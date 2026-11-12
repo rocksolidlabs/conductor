@@ -38,10 +38,10 @@ func (f *fakeFacts) CheckAccountDir(dir string) error {
 	return nil
 }
 
-func (f *fakeFacts) Bound(id string) []string {
+func (f *fakeFacts) Bound(a Account) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.bound[id]
+	return f.bound[a.ID]
 }
 
 // openAt opens capacity/ in dir and owns it, as the server holding

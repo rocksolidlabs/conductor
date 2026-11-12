@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // TaskFile is .conductor/task.json: an attempt's task as a tool reads it.
@@ -994,8 +995,16 @@ func launchStage(stage string) bool {
 	return stage == "package" || stage == "agent"
 }
 
-// crewAsLaunched is the crew as launched, for the ledger's run row.
+// crewAsLaunched is the crew as launched, for the ledger's run row: each
+// member's binding whole, but the tool's own login kept as no binding, as
+// a crew from before bindings is (read back, its launch takes default).
 func crewAsLaunched(c Crew) string {
+	c.Members = slices.Clone(c.Members)
+	for i := range c.Members {
+		if b := c.Members[i].Bound; b != nil && b.Source == session.SourceOwn {
+			c.Members[i].Bound = nil
+		}
+	}
 	b, err := json.Marshal(c)
 	if err != nil {
 		return ""

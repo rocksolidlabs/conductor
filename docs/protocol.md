@@ -2479,12 +2479,43 @@ previewed page runs, loaded by the page itself in a browser or put into
 it by the desktop shell, that reads the page for the workbench framing
 it: the frame's document is another origin's, so nothing else can. It
 reads, never writes, the page; it reads no storage, cookie, console or
-network, never an `input`'s value, a password field or a `textarea`'s
-text; and it does nothing until a workbench origin says `hello`.
+network; a report it writes never carries an `input`'s value, a password
+field or a `textarea`'s text; and it does nothing until a workbench
+origin says `hello`. What it
+reports of the page it writes itself: every string of the page's is cut
+to its bound by one slice before anything else reads it, every list it
+walks itself read by index to its bound and of the engine's lists (the
+stack under the pointer, an element's own keys) a bounded number, every
+walk of the tree bounded in the links it follows (down, across and up
+alike), and the markup and text
+written by the bridge's own writer from the live tree, never a copy and
+never the page's serialiser. A walk's budget is counted in links, a node
+costing it up to three, so a text, a name or a markup may end at its
+walk's budget, before its bound in bytes, with nothing in `cut` saying
+so. What the engine builds in one call before
+the bridge reads any of it is the engine's work, the bridge bounding what
+it reads of it: an attribute's value, the title, the stack under the
+pointer, an element's animations, its computed style, an element's own
+keys, a describe's one query, the id form's one question to the document
+(`#` and the id, for each selector a report writes), the lookups by id
+of a label's ids (at most 8, of aria-labelledby's), the one hit test at
+the box's centre, and the element links an arrow key follows in
+selection mode. Of an element that takes a
+person's input (`input`, `textarea`, `select`, `option`) or one a person
+edits in place it writes the tag and its `type`, `name`, `id`, `class`,
+`role`, `contenteditable` and `aria-*` attributes alone; of a `script`, a
+`style` and a `template` the tag and its attributes alone. The one thing
+it puts on the page is its outline's host, a `div` holding a closed
+shadow root, in selection mode alone: it takes it off when selection mode
+ends, and selection mode ends before any report is read (a pick, Escape,
+a `cancel`, a `describe`, a `hello`, a `select`).
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
-build emits (the script and its build are PV1 PR-2b's) whole, its bytes
+build emits (`web/build/previewBridge.ts`; `make web-build` fails when
+the built app has none, an empty one, or one that does not compile as one
+classic script inside the wrapper below, a module's `import` or `export`
+or a syntax error: `web/build/checkPreviewBridge.mjs`) whole, its bytes
 unchanged, inside a wrapper the server writes:
 `(function (conductorWorkbenchOrigins) {` and a line break, the script,
 a line break and `})(`, the server's workbench origins as a JSON array
@@ -2523,14 +2554,18 @@ at most 256 bytes.
 `Content-Type: text/javascript;
 charset=utf-8`, `Cache-Control: no-cache`, `Cross-Origin-Resource-Policy:
 cross-origin`, `X-Content-Type-Options: nosniff`. A server whose embedded
-app has no bridge (built without `make web-build`, by a web build that
-emits none, or `make dev`'s), and
+app has no bridge (built without `make web-build`, or `make dev`'s), and
 a switchyard, answer `404 no_bridge` ("this server was built without the
 web app's preview bridge: run make web-build"). A tree with a preview
 resolved once the server listens on the loopback (or on every address)
 is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
 (`[::1]` for a listener there alone); a tree without a preview, and every
-tree of a server with no bridge or no loopback listener, none.
+tree of a server with no bridge or no loopback listener, none. The Nuxt
+dev server, which is for developing Conductor itself, answers the same
+path: it wraps the script as the route does and names the loopback's
+three names at the port the request names (its `Host`, when that is a
+loopback name; no origin otherwise). Its headers, its routing and what
+it takes the port from are the dev server's own.
 
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
@@ -2598,11 +2633,15 @@ proportion to the value, which the browser has already spent, several
 times over, deserialising the message to hand it to the page. From the workbench:
 `hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
 later message of either side carries), `select` (selection mode: the
-pointer outlines, a click or Enter selects, Up and Down step through the
+pointer outlines, a click selects what is under it and Enter what is
+outlined, Up and Down step through the
 elements stacked under the pointer, Left and Right walk to the parent
 and the first child, Shift with Up and Down to the siblings, Escape
 leaves), `describe {selector}` (the element a selector of at most 1,024
-bytes finds), `look` (the page now) and `cancel`. From the bridge:
+bytes finds; a describe answers whether the selector it was sent finds
+an element, and a selector can itself ask about an attribute or a state;
+which selectors the workbench sends is the workbench's), `look` (the
+page now; it does not end selection mode) and `cancel`. From the bridge:
 `ready {version: 1, hints}` (`hints` the kinds of source the page gives,
 each once: `attribute`, `vue`, `svelte`, `react`), `selected {element}`,
 `described {element}` or `described {missing: true}`, `looked` and
@@ -2614,24 +2653,52 @@ whole number the bridge bumps, at most once an animation frame, on a
 resize or scroll of the window, a mutation of the document but its own
 host's, and every animation and transition event: it says only that the
 page moved) and `revision` (the page's `<meta name="conductor-revision"
-content="<commit>[+<content>]">`, lower-case hex of 4 to 64 digits with
-one optional `+` part, at most 128 bytes, else "").
+content="<commit>[+<content>]">` among the head's children, within 128
+links of a walk of the root's and the head's children, lower-case hex of
+4 to 64 digits with one optional `+` part, at most 128 bytes, else ""). A
+`ready`'s hint kinds are read from the elements a walk of the document
+reaches within 2,000 links, React's from the own keys of the first 64
+elements of the document, in document order (at most 64 keys read of
+each). An accepted `hello` changes the
+nonce and the origin even when its `ready` is never sent (a page whose
+properties throw as they are read gets no answer).
 
 **The element report** (`element`): `{tag, id, classes, role, name (the
-accessible name), text, selector (found exactly once: a unique id, else
-the shortest chain of tag, stable classes and :nth-of-type), box {x, y,
-width, height}, attributes ([name, value]; an input's value never),
-state {disabled, hidden, ariaDisabled, ariaExpanded, pointerEvents,
-inert, hovered, motion (the animations playing on it, its subtree and
-its ancestors)}, hit {self, selector, tag} (what elementFromPoint finds
-at the box's centre), html (its outer HTML from a copy with every input
-value and textarea text emptied, cut at a tag's end), neighbourhood (its
-parent's, each sibling's subtree past depth 2 elided), ancestors ([{tag,
-id, classes, role}], innermost first), styles ([property, value] of a
-fixed list of 64), hints ([{how, file, line, column, component}]: a
-data-conductor-source "<file>:<line>:<column>" on it or an ancestor, a
-Vue dev build's component chain, Svelte's __svelte_meta, React 18's
-_debugSource), cut (the steps it was cut by)}`. Each field to its bound,
+accessible name: aria-label, the text of at most 8 of aria-labelledby's
+ids, of the label for its id within 256 links of a walk of its third
+ancestor's subtree or of the label around it, else its own; an id past
+its bound is not looked for as a label's `for`, and an aria-labelledby
+list past its bound drops its last token, so a value past its bound
+names no element), text (of
+what a walk of its subtree reaches within 256 links), selector (built,
+never searched for and never cut: `#` and its id escaped, in a document
+not in quirks mode, when that is within the bound and the document,
+asked that very selector, gives the element; else its path from the
+root, `:root > tag:nth-child(n) > …`, each step its place among its
+siblings and its name only when the element's local name, as read, is
+lower-case letters, digits and hyphens beginning with a letter (else
+`*`), so a step matches one child in any document and namespace; "" when
+the path passes 4,096 nodes or the bound; a describe of it finds the
+element), box {x, y, width, height}, attributes ([name, value], the
+first 32 by index; of a control, what it is alone), state {disabled,
+hidden, ariaDisabled, ariaExpanded, pointerEvents, inert (it or one of
+its 63 nearest ancestors), hovered, motion (the animations playing on
+it, on the elements a walk of its subtree reaches within 64 links and on
+its 12 nearest ancestors)}, hit {self, selector, tag} (what
+elementFromPoint finds at the box's centre; self when that is it or it
+is one of the 63 nearest ancestors of what is found), html (its markup
+as the bridge writes it, within 3,072 links and its bound in bytes,
+every node whole and every element closed, so it is never cut
+afterwards), neighbourhood (its parent's, written the same way within
+6,144 links, each sibling's subtree past depth 2 elided), ancestors
+([{tag, id, classes, role}], innermost first), styles ([property, value]
+of a fixed list of 64), hints ([{how, file, line, column, component}]: a
+data-conductor-source "<file>:<line>:<column>" on it or one of its 63
+nearest ancestors, a Vue dev build's component chain (64 levels to its
+instance, its own included, and 64 instances), Svelte's __svelte_meta
+(it or one of its 63 nearest ancestors), React 18's _debugSource (its
+fiber among the element's first 64 own keys, 256 fibers); each walk
+stopping at 8 hints), cut (the steps it was cut by)}`. Each field to its bound,
 in bytes as measured below: the tag, id, classes, role, name and the
 state's strings 1,024 each, the text and the selectors 1,024, at most 32
 attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
@@ -2642,11 +2709,12 @@ the bridge cuts it to fit, measuring after each step and stopping at the
 first that fits, in this order, each named in `cut`: `neighbourhood` (to
 nothing), `html` (to its opening tag), `styles` (to the first 16),
 `attributes` (each value to 64 bytes), `tag` (the opening tag to 512
-bytes, then the HTML dropped), `hints` (the innermost 2, each file to its
-last 256 bytes and component to 128), `ancestors` (the innermost 4),
-`attribute-count` (the first 8), `names` (the tag, text, name, id, role,
-classes, selector and the hit test's tag and selector to 256 bytes each),
-`style-count` (the first 8). What the last step leaves is under 12 KiB
+bytes, its attributes from the last that does not fit left out, then the
+HTML dropped), `hints` (the innermost 2, each file to its last 256 bytes
+and component to 128), `ancestors` (the innermost 4), `attribute-count`
+(the first 8), `names` (the tag, text, name, id, role, classes and the
+hit test's tag to 256 bytes each, a selector longer than 256 bytes to
+""), `style-count` (the first 8). What the last step leaves is under 12 KiB
 whatever the fields held. So `cut` is always a prefix of that order, its
 first steps with none skipped or twice; a report whose `cut` is not is
 refused. **One measure**: a value's size is the UTF-8
@@ -2660,10 +2728,39 @@ string's bound leaves its quotes out.
 **Bounds and the gate.** A message to the bridge is at most 4 KiB, one
 to the workbench at most 64 KiB, as measured; one past it, or that does
 not parse by its type's schema, is dropped unanswered. The bridge takes
-a message only from `window.parent`, at one of the origins written into
-it, and, after the `hello`, only from that hello's origin with its
-nonce (a later `hello` starts again); it posts only to `window.parent`,
-addressed to that origin, never `*`. The workbench takes an answer only
+a message only from an event the browser delivered (`isTrusted`), from
+`window.parent`, at one of the origins written into it (compared
+exactly), and, after the `hello`, only from that hello's origin with its
+nonce (a later `hello` starts again: selection mode is ended first, and
+nothing of the exchange before is sent under the new nonce); what it
+drops changes nothing. In selection mode it stops the events of its
+table, the pointer, mouse (not drag), touch and key events it names, of
+those the browser delivers to the page's own window (its listeners, in
+the window's capture phase, added and removed from that table, so a
+listener the page put on the window in that phase before selection mode
+began is called before the bridge's; a tap's touches and a wheel keep
+their default action). Selection mode picks, and stops what it stops,
+only on events the browser delivered: a pointer move outlines the
+element under it, a click picks the element under its own point, the
+release of Enter picks the outlined element if it is still connected to
+a document, and otherwise does nothing, and the release of Escape leaves. A scroll
+or a resize of the window takes the outline off (every such event the
+window hears, the page's own among them) until the next pointer event or
+arrow key gives one; a scroll inside the page, of a container, does not:
+the outline stays where it was drawn until the next pointer move or
+arrow key. What is aimed at a frame inside the page (`iframe`, `frame`,
+`object`, `embed`) the browser delivers to the frame. A frame's element
+is outlined when the browser delivers the page's window a pointer event
+aimed at it (a mouse pointer entering it), and while it is outlined the
+outline's box, drawn over it, takes the pointer, so a click there picks
+it. Not otherwise: a touch on a frame, a frame inside a component's own
+tree, a frame that a scroll brings under a resting pointer, and a frame
+the pointer already rests in when selection mode begins keep their
+events, and so do keys typed while the focus is inside a frame.
+Outside selection mode it stops none; a throw while it handles one
+leaves selection mode. It posts only to `window.parent`, addressed to
+that origin, never `*`, and only a message its own parser takes as one to
+the workbench. The workbench takes an answer only
 from the frame's window at the preview's origin with the nonce it sent.
 Nothing the page sends is executed or rendered as HTML by the workbench.
 
@@ -2762,7 +2859,7 @@ its run, and on no other.
 | `GET /api/paths` | admin | `scope` (optional): `roots` (the default, everything below) or `any`, which lists any directory the server's user can stat, a symbolic link to any directory included, the stat still first; `any` only with `paths.browse: any` (the desktop app sets it for its own server, for its settings picker), else `403 browse_off`; another value `400 invalid_request`. `prefix` (≤ 4096 bytes, no NUL; a relative one resolves against the server's own working directory, as a session's `cwd` does) and `limit` (a positive integer, default 50, at most 50: more counts as 50) in the query; reply `{dir, entries, truncated, more?, moreUnknown?}`: `dir` is the longest leading part of `prefix` that is an existing directory under an allowed root (symbolic links resolved, as a session's `cwd` is checked; the server's default working directory for an empty `prefix`), `entries` its child directories whose names start with the path element typed after `dir` (all of them when `prefix` names a directory), in name order, at most `limit` of the first 2000 entries the directory gives, hidden ones only when that element starts with a dot (a lone `.` after the last separator included), a symbolic link only when it leads to a directory under an allowed root, each `{name, path, git: {repo, commits}}` (`repo`: in a git working tree; `commits`: its `HEAD` is a commit; a child with no `.git` of its own carries its parent's marks, a symbolic link its target's; neither without `git` on the server; git is asked at most once per entry, one call at a time), `truncated` when more match than `limit`, when the directory has more than 2000 entries (the rest are not read), when the listing stopped at a symbolic link (the one after 50 that led nowhere usable, or any once the deadline has passed), or when the deadline passed before every entry was marked; `more` how many directories matching the typed element were left out past `limit` (round 14: the pickers say "30 more folders here"), and `moreUnknown` that there may be others besides (more than 2000 entries, or the listing stopped at a link); the 5 s deadline covers the whole request, and when it passes after the directory is found the listing keeps its entries, the git marks not yet asked for left false and `truncated` set, which is not an error; a directory the server cannot read lists nothing (`200`, no entries); the listing and the git check below refuse a chain of symbolic links longer than the kernel follows (about 40), which a launch's own resolution of a `cwd` would still accept; `400 invalid_cwd` when no part of `prefix` is such a directory, its message naming the allowed roots (`no directory in the prefix is under the allowed roots: <root>, <root>`), which the picker shows as it is; `400 invalid_request` for a bad `prefix` or `limit`; `500 list_failed` when the deadline passes before the directory is found (a prefix of very many elements through symbolic links); the path asked about is logged at debug level only |
 | `GET /api/git/check` | admin | `cwd` in the query (≤ 4096 bytes, no NUL; the server's default working directory when empty; resolved as the listing resolves it); reply `{inRepo, toplevel?, hasCommit, message}` by the rules a launch with `isolation: worktree` applies (`git -C <cwd> rev-parse`, under the allowed roots): `inRepo` when `cwd` is in a git working tree, `toplevel` its top, left out when it is not under an allowed root (a root may lie inside a repository, and a repository's `core.worktree` can name any directory), `hasCommit` when `HEAD` is a commit, `message` the words the launch's refusal would use, or that worktrees can be made: that `cwd` is in no repository, or in one with no commit, or that `git` is not installed (then `inRepo:false`), or, for a repository git refuses (owned by another user, unreadable), `git cannot use the working directory's repository:` and git's first line of stderr, which may name a configuration file or a repository path outside the roots; in a repository with a commit, a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, which the launch refuses first, answers `inRepo:true, hasCommit:true` with that refusal in `message`, so `message` is the verdict, not the two booleans; a preview: the launch's own refusal stays the authority (`409 not_a_repo`, or `400 invalid_crew` for the symbolic link); `400 invalid_cwd` as for a session; `500 git_failed` when git does not answer within 5 s (another failure to run it answers `200` with git's message) |
 | `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId, start}], people?: [{name, responsibilities?}], updatedAt}` (`people` the crew's people with their responsibilities, never their notes, absent for a crew without people); `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
-| `GET /api/crews/{id}` | admin | one crew in full, `{crew, revision}` (`revision` names the copy stored: 64 lower-case hex digits, the SHA-256 of the crew's JSON as the server reads it, computed and never stored, so any change to the crew, its `updatedAt` included, gives another; an update made from this copy sends it back), the crew shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, yolo?, members, people?, createdAt, updatedAt}` (`people` and a task's `owner` as People in a crew below has them, absent for a crew without) (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, start: {when, member?}}`; `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
+| `GET /api/crews/{id}` | admin | one crew in full, `{crew, revision}` (`revision` names the copy stored: 64 lower-case hex digits, the SHA-256 of the crew's JSON as the server reads it, computed and never stored, so any change to the crew, its `updatedAt` included, gives another; an update made from this copy sends it back), the crew shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, yolo?, members, people?, createdAt, updatedAt}` (`people` and a task's `owner` as People in a crew below has them, absent for a crew without) (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, account?, model?, start: {when, member?}}` (`account` an account's id or `default`, `model` as a session's, see Capacity; a member sent with `bound` is refused `400 invalid_crew`); `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
 | `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt`, `updatedAt` and `manifestRevision`, which the server sets and rejects like any unknown field (`manifestRevision` 1 for a crew with a project manifest or a `setup`, absent for one without); the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; a `revision` is refused as an unknown field; reply `201 {crew, revision}`, `revision` as for `GET`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `503 store_unavailable` when there is no data directory |
 | `POST /api/crews/examples` | admin | seed the example crews (`example-todo-app`, `example-todo-app-tasks`, `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`), as `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to `1` or `true`) does at startup: each is saved unless an entry named `<id>.json` exists in `crews/`, usable or not (a symbolic link included), which is left alone whatever it holds; reply `200 {added, skipped}`, the ids each way in that order, each a list (`[]` when none); their `cwd` is the server's default working directory, their members use the `claude` and `codex` built-ins (not checked against the catalog: the launch checks), `where` is `server` and `isolation` `worktree`; each member that starts `after` another has a role prompt that begins by merging that member's branch, `crew/$CONDUCTOR_RUN/<member>`; `example-todo-app-tasks` has tasks instead of start rules (every member `start.when` `task`); `503 store_unavailable` without a data directory; `500 store_failed` when the directory cannot be read or a crew cannot be saved (the ones saved before it stay) |
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; the body may also carry `revision`, the one a `GET` (or the reply of a create or an earlier update) answered for the copy the edit was made from: the save is made only while that copy is the one stored, checked and written under one lock, so of two saves made from one copy the second is `409 stale_revision` and nothing is saved (the crew editor sends it, and on that answer keeps the person's edits as typed, says what changed elsewhere and offers two choices behind a confirm: read the crew again, which replaces the edits, or save them anyway with the revision of the copy the server holds now, refused again if the crew changed once more); without `revision` the body replaces whatever is stored; `400 invalid_request` for a `revision` that is not 64 lower-case hex digits; reply `{crew, revision}`, the new copy's; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
@@ -2849,12 +2946,12 @@ its run, and on no other.
 | `GET /api/inbox?after=<cursor>` | admin | the decision inbox (`docs/plans/decision-inbox.md`, Program item MB0): the open items a person must decide, as summaries, oldest first by `(since, ref)`: `{items[{ref, kind, since, title, brief, question, answerer, routed?, blocks?, actions[label], card?, state?, tracking?, closed?}], next?, total, tracking?, recent?, at}`, at most 150 a page, `next` the cursor after the last when more follow (`?after=` takes it; `400 invalid_request` for any other value, any other parameter, or one given twice, on all three inbox routes), `total` every open item, not the page's. An item is named by Brakeman's ref of what it is about: `question:<session>/<question>` (a listed session's attention `needs_input` with that id, not answered in the terminal; a turn held for the terminal is an item with no answer, and so is a question that mirrors a durable decision, its attention's `decision`: it is answered through `POST /api/decisions/{did}/respond` on the decision's card, its brief and `blocking.words` naming the decision and where, and the session refuses every reply naming it), `task:<run>/<task>` (a managed run's failed task that `crew.TaskCommands` allows a command on; a blocker an attempt reports is its session's question, naming the task and carrying its Cancel), `plan:<KEY-n>/<n>` (a ticket's proposed revision, or, while the ticket is neither done nor cancelled, its approved one whose approval no longer holds, `dispatch.Store.OpenPlans`), `decision:dr-<n>` (a DR1 record, `open`, or `answered` and not yet applied: the latter `tracking: true`, listed and counted in `total` until DR1 gives it a final state, and counted in `tracking`, which the bar's number leaves out, the records' page, their count and `tracking` of one read; its `since` the record's `createdAt`, `ledger.InboxDecisions`). A question that mirrors a DR1 record (its attention's `decision`) is not listed: the record is its item. A decision's summary carries `state`, the record's. The first page carries `recent?`, DR1's records closed (applied, superseded, cancelled or expired) in the last 24 hours, at most 50, the latest first, each a summary with `closed`, for every viewer. A summary is at most 4 KiB, the reply at most 840 KiB; it carries no action's input or scope. Nothing is written: the page acts through each action's own route. On a switchyard `403 switchyard` (decisions are answered where the work runs) |
 | `GET /api/inbox/item?ref=<ref>` | admin | one item whole, at most 96 KiB: `{item: {ref, subject, kind, state?, since, title, brief, briefBy, card?, question, answerer, routedTo?[{kind, name}], routedRule?, revision, now?, blocking{words, refs, more?}, actions[{name, label, input?, text?, choice?, expect, ticketRev?, scope, confirm?, route, track?, attempt?, commit?}], whyHuman?, considered?[{label, tradeoffs}], recommended, uncertainty?, authorizes?, cardRev?, cardNote?, evidence?[{ref, label}], delivery?}}`. A DR1 record's item (`decision:dr-<n>`, `kind` `decision`, `state` the record's) does not carry the record (its read, `GET /api/decisions/{did}`, is up to 1 MiB): its question exactly as the record keeps it (at most 500 characters), its answerer the operator (with whom the record is for when it names a person, in DR1's card's words: "you, the operator, for nate (architecture owner)", the responsibility in HM1's words, a label that named no one the operator alone, and one given to the decide grant "you, the operator, or anyone holding the decide grant"), its `revision` the record's `rev`, its blocking the tasks the record holds and their dependents, the asking attempt and the run's end, its evidence the run, the asking task, attempt and session, the ticket and the evidence the request cites, and its `delivery` DR1's four states as the record reports them, each its own step: `available` (opened), `recorded` (the accepted response, its receipt `dr-N/<k>`; not applicable for one closed unanswered), `validated` (Yardmaster's application checked the subject, the policy and the asker again; waiting while answered: "Yardmaster applies it next", or, its run not held by the engine, "it waits for its run to be continued"), and `applied` (the application's words, or why not). Its actions, open, by its type, each through DR1's route at the record's `rev` (`expect`): its options by index (`choice`; an approval's first two named `approve` and `reject`, asked first; an assignment's `Done` and `Not done`), a clarification's line (`answer` with `text`), each to `POST /api/decisions/{did}/respond`, then `more_info` (an agent's record, open, while its asking attempt is live, as DR1's `asker.live` says: DR1 refuses it `no_recipient` after) and `comment` (open or answered), each with `text`, to `POST /api/decisions/{did}/comment`; each `scope` says what Yardmaster then does (types the answer into the asking attempt's session, or, that attempt ended, says the task's next attempt reads it in its task file; lets the held tasks start, cancels them) and what the request authorizes. A record and what it holds (its active holds under its current run) are of one read of the ledger, so its blocking and its actions' scopes are of the `rev` they are answered at (a continuation that moves both is seen whole or not at all); a read that fails is no item (`503 unavailable`, and the list's too): what it holds is never guessed. Each action carries the revision its own operation checks (`expect`: the question's id for an `answer`, the run's revision for `retry`, `accept`, `cancel` and `recheck`, the plan revision's `rev` for `approve` and `withdraw`, and `ticketRev`, the ticket's, beside it for `approve`) and its `route` (`/ws/sessions/{id}`'s `answer`, `POST /api/runs/{run}/tasks/{task}/{command}`, `POST /api/dispatch/plans/{id}/{approve,withdraw}`); a failed task offers `recheck`, Check again, beside them when the engine would take it now (`crew.TaskCommands`' `recheck`, by `Engine.Recheck`'s own rule): its `attempt` and `commit` name the standing failed candidate as its own run names it, and its route is that run's recheck route (in a continuation, the continued run's, which the route walks forward from); a run that moved on refuses it `stale_revision`, the page's words then naming the candidate the item read again offers, and a candidate that no longer stands is refused `stale_candidate` in the engine's words; `track`, when set, is the ref its steps are read under (`GET /api/inbox/track`), when not the item's own: a task command a blocker's question carries is tracked as `task:<run>/<task>`. `scope` says exactly what it does, at which revision (an Approve's names the yolo choice read from the revision's body and the approval it supersedes, kept whole within the scope's 1 KiB, the crew's tasks and agents shortened first; a body not read gives no Approve; a Retry's names the commit the engine would start it at). A task's item describes the task as the engine judged its commands, in one read. An exact field (`question`, at most 500 raw bytes; an `input`, at most 48; the refs; `expect`) is never cut; a display field is cut on a rune boundary until its encoded form fits. Brakeman's newest `decision/1` card about the item's `subject` fills the brief, `whyHuman`, `considered`, `recommended` (-1 for none: Conductor recommends nothing), `uncertainty` and `authorizes` (Brakeman's, beside each scope), with `cardNote` when it was read at another revision. `routedTo` is the route a registered decision router gave for that question, kept by question id (the last 256, in memory). A ref of something no longer open answers the item as it is now (no actions, `now` saying why, a question's `delivery`: "not open now" for a question kept to show again, "no longer open" with how it left otherwise), a task of a run the engine let go read from the run's record; `404 not_found` for one that names nothing the server holds; `400 invalid_request` for a ref that does not parse. On a switchyard `403 switchyard` |
 | `GET /api/inbox/track?ref=<ref>&receipt=<id>&attempt=<reqId>` | admin | the four steps of one action, from its durable receipt, at most 8 KiB: `{ref, receipt, steps[{step, state, at?, words, receipt?}]}`, the steps `available`, `recorded`, `validated` and `resumed` (for a DR1 record, `applied`: DR1's fourth state), each `done`, `waiting`, `refused`, `not_applicable` or `unknown`, never merged. For `decision:dr-<n>`, `receipt` is the tracking key, which names what it tracks by its kind and id: `response:<responseId>` for a response, `comment:<opId>` for a comment or a request for more information (DR1 keeps the two ids apart, so one id may name a response and a comment both, and neither is read as the other; a key without its kind, `400 invalid_request`), read under the caller's actor, with no `attempt`: a response accepted reads the record's four states, one refused reads recorded refused with DR1's words and code; a comment or a request for more information reads recorded done at its history row and the rest not applicable (a comment changes nothing; more information keeps the record open); an id the record keeps nothing of under the caller reads recorded `unknown`. `receipt` is a task command's id (the ledger's receipt of the caller's actor: `accepted` is validated waiting, `done` done, `failed` refused with its code, `uncertain` validated unknown and resumed not applicable: a command's change commits with its receipt's settlement, so a receipt left unsettled at a stop made nothing; then the task since: a retry's next attempt, an accept's dependents (the first attempt of any of them that started since, from every attempt each keeps), a Check again's attempt checking its candidate (waiting while the attempt its change recorded waits for its verification, which starts once the run's prerequisites have passed; done at the first receipt of that verification, or at the attempt's end when it decided without one; not applicable when it was closed before), read from the run's record for a run the engine let go and `unknown` for one found nowhere, a cancel's nothing; an id whose receipt is another command's, a run's pause or another task's, is recorded refused, nothing taken for this task, a Check again's task read from the arguments it was taken with whatever its receipt names (one refused before its change, or not settled, names none); a Check again's receipt not in the ref's run is looked for in the runs that continue it, where its route sends it), a plan revision's Dispatch op id (the operation's receipt and its own outcome; resumed does not apply: a launch from the ticket page starts it; an id whose receipt is not an approval or withdrawal of this revision, as far as the store keeps the operation's subject, is recorded refused), or a question's id with `attempt` the request id the answer was sent with. A question reads, by how it left: shown, or kept to show again (the agent's own set aside, the one a held turn holds over), waiting; answered through its claim, the winner's id done, another's refused "another answer first", then its resumption as the session kept it at the first change after the answer, `working` or a next question done, the end not applicable; answered by keys typed in the terminal (a person's Enter at a wait with no words among them), while it still shows and once it left (whatever let it go after, the process's end among them), recorded refused "keys typed in the terminal answered it first"; gone for good without an answer, recorded refused at the time it went, saying how: the session ended, another question shown in its place, or withdrawn by the agent (by what it reported next, or by its id while it was set aside or held over, with nothing else changing); forgotten past the session's 64, or the session no longer listed, `unknown`. A hosted session's question reads recorded and validated `unknown` (the host holds the answer) and resumed from what the server saw as its host synced the attention (what the host said, never a change the server forwarded and the host has not applied), its last 64 questions: a question leaves when the host's session neither shows nor keeps it, and its resumption is the first change from then, waiting until it comes, `unknown` when the server did not see it leave; the server notes it before it publishes the change's `session` event. A question's `receipt` is its own id; a task command carried by its item is tracked under the action's `track`, and its command id under the question's ref is `400 invalid_request`. A step is a historical fact, read the same by every browser; what changed of the subject since is the item's `now`. On a switchyard `403 switchyard` |
-| `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?}`, reply `201` with the session `Info`; `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
-| `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`, and for a server session its `launch`, `{agentId, cwd, args, yolo}`: what it was launched with and what a clone takes by default (`POST /api/sessions/{id}/clone`), its agent, its resolved working directory, the arguments the launch gave, as given, and its yolo choice (not whether a recipe was applied: `Info.yolo` says that); never the launch's environment, and never to a share link's holder; on a switchyard the workbench token's `role` is `""` |
+| `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?, account?, model?}`, reply `201` with the session `Info`; `account` and `model` bind its login and model (see Capacity: `400 invalid_account`, `409 accounts_not_owner`, `503 capacity_unavailable`, a model `400 invalid_request`); `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
+| `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`, and for a server session its `launch`, `{agentId, cwd, args, yolo, account: {id, label?, source}, model?}` (its binding without its folder or fingerprint, see Capacity): what it was launched with and what a clone takes by default (`POST /api/sessions/{id}/clone`), its agent, its resolved working directory, the arguments the launch gave, as given, and its yolo choice (not whether a recipe was applied: `Info.yolo` says that); never the launch's environment, and never to a share link's holder; on a switchyard the workbench token's `role` is `""` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list; on a switchyard, a session a Conductor published there ends its publication, its process running on at home |
 | `PATCH /api/sessions/{id}` | admin | rename a server session, running or ended: `{name}` (the body at most 4 KiB); the name loses its control characters (C0, DEL and C1) and the space around it and is cut to 120 bytes at a character boundary (`proto.MaxSessionName`, the bound a launch's name has too); reply `200` with the session `Info`; the change reaches `GET /api/events` as a `session` event, and a resume of the session starts under the new name (`POST /api/sessions/{id}/resume`; a crew member's too, the member keeping its own name in its run); `400 invalid_name` when nothing is left; `400 hosted_session` for a hosted session (its host names it); `400 invalid_request` for a body that is not one `{name}` (an unknown field, or past its 4 KiB); `404` when unknown. A session a Conductor published to a switchyard keeps there the name it was published with |
-| `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name (the one it was renamed to, if it was: `PATCH /api/sessions/{id}`), working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`, also, read as the launch takes the conversation, while a session of that agent session or of its `resumedFrom` chain has a process not done (a stop that failed, listed or removed since); `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; otherwise as `POST /api/sessions` answers |
-| `POST /api/sessions/{id}/clone` | admin | start a new session like a server session, running or ended, while it is listed (#434): `{name, agentId?, cwd?, args?, yolo?}` (the body at most 64 KiB); what the body leaves out (an empty `agentId` or `cwd`, no `args`, no `yolo`) is the source's `launch` (`GET /api/sessions/{id}`), never its environment; `args: []` launches with none; the yolo choice is sent as the source's, never left to the server's default. The clone is a loose session (a crew member's gets nothing of its run: no `crew`, no `CONDUCTOR_CREW`, `CONDUCTOR_RUN`, `CONDUCTOR_MEMBER`, `CONDUCTOR_TASK*` or `GOAL`, no tree names, run chat or role prompt), in a new agent conversation (an agent whose recipe names it at launch names it afresh); Conductor makes and removes no worktree for it, and nothing of the source changes. The name is cleaned as a rename's (`PATCH /api/sessions/{id}`) and must be no listed session's, server or hosted, running or ended, compared ignoring case; it is held from that check until the clone is registered or refused, so two clones asking for one name at once make one session. Reply `201` with the clone's `Info`; `404` when unknown; `400 hosted_session` for a hosted session (Conductor cannot start a session on its machine); `400 invalid_name` when nothing of the name is left; `409 name_taken`; `400 invalid_request` for a body that is not one (an unknown field such as `env` among it); otherwise as `POST /api/sessions` answers: `400 invalid_agent` when the agent is no longer in the catalog, `400 invalid_cwd` when the directory is gone or outside the allowed roots (with no default directory instead, unlike a resume), `400 args_not_allowed`, `409 too_many_sessions`; a switchyard's `403 switchyard` |
+| `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name (the one it was renamed to, if it was: `PATCH /api/sessions/{id}`), working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`, also, read as the launch takes the conversation, while a session of that agent session or of its `resumedFrom` chain has a process not done (a stop that failed, listed or removed since); `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; it is started under the binding and model the session was launched with, `409 account_gone` when its login would now be another (see Capacity); otherwise as `POST /api/sessions` answers |
+| `POST /api/sessions/{id}/clone` | admin | start a new session like a server session, running or ended, while it is listed (#434): `{name, agentId?, cwd?, args?, yolo?, account?, model?}` (the body at most 64 KiB; `account` and `model` left out are the source's, its registered account or else `default`, for an agent of the source's adapter, the one it was started as whatever became of its entry, and the adapter's default otherwise); what the body leaves out (an empty `agentId` or `cwd`, no `args`, no `yolo`) is the source's `launch` (`GET /api/sessions/{id}`), never its environment; `args: []` launches with none; the yolo choice is sent as the source's, never left to the server's default. The clone is a loose session (a crew member's gets nothing of its run: no `crew`, no `CONDUCTOR_CREW`, `CONDUCTOR_RUN`, `CONDUCTOR_MEMBER`, `CONDUCTOR_TASK*` or `GOAL`, no tree names, run chat or role prompt), in a new agent conversation (an agent whose recipe names it at launch names it afresh); Conductor makes and removes no worktree for it, and nothing of the source changes. The name is cleaned as a rename's (`PATCH /api/sessions/{id}`) and must be no listed session's, server or hosted, running or ended, compared ignoring case; it is held from that check until the clone is registered or refused, so two clones asking for one name at once make one session. Reply `201` with the clone's `Info`; `404` when unknown; `400 hosted_session` for a hosted session (Conductor cannot start a session on its machine); `400 invalid_name` when nothing of the name is left; `409 name_taken`; `400 invalid_request` for a body that is not one (an unknown field such as `env` among it); otherwise as `POST /api/sessions` answers: `400 invalid_agent` when the agent is no longer in the catalog, `400 invalid_cwd` when the directory is gone or outside the allowed roots (with no default directory instead, unlike a resume), `400 args_not_allowed`, `409 too_many_sessions`; a switchyard's `403 switchyard` |
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included) |
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
 | `GET /api/sessions/{id}/task` | the session's agent token, or admin | the task of an attempt's session in a managed run (#334, row 6): `{task, markdown, page, pages, bytes}`, `task` the attempt's `task.json` and `markdown` a page of its `task.md` (32 KiB a page, `?page=` from 1, page 1 unless asked; `400 invalid_request` past the last); `404 not_an_attempt` for a session that is no attempt; `409 not_running` for an attempt whose worktree is not made yet; never gated by `agents.selfService` |
@@ -5044,7 +5141,11 @@ resolved to its revision's state and `rev` like any ref; the app's
 pages draw neither such a card's Approve nor a `draft_plan/1` yet, which
 come with the pages' part, #532),
 `comparison/1`, `evidence/1`, `draft_ticket/1` (at most 20, their `blocks`
-without a cycle), `draft_crew/1`, `draft_plan/1` (`ticket`, a `ticket:`
+without a cycle), `draft_crew/1` (a member that names an `account` or
+a `bound` is refused at the brief's check, `400 invalid_brief`, and at
+the make, `400 invalid_draft`, a person's own `edit` of the draft
+included: an agent does not choose accounts; a member's `model` is
+taken, a person making the draft), `draft_plan/1` (`ticket`, a `ticket:`
 ref; `crew`, a saved crew's id; `base?` at most 256 bytes; `basedOn?`, a
 `plan:` ref; `references?` at most 20 `{path, start?, end?, note?}`;
 `attachments?` at most 8 ids; `comments?` at most 20 `comment:` refs;
@@ -5298,7 +5399,7 @@ the records reads a file again only when its size or time changed.
 | `GET /api/history/sessions/{id}` | admin | `{record, live, newer}`: the record whole (at most 64 KiB), `live` while the registry lists its session running; `404 not_found` |
 | `DELETE /api/history/sessions/{id}` | admin | `204`: the record forgotten, its file deleted; `409 live_session` for a session still running, `409 resume_pending` for a record whose resume is being started, `409 history_read_only` on a server that does not hold the records, `404 not_found`, `500 history_failed` when its file could not be deleted: the record stays as last written, listed and forgettable again, nothing its session says is written to it, and one whose file has no end is listed `lost` and written so; `503 history_index_failed` when the record is removed but the history's index could not drop its entries yet (they are dropped before the index is read again); a `204` answers once the index holds nothing of it |
 | `DELETE /api/history/sessions` | admin | `{forgotten, kept}`: every record neither live nor pending forgotten, those kept counted, answered once the index holds nothing of those forgotten; `500 history_failed` when a file could not be deleted (those records stay, as above); `503 history_index_failed` as above |
-| `POST /api/history/sessions/{id}/resume` | admin | resume the session's agent conversation from its record, after a restart as much as while the session is listed: body `{commandId, withoutEnv?, confirmLost?}` (at most 1 KiB; `commandId` 1 to 32 of `[A-Za-z0-9._~-]`; `400 invalid_request` otherwise, an unknown field among it). The command id is looked up first, under the record's lock: its receipt answers at once and starts nothing (started: `200 {receipt, session?}`, the session while it is listed; failed: its refusal's code with `{error, receipt}`; `409 resume_uncertain` with its words; `409 resume_pending` while it is being started). A record holding 16 receipts refuses a new id, `409 resume_limit`, with nothing reserved (a receipt is never let go to make room: it goes only with its record); else a receipt is reserved `pending`, with the new session's id allocated now, and written before anything is checked or launched. Then, in this order, the refusals (each settling the receipt `failed` with its code, its words cut to the receipt's 200 bytes: the reply's `error.message` is the receipt's `error`, as every resend of the id answers it): `400 hosted_session` (its machine resumes it), `409 brakeman_run`, `409 managed_run` (its run continues), `409 crew_member` (a run's member, known by the record's crew, the engine's runs or a run record naming the session: its run's member route resumes it, `POST /api/runs/{run}/members/{name}/resume`, which the words name), `503 member_unknown` (the run records could not all be read), `409 args_not_kept` (its launch's arguments were too long to keep), `409 runtime_gone` (the record's `where` is no Runtime of this server), `409 still_running` (the session still running), `409 cwd_not_kept` (the record's working directory may be a cut of a longer one: its JSON form within 6 bytes of the record's 4096-byte bound; a listed session starts in its own, whole), `400 invalid_agent`, `409 already_resumed` (a running session holds the conversation, or one is being made for it), `400 invalid_cwd` (its folder gone and its agent resumes only where it ran; else it starts in the default folder), `409 not_resumable` (no session recipe, or the agent had no turn: nothing of its conversation to take up), `409 env_not_kept` naming the variables its launch had, whose values no record keeps, unless `withoutEnv: true` (resumed without them, the reply's `notice` says which), then, read again as the launch takes the conversation and deciding alone (whatever was read before, a removal or a failed stop since included): `409 still_running` while a local session of the conversation (one holding it, the record's own, any it resumed from or resumed from it, up the `resumedFrom` chain) has a process not done (listed, running or ended by a stop that failed, or removed while its process ran; `409 already_resumed` for another running one), and `409 lost_unconfirmed` for a record whose end was not observed (`lost`, or open with its session no longer listed: its process may still be running) unless `confirmLost: true`; otherwise as `POST /api/sessions` answers. The session is made as the session route's resume makes one (the same launch: the agent's `resumeArgs` for the conversation, then the launch's own arguments; the record's folder, name and yolo choice; a listed session's own launch, its variables among it), in the record's Runtime, with the allocated id; `201 {session, resumed, notice?, receipt}`, the receipt `started` naming it. A receipt a stop left `pending` is settled at the next start: `started` when the allocated session's record exists, else `uncertain` ("the server stopped while starting the session; its process may have started before its record was written"): that id answers it, a new one may try again. `404 not_found`, `409 history_read_only`, `409 record_newer` (a later version's record), `503 history_closed` (the server is stopping), `500 history_failed` when the receipt could not be written (nothing launched) |
+| `POST /api/history/sessions/{id}/resume` | admin | resume the session's agent conversation from its record, after a restart as much as while the session is listed: body `{commandId, withoutEnv?, confirmLost?}` (at most 1 KiB; `commandId` 1 to 32 of `[A-Za-z0-9._~-]`; `400 invalid_request` otherwise, an unknown field among it). The command id is looked up first, under the record's lock: its receipt answers at once and starts nothing (started: `200 {receipt, session?}`, the session while it is listed; failed: its refusal's code with `{error, receipt}`; `409 resume_uncertain` with its words; `409 resume_pending` while it is being started). A record holding 16 receipts refuses a new id, `409 resume_limit`, with nothing reserved (a receipt is never let go to make room: it goes only with its record); else a receipt is reserved `pending`, with the new session's id allocated now, and written before anything is checked or launched. Then, in this order, the refusals (each settling the receipt `failed` with its code, its words cut to the receipt's 200 bytes: the reply's `error.message` is the receipt's `error`, as every resend of the id answers it): `400 hosted_session` (its machine resumes it), `409 brakeman_run`, `409 managed_run` (its run continues), `409 crew_member` (a run's member, known by the record's crew, the engine's runs or a run record naming the session: its run's member route resumes it, `POST /api/runs/{run}/members/{name}/resume`, which the words name), `503 member_unknown` (the run records could not all be read), `409 args_not_kept` (its launch's arguments were too long to keep), `409 runtime_gone` (the record's `where` is no Runtime of this server), `409 still_running` (the session still running), `409 cwd_not_kept` (the record's working directory may be a cut of a longer one: its JSON form within 6 bytes of the record's 4096-byte bound; a listed session starts in its own, whole), `400 invalid_agent`, `409 already_resumed` (a running session holds the conversation, or one is being made for it), `400 invalid_cwd` (its folder gone and its agent resumes only where it ran; else it starts in the default folder), `409 not_resumable` (no session recipe, or the agent had no turn: nothing of its conversation to take up), `409 env_not_kept` naming the variables its launch had, whose values no record keeps, unless `withoutEnv: true` (resumed without them, the reply's `notice` says which), `409 account_gone` when its login is not the one it would get: for a session still listed, judged by what the server holds of its launch (its binding, compared whole, as a listed resume is); for one no longer listed, for a record of a registered account (a record keeps a registered account's id and source and the model, never a folder or fingerprint, and nothing of any other login: a record of the agent's own login, of one its entry or its launch set, or from before bindings resumes as a launch of `default` gives it at the resume, as before bindings), then, read again as the launch takes the conversation and deciding alone (whatever was read before, a removal or a failed stop since included): `409 still_running` while a local session of the conversation (one holding it, the record's own, any it resumed from or resumed from it, up the `resumedFrom` chain) has a process not done (listed, running or ended by a stop that failed, or removed while its process ran; `409 already_resumed` for another running one), and `409 lost_unconfirmed` for a record whose end was not observed (`lost`, or open with its session no longer listed: its process may still be running) unless `confirmLost: true`; otherwise as `POST /api/sessions` answers. The session is made as the session route's resume makes one (the same launch: the agent's `resumeArgs` for the conversation, then the launch's own arguments; the record's folder, name and yolo choice; a listed session's own launch, its variables among it), in the record's Runtime, with the allocated id; `201 {session, resumed, notice?, receipt}`, the receipt `started` naming it. A receipt a stop left `pending` is settled at the next start: `started` when the allocated session's record exists, else `uncertain` ("the server stopped while starting the session; its process may have started before its record was written"): that id answers it, a new one may try again. `404 not_found`, `409 history_read_only`, `409 record_newer` (a later version's record), `503 history_closed` (the server is stopping), `500 history_failed` when the receipt could not be written (nothing launched) |
 | `POST /api/history/reindex` | admin | `202 {indexing}`: the history's index cleared in place and caught up from nothing, on the indexer's goroutine; `409 history_read_only` on a server that does not hold `history/owner.lock` |
 
 From a forget on, nothing the forgotten record's session says is written
@@ -5759,10 +5860,114 @@ SHA-256 of the agent's adapter and that environment, never its values, and
 a view whose adapter or environment now hashes otherwise is `stale`. A reader's words are Conductor's own, never the
 tool's output.
 
-No launch takes an account yet: a session runs on the agent's own login
-whatever the default says, and nothing holds an account, so a remove is
-never refused for one in use (`account_in_use` comes with the launches
-that bind an account, issue #784).
+**A launch is bound to its login.** Every server session is started by
+one function, a person's launch, a resume, a clone, a crew member's
+session, a managed run's attempt and a Brakeman turn's alike, and its
+login is decided there, once, before its process starts: the `account` a
+launch names (an account's id, or `default` for the agent's own login),
+or, naming none, its adapter's default at that moment. A registered
+account's folder is set as the adapter's folder variable
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) over everything else the process's
+environment holds, and the account is held (a remove refused) from its
+reservation until the launch's process has ended, whether or not its
+session was registered; a launch that fails before its process starts
+lets it go. An entry whose
+environment, or the server's passthrough, sets the folder variable or one
+of the adapter's login variables has that login alone, and so has a launch
+whose own additions (its yolo recipe's variables, an attempt's approved
+names) set one: each takes `default` only, and another account is refused
+`400 invalid_account` naming the variable. What the session was bound to
+is its binding: the account's id and label, the folder (none for the
+agent's own login), where the login comes from (`source`: `own`,
+`account`, `pinned` for an entry or passthrough that sets it, `launch_env`
+for a launch's additions, `unlisted` for Brakeman's folder that no account
+holds) and a SHA-256 of the adapter and its login variables as the
+environment the process started with holds them; the folder and that
+fingerprint are in no reply. A launch made again under a binding (a resume,
+a member's attempt, a retry, a member started later, a continuation)
+builds its environment the same way and starts only when its login is the
+bound one, refused `409 account_gone` with words before any process exists
+otherwise: an account removed, an entry or a recipe that now sets another
+folder or key. A continuation of a managed run, and a resume from the
+record of a session no longer listed, are made from what is written, and
+what is written is compared: a run keeps every binding but the tool's own
+login, a session's record a registered account's id and source; a launch
+whose binding is not kept is made as a launch of `default` is. A resume
+from the record of a session still listed is made from what the server
+holds of its launch and compared, as a listed resume is. A clone is a new
+launch: onto an entry of its source's launched adapter it starts from its
+source's account and model, and it is bound as any new launch is. A
+changed default moves nothing launched. A retired or
+unknown account, or one of another adapter, is refused `400
+invalid_account`; a server that does not own the accounts refuses a
+registered account `409 accounts_not_owner`; while the accounts cannot be
+read, a launch that would read them is refused `503 capacity_unavailable`
+(one naming no account, whose default is not known; a registered
+account; a Brakeman turn with a folder) and one naming `default` is
+started. A `model` (1 to
+100 of `A-Z a-z 0-9 . _ : / @ -`) goes through the adapter's flag
+(`--model=`) after the launch's own arguments, `400 invalid_request` for an
+agent whose adapter takes none or beside any of the launch's own arguments
+(the request's `args`, a member's) that reads as choosing one, as its
+adapter's list says (Claude Code's `--model`; Codex's `--model`, `-m` and
+a `-c`/`--config` override of `model`), whatever it was meant as: name the
+model in one place. Nothing else is read for a model: an entry's command
+and its recipes' arguments (a yolo recipe's, a fresh session's, a
+resume's) are the catalog's own configuration, and a model they, or the
+tool's own configuration, profile or environment, choose beside a
+launch's is the tool's to resolve.
+Brakeman's turn is bound from its configured folder: none is the agent's
+own login (never the adapter's default), a folder a registered account of
+the adapter holds is that account, any other `unlisted`; beside a login
+variable its entry, the passthrough or its launch sets, the folder is
+bound `pinned` or `launch_env` as any such launch is, and a folder of a
+retired account is refused `400 invalid_account` (a new launch binds no
+retired account). A folder variable that is not a whole path names the
+folder under the one the process starts in, and that is the folder bound
+and compared; a crew member of such an entry, bound before it has a
+folder, is refused `400 invalid_account`. A crew member
+names `account` and `model` beside its agent; a launch of the crew (`POST
+/api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
+added member (`POST /api/runs/{run}/members`) bind each member before the
+run admits it, and the run keeps the binding for every launch of the
+member; an agent's own crew and added member name no account (`400
+invalid_account`): a member of the session's own tool takes the session's
+login, refused `400 invalid_account` when its entry would give another (a
+session whose launch set its login adds none of its tool), and a member of
+another tool takes that tool's default. A run reply names each member's
+`account` as `{id, source}` and its `model`, to whoever may read the run;
+a member with no `account` is on the agent's own login (a run keeps that
+login as no binding, as a run from before bindings, and a launch of it
+from what was kept takes what `default` gives then), but for a Brakeman
+turn's member, which names no account in its run: its login is its
+configured folder's, which its session's launch block names (the
+admin's); the label stays in
+the accounts and the session's launch, the admin's. A legacy run's record
+that names a member's account and keeps no binding for it is refused at
+its resume `409 login_not_kept`. A sync store is handed a run's record as
+the run its routes answer, never the bindings the record keeps beside it.
+A managed run any member of which is bound to anything but `own` is
+offered to no Runtime and runs on this server, and a process is started
+on a Runtime other than the native one only under the agent's own login
+(`400 invalid_account` otherwise, an attempt failed with those words).
+`DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
+most 10, while a launch that names the account (or takes it as its
+adapter's default) is under way, from its reservation until its process
+has ended, whether or not its session was registered (its registration
+refused and its stop failed among them), a registered server session's
+process bound to it still runs (its stop failed, or it was removed from
+the listing), an engine run not ended, or a ledger run running or
+interrupted, and continued by no other run, is bound to it (one whose
+crew cannot be read holds every account); a stopped or finished run is no
+bar (continuing it is refused `account_gone`), and a kept run that
+another run has continued holds nothing. A registered session, and a
+member of a run not ended (the engine's, or the ledger's as above), whose
+binding is `pinned` (its entry or the server's passthrough sets the login,
+and the launch's own environment sets none of its login variables) to a
+folder that a registered account holds, holds that account, its `source`
+still what the environment says, and such a session is counted on it. For a login that an entry, the
+passthrough or a launch's own environment sets, what is held and counted
+begins at the session's registration and follows what the binding keeps.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -5803,8 +6008,9 @@ has its words. Each window carries `source: "provider"` and is absent when
 the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
-server counted since it started (no launch binds an account other than
-`default` yet, so another account counts none). `host.kind` is `native`
+server counted since it started, each from its registration: a session
+bound to the account, and one bound `pinned` to the account's folder
+(Capacity's binding paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage

@@ -44,8 +44,11 @@ async function launch(api: { ok: <T>(method: string, path: string, body?: unknow
 
 /** What a session was launched with, as the server keeps it for an admin (GET /api/sessions/{id}'s `launch`). */
 async function launched(api: { ok: <T>(method: string, path: string, body?: unknown) => Promise<T> }, s: Session) {
-  return (await api.ok<{ launch: { agentId: string; cwd: string; args: string[]; yolo: boolean } }>('GET', `/api/sessions/${s.id}`)).launch
+  return (await api.ok<{ launch: { agentId: string; cwd: string; args: string[]; yolo: boolean; account: { id: string; label?: string; source: string }; model?: string } }>('GET', `/api/sessions/${s.id}`)).launch
 }
+
+/** The launch block's account of a session on the agent's own login, which every session of these specs is on. */
+const own = { id: 'default', source: 'own' }
 
 function row(page: Page, s: Session): Locator {
   return page.locator(`[data-session-list] [data-sidebar-row="s:${s.id}"]`).first()
@@ -166,7 +169,7 @@ test("Clone… from More and from a right-click refuses a name in use, then open
   await expect(toast).toBeVisible()
   await expect(toast).toContainText(name)
   expect(clone).toMatchObject({ name, agentId: 'claude', cwd: source.cwd, yolo: true })
-  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'opus'], yolo: true })
+  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'opus'], yolo: true, account: own })
   expect(clone.agentSession?.id).not.toBe(source.agentSession?.id)
   await expect(row(page, clone).locator('[data-yolo-badge]')).toBeVisible()
   // The source is as it was.
@@ -221,7 +224,7 @@ test('Clone with options… opens the Launch dialog filled in, yolo as the sourc
   await submit.click()
   const clone = await opened(page, api)
   expect(clone).toMatchObject({ name: cloneName, agentId: 'claude', cwd: source.cwd, yolo: true })
-  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'sonnet'], yolo: true })
+  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'sonnet'], yolo: true, account: own })
 
   // Left alone, the arguments launch as recorded; yolo turned off launches without it.
   await page.goto('/crews')
@@ -237,7 +240,7 @@ test('Clone with options… opens the Launch dialog filled in, yolo as the sourc
   const other = await opened(page, api)
   expect(other).toMatchObject({ name: plain, cwd: source.cwd })
   expect(other.yolo ?? false).toBe(false)
-  expect(await launched(api, other)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'opus', 'two words'], yolo: false })
+  expect(await launched(api, other)).toEqual({ agentId: 'claude', cwd: source.cwd, args: ['--model', 'opus', 'two words'], yolo: false, account: own })
 })
 
 test("the palette's Launch another like opens the same dialog, filled in", async ({ page, api }) => {
@@ -350,7 +353,7 @@ test("Clone with options… keeps arguments its agent takes no more in sight, an
   await submit.click()
   const clone = await opened(page, api)
   expect(clone.name).toBe(bare)
-  expect(await launched(api, clone)).toEqual({ agentId: id, cwd: source.cwd, args: [], yolo: false })
+  expect(await launched(api, clone)).toEqual({ agentId: id, cwd: source.cwd, args: [], yolo: false, account: own })
 
   // Not installed now. The page's cached catalog, from the opening before, still offers it; this opening's own read does not.
   await api.ok('POST', '/api/catalog', { ...agent, allowArgs: false, command: ['/nonexistent-e2e/cat'] })
@@ -552,7 +555,7 @@ test("the palette's Clone with options… of another session, over the open dial
   await dialog.locator('[data-launch-clone-submit]').click()
   const clone = await opened(page, api)
   expect(clone.name).toBe(name)
-  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: true })
+  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: true, account: own })
 })
 
 test("Clone with options… of one session, then of another, is the other's when the first's read answers last", async ({ page, api }) => {
@@ -590,7 +593,7 @@ test("Clone with options… of one session, then of another, is the other's when
   const clone = await opened(page, api)
   await page.unroute(`**/api/sessions/${first.id}`)
   expect(clone.name).toBe(name)
-  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: false })
+  expect(await launched(api, clone)).toEqual({ agentId: 'claude', cwd: second.cwd, args: ['--model', 'haiku'], yolo: false, account: own })
 })
 
 test("a clone's answer that comes after its dialog was cancelled leaves the next dialog alone", async ({ page, api }) => {

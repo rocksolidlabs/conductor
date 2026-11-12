@@ -472,6 +472,17 @@ add its rule here.
   on those words until the poll's bound and fails at once on any other
   rejection: the poll alone fails at the first rejection its read meets
   (`not-yet.spec.ts` cuts a read with a load to show both).
+- A fake answers only what it was told to. A handler that returns
+  having written nothing has net/http send a 200 with no body, and a
+  request the fake held is answered so once its client leaves: a TLS
+  client leaves in two steps, its close_notify and then its socket, and a
+  reply written between them is a response the client's transport hands
+  back though its own cancel came first. The adapter then read "200: an
+  answer Conductor cannot read" for a write its deadline had ended
+  (`TestWriteTable`, 2026-11-12, #281). A held request whose client left
+  aborts the connection (`panic(http.ErrAbortHandler)` in `githubtest`),
+  proved with the client's close_notify sent and its socket left open to
+  read (`CloseWrite`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
