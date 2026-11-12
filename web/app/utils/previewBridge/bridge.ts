@@ -153,7 +153,9 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
         const el = under()
         if (el) choose(el)
       } else if (e.type === 'keydown' && Object.hasOwn(ways, k.key)) show(s, ways[k.key]!(s, k.shiftKey))
-      // Enter asks what the outline shows now first: a choice that changed is outlined, and the next press picks it.
+      // A release of Enter asks what the outline shows now first (redraw): where the choice stays, its box is drawn again and it is
+      // picked; where the element now on top under the pointer's last point takes its place, that element is outlined and nothing
+      // is picked, and the release after it picks, unless that changed again.
       else if (e.type === 'keyup' && k.key === 'Enter' && !redraw(s) && s.current?.isConnected && s.current.getRootNode() === doc) choose(s.current)
       else if (e.type === 'keyup' && k.key === 'Escape') {
         leave()
@@ -165,12 +167,20 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
   }
 
   // What the outline shows now, asked after a resize or a scroll the window hears and by Enter before it picks: where the pointer
-  // gave a point, an element now topmost under it other than the one the point last gave becomes the choice; else the choice stays
-  // (an arrow key's too). The box is drawn again over the choice where it is now. Whether the choice changed.
+  // gave a point, the bridge looks under that point again. An element now topmost there other than the one the point last gave is
+  // kept as what the point gave, and becomes the choice only when there is none or the choice is not among the elements stacked
+  // under the point (the bounded stack the arrow keys step through); else the choice stays (an arrow key's too). With no point
+  // (keys alone) the choice stays. The box is drawn again over the choice where it is now. Whether the choice changed.
   const redraw = (s: Selection): boolean => {
     const was = s.current
-    const top = s.pointed ? (stackAt(doc, s.px, s.py, s.host)[0] ?? null) : s.under
-    if (top !== s.under) s.current = s.under = top
+    if (s.pointed) {
+      const stack = stackAt(doc, s.px, s.py, s.host)
+      const top = stack[0] ?? null
+      if (top !== s.under) {
+        s.under = top
+        if (!s.current || stack.indexOf(s.current) < 0) s.current = top
+      }
+    }
     show(s, s.current)
     return s.current !== was
   }

@@ -2754,23 +2754,29 @@ still in the page's own tree (connected, and its root node the page's
 document), and otherwise does
 nothing, and the release of Escape leaves. After a resize of the window
 or a scroll the browser delivered (the window's, or a container's, which
-the window hears in its capture phase) the bridge looks under the
-pointer's last point again: when the topmost element there is another
-than the one the point last gave, that element is outlined; otherwise
-the outlined element stays, an arrow key's choice too, and its outline
-is drawn again where it now is. Before the pointer has given a point
-(the arrow keys alone) the outline is drawn again over the outlined
-element, never taken off, and a scroll the page's own script dispatches
-changes nothing. The release of Enter looks the same way first: when
-the outlined element changes, that release moves the outline and picks
-nothing, and the next release picks. So a scroll the window does not
-hear, of a container inside a component's own tree, moves the outline
-at the next pointer move, the next scroll the window hears or the next
-release of Enter, which then picks nothing. What is aimed at a frame inside the
-page (`iframe`, `frame`, `object`, `embed`) the browser delivers to the
-frame. A frame's element is outlined when the browser delivers the
-page's window a pointer event aimed at it (a mouse pointer entering it)
-or when a scroll brings it under the pointer's last point, and while it
+the window hears in its capture phase), and at a release of Enter, the
+bridge looks under the pointer's last point again. The outlined element
+(the choice), an arrow key's choice too, stays while it is still among
+the elements stacked under that point (the bounded stack under the
+pointer that Up and Down step through), and its outline is drawn again
+where it now is. When the topmost element there is another than the one
+the point last gave and the choice is no longer under the point (or
+there is none), the element now on top becomes the choice and is
+outlined; a release of Enter that finds this moves the outline and
+picks nothing, and the release after it picks, unless that changed
+again. Before the pointer has given a point (the arrow keys alone) the
+outline is drawn again over the choice, never taken off, and a scroll
+the page's own script dispatches changes nothing. So a scroll the window
+does not hear, of a container inside a component's own tree, moves the
+outline, when the choice is no longer under the point, at the next
+pointer move, the next scroll the window hears or the next release of
+Enter, which then picks nothing; when the choice is still under the
+point, that release draws its outline again and picks it. What is aimed
+at a frame inside the page (`iframe`, `frame`, `object`, `embed`) the
+browser delivers to the frame. A frame's element is outlined when the
+browser delivers the page's window a pointer event aimed at it (a mouse
+pointer entering it) or when a scroll brings it to the top under the
+pointer's last point and it becomes the choice as above, and while it
 is outlined the outline's box, drawn over it, takes the pointer, so a
 click there picks it. Not otherwise: a touch on a frame, a frame inside
 a component's own tree, and a frame the pointer already rests in when

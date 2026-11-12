@@ -239,6 +239,56 @@ describe('selection mode', () => {
     expect(seen).toEqual(['button#one', [], 'button#two', ['two'], false])
   })
 
+  /** Selection mode on a page over root, with hit as what lies under any point, and the pointer resting at (1, 1). */
+  function resting(root: FakeEl, hit: () => FakeEl[]) {
+    const page = framed(root)
+    page.doc.hitAt = hit
+    page.ask('hello')
+    page.answers()
+    page.ask('select')
+    page.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 1 }))
+    const outlined = () => {
+      const box = hostOf(root)?.shadow?.elements[0]
+      return box?.style.display === 'block' ? plainText(box.elements[0]!) : 'none'
+    }
+    const press = (key: string) => (page.win.dispatch('keydown', event('keydown', { key })), page.win.dispatch('keyup', event('keyup', { key })))
+    const picked = () => page.answers().map((a) => (a.t === 'selected' ? a.element.id : a.t))
+    return { ...page, outlined, press, picked }
+  }
+
+  it('keeps the container the arrow keys chose while the ticker’s item under the pointer changes, and the first Enter picks it', () => {
+    const items = [h('span', { id: 'a' }, 'A'), h('span', { id: 'b' }, 'B'), h('span', { id: 'c' }, 'C')]
+    const ticker = h('div', { id: 'ticker' }, ...items)
+    const root = h('html', {}, h('head'), h('body', {}, ticker))
+    let shown = 0
+    const p = resting(root, () => [items[shown % items.length]!, ticker, root.children[1]!, root])
+    const seen: unknown[] = [p.outlined()]
+    p.press('ArrowLeft')
+    seen.push(p.outlined())
+    // The ticker shows its next item under the pointer before the release of Enter, and the window hears nothing of it.
+    shown++
+    p.press('Enter')
+    seen.push(p.picked(), hostOf(root) !== null)
+    expect(seen).toEqual(['span#a', 'div#ticker', ['ticker'], false])
+  })
+
+  it('keeps the card the arrow keys chose behind an overlay that appeared under the resting pointer, and Enter picks it', () => {
+    const button = h('button', { id: 'go' }, 'Go')
+    const card = h('div', { id: 'card' }, button)
+    const overlay = h('div', { id: 'overlay' }, 'Tip')
+    const root = h('html', {}, h('head'), h('body', {}, card, overlay))
+    let hovered = false
+    const p = resting(root, () => [...(hovered ? [overlay] : []), button, card, root.children[1]!, root])
+    const seen: unknown[] = [p.outlined()]
+    // The overlay appears above the button on hover, with no event the bridge hears; Down steps from the button to the card.
+    hovered = true
+    p.press('ArrowDown')
+    seen.push(p.outlined())
+    p.press('Enter')
+    seen.push(p.picked(), hostOf(root) !== null)
+    expect(seen).toEqual(['button#go', 'div#card', ['card'], false])
+  })
+
   it('picks nothing with Enter for an element taken out of its document', () => {
     const seen = (['on the element', 'on its prototype'] as const).map((where) => {
       const p = twoButtons()

@@ -5,9 +5,9 @@ import { expect, test } from './fixtures'
 // workbench origins, frames a page of another origin that loads GET /preview-bridge.js from the test server. The spec serves the
 // two pages itself; nothing is fetched from anywhere but the test server. In selection mode the pointer rests over a button while
 // a scroll (of a container, then of the window) brings another under it: the outline is drawn over the button now under the
-// pointer, and Enter answers a `selected` naming it. A scroll in a component's own tree, which the window does not hear, moves
-// the outline at the next Enter, which answers nothing; the Enter after it picks. Waits are on the bridge's answers, the scrolls'
-// ends and what the page draws.
+// pointer, and Enter answers a `selected` naming it. A scroll in a component's own tree, which the window does not hear, takes the
+// outlined button from under the pointer: the next Enter moves the outline and answers nothing; the Enter after it picks. Waits
+// are on the bridge's answers, the scrolls' ends and what the page draws.
 
 /** The messages' mark (docs/protocol.md, Preview bridge: `conductor: "preview/1"`) and the hello's nonce. */
 const PREVIEW_MARK = 'preview/1'
