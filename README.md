@@ -2,6 +2,9 @@
 
 <img src="web/public/brand/conductor-logo.svg" alt="Conductor" width="320">
 
+[![ci](https://github.com/rocksolidlabs/conductor/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rocksolidlabs/conductor/actions/workflows/ci.yml)
+Licence: [Apache-2.0](LICENSE)
+
 **Shared agent terminals.** Launch coding agents such as Claude Code, Codex or
 Antigravity in real terminals, watch and drive them from the browser, and share
 a live session with other developers through a link. Inspired by
