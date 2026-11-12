@@ -64,19 +64,16 @@ const (
 	treeSecretName = "${CONDUCTOR_TREE_SECRET}"
 )
 
-// captureRoutes are the capture routes, each the admin's.
+// routeCaptures adds the capture routes and the label, each the admin's
+// and a switchyard's 403.
 func (s *Server) routeCaptures(mux *http.ServeMux) {
-	for pattern, h := range map[string]http.HandlerFunc{
-		"POST /api/captures":                                    s.handleCaptureCreate,
-		"GET /api/captures":                                     s.handleCaptures,
-		"GET /api/captures/{id}":                                s.handleCapture,
-		"GET /api/captures/{id}/image":                          s.handleCaptureImage,
-		"POST /api/captures/{id}/edit":                          s.handleCaptureEdit,
-		"POST /api/captures/{id}/delete":                        s.handleCaptureDelete,
-		"GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview": s.handlePreviewLabel,
-	} {
-		mux.HandleFunc(pattern, s.requireAdmin(s.launchingAny(h)))
-	}
+	mux.HandleFunc("POST /api/captures", s.requireAdmin(s.launchingAny(s.handleCaptureCreate)))
+	mux.HandleFunc("GET /api/captures", s.requireAdmin(s.launchingAny(s.handleCaptures)))
+	mux.HandleFunc("GET /api/captures/{id}", s.requireAdmin(s.launchingAny(s.handleCapture)))
+	mux.HandleFunc("GET /api/captures/{id}/image", s.requireAdmin(s.launchingAny(s.handleCaptureImage)))
+	mux.HandleFunc("POST /api/captures/{id}/edit", s.requireAdmin(s.launchingAny(s.handleCaptureEdit)))
+	mux.HandleFunc("POST /api/captures/{id}/delete", s.requireAdmin(s.launchingAny(s.handleCaptureDelete)))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview", s.requireAdmin(s.launchingAny(s.handlePreviewLabel)))
 }
 
 // The bodies a capture route takes, as the gate decodes them.
