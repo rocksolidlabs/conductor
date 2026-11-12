@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -627,4 +629,190 @@ func lastOutput(res proc.Result, n int) []byte {
 		all = all[len(all)-n:]
 	}
 	return all
+}
+
+// A preview's tree as the label of an attempt's preview reads it (Program
+// item PV1, docs/plans/browser-evidence.md "The label"): the tree's own
+// facts, never what a page says it shows. TreeRevision reads what the tree
+// holds now through an index of the reader's own; TreeClasses classes the
+// paths a page's source hints name.
+
+// WorktreePreview is an attempt's worktree while its preview is offered:
+// the URL as the manifest gave it (naming ${CONDUCTOR_TREE_SECRET}, never
+// its value), the worktree's directory, the tree's secret and where the
+// attempt runs. The secret is given to the server's own label and capture
+// routes alone, which put it in the admin's URL and scrub it from what a
+// capture keeps; nothing else of the engine's gives it.
+type WorktreePreview struct {
+	URL    string
+	Dir    string
+	Secret string
+	Where  string
+}
+
+// WorktreePreview is the worktree preview of the attempt n of the task of
+// the run, as AttemptState.Preview offers it: from its worktree's
+// tree.ready until the attempt's close, a service of the worktree exiting
+// on its own, or the run's stop; ok false otherwise, and for a run the
+// engine does not hold.
+func (e *Engine) WorktreePreview(runID, taskID string, n int) (WorktreePreview, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r := e.runs[runID]
+	if r == nil || r.stopping {
+		return WorktreePreview{}, false
+	}
+	t := r.task(taskID)
+	if t == nil {
+		return WorktreePreview{}, false
+	}
+	for _, a := range t.attempts {
+		if a.n != n || a.preview == "" {
+			continue
+		}
+		for _, tr := range a.trees {
+			if tr.kind == ledger.TreeWorktree && tr.preview == a.preview {
+				return WorktreePreview{URL: a.preview, Dir: tr.dir, Secret: tr.secret, Where: string(a.where)}, true
+			}
+		}
+	}
+	return WorktreePreview{}, false
+}
+
+// TreeRead is a tree's revision as one read found it: HEAD's commit; the
+// tree id of everything the tree holds that git would see (Content: the
+// commit's tree with every change and every file that is not ignored);
+// the paths that differ from HEAD, all of them counted (Changed) and the
+// first of them kept (Paths) within treeReadPaths and treeReadPathBytes.
+type TreeRead struct {
+	Commit  string
+	Content string
+	Changed int
+	Paths   []string
+}
+
+// The bounds of a read's kept paths, and of one path read (a path the
+// system names is far shorter; a longer one is counted, never kept).
+const (
+	treeReadPaths     = 200
+	treeReadPathBytes = 16 << 10
+	treeReadPathMax   = 64 << 10
+)
+
+// readModes is, per index, whether the filesystem under its tree keeps
+// the executable bit (modesKept), asked once for each index: the look
+// writes a file in the tree, which a read every few seconds should not.
+var readModes sync.Map
+
+// treeEnv is the environment of git in a tree's read: the reader's own
+// index, and the configuration that would let a command in the tree hide
+// a change from it set back (the stat data trusted in full, no sparse
+// checkout, the executable bit kept where the filesystem keeps it), and
+// every pathspec literal.
+func treeEnv(dir, index string) map[string]string {
+	keep, ok := readModes.Load(index)
+	if !ok {
+		keep, _ = readModes.LoadOrStore(index, modesKept(dir))
+	}
+	env := map[string]string{"GIT_INDEX_FILE": index, "GIT_LITERAL_PATHSPECS": "1"}
+	cfg := [][2]string{{"core.ignoreStat", "false"}, {"core.checkStat", "default"}, {"core.trustctime", "true"}, {"core.sparseCheckout", "false"}}
+	if keep.(bool) {
+		cfg = append(cfg, [2]string{"core.fileMode", "true"})
+	}
+	env["GIT_CONFIG_COUNT"] = strconv.Itoa(len(cfg))
+	for i, kv := range cfg {
+		env["GIT_CONFIG_KEY_"+strconv.Itoa(i)], env["GIT_CONFIG_VALUE_"+strconv.Itoa(i)] = kv[0], kv[1]
+	}
+	return env
+}
+
+// TreeRevision reads the tree at dir as it is now, through git with argv
+// in the C locale (gitcli), in the index at index, a file of the
+// reader's own kept between reads so that git's stat cache keeps a read
+// near git status's cost: rev-parse HEAD; read-tree -m HEAD, a one-tree
+// merge that makes the index HEAD's entries again, each keeping its stat
+// data only where the file still matches HEAD, so nothing an earlier read
+// staged survives into this one; add -A, the ignored paths aside;
+// write-tree, the content; and diff --cached --name-only -z HEAD, read as
+// it comes, counted whole and kept to its bounds. Its time is ctx's. A
+// read that cannot name HEAD's commit is an error; one that fails after
+// gives the commit with no content.
+func TreeRevision(ctx context.Context, dir, index string) (TreeRead, error) {
+	head, err := headCommit(ctx, dir)
+	if err != nil {
+		return TreeRead{}, err
+	}
+	out := TreeRead{Commit: head}
+	env := treeEnv(dir, index)
+	for _, args := range [][]string{{"read-tree", "-m", "--no-sparse-checkout", head}, {"add", "-A"}} {
+		if _, err := gitcli.RunEnv(ctx, dir, env, args...); err != nil {
+			return out, err
+		}
+	}
+	tree, err := gitcli.RunEnv(ctx, dir, env, "write-tree")
+	if err != nil {
+		return out, err
+	}
+	paths := &pathList{}
+	if err := gitcli.RunToEnv(ctx, dir, env, paths, "diff", "--cached", "--name-only", "-z", head); err != nil {
+		return out, err
+	}
+	out.Content, out.Changed, out.Paths = strings.TrimSpace(tree), paths.n, paths.kept
+	return out, nil
+}
+
+// pathList is a -z listing read as it comes: every path counted, the
+// first kept within treeReadPaths and treeReadPathBytes, and no more of
+// any one path held than treeReadPathMax.
+type pathList struct {
+	cur   []byte
+	long  bool
+	n     int
+	bytes int
+	kept  []string
+}
+
+func (l *pathList) Write(p []byte) (int, error) {
+	for _, c := range p {
+		if c != 0 {
+			if len(l.cur) < treeReadPathMax {
+				l.cur = append(l.cur, c)
+			} else {
+				l.long = true
+			}
+			continue
+		}
+		if len(l.cur) > 0 || l.long {
+			l.n++
+			if !l.long && len(l.kept) < treeReadPaths && l.bytes+len(l.cur) <= treeReadPathBytes {
+				l.kept, l.bytes = append(l.kept, string(l.cur)), l.bytes+len(l.cur)
+			}
+		}
+		l.cur, l.long = l.cur[:0], false
+	}
+	return len(p), nil
+}
+
+// TreeClasses classes paths of the tree at dir (relative to its top, as
+// TreeRevision left the index at index): tracked when HEAD's tree has it
+// (ls-tree), ignored when it is a file the tree's ignore rules leave out
+// (ls-files --others --ignored --exclude-standard in that index); the
+// rest are neither. Every path is a literal pathspec.
+func TreeClasses(ctx context.Context, dir, index string, paths []string) (tracked, ignored map[string]bool, err error) {
+	if len(paths) == 0 {
+		return map[string]bool{}, map[string]bool{}, nil
+	}
+	env := treeEnv(dir, index)
+	lists := [2]map[string]bool{}
+	for i, args := range [][]string{{"ls-tree", "-z", "--name-only", "--full-tree", "HEAD", "--"}, {"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"}} {
+		out, err := gitcli.RunEnv(ctx, dir, env, append(args, paths...)...)
+		if err != nil {
+			return nil, nil, err
+		}
+		lists[i] = map[string]bool{}
+		for _, p := range splitNUL(out) {
+			lists[i][p] = true
+		}
+	}
+	return lists[0], lists[1], nil
 }

@@ -224,6 +224,9 @@ type Server struct {
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// trees reads the trees of the previews, their indexes kept
+	// (captures.go).
+	trees treeReads
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
@@ -1000,6 +1003,7 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
+	s.routeCaptures(mux)
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
@@ -1350,6 +1354,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The trees still being ended, a run's stopped before the shutdown
 	// among them, end in the ledger they end in.
 	s.runs.Drain(ctx)
+	s.trees.close()
 	if f := gateSeam(&s.launches, &s.launches.afterStops); f != nil {
 		f()
 	}
