@@ -301,10 +301,6 @@ type tx struct {
 	fp  string
 	n   int
 	seq int64
-	// holds, when a change sets it, says that what the operation asks
-	// holds already (a cancel of a send cancelled): done with no row, an
-	// answer every run of it gives again.
-	holds bool
 	// touched is every (entity, id) the change rows named, in order; the
 	// first is the operation's subject, whose rev the receipt carries.
 	touched []touched
@@ -628,10 +624,9 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, cancelledAs(ctx, err)
 	}
 	err = change(t)
-	if err == nil && t.n == 0 && !t.holds {
+	if err == nil && t.n == 0 {
 		// Done with no row, a success would leave the log nothing to answer
-		// a resend by once its receipt is pruned, and run again: only one
-		// whose run again gives the same answer (holds) may.
+		// a resend by once its receipt is pruned, and run again.
 		err = refuse(RefusalInvalid, "the operation changes nothing")
 	}
 	if err != nil {

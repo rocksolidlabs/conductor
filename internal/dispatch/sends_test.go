@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // A capture's sends (Program item PV1, PR-1b, issue #825,
@@ -641,14 +642,51 @@ func TestSendOutcomesMergeByTheProjection(t *testing.T) {
 	}
 }
 
-// A page's address in a ticket's text is named without its user, query or
-// fragment.
+// A page's address in a ticket's text is written from its parts, its
+// scheme, its host with its port and its path, and not folded again: the
+// line the ticket gets for a loopback address and a named host on another
+// port is the address, and one with a user, a password, a query and a
+// fragment holds none of the four. Every other value is written as the
+// capture holds it, inside its block, the fold a courtesy that changes
+// only what it recognises as an address with a scheme.
 func TestAPagesAddressInATicket(t *testing.T) {
 	for in, want := range map[string]string{
 		"http://u:p@h:8/a/b?token=x#f": "http://h:8/a/b", "https://h/a%20b": "https://h/a%20b", "not a url": "the page",
 	} {
 		if got := pageAddress(in); got != want {
 			t.Errorf("pageAddress(%q) = %q, want %q", in, got, want)
+		}
+	}
+	lineOf := func(desc, label string) string {
+		for _, l := range strings.Split(desc, "\n") {
+			if strings.HasPrefix(l, label+":") {
+				return l
+			}
+		}
+		return ""
+	}
+	for in, want := range map[string]string{
+		"http://127.0.0.1:5173/app": "page: http://127.0.0.1:5173/app", "http://devbox:8080/app": "page: http://devbox:8080/app",
+		"https://USERWORD:PASSWORD@h.example:8443/a/b?QUERYWORD=1#FRAGMENTWORD": "page: https://h.example:8443/a/b",
+	} {
+		c := wordsCapture()
+		c.URL = in
+		if err := checkField("capture.url", "the address", in); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		desc := ticketText(c)
+		checkTicketWords(t, in, desc, ticketComments(c))
+		if got := lineOf(desc, "page"); got != want {
+			t.Errorf("%s: the ticket's line %q, want %q", in, got, want)
+		}
+	}
+	c := wordsCapture()
+	c.Title, c.Annotations[0].Element.Name = "//h.example/a#part", "h.example?q=1"
+	desc := ticketText(c)
+	checkTicketWords(t, "values as given", desc, ticketComments(c))
+	for label, want := range map[string]string{"title": "title: //h.example/a#part", "name": "name: h.example?q=1"} {
+		if got := lineOf(desc, label); got != want {
+			t.Errorf("the ticket's line %q, want %q", got, want)
 		}
 	}
 }
@@ -731,7 +769,7 @@ var (
 		{"sent by Brakeman", "ask cancel"}:                 SendSent,
 		{"sent by Brakeman, a cancel asked", "ask cancel"}: SendSent,
 		{"refused", "ask cancel"}:                          RefusalStaleRevision,
-		{"cancelled", "ask cancel"}:                        SendCancelled,
+		{"cancelled", "ask cancel"}:                        RefusalStaleRevision,
 	}
 )
 
@@ -775,9 +813,9 @@ func (w *sendWalk) step(t *testing.T, state, op string) {
 		if rc.Status != StatusDone || rc.ID != sid || after.State != takes {
 			t.Errorf("%s, %s: %+v, the send %s, want %s", state, op, rc, after.State, takes)
 		}
-		// A cancel is kept while one could still act; asked of a send
-		// cancelled, it is answered from the state, nothing written.
-		if added := len(after.Cancels) - len(before.Cancels); op == "ask cancel" && added != map[bool]int{true: 0, false: 1}[before.State == SendCancelled] {
+		// A cancel taken is kept (one asked of a send that ended is
+		// refused above, nothing written).
+		if added := len(after.Cancels) - len(before.Cancels); op == "ask cancel" && added != 1 {
 			t.Errorf("%s, %s: %d cancels added", state, op, added)
 		}
 	}
@@ -882,8 +920,10 @@ func TestAPendingSendKeepsItsRequest(t *testing.T) {
 
 // A cancel is kept before it acts: AskCancel's row and its receipt are one
 // transaction (a receipt that fails leaves no row); a pending send is
-// cancelled only once one was asked; a send to a ticket and a refused one
-// refuse it stale_revision; a repeat is answered by its receipt, and once
+// cancelled only once one was asked; a send to a ticket, a refused one and
+// a cancelled one refuse it stale_revision, the cancelled one's resend
+// refused the same once pruned, its id then free; a repeat is answered by
+// its receipt, and once
 // that is pruned by its row; a send the desk took first is settled sent
 // with its cancel still asked, for the settlement to finish.
 func TestACancelIsKeptBeforeItActs(t *testing.T) {
@@ -926,14 +966,15 @@ func TestACancelIsKeptBeforeItActs(t *testing.T) {
 	if got := asked(t, s); len(got) != 0 {
 		t.Fatalf("asked after the cancel: %v", got)
 	}
-	// One already cancelled is answered from its state: done, nothing
-	// written, and the same answer for a repeat, its receipt kept or
-	// pruned (below).
+	// One already cancelled refuses a cancel as a refused one does, from
+	// its state: nothing of it is under way, nothing written, and a resend
+	// is refused the same, its receipt kept or pruned (below).
 	before := count(t, s, "SELECT COUNT(*) FROM changes")
-	for range 2 {
+	for i := range 2 {
 		rc, err = s.AskCancel(ctx, testOp("k2"), sid)
-		want(t, rc, err, StatusDone, "")
-		if rc.ID != sid || count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid) != 1 || count(t, s, "SELECT COUNT(*) FROM changes") != before {
+		want(t, rc, err, StatusFailed, RefusalStaleRevision)
+		if rc.Repeat != (i == 1) || !strings.Contains(rc.Error, "nothing of it is under way") ||
+			count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid) != 1 || count(t, s, "SELECT COUNT(*) FROM changes") != before {
 			t.Fatalf("a cancel of a cancelled send: %+v", rc)
 		}
 	}
@@ -973,12 +1014,22 @@ func TestACancelIsKeptBeforeItActs(t *testing.T) {
 	want(t, rc, err, StatusFailed, RefusalOpConflict)
 	rc, err = s.AskCancel(ctx, testOp("k1"), taken)
 	want(t, rc, err, StatusFailed, RefusalOpConflict)
+	before = count(t, s, "SELECT COUNT(*) FROM changes")
 	rc, err = s.AskCancel(ctx, testOp("k2"), sid)
-	if err != nil || rc.Status != StatusDone || rc.ID != sid {
-		t.Fatalf("a cancel of a cancelled send, its receipt pruned: %+v %v", rc, err)
+	want(t, rc, err, StatusFailed, RefusalStaleRevision)
+	if rc.Repeat || count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid) != 1 || count(t, s, "SELECT COUNT(*) FROM changes") != before {
+		t.Fatalf("a cancel of a cancelled send, its receipt pruned: %+v", rc)
 	}
-	if n := count(t, s, "SELECT COUNT(*) FROM capture_send_cancels WHERE send_id = ?", sid); n != 1 {
-		t.Fatalf("%d cancels", n)
+	// Once that refusal's receipt is pruned too, the id is free: under it a
+	// cancel of a pending send is taken, as a request of its own.
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	free := mustSend(t, s, "s7", id, 1, toBrakeman, askBrakeman)
+	rc, err = s.AskCancel(ctx, testOp("k2"), free)
+	want(t, rc, err, StatusDone, "")
+	if c := sendOf(t, s, free).Cancels; rc.ID != free || len(c) != 1 || c[0].OpID != "k2" {
+		t.Fatalf("a cancel under the freed id: %+v %+v", rc, c)
 	}
 	// Another person's cancel whose op id one cancel of the send took:
 	// refused as what it is, the id taken on this send, nothing written,
@@ -1320,12 +1371,35 @@ func TestSendBoundsAtTheirEdges(t *testing.T) {
 	if why := sendOf(t, s, sends[20]).Why; strings.Contains(why, "QUERYWORD") || strings.Contains(why, "FRAG") || !strings.Contains(why, "https://h.example/p") {
 		t.Fatalf("why kept as %q", why)
 	}
-	for i := range MaxSendCancels {
-		rc, err := s.AskCancel(ctx, testOp(opID("cancel", i)), sends[30])
-		want(t, rc, err, StatusDone, "")
+	// Words within their bound are taken whatever the fold makes of them:
+	// kept folded, within the bound, cut at a character's end.
+	given := rep("é", MaxSendWhy-len(" h://x")) + " h://x"
+	if utf8.RuneCountInString(given) != MaxSendWhy || utf8.RuneCountInString(addressFree(given)) <= MaxSendWhy {
+		t.Fatalf("the fold does not lengthen %q", given[len(given)-10:])
 	}
-	rc, err = s.AskCancel(ctx, testOp("cancel-past"), sends[30])
-	want(t, rc, err, StatusFailed, RefusalBound)
+	rc, err = s.MarkRefused(ctx, testOp("why-folded"), sends[21], given)
+	want(t, rc, err, StatusDone, "")
+	if sv := sendOf(t, s, sends[21]); sv.State != SendRefused || sv.Why != cutChars(addressFree(given), MaxSendWhy) || utf8.RuneCountInString(sv.Why) != MaxSendWhy {
+		t.Fatalf("why at its bound, folded longer: %s, kept %q", sv.State, sv.Why[len(sv.Why)-10:])
+	}
+	// Ten cancels of a pending send and of one Brakeman took, the eleventh
+	// refused bound; a send cancelled at the bound refuses a cancel by its
+	// state.
+	for _, sid := range []string{sends[30], sends[0]} {
+		for i := range MaxSendCancels {
+			rc, err := s.AskCancel(ctx, testOp(opID("cancel-"+sid+"-", i)), sid)
+			want(t, rc, err, StatusDone, "")
+		}
+		rc, err = s.AskCancel(ctx, testOp("cancel-past-"+sid), sid)
+		want(t, rc, err, StatusFailed, RefusalBound)
+	}
+	if sv := sendOf(t, s, sends[0]); sv.State != SendSent || len(sv.Cancels) != MaxSendCancels {
+		t.Fatalf("the send Brakeman took: %s, %d cancels", sv.State, len(sv.Cancels))
+	}
+	rc, err = s.CancelSend(ctx, testOp("cancelled-at-bound"), sends[30])
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.AskCancel(ctx, testOp("cancel-cancelled"), sends[30])
+	want(t, rc, err, StatusFailed, RefusalStaleRevision)
 	// The pages: 1 to MaxCapturePage, by a cursor that names a send, each
 	// send once in its order.
 	for _, read := range []func(after string, limit int) (SendsPage, error){

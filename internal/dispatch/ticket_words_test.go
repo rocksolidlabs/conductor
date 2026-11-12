@@ -320,15 +320,45 @@ func TestNothingACaptureHoldsIsMarkdownInATicket(t *testing.T) {
 	for i := 0; i < len(cuts); i += len(cuts) / 8 {
 		fixture = append(fixture, cuts[i])
 	}
+	// The cut is safe for any bound: one too small for the closing fence
+	// and its "…" gives an empty text.
+	for n := 0; n <= 16; n++ {
+		desc := describe(all).text(n)
+		if len(desc) > n || (n < len(ticketFence)+1+len("\n…") && desc != "") {
+			t.Errorf("cut to %d: %q", n, desc)
+		}
+		checkTicketWords(t, fmt.Sprintf("cut to %d", n), desc, ticketComments(all))
+	}
 	// A person's note that opens a fence, a list or a quote ends with its
-	// quote: the next block is still the store's.
-	for _, note := range []string{"```", "~~~~", "```\nstill open", "- a\n\n      ```", "> ```", "a\r```"} {
+	// quote: the next block is still the store's. A note of more than three
+	// lines, a heading and a fence opened after its third, is quoted on
+	// every line, also cut at each of its line ends, and the next
+	// annotation's block is the store's.
+	long := "one\ntwo\nthree\n# Escaped heading\n```\na fence opened after the third line\nand its last"
+	noted := func(note string) Capture {
 		c := all
 		c.Annotations = append([]Annotation{}, all.Annotations...)
 		c.Annotations[0].Note = note
-		row := check(fmt.Sprintf("a note %q, the rest hostile", note), c)
+		return c
+	}
+	for _, note := range []string{"```", "~~~~", "```\nstill open", "- a\n\n      ```", "> ```", "a\r```", long} {
+		row := check(fmt.Sprintf("a note %q, the rest hostile", note), noted(note))
 		row.Notes = true
 		fixture = append(fixture, row)
+	}
+	whole = describe(noted(long)).text(1 << 30)
+	start := strings.Index(whole, "> one\n")
+	if start < 0 || !strings.Contains(whole[start:], "> # Escaped heading\n> ```\n") || !strings.Contains(whole[start:], "### Annotation 2") {
+		t.Fatalf("the long note is not quoted line by line before the next annotation:\n%s", whole)
+	}
+	for e := start + strings.IndexByte(whole[start:], '\n'); e < start+strings.Index(whole[start:], "\n\n")+1; e += strings.IndexByte(whole[e+1:], '\n') + 1 {
+		desc := describe(noted(long)).text(e + 1 + len("\n…"))
+		if desc != whole[:e+1]+"\n…" {
+			t.Fatalf("cut after the note's line ending at %d: %q", e, desc[start:])
+		}
+		blocks, marks := checkTicketWords(t, fmt.Sprintf("the long note cut at %d", e), desc, ticketComments(all))
+		fixture = append(fixture, captureTicketCase{Name: fmt.Sprintf("a note of more than three lines, cut at its line ending at %d", e), Description: desc,
+			Comment: ticketComments(all), Blocks: blocks, Marks: marks, Notes: true})
 	}
 	path := filepath.Join("testdata", "capture-tickets.json")
 	var b bytes.Buffer

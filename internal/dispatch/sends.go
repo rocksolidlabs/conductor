@@ -22,8 +22,10 @@ import (
 // its SHA-256 (the send's row keeps the digest, never the document), and
 // the screenshot's content file when there is one; the send holds both
 // (capture_files, holder its id) while something can still use them: a
-// send of a live capture, and a sent one, for good; a send of a deleted
-// capture that ended refused or cancelled lets them go (releaseEnded). A
+// send of a live capture, and a sent one for as long as the store keeps
+// the send (nothing removes a send; what a sent send of a deleted capture
+// keeps is the settlement's to say, #794); a send of a deleted capture
+// that ended refused or cancelled lets them go (releaseEnded). A
 // send to a ticket writes, in its one transaction, the ticket when it is
 // new (its description ticketText), an attachment row naming each of the
 // two files (no file copied), a comment in the store's own words
@@ -450,8 +452,10 @@ func (s *Store) MarkSent(ctx context.Context, op Op, id, target string) (Receipt
 }
 
 // MarkRefused records that the pending send with the id was refused by
-// its target, with the target's words (capture_send.refused), kept
-// address-free (addressFree) within MaxSendWhy characters.
+// its target, with the target's words (capture_send.refused): at most
+// MaxSendWhy characters as given, then folded (addressFree) and kept
+// within MaxSendWhy, cut at a character's end, so words within their
+// bound are never refused for what the fold makes of them.
 func (s *Store) MarkRefused(ctx context.Context, op Op, id, why string) (Receipt, error) {
 	return s.settleSend(ctx, op, IntentSendRefused, SendRefused, captureArgs{ID: id, Why: why})
 }
@@ -491,10 +495,10 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 				return refuse(RefusalInvalid, "a send to Brakeman is sent as its request's id, br-<n>")
 			}
 		case SendRefused:
-			why = addressFree(args.Why)
-			if err := checkField("send.why", "why", why); err != nil {
+			if err := checkField("send.why", "why", args.Why); err != nil {
 				return err
 			}
+			why = cutChars(addressFree(args.Why), MaxSendWhy)
 		case SendCancelled:
 			if len(sv.Cancels) == 0 {
 				return refuse(RefusalInvalid, "no cancel was asked of the send %s", args.ID)
@@ -530,7 +534,8 @@ func (s *Store) collectAll(ctx context.Context, rc Receipt, err error, released 
 // the id send alone when it is not "": each file row deleted and its add
 // row removed in the change log, in the caller's transaction (a delete's,
 // or the outcome's that ended the send once its capture was deleted). A
-// sent send keeps what it holds: those are its ticket's. It gives the
+// sent send keeps what it holds for as long as the store keeps it (a
+// ticket's attachments name the same content). It gives the
 // hashes let go, for the caller to collect once committed.
 func (t *tx) releaseEnded(captureID, send string) ([]string, error) {
 	where, args := "s.capture_id = ? AND "+sendStateSQL("s.id")+" IN ('refused', 'cancelled')", []any{captureID}
@@ -579,14 +584,13 @@ func (t *tx) releaseEnded(captureID, send string) ([]string, error) {
 // AskCancel records a person's cancel of the send with the id
 // (capture_send.cancel), its row and its receipt in one transaction,
 // before anything acts on it: a pending and a sent send (its request is
-// closed at the desk) take it; one cancelled already is answered from its
-// state, done with nothing written, the same answer for every repeat; a
-// send to a ticket (made in its one step: nothing of it is under way) and
-// a refused one are refused stale_revision. At most MaxSendCancels a send
-// (bound), so the bound counts the cancels asked while one could still
-// act. A cancel is known on its send by its operation's id: an id another
-// cancel of the send took is refused op_conflict. The receipt's id is the
-// send's.
+// closed at the desk) take it; a send to a ticket (made in its one step),
+// a refused one and a cancelled one are refused stale_revision, nothing of
+// them under way, writing nothing, so a resend is refused the same by the
+// send's state whatever was pruned. At most MaxSendCancels a send (bound),
+// counted after the state. A cancel is known on its send by its
+// operation's id: an id another cancel of the send took is refused
+// op_conflict. The receipt's id is the send's.
 func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error) {
 	return s.Apply(ctx, op, IntentSendCancel, captureArgs{ID: id}, func(t *tx) error {
 		sv, err := readSend(t.ctx, t.tx, id, false)
@@ -597,12 +601,8 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 			return err
 		case sv.Kind == SendTicket:
 			return refuse(RefusalStaleRevision, "a send to a ticket is made in its one step: nothing of it is under way")
-		case sv.State == SendRefused:
-			return refuse(RefusalStaleRevision, "the send was refused: nothing of it is under way")
-		case sv.State == SendCancelled:
-			t.created(id, "")
-			t.holds = true
-			return nil
+		case sv.State == SendRefused, sv.State == SendCancelled:
+			return refuse(RefusalStaleRevision, "the send was %s: nothing of it is under way", sv.State)
 		}
 		if err := checkCount("cancels of a send", len(sv.Cancels)+1, MaxSendCancels); err != nil {
 			return err
@@ -801,7 +801,9 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 // CaptureSends lists the sends of the kind sent to the target (a ticket's
 // key, br-<n>) by sendState, newest first, by pages (sendsPage): a
 // ticket's captures as they were sent, a deleted capture's among them.
-// ErrBadQuery for another kind, a target of no such form, or a bad page.
+// Its answer is a page; its work, as PendingSends', is the target's sends
+// (#794). ErrBadQuery for another kind, a target of no such form, or a bad
+// page.
 func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, limit int) (SendsPage, error) {
 	_, _, isKey := ParseKey(target)
 	if !(kind == SendTicket && isKey) && !(kind == SendBrakeman && brakemanTarget.MatchString(target)) {
@@ -825,9 +827,9 @@ func (s *Store) PendingSends(ctx context.Context, after string, limit int) (Send
 // cancelled, oldest first, by pages (sendsPage): what a settlement
 // finishes (a pending one cancelled, a sent one's request closed at the
 // desk), whether a cancel is done at the desk being the desk's to say. A
-// send sent with its cancel asked stays listed, since nothing records its
-// cancel closed; its answer is a page and its work, as PendingSends', is
-// not bounded by it. Issue #794 brings both.
+// send sent and a send refused with its cancel asked stay listed, since
+// nothing records its cancel closed; its answer is a page and its work, as
+// PendingSends', is not bounded by it. Issue #794 brings both.
 func (s *Store) AskedCancels(ctx context.Context, after string, limit int) (SendsPage, error) {
 	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" != 'cancelled'", nil, false, after, limit)
 }
@@ -863,9 +865,10 @@ func fileName(c Capture, ext string) string {
 	return fmt.Sprintf("capture-%s-r%d.%s", c.ID, c.Rev, ext)
 }
 
-// pageAddress is a page's address as a ticket's words name it: its scheme,
-// its host and its path, never its user, query or fragment (the document
-// attached keeps it whole).
+// pageAddress is a page's address as a ticket's words name it, written
+// from its parts and nothing else: its scheme, its host with its port and
+// its path, never its user, query or fragment, an address on any host
+// shown as what it is (the document attached keeps it whole).
 func pageAddress(s string) string {
 	u, err := url.Parse(s)
 	if err != nil || u.Hostname() == "" {
@@ -891,20 +894,26 @@ func (w *ticketWords) say(line string) { w.WriteString(line + "\n") }
 
 // block adds a block of values, each on one line after its label (a word
 // of the store's, which value is given): every string of the capture but
-// the person's notes is written this way and no other. A value is folded
-// onto one line and made address-free (addressFree); an empty one is its
-// label alone.
+// the person's notes is written this way and no other. A value is written
+// as the capture holds it, folded onto one line (line), with addressFree
+// over it as a courtesy: it takes the user, the query and the fragment off
+// what it recognises as an address with a scheme, and changes nothing
+// else.
 func (w *ticketWords) block(values func(value func(label, s string))) {
 	w.say(ticketFence)
-	values(func(label, s string) {
-		if v := strings.Join(strings.Fields(addressFree(fitText(s, false))), " "); v != "" {
-			label += ": " + v
-		} else {
-			label += ":"
-		}
-		w.say(label)
-	})
+	values(func(label, s string) { w.line(label, addressFree(fitText(s, false))) })
 	w.say(ticketFence)
+}
+
+// line adds a line of a block: the label, then the value folded onto one
+// line (fitText, strings.Fields); an empty one is its label alone.
+func (w *ticketWords) line(label, s string) {
+	if v := strings.Join(strings.Fields(fitText(s, false)), " "); v != "" {
+		label += ": " + v
+	} else {
+		label += ":"
+	}
+	w.say(label)
 }
 
 // quote adds the person's note, their Markdown, each of its lines in a
@@ -918,12 +927,16 @@ func (w *ticketWords) quote(note string) {
 
 // text is the description within n bytes: whole when it fits, else cut at
 // a line's end with "…" after it, a block open there closed by its fence
-// first, the fence counted in the bound.
+// first, the fence counted in the bound; empty for a bound too small for
+// the fence and the "…".
 func (w *ticketWords) text(n int) string {
 	const more = "\n…"
 	text := w.String()
 	if len(text) <= n {
 		return text
+	}
+	if n < len(ticketFence)+1+len(more) {
+		return ""
 	}
 	open := func(s string) bool { return strings.Count("\n"+s, "\n"+ticketFence+"\n")%2 == 1 }
 	keep, _ := cutLines(text, n-len(more), "")
@@ -979,7 +992,7 @@ func describe(c Capture) *ticketWords {
 	w.say(fmt.Sprintf("Capture %s, revision %d, as the page and the tree gave it:", c.ID, c.Rev))
 	w.say("")
 	w.block(func(value func(label, s string)) {
-		value("page", pageAddress(c.URL))
+		w.line("page", pageAddress(c.URL)) // from its parts, not folded again
 		value("title", c.Title)
 		value("viewport", fmt.Sprintf("%s %d by %d", c.Viewport.Mode, c.Viewport.Width, c.Viewport.Height))
 		if o.Kind != OriginURL {
