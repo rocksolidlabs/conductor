@@ -259,7 +259,7 @@ func TestRunInjectsConductorsOwnNamesAlone(t *testing.T) {
 	t.Setenv("CONDUCTOR_RUN", "the-server's-own")
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "secret")
 	inject := map[string]string{"CONDUCTOR_RUN": "build-00000001", "CONDUCTOR_TASK": "build", "CONDUCTOR_ATTEMPT": "2", "CONDUCTOR_STATE_DIR": "/w/.conductor/state",
-		"CONDUCTOR_PREVIEW_URL": "http://127.0.0.1:41234/", "CONDUCTOR_PORT_WEB": "41234", "CONDUCTOR_PORT_DB_2": "5433", "CONDUCTOR_PORT_" + strings.Repeat("A", 16): "1"}
+		"CONDUCTOR_PREVIEW_URL": "http://127.0.0.1:41234/", "CONDUCTOR_PREVIEW_BRIDGE": "http://127.0.0.1:8080/preview-bridge.js", "CONDUCTOR_TREE_SECRET": "ab12", "CONDUCTOR_PORT_WEB": "41234", "CONDUCTOR_PORT_DB_2": "5433", "CONDUCTOR_PORT_" + strings.Repeat("A", 16): "1"}
 	res := sh(t, time.Minute, "env", func(s *Spec) { s.Inject = inject })
 	if res.Exit != 0 || res.Err != "" {
 		t.Fatalf("%+v", res)

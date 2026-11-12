@@ -55,7 +55,7 @@ var webUI = web.Handler
 // composition root read: a test replaces it to see what runServe hands the
 // server, as it replaces extensions.
 var newServer = func(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, ui http.Handler, st *store.Store, p ext.Providers, notices string) (*api.Server, error) {
-	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p), api.WithNotices(notices))
+	return api.New(cfg, cat, log, ui, st, api.WithExtensions(p), api.WithNotices(notices), api.WithPreviewBridge(web.PreviewBridge()))
 }
 
 // extensionsLine names what the registry holds, kind and name, in its
@@ -78,6 +78,16 @@ var terminalOf = func(w io.Writer) io.Writer {
 		return f
 	}
 	return nil
+}
+
+// serveConfig is the configuration serve runs with, and once it is read
+// CONDUCTOR_GITHUB_TOKEN is gone from the server's own environment: a
+// process the server starts with no environment built for it inherits the
+// server's (pty.BuildEnv drops CONDUCTOR_* from the ones it builds).
+func serveConfig(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	_ = os.Unsetenv("CONDUCTOR_GITHUB_TOKEN")
+	return cfg, err
 }
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
@@ -104,7 +114,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	log := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := serveConfig(*configPath)
 	if err != nil {
 		return 1, err
 	}
@@ -284,6 +294,11 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// desktop app): the agents' notify URL and local links reach the server.
 	// The API reads cfg live, so the change lands before any session starts.
 	cfg.PublicURL = localPublicURL(cfg.PublicURL, cfg.PublicURLIsLocal(), ln.Addr())
+	// The address it got, for the preview bridge's origins and its URL in a tree.
+	srv.SetListen(ln.Addr().String())
+	if srv.PublicOriginLeftOut() {
+		log.Warn("publicUrl is left out of the preview bridge's origins (not written as a browser writes an origin: lower case, no default port, an address in its own form; or a name under localhost, or an address that is not one machine's), so the bridge does not answer a workbench opened there")
+	}
 	log.Info("conductor serving", "version", version.String(), "listen", ln.Addr().String(), "publicUrl", cfg.PublicURL, "agents", len(srv.Catalog().List()), "dataDir", cfg.DataDir)
 	if cfg.PublicURLIsLocal() {
 		log.Info("share links take the address the workbench is opened at; set publicUrl (CONDUCTOR_PUBLIC_URL) for a fixed one")
@@ -354,6 +369,8 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			_ = ln.Close()
 			return 1, err
 		}
+		// The port it is bound to, for the bridge's https origins.
+		srv.SetTLSListen(tlsLn.Addr().String())
 		go func() { errCh <- httpSrv.Serve(tlsLn) }()
 	}
 	mapper := startReach(mctx, cfg, srv, certMgr, portOf(ln), portOf(tlsLn), log)

@@ -83,6 +83,29 @@ func TestRefStrings(t *testing.T) {
 	}
 }
 
+// The reference parsers answer a host they do not read in fixed words: a
+// made-up token where the host goes, and a name not among the hosts, are
+// quoted by no error, which stays ErrRef.
+func TestParsersQuoteNoRefusedHost(t *testing.T) {
+	const hexTok = "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d"
+	for _, host := range []string{hexTok, "ghp_PLANTEDhostTOKEN0123456789abcdWXYZ", "planted-not-admitted.example"} {
+		var errs []error
+		_, err := ParseGitHub("https://"+host+"/o/r/issues/1", "", ParseOptions{})
+		errs = append(errs, err)
+		_, err = ParseGitHub("#1", "git@"+host+":o/r.git", ParseOptions{})
+		errs = append(errs, err)
+		for _, raw := range []string{"https://" + host + "/o/r", "ssh://git@" + host + "/o/r.git", "git@" + host + ":o/r.git"} {
+			_, _, err := ParseRepository(raw, ParseOptions{})
+			errs = append(errs, err)
+		}
+		for i, err := range errs {
+			if !errors.Is(err, ErrRef) || strings.Contains(err.Error(), host) || strings.Contains(err.Error(), host[4:16]) {
+				t.Errorf("%.12s, parse %d: %v", host, i, err)
+			}
+		}
+	}
+}
+
 func TestCheckHost(t *testing.T) {
 	for _, h := range []string{"github.com", "ghe.example.test", "a.b-c.d", "xn--github-qyd.com", "a1.example"} {
 		if err := CheckHost(h, false); err != nil {
@@ -91,9 +114,15 @@ func TestCheckHost(t *testing.T) {
 	}
 	for _, h := range []string{"", "GitHub.com", "github.com.", ".github.com", "git..hub.com", "-a.example", "a-.example", "a_b.example",
 		"gİthub.com", "g%c4%b0thub.com", "github.com:443", "user@github.com", "github.com/x", "github.com?x", "github.com#x", "github .com",
-		"localhost:8123", "127.0.0.1:8123", strings.Repeat("a", 64) + ".example"} {
-		if err := CheckHost(h, false); !errors.Is(err, ErrHost) {
+		"localhost:8123", "127.0.0.1:8123", strings.Repeat("a", 64) + ".example",
+		// One label is no host: a word typed in the wrong field (a made-up
+		// 40-hex value among them) is never resolved or dialled.
+		"ghe", "github", "d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d"} {
+		err := CheckHost(h, false)
+		if !errors.Is(err, ErrHost) {
 			t.Errorf("CheckHost(%q) admitted", h)
+		} else if h != "" && strings.Contains(err.Error(), h) {
+			t.Errorf("CheckHost(%q) quotes it: %v", h, err)
 		}
 	}
 	for _, h := range []string{"localhost:8123", "127.0.0.1:1", "[::1]:65535"} {

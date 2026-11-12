@@ -347,6 +347,9 @@ type Engine struct {
 	// by number (steps.go: a number is one tree's at a time). Both under mu.
 	envPassthrough []string
 	ports          map[int]*tree
+	// previewBridge is the bridge's URL a tree with a preview is named
+	// (SetPreviewBridge), "" for none. Under mu.
+	previewBridge string
 	// contextOf answers an attempt's context blocks (SetContext; nil, none
 	// is asked). Under mu.
 	contextOf ContextFunc
