@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/tracker"
 )
 
 // Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
@@ -170,6 +171,15 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/views/{id}/edit", s.handleDispatchEditView},
 		{"POST /api/dispatch/views/{id}/delete", s.handleDispatchDeleteView},
 		{"GET /api/dispatch/ops/{opId}", s.handleDispatchOp},
+		// A ticket's GitHub item (dispatch_external.go).
+		{"POST /api/dispatch/external/preview", s.handleDispatchExternalPreview},
+		{"POST /api/dispatch/projects/{key}/import", s.handleDispatchImport},
+		{"POST /api/dispatch/tickets/{key}/external", s.handleDispatchLinkExternal},
+		{"POST /api/dispatch/tickets/{key}/external/delete", s.handleDispatchUnlinkExternal},
+		{"POST /api/dispatch/tickets/{key}/external/refresh", s.handleDispatchRefresh},
+		{"POST /api/dispatch/tickets/{key}/external/authority", s.handleDispatchAuthority},
+		{"POST /api/dispatch/tickets/{key}/links/{id}/read", s.handleDispatchReadLink},
+		{"GET /api/dispatch/tickets/{key}/links/{id}/read", s.handleDispatchLinkRead},
 	}
 }
 
@@ -183,9 +193,16 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 // timeout) is logged with why: its reads answer as they can and its
 // writes are 503 dispatch_unavailable with why. What the store's sweep of
 // its attachments' files at open could not delete is logged too: it is
-// left for the next sweep, and the store serves regardless.
-func openDispatch(st *store.Store, log logger) *dispatch.Store {
-	ds, err := dispatch.Open(filepath.Join(st.Dir(), "dispatch"))
+// left for the next sweep, and the store serves regardless. The trackers'
+// systems a ticket's source and its owners may name are the adapter
+// registry's (tracker.Adapters, the GitHub adapter alone).
+func openDispatch(st *store.Store, log logger, gh tracker.Adapter) *dispatch.Store {
+	systems, err := tracker.Adapters{gh.System(): gh}.Systems()
+	if err != nil {
+		log.Warn("Dispatch is off: the trackers' systems could not be named", "err", err)
+		return nil
+	}
+	ds, err := dispatch.OpenOptions(filepath.Join(st.Dir(), "dispatch"), dispatch.Options{Systems: systems})
 	if err != nil {
 		log.Warn("Dispatch is off: its store could not be opened", "err", err)
 		return nil
@@ -1203,6 +1220,9 @@ func (s *Server) handleDispatchEditTicket(w http.ResponseWriter, r *http.Request
 	if !readOp(w, r, &body, &body.dispatchOp, maxTicketBody) {
 		return
 	}
+	if !s.readForClose(w, r, ds, key, body.op(r), body.TicketEdit) {
+		return
+	}
 	ctx, cancel := opContext(r)
 	defer cancel()
 	rc, err := ds.EditTicket(ctx, body.op(r), key, body.TicketEdit)
@@ -1470,6 +1490,7 @@ func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rc, err := ds.AddLink(ctx, body.op(r), key, body.NewLink, nil)
+	s.readAddedLink(ds, key, body.NewLink, rc, err)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 

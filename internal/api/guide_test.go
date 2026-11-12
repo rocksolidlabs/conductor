@@ -828,6 +828,9 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		// A person's reviews.
 		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
 		"tracker_set": trackerSaveBody{},
+		// A ticket's GitHub item.
+		"ticket_import_preview": externalPreviewBody{}, "ticket_import": externalImportBody{}, "ticket_link_issue": externalLinkBody{},
+		"ticket_unlink_issue": dispatchOp{}, "ticket_refresh": externalRefreshBody{}, "ticket_authority": externalAuthorityBody{}, "link_read": linkReadBody{},
 	}
 	seen := 0
 	for _, op := range Operations() {
