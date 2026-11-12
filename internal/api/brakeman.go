@@ -21,6 +21,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -2501,18 +2502,9 @@ func (s *Server) brakemanLaunch(spec crew.LaunchSpec, req *createSessionRequest,
 		req.inject = map[string]string{}
 	}
 	req.inject["CONDUCTOR_BRAKEMAN"] = spec.Request
-	if account != "" {
-		a, ok := s.Catalog().Get(spec.AgentID)
-		ad, known := agents.Get(a.Adapter)
-		if !ok || !known || ad.ConfigDirEnv == "" {
-			return newAPIError(http.StatusBadRequest, "invalid_agent", "the agent takes no account folder")
-		}
-		req.Env = maps.Clone(req.Env)
-		if req.Env == nil {
-			req.Env = map[string]string{}
-		}
-		req.Env[ad.ConfigDirEnv] = account
-	}
+	// Bound from the configured folder (bindLogin): none is the tool's own
+	// login, never the adapter's default in Accounts.
+	req.Account, req.login = capacity.DefaultID, loginWant{folder: account}
 	quiet := false
 	if r, err := s.brakeman.st.Get(spec.Request); err != nil {
 		return newAPIError(http.StatusConflict, "not_the_turn", "the turn's request "+spec.Request+" could not be read")

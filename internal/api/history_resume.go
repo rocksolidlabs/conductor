@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -146,6 +147,11 @@ func (s *Server) recordResume(rec journal.Record) (recordPlan, *apiError) {
 			launched := l.Launched()
 			agentID, cwd, as = launched.AgentID, launched.Cwd, info.AgentSession
 		}
+	}
+	if src := rec.Launch.Source; p.listed == nil && src != "" && src != session.SourceOwn && src != session.SourceAccount {
+		// A login its agent's entry or its launch set: the record keeps
+		// neither, so it could not show the login is the same.
+		return p, newAPIError(http.StatusConflict, "login_not_kept", "its login was set by its agent's entry or its launch, which its record does not keep: resume it while the server lists it, or start a session anew")
 	}
 	if p.listed == nil && journal.CwdMayBeCut(cwd) {
 		// The record's folder may be a cut of the session's, its parent
@@ -317,8 +323,17 @@ func (s *Server) resumeFromRecord(ctx context.Context, rec journal.Record, body 
 	if p.listed != nil {
 		l := p.listed.Launched()
 		sp.agentID, sp.name, sp.args, sp.env, sp.yolo, sp.renamed = l.AgentID, l.Name, l.Args, l.Env, l.Yolo, l.Renamed
+		sp.account, sp.login = boundOf(l)
+		sp.model = l.Model
 	} else {
-		sp.args, sp.yolo, sp.renamed = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed
+		sp.args, sp.yolo, sp.renamed, sp.model = slices.Clone(rec.Launch.Args), rec.Launch.Yolo, rec.Launch.Renamed, rec.Launch.Model
+		// The login it was bound to, by the id and source its record keeps
+		// (recordResume refused any other); a record from before them, the
+		// tool's own login, as it resumed then.
+		sp.account = capacity.DefaultID
+		if src := rec.Launch.Source; src != "" {
+			sp.account, sp.login = "", loginWant{bound: &session.BoundAccount{ID: rec.Launch.Account, Source: src}, kept: true}
+		}
 		if names, n := envNamesOf(rec.Launch); n > 0 {
 			if !body.WithoutEnv {
 				return nil, newAPIError(http.StatusConflict, "env_not_kept", "its launch had variables, whose values no record keeps; resume without them (withoutEnv): "+envWords(names, n))

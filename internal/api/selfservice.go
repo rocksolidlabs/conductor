@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,6 +171,14 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
+	// The others bound as the session's own logins allow (bindMembers);
+	// the session itself, adopted, keeps the login it was launched with.
+	bound, unbind, aerr := s.bindMembers(others, yolo, local)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	defer unbind()
 	if !s.selfLimits.take(s.selfLimits.crews, info.ID, selfCrewsPerHour, time.Hour) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "this session has formed its crews for the hour")
 		return
@@ -179,9 +188,20 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		s.crewStoreError(w, "", err)
 		return
 	}
+	launch := saved
+	launch.Members = slices.Clone(saved.Members)
+	for i := range launch.Members {
+		if launch.Members[i].Name == self {
+			if b := local.Launched().Account; b.Source != "" {
+				launch.Members[i].Bound = &b
+			}
+			continue
+		}
+		launch.Members[i] = bound[slices.IndexFunc(bound, func(m crew.Member) bool { return m.Name == launch.Members[i].Name })]
+	}
 	ctx, cancel := runContext(r)
 	defer cancel()
-	run, release, err := s.runs.LaunchAdopting(ctx, saved, self, info.ID)
+	run, release, err := s.runs.LaunchAdopting(ctx, launch, self, info.ID)
 	defer release()
 	if err != nil {
 		s.runError(w, "self crew", saved.ID, err)
@@ -226,6 +246,12 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}
+	m, unbind, aerr := s.bindMember(runID, m, local)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	defer unbind()
 	ctx, cancel := runContext(r)
 	defer cancel()
 	if err := s.runs.AddMember(ctx, runID, m); err != nil {

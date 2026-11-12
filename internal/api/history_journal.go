@@ -291,6 +291,8 @@ func (s *Server) beginServerRecord(info session.Info, launched session.Launched,
 		ResumedFrom: info.ResumedFrom,
 		StartedAt:   info.CreatedAt,
 	}
+	// The login it was bound to, by its id and source alone, and its model.
+	r.Launch.Account, r.Launch.Source, r.Launch.Model = launched.Account.ID, launched.Account.Source, launched.Model
 	switch {
 	case info.Crew != nil && info.Crew.Task != "":
 		// An attempt's start is the engine's own, the ledger's.

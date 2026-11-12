@@ -1382,7 +1382,15 @@ func loginsIn(t *testing.T, root string) string {
 // viewOfFiles is a new cat session's id on e and a view link's token for it.
 func viewOfFiles(t *testing.T, e *testEnv) (string, string) {
 	t.Helper()
-	sid := e.createSession("cat")
+	// On the tool's own login, which needs no account read: a launch that
+	// names none takes the adapter's default, which an unreadable
+	// document cannot say (TestLaunchRefusedWhileTheAccountsCannotBeRead).
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat", "account": "default"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create session: %d %v", resp.StatusCode, out)
+	}
+	sid := out["id"].(string)
+	t.Cleanup(func() { e.stopAndWait(sid) })
 	_, lo := e.do("POST", "/api/sessions/"+sid+"/links", adminToken, map[string]any{"role": "view"})
 	tok, _ := lo["token"].(string)
 	if tok == "" {

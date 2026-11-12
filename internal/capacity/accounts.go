@@ -667,7 +667,13 @@ func DefaultOf(d Accounts, adapter string) string {
 // server that does not cannot see a removal, so it binds no registered
 // account. "default" needs no reservation: it answers a zero Account and
 // a release that does nothing.
-func (s *Store) Reserve(id string) (Account, func(), error) {
+func (s *Store) Reserve(id string) (Account, func(), error) { return s.reserve(id, false) }
+
+// Hold is Reserve for a launch made again under a binding (a resume): a
+// retired account, kept for what is bound to it, is held as well.
+func (s *Store) Hold(id string) (Account, func(), error) { return s.reserve(id, true) }
+
+func (s *Store) reserve(id string, retired bool) (Account, func(), error) {
 	if id == DefaultID {
 		return Account{}, func() {}, nil
 	}
@@ -685,7 +691,7 @@ func (s *Store) Reserve(id string) (Account, func(), error) {
 		return Account{}, nil, err
 	}
 	a := d.Accounts[i]
-	if a.Retired {
+	if a.Retired && !retired {
 		return Account{}, nil, invalid("account", "%s is retired", id)
 	}
 	s.reserved[id]++

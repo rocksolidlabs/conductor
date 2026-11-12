@@ -22,12 +22,13 @@ import (
 // accounts_not_owner elsewhere). The routes answer the admin alone, and a
 // refusal's words never reach a log.
 
-// capacityFacts is what internal/capacity asks of the server. Nothing
-// binds an account before PR-4, so Bound names nothing: a remove is
-// refused only while a reservation holds the account.
+// capacityFacts is what internal/capacity asks of the server: Bound names
+// the sessions running bound to an account (Server.boundTo); a launch's
+// reservation the store counts itself.
 type capacityFacts struct {
-	seam func()
-	data string // the server's data directory, which no account's folder overlaps
+	seam  func()
+	data  string // the server's data directory, which no account's folder overlaps
+	bound func(id string) []string
 }
 
 func (capacityFacts) ConfigDirEnv(adapter string) (string, bool) {
@@ -57,7 +58,12 @@ func (f capacityFacts) CheckAccountDir(dir string) error {
 	return nil
 }
 
-func (capacityFacts) Bound(string) []string { return nil }
+func (f capacityFacts) Bound(id string) []string {
+	if f.bound == nil {
+		return nil
+	}
+	return f.bound(id)
+}
 
 // accountsAdapter is an adapter with a ConfigDirEnv as GET /api/accounts
 // gives it: its implicit default login, its default account and that
@@ -300,7 +306,7 @@ func (s *Server) handleRemoveAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.capacity.st.Remove(capacityFacts{}, id, rev); err != nil {
+	if _, err := s.capacity.st.Remove(capacityFacts{bound: s.boundTo}, id, rev); err != nil {
 		s.writeCapacityError(w, err)
 		return
 	}

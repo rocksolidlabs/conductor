@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -64,7 +65,15 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	name, renamed := s.memberSessionName(spec)
 	req := createSessionRequest{AgentID: spec.AgentID, Name: name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
 		renamed: renamed, runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow, agentSHA256: spec.AgentSHA256,
-		ctx: ctx, where: spec.Where}
+		ctx: ctx, where: spec.Where, Model: spec.Model}
+	// The member's binding (bindMembers'), which its session must get
+	// again; a member no launch bound (a run from before bindings) takes
+	// the tool's own login, as it did.
+	req.Account = capacity.DefaultID
+	if spec.Account.Source != "" {
+		b := spec.Account
+		req.Account, req.login = "", loginWant{bound: &b}
+	}
 	if spec.Class == crew.ClassBrakeman {
 		if aerr := s.brakemanLaunch(spec, &req, &ref); aerr != nil {
 			return nil, aerr
@@ -354,16 +363,25 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label string, admit fu
 		yolo = *c.Yolo
 	}
 	c.Yolo = &yolo
+	// Each member bound to its login (bindMembers), in the crew the engine
+	// is handed alone: the saved crew stays as it is.
+	members, unbind, aerr := s.bindMembers(c.Members, yolo, nil)
+	if aerr != nil {
+		return nil, c, noop, launchRefused{aerr}
+	}
 	if admit != nil {
 		if err := admit(); err != nil {
+			unbind()
 			return nil, c, noop, err
 		}
 	}
+	launch := c
+	launch.Members = members
 	// The launch's context ends with its release, as the route's did at
 	// its end: after the engine's release.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runTimeout)
-	run, release, err := s.runs.LaunchNamed(rctx, c, label)
-	return run, c, func() { release(); cancel() }, err
+	run, release, err := s.runs.LaunchNamed(rctx, launch, label)
+	return run, c, func() { release(); cancel(); unbind() }, err
 }
 
 // launchViewLink creates the view link a crew asks for at launch, as POST
@@ -448,6 +466,14 @@ func (s *Server) handleAddRunMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("run")
+	// Bound now, to the account it names or its adapter's default at the
+	// add, which it keeps when it starts later.
+	m, unbind, aerr := s.bindMember(id, m, nil)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	defer unbind()
 	ctx, cancel := runContext(r)
 	defer cancel()
 	if err := s.runs.AddMember(ctx, id, m); err != nil {

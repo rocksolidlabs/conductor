@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -30,16 +31,28 @@ type cloneRequest struct {
 	Cwd     string    `json:"cwd,omitempty"`
 	Args    *[]string `json:"args,omitempty"`
 	Yolo    *bool     `json:"yolo,omitempty"`
+	Account *string   `json:"account,omitempty"`
+	Model   *string   `json:"model,omitempty"`
 }
 
 // launchRecord is what GET /api/sessions/{id} gives an admin of a server
 // session's launch (the `launch` field), what a clone takes by default:
-// never its environment.
+// never its environment, and of its login the account's id, label and
+// source, never its folder or fingerprint.
 type launchRecord struct {
-	AgentID string   `json:"agentId"`
-	Cwd     string   `json:"cwd"`
-	Args    []string `json:"args"`
-	Yolo    bool     `json:"yolo"`
+	AgentID string        `json:"agentId"`
+	Cwd     string        `json:"cwd"`
+	Args    []string      `json:"args"`
+	Yolo    bool          `json:"yolo"`
+	Account launchAccount `json:"account"`
+	Model   string        `json:"model,omitempty"`
+}
+
+// launchAccount is a launch's login as a reply shows it.
+type launchAccount struct {
+	ID     string `json:"id"`
+	Label  string `json:"label,omitempty"`
+	Source string `json:"source"`
 }
 
 // launchOf is l's launchRecord.
@@ -48,7 +61,8 @@ func launchOf(l session.Launched) launchRecord {
 	if args == nil {
 		args = []string{}
 	}
-	return launchRecord{AgentID: l.AgentID, Cwd: l.Cwd, Args: args, Yolo: l.Yolo}
+	return launchRecord{AgentID: l.AgentID, Cwd: l.Cwd, Args: args, Yolo: l.Yolo, Model: l.Model,
+		Account: launchAccount{ID: l.Account.ID, Label: l.Account.Label, Source: l.Account.Source}}
 }
 
 // cloneNames holds the names clones are being made under, from their check
@@ -145,7 +159,23 @@ func (s *Server) handleCloneSession(w http.ResponseWriter, r *http.Request) {
 		yolo = *req.Yolo
 	}
 	next.Yolo = &yolo
+	// The source's account and model, for an agent of the source's
+	// adapter: its registered account, else the tool's own login; for
+	// another adapter, its default and the agent's default model.
+	src, _ := s.Catalog().Get(launched.AgentID)
 	agent, known := s.Catalog().Get(next.AgentID)
+	if known && src.Adapter == agent.Adapter {
+		next.Account, next.Model = capacity.DefaultID, launched.Model
+		if launched.Account.Source == session.SourceAccount {
+			next.Account = launched.Account.ID
+		}
+	}
+	if req.Account != nil {
+		next.Account = *req.Account
+	}
+	if req.Model != nil {
+		next.Model = *req.Model
+	}
 	if known {
 		if aerr := s.notTheAgent(agent); aerr != nil {
 			writeAPIError(w, aerr)
