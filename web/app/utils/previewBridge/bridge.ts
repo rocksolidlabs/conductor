@@ -46,7 +46,7 @@ function revisionOf(doc: Document): string {
   return rev.length <= MAX_PREVIEW_REVISION && /^[0-9a-f]{4,64}(?:\+[0-9a-f]{4,64})?$/.test(rev) ? rev : ''
 }
 
-/** Selection mode, while it lasts: the outline's host, its box and label, the outlined element and the pointer. */
+/** Selection mode, while it lasts: the outline's host, its box and label, the outlined element and the pointer's last point, if it gave one. */
 interface Selection {
   host: HTMLElement
   box: HTMLElement
@@ -54,6 +54,7 @@ interface Selection {
   current: El | null
   px: number
   py: number
+  pointed: boolean
 }
 
 /** Starts the bridge in win, answering the workbench origins given (the server's): none, or a window no parent frames, starts nothing. */
@@ -129,7 +130,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     ArrowRight: (s) => (s.current ? walk(s.current, 'child', s.host) : null),
   }
   // A pointer move outlines what is under it, the arrows step and walk, a click picks what is under its own point, the release of
-  // Enter picks what is outlined if it is still connected to a document (and otherwise does nothing), the release of Escape leaves,
+  // Enter picks what is outlined if it is still in this page's own tree (and otherwise does nothing), the release of Escape leaves,
   // and an event aimed at an element that holds a frame outlines it. Only an event the browser delivered is stopped or acted on; a
   // throw while handling one leaves selection mode.
   const onEvent = (e: Event) => {
@@ -138,8 +139,8 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     if (!KEEP_DEFAULT.has(e.type)) e.preventDefault()
     e.stopImmediatePropagation()
     const k = e as KeyboardEvent
-    // The topmost element under the event's own point, the host left out.
-    const under = () => stackAt(doc, (s.px = (e as PointerEvent).clientX), (s.py = (e as PointerEvent).clientY), s.host)[0] ?? null
+    // The topmost element under the event's own point, the host left out; the point is kept as the pointer's last.
+    const under = () => ((s.pointed = true), stackAt(doc, (s.px = (e as PointerEvent).clientX), (s.py = (e as PointerEvent).clientY), s.host)[0] ?? null)
     const target = e.target as El | null
     try {
       if (e.type === 'pointermove') show(s, under())
@@ -147,11 +148,23 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
         const el = under()
         if (el) choose(el)
       } else if (e.type === 'keydown' && Object.hasOwn(ways, k.key)) show(s, ways[k.key]!(s, k.shiftKey))
-      else if (e.type === 'keyup' && k.key === 'Enter' && s.current?.isConnected) choose(s.current)
+      else if (e.type === 'keyup' && k.key === 'Enter' && s.current?.getRootNode() === doc) choose(s.current)
       else if (e.type === 'keyup' && k.key === 'Escape') {
         leave()
         answer({ t: 'cancelled' })
       } else if (target && target !== s.host && FRAMES.has(nameOf(target, 8))) show(s, target)
+    } catch {
+      leave()
+    }
+  }
+
+  // After a resize, or a scroll the browser delivered (the window's or a container's: the epoch hears both), the outline is drawn
+  // again over what is now under the pointer's last point; with no point yet, none is drawn. A throw leaves selection mode.
+  const moved = (e: Event) => {
+    const s = sel
+    if (!e.isTrusted || !s) return
+    try {
+      show(s, s.pointed ? (stackAt(doc, s.px, s.py, s.host)[0] ?? null) : null)
     } catch {
       leave()
     }
@@ -171,7 +184,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     box.append(label)
     root.append(box)
     hosts.add(host)
-    sel = { host, box, label, current: null, px: 0, py: 0 }
+    sel = { host, box, label, current: null, px: 0, py: 0, pointed: false }
     doc.documentElement.append(host)
     for (const t of SELECTION_EVENTS) win.addEventListener(t, onEvent, true)
   }
@@ -182,9 +195,7 @@ export function startBridge(win: Window & typeof globalThis, origins: readonly s
     try {
       switch (m.t) {
         case 'hello':
-          // A resize or a scroll of the window, any the window hears, takes selection mode's outline off: what was under it may be
-          // elsewhere now. A scroll of a container inside the page does not.
-          epoch ??= pageEpoch({ win, doc, mine: (n) => hosts.has(n as object), observer: (cb) => new win.MutationObserver(cb), frame: (cb) => win.requestAnimationFrame(cb), moved: () => sel && show(sel, null) })
+          epoch ??= pageEpoch({ win, doc, mine: (n) => hosts.has(n as object), observer: (cb) => new win.MutationObserver(cb), frame: (cb) => win.requestAnimationFrame(cb), moved })
           answer({ t: 'ready', version: PREVIEW_VERSION, hints: hintKindsOf(doc), ...page() })
           break
         case 'select':

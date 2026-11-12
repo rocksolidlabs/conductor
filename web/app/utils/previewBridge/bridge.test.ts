@@ -3,6 +3,7 @@ import { ELEMENT_BOUNDS, PREVIEW_MARK, parsePreviewMessage, type PreviewToWorkbe
 import * as bridge from './bridge'
 import { startBridge } from './bridge'
 import { HINT_NODES } from './hints'
+import { MOTION, TEXT_NODES } from './report'
 
 /** The event names selection mode stops (none where the bridge has no such table). */
 const SELECTION_EVENTS: readonly string[] = (bridge as { SELECTION_EVENTS?: readonly string[] }).SELECTION_EVENTS ?? []
@@ -122,19 +123,27 @@ describe('selection mode', () => {
     expect([down.swallowed, up.swallowed, after.swallowed, answers().map((a) => a.t), win.count]).toEqual([true, true, false, ['selected'], 3])
   })
 
-  /** A page of two buttons, the first under the point (1, 10) until the window scrolls, the second after. */
+  /**
+   * A page of two buttons, the first under the point (1, 10) until the page scrolls, the second after. A scroll is delivered as
+   * the browser delivers one to the window (a container's in the capture phase, whose listeners the fake does not tell apart), or
+   * dispatched by the page's own script (untrusted).
+   */
   function twoButtons() {
     const [one, two] = [h('button', { id: 'one' }, 'One'), h('button', { id: 'two' }, 'Two')]
-    const root = h('html', {}, h('head'), h('body', {}, one, two))
+    const list = h('div', { id: 'list' }, one, two)
+    const root = h('html', {}, h('head'), h('body', {}, list))
     const page = framed(root)
     let scrolled = false
-    page.doc.hitAt = (_x, y) => [y < 50 === !scrolled ? one : two, root.children[1]!, root]
+    page.doc.hitAt = (_x, y) => [y < 50 === !scrolled ? one : two, list, root.children[1]!, root]
     page.ask('hello')
     page.answers()
-    const scroll = () => ((scrolled = true), page.win.dispatch('scroll', event('scroll')))
+    const scroll = (type = 'scroll', target: unknown = page.win, trusted = true) => ((scrolled = trusted), page.win.dispatch(type, event(type, { target }, trusted)))
     const box = () => hostOf(root)?.shadow?.elements[0]?.style.display
+    // What the outline's label names: the outlined element's tag and id.
+    const outlined = () => (box() === 'block' ? plainText(hostOf(root)!.shadow!.elements[0]!.elements[0]!) : 'none')
     const picked = () => page.answers().map((a) => (a.t === 'selected' ? a.element.id : a.t))
-    return { ...page, root, one, two, scroll, box, picked }
+    const enter = () => (page.win.dispatch('keydown', event('keydown', { key: 'Enter' })), page.win.dispatch('keyup', event('keyup', { key: 'Enter' })))
+    return { ...page, root, list, one, two, scroll, box, outlined, picked, enter }
   }
 
   it('picks the element under the click’s own point, whether a move came before it or not', () => {
@@ -149,21 +158,71 @@ describe('selection mode', () => {
     expect(p.picked()).toEqual(['two'])
   })
 
-  it('takes the outline off when the window scrolls, so a click picks what is under it then and Enter picks nothing', () => {
+  it('outlines what is under the pointer’s last point after a scroll of the window or a container and after a resize, and Enter picks it', () => {
+    const seen = (['window', 'container', 'resize'] as const).map((how) => {
+      const p = twoButtons()
+      p.ask('select')
+      p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+      const before = p.outlined()
+      p.scroll(how === 'resize' ? 'resize' : 'scroll', how === 'container' ? p.list : p.win)
+      const after = p.outlined()
+      p.enter()
+      return [how, before, after, p.picked(), hostOf(p.root) !== null]
+    })
+    expect(seen).toEqual([
+      ['window', 'button#one', 'button#two', ['two'], false],
+      ['container', 'button#one', 'button#two', ['two'], false],
+      ['resize', 'button#one', 'button#two', ['two'], false],
+    ])
+  })
+
+  it('changes nothing for a scroll the browser did not deliver, and draws nothing after a scroll before the pointer gave a point', () => {
     const p = twoButtons()
     p.ask('select')
     p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
-    const seen: unknown[] = [p.box()]
+    p.scroll('scroll', p.list, false)
+    const seen: unknown[] = [p.outlined()]
+    p.enter()
+    seen.push(p.picked())
+    // Selection mode again, with no pointer event yet: a scroll draws nothing, and Enter picks nothing.
+    p.ask('select')
     p.scroll()
-    seen.push(p.box())
-    // Enter with nothing outlined: nothing sent, selection mode still on.
-    p.win.dispatch('keydown', event('keydown', { key: 'Enter' }))
-    p.win.dispatch('keyup', event('keyup', { key: 'Enter' }))
+    seen.push(p.outlined())
+    p.enter()
     seen.push(p.picked(), hostOf(p.root) !== null, p.win.count)
     // The click at the point the pointer stayed at picks what the scroll brought there.
     p.win.dispatch('click', event('click', { clientX: 1, clientY: 10 }))
     seen.push(p.picked(), hostOf(p.root) !== null)
-    expect(seen).toEqual(['block', 'none', [], true, 3 + SELECTION_EVENTS.length, ['two'], false])
+    expect(seen).toEqual(['button#one', ['one'], 'none', [], true, 3 + SELECTION_EVENTS.length, ['two'], false])
+  })
+
+  it('picks nothing with Enter when the outlined element has moved into another document or a component’s own tree, and picks one put back in the page', () => {
+    const p = twoButtons()
+    const other = new FakeDoc(h('html', {}, h('body')))
+    const component = h('div', { id: 'component' })
+    p.list.append(component)
+    const shadow = component.attachShadow({ mode: 'open' })
+    const moves: Array<[string, () => void]> = [
+      ['another document', () => other.documentElement.elements[0]!.append(p.one)],
+      ['a component’s own tree', () => shadow.append(p.one)],
+      ['put back elsewhere in the page', () => (p.one.remove(), p.root.children[1]!.append(p.one))],
+    ]
+    const seen = moves.map(([what, move]) => {
+      p.ask('select')
+      p.win.dispatch('pointermove', event('pointermove', { clientX: 1, clientY: 10 }))
+      move()
+      const connected = p.one.isConnected
+      p.enter()
+      const out = [what, connected, p.picked(), hostOf(p.root) !== null]
+      p.ask('cancel')
+      p.answers()
+      return out
+    })
+    expect(seen).toEqual([
+      ['another document', true, [], true],
+      ['a component’s own tree', true, [], true],
+      ['put back elsewhere in the page', true, ['one'], false],
+    ])
   })
 
   it('picks nothing with Enter when the outlined element has left the page, and stays in selection mode', () => {
@@ -201,6 +260,26 @@ describe('selection mode', () => {
     win.dispatch('click', event('click', { target: host, clientX: 160, clientY: 20 }))
     seen.push(answers().map((a) => (a.t === 'selected' ? a.element.tag : a.t)), hostOf(p.root) !== null)
     expect(seen).toEqual([true, ['block', 'none'], ['block', 'auto'], ['ready', 'iframe'], false])
+  })
+
+  it('outlines a frame’s element that a scroll brings under the resting pointer, and its box then takes the pointer, so a click there picks it', () => {
+    const p = plainPage()
+    const frame = h('iframe', { id: 'frame', src: '/inner.html' })
+    p.root.children[1]!.append(frame)
+    const { doc, win, answers, ask } = framed(p.root)
+    let scrolled = false
+    doc.hitAt = () => (scrolled ? [hostOf(p.root), frame, p.root] : [p.p, p.root]).filter((e): e is FakeEl => e !== null)
+    ask('hello')
+    ask('select')
+    const box = hostOf(p.root)!.shadow!.elements[0]!
+    win.dispatch('pointermove', event('pointermove', { target: p.p, clientX: 10, clientY: 10 }))
+    const seen: unknown[] = [[box.style.display, box.style.pointerEvents]]
+    scrolled = true
+    win.dispatch('scroll', event('scroll', { target: win }))
+    seen.push([box.style.display, box.style.pointerEvents])
+    win.dispatch('click', event('click', { target: hostOf(p.root), clientX: 10, clientY: 10 }))
+    seen.push(answers().map((a) => (a.t === 'selected' ? a.element.tag : a.t)))
+    expect(seen).toEqual([['block', 'none'], ['block', 'auto'], ['ready', 'iframe']])
   })
 })
 
@@ -447,8 +526,9 @@ describe('what the bridge reads of a page', () => {
     took(() => ask('describe', { selector: ':root' }))
     console.log('parents climbed by a hello, a pick and a describe:', JSON.stringify(counts))
     // Each within the walks that reach b: the hint kinds' (a hello), the neighbourhood's (a pick of b), the root's markup, text and motion.
+    // The root's: its markup, its text, its name (its text again) and its animations.
     const B = ELEMENT_BOUNDS
-    expect([answers().map((a) => a.t), counts[0]! <= HINT_NODES, counts[1]! <= B.neighbourhood / 4, counts[2]! <= B.html / 4 + 256 + 64]).toEqual([
+    expect([answers().map((a) => a.t), counts[0]! <= HINT_NODES, counts[1]! <= B.neighbourhood / 4, counts[2]! <= B.html / 4 + 2 * TEXT_NODES + MOTION]).toEqual([
       ['ready', 'selected', 'described'],
       true,
       true,
