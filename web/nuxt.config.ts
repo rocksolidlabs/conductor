@@ -96,8 +96,8 @@ export default defineNuxtConfig({
           return code
         })
       bundle.catch(() => {})
-      // The preview bridge, answered as the server answers a page on the loopback (devPreviewBridge): its headers, its wrapper and,
-      // for a page that asks over the loopback, the loopback's three names at the dev server's port.
+      // The preview bridge, for developing Conductor itself (devPreviewBridge): wrapped as the route wraps it, with the loopback's
+      // three names at the port a request over the loopback names; its headers and its routing are the dev server's own.
       const bridge = buildPreviewBridge(webRoot)
       bridge.catch(() => {})
       server.middlewares.stack.unshift({

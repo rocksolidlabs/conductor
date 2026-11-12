@@ -1,8 +1,8 @@
 import { ELEMENT_BOUNDS, measuredBytes, wellFormed } from '../protocol'
 
 /**
- * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText, every list by index up to its
- * bound, every walk of the tree its own and bounded (walkTree, up); and what it picks an element by: a selector it builds, the
+ * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText, every list it walks by index up
+ * to its bound, every walk of the tree its own and bounded (walkTree, up); and what it picks an element by: a selector it builds, the
  * elements stacked under the pointer and the DOM's walk from one, each leaving out the bridge's own host; and the page epoch,
  * which says only that the page moved. The DOM's types; a test hands in fakes.
  */

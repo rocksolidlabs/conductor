@@ -40,9 +40,10 @@ export function wrapPreviewBridge(code: string, origins: string[]): string {
 }
 
 /**
- * The dev server's answer for the bridge to a request with host (its Host header), as the route answers one on a loopback listener
- * (internal/api/testdata/preview-bridge-served.json, which web/build/previewBridge.test.ts holds it to): the route's four headers,
- * and the script in its wrapper with the loopback's three names at the host's port, or no origin for a host off the loopback.
+ * The dev server's answer for the bridge (for developing Conductor itself) to a request with host (its Host header): the script
+ * wrapped as the route wraps it (internal/api/testdata/preview-bridge-served.json, which web/build/previewBridge.test.ts holds the
+ * wrapper to), with the loopback's three names at the port the host names, or no origin for a host off the loopback. Its headers,
+ * and what it takes the port from, are the dev server's own.
  */
 export function devPreviewBridge(code: string, host: string): { headers: Record<string, string>; body: string } {
   const m = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/.exec(host)

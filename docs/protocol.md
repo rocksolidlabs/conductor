@@ -2482,24 +2482,31 @@ reads, never writes, the page; it reads no storage, cookie, console or
 network, never an `input`'s value, a password field or a `textarea`'s
 text; and it does nothing until a workbench origin says `hello`. What it
 reports of the page it writes itself: every string of the page's is cut
-to its bound by one slice before anything else reads it, every list read
-by index to its bound, every walk of the tree bounded in nodes, and the
-markup and text written by the bridge's own writer from the live tree,
-never a copy and never the page's serialiser. Of an element that takes a
+to its bound by one slice before anything else reads it, every list it
+walks read by index to its bound, every walk of the tree bounded in the
+links it follows (down, across and up alike), and the markup and text
+written by the bridge's own writer from the live tree, never a copy and
+never the page's serialiser. What the engine builds in one call before
+the bridge reads any of it is the engine's work, the bridge bounding what
+it reads of it: an attribute's value, the title, the stack under the
+pointer, an element's animations, its computed style, an element's own
+keys, a describe's one query, and the element links an arrow key follows
+in selection mode. Of an element that takes a
 person's input (`input`, `textarea`, `select`, `option`) or one a person
 edits in place it writes the tag and its `type`, `name`, `id`, `class`,
 `role`, `contenteditable` and `aria-*` attributes alone; of a `script`, a
 `style` and a `template` the tag and its attributes alone. The one thing
 it puts on the page is its outline's host, a `div` holding a closed
 shadow root, in selection mode alone: it takes it off when selection mode
-ends, and selection mode ends before anything is read (a pick, Escape, a
-`cancel`, a `describe`, a `hello`, a `select`).
+ends, and selection mode ends before any report is read (a pick, Escape,
+a `cancel`, a `describe`, a `hello`, a `select`).
 
 **Serving.** `GET /preview-bridge.js` (no credential: a script tag
 carries none, and the script holds no secret) serves the bridge the web
 build emits (`web/build/previewBridge.ts`; `make web-build` fails when
 the built app has none, an empty one, or one that does not compile as one
-classic script inside the wrapper below) whole, its bytes
+classic script inside the wrapper below, a module's `import` or `export`
+or a syntax error: `web/build/checkPreviewBridge.mjs`) whole, its bytes
 unchanged, inside a wrapper the server writes:
 `(function (conductorWorkbenchOrigins) {` and a line break, the script,
 a line break and `})(`, the server's workbench origins as a JSON array
@@ -2545,10 +2552,11 @@ resolved once the server listens on the loopback (or on every address)
 is given `CONDUCTOR_PREVIEW_BRIDGE`, `http://127.0.0.1:<port>/preview-bridge.js`
 (`[::1]` for a listener there alone); a tree without a preview, and every
 tree of a server with no bridge or no loopback listener, none. The Nuxt
-dev server answers the same path as the route answers a listener on the
-loopback: the same four headers, the same wrapper and, for a page that
-asks it over the loopback, the loopback's three names at the dev
-server's port (no origin for a page that asks otherwise).
+dev server, which is for developing Conductor itself, answers the same
+path: it wraps the script as the route does and names the loopback's
+three names at the port the request names (its `Host`, when that is a
+loopback name; no origin otherwise). Its headers, its routing and what
+it takes the port from are the dev server's own.
 
 **Messages** (`conductor-preview/1`; `internal/proto/preview.go` and
 `web/app/utils/protocol.ts`, both held to
@@ -2616,7 +2624,8 @@ proportion to the value, which the browser has already spent, several
 times over, deserialising the message to hand it to the page. From the workbench:
 `hello` (its `nonce`, 16 to 64 of `A-Z a-z 0-9 _ -`, is the one every
 later message of either side carries), `select` (selection mode: the
-pointer outlines, a click or Enter selects, Up and Down step through the
+pointer outlines, a click selects what is under it and Enter what is
+outlined, Up and Down step through the
 elements stacked under the pointer, Left and Right walk to the parent
 and the first child, Shift with Up and Down to the siblings, Escape
 leaves), `describe {selector}` (the element a selector of at most 1,024
@@ -2632,38 +2641,48 @@ whole number the bridge bumps, at most once an animation frame, on a
 resize or scroll of the window, a mutation of the document but its own
 host's, and every animation and transition event: it says only that the
 page moved) and `revision` (the page's `<meta name="conductor-revision"
-content="<commit>[+<content>]">` among the head's children, within the
-first 128 nodes of the root's and the head's, lower-case hex of 4 to 64
-digits with one optional `+` part, at most 128 bytes, else ""). A
-`ready`'s hint kinds are read from the elements among the document's
-first 2,000 nodes.
+content="<commit>[+<content>]">` among the head's children, within 128
+links of a walk of the root's and the head's children, lower-case hex of
+4 to 64 digits with one optional `+` part, at most 128 bytes, else ""). A
+`ready`'s hint kinds are read from the elements a walk of the document
+reaches within 2,000 links, React's from the own keys of the first 64 of
+them (at most 64 keys read of each). An accepted `hello` changes the
+nonce and the origin even when its `ready` is never sent (a page whose
+properties throw as they are read gets no answer).
 
 **The element report** (`element`): `{tag, id, classes, role, name (the
 accessible name: aria-label, the text of at most 8 of aria-labelledby's
-ids, of the label for its id among the 256 nodes of its third ancestor's
-subtree or of the label around it, else its own), text (of its subtree's
-first 256 nodes), selector (built, never searched for and never cut: its
-id when the id is within the bound and the document gives the element
-for it, else its path from the root, `:root > tag:nth-child(n) > …`, a
-step's tag `*` when it is not a plain name; "" when the path passes
-4,096 nodes or the bound, and a describe of it finds the element), box
-{x, y, width, height}, attributes ([name, value], the first 32 by index;
-of a control, what it is alone), state {disabled, hidden, ariaDisabled,
-ariaExpanded, pointerEvents, inert (it or one of its 64 nearest
-ancestors), hovered, motion (the animations playing on it, on the
-elements of its subtree's first 64 nodes and on its 12 nearest
-ancestors)}, hit {self, selector, tag} (what elementFromPoint finds at
-the box's centre; self when that is it or within its 64 levels), html
-(its markup as the bridge writes it, at most 3,072 nodes and its bound in
-bytes, every node whole and every element closed, so it is never cut
+ids, of the label for its id within 256 links of a walk of its third
+ancestor's subtree or of the label around it, else its own), text (of
+what a walk of its subtree reaches within 256 links), selector (built,
+never searched for and never cut: `#` and its id escaped, in a document
+not in quirks mode, when that is within the bound and the document,
+asked that very selector, gives the element; else its path from the
+root, `:root > tag:nth-child(n) > …`, each step its place among its
+siblings and its name only when the element's local name, as read, is
+lower-case letters, digits and hyphens beginning with a letter (else
+`*`), so a step matches one child in any document and namespace; "" when
+the path passes 4,096 nodes or the bound; a describe of it finds the
+element), box {x, y, width, height}, attributes ([name, value], the
+first 32 by index; of a control, what it is alone), state {disabled,
+hidden, ariaDisabled, ariaExpanded, pointerEvents, inert (it or one of
+its 63 nearest ancestors), hovered, motion (the animations playing on
+it, on the elements a walk of its subtree reaches within 64 links and on
+its 12 nearest ancestors)}, hit {self, selector, tag} (what
+elementFromPoint finds at the box's centre; self when that is it or it
+is one of the 63 nearest ancestors of what is found), html (its markup
+as the bridge writes it, within 3,072 links and its bound in bytes,
+every node whole and every element closed, so it is never cut
 afterwards), neighbourhood (its parent's, written the same way within
-6,144 nodes, each sibling's subtree past depth 2 elided), ancestors
+6,144 links, each sibling's subtree past depth 2 elided), ancestors
 ([{tag, id, classes, role}], innermost first), styles ([property, value]
 of a fixed list of 64), hints ([{how, file, line, column, component}]: a
-data-conductor-source "<file>:<line>:<column>" on it or one of its 64
-nearest ancestors, a Vue dev build's component chain, Svelte's
-__svelte_meta, React 18's _debugSource; each walk stopping at 8 hints),
-cut (the steps it was cut by)}`. Each field to its bound,
+data-conductor-source "<file>:<line>:<column>" on it or one of its 63
+nearest ancestors, a Vue dev build's component chain (64 levels to its
+instance, its own included, and 64 instances), Svelte's __svelte_meta
+(it or one of its 63 nearest ancestors), React 18's _debugSource (its
+fiber among the element's first 64 own keys, 256 fibers); each walk
+stopping at 8 hints), cut (the steps it was cut by)}`. Each field to its bound,
 in bytes as measured below: the tag, id, classes, role, name and the
 state's strings 1,024 each, the text and the selectors 1,024, at most 32
 attributes of a 64-byte name and a 512-byte value, the HTML 12 KiB, the
@@ -2698,12 +2717,24 @@ a message only from an event the browser delivered (`isTrusted`), from
 exactly), and, after the `hello`, only from that hello's origin with its
 nonce (a later `hello` starts again: selection mode is ended first, and
 nothing of the exchange before is sent under the new nonce); what it
-drops changes nothing. In selection mode it stops every pointer, mouse,
-touch and key event the browser delivers (one table, the listeners added
-and removed from it; a tap's touches and a wheel keep their default
-action) and acts only on those (a click or the release of Enter picks,
-the release of Escape leaves); outside it, none; a throw while it handles
-one leaves selection mode. It posts only to `window.parent`, addressed to
+drops changes nothing. In selection mode it stops the events of its
+table, the pointer, mouse (not drag), touch and key events it names, of
+those the browser delivers to the page's own window (the listeners added
+and removed from that table; a tap's touches and a wheel keep their
+default action), and acts only on those: a pointer move outlines the
+element under it, a click picks the element under its own point, the
+release of Enter picks the outlined element and does nothing when none
+is, the release of Escape leaves, and a resize or a scroll of the window
+takes the outline off until the next pointer event or arrow key gives
+one. What is aimed at a frame inside the page (`iframe`, `frame`,
+`object`, `embed`) the browser delivers to the frame: an event of the
+table aimed at such an element outlines it, and while the outlined
+element holds a frame the outline's box, drawn over it, takes the
+pointer, so a click there picks it. So the pointer's events over a frame
+are the bridge's once the pointer has entered that frame in selection
+mode, and keys typed while the focus is inside a frame are that frame's.
+Outside selection mode it stops none; a throw while it handles one
+leaves selection mode. It posts only to `window.parent`, addressed to
 that origin, never `*`, and only a message its own parser takes as one to
 the workbench. The workbench takes an answer only
 from the frame's window at the preview's origin with the nonce it sent.
