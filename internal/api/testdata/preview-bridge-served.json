@@ -1,0 +1,37 @@
+{
+ "comment": "Written by internal/api's TestTheBridgeIsServedWhole (CONDUCTOR_WRITE_FIXTURES=1) and run by web/app/utils/protocol.test.ts: each script as GET /preview-bridge.js serves it, wrapped with origins.",
+ "origins": [
+  "https://a\"b",
+  "https://a'b",
+  "https://a`b",
+  "https://a\\b",
+  "https://a</script><script>x()</script>",
+  "https://a\u2028b\u2029c",
+  "https://a\nb\r",
+  "https://a\u0000b",
+  "https://a${x}b",
+  "https://a*/b//c"
+ ],
+ "cases": [
+  {
+   "name": "a script that reads its origins",
+   "script": "report(conductorWorkbenchOrigins);\n",
+   "served": "(function (conductorWorkbenchOrigins) {\nreport(conductorWorkbenchOrigins);\n\n})([\"https://a\\\"b\",\"https://a\\u0027b\",\"https://a\\u0060b\",\"https://a\\\\b\",\"https://a\\u003c/script\\u003e\\u003cscript\\u003ex()\\u003c/script\\u003e\",\"https://a\\u2028b\\u2029c\",\"https://a\\nb\\r\",\"https://a\\u0000b\",\"https://a\\u0024{x}b\",\"https://a*/b//c\"]);\n"
+  },
+  {
+   "name": "a script ending in a line comment",
+   "script": "report(conductorWorkbenchOrigins.length, conductorWorkbenchOrigins); // the end",
+   "served": "(function (conductorWorkbenchOrigins) {\nreport(conductorWorkbenchOrigins.length, conductorWorkbenchOrigins); // the end\n})([\"https://a\\\"b\",\"https://a\\u0027b\",\"https://a\\u0060b\",\"https://a\\\\b\",\"https://a\\u003c/script\\u003e\\u003cscript\\u003ex()\\u003c/script\\u003e\",\"https://a\\u2028b\\u2029c\",\"https://a\\nb\\r\",\"https://a\\u0000b\",\"https://a\\u0024{x}b\",\"https://a*/b//c\"]);\n"
+  },
+  {
+   "name": "a script beginning with a directive",
+   "script": "\"use strict\";\nreport((function () { return typeof this })(), conductorWorkbenchOrigins[0]);\n",
+   "served": "(function (conductorWorkbenchOrigins) {\n\"use strict\";\nreport((function () { return typeof this })(), conductorWorkbenchOrigins[0]);\n\n})([\"https://a\\\"b\",\"https://a\\u0027b\",\"https://a\\u0060b\",\"https://a\\\\b\",\"https://a\\u003c/script\\u003e\\u003cscript\\u003ex()\\u003c/script\\u003e\",\"https://a\\u2028b\\u2029c\",\"https://a\\nb\\r\",\"https://a\\u0000b\",\"https://a\\u0024{x}b\",\"https://a*/b//c\"]);\n"
+  },
+  {
+   "name": "a script holding the marker's old text in a string, a comment and a regular expression",
+   "script": "var s = \"__CONDUCTOR_WORKBENCH_ORIGINS__\"; /* \"__CONDUCTOR_WORKBENCH_ORIGINS__\" */\nvar r = /\"__CONDUCTOR_WORKBENCH_ORIGINS__\"/;\nreport(s, r.source, conductorWorkbenchOrigins); // '__CONDUCTOR_WORKBENCH_ORIGINS__'\n",
+   "served": "(function (conductorWorkbenchOrigins) {\nvar s = \"__CONDUCTOR_WORKBENCH_ORIGINS__\"; /* \"__CONDUCTOR_WORKBENCH_ORIGINS__\" */\nvar r = /\"__CONDUCTOR_WORKBENCH_ORIGINS__\"/;\nreport(s, r.source, conductorWorkbenchOrigins); // '__CONDUCTOR_WORKBENCH_ORIGINS__'\n\n})([\"https://a\\\"b\",\"https://a\\u0027b\",\"https://a\\u0060b\",\"https://a\\\\b\",\"https://a\\u003c/script\\u003e\\u003cscript\\u003ex()\\u003c/script\\u003e\",\"https://a\\u2028b\\u2029c\",\"https://a\\nb\\r\",\"https://a\\u0000b\",\"https://a\\u0024{x}b\",\"https://a*/b//c\"]);\n"
+  }
+ ]
+}
