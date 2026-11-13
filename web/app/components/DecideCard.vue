@@ -35,7 +35,7 @@ const asked = computed(() => (v.value?.createdAt ? new Date(v.value.createdAt).t
     <UAlert v-if="card.unknown" color="warning" variant="subtle" icon="i-lucide-circle-help" :title="`Not known whether your answer to ${card.id} was recorded. Send it again: the same answer is never recorded twice.`" data-decide-unknown />
     <UAlert v-if="card.refused" color="error" variant="subtle" icon="i-lucide-circle-x" :title="card.refused" data-decide-refused />
     <UAlert v-if="outcome" :color="v?.outcome === 'applied' || v?.outcome === 'waiting' ? 'success' : 'neutral'" variant="subtle" icon="i-lucide-info" :title="outcome" data-decide-outcome />
-    <p v-if="!v" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading {{ card.id }}…</p>
+    <p v-if="!v && !card.end && !ended" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading {{ card.id }}…</p>
 
     <template v-if="v?.question">
       <p class="break-words text-base font-medium text-highlighted" data-decide-question>{{ v.question }}</p>

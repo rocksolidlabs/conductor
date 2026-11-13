@@ -5836,7 +5836,16 @@ registered can present, is admitted by `GET /api/me`, by the list of the open
 decisions it is admitted to and by the read and the response of a decision
 it is admitted to: one the operator gave to the decide grant
 (`docs/plans/decide-grant.md`); every other route answers it as without the
-grant.
+grant. Its pass reaches the app in the URL fragment, the key `pass` beside the
+desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
+taken out of the address bar before anything else runs, kept for the tab
+(`sessionStorage`) until its first `401`, and sent only in the `Authorization`
+header of the four routes, never in a URL. The decide page (`/decide`,
+`/decide/<did>`, drawn for a tab that holds a pass and no workbench token)
+reads the list and each open card, at most four cards open, each one at a
+time, the next due 10 s after the last began while the tab is shown and at
+once when it is shown again, each bounded at 10 s; a view no read has renewed
+for 25 s cannot be answered there (`DECIDE_*` in `web/app/utils/protocol.ts`).
 
 | Route | Who | Body → reply |
 |---|---|---|
