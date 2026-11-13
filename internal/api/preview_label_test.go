@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -254,59 +255,167 @@ func TestALabelOfATreeWithNoGitOfItsOwnIsUnread(t *testing.T) {
 	}
 }
 
-// A read held between write-tree and the diff while the server's stop
-// begins (close removes the indexes) is unread once it is let go: its
-// diff ran with the index gone, and the stop's mark is asked after it.
-func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
-	logs := &logBuffer{}
-	p := previewEnvLogging(t, nil, logs)
-	at, release := make(chan struct{}), make(chan struct{})
-	held := false
-	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
-		if args[0] == "diff" && !held {
-			held = true
-			close(at)
-			<-release
-		}
-		return gitcli.RunTree(ctx, workTree, env, in, w, args...)
-	}))
-	type answer struct {
-		status int
-		body   []byte
-		err    error
-	}
-	done := make(chan answer, 1)
+// labelAnswer is the label's answer as labelAsync got it.
+type labelAnswer struct {
+	status int
+	body   []byte
+	err    error
+}
+
+// labelAsync asks the attempt's label as the admin and gives its answer
+// on the returned channel.
+func (p *previewed) labelAsync() <-chan labelAnswer {
+	done := make(chan labelAnswer, 1)
 	go func() {
 		req, err := http.NewRequest("GET", p.e.http.URL+"/api/runs/"+p.run+"/tasks/build/attempts/1/preview", nil)
 		if err != nil {
-			done <- answer{err: err}
+			done <- labelAnswer{err: err}
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+adminToken)
 		resp, err := p.e.client.Do(req)
 		if err != nil {
-			done <- answer{err: err}
+			done <- labelAnswer{err: err}
 			return
 		}
 		defer resp.Body.Close()
 		b, err := io.ReadAll(resp.Body)
-		done <- answer{resp.StatusCode, b, err}
+		done <- labelAnswer{resp.StatusCode, b, err}
 	}()
+	return done
+}
+
+// holdAfter holds the first git command named sub of a tree's read once
+// it has run, until release is closed; at is closed when it is held.
+func holdAfter(t *testing.T, sub string) (at, release chan struct{}) {
+	at, release = make(chan struct{}), make(chan struct{})
+	held := false
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		err := gitcli.RunTree(ctx, workTree, env, in, w, args...)
+		if args[0] == sub && !held {
+			held = true
+			close(at)
+			<-release
+		}
+		return err
+	}))
+	return at, release
+}
+
+// unreadLabel fails the test unless a is a label that is unread, with no
+// content and no changed path.
+func unreadLabel(t *testing.T, what string, a labelAnswer) {
+	t.Helper()
+	var l map[string]any
+	if a.err != nil || a.status != http.StatusOK || json.Unmarshal(a.body, &l) != nil {
+		t.Fatalf("%s: the label: %d %s %v", what, a.status, a.body, a.err)
+	}
+	if l["unread"] != "the tree could not be read" || l["content"] != "" || l["changed"] != float64(0) || fmt.Sprint(l["changedPaths"]) != "[]" {
+		t.Fatalf("%s: the label: %s", what, a.body)
+	}
+}
+
+// A read held after any of its commands (rev-parse, read-tree, add,
+// write-tree, the diff) while the server's stop begins (close marks it
+// and removes the indexes) is unread once it is let go: a later command
+// fails with the index gone, or the stop's mark is asked after the last.
+func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, nil, logs)
+	for _, sub := range []string{"rev-parse", "read-tree", "add", "write-tree", "diff"} {
+		at, release := holdAfter(t, sub)
+		done := p.labelAsync()
+		select {
+		case <-at:
+		case a := <-done:
+			t.Fatalf("after %s: answered before it was held: %d %s %v", sub, a.status, a.body, a.err)
+		}
+		p.e.srv.trees.close()
+		close(release)
+		unreadLabel(t, "the read held after "+sub+" across the stop", <-done)
+		// The next row's read begins before a stop.
+		p.e.srv.trees.mu.Lock()
+		p.e.srv.trees.stopped = false
+		p.e.srv.trees.mu.Unlock()
+	}
+	if !strings.Contains(logs.String(), `why=refused`) {
+		t.Fatalf("the log: %s", logs.String())
+	}
+}
+
+// A read held at the runner's seam while the server's Shutdown begins and
+// is held in its waits (a run start under way, which it waits for before
+// it lists the runs to stop) is unread once let go: the stop is marked at
+// Shutdown's entry, before any wait.
+func TestAReadThatEndsWhileTheShutdownWaitsIsUnread(t *testing.T) {
+	p := previewEnv(t, nil)
+	at, release := holdAfter(t, "write-tree")
+	done := p.labelAsync()
 	select {
 	case <-at:
 	case a := <-done:
-		t.Fatalf("answered before the diff: %d %s %v", a.status, a.body, a.err)
+		t.Fatalf("answered before it was held: %d %s %v", a.status, a.body, a.err)
 	}
-	p.e.srv.trees.close()
+	launches := &p.e.srv.launches
+	launches.starting.Add(1)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		p.e.srv.Shutdown(ctx)
+	}()
+	waiting := waitFor(30*time.Second, func() bool { return gateSeam(launches, &launches.closed) })
 	close(release)
 	a := <-done
-	var l map[string]any
-	if a.err != nil || a.status != http.StatusOK || json.Unmarshal(a.body, &l) != nil {
-		t.Fatalf("the label: %d %s %v", a.status, a.body, a.err)
+	launches.starting.Done()
+	<-stopped
+	if !waiting {
+		t.Fatal("the shutdown never reached its wait for the runs being started")
 	}
-	if l["unread"] != "the tree could not be read" || l["content"] != "" || l["changed"] != float64(0) || fmt.Sprint(l["changedPaths"]) != "[]" {
-		t.Fatalf("the label read across the stop: %s", a.body)
+	unreadLabel(t, "the read that ended while the shutdown waited", a)
+}
+
+// A named pipe put in place of the tree's folder between the walk's look
+// and its open is refused at once: the label is unread and the log says
+// refused.
+func TestALabelOfATreeMadeAPipeAtItsOpenIsUnread(t *testing.T) {
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, nil, logs)
+	aside, placed := p.dir+"-aside", false
+	t.Cleanup(crew.SetTreeOpenForTest(func(name string) {
+		if name != filepath.Base(p.dir) || placed {
+			return
+		}
+		placed = true
+		if err := os.Rename(p.dir, aside); err != nil {
+			t.Error(err)
+		}
+		if err := syscall.Mkfifo(p.dir, 0o600); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(func() {
+		if placed {
+			_ = os.Remove(p.dir)
+			_ = os.Rename(aside, p.dir)
+		}
+	})
+	done := p.labelAsync()
+	var a labelAnswer
+	select {
+	case a = <-done:
+	case <-time.After(time.Minute):
+		t.Errorf("the label was not answered within a minute: its read's open waits on the pipe at %s", p.dir)
+		if w, err := os.OpenFile(p.dir, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			w.Close()
+		}
+		a = <-done
 	}
+	if !placed {
+		t.Fatal("the walk never reached the tree's folder")
+	}
+	unreadLabel(t, "the label of a pipe", a)
 	if !strings.Contains(logs.String(), `why=refused`) {
 		t.Fatalf("the log: %s", logs.String())
 	}

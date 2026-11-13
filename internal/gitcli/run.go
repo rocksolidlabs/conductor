@@ -183,16 +183,20 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 	return nil
 }
 
-// RunTree runs git with args in the work tree workTree, named outright
-// (-C workTree --work-tree=workTree), so that no configuration names
-// another work tree; git finds the git directory from the tree's .git,
-// as it does for Run: with env set in git's environment beside the safe
-// one, in (nil for none) on its standard input and its standard output
-// written to w as it comes (w bounds what it keeps). Of its error stream
-// the first maxStderr bytes are kept for the error. It is how a tree's
-// read runs git (crew.TreeRevision).
+// RunTree runs git with args in the work tree workTree, with the tree's
+// own .git and the work tree named outright (-C workTree
+// --git-dir=workTree/.git --work-tree=workTree), so that git looks for no
+// repository and no configuration names another work tree: a .git that
+// is a gitfile is followed, one that is a directory is opened, and a tree
+// with no .git at its top is no repository (ErrNotRepo). The filter
+// look-up before the command (filterArgs) takes the same location. env
+// is set in git's environment beside the safe one, in (nil for none) is
+// on its standard input and its standard output is written to w as it
+// comes (w bounds what it keeps). Of its error stream the first
+// maxStderr bytes are kept for the error. It is how a tree's read runs
+// git (crew.TreeRevision).
 func RunTree(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
-	loc := []string{"-C", workTree, "--work-tree=" + workTree}
+	loc := []string{"-C", workTree, "--git-dir=" + filepath.Join(workTree, ".git"), "--work-tree=" + workTree}
 	argv, err := argvFor(ctx, "", loc, args)
 	if err != nil {
 		return err

@@ -1331,8 +1331,10 @@ const recordsGrace = 5 * time.Second
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
 	// From now on no call enters the one door to GitHub of a ticket's
-	// item (atGitHub), before any wait.
+	// item (atGitHub), and a tree's read that ends is unread (the reads'
+	// mark; their indexes go below), before any wait.
 	s.external.end()
+	s.trees.mark()
 	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
