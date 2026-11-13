@@ -5179,7 +5179,11 @@ read starts none (`POST /api/capacity/read` refuses a turn's token `401`),
 and it looks the readings up without asking them, so a turn's read, of one
 view or of the listing, moves no key's place among the readings (which
 key the next read drops past the readings' bound); the admin's read asks
-as before. A view that shows a reading carries its ref, `capacity:<agent>/<account>@<readAt>`,
+as before. A turn's read starts no look-up of a program and waits for
+none: whether an agent's program is installed, and a version taken from
+its identity, are what the server's look-ups already hold, whatever
+their age; with nothing held the agent counts as installed and its view
+carries no version that only a look-up would give. A view that shows a reading carries its ref, `capacity:<agent>/<account>@<readAt>`,
 noted at the reading's own state, as the same look that made the view
 answered it, the one a brief citing it resolves to: `ok`, say, while a
 new read of its key under way shows the view `reading`. A capacity view is no project's, repository's,
@@ -5525,13 +5529,15 @@ turn reads) and made from that reading: its state and that state's
 fixed words, its plan, windows, credits, limits, time, `readBy` and
 version (none when the reading carries none: a reading that is not `ok`
 carries none), the agent's id, name and adapter from its catalog entry,
-the account's id with its label, default and retired marks when the
-accounts list names it (an account removed since, or the list
-unreadable: its id alone), this server's counts as the brief is kept,
-and `host` empty (a reading says nothing of where a launch would run);
-nothing is looked up or read for it, and the accounts
-list is read once for the brief, as every capacity read reads it, with
-no wait of its own; every time in UTC), each at most 512 bytes, resolved as the brief is kept
+the account's id with its label and retired mark as the accounts list
+has them as the brief is kept (an account removed since, or the list
+unreadable: its id alone), and this server's counts as the brief is
+kept; no host and no default mark (`host` empty). Nothing is looked up
+or read for it; the accounts list is read once for each check of a
+brief (a brief is checked again, at most three times, when the
+configuration is saved meanwhile) and once for a read of earlier briefs
+that resolves their refs again, with no wait of its own; every time in
+UTC), each at most 512 bytes, resolved as the brief is kept
 against the record it names (a plan revision and a launch admitted by
 their ticket, as a ticket is; a candidate by its run; a decision by the
 run it is on now). A `session:` ref whose session the server no longer
