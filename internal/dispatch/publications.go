@@ -540,7 +540,8 @@ func normalBody(s string) (string, error) {
 // API resolved a moment before (target: its node id, its kind as the
 // tracker types it, its repository's id), which must be the item the store
 // holds for that target, by its node, its host and its kind: the linked
-// issue's identity and snapshot, or the link's address and its last read;
+// issue's identity and snapshot, or the link's address and its last read,
+// kept under a system the store links (Options.Systems);
 // the body the person composed (normalBody), the parts ticked, the close
 // asked for (completed or not_planned, for an issue by the store's kind
 // alone), the marker mark gives of the id the
@@ -589,8 +590,9 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 		// The target is the item the store holds: the ticket's linked issue
 		// (its identity's node and host, its snapshot's kind), or a live
 		// delivery or external link of it (the node and the kind its last
-		// read found, and the host of both its address and that read). Only
-		// an issue, by the store's kind, is closed.
+		// read found, and the host of both its address and that read, a read
+		// kept under a system the store links). Only an issue, by the store's
+		// kind, is closed.
 		var node, host, kind string
 		if args.Target == TargetLinked {
 			if i, j := strings.IndexByte(tk.ExternalID, ':'), strings.LastIndexByte(tk.ExternalID, ':'); i < j {
@@ -599,13 +601,13 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 			sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
 			kind = sn.Kind
 		} else if linkID, ok := strings.CutPrefix(args.Target, "link:"); ok {
-			var addr, readHost string
-			err := t.tx.QueryRowContext(t.ctx, `SELECT l.url, r.node_id, r.kind, r.host FROM links l JOIN link_reads r ON r.link_id = l.id
-				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &node, &kind, &readHost)
+			var addr, readHost, readSystem string
+			err := t.tx.QueryRowContext(t.ctx, `SELECT l.url, r.node_id, r.kind, r.host, r.system FROM links l JOIN link_reads r ON r.link_id = l.id
+				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &node, &kind, &readHost, &readSystem)
 			if err != nil && !isNoRows(err) {
 				return err
 			}
-			if a, err := admitAddress("the link", addr); err == nil && a.host == readHost {
+			if a, err := admitAddress("the link", addr); err == nil && a.host == readHost && slices.Contains(t.systems, readSystem) {
 				host = a.host
 			}
 		}

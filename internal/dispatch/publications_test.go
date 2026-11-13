@@ -960,17 +960,63 @@ func TestPrepareTargetHostIsTheReadsToo(t *testing.T) {
 	}
 }
 
+// A link target is the item the link's last read found under a system the
+// store links: a read kept under another system, of the node on the link's
+// own host, is refused in prepare's words, which name the key.
+func TestPrepareTargetSystemIsTheStores(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	_, other := newTicket(t, f.s, "CND", "Read under another system")
+	rc, err := addLink(f.s, "d2", other, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/10"})
+	want(t, rc, err, StatusDone, "")
+	link := rc.ID
+	read := prRead("PR_10", 1, "open")
+	read.System = "forge"
+	if err := f.s.RecordRead(ctx, link, read); err != nil {
+		t.Fatal(err)
+	}
+	target := PublicationTarget{NodeID: "PR_10", SpaceID: "4000001", Kind: ExternalChange, URL: "https://github.com/rocksolidlabs/conductor/pull/10", Ref: "rocksolidlabs/conductor#10"}
+	rc, err = f.s.PreparePublication(ctx, testOp("p1"), PublicationArgs{Key: other, Target: "link:" + link, Body: "b"}, target, markOf)
+	if err != nil || rc.Status != StatusFailed || rc.Refusal != RefusalInvalid || !strings.Contains(rc.Error, other) {
+		t.Errorf("a target read under another system: %+v %v", rc, err)
+	}
+	// The fixture's link, read under the store's own system, is a target.
+	rc, err = f.s.PreparePublication(ctx, testOp("p2"), PublicationArgs{Key: f.native, Target: "link:" + f.link, Body: "b"}, changeTarget, markOf)
+	want(t, rc, err, StatusDone, "")
+}
+
 // The list of the publications being sent has the store's bound: none for
-// n under 1, at most n, and never more than MaxSendingPublications.
+// n under 1, at most n, and never more than MaxSendingPublications, here
+// with 300 publications being sent (three tickets of MaxPublications).
 func TestSendingPublicationsBound(t *testing.T) {
 	f := newPubFixture(t)
 	ctx := context.Background()
-	for i := range 3 {
-		f.send(t, fmt.Sprint("s", i), f.prepared(t, fmt.Sprint("p", i), ""))
+	const sending = 300
+	keys, targets := []string{f.key}, []PublicationTarget{issueTarget}
+	for i := 2; len(keys)*MaxPublications < sending; i++ {
+		read := ghRead(fmt.Sprint("I_", i), 0, "Title", "Body")
+		read.Snapshot.ID = fmt.Sprint(611 + i)
+		read.Snapshot.URL = "https://github.com/rocksolidlabs/conductor/issues/" + read.Snapshot.ID
+		keys = append(keys, mustImport(t, f.s, fmt.Sprint("imp", i), "CND", read))
+		target := issueTarget
+		target.NodeID, target.URL, target.Ref = read.Snapshot.NodeID, read.Snapshot.URL, "rocksolidlabs/conductor#"+read.Snapshot.ID
+		targets = append(targets, target)
 	}
-	for _, c := range []struct{ n, want int }{{-1, 0}, {0, 0}, {1, 1}, {2, 2}, {1000, 3}} {
+	for i := range sending {
+		k := i / MaxPublications
+		rc, err := f.s.PreparePublication(ctx, testOp(fmt.Sprint("p", i)), PublicationArgs{Key: keys[k], Target: TargetLinked, Body: "b"}, targets[k], markOf)
+		want(t, rc, err, StatusDone, "")
+		if _, owned := f.send(t, fmt.Sprint("s", i), f.pub(t, rc.ID)); !owned {
+			t.Fatalf("publication %d: its send not begun", i)
+		}
+	}
+	if n := countOf(t, f.s, "SELECT COUNT(*) FROM publications WHERE state = ?", PublicationSending); n != sending {
+		t.Fatalf("%d publications being sent, want %d", n, sending)
+	}
+	for _, c := range []struct{ n, want int }{{-1, 0}, {0, 0}, {1, 1}, {2, 2}, {MaxSendingPublications, MaxSendingPublications},
+		{sending, MaxSendingPublications}, {1000, MaxSendingPublications}} {
 		if ids, err := f.s.SendingPublications(ctx, c.n); err != nil || len(ids) != c.want {
-			t.Errorf("SendingPublications(%d): %v %v, want %d", c.n, ids, err, c.want)
+			t.Errorf("SendingPublications(%d): %d ids %v, want %d", c.n, len(ids), err, c.want)
 		}
 	}
 }
@@ -1252,11 +1298,17 @@ func routeWords() []string {
 	return out
 }
 
-// addressWordsTable is words that hold an address, in every spelling: a
+// addressWordsTable is words that hold an address, in these spellings: a
 // scheme, none, two slashes, a user and a password, a query after a host
 // and after a path, a fragment, an IPv6 host, a host of one label, a
-// zero-width character (zeroWidth), a line break inside, an escaped query.
+// zero-width character (zeroWidth), a line break inside, an escaped query;
+// and three whose one character past the plain set is a slash (a scheme, a
+// host and a path; a host and a path) or a question mark (a host and a
+// bare query).
 var addressWordsTable = []string{
+	"GitHub said https://x.example.com/p",
+	"x.example.com/o/r",
+	"x.example.com?SECRET",
 	"GitHub said https://bob:hunter2@x.example.com/p?q=SECRET#frag",
 	"GitHub said x.example.com/p?q=SECRET",
 	"GitHub said //bob:hunter2@x.example.com/p?q=SECRET",
