@@ -1,0 +1,68 @@
+{
+  "id": "api-sweep",
+  "name": "API sweep",
+  "goal": "ship /v1/users",
+  "cwd": "/work",
+  "where": "server",
+  "isolation": "worktree",
+  "openAfterLaunch": false,
+  "tasks": [
+    {
+      "id": "build",
+      "member": "builder",
+      "kind": "work",
+      "instructions": "Build it.",
+      "checks": [
+        {
+          "id": "unit",
+          "argv": [
+            "go",
+            "test",
+            "./..."
+          ],
+          "timeoutSeconds": 600
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "member": "reviewer",
+      "kind": "review",
+      "instructions": "Review it.",
+      "needs": [
+        "build"
+      ]
+    }
+  ],
+  "manifest": {
+    "verify": [
+      {
+        "id": "lint",
+        "argv": [
+          "make",
+          "lint"
+        ]
+      }
+    ]
+  },
+  "members": [
+    {
+      "name": "builder",
+      "agentId": "claude",
+      "prompt": "Do your part.",
+      "start": {
+        "when": "task"
+      }
+    },
+    {
+      "name": "reviewer",
+      "agentId": "claude",
+      "prompt": "Do your part.",
+      "start": {
+        "when": "task"
+      }
+    }
+  ],
+  "createdAt": "0001-01-01T00:00:00Z",
+  "updatedAt": "0001-01-01T00:00:00Z"
+}
