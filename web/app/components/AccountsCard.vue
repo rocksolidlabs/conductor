@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
-import type { Account, AccountsAdapter } from '~/composables/useAccounts'
+import { ACCOUNTS_DEADLINE_MS, TokenReplacedError, type Account, type AccountsAdapter } from '~/composables/useAccounts'
+import { withDeadline } from '~/utils/capacity'
 
 /**
  * Settings, Accounts (docs/plans/capacity.md, PR-5): one block per agent tool whose login folder Conductor can move (Claude Code,
@@ -16,9 +17,16 @@ const agents = ref<AgentInfo[]>([])
 const error = ref('')
 const notice = ref('')
 
-// Another workbench token empties the store (useAccounts): the card reads the accounts again with it.
-watch(useWorkbenchToken().token, () => void store.load())
+/**
+ * Whether the server lists folders beyond its allowed roots, asked once (one entry of the wider scope): only then does the folder
+ * field look anywhere. Unknown (null) until answered; a refusal (403 browse_off), any other failure or the deadline is no.
+ */
+const anywhere = ref<boolean | null>(null)
 onMounted(async () => {
+  withDeadline(() => sessions.listPaths('', 1, 'any'), ACCOUNTS_DEADLINE_MS, 'no answer').then(
+    () => (anywhere.value = true),
+    () => (anywhere.value = false),
+  )
   await store.load()
   try {
     agents.value = (await sessions.catalogInfo()).agents
@@ -54,7 +62,8 @@ async function run(what: () => Promise<void>, done?: string) {
     await what()
     if (done) notice.value = done
   } catch (e) {
-    error.value = (e as Error).message
+    // A write whose token was replaced on its way is neither done nor refused: the card says nothing of it.
+    if (!(e instanceof TokenReplacedError)) error.value = (e as Error).message
   }
 }
 
@@ -157,7 +166,13 @@ const removing = ref('')
         </ul>
       </section>
 
-      <form v-if="doc && doc.adapters.length && owner" class="flex flex-col gap-3 rounded-md bg-elevated/50 p-3" data-account-add @submit.prevent="addAccount">
+      <form
+        v-if="doc && doc.adapters.length && owner"
+        class="flex flex-col gap-3 rounded-md bg-elevated/50 p-3"
+        data-account-add
+        :data-accounts-folders="anywhere === null ? undefined : anywhere ? 'any' : 'roots'"
+        @submit.prevent="addAccount"
+      >
         <p class="text-sm font-medium">Add an account</p>
         <div class="grid gap-3 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]">
           <UFormField label="Agent tool" name="adapter">
@@ -168,7 +183,7 @@ const removing = ref('')
           </UFormField>
         </div>
         <UFormField label="Folder" name="folder" description="The folder that login lives in (the tool's configuration folder). Fixed once added: for another folder, add another account.">
-          <DirInput v-model="add.folder" placeholder="/home/me/.claude-work" picker-title="The folder the login lives in" anywhere data-account-add-folder />
+          <DirInput v-model="add.folder" placeholder="/home/me/.claude-work" picker-title="The folder the login lives in" :anywhere="anywhere === true" data-account-add-folder />
         </UFormField>
         <div class="flex justify-end">
           <UButton type="submit" label="Add account" icon="i-lucide-plus" :loading="busy" :disabled="busy || !add.adapter || !add.label.trim() || !add.folder.trim()" data-account-add-submit />

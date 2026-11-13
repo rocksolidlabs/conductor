@@ -51,6 +51,14 @@ export const UNANSWERED_WORDS = `${DEADLINE_WORDS}, so the change may still have
 /** The words of a write refused because the accounts changed since this page read them; the page has read them again. */
 export const STALE_WORDS = 'The accounts changed since this page read them: they are shown again as they are now. Try again if it still applies.'
 
+/** A write whose workbench token was replaced while it was on its way: neither done nor refused, so nothing of it is drawn. */
+export class TokenReplacedError extends Error {
+  constructor() {
+    super('The workbench token was replaced while this change was on its way: the accounts shown are read with the token now held.')
+    this.name = 'TokenReplacedError'
+  }
+}
+
 /** A refusal's words: the server's own, with the sessions and runs that hold an account when it names them. */
 export function accountRefusalWords(e: unknown): string {
   if (e instanceof ApiError) {
@@ -123,7 +131,10 @@ export class AccountsLive {
     this.changed()
   }
 
-  /** Runs one write against the revision read, then reads the document again, busy until that read has ended; a refusal is thrown in its words. */
+  /**
+   * Runs one write against the revision read, then reads the document again, busy until that read has ended; a refusal is thrown in
+   * its words, and a write whose token was replaced meanwhile rejects with TokenReplacedError, so nothing after it in a caller runs.
+   */
   private async write(send: (rev: number, signal: AbortSignal) => Promise<unknown>): Promise<void> {
     if (!this.reads || !this.doc) throw new Error('The accounts have not been read yet')
     if (this.busy) throw new Error('Another change to the accounts is under way')
@@ -138,9 +149,9 @@ export class AccountsLive {
     } catch (e) {
       refusal = e
     }
-    if (!this.stands(epoch)) return
+    if (!this.stands(epoch)) throw new TokenReplacedError()
     await this.load()
-    if (!this.stands(epoch)) return
+    if (!this.stands(epoch)) throw new TokenReplacedError()
     this.busy = false
     this.changed()
     // Aborted at its deadline: whether the server took it is not known, and the document just read says what it holds.
@@ -167,7 +178,10 @@ export class AccountsLive {
     return this.write((rev, signal) => this.reads!.setDefault(adapter, { account, expectedRev: rev }, signal))
   }
 
-  /** Another workbench token: nothing read through the old one stays, and every step on its way for it stands no more. */
+  /**
+   * Another workbench token: nothing read through the old one stays, every step on its way for it stands no more, and the accounts
+   * are read again with the token now held, so a page that shows them has them again whichever page it is.
+   */
   forget() {
     this.epoch++
     this.doc = null
@@ -175,6 +189,7 @@ export class AccountsLive {
     this.problem = ''
     this.busy = false
     this.changed()
+    void this.load()
   }
 }
 
@@ -200,7 +215,7 @@ export function useAccounts() {
     setDefault: (ad, body, signal) => request(`/api/accounts/defaults/${id(ad)}`, { method: 'PUT', body, signal }),
   })
   store.changed = () => version.value++
-  // The token is watched while a page shows the accounts: another one empties the store, so nothing read with the old one is shown.
+  // The token is watched while a page shows the accounts: another one empties the store and reads it again with the new one (forget).
   const held = useState<string | null>('accountsToken', () => null)
   const judge = () => {
     if (held.value !== null && held.value !== admin.token.value) store.forget()

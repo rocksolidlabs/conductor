@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './useApi'
-import { ACCOUNTS_DEADLINE_MS, AccountsLive, STALE_WORDS, UNANSWERED_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
+import { ACCOUNTS_DEADLINE_MS, AccountsLive, STALE_WORDS, TokenReplacedError, UNANSWERED_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
 
 // The accounts store (docs/plans/capacity.md, PR-5): every write names the revision read and is followed by a read of the document;
 // a stale revision reads it again and says so; a refusal is the server's words, with what holds an account; a server that offers
@@ -107,14 +107,91 @@ describe('AccountsLive', () => {
     expect(live.available).toBe(false)
     expect(live.doc).toBeNull()
     const other = new AccountsLive()
-    let answer: (d: AccountsDoc) => void = () => {}
-    other.attach({ ...fakeServer(doc(1)).reads, list: () => new Promise((r) => (answer = r)) })
+    let answer: ((d: AccountsDoc) => void) | null = null
+    other.attach({ ...fakeServer(doc(1)).reads, list: () => new Promise((r) => (answer ??= r)) })
     const loading = other.load()
     other.forget()
-    answer(doc(9))
+    answer!(doc(9))
     await loading
     expect(other.doc).toBeNull()
     expect(other.available).toBeNull()
+  })
+
+  it('reads the accounts again with the token now held when another token is taken, whatever page shows them', async () => {
+    const asked: Array<(d: AccountsDoc) => void> = []
+    const live = new AccountsLive()
+    live.attach({ ...fakeServer(doc(1)).reads, list: () => new Promise((r) => asked.push(r)) })
+    const loading = live.load()
+    live.forget()
+    // The read begun before is answered after: nothing of it is taken.
+    asked[0]!(doc(9))
+    await loading
+    expect(live).toMatchObject({ doc: null, available: null })
+    expect(asked).toHaveLength(2)
+    asked[1]!(doc(3))
+    await settle()
+    expect(live).toMatchObject({ available: true, problem: '' })
+    expect(live.doc?.rev).toBe(3)
+  })
+
+  it('rejects a write whose token was replaced while it was on its way, whether its request then answers or is refused, and draws nothing of it', async () => {
+    for (const outcome of ['answers', 'is refused'] as const) {
+      const srv = fakeServer(doc(1))
+      const lists: Array<(d: AccountsDoc) => void> = []
+      let n = 0
+      let held: { answer: () => void; refuse: () => void } | null = null
+      const live = new AccountsLive()
+      live.attach({
+        ...srv.reads,
+        list: (signal) => (++n === 1 ? srv.reads.list(signal) : new Promise((r) => lists.push(r))),
+        add: () => new Promise((resolve, reject) => (held = { answer: () => resolve({}), refuse: () => reject(new ApiError(409, 'account_exists', 'that folder is an account already')) })),
+      })
+      await live.load()
+      const writing = live.add('claude', 'Work', '/home/me/.claude-work').then(
+        () => 'fulfilled',
+        (e: unknown) => e,
+      )
+      await settle()
+      expect(live.busy).toBe(true)
+      live.forget()
+      expect(lists).toHaveLength(1)
+      lists[0]!(doc(5))
+      await settle()
+      expect(live).toMatchObject({ busy: false, available: true, problem: '' })
+      if (outcome === 'answers') held!.answer()
+      else held!.refuse()
+      const result = await writing
+      expect(result, `the write whose request ${outcome}`).not.toBe('fulfilled')
+      expect(result).toBeInstanceOf(TokenReplacedError)
+      // No read after the old answer, and the document and busy are the read after forget()'s.
+      expect(lists).toHaveLength(1)
+      expect(live).toMatchObject({ busy: false, available: true, problem: '' })
+      expect(live.doc?.rev).toBe(5)
+    }
+  })
+
+  it("rejects a write whose token was replaced while the read after it was on its way, and that read's answer is not taken", async () => {
+    const srv = fakeServer(doc(1))
+    const lists: Array<(d: AccountsDoc) => void> = []
+    let n = 0
+    const live = new AccountsLive()
+    live.attach({ ...srv.reads, list: (signal) => (++n === 1 ? srv.reads.list(signal) : new Promise((r) => lists.push(r))) })
+    await live.load()
+    const writing = live.retire('a-1').then(
+      () => 'fulfilled',
+      (e: unknown) => e,
+    )
+    await settle()
+    expect(lists).toHaveLength(1)
+    live.forget()
+    expect(lists).toHaveLength(2)
+    lists[1]!(doc(7))
+    lists[0]!(doc(2))
+    const result = await writing
+    expect(result).not.toBe('fulfilled')
+    expect(result).toBeInstanceOf(TokenReplacedError)
+    expect(live.doc?.rev).toBe(7)
+    expect(live.busy).toBe(false)
   })
 
   it("stays busy through a write's read of the document: a second click sends nothing, and the next carries the new revision", async () => {

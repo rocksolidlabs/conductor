@@ -478,6 +478,8 @@ test("an account's folder outside the allowed roots is picked with the folder fi
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await add.locator('[data-account-add-label]').fill(work)
   await expect(add.locator('[data-account-add-label]')).toHaveValue(work)
+  // The server lists beyond its roots (the e2e server does): the field looks there once the card has asked.
+  await expect(add).toHaveAttribute('data-accounts-folders', 'any')
   await add.locator('[data-account-add-folder] [data-dir-input-pick]').click()
   const picker = page.getByRole('dialog', { name: 'The folder the login lives in' })
   const path = picker.locator('[data-dir-picker-path]')
@@ -498,6 +500,28 @@ test("an account's folder outside the allowed roots is picked with the folder fi
   await expect(row).toBeVisible()
   made.accounts.push((await row.getAttribute('data-account-row')) ?? '')
   await expect(row.locator('[data-account-folder]')).toHaveText(outside)
+})
+
+test("on a server that lists folders only inside its allowed roots, an account's folder field lists inside them and shows no refusal", async ({ page, state }) => {
+  // The page's own routing answers every listing beyond the roots as such a server does.
+  await page.route(
+    (url) => url.pathname === '/api/paths' && url.searchParams.get('scope') === 'any',
+    (route) => route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: { code: 'browse_off', message: 'listing outside the allowed roots is off: set paths.browse to any (CONDUCTOR_PATHS_BROWSE=any)' } }) }),
+  )
+  const inside = realpathSync(mkdtempSync(join(state.root, 'e2e-account-inside-')))
+  made.folders.push(inside)
+  mkdirSync(join(inside, 'inner'))
+  await page.goto('/settings')
+  const add = page.locator('[data-accounts-card] [data-account-add]')
+  // The card's one question has been answered: the field looks inside the roots.
+  await expect(add).toHaveAttribute('data-accounts-folders', 'roots')
+  const folderInput = add.locator('[data-account-add-folder] input[role="combobox"]')
+  await folderInput.fill(inside + '/')
+  await expect(folderInput).toHaveValue(inside + '/')
+  await expect(page.getByRole('option', { name: 'inner' })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('listbox')).not.toContainText('outside the allowed roots')
+  await folderInput.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
 })
 
 test.describe('on a phone', () => {
