@@ -59,6 +59,18 @@ export function useWorkbenchToken() {
     set('')
   }
 
+  /** A later link's token, written to this browser's storage alone (this page's stays): true when it took one that differs. */
+  function stored(value: string): boolean {
+    if (desktop) return false
+    try {
+      if (localStorage.getItem(STORAGE_KEY) === value) return false
+      localStorage.setItem(STORAGE_KEY, value)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /**
    * A refusal (401) of a request sent with `sent`, the token the browser held as it sent it: the gate asks for the token only while that
    * is still the one held. A reply to a request made with the token before, landing after another was saved, asks for nothing: the
@@ -74,6 +86,7 @@ export function useWorkbenchToken() {
     needsToken,
     set,
     clear,
+    stored,
     refused,
   }
 }
