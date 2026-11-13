@@ -450,10 +450,12 @@ func (f *careFile) Unlock() error { return errReadOnly }
 // refusal keeps the first file an opening refused (ErrUnreadable), or the
 // end of the read's context a step found (ended): go-git goes on past some
 // failed opens (a loose ref's, to packed-refs), so open and read answer
-// with the refusal, not with what go-git made of it. It keeps the
-// opening's roots too, closed once the read is over (close); a folder
-// whose .git is gone by the root's look is closed as the discovery moves
-// up (drop).
+// with the refusal, not with what go-git made of it. A read whose context
+// has ended answers the context's error, whichever of the two was kept
+// first (read); one whose context has not answers the first file refused.
+// It keeps the opening's roots too, closed once the read is over
+// (close); a folder whose .git is gone by the root's look is closed as
+// the discovery moves up (drop).
 type refusal struct {
 	mu    sync.Mutex
 	err   error
@@ -468,15 +470,17 @@ type refusal struct {
 // (ending). go-git reads each object from that cache or from its file, so
 // the candidates of a revision's name, the commits of a walk and the files
 // of a comparison each ask, and the read ends at its next step whatever
-// go-git makes of the error; the read asks once more when it returns
-// (read), so it answers the context's error whichever step noticed. What
+// go-git makes of the error; the read answers the context's error once
+// the context has ended, whichever step noticed and whatever was kept
+// before (read). What
 // runs between two asks works on what was read, in time that grows with
 // it (an object or a delta's base decoded, a small file within its bound
 // parsed), or is bounded otherwise: a folder's listing asks between two
 // batches and holds at most maxListed entries (ReadDir); renames are
 // looked for among at most MaxRenamed added and deleted files, and a
-// comparison asks between two files, each file's line diff bounded in
-// time (diffTrees, lineDiff).
+// comparison asks between two files, each file's line diff made on at most
+// MaxDiffLines lines a side, once the lines its sides share at their start
+// and their end are set aside, and within its time (diffTrees, lineDiff).
 func (r *refusal) ended() error {
 	if r.ctx == nil || r.ctx.Err() == nil {
 		return nil

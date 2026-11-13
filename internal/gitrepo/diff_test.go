@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	godiff "github.com/go-git/go-git/v5/utils/diff"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 // numbered is n lines, "line 0" on, the last one last.
@@ -229,8 +232,10 @@ func patchDetail(t *testing.T, changes object.Changes) Detail {
 // Every file of every comparison of the fixtures gets the same lines and
 // the same binary flag from lineDiff as from go-git's patch
 // (Change.PatchContext), and Compare and CommitDetail answer the files,
-// flags and lines go-git's patch and its rename defaults give.
+// flags and lines go-git's patch and its rename defaults give. The clock
+// stands still (stillClock): no file is out of time.
 func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
+	stillClock(t)
 	dir, commits := fixtureCommits(t)
 	ctx := context.Background()
 	r, err := git.PlainOpen(dir)
@@ -316,16 +321,54 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 	t.Logf("%d files of %d comparisons", files, len(pairs(commits)))
 }
 
-// A file of 30,000 lines with two of them changed keeps its lines, in
-// Compare and in CommitDetail.
+// counted is the lines of each side's text go-git's line diff is handed
+// (diffLines), and the time it is given, call by call.
+type counted struct {
+	lines [][2]int
+	limit []time.Duration
+}
+
+// handed records in a counted what go-git's line diff is handed, and hands
+// it on to the diff diffLines was when handed was called.
+func handed(t *testing.T) *counted {
+	t.Helper()
+	seen, diff := &counted{}, diffLines
+	diffLines = func(a, b string, limit time.Duration) []diffmatchpatch.Diff {
+		seen.lines = append(seen.lines, [2]int{lineCount(a), lineCount(b)})
+		seen.limit = append(seen.limit, limit)
+		return diff(a, b, limit)
+	}
+	t.Cleanup(func() { diffLines = godiff.DoWithTimeout })
+	return seen
+}
+
+// shortLines is n lines, each its number, so a long file stays under
+// MaxDiffed.
+func shortLines(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("%d\n", i)
+	}
+	return out
+}
+
+// A file of 100,000 lines with three lines close together changed keeps
+// its lines, in Compare and in CommitDetail: the lines the two sides share
+// at their start and their end are set aside, and go-git's line diff is
+// handed the four lines left of each. The clock stands still
+// (stillClock).
 func TestALongFileKeepsTheLinesOfItsChange(t *testing.T) {
+	stillClock(t)
+	seen := handed(t)
 	dir := scratch(t)
 	ctx := context.Background()
-	body := numbered(30000, "the end\n")
-	write(t, dir, "big.txt", body)
+	lines := shortLines(100000)
+	write(t, dir, "big.txt", strings.Join(lines, ""))
 	c1 := commit(t, dir, time.Time{}, "one")
-	body = strings.Replace(body, "line 100\n", "line one hundred\n", 1)
-	write(t, dir, "big.txt", strings.Replace(body, "line 20000\n", "line twenty thousand\n", 1))
+	for _, i := range []int{50000, 50001, 50003} {
+		lines[i] = fmt.Sprintf("line %d, changed\n", i)
+	}
+	write(t, dir, "big.txt", strings.Join(lines, ""))
 	c2 := commit(t, dir, time.Time{}, "two")
 	compared, err := Compare(ctx, dir, c1, c2)
 	if err != nil {
@@ -335,11 +378,49 @@ func TestALongFileKeepsTheLinesOfItsChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Change{{Path: "big.txt", Status: "M", Added: 2, Removed: 2}}
+	want := []Change{{Path: "big.txt", Status: "M", Added: 3, Removed: 3}}
 	for name, d := range map[string]Detail{"Compare": compared, "CommitDetail": detail} {
 		if !slices.Equal(d.Changes, want) {
 			t.Errorf("%s: %+v, want %+v", name, d.Changes, want)
 		}
+	}
+	if four := [][2]int{{4, 4}, {4, 4}}; !slices.Equal(seen.lines, four) {
+		t.Errorf("go-git's line diff was handed %v lines a side; want %v", seen.lines, four)
+	}
+}
+
+// A file whose sides, once the lines they share at their start and their
+// end are set aside, have more than MaxDiffLines lines left is listed
+// without its lines, and go-git's line diff is not handed it; one with
+// MaxDiffLines lines left a side keeps its lines.
+func TestAFilePastTheDiffsLinesIsListedWithoutThem(t *testing.T) {
+	stillClock(t)
+	seen := handed(t)
+	dir := scratch(t)
+	// The first and the last of n+2 lines changed, n lines between them
+	// that are left on each side with the two changed.
+	sides := func(n int) (string, string) {
+		lines := shortLines(n + 2)
+		before := strings.Join(lines, "")
+		lines[0], lines[n+1] = "first, changed\n", "last, changed\n"
+		return before, strings.Join(lines, "")
+	}
+	atBound, pastBound := [2]string{}, [2]string{}
+	atBound[0], atBound[1] = sides(MaxDiffLines - 2)
+	pastBound[0], pastBound[1] = sides(MaxDiffLines - 1)
+	write(t, dir, "at.txt", atBound[0])
+	write(t, dir, "past.txt", pastBound[0])
+	c1 := commit(t, dir, time.Time{}, "one")
+	write(t, dir, "at.txt", atBound[1])
+	write(t, dir, "past.txt", pastBound[1])
+	c2 := commit(t, dir, time.Time{}, "two")
+	d, err := Compare(context.Background(), dir, c1, c2)
+	want := []Change{{Path: "at.txt", Status: "M", Added: 2, Removed: 2}, {Path: "past.txt", Status: "M", Binary: true}}
+	if err != nil || !slices.Equal(d.Changes, want) {
+		t.Errorf("rests of %d and of %d lines: %+v, %v; want %+v", MaxDiffLines, MaxDiffLines+1, d.Changes, err, want)
+	}
+	if once := [][2]int{{MaxDiffLines, MaxDiffLines}}; !slices.Equal(seen.lines, once) {
+		t.Errorf("go-git's line diff was handed %v lines a side; want %v, once", seen.lines, once)
 	}
 }
 
@@ -508,16 +589,24 @@ func TestAFileWhoseDiffTookItsTimeIsListedWithoutItsLines(t *testing.T) {
 }
 
 // Once the comparison's time (MaxCompareDiff) is spent, every file after
-// it is listed without its lines, its diff not started.
+// it is listed without its lines, its diff not started. go-git's line diff
+// is handed each file's time, the less of MaxFileDiff and what is left of
+// the comparison's (diffLines): a diff handed any other limit, or none,
+// fails the test.
 func TestOnceTheComparisonsTimeIsSpentNoFileGetsItsLines(t *testing.T) {
 	dir, c1, c2 := changedFiles(t, 8)
 	each := MaxFileDiff - time.Millisecond
 	started := fakeClock(t, func(int) time.Duration { return each }, nil)
+	seen := handed(t)
 	d, err := Compare(context.Background(), dir, c1, c2)
 	// Five diffs end within their time; the sixth is given what is left
 	// of the comparison's, 5 ms, and takes longer.
 	if got, want := linesOf(d), []int{2, 2, 2, 2, 2, -1, -1, -1}; err != nil || !slices.Equal(got, want) || *started != 6 {
 		t.Errorf("each diff took %v: lines %v, %d diffs started, %v; want %v and 6", each, got, *started, err, want)
+	}
+	want := []time.Duration{MaxFileDiff, MaxFileDiff, MaxFileDiff, MaxFileDiff, MaxFileDiff, MaxCompareDiff - 5*each}
+	if !slices.Equal(seen.limit, want) {
+		t.Errorf("go-git's line diff was given %v; want %v", seen.limit, want)
 	}
 }
 
@@ -554,3 +643,83 @@ func TestAComparisonEndsWithItsContextBetweenTwoFiles(t *testing.T) {
 }
 
 func short(id string) string { return id[:min(len(id), 7)] }
+
+// stillClock stands the clock lineDiff reads still, so no file's diff
+// takes any of its time, and gives go-git's line diff the hour go-git's
+// patch gives it (diff.Do), so a loaded machine's clock, which the line
+// diff reads itself, ends none: the counts are go-git's patch's.
+func stillClock(t *testing.T) {
+	t.Helper()
+	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	clock = func() time.Time { return now }
+	diffLines = func(a, b string, _ time.Duration) []diffmatchpatch.Diff { return godiff.DoWithTimeout(a, b, time.Hour) }
+	t.Cleanup(func() { clock, diffLines = time.Now, godiff.DoWithTimeout })
+}
+
+// wholeCounts is the lines added and removed between a and b as go-git's
+// line diff counts them on the whole texts (diff.Do, as its patch does):
+// binary when it has nothing to compare.
+func wholeCounts(a, b string) (added, removed int, binary bool) {
+	diffs := godiff.Do(a, b)
+	for _, d := range diffs {
+		switch d.Type {
+		case diffmatchpatch.DiffInsert:
+			added += lineCount(d.Text)
+		case diffmatchpatch.DiffDelete:
+			removed += lineCount(d.Text)
+		}
+	}
+	return added, removed, len(diffs) == 0
+}
+
+// Pairs of small texts from a fixed seed, lines of a few kinds repeated
+// (CRLF among them), each with a shared start and a shared end of every
+// length up to five lines, either side's last line with or without its
+// newline, an empty side, one side the start or the end of the other, and
+// equal texts: the counts, with the shared lines set aside, are the whole
+// texts' as go-git's line diff counts them.
+func TestTheLinesSharedAtTheEndsAreSetAsideWithTheSameCounts(t *testing.T) {
+	stillClock(t)
+	rnd := rand.New(rand.NewPCG(874, 2))
+	kinds := []string{"a\n", "b\n", "c\n", "\n", "a\r\n", "b\r\n", "a b\n", "é\n"}
+	lines := func(most int) string {
+		var s strings.Builder
+		for range rnd.IntN(most + 1) {
+			s.WriteString(kinds[rnd.IntN(len(kinds))])
+		}
+		return s.String()
+	}
+	noNewline := func(s string) string {
+		if rnd.IntN(3) == 0 {
+			return strings.TrimSuffix(s, "\n")
+		}
+		return s
+	}
+	var cases [][2]string
+	for start := range 6 {
+		for end := range 6 {
+			for range 12 {
+				shared, tail := "", ""
+				for range start {
+					shared += kinds[rnd.IntN(len(kinds))]
+				}
+				for range end {
+					tail += kinds[rnd.IntN(len(kinds))]
+				}
+				cases = append(cases, [2]string{noNewline(shared + lines(5) + tail), noNewline(shared + lines(5) + tail)})
+			}
+		}
+	}
+	for range 60 {
+		a, more := noNewline(lines(6)), lines(3)
+		cases = append(cases, [2]string{a, a}, [2]string{a, ""}, [2]string{"", a}, [2]string{a, a + more}, [2]string{a + more, a}, [2]string{more + a, a}, [2]string{a, more + a})
+	}
+	for _, c := range cases {
+		left := MaxCompareDiff
+		ga, gr, gb := counts(c[0], c[1], &left)
+		if wa, wr, wb := wholeCounts(c[0], c[1]); ga != wa || gr != wr || gb != wb {
+			t.Errorf("%q to %q: +%d -%d binary %v; the whole texts: +%d -%d binary %v", c[0], c[1], ga, gr, gb, wa, wr, wb)
+		}
+	}
+	t.Logf("%d pairs", len(cases))
+}

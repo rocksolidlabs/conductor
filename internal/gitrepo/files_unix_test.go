@@ -1075,6 +1075,110 @@ func TestAReadEndsWithItsContext(t *testing.T) {
 	}
 }
 
+// endedReads are Compare and CommitDetail of an ordinary repository's two
+// commits, their context ended by the test.
+var endedReads = []struct {
+	name string
+	read func(ctx context.Context, r linkedRepo) error
+}{
+	{"Compare", func(ctx context.Context, r linkedRepo) error {
+		_, err := Compare(ctx, r.wt, r.c1, r.c2)
+		return err
+	}},
+	{"CommitDetail", func(ctx context.Context, r linkedRepo) error {
+		_, err := CommitDetail(ctx, r.wt, "HEAD")
+		return err
+	}},
+}
+
+// A read whose context has ended as it is about to answer answers the
+// context's error, whatever else it kept: the context ended at the look
+// at config (afterLook), one byte past its bound, which the opening then
+// refuses; ended at the discovery's look in the first folder of one that
+// is no repository (looking); and ended as the comparison's first file is
+// diffed (the clock), after the opening refused a listing go-git reads
+// past (the objects folder, past the listing's bound, which go-git lists
+// to look for objects another git is receiving).
+func TestAReadWhoseContextHasEndedAnswersItsError(t *testing.T) {
+	for _, rd := range endedReads {
+		r := ordinary(t)
+		if err := os.Truncate(filepath.Join(r.wt, ".git", "config"), maxConfig+1); err != nil {
+			t.Fatal(err)
+		}
+		ended := false
+		err := within(t, "", rd.name, func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			afterLook = func(rel string) {
+				if rel == "config" {
+					ended = true
+					cancel()
+				}
+			}
+			defer func() { afterLook = nil }()
+			return rd.read(ctx, r)
+		})
+		if !ended || !errors.Is(err, context.Canceled) {
+			t.Errorf("%s, its context ended at the look at config, one byte past its bound (%v): %v; want the context's error", rd.name, ended, err)
+		}
+
+		r = linkedRepo{wt: t.TempDir(), c1: strings.Repeat("a", 40), c2: strings.Repeat("b", 40)}
+		looked := 0
+		err = within(t, "", rd.name, func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			looking = func(string) {
+				if looked++; looked == 1 {
+					cancel()
+				}
+			}
+			defer func() { looking = nil }()
+			return rd.read(ctx, r)
+		})
+		if looked != 1 || !errors.Is(err, context.Canceled) {
+			t.Errorf("%s in a folder that is no repository, its context ended at the first folder looked in (%d looked in): %v; want the context's error", rd.name, looked, err)
+		}
+
+		r = ordinary(t)
+		gitIn(t, r.wt, time.Time{}, "repack", "-a", "-d", "-q")
+		gitIn(t, r.wt, time.Time{}, "prune-packed")
+		packs, err := os.ReadDir(filepath.Join(r.wt, ".git", "objects", "pack"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		listBound = len(packs)
+		t.Cleanup(func() { listBound = maxListed })
+		for i := range listBound {
+			if err := os.Mkdir(filepath.Join(r.wt, ".git", "objects", fmt.Sprintf("x%d", i)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Its context not ended, the read goes on past the refusal to its
+		// diff, and answers the refusal.
+		for _, end := range []bool{false, true} {
+			diffs, cancel := 0, context.CancelFunc(nil)
+			fakeClock(t, func(int) time.Duration { return 0 }, func(int) {
+				if diffs++; end {
+					cancel()
+				}
+			})
+			err = within(t, "", rd.name, func(ctx context.Context) error {
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				return rd.read(ctx, r)
+			})
+			want := error(ErrUnreadable)
+			if end {
+				want = context.Canceled
+			}
+			if diffs != 1 || !errors.Is(err, want) {
+				t.Errorf("%s, a listing refused, its context ended in the first file's diff %v (%d diffs): %v; want %v", rd.name, end, diffs, err, want)
+			}
+		}
+		listBound = maxListed
+	}
+}
+
 // leftBehind is the stacks of the goroutines, the caller's aside, that run
 // go-git's code or wait on a process: what a read started and did not end.
 func leftBehind() []string {
