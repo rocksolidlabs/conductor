@@ -108,8 +108,10 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
-	// trackers keeps the person's GitHub token (trackers.go).
+	// trackers keeps the person's GitHub token (trackers.go); external the
+	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
+	external externalState
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -635,7 +637,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// (OnChange hands the hub a commit at a time), and a run link names
 		// a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
-			s.dispatch = openDispatch(st, log)
+			s.dispatch = openDispatch(st, log, s.trackers.gh)
 			if s.dispatch == nil {
 				syncs.unopened("Dispatch")
 			}
@@ -644,6 +646,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
+			s.dispatch.OnRead(s.events.dispatchRead)
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
@@ -867,6 +870,9 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub).
+	s.external.end()
 	s.stopExtensions()
 	s.stopRevokeRetries()
 	s.bgMu.Lock()
@@ -1314,7 +1320,10 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
-	// Brakeman's desk first: it writes no request's state from now on, so
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub), before any wait.
+	s.external.end()
+	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
 	// for, and every act whose operation has begun (no other begins), so
