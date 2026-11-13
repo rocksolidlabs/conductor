@@ -141,8 +141,8 @@ an identity provider registered:
    `{grant: decide, via: identity}`, rechecked with the provider after
    its commit, and applied by Yardmaster as any identity's answer is.
    Once dr-7 is answered, it leaves the list; Ana reads only the outcome
-   of her own answer, by its address, and another holder of the grant
-   reads nothing of it.
+   of her own answer, by its address, and another holder that sent no
+   response of its own reads nothing of it.
 5. When the provider stops admitting the pass (its end, or a revocation),
    the page's next request is `401`; the page says "Your access to this server
    has ended. Open it again from your workspace page.", clears the pass,
