@@ -92,10 +92,11 @@ func TestRoundTrip(t *testing.T) {
 		}
 	}
 	for _, db := range []string{export.LedgerPath, export.DispatchPath} {
-		if !slices.Equal(dump(t, filepath.Join(dst, filepath.FromSlash(db))), dump(t, filepath.Join(f.dir, filepath.FromSlash(db)))) {
+		if !slices.Equal(notInstance(dump(t, filepath.Join(dst, filepath.FromSlash(db)))), notInstance(dump(t, filepath.Join(f.dir, filepath.FromSlash(db))))) {
 			t.Fatalf("%s: the rows differ", db)
 		}
 	}
+	restoredReissued(t, filepath.Join(f.dir, filepath.FromSlash(export.DispatchPath)), filepath.Join(dst, filepath.FromSlash(export.DispatchPath)))
 	for _, left := range []string{export.LockFile, "runs/" + ledger.Lock} {
 		if _, err := os.Lstat(filepath.Join(dst, filepath.FromSlash(left))); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s in the restored directory: %v", left, err)
