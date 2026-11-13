@@ -21,9 +21,16 @@ import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchin
  * picked.
  */
 const model = defineModel<string>({ default: '' })
-const props = defineProps<{ placeholder?: string; name?: string; /** The folder picker's title; the button beside the field opens it. */ pickerTitle?: string }>()
+const props = defineProps<{
+  placeholder?: string
+  name?: string
+  /** The folder picker's title; the button beside the field opens it. */
+  pickerTitle?: string
+  /** A folder that is not a working folder (an account's login folder): the list and the picker browse the whole machine, as Settings' picker does. */
+  anywhere?: boolean
+}>()
 
-// The folder button: the picker browses the allowed roots, opening on the text or the server's default directory.
+// The folder button: the picker browses the allowed roots (or the whole machine, `anywhere`), opening on the text or the server's default directory.
 const pickerOpen = ref(false)
 const pickerStart = ref('')
 function openPicker() {
@@ -77,7 +84,7 @@ async function fetchNow() {
   const query = dirQuery(model.value)
   loading.value = true
   try {
-    const r = await api.listPaths(query)
+    const r = await api.listPaths(query, 50, props.anywhere ? 'any' : 'roots')
     if (n !== seq) return
     entries.value = r.entries
     truncated.value = r.truncated
@@ -236,6 +243,6 @@ onBeforeUnmount(() => {
     </UInputMenu>
   </div>
   <UButton icon="i-lucide-folder" color="neutral" variant="outline" :aria-label="props.pickerTitle || 'Choose a folder'" data-dir-input-pick @click="openPicker" />
-  <DirPickerModal v-if="pickerOpen" v-model:open="pickerOpen" :start="pickerStart" :title="props.pickerTitle || 'Choose a folder'" @pick="onPicked" />
+  <DirPickerModal v-if="pickerOpen" v-model:open="pickerOpen" :start="pickerStart" :title="props.pickerTitle || 'Choose a folder'" :anywhere="props.anywhere" @pick="onPicked" />
   </div>
 </template>
