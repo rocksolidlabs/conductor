@@ -6106,6 +6106,53 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `TestHostTokenRenewal`, `TestCapabilitiesDetail`, the host's start and
   export tests), vitest and `about-identity.spec.ts` stand in for a real
   provider, which no build of this repository registers.
+- **A decide grant and a pass taken from the fragment (#776, #847, #819,
+  2026-11-12).** The plan is `docs/plans/decide-grant.md`. On a build with
+  a registered identity provider, the operator gives an open decision to
+  the decide grant (a route `to: {kind: "grant", grant: "decide"}`, and
+  takes it back with a route to the operator); anyone the provider gives
+  the grant answers it beside the operator, and reads nothing else but
+  the list of the open decisions given to it. Such a person is sent to
+  `/decide#pass=…` or `/decide/dr-7#pass=…`: the app takes the pass out of
+  the address before the app's router reads it, keeps it for the tab, and
+  draws the decide page alone, "Signed in as Ana" (no sidebar, sessions,
+  runs, Dispatch or inbox): the open cards, at most four, then the list's
+  other decisions with Open. The list and each card are read again every
+  10 s while the tab is shown and at once when it is shown again; a new
+  answer is sent only on a view read in the last 25 s, on both the steady
+  and the wall clock, and one answer is on its way at a time for the
+  page. An answer whose outcome is not known is held and sent again
+  unchanged under its own response id, whatever the view's age, until a
+  reply judges it or its own receipt settles it, and once an answer is
+  taken no new one is sent until a read made after it; a `401` ends the
+  page and the pass it was sent with, keeping what was typed; a card no longer open to the
+  person says so and keeps its draft, and of an answer held there, that
+  whether it was recorded cannot be learned here. A read that fails before
+  it ever succeeded says so where its result would be shown. A
+  browser that holds a workbench token keeps it: the decide address opens
+  the operator's decision page instead. A build with no provider shows
+  and does nothing new: no one holds the grant, the route to it is `409
+  no_identity`, and a pass in a fragment is refused as an unknown token
+  (`401`, the page's ended words). The Go race tests of `internal/api`'s
+  `decide_test.go` and `internal/crew`, the vitest files
+  (`useDecide.test.ts`, `identityPass.test.ts`, `useIdentityPass.test.ts`,
+  `passSites.test.ts`), `decide-only.spec.ts` and `token-fragment.spec.ts`
+  stand in for a real provider; a live check with one is the provider
+  module's. A navigation the browser starts (a load, a fragment change,
+  back or forward) never lets the app's router read a fragment that
+  carries the pass or the workbench token, in any spelling: at a load the
+  plugin runs before the router, and a fragment that arrives later is
+  taken by the plugin's capture listener of `popstate`, ahead of the
+  router's; a fragment that holds both keys gives neither. A later link
+  is written to the browser's storage for its credential alone, never
+  to what the running page holds and sends, and loads the page again at
+  the clean address only when it changed what that storage held; a
+  load drops what the page held (drafts, an answer whose outcome was
+  not known). In the desktop app the workbench token is kept in memory
+  from the app's bridge, not in the browser's storage, and a later
+  link's token changes nothing there. Where the browser refuses the
+  tab's storage, a link opened in a tab that already shows the page is
+  not taken: load it in a new tab.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do
