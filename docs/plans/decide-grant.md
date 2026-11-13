@@ -743,7 +743,14 @@ pass is held:
   then `history.replaceState` with the URL it answers, before anything
   else; then the token into the workbench store as today, and the pass
   into the pass store. A refused value is dropped from the address bar
-  and stored nowhere.
+  and stored nowhere. After a link that carries the pass or the
+  workbench token, the address and the history hold no fragment of it,
+  whatever its spelling; the plugin runs before the router (`order:
+  -25`, ahead of Nuxt's `nuxt:router` at `enforce: 'pre'`, -20). A
+  fragment that holds either key, its keys read as the browser reads
+  them and again with each layer of escapes taken off, or that cannot
+  be read so, is dropped whole; the middleware below applies the same
+  rule to every navigation.
 - `middleware/decide.global.ts` (new), synchronous over the stores, and
   on the first navigation over `to.hash` too (`takeCredentials`), so it
   judges right whether it runs before or after the plugin: a workbench
@@ -777,7 +784,10 @@ pass is held:
     no draft is ever put out of sight; a closed card's state is kept, so
     Open again draws it as it was and reads it at once. A card closed by
     a refusal (`gone`) or at a final outcome reads no more and is not
-    counted among the four; Dismiss drops it. A list read whose `rev`
+    counted among the four; Dismiss drops it and everything the page
+    held for it. A card that ended or was closed is kept until
+    dismissed, at most one per decision the list named (and the
+    address's). A list read whose `rev`
     for an open card differs from its view's reads that card at once; an
     open card whose decision is no longer listed is read once at once,
     whatever is due. An empty list, with no card open: "Nothing awaits
@@ -791,9 +801,18 @@ pass is held:
     once on `visibilitychange` to visible and on the window's `focus`; a
     read that falls due while one is out is not stacked, and starts the
     moment that one returns. A card's reads stop at `applied`,
-    `not_used`, `ended`, `gone` or its Close; the list's at `ended`. So
-    a tab makes at most five reads at a time, the list's and four
-    cards'.
+    `not_used`, `ended`, `gone` or its Close, its read on the way
+    aborted; the list's at `ended`. A read that falls due while the tab
+    is hidden stays due until it is shown. So a tab makes at most five
+    reads at a time, the list's and four cards'. The schedules and the
+    freshness window are measured on the monotonic clock
+    (`performance.now()`), so setting the system's time moves neither.
+    A read refused `403` with a code (a server that serves no decisions
+    to this pass) says so in fixed words and stops that schedule; a list
+    read that fails before any succeeded says so under "Signed in as"
+    and is tried again. Once the page stops, every request on its way is
+    aborted and no reply changes it. A `401` ends the page in the one
+    function that sends the pass, before its body is read.
   - **One order for a card, whichever reply brings it.** A card keeps
     `view`, the view it shows (the highest `rev` it has shown), and `end`,
     set once it has reached an end for this person (`applied`,
@@ -842,8 +861,8 @@ pass is held:
     | the person edits | `{choice?, text, rationale}`, as typed | none | the form | `useDecide.test.ts`: the draft kept through a refused read |
     | the person sends | kept | `{responseId, choice?, text?, rationale?, expectedRev}`: a new `responseId` minted for this send, the draft's fields and the `rev` of `view`, frozen as sent | "Sending"; Send disabled | the body sent is `sent`, byte for byte |
     | `201`, or `200` repeat | kept | cleared | the receipt; then the outcome from the next read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts` |
-    | a definite refusal (a `4xx` with a code: `stale_decision`, `decision_answered`, `not_approver`, `response_conflict`, `invalid`, ...) | kept | cleared: its id is done with (a kept refusal is replayed for it, another body refused `response_conflict`) | its code's words; the next Send is a new attempt, with a new `responseId` and the latest `view.rev` | `TestDecideOwnCarriesTheResponseID`: after a kept `stale_decision`, the same id with the new rev `response_conflict`, a new id accepted; `useDecide.test.ts`: a new id after a refusal |
-    | no definite answer (no reply, an abort, a `5xx`, `503 decision_moved`) | kept | kept as it was | "Not known whether your answer to dr-7 was recorded. Send it again: the same answer is never recorded twice."; Send again sends `sent` unchanged, never the draft | `TestDecideOwnCarriesTheResponseID`: the same body again `200` repeat with the saved receipt; `useDecide.test.ts`: the retry's body equals the first |
+    | a definite refusal (a `4xx` with a code that judges a response, `DECIDE_JUDGING` in `utils/decisions.ts`, the server's own list: `decision_answered`, `decision_closed`, `stale_decision`, `not_approver`, `response_conflict`, `not_held`, `stale_policy`, `invalid`, `decision_limit`) | kept | cleared: its id is done with (a kept refusal is replayed for it, another body refused `response_conflict`) | its code's words; the next Send is a new attempt, with a new `responseId` and the latest `view.rev` | `TestDecideOwnCarriesTheResponseID`: after a kept `stale_decision`, the same id with the new rev `response_conflict`, a new id accepted; `useDecide.test.ts`: a new id after a refusal |
+    | no definite answer (anything else: no reply, an abort, a `5xx`, `503 decision_moved`, a `429 rate_limited`, a `4xx` with another code or none, a reply past its bound) | kept | kept as it was | the server's words, "Not known whether your answer to dr-7 was recorded: send it again."; for `rate_limited`, "The server is working on other requests of yours: send your answer to dr-7 again in a moment."; Send again sends `sent` unchanged, never the draft, and stays offered while the card is not gone and the pass not ended, whatever a read has shown of the decision since | `TestDecideOwnCarriesTheResponseID`: the same body again `200` repeat with the saved receipt; `useDecide.test.ts`: the retry's body equals the first |
     | a read whose `own` holds `sent.responseId` | kept | resolved by that receipt (accepted, or the refusal row above) | as that row | `useDecide.test.ts`: a receipt of another `responseId` (another tab of the same subject) resolves nothing |
     | the view not fresh (`suspended`) | kept | kept | "Checking that dr-7 is still yours to answer."; choices and sends disabled until a read succeeds | `useDecide.test.ts` |
     | `401` | kept | kept | "Your access to this server has ended. Open it again from your workspace page."; every send disabled; the pass emptied | `decide-only.spec.ts` |

@@ -42,6 +42,7 @@ function stub(page: Page) {
     views: new Map<string, { status: number; body: unknown }>(),
     respond: async (_id: string, _body: string, route: Route) => route.abort(),
     statuses: [] as number[],
+    listStatus: 200,
   }
   const reply = (route: Route, status: number, body: unknown) => {
     s.statuses.push(status)
@@ -54,7 +55,7 @@ function stub(page: Page) {
         const path = new URL(route.request().url()).pathname
         let m: RegExpExecArray | null
         if (path === '/api/me') return reply(route, 200, { subject: 'ana', name: 'Ana​ ', grants: ['decide'] })
-        if (path === '/api/me/decisions') return reply(route, 200, s.list)
+        if (path === '/api/me/decisions') return reply(route, s.listStatus, s.listStatus === 200 ? s.list : { error: { code: 'ledger_unavailable', message: 'the decisions could not be read' } })
         if ((m = /^\/api\/decisions\/(dr-\d+)$/.exec(path))) {
           const v = s.views.get(m[1]!) ?? { status: 404, body: { error: { code: 'not_found', message: 'no such decision' } } }
           return reply(route, v.status, v.body)
@@ -69,6 +70,58 @@ function stub(page: Page) {
 const card = (page: Page, id: string) => page.locator(`[data-decide-card][data-decision-id="${id}"]`)
 /** A read of the list and the open cards, driven by the window's focus once the page is drawn. */
 const focus = (page: Page) => page.evaluate(() => window.dispatchEvent(new Event('focus')))
+
+/** Everything of the page that could hold an address: the address bar, the history's state, the Navigation API's entries, and the router's route and the one it was redirected from. */
+const addressHeld = (page: Page) =>
+  page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const route = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$router.currentRoute.value
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entries = ((window as any).navigation?.entries() ?? []).map((e: { url: string }) => e.url)
+    return [location.href, JSON.stringify(history.state), ...entries, route.fullPath, route.redirectedFrom?.fullPath ?? ''].join(' ')
+  })
+
+test('the pass in the fragment, in any spelling: once the page has drawn, no address, history state or route holds it', async ({ browser }) => {
+  for (const fragment of [`pass=${PASS}`, `%70ass=${PASS}`, `%70ass=${PASS}&%E0`, `%70ass=${PASS}&%`]) {
+    const { ctx, page, sent } = await tab(browser)
+    const { s } = await stub(page)
+    s.list = { decisions: [] }
+    await page.goto(`/decide#${fragment}`)
+    await expect(page.locator('[data-decide-signed-in]')).toHaveText('Signed in as Ana')
+    await expect(page.getByText('Nothing awaits your answer here.')).toBeVisible()
+    expect(await addressHeld(page), fragment).not.toContain(PASS)
+    expect(new URL(page.url()).hash).toBe('')
+    await checkSent(sent)
+    await ctx.close()
+  }
+})
+
+test('at 390 wide: a list that fails from its first read says so, the title, and long words wrap inside the card', async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const { s } = await stub(page)
+  s.listStatus = 503
+  await page.goto(`/decide#pass=${PASS}`)
+  await expect(page.locator('[data-decide-signed-in]')).toHaveText('Signed in as Ana')
+  await expect(page.locator('[data-decide-list-failed]')).toContainText('The decisions awaiting you could not be read. Trying again.')
+  await expect(page).toHaveTitle('Decide · Conductor')
+
+  const long = (w: string) => w.repeat(300 / w.length)
+  s.listStatus = 200
+  s.list = { decisions: [{ id: 'dr-7', rev: 1 }] }
+  s.views.set('dr-7', { status: 200, body: approval('dr-7', 1, { uncertainty: long('uncertain'), authorizes: long('authorize'), recommendation: 0, options: [{ label: long('option'), tradeoffs: long('tradeoff') }, { label: 'Reject' }] }) })
+  await focus(page)
+  const c = card(page, 'dr-7')
+  await expect(c.getByText('May dr-7 go out?')).toBeVisible()
+  await expect(page.locator('[data-decide-list-failed]')).toHaveCount(0)
+  const past = await c.evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    return Array.from(el.querySelectorAll('*')).filter((e) => e.getBoundingClientRect().right > box.right + 0.5).map((e) => `${e.tagName} ${e.getAttribute('class')}`)
+  })
+  expect(past).toEqual([])
+  await checkSent(sent)
+  await ctx.close()
+})
 
 test('against the server as shipped: the pass leaves the address bar, the server refuses it, the page says access ended', async ({ browser }) => {
   const { ctx, page, sent } = await tab(browser)

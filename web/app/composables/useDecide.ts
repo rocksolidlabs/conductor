@@ -1,5 +1,5 @@
 import { onBeforeUnmount, onMounted, reactive } from 'vue'
-import { decideWords, isDecisionId, replaces } from '~/utils/decisions'
+import { decideWords, isDecisionId, replaces, respondOutcome } from '~/utils/decisions'
 import { DECIDE_CARDS, DECIDE_FRESH_FOR, DECIDE_READ_EVERY, DECIDE_READ_WAIT, GRANT_DECIDE, MAX_DECIDE_LIST, MAX_DECIDE_REPLY, MAX_DECIDE_VIEW, MAX_ME_REPLY } from '~/utils/protocol'
 import type { DecideEntry, DecideReceipt, DecideView, MeReply } from '~/utils/protocol'
 import { mintCommandId } from '~/utils/tasks'
@@ -9,8 +9,9 @@ import { mintCommandId } from '~/utils/tasks'
 // (`POST /api/decisions/{did}/respond`) with the pass in the Authorization header, the one request it is ever sent in (`call`). The
 // list and each open card read one at a time, the next due DECIDE_READ_EVERY after the last began while the tab is shown and at once
 // when it is shown again, each aborted at DECIDE_READ_WAIT. A card is answered only on a view a read renewed in the last
-// DECIDE_FRESH_FOR. A 401 ends the page and empties the pass; a card's 404 closes that card alone. Drafts and the answer sent stay in
-// the page's memory, never in the browser's storage.
+// DECIDE_FRESH_FOR, measured on the page's one clock (`env.now`, monotonic). A 401 ends the page and empties the pass, wherever it
+// arrives; a card's 404 closes that card alone. Once the page stops, every request on its way is aborted and no reply changes it.
+// Drafts and the answer sent stay in the page's memory, never in the browser's storage.
 
 export interface DecideDraft {
   choice?: number
@@ -27,12 +28,12 @@ export interface DecideCard {
   /** The body of the send whose outcome is not known yet, frozen as sent ('' for none). */
   sent: string
   sending: boolean
-  /** No definite answer came to `sent`: Send again sends it unchanged. */
-  unknown: boolean
+  /** The words of a send that had no definite answer ('' for none): Send again sends `sent` unchanged. */
+  unknown: string
   /** The words of the last send's definite refusal. */
   refused: string
-  /** An end for this person: its answer's final outcome, or no longer open to it (404). */
-  end: '' | 'applied' | 'not_used' | 'gone'
+  /** An end for this person: its answer's final outcome, no longer open to it (404), or its reads refused (403). */
+  end: '' | 'applied' | 'not_used' | 'gone' | 'refused'
   open: boolean
   /** When the last read whose reply the card took began (0: none yet), and whether that is too long ago to answer on. */
   freshAt: number
@@ -48,55 +49,83 @@ export interface DecideEnv {
   base: string
   doc: Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>
   win: Pick<Window, 'addEventListener' | 'removeEventListener'>
+  /** The page's one clock, in ms: monotonic (`performance.now()`), so setting the system's time moves no window and no schedule. */
+  now: () => number
 }
 
 type Reply = { status: number; body?: any } // eslint-disable-line @typescript-eslint/no-explicit-any
 
-/** One read at a time on its own schedule: due EVERY after the last began while shown; one due while one is out starts as it returns. */
+/** A reply's body read through its stream, stopped once it passes max bytes: null then, never held whole and never parsed. */
+async function upTo(res: Response, max: number): Promise<string | null> {
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let n = 0
+  let text = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return text + dec.decode()
+    n += value.byteLength
+    if (n > max) {
+      void reader.cancel().catch(() => {})
+      return null
+    }
+    text += dec.decode(value, { stream: true })
+  }
+}
+
+/** One read at a time on its own schedule: due EVERY after the last began; one due while one is out, or while hidden, waits. */
 class Reads {
-  private out = false
+  private out?: AbortController
   private due = false
   private stopped = true
   private began = 0
   private timer?: ReturnType<typeof setTimeout>
   constructor(
-    private read: () => Promise<void>,
+    private read: (signal: AbortSignal) => Promise<void>,
     private visible: () => boolean,
+    private now: () => number,
     private track: (p: Promise<void>) => void,
   ) {}
   start() {
     this.stopped = false
-    this.now()
+    this.run()
   }
-  now() {
+  /** The one place a read starts: none once stopped, none while one is out or the page is hidden (it stays due until shown). */
+  run() {
     if (this.stopped) return
-    if (this.out) {
+    if (this.out || !this.visible()) {
       this.due = true
       return
     }
     clearTimeout(this.timer)
-    this.out = true
-    this.began = Date.now()
+    this.due = false
+    const ac = (this.out = new AbortController())
+    this.began = this.now()
     this.track(
-      this.read().finally(() => {
-        this.out = false
+      this.read(ac.signal).finally(() => {
+        if (this.out !== ac) return
+        this.out = undefined
         if (this.stopped) return
-        if (this.due) {
-          this.due = false
-          this.now()
-        } else if (this.visible()) this.timer = setTimeout(() => this.visible() && this.now(), Math.max(0, this.began + DECIDE_READ_EVERY - Date.now()))
+        if (this.due) this.run()
+        else this.timer = setTimeout(() => this.run(), Math.max(0, this.began + DECIDE_READ_EVERY - this.now()))
       }),
     )
   }
+  /** Stops the schedule and aborts the read on its way. */
   stop() {
     this.stopped = true
     this.due = false
     clearTimeout(this.timer)
+    this.out?.abort()
+    this.out = undefined
   }
 }
 
 const emptyDraft = (d: DecideDraft) => d.choice === undefined && !d.text.trim() && !d.rationale.trim()
 const isView = (v: DecideView | undefined, id: string): v is DecideView => !!v && v.id === id && Number.isInteger(v.rev) && Array.isArray(v.own)
+/** A read's definite refusal: a 403 with a code (a server that serves no decisions to this pass). */
+const refusal = (r: Reply) => r.status === 403 && typeof r.body?.error?.code === 'string'
 
 export function createDecide(env: DecideEnv, did?: string) {
   const page = reactive({
@@ -105,9 +134,12 @@ export function createDecide(env: DecideEnv, did?: string) {
     notForIt: false,
     /** Access ended: a 401, or no pass at all. */
     ended: !env.pass.get(),
-    list: { entries: [] as DecideEntry[], cut: false, loaded: false, freshAt: 0, suspended: true },
+    /** `failed`: a list read failed and none has succeeded yet; `refused`: the server refused the list (403), read no more. */
+    list: { entries: [] as DecideEntry[], cut: false, loaded: false, failed: false, refused: false, freshAt: 0, suspended: true },
     cards: [] as DecideCard[],
   })
+  let stopped = false
+  const aborts = new Set<() => void>()
   const pending = new Set<Promise<void>>()
   const track = (p: Promise<void>) => {
     pending.add(p)
@@ -116,21 +148,37 @@ export function createDecide(env: DecideEnv, did?: string) {
   const visible = () => env.doc.visibilityState === 'visible'
   const reads = new Map<string, Reads>()
   const freshTimers = new Map<object, ReturnType<typeof setTimeout>>()
+  /** Whether the page goes on: not stopped and its access not ended. Read after every await. */
+  const alive = () => !stopped && !page.ended
+  /** Whether a read's reply may still change a card: the page alive, the card open and not at an end. */
+  const cardOpen = (c: DecideCard) => alive() && c.open && !c.end
 
-  /** The one request the pass is sent in: to one of the four routes, in the Authorization header, aborted at DECIDE_READ_WAIT. */
-  async function call(method: 'GET' | 'POST', path: '/api/me' | '/api/me/decisions' | `/api/decisions/${string}`, max: number, body?: string): Promise<Reply> {
+  /**
+   * The one request the pass is sent in: to one of the four routes, in the Authorization header, aborted at DECIDE_READ_WAIT, at
+   * `signal`, or when the page stops. A 401 ends the page here, before its body is read and before any caller sees the reply.
+   */
+  async function call(method: 'GET' | 'POST', path: '/api/me' | '/api/me/decisions' | `/api/decisions/${string}`, max: number, body?: string, signal?: AbortSignal): Promise<Reply> {
     const pass = env.pass.get()
-    if (!pass) return { status: 401 }
+    if (!pass) end()
+    if (!alive()) return { status: 0 }
     const ac = new AbortController()
-    const t = setTimeout(() => ac.abort(), DECIDE_READ_WAIT)
+    const abort = () => ac.abort()
+    signal?.addEventListener('abort', abort)
+    aborts.add(abort)
+    const t = setTimeout(abort, DECIDE_READ_WAIT)
     try {
       const headers: Record<string, string> = { Authorization: `Bearer ${pass}` }
       if (body !== undefined) headers['Content-Type'] = 'application/json'
       const res = await env.fetch(env.base + path, { method, headers, body, signal: ac.signal, cache: 'no-store', redirect: 'error' })
-      const bytes = await res.arrayBuffer()
-      if (bytes.byteLength > max) return { status: 0 }
+      if (res.status === 401) {
+        void res.body?.cancel().catch(() => {})
+        end()
+        return { status: 401 }
+      }
+      const text = await upTo(res, max)
+      if (text === null) return { status: 0 }
       try {
-        return { status: res.status, body: JSON.parse(new TextDecoder().decode(bytes)) }
+        return { status: res.status, body: JSON.parse(text) }
       } catch {
         return { status: res.status }
       }
@@ -138,17 +186,20 @@ export function createDecide(env: DecideEnv, did?: string) {
       return { status: 0 }
     } finally {
       clearTimeout(t)
+      aborts.delete(abort)
+      signal?.removeEventListener('abort', abort)
     }
   }
 
   /** Whether a mark (a card's, the list's) is too old to answer or open on; judged again when it turns so. */
   function fresh(o: { freshAt: number; suspended: boolean }) {
-    o.suspended = !o.freshAt || Date.now() - o.freshAt > DECIDE_FRESH_FOR
+    o.suspended = !o.freshAt || env.now() - o.freshAt > DECIDE_FRESH_FOR
     clearTimeout(freshTimers.get(o))
-    if (!o.suspended) freshTimers.set(o, setTimeout(() => fresh(o), o.freshAt + DECIDE_FRESH_FOR - Date.now() + 1))
+    if (!o.suspended && !stopped) freshTimers.set(o, setTimeout(() => fresh(o), o.freshAt + DECIDE_FRESH_FOR - env.now() + 1))
   }
 
   function end() {
+    if (page.ended) return
     page.ended = true
     env.pass.end()
     for (const r of reads.values()) r.stop()
@@ -166,7 +217,7 @@ export function createDecide(env: DecideEnv, did?: string) {
   /** A reply's receipt of the send under way settles it: accepted, or refused in its code's words. */
   function settle(c: DecideCard, rc: DecideReceipt) {
     c.sent = ''
-    c.unknown = false
+    c.unknown = ''
     c.refused = rc.status === 'refused' ? decideWords(rc.code ?? '', c.id) : ''
   }
 
@@ -184,33 +235,40 @@ export function createDecide(env: DecideEnv, did?: string) {
     if (v.outcome === 'applied' || v.outcome === 'not_used') stopCard(c, v.outcome)
   }
 
-  async function readCard(c: DecideCard) {
-    const at = Date.now()
-    const r = await call('GET', `/api/decisions/${c.id}`, MAX_DECIDE_VIEW)
-    if (page.ended || c.end) return
-    if (r.status === 401) end()
-    else if (r.status === 404) stopCard(c, 'gone')
+  async function readCard(c: DecideCard, signal: AbortSignal) {
+    const at = env.now()
+    const r = await call('GET', `/api/decisions/${c.id}`, MAX_DECIDE_VIEW, undefined, signal)
+    if (!cardOpen(c)) return
+    if (r.status === 404) stopCard(c, 'gone')
+    else if (refusal(r)) stopCard(c, 'refused')
     else if (r.status === 200 && isView(r.body, c.id)) take(c, r.body, true, at)
   }
 
   function openCard(id: string, listed: boolean) {
     let c = card(id)
     if (!c) {
-      c = reactive<DecideCard>({ id, view: null, draft: { text: '', rationale: '' }, sent: '', sending: false, unknown: false, refused: '', end: '', open: true, freshAt: 0, suspended: true, listed })
+      c = reactive<DecideCard>({ id, view: null, draft: { text: '', rationale: '' }, sent: '', sending: false, unknown: '', refused: '', end: '', open: true, freshAt: 0, suspended: true, listed })
       page.cards.push(c)
       const cc = c
-      reads.set(id, new Reads(() => readCard(cc), visible, track))
+      reads.set(id, new Reads((s) => readCard(cc, s), visible, env.now, track))
     }
     c.open = true
     reads.get(id)!.start()
   }
 
-  async function readList() {
+  /** A list read that did not succeed: refused (403), it reads no more; else it is tried again, said while none has succeeded. */
+  function listFailed(r: Reply) {
+    if (refusal(r)) {
+      page.list.refused = true
+      reads.get('')!.stop()
+    } else page.list.failed = !page.list.loaded
+  }
+
+  async function readList(signal: AbortSignal) {
     if (!page.me) {
-      const r = await call('GET', '/api/me', MAX_ME_REPLY)
-      if (page.ended) return
-      if (r.status === 401) return end()
-      if (r.status !== 200 || !Array.isArray(r.body?.grants)) return
+      const r = await call('GET', '/api/me', MAX_ME_REPLY, undefined, signal)
+      if (!alive()) return
+      if (r.status !== 200 || !Array.isArray(r.body?.grants)) return refusal(r) ? listFailed(r) : undefined
       page.me = r.body as MeReply
       if (!page.me.grants.includes(GRANT_DECIDE) || page.me.grants.includes('admin')) {
         page.notForIt = true
@@ -218,29 +276,28 @@ export function createDecide(env: DecideEnv, did?: string) {
       }
       if (isDecisionId(did)) openCard(did, false)
     }
-    const at = Date.now()
-    const r = await call('GET', '/api/me/decisions', MAX_DECIDE_LIST)
-    if (page.ended) return
-    if (r.status === 401) return end()
-    if (r.status !== 200 || !Array.isArray(r.body?.decisions)) return
+    const at = env.now()
+    const r = await call('GET', '/api/me/decisions', MAX_DECIDE_LIST, undefined, signal)
+    if (!alive()) return
+    if (r.status !== 200 || !Array.isArray(r.body?.decisions)) return listFailed(r)
     const entries = (r.body.decisions as DecideEntry[]).filter((e) => isDecisionId(e?.id) && Number.isInteger(e.rev))
-    Object.assign(page.list, { entries, cut: r.body.cut === true, loaded: true, freshAt: at })
+    Object.assign(page.list, { entries, cut: r.body.cut === true, loaded: true, failed: false, freshAt: at })
     fresh(page.list)
     for (const c of page.cards) {
       if (!c.open || c.end) continue
       const e = entries.find((x) => x.id === c.id)
       // A listed rev other than the view's, or a decision that left the list since the last read, reads the card at once.
-      if ((e && c.view && e.rev !== c.view.rev) || (!e && c.listed)) reads.get(c.id)?.now()
+      if ((e && c.view && e.rev !== c.view.rev) || (!e && c.listed)) reads.get(c.id)?.run()
       c.listed = !!e
     }
     for (const e of entries) if (openCount() < DECIDE_CARDS && !card(e.id)) openCard(e.id, true)
   }
-  reads.set('', new Reads(readList, visible, track))
+  reads.set('', new Reads(readList, visible, env.now, track))
 
-  /** The tab shown again, or focused: everything read at once, and every mark judged now. */
+  /** The tab shown again, or focused: everything due read at once, and every mark judged now. */
   function shown() {
     if (!visible()) return
-    for (const r of reads.values()) r.now()
+    for (const r of reads.values()) r.run()
     for (const c of page.cards) if (c.freshAt) fresh(c)
     if (page.list.freshAt) fresh(page.list)
   }
@@ -248,9 +305,10 @@ export function createDecide(env: DecideEnv, did?: string) {
   /** Whether a card may be closed: no draft and no answer whose outcome is not known; its state is kept. */
   const closable = (c: DecideCard) => c.open && !c.end && emptyDraft(c.draft) && !c.sent
 
-  /** Whether a card's answer may be sent now. */
+  /** Whether a card's answer may be sent now: one held needs only the card and the pass; a new one a fresh view of an open decision. */
   function answerable(c: DecideCard): boolean {
-    return !page.ended && c.open && !c.end && !c.sending && !c.suspended && c.view?.state === 'open'
+    if (page.ended || !c.open || c.end || c.sending) return false
+    return !!c.sent || (!c.suspended && c.view?.state === 'open')
   }
 
   /** Sends the card's answer: `sent` again, unchanged, when its outcome is not known; else the draft, frozen under a new response id. */
@@ -269,22 +327,22 @@ export function createDecide(env: DecideEnv, did?: string) {
     }
     const body = c.sent
     c.sending = true
-    c.unknown = false
+    c.unknown = ''
     c.refused = ''
     const p = call('POST', `/api/decisions/${id}/respond`, MAX_DECIDE_REPLY, body)
     track(p.then(() => {}))
     const r = await p
     c.sending = false
-    if (page.ended || c.sent !== body) return
-    if (r.status === 401) end()
-    else if (r.status === 404) stopCard(c, 'gone')
-    else if ((r.status === 200 || r.status === 201) && typeof r.body?.receipt?.responseId === 'string') {
+    if (!alive() || c.sent !== body) return
+    const outcome = respondOutcome(r.status, r.body)
+    if (outcome === 'gone') stopCard(c, 'gone')
+    else if (outcome === 'taken') {
       settle(c, r.body.receipt)
       if (isView(r.body.decision, id)) take(c, r.body.decision, false)
-    } else if (r.status >= 400 && r.status < 500 && typeof r.body?.error?.code === 'string') {
+    } else if (outcome === 'refused') {
       c.sent = ''
       c.refused = decideWords(r.body.error.code, id)
-    } else c.unknown = true
+    } else c.unknown = decideWords(r.body?.error?.code === 'rate_limited' ? 'rate_limited' : 'decision_moved', id)
   }
 
   return {
@@ -298,28 +356,35 @@ export function createDecide(env: DecideEnv, did?: string) {
       env.win.addEventListener('focus', shown)
       if (!page.ended) reads.get('')!.start()
     },
+    /** Stops the page: no read is started again, every request on its way is aborted, and no reply changes anything. */
     stop() {
+      stopped = true
       env.doc.removeEventListener('visibilitychange', shown)
       env.win.removeEventListener('focus', shown)
       for (const r of reads.values()) r.stop()
+      for (const a of [...aborts]) a()
       for (const t of freshTimers.values()) clearTimeout(t)
+      freshTimers.clear()
     },
     /** Opens a listed decision's card: not while the list is not fresh, nor while DECIDE_CARDS are open. */
     open(id: string) {
-      if (!page.ended && !page.list.suspended && openCount() < DECIDE_CARDS && page.list.entries.some((e) => e.id === id)) openCard(id, true)
+      if (alive() && !page.list.suspended && openCount() < DECIDE_CARDS && page.list.entries.some((e) => e.id === id)) openCard(id, true)
     },
     closable,
+    /** Closes a card with nothing unsent: its read on the way is aborted, and its state kept as it is. */
     close(id: string) {
       const c = card(id)
       if (!c || !closable(c)) return
       c.open = false
       reads.get(id)?.stop()
     },
-    /** Drops a card that reached its end. */
+    /** Drops a card that reached its end, and everything the page held for it. */
     dismiss(id: string) {
       const i = page.cards.findIndex((c) => c.id === id && c.end)
       if (i < 0) return
-      clearTimeout(freshTimers.get(page.cards[i]!))
+      const c = page.cards[i]!
+      clearTimeout(freshTimers.get(c))
+      freshTimers.delete(c)
       page.cards.splice(i, 1)
       reads.delete(id)
     },
@@ -331,9 +396,9 @@ export function createDecide(env: DecideEnv, did?: string) {
   }
 }
 
-/** The decide page's client over the browser: the tab's pass, the window's focus and the document's visibility. */
+/** The decide page's client over the browser: the tab's pass, the window's focus, the document's visibility and the monotonic clock. */
 export function useDecide(did: string | undefined) {
-  const d = createDecide({ fetch: (i, o) => globalThis.fetch(i, o), pass: useIdentityPass(), base: useApiBase().httpBase.value, doc: document, win: window }, did)
+  const d = createDecide({ fetch: (i, o) => globalThis.fetch(i, o), pass: useIdentityPass(), base: useApiBase().httpBase.value, doc: document, win: window, now: () => performance.now() }, did)
   onMounted(d.start)
   onBeforeUnmount(d.stop)
   return d

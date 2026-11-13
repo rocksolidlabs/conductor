@@ -6130,8 +6130,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`401`, the page's ended words). The Go race tests of `internal/api`'s
   `decide_test.go` and `internal/crew`, the vitest files
   (`useDecide.test.ts`, `identityPass.test.ts`, `useIdentityPass.test.ts`,
-  `passSites.test.ts`) and `decide-only.spec.ts` stand in for a real
-  provider; a live check with one is the provider module's.
+  `passSites.test.ts`), `decide-only.spec.ts` and `token-fragment.spec.ts`
+  stand in for a real provider; a live check with one is the provider
+  module's. After a link that carries the pass or the workbench token,
+  the address and the history hold no fragment of it, whatever its
+  spelling; the plugin runs before the router.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do
