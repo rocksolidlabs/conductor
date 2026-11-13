@@ -195,13 +195,21 @@ func TestSuitePassesEveryFake(t *testing.T) {
 			{Kind: ext.KindEntitlements, Name: "fake-plans", Value: plans},
 		},
 	}
+	// A provider that offers a sign-in, its BeginSignIn moving it to a code.
+	signIn := NewFakeSignIn("fake-signin")
+	signIn.Add("tok-admin", ada)
+	signIn.OnBegin(ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/device"})
 	errs := record(t, func(t T) {
 		Starter(t, n, keyed())
 		RunAll(t, n, p, Started(), WithRuntimeCase(rc))
 		Identity(t, n, id, []string{"tok-admin"}, []string{UnknownToken})
+		Identity(t, n, signIn, []string{"tok-admin"}, []string{UnknownToken})
 	})
 	for _, e := range errs {
 		t.Error(e)
+	}
+	if signIn.Begins() == 0 || signIn.SignOuts() == 0 {
+		t.Errorf("Identity did not check the sign-in: %d begins, %d sign-outs", signIn.Begins(), signIn.SignOuts())
 	}
 	// The suite reached each of them.
 	if len(router.Decisions()) == 0 || len(router.Resolutions()) == 0 || len(cx.Queries()) == 0 || len(cx.Touches()) == 0 ||
@@ -265,6 +273,22 @@ func (p quitterIdentity) Authenticate(ctx context.Context, tok string) (ext.Prin
 	}
 	conn.Close()
 	return ada, tok == "tok-q", nil
+}
+
+// dialSignIn begins its sign-in by dialling its service under the call's
+// context.
+type dialSignIn struct {
+	*FakeSignIn
+	n    *Network
+	addr string
+}
+
+func (p dialSignIn) BeginSignIn(ctx context.Context) error {
+	conn, err := p.n.DialContext(ctx, "tcp", p.addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // emptyIdentity admits every token, the empty one too.
@@ -513,6 +537,14 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"a wait on the network under a context of its own", func(t T, n *Network) {
 			Identity(t, n, waitIdentity{&http.Client{Transport: n.Transport()}, srv.URL}, nil, nil)
 		}, []string{`exttest: Identity "waiter": Authenticate did not return within 1s with the network blocked`, "article 8"}},
+		{"a sign-in that dials under the call's context", func(t T, n *Network) {
+			Identity(t, n, dialSignIn{NewFakeSignIn("dial-signin"), n, srv.Listener.Addr().String()}, nil, nil)
+		}, []string{`exttest: SignIn "dial-signin": BeginSignIn dialled tcp`, "under its call's context", "article 8"}},
+		{"a sign-in's page over http", func(t T, n *Network) {
+			f := NewFakeSignIn("http-signin")
+			f.OnBegin(ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "http://id.example.com/device"})
+			Identity(t, n, f, nil, nil)
+		}, []string{`exttest: SignIn "http-signin": SignInStatus answered a status that is not valid`, "url is not https"}},
 		{"ok for the empty token", func(t T, n *Network) {
 			Identity(t, n, emptyIdentity{}, nil, nil)
 		}, []string{`exttest: Identity "lenient": Authenticate said ok for the empty token: nothing is recognised for an empty token`}},

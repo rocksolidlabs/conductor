@@ -299,6 +299,29 @@ export interface MeReply {
 }
 export const MAX_ME_REPLY = 1024
 
+/** Where the identity provider's sign-in stands (docs/protocol.md, `GET /api/signin`; ext.SignInState). */
+export type SignInState = 'signed-out' | 'starting' | 'code' | 'signed-in'
+
+/**
+ * `GET`, `POST` and `DELETE /api/signin` (admin): the identity provider's sign-in, or `{supported: false}` where none is offered; at
+ * most MAX_SIGNIN_REPLY bytes. `who` only in `signed-in`; `code`, `url` (https) and `expires` (RFC 3339) only in `code`; `why` in any.
+ */
+export interface SignInReply {
+  supported: boolean
+  state?: SignInState
+  who?: string
+  code?: string
+  url?: string
+  expires?: string
+  why?: string
+}
+export const MAX_SIGNIN_REPLY = 1024
+/** The bounds of SignInReply's fields, in bytes (ext.MaxSignInWho and the rest). */
+export const MAX_SIGNIN_WHO = 80
+export const MAX_SIGNIN_CODE = 16
+export const MAX_SIGNIN_URL = 200
+export const MAX_SIGNIN_WHY = 120
+
 /** `GET /api/me/decisions`: the open decisions that admit the caller, newest first; `cut` when more may await it. */
 export interface DecideList {
   decisions: DecideEntry[]
