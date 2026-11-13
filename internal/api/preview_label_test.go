@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // previewedCrew is servedCrew whose preview names the tree's secret in its
@@ -314,14 +316,15 @@ func unreadLabel(t *testing.T, what string, a labelAnswer) {
 	}
 }
 
-// A read held after any of its commands (rev-parse, read-tree, add,
-// write-tree, the diff) while the server's stop begins (close marks it
-// and removes the indexes) is unread once it is let go: a later command
-// fails with the index gone, or the stop's mark is asked after the last.
+// A read held after any of its commands (rev-parse, read-tree, the two
+// listings, update-index, write-tree, the diff) while the server's stop
+// begins (close marks it, cancels the read and waits for it: the read is
+// let go once the stop waits) is unread: a later command ends with its
+// context, or the stop's mark is asked after the last.
 func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
 	logs := &logBuffer{}
 	p := previewEnvLogging(t, nil, logs)
-	for _, sub := range []string{"rev-parse", "read-tree", "add", "write-tree", "diff"} {
+	for _, sub := range []string{"rev-parse", "read-tree", "diff-files", "ls-files", "update-index", "write-tree", "diff"} {
 		at, release := holdAfter(t, sub)
 		done := p.labelAsync()
 		select {
@@ -329,12 +332,23 @@ func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
 		case a := <-done:
 			t.Fatalf("after %s: answered before it was held: %d %s %v", sub, a.status, a.body, a.err)
 		}
-		p.e.srv.trees.close()
+		closing, stopped := make(chan struct{}), make(chan struct{})
+		p.e.srv.trees.seam = func(at, _ string) {
+			if at == "closing" {
+				close(closing)
+			}
+		}
+		go func() {
+			defer close(stopped)
+			p.e.srv.trees.close()
+		}()
+		<-closing
 		close(release)
 		unreadLabel(t, "the read held after "+sub+" across the stop", <-done)
+		<-stopped
 		// The next row's read begins before a stop.
 		p.e.srv.trees.mu.Lock()
-		p.e.srv.trees.stopped = false
+		p.e.srv.trees.stopped, p.e.srv.trees.seam = false, nil
 		p.e.srv.trees.mu.Unlock()
 	}
 	if !strings.Contains(logs.String(), `why=refused`) {
@@ -468,7 +482,7 @@ func TestAFailedReadIsLoggedInFixedWords(t *testing.T) {
 		t.Fatalf("no line for the read: %s", got)
 	}
 	line, _, _ := strings.Cut(got[i:], "\n")
-	if !strings.Contains(line, `why="git failed"`) || strings.Contains(line, "closed.txt") || strings.Contains(line, "Permission") || strings.Contains(line, "git add") {
+	if !strings.Contains(line, `why="git failed"`) || strings.Contains(line, "closed.txt") || strings.Contains(line, "Permission") || strings.Contains(line, "git add") || strings.Contains(line, "update-index") {
 		t.Fatalf("the line: %s", line)
 	}
 }
@@ -630,6 +644,158 @@ func TestLettingAnEntryGoAndTheStopRemoveItsObjects(t *testing.T) {
 	tr.close()
 	if _, err := os.Lstat(last.Objects()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a kept entry's objects after the stop: %v", err)
+	}
+}
+
+// The stop ends a read under way before it removes the folder: a read held
+// inside its update-index (the runner's seam) is cancelled by the stop,
+// and the held command, once its context has ended and the stop waits
+// (the stop's "closing" seam), writes a file into its folder of objects
+// as git's object writer would, making the folders it needs. The read
+// returns before the stop does, the read is unread (refused), and nothing
+// is left at the folder's path or the objects' path: the write, made
+// after the stop began, was made before the stop removed the folder.
+func TestTheStopEndsItsReadsBeforeItRemovesTheirFolder(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "r-1", "tree")
+	gitInit(t, dir, true)
+	tr := &treeReads{}
+	t.Cleanup(tr.close)
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, s)
+	}
+	closing, stopped, held := make(chan struct{}), make(chan struct{}), make(chan string, 1)
+	closed := sync.OnceFunc(func() { close(closing) })
+	tr.seam = func(at, _ string) {
+		if at == "closing" {
+			closed()
+		}
+	}
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		if args[0] != "update-index" {
+			return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
+		}
+		held <- objects
+		<-ctx.Done()
+		select {
+		case <-closing:
+		case <-stopped:
+		}
+		if err := os.MkdirAll(filepath.Join(objects, "pack"), 0o700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(filepath.Join(objects, "pack", "tmp_pack_written"), []byte("x"), 0o600); err != nil {
+			t.Error(err)
+		}
+		return ctx.Err()
+	}))
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.read(context.Background(), crew.WorktreePreview{Root: root, Dir: dir})
+		note("the read returned")
+		done <- err
+	}()
+	objects := <-held
+	tr.mu.Lock()
+	folder := tr.dir
+	tr.mu.Unlock()
+	go func() {
+		tr.close()
+		note("the stop returned")
+		close(stopped)
+	}()
+	err := <-done
+	<-stopped
+	if !errors.Is(err, errReadsStopped) {
+		t.Errorf("the read: %v, want errReadsStopped", err)
+	}
+	if want := []string{"the read returned", "the stop returned"}; fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Errorf("the order: %v, want %v", order, want)
+	}
+	for _, p := range []string{folder, objects} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s after the stop: %v", p, err)
+		}
+	}
+}
+
+// labelsFolder makes a folder of indexes named name in tmp, with an index
+// in it and its lock file (taken and let go, as a server that ended left
+// it) unless bare.
+func labelsFolder(t *testing.T, tmp, name string, bare bool) string {
+	t.Helper()
+	dir := filepath.Join(tmp, labelsPrefix+name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "0123.index"), []byte("index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !bare {
+		lock, _, _, err := store.TakeOwnerLock(filepath.Join(dir, labelsLock))
+		if err != nil || lock == nil {
+			t.Fatalf("the lock of %s: %v", name, err)
+		}
+		lock.Release()
+	}
+	return dir
+}
+
+// A server's first read makes its folder of indexes with its lock held,
+// and removes every other folder of indexes whose lock no server holds;
+// one whose lock is held (another server's, alive) is left, as is one
+// with no lock file. A second server's first read leaves the first's
+// folder, and the stop removes it and lets its lock go.
+func TestAFolderOfIndexesNoServerHoldsIsRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this system has no owner lock")
+	}
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	left, alive, bare := labelsFolder(t, tmp, "left", false), labelsFolder(t, tmp, "alive", false), labelsFolder(t, tmp, "bare", true)
+	holder, _, _, err := store.TakeOwnerLock(filepath.Join(alive, labelsLock))
+	if err != nil || holder == nil {
+		t.Fatalf("the live server's lock: %v", err)
+	}
+	t.Cleanup(holder.Release)
+	first := &treeReads{}
+	t.Cleanup(first.close)
+	firstRead := func(tr *treeReads) string {
+		t.Helper()
+		e, err := tr.take(t.Context(), "tree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr.give(e, true)
+		return tr.dir
+	}
+	own := firstRead(first)
+	if _, err := os.Lstat(left); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the folder no server holds after the first read: %v", err)
+	}
+	for _, d := range []string{alive, bare} {
+		if _, err := os.Lstat(filepath.Join(d, "0123.index")); err != nil {
+			t.Errorf("%s after the first read: %v", d, err)
+		}
+	}
+	if held, err := store.LockHeld(filepath.Join(own, labelsLock)); err != nil || !held || filepath.Dir(own) != tmp {
+		t.Fatalf("the server's own folder %s: held %v %v", own, held, err)
+	}
+	second := &treeReads{}
+	t.Cleanup(second.close)
+	if other := firstRead(second); other == own {
+		t.Fatalf("two servers share %s", own)
+	}
+	if _, err := os.Lstat(filepath.Join(own, labelsLock)); err != nil {
+		t.Fatalf("the first server's folder after the second's first read: %v", err)
+	}
+	first.close()
+	if _, err := os.Lstat(own); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the first server's folder after its stop: %v", err)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // The label of an attempt's preview over HTTP (Program item PV1,
@@ -64,21 +65,87 @@ func storedPaths(paths []string) []string {
 // tree waits for one. The stop begins at Shutdown's entry (mark): a read
 // that begins once it has begun makes no folder and no index; a read under
 // way when it begins may still run its commands and write its own index
-// until the stop removes the folder of indexes (close), and its label is
-// unread.
+// until the stop ends it (close: its git ends with its context), and its
+// label is unread. The folder holds a lock file the server holds while it
+// lives (labelsLock), and a server making its folder removes every other
+// one whose lock no server holds (sweepLabels).
 type treeReads struct {
 	mu      sync.Mutex
 	dir     string
+	lock    *store.OwnerLock
 	stopped bool
 	order   []string
 	entries map[string]*treeEntry
 	// freed is closed, and made again, when an entry stops being
 	// reserved, and at the stop.
 	freed chan struct{}
+	// reads cancels each read under way; running counts them.
+	reads   map[*context.CancelFunc]bool
+	running sync.WaitGroup
 	// seam, when set (by a test), is called at "handed" (a read has its
-	// entry and has not yet taken its gate) and at "waiting" (a read waits
-	// for room).
+	// entry and has not yet taken its gate), at "waiting" (a read waits
+	// for room) and at "closing" (the stop has cancelled the reads and
+	// waits for them).
 	seam func(at, dir string)
+}
+
+// labelsPrefix names a server's folder of indexes in the system's
+// temporary folder; labelsLock is the lock file inside it.
+const (
+	labelsPrefix = "conductor-labels-"
+	labelsLock   = "owner.lock"
+)
+
+// makeLabels makes the server's folder of indexes: made under another
+// name, its lock taken (store.TakeOwnerLock, held until the stop), and
+// only then given its name, so that a folder under that name has its lock
+// file and was held from the start. Where the lock is taken, every other
+// folder of that name whose lock no server holds is removed first.
+func makeLabels() (string, *store.OwnerLock, error) {
+	stage, err := os.MkdirTemp("", "conductor-new-labels-")
+	if err != nil {
+		return "", nil, err
+	}
+	lock, _, _, err := store.TakeOwnerLock(filepath.Join(stage, labelsLock))
+	dir := filepath.Join(filepath.Dir(stage), labelsPrefix+strings.TrimPrefix(filepath.Base(stage), "conductor-new-labels-"))
+	if err == nil {
+		err = os.Rename(stage, dir)
+	}
+	if err != nil {
+		if lock != nil {
+			lock.Release()
+		}
+		_ = os.RemoveAll(stage)
+		return "", nil, err
+	}
+	if lock != nil {
+		sweepLabels(dir)
+	}
+	return dir, lock, nil
+}
+
+// sweepLabels removes every folder of indexes beside own, a real folder
+// with its lock file, whose lock no server holds (store.LockHeld): its
+// server ended without its stop. A folder whose lock is held, or with no
+// lock file, is left.
+func sweepLabels(own string) {
+	entries, err := os.ReadDir(filepath.Dir(own))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		dir := filepath.Join(filepath.Dir(own), e.Name())
+		if !strings.HasPrefix(e.Name(), labelsPrefix) || !e.IsDir() || dir == own {
+			continue
+		}
+		lock := filepath.Join(dir, labelsLock)
+		if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if held, err := store.LockHeld(lock); err == nil && !held {
+			_ = os.RemoveAll(dir)
+		}
+	}
 }
 
 // treeEntry is a tree's kept index, its gate (held by sending to it) and
@@ -104,12 +171,12 @@ func (tr *treeReads) take(ctx context.Context, dir string) (*treeEntry, error) {
 			return nil, errReadsStopped
 		}
 		if tr.dir == "" {
-			d, err := os.MkdirTemp("", "conductor-labels-")
+			d, lock, err := makeLabels()
 			if err != nil {
 				tr.mu.Unlock()
 				return nil, err
 			}
-			tr.dir, tr.entries, tr.freed = d, map[string]*treeEntry{}, make(chan struct{})
+			tr.dir, tr.lock, tr.entries, tr.freed = d, lock, map[string]*treeEntry{}, make(chan struct{})
 		}
 		e = tr.entries[dir]
 		// Past the bound, the least recently read entry no read holds or
@@ -182,17 +249,52 @@ func (tr *treeReads) mark() {
 }
 
 // close ends the reads at the stop: the stop is marked (if it is not
-// already), then the reads' indexes are removed and a read waiting for
-// room is let go.
+// already) and every read under way is cancelled, its git ending with its
+// context; once each of them has returned, the folder of indexes is
+// removed and its lock let go.
 func (tr *treeReads) close() {
 	tr.mu.Lock()
-	defer tr.mu.Unlock()
 	tr.stopped = true
+	for cancel := range tr.reads {
+		(*cancel)()
+	}
+	tr.mu.Unlock()
+	if tr.seam != nil {
+		tr.seam("closing", "")
+	}
+	tr.running.Wait()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
 	if tr.dir != "" {
 		_ = os.RemoveAll(tr.dir)
+		if tr.lock != nil {
+			tr.lock.Release()
+		}
 		close(tr.freed)
-		tr.dir, tr.order, tr.entries, tr.freed = "", nil, nil, nil
+		tr.dir, tr.lock, tr.order, tr.entries, tr.freed = "", nil, nil, nil, nil
 	}
+}
+
+// begin counts a read under way, cancelled by cancel at the stop; false
+// once the stop has begun. end, given back, ends the count.
+func (tr *treeReads) begin(cancel context.CancelFunc) (end func(), ok bool) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.stopped {
+		return nil, false
+	}
+	if tr.reads == nil {
+		tr.reads = map[*context.CancelFunc]bool{}
+	}
+	key := &cancel
+	tr.reads[key] = true
+	tr.running.Add(1)
+	return func() {
+		tr.mu.Lock()
+		delete(tr.reads, key)
+		tr.mu.Unlock()
+		tr.running.Done()
+	}, true
 }
 
 // stopping reports whether the stop has begun, under the reads' lock: a
@@ -207,12 +309,20 @@ func (tr *treeReads) stopping() bool {
 // read reads the worktree of wp now (crew.TreeRevision) in its entry,
 // opened as the engine made it (crew.OpenTree: a tree that cannot be
 // reached so is not read). A read that ends past labelReadWait, fails
-// after naming HEAD, or ends once the stop has begun (errReadsStopped)
-// gives the commit alone and the error.
+// after naming HEAD, or ends once the stop has begun (errReadsStopped,
+// whatever else ended it) gives the commit alone and the error.
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.TreeRead, error) {
 	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
 	defer cancel()
+	end, ok := tr.begin(cancel)
+	if !ok {
+		return crew.TreeRead{}, errReadsStopped
+	}
+	defer end()
 	e, err := tr.take(ctx, wp.Dir)
+	if err != nil && tr.stopping() {
+		err = errReadsStopped
+	}
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
@@ -226,7 +336,7 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.Tr
 	if err == nil && !t.Still() {
 		err = crew.ErrTreeMoved
 	}
-	if err == nil && tr.stopping() {
+	if tr.stopping() {
 		err = errReadsStopped
 	}
 	if err != nil {
@@ -315,7 +425,7 @@ func readFailure(err error) string {
 		return "late"
 	case errors.Is(err, gitcli.ErrNotRepo):
 		return "not a repository"
-	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped):
+	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped), errors.Is(err, gitcli.ErrNoObjects):
 		return "refused"
 	}
 	return "git failed"
