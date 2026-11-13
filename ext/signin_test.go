@@ -78,11 +78,36 @@ func TestSignInStatusValid(t *testing.T) {
 		{"url with a cut escape", code("ABCD", "https://id.example.com/d%2"), false},
 		{"url with an apostrophe", code("ABCD", "https://id.example.com/a'b"), false},
 		{"url with a backtick", code("ABCD", "https://id.example.com/a`b"), false},
-		{"who with a right-to-left override", ext.SignInStatus{State: ext.SignedIn, Who: "Ana " + string(rune(0x202e)) + "gnp.exe"}, false},
-		{"who with a zero-width space", ext.SignInStatus{State: ext.SignedIn, Who: string(rune(0x200b))}, false},
-		{"who with a line separator", ext.SignInStatus{State: ext.SignedIn, Who: "Ana" + string(rune(0x2028)) + "Eve"}, false},
-		{"why with a paragraph separator", ext.SignInStatus{State: ext.SignedOut, Why: "a" + string(rune(0x2029)) + "b"}, false},
+		// Format characters and the separators are taken: the server shows
+		// who and why without them.
+		{"who with a right-to-left override", ext.SignInStatus{State: ext.SignedIn, Who: "Ana " + string(rune(0x202e)) + "gnp.exe"}, true},
+		{"who with a joined emoji", ext.SignInStatus{State: ext.SignedIn, Who: "Ana " + string([]rune{0x1f469, 0x200d, 0x1f4bb})}, true},
+		{"who with a soft hyphen", ext.SignInStatus{State: ext.SignedIn, Who: "Ana" + string(rune(0xad)) + "stasia"}, true},
+		{"who with a line separator", ext.SignInStatus{State: ext.SignedIn, Who: "Ana" + string(rune(0x2028)) + "Eve"}, true},
+		{"why with a paragraph separator", ext.SignInStatus{State: ext.SignedOut, Why: "a" + string(rune(0x2029)) + "b"}, true},
 		{"why with a C1 control", ext.SignInStatus{State: ext.SignedOut, Why: "a\u0085b"}, false},
+
+		// The page's address: a host name, a path, a port without leading
+		// zeros that is not 443, no fragment.
+		{"url with a dotted address", code("ABCD", "https://999.1.1.1/device"), false},
+		{"url with a zoned address", code("ABCD", "https://[fe80::1%25eth0]/device"), false},
+		{"url with a bracketed address", code("ABCD", "https://[::1]/x"), false},
+		{"url whose last label begins with a digit", code("ABCD", "https://a.0x7f/x"), false},
+		{"url with capitals in its host", code("ABCD", "https://ID.example/x"), false},
+		{"url with a trailing dot", code("ABCD", "https://id.example./x"), false},
+		{"url with an escape in its host", code("ABCD", "https://ex%25ample.test/d"), false},
+		{"url with no path", code("ABCD", "https://id.example"), false},
+		{"url with port 443", code("ABCD", "https://id.example:443/x"), false},
+		{"url with a port with a leading zero", code("ABCD", "https://id.example:0443/x"), false},
+		{"url with a fragment", code("ABCD", "https://id.example/x#token=abc"), false},
+		{"url with a short fragment", code("ABCD", "https://id.example/x#a"), false},
+		{"url with an empty authority", code("ABCD", "https:///id.example/device"), false},
+		// Taken, though a browser writes them otherwise: the page draws no link.
+		{"url with an empty port", code("ABCD", "https://id.example:/x"), true},
+		{"url with dot segments", code("ABCD", "https://id.example/a/../b"), true},
+		{"url with escaped dot segments", code("ABCD", "https://id.example/%2e%2e/b"), true},
+		{"url with a query", code("ABCD", "https://id.example/device?user_code=ABCD-EFGH"), true},
+		{"url with port 8443", code("ABCD", "https://id.example:8443/x"), true},
 	}
 	for _, c := range cases {
 		err := c.s.Valid()

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -20,9 +21,13 @@ import (
 // Every call is the guard's (extCallTold) in slots of its own
 // (kindIdentitySignIn), within ext.IdentityWait, and every status is
 // checked (ext.SignInStatus.Valid, and the detail's filter of the
-// credentials the server holds) before it is sent: a late, failing,
-// busy, panicking or invalid answer is 503 signin_unavailable, in the
-// server's own words. The status is sent to the caller and to nothing
+// credentials the server holds) before it is sent, its who and why as
+// shownText shows them: a read that is late, failing, busy, panicking or
+// invalid is 503 signin_unavailable, in the server's own words. A begin
+// or a sign-out not asked (busy) or refused is 503 signin_unavailable;
+// one that went in and had not returned when the wait ended, or panicked,
+// may have been taken: 503 signin_status_unknown, its status not read.
+// The status is sent to the caller and to nothing
 // else: no log line, event or error quotes it, and the guard's log of a
 // failure names its kind and count alone (extFailed: the identity
 // provider's words are never quoted).
@@ -60,18 +65,22 @@ func (s *Server) signIn() (guardIdentity, ext.SignIn, bool) {
 }
 
 // signInStatus is si's status through the guard, and whether it answered
-// in time with one Valid takes and that holds none of the credentials
-// providerCredentials lists as it is asked (the detail's filter,
-// holdsCredential): each field as written, the URL also percent-decoded
-// once.
+// in time with one Valid takes, as given and as shown (signInShown), and
+// that holds none of the credentials providerCredentials lists as it is
+// asked (the detail's filter, holdsCredential): each field as it is sent,
+// the URL also percent-decoded once.
 func (g guardIdentity) signInStatus(ctx context.Context, si ext.SignIn) (ext.SignInStatus, bool) {
 	own := g.s.providerCredentials()
 	st, _, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, ext.SignInStatus{}, func(st ext.SignInStatus) error {
 		if err := st.Valid(); err != nil {
 			return err
 		}
-		decoded, err := url.PathUnescape(st.URL)
-		if err != nil || holdsCredential(own, st.Who, st.Code, st.URL, decoded, st.Why) {
+		shown := signInShown(st)
+		if err := shown.Valid(); err != nil {
+			return err
+		}
+		decoded, err := url.PathUnescape(shown.URL)
+		if err != nil || holdsCredential(own, shown.Who, shown.Code, shown.URL, decoded, shown.Why) {
 			return errors.New("sign-in status: it holds a token")
 		}
 		return nil
@@ -79,12 +88,47 @@ func (g guardIdentity) signInStatus(ctx context.Context, si ext.SignIn) (ext.Sig
 	return st, ok
 }
 
-// signInAct is BeginSignIn or SignOut through the guard, and whether it
-// returned in time with no error.
-func (g guardIdentity) signInAct(ctx context.Context, act func(context.Context) error) bool {
-	_, _, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, struct{}{}, nil,
-		func(ctx context.Context) (struct{}, error) { return struct{}{}, act(ctx) })
-	return ok
+// signInShown is st with its who and why as shownText shows them.
+func signInShown(st ext.SignInStatus) ext.SignInStatus {
+	st.Who, st.Why = shownText(st.Who), shownText(st.Why)
+	return st
+}
+
+// signInOutcome is what became of a begin or a sign-out asked through the
+// guard.
+type signInOutcome int32
+
+const (
+	signInNotKnown signInOutcome = iota // it went in and had not returned when the wait ended, or panicked
+	signInNotAsked                      // no slot was free: the provider was not called
+	signInRefused                       // the provider's method returned an error
+	signInTaken                         // it returned nil
+)
+
+// signInAct is BeginSignIn or SignOut through the guard, and its outcome.
+// What the method returned is recorded by the call's own goroutine once
+// it returns and read once, after the guard has answered: a method that
+// returns just after the wait is read as what it returned or as not
+// known, and either is so.
+func (g guardIdentity) signInAct(ctx context.Context, act func(context.Context) error) signInOutcome {
+	var returned atomic.Int32 // signInNotKnown until the method returns
+	_, sent, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, struct{}{}, nil,
+		func(ctx context.Context) (struct{}, error) {
+			err := act(ctx)
+			out := signInTaken
+			if err != nil {
+				out = signInRefused
+			}
+			returned.Store(int32(out))
+			return struct{}{}, err
+		})
+	switch {
+	case !sent:
+		return signInNotAsked
+	case ok:
+		return signInTaken
+	}
+	return signInOutcome(returned.Load())
 }
 
 // handleSignIn answers GET /api/signin: the sign-in's status, or
@@ -103,20 +147,21 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 // handleSignInBegin answers POST /api/signin: the provider asked to begin,
 // then its status.
 func (s *Server) handleSignInBegin(w http.ResponseWriter, r *http.Request) {
-	s.signInAct(w, r, ext.SignIn.BeginSignIn, "the sign-in was begun; its status could not be read just then")
+	s.signInAct(w, r, ext.SignIn.BeginSignIn, "the sign-in may have begun; its status is not known yet")
 }
 
 // handleSignOut answers DELETE /api/signin: the provider asked to sign
 // out, then its status.
 func (s *Server) handleSignOut(w http.ResponseWriter, r *http.Request) {
-	s.signInAct(w, r, ext.SignIn.SignOut, "the sign-out was asked; its status could not be read just then")
+	s.signInAct(w, r, ext.SignIn.SignOut, "the sign-out may have been done; its status is not known yet")
 }
 
 // signInAct is POST's and DELETE's: a body of none or {} (at most
 // maxSignInBody, no member; null is not {}), a provider that offers a
-// sign-in, act through the guard, and the status after it; a status not
-// read after an act the provider took is 503 signin_status_unknown in
-// unknown, the act's own words.
+// sign-in, act through the guard, and the status after it. An act not
+// asked or refused is 503 signin_unavailable; one whose outcome is not
+// known, or one taken whose status is then not read, is 503
+// signin_status_unknown in unknown, the act's own words.
 func (s *Server) signInAct(w http.ResponseWriter, r *http.Request, act func(ext.SignIn, context.Context) error, unknown string) {
 	var body *struct{} // nil after null, a member after {}
 	err := decodeJSONLimit(w, r, &body, maxSignInBody)
@@ -138,25 +183,30 @@ func (s *Server) signInAct(w http.ResponseWriter, r *http.Request, act func(ext.
 		writeError(w, http.StatusNotFound, "not_supported", "the identity provider offers no sign-in")
 		return
 	}
-	if !g.signInAct(r.Context(), func(ctx context.Context) error { return act(si, ctx) }) {
-		signInUnavailable(w)
-		return
-	}
-	s.writeSignInStatus(w, r, g, si, func(w http.ResponseWriter) {
+	notKnown := func(w http.ResponseWriter) {
 		writeError(w, http.StatusServiceUnavailable, "signin_status_unknown", unknown)
-	})
+	}
+	switch g.signInAct(r.Context(), func(ctx context.Context) error { return act(si, ctx) }) {
+	case signInNotAsked, signInRefused:
+		signInUnavailable(w)
+	case signInNotKnown:
+		notKnown(w)
+	case signInTaken:
+		s.writeSignInStatus(w, r, g, si, notKnown)
+	}
 }
 
 // writeSignInStatus is the one place a sign-in's status is answered: its
-// expiry in UTC, the reply within maxSignInReply; a status the guard has
-// none of, or a reply that does not encode within its bound, is answered
-// by unread.
+// who and why as shownText shows them, its expiry in UTC, the reply within
+// maxSignInReply; a status the guard has none of, or a reply that does not
+// encode within its bound, is answered by unread.
 func (s *Server) writeSignInStatus(w http.ResponseWriter, r *http.Request, g guardIdentity, si ext.SignIn, unread func(http.ResponseWriter)) {
 	st, ok := g.signInStatus(r.Context(), si)
 	if !ok {
 		unread(w)
 		return
 	}
+	st = signInShown(st)
 	if !st.Expires.IsZero() {
 		st.Expires = st.Expires.UTC()
 	}
@@ -171,8 +221,9 @@ func (s *Server) writeSignInStatus(w http.ResponseWriter, r *http.Request, g gua
 	_, _ = w.Write(buf.Bytes())
 }
 
-// signInUnavailable answers a call the provider did not answer in time
-// with what the guard takes, in the server's own words.
+// signInUnavailable answers a read the provider did not answer in time
+// with what the guard takes, or an act not asked or refused, in the
+// server's own words.
 func signInUnavailable(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "signin_unavailable", "the identity provider did not answer the sign-in: try again")
 }

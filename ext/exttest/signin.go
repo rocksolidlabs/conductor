@@ -120,6 +120,13 @@ func (f *FakeSignIn) act(count *int, next *ext.SignInStatus) error {
 // is wrong with it.
 func SignIn(t T, n *Network, s ext.SignIn) {
 	t.Helper()
+	signIn(t, n, s, nil)
+}
+
+// signIn is SignIn, its findings keeping out secrets as Identity's do:
+// Identity's tokens when Identity runs it.
+func signIn(t T, n *Network, s ext.SignIn, secrets []string) {
+	t.Helper()
 	p, isProvider := s.(ext.Provider)
 	if !isProvider && s != nil {
 		t.Errorf("exttest: SignIn: the value is no ext.Provider: a sign-in is an identity provider's")
@@ -129,6 +136,7 @@ func SignIn(t T, n *Network, s ext.SignIn) {
 	if !ok {
 		return
 	}
+	c.secrets = secrets
 	defer c.done()
 	status := func(ph phase) {
 		st, returned := run(c, "SignInStatus", ext.IdentityWait, ph, func(context.Context) ext.SignInStatus { return s.SignInStatus() })

@@ -946,7 +946,44 @@ func TestBreachWordsKeepTokens(t *testing.T) {
 			t.Errorf("the Network recorded %q, with its query or user information", d.URL)
 		}
 	}
+
+	// The sign-in's findings keep out the same tokens: its methods fail and
+	// panic with words that hold one.
+	leaky := leakySignIn{NewFakeSignIn("leaky"), secret}
+	leaky.Add(secret, ada)
+	errs = record(t, func(rt T) {
+		Identity(rt, n, leaky, []string{secret}, []string{UnknownToken})
+	})
+	for _, m := range []string{"SignInStatus", "BeginSignIn"} {
+		if !said(errs, `exttest: SignIn "leaky": `+m+` panicked: refused [token] ([token], [token])`) {
+			t.Errorf("%s's panic was not said with its token stood in for: %q", m, errs)
+		}
+	}
+	for _, e := range errs {
+		for _, kept := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+			if strings.Contains(e, kept) {
+				t.Errorf("the suite printed %q: %s", kept, e)
+			}
+		}
+	}
 }
+
+// leakySignIn's sign-in fails and panics with words that hold token, in
+// each of its forms.
+type leakySignIn struct {
+	*FakeSignIn
+	token string
+}
+
+func (p leakySignIn) words() string {
+	return fmt.Sprintf("refused %s (%s, %s)", p.token, url.QueryEscape(p.token), url.PathEscape(p.token))
+}
+
+func (p leakySignIn) SignInStatus() ext.SignInStatus { panic(p.words()) }
+func (p leakySignIn) BeginSignIn(context.Context) error {
+	panic(p.words())
+}
+func (p leakySignIn) SignOut(context.Context) error { return errors.New(p.words()) }
 
 // refusedStarter's Start begins a goroutine whose Launch its host holds,
 // and returns once the host holds it; the goroutine hands back what the

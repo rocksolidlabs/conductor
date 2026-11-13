@@ -197,10 +197,46 @@ type signInGate struct {
 	entered chan struct{} // non-nil: SignInStatus sends on it as it is called
 	panics  bool
 	failure error
+	reads   int // SignInStatus's calls
+
+	actHold   chan struct{} // non-nil: an act, once made, waits for its context to end, then for this to close
+	actPanics bool          // an act, once made, panics
+
+	authHold    chan struct{} // non-nil: Authenticate of heldToken sends on authEntered, then waits for this to close
+	authEntered chan struct{}
+}
+
+// heldToken is the token whose Authenticate a signInGate holds.
+const heldToken = "tok-held"
+
+func (g *signInGate) Authenticate(ctx context.Context, tok string) (ext.Principal, bool, error) {
+	g.mu.Lock()
+	hold, entered := g.authHold, g.authEntered
+	g.mu.Unlock()
+	if tok == heldToken && hold != nil {
+		entered <- struct{}{}
+		<-hold
+	}
+	return g.FakeSignIn.Authenticate(ctx, tok)
+}
+
+// setAct has each act, once made, wait on hold (nil: not) or panic.
+func (g *signInGate) setAct(hold chan struct{}, panics bool) {
+	g.mu.Lock()
+	g.actHold, g.actPanics = hold, panics
+	g.mu.Unlock()
+}
+
+// statusReads answers how many times SignInStatus was called.
+func (g *signInGate) statusReads() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.reads
 }
 
 func (g *signInGate) SignInStatus() ext.SignInStatus {
 	g.mu.Lock()
+	g.reads++
 	hold, entered, panics := g.hold, g.entered, g.panics
 	g.mu.Unlock()
 	if entered != nil {
@@ -225,13 +261,34 @@ func percentEncoded(s string) string {
 }
 
 func (g *signInGate) BeginSignIn(ctx context.Context) error {
+	return g.act(ctx, g.FakeSignIn.BeginSignIn)
+}
+
+func (g *signInGate) SignOut(ctx context.Context) error {
+	return g.act(ctx, g.FakeSignIn.SignOut)
+}
+
+// act answers the failure set, or makes the fake's act (do) and then, as
+// the test says, panics or waits for its context to end and then for
+// actHold to close.
+func (g *signInGate) act(ctx context.Context, do func(context.Context) error) error {
 	g.mu.Lock()
-	err := g.failure
+	err, hold, panics := g.failure, g.actHold, g.actPanics
 	g.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return g.FakeSignIn.BeginSignIn(ctx)
+	if err := do(ctx); err != nil {
+		return err
+	}
+	if panics {
+		panic("the act of " + leakWords)
+	}
+	if hold != nil {
+		<-ctx.Done()
+		<-hold
+	}
+	return nil
 }
 
 // leakWords stands for what a provider's failure may quote.
@@ -288,9 +345,8 @@ func TestSignInLimits(t *testing.T) {
 		{"a page with a port past 65535", ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com:99999/d"}},
 		{"a page with a malformed escape", ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/d?x=%zz"}},
 		{"a page with an apostrophe", ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/a'b"}},
-		{"a who with a right-to-left override", ext.SignInStatus{State: ext.SignedIn, Who: "Ana " + string(rune(0x202e)) + "gnp.exe"}},
-		{"a who with a zero-width space", ext.SignInStatus{State: ext.SignedIn, Who: string(rune(0x200b))}},
-		{"a who with a line separator", ext.SignInStatus{State: ext.SignedIn, Who: "Ana" + string(rune(0x2028)) + "Eve"}},
+		{"a who of a zero-width space alone", ext.SignInStatus{State: ext.SignedIn, Who: string(rune(0x200b))}},
+		{"a page with a fragment", ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/d#token=abc"}},
 	} {
 		g.SetStatus(c.s)
 		unavailable(c.what, "GET")
@@ -368,8 +424,8 @@ func TestSignInStatusUnknown(t *testing.T) {
 		then   func(ext.SignInStatus)
 		words  string
 	}{
-		{"POST", g.Begins, g.OnBegin, "the sign-in was begun"},
-		{"DELETE", g.SignOuts, g.OnSignOut, "the sign-out was asked"},
+		{"POST", g.Begins, g.OnBegin, "the sign-in may have begun; its status is not known yet"},
+		{"DELETE", g.SignOuts, g.OnSignOut, "the sign-out may have been done; its status is not known yet"},
 	} {
 		for _, c := range []struct {
 			what string
@@ -447,11 +503,163 @@ func TestSignInOwnSlots(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("the provider's admin on GET /api/whoami with every sign-in slot held: %d, want 200", resp.StatusCode)
 	}
-	if code, body := signInCall(t, e, "GET", adminToken, ""); code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_unavailable" {
-		t.Errorf("a sign-in call past its slots: %d %s, want 503 signin_unavailable", code, body)
+	for _, m := range []string{"GET", "POST", "DELETE"} {
+		if code, body := signInCall(t, e, m, adminToken, ""); code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_unavailable" {
+			t.Errorf("%s past the sign-in's slots: %d %s, want 503 signin_unavailable", m, code, body)
+		}
 	}
 	if n := len(entered); n != 0 {
 		t.Errorf("a sign-in call past its slots asked the provider (%d calls)", n)
+	}
+	if g.Begins() != 0 || g.SignOuts() != 0 {
+		t.Errorf("an act past the sign-in's slots was made: %d begins, %d sign-outs", g.Begins(), g.SignOuts())
+	}
+}
+
+// The sign-in's slots are its own the other way too: with every slot of
+// the provider's authentication held in the provider, the sign-in is still
+// read, begun and ended.
+func TestSignInSlotsApart(t *testing.T) {
+	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
+	g.Add("tok-admin", cloudAdmin("ana"))
+	e, _ := signInEnv(t, g)
+	hold, entered := make(chan struct{}), make(chan struct{}, 2*extInFlight)
+	g.mu.Lock()
+	g.authHold, g.authEntered = hold, entered
+	g.mu.Unlock()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer close(hold)
+	whoami := func(tok string) int {
+		req, err := http.NewRequest("GET", e.http.URL+"/api/whoami", nil)
+		if err != nil {
+			t.Error(err)
+			return 0
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := e.client.Do(req)
+		if err != nil {
+			t.Error(err)
+			return 0
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for range extInFlight {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			whoami(heldToken) // late: 401
+		}()
+	}
+	for range extInFlight {
+		<-entered
+	}
+	if code := whoami("tok-admin"); code != http.StatusUnauthorized {
+		t.Fatalf("the provider's admin with every authentication slot held: %d, want 401 (the slots are not all held)", code)
+	}
+	for _, m := range []string{"GET", "POST", "DELETE"} {
+		if code, body := signInCall(t, e, m, adminToken, ""); code != http.StatusOK {
+			t.Errorf("%s with every authentication slot held: %d %s, want 200", m, code, body)
+		}
+	}
+	if g.Begins() != 1 || g.SignOuts() != 1 {
+		t.Errorf("with every authentication slot held: %d begins, %d sign-outs, want 1 and 1", g.Begins(), g.SignOuts())
+	}
+}
+
+// A begin or a sign-out that went into the provider and made its change,
+// then held past the wait or panicked, may have been taken: 503
+// signin_status_unknown in the act's words, no status read in that
+// request, the act made once, and the next read shows what it made.
+func TestSignInActNotKnown(t *testing.T) {
+	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
+	e, logs := signInEnv(t, g)
+	for _, act := range []struct {
+		method       string
+		count        func() int
+		then         func(ext.SignInStatus)
+		before, made ext.SignInStatus
+		words        string
+	}{
+		{"POST", g.Begins, g.OnBegin, ext.SignInStatus{State: ext.SignedOut},
+			ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/device"}, "the sign-in may have begun; its status is not known yet"},
+		{"DELETE", g.SignOuts, g.OnSignOut, ext.SignInStatus{State: ext.SignedIn, Who: "Ana"},
+			ext.SignInStatus{State: ext.SignedOut, Why: "signed out from Settings"}, "the sign-out may have been done; its status is not known yet"},
+	} {
+		act.then(act.made)
+		for _, c := range []struct {
+			what string
+			set  func() func() // sets the case up, answers what ends it
+		}{
+			{"held past the wait", func() func() {
+				hold := make(chan struct{})
+				g.setAct(hold, false)
+				return func() { close(hold); g.setAct(nil, false) }
+			}},
+			{"panicking", func() func() { g.setAct(nil, true); return func() { g.setAct(nil, false) } }},
+		} {
+			g.SetStatus(act.before)
+			acts, reads := act.count(), g.statusReads()
+			end := c.set()
+			code, body := signInCall(t, e, act.method, adminToken, "")
+			gotReads := g.statusReads() - reads
+			end()
+			if code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_status_unknown" || !strings.Contains(body, act.words) {
+				t.Errorf("%s %s: %d %s, want 503 signin_status_unknown in the act's words", act.method, c.what, code, body)
+			}
+			if gotReads != 0 {
+				t.Errorf("%s %s: the status was read %d times in that request, want 0", act.method, c.what, gotReads)
+			}
+			if n := act.count() - acts; n != 1 {
+				t.Errorf("%s %s: the act was made %d times, want 1", act.method, c.what, n)
+			}
+			code, body = signInCall(t, e, "GET", adminToken, "")
+			if r := signInStatusOf(t, code, body); r.SignInStatus != act.made {
+				t.Errorf("%s %s: the next read shows %+v, want %+v", act.method, c.what, r.SignInStatus, act.made)
+			}
+		}
+	}
+	if strings.Contains(logs.String(), leakWords) {
+		t.Errorf("the log quotes the provider's words:\n%s", logs.String())
+	}
+}
+
+// Who and why are answered without their characters of Unicode's Cf, Zl
+// and Zp and the space around them, every other character as given; the
+// filter of the server's credentials reads them as they are sent.
+func TestSignInShownText(t *testing.T) {
+	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
+	e, _ := signInEnv(t, g)
+	// A paragraph separator, a soft hyphen, an emoji joined by a zero-width
+	// joiner, a zero-width space and a right-to-left override.
+	given := string([]rune{0x2029}) + "Ana" + string([]rune{0xad}) + "stasia " + string([]rune{0x1f469, 0x200d, 0x1f4bb, 0x200b}) +
+		" " + string([]rune{0x202e}) + "exe" + string([]rune{0x2029})
+	shown := "Anastasia " + string([]rune{0x1f469, 0x1f4bb}) + " exe"
+	formats := []rune{0xad, 0x200d, 0x200b, 0x202e, 0x2029}
+	for _, c := range []struct {
+		field string
+		s     ext.SignInStatus
+		got   func(signInReply) string
+	}{
+		{"who", ext.SignInStatus{State: ext.SignedIn, Who: given}, func(r signInReply) string { return r.Who }},
+		{"why", ext.SignInStatus{State: ext.SignedOut, Why: given}, func(r signInReply) string { return r.Why }},
+	} {
+		g.SetStatus(c.s)
+		code, body := signInCall(t, e, "GET", adminToken, "")
+		if got := c.got(signInStatusOf(t, code, body)); got != shown {
+			t.Errorf("%s: %q, want %q", c.field, got, shown)
+		}
+		for _, r := range formats {
+			// As itself, or as encoding/json escapes a separator.
+			if strings.ContainsRune(body, r) || strings.Contains(body, fmt.Sprintf(`\%c%04x`, 'u', r)) {
+				t.Errorf("%s: the reply holds %U: %s", c.field, r, body)
+			}
+		}
+	}
+	g.SetStatus(ext.SignInStatus{State: ext.SignedIn, Who: "test-host" + string(rune(0x200b)) + "-token"})
+	if code, body := signInCall(t, e, "GET", adminToken, ""); code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_unavailable" || strings.Contains(body, "test-host") {
+		t.Errorf("a who that holds a host token as it is sent: %d %s, want 503 signin_unavailable", code, body)
 	}
 }
 

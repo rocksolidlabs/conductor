@@ -299,17 +299,17 @@ func (c *checker) phases(call func(ph phase)) {
 // provider then still holds a current lease, and ok false is for an
 // admission that has ended, which ends the token's connections. A
 // provider that offers a sign-in (ext.SignIn) has it checked after
-// (SignIn).
+// (SignIn), its findings keeping out known and unknown the same way.
 func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) {
 	t.Helper()
 	c, ok := begin(t, n, "Identity", p)
 	if !ok {
 		return
 	}
-	if s, ok := p.(ext.SignIn); ok {
-		defer SignIn(t, n, s)
-	}
 	c.secrets = append(append([]string(nil), known...), unknown...)
+	if s, ok := p.(ext.SignIn); ok {
+		defer signIn(t, n, s, c.secrets)
+	}
 	defer c.done()
 	type answer struct {
 		p   ext.Principal

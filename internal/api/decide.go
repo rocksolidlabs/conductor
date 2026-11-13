@@ -437,17 +437,22 @@ type decideBody struct {
 
 // decideResponse is the engine's response of p's body, each field set by
 // name: the name the answer is shown under is the provider's for p (as
-// GET /api/me says it) without its characters of Unicode's Cf, Zl and Zp
-// and the space around it, the actor when nothing is left; every other
-// character is kept as given, and nothing the request carries names it.
+// GET /api/me says it) as shownText shows it, the actor when nothing is
+// left; nothing the request carries names it.
 func decideResponse(b decideBody, p principal) crew.Response {
-	name := strings.TrimSpace(strings.Map(func(r rune) rune {
+	return crew.Response{ResponseID: b.ResponseID, Choice: b.Choice, Text: b.Text, Rationale: b.Rationale, ExpectedRev: b.ExpectedRev, ByName: shownText(p.name)}
+}
+
+// shownText is a provider's text as it is shown: without its characters
+// of Unicode's Cf, Zl and Zp and the space around it; every other
+// character as given.
+func shownText(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return -1
 		}
 		return r
-	}, p.name))
-	return crew.Response{ResponseID: b.ResponseID, Choice: b.Choice, Text: b.Text, Rationale: b.Rationale, ExpectedRev: b.ExpectedRev, ByName: name}
+	}, s))
 }
 
 // decideReceipt is rc reduced to what a decide principal reads of its own
