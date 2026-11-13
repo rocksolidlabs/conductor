@@ -109,12 +109,12 @@ func open(dir string) (r *git.Repository, top string, seen *refusal, err error) 
 	seen = &refusal{}
 	r, top, err = openOver(dir, seen)
 	if refused := seen.first(); refused != nil {
-		return nil, "", nil, refused
-	}
-	if errors.Is(err, git.ErrRepositoryNotExists) {
-		return nil, "", nil, ErrNotRepo
+		err = refused
+	} else if errors.Is(err, git.ErrRepositoryNotExists) {
+		err = ErrNotRepo
 	}
 	if err != nil {
+		seen.close()
 		return nil, "", nil, err
 	}
 	return r, top, seen, nil
@@ -178,6 +178,7 @@ func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (
 		return none, err
 	}
 	out, err := f(r, top)
+	seen.close()
 	if refused := seen.first(); refused != nil {
 		return none, refused
 	}
@@ -187,7 +188,8 @@ func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (
 	if r, top, seen, err = open(dir); err != nil {
 		return out, err
 	}
-	if out, err = f(r, top); seen.first() != nil {
+	out, err = f(r, top)
+	if seen.close(); seen.first() != nil {
 		return none, seen.first()
 	}
 	return out, err

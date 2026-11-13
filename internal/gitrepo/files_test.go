@@ -59,7 +59,8 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 	} {
 		write(t, dir, "HEAD", "ref: refs/heads/main\n")
 		seen := &refusal{}
-		f, err := careFS(dir, seen).Open("HEAD")
+		defer seen.close()
+		f, err := careFS(dir, seen).billy().Open("HEAD")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,13 +73,38 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 			t.Errorf("%s: %d bytes, %v (noted %v); want %d bytes and the refusal", read.name, n, err, seen.first(), maxSmall)
 		}
 		seen = &refusal{}
-		if _, err := careFS(dir, seen).Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+		defer seen.close()
+		if _, err := careFS(dir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
 			t.Errorf("open past the bound: %v, want the refusal", err)
 		}
 	}
 	// The package only reads.
-	if _, err := careFS(dir, &refusal{}).OpenFile("HEAD", os.O_RDWR, 0); !errors.Is(err, errReadOnly) {
+	seen := &refusal{}
+	defer seen.close()
+	if _, err := careFS(dir, seen).billy().OpenFile("HEAD", os.O_RDWR, 0); !errors.Is(err, errReadOnly) {
 		t.Errorf("open for writing: %v", err)
+	}
+}
+
+// The file opened is the file the root looked at: one put in its place
+// between the look and the open is refused, as the file it is.
+func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "HEAD", "ref: refs/heads/main\n")
+	write(t, dir, "other", "ref: refs/heads/other\n")
+	afterLook = func(string) {
+		if err := os.Rename(filepath.Join(dir, "other"), filepath.Join(dir, "HEAD")); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { afterLook = nil }()
+	seen := &refusal{}
+	defer seen.close()
+	if f, err := careFS(dir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+		if err == nil {
+			f.Close()
+		}
+		t.Errorf("open: %v (noted %v), want the refusal", err, seen.first())
 	}
 }
 
@@ -89,11 +115,10 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		"git.Open":                         "openOver",
 		"filesystem.NewStorageWithOptions": "openOver",
 		"dotgit.NewRepositoryFilesystem":   "openOver",
-		"syscall.Open":                     "openRegular",
-		"os.Open":                          "openRegular",
-		"chroot.New":                       "careUnder",
+		"os.OpenRoot":                      "careFS",
+		"chroot.New":                       "billy",
 	}
-	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "filesystem.NewStorage", "osfs.New", "os.OpenFile", "os.ReadFile"}
+	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "filesystem.NewStorage", "osfs.New", "os.Open", "os.OpenFile", "os.ReadFile", "syscall.Open"}
 	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ package gitrepo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -120,7 +121,7 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 		make func(path string) error
 	}{
 		{"a named pipe with no writer", func(path string) error { return syscall.Mkfifo(path, 0o600) }},
-		{"a link to a character device", func(path string) error { return os.Symlink("/dev/null", path) }},
+		{"a link out of its folder", nil},
 		{"a directory", func(path string) error { return os.Mkdir(path, 0o755) }},
 		{"a regular file past its bound", nil},
 	}
@@ -136,7 +137,14 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 					}
 				}
 				path := r.files[name]
-				if kind.make == nil {
+				if kind.name == "a link out of its folder" {
+					// To a copy of the file as git wrote it, a regular
+					// file within its bound, in a folder of the test's
+					// own outside the repository.
+					copied := filepath.Join(t.TempDir(), name)
+					padded(t, path, copied, "", 0, false)
+					linkTo(t, copied, path)
+				} else if kind.make == nil {
 					// The file as git wrote it, then zeros past the bound
 					// (sparse: nothing written to the disk for them).
 					if err := os.Truncate(path, limit+1); err != nil {
@@ -165,17 +173,135 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 	}
 }
 
-// The opener's one way to open a file takes a regular file only, judged
-// on the open file: a link (here to a character device, under the test's
-// own folder) is followed by the open and refused.
-func TestTheOpenerRefusesALinkToADevice(t *testing.T) {
+// padded writes to path what was at from, then lines of line's shape (%d
+// a running number) until it is at least size bytes long; cut cuts it to
+// size exactly.
+func padded(t *testing.T, from, path, line string, size int64, cut bool) {
+	t.Helper()
+	b, err := os.ReadFile(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; int64(len(b)) < size; i++ {
+		b = fmt.Appendf(b, line, i)
+	}
+	if cut {
+		b = b[:size]
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// linkTo replaces the file at path with a link to target.
+func linkTo(t *testing.T, target, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A link inside the git directory is followed, and what is read of it is
+// bounded by the name asked for, never by the name it leads to: config, a
+// link to a file under objects one byte past config's bound, is refused;
+// packed-refs, a link to a file of another name of a mebibyte (past the
+// bound of a file of no named kind), is read.
+func TestALinkIsReadWithTheBoundOfTheNameAskedFor(t *testing.T) {
+	t.Run("config to a file under objects past config's bound", func(t *testing.T) {
+		t.Parallel()
+		r := linked(t)
+		config := r.files["config"]
+		padded(t, config, filepath.Join(filepath.Dir(config), "objects", "config-data"), "# a comment of the configuration, line %08d\n", maxConfig+1, true)
+		linkTo(t, filepath.Join("objects", "config-data"), config)
+		for _, rd := range readers {
+			if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) {
+				t.Errorf("%s: %v, want the refusal", rd.name, err)
+			}
+		}
+	})
+	t.Run("packed-refs to a file of another name of a mebibyte", func(t *testing.T) {
+		t.Parallel()
+		r := linked(t)
+		packed := r.files["packed-refs"]
+		padded(t, packed, filepath.Join(filepath.Dir(packed), "all-refs"), r.c1+" refs/tags/pad-%08d\n", 1<<20, false)
+		linkTo(t, "all-refs", packed)
+		for _, rd := range readers {
+			if err := rd.read(context.Background(), r); err != nil {
+				t.Errorf("%s: %v, want it read", rd.name, err)
+			}
+		}
+	})
+}
+
+// A folder on the way to the repository's files that is a link out of the
+// git directory (objects, to a copy of it elsewhere), and a .git that is a
+// link to a git directory elsewhere, are refused by each read.
+func TestALinkOutOfTheGitDirectoryIsRefused(t *testing.T) {
+	t.Run("objects", func(t *testing.T) {
+		t.Parallel()
+		r := linked(t)
+		objects := filepath.Join(filepath.Dir(r.files["config"]), "objects")
+		elsewhere := filepath.Join(t.TempDir(), "objects")
+		if err := os.CopyFS(elsewhere, os.DirFS(objects)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(objects); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, objects); err != nil {
+			t.Fatal(err)
+		}
+		for _, rd := range readers {
+			if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) {
+				t.Errorf("%s: %v, want the refusal", rd.name, err)
+			}
+		}
+	})
+	t.Run(".git", func(t *testing.T) {
+		t.Parallel()
+		dir := scratch(t)
+		write(t, dir, "a.txt", "one\n")
+		c := commit(t, dir, time.Time{}, "one")
+		elsewhere := filepath.Join(t.TempDir(), "git")
+		if err := os.Rename(filepath.Join(dir, ".git"), elsewhere); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, filepath.Join(dir, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Commits(context.Background(), dir, "", time.Time{}); !errors.Is(err, ErrUnreadable) {
+			t.Errorf("Commits: %v, want the refusal", err)
+		}
+		if _, err := FileAt(context.Background(), dir, c, "a.txt", 100); !errors.Is(err, ErrUnreadable) {
+			t.Errorf("FileAt: %v, want the refusal", err)
+		}
+	})
+}
+
+// The opener follows a link within its folder (HEAD, to a regular file
+// beside it) and reads it; a named pipe (under the test's own folder) is
+// refused by the look, before any open.
+func TestTheOpenerFollowsALinkWithinItsFolderAndRefusesAPipe(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Symlink("/dev/null", filepath.Join(dir, "HEAD")); err != nil {
+	write(t, dir, "head-data", "ref: refs/heads/main\n")
+	if err := os.Symlink("head-data", filepath.Join(dir, "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	seen := &refusal{}
-	fs := &careOS{osBase: nil, root: dir, seen: seen}
-	if _, err := fs.Open(filepath.Join(dir, "HEAD")); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
-		t.Fatalf("open: %v, noted %v", err, seen.first())
+	defer seen.close()
+	fs := careFS(dir, seen).billy()
+	f, err := fs.Open("HEAD")
+	if err != nil {
+		t.Fatalf("open HEAD: %v", err)
+	}
+	f.Close()
+	if _, err := fs.Open("pipe"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+		t.Fatalf("open pipe: %v, noted %v", err, seen.first())
 	}
 }
