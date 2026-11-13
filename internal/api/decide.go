@@ -53,12 +53,16 @@ type decideWorking struct {
 	n  map[string]int
 }
 
-// decideWorked runs work, a decide principal's request's own work once its
-// body has been read whole, in one of its subject's maxDecideWorked
-// places, or answers 429 when all are taken, nothing read or written. The
-// place is let go once work has made its reply, on every way out of it,
-// and the reply is written after: a request is counted while the server
-// works on it, never while it is received or sent.
+// decideWorked runs work, a decide principal's request's own work, in one
+// of its subject's maxDecideWorked places (by subject, whatever name the
+// pass carries), or answers 429 when all are taken, nothing read or
+// written. A request is counted from the moment the server starts its own
+// work on it (for a response: once its body has been read whole; for the
+// other three routes: once the route's gate and query check have passed)
+// until its reply has been made, before the reply's first byte is written:
+// the place is let go once work has made its reply, on every way out of
+// it, and the reply is written after. A request that carries a body the
+// route does not read is not waited for.
 func (s *Server) decideWorked(w http.ResponseWriter, p principal, work func(http.ResponseWriter)) {
 	c := &s.decideWork
 	c.mu.Lock()

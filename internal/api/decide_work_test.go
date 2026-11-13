@@ -220,6 +220,58 @@ func TestDecideWorksSixteenOfASubjectAtOnce(t *testing.T) {
 	}
 }
 
+// answeredAll checks that every call is answered 200.
+func (f *decideFixture) answeredAll(t *testing.T, what string, calls ...decideCall) {
+	t.Helper()
+	for _, c := range calls {
+		if s := f.send(c); s.status != http.StatusOK {
+			t.Errorf("%s, %s %s by %.12s: %d %.200s", what, c.method, c.path, c.pass, s.status, s.data)
+		}
+	}
+}
+
+// The places are a subject's, never a name's: with eight of ana's requests
+// held under her pass named Ana and eight under her pass named Anna, a 17th
+// by either name is 429 and eve's passes named Ana and Anna are answered;
+// with all sixteen held under the name Anna, ana's pass named Ana is 429
+// and eve's named Anna is answered.
+func TestDecideWorkIsCountedBySubjectNotByName(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	f.give(t, did)
+	const (
+		passAnaAnna = "pass.decide.ana-anna-3c71"
+		passEveAna  = "pass.decide.eve-ana-6d42"
+		passEveAnna = "pass.decide.eve-anna-a915"
+	)
+	decide := []ext.Grant{ext.GrantDecide}
+	f.id.Add(passAnaAnna, ext.Principal{Subject: "ana", Name: "Anna", Grants: decide})
+	f.id.Add(passEveAna, ext.Principal{Subject: "eve", Name: "Ana", Grants: decide})
+	f.id.Add(passEveAnna, ext.Principal{Subject: "eve", Name: "Anna", Grants: decide})
+
+	h := f.holdWork(t)
+	h.hold(16)
+	for range 4 {
+		h.start(f, meCall(passAna), readCall(passHostAna, did), meCall(passAnaAnna), readCall(passAnaAnna, did))
+	}
+	h.waitHeld(t, 16)
+	f.over(t, "ana's 17th by either name", meCall(passAna), readCall(passHostAna, did), meCall(passAnaAnna), readCall(passAnaAnna, did))
+	f.answeredAll(t, "eve by ana's names while ana's are held", meCall(passEveAna), readCall(passEveAna, did), meCall(passEveAnna), readCall(passEveAnna, did), listCall(passEveAna))
+	h.end()
+	h.collect(t, 16, "ana's held requests by both names")
+
+	h = f.holdWork(t)
+	h.hold(16)
+	for range 8 {
+		h.start(f, meCall(passAnaAnna), readCall(passAnaAnna, did))
+	}
+	h.waitHeld(t, 16)
+	f.over(t, "ana's 17th by the name none of hers are held under", meCall(passAna), readCall(passHostAna, did), listCall(passAna))
+	f.answeredAll(t, "eve named Anna while ana's are held under that name", meCall(passEveAnna), readCall(passEveAnna, did), listCall(passEveAnna))
+	h.end()
+	h.collect(t, 16, "ana's held requests named Anna")
+}
+
 // heldBody is a request's body its sender holds back: first, then, once
 // that is read, a wait for gate (at told as it starts), then rest.
 type heldBody struct {
@@ -440,4 +492,62 @@ func TestDecideResponseIsJudgedOnceItsBodyIsRead(t *testing.T) {
 	if rec := f.record(t, did); rec.Rev != rev || len(rec.Responses) != 0 {
 		t.Errorf("the decision after the responses: rev %d (was %d), %d responses", rec.Rev, rev, len(rec.Responses))
 	}
+}
+
+// A response takes its place before its pass is asked about again: with
+// ana's sixteen places held, her response is 429 in the fixed words, the
+// provider asked about its pass at the gate alone, the decision not read
+// and nothing recorded; once a place is let go, the same response id is
+// taken.
+func TestDecideResponseIsCountedBeforeItsPassIsAskedAgain(t *testing.T) {
+	f := newDecideFixture(t, nil)
+	did := f.open(t, "r1")
+	f.give(t, did)
+	rev := f.rev(t, did)
+	const passAnaRespond = "pass.decide.ana-respond-58e0"
+	f.id.Add(passAnaRespond, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantDecide}})
+	asks := func() int {
+		f.id.mu.Lock()
+		defer f.id.mu.Unlock()
+		return f.id.asked[passAnaRespond]
+	}
+	h := f.holdWork(t)
+	h.hold(16)
+	for range 8 {
+		h.start(f, meCall(passAna), meCall(passHostAna))
+	}
+	h.waitHeld(t, 16)
+	before := asks()
+	f.over(t, "a response past the places", respondCall(passAnaRespond, did, "past", rev))
+	if n := asks() - before; n != 1 {
+		t.Errorf("the provider was asked about the pass %d times for the response past the places, not once (the gate's)", n)
+	}
+	if n := h.reads.Load(); n != 0 {
+		t.Errorf("the decision was read %d times for the response past the places", n)
+	}
+	if rec := f.record(t, did); rec.Rev != rev || len(rec.Responses) != 0 {
+		t.Errorf("the decision after the response past the places: rev %d (was %d), %d responses", rec.Rev, rev, len(rec.Responses))
+	}
+	select {
+	case h.release <- struct{}{}:
+	case <-time.After(testWait):
+		t.Fatal("no held request took its release")
+	}
+	h.collect(t, 1, "the one let go")
+	before = asks()
+	if s := f.send(respondCall(passAnaRespond, did, "past", rev)); s.status != http.StatusCreated {
+		t.Fatalf("the same response once a place is free: %d %.200s", s.status, s.data)
+	}
+	if n := asks() - before; n < 2 {
+		t.Errorf("the provider was asked about the pass %d times for the response taken, not at the gate and again in its place", n)
+	}
+	kept := false
+	for _, row := range f.record(t, did).Responses {
+		kept = kept || row.ResponseID == "past"
+	}
+	if !kept {
+		t.Error("the response taken once a place was free is not in the record")
+	}
+	h.end()
+	h.collect(t, 15, "the held requests")
 }
