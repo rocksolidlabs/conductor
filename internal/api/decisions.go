@@ -145,7 +145,7 @@ func (s *Server) decisionSession(w http.ResponseWriter, r *http.Request) (string
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return "", false
 	}
-	if agentTokenOK(d, presentedToken(r, false)) {
+	if s.agentTokenOK(r, d) {
 		return d.Info().ID, true
 	}
 	if !s.limiter.allow(clientKey(r)) {

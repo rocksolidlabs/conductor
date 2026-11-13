@@ -30,7 +30,7 @@ func (s *Server) taskSession(w http.ResponseWriter, r *http.Request, agentOnly b
 	if agentOnly {
 		// A result is always the agent's own: the workbench token submits
 		// none, so a person cannot finish a task for an agent by mistake.
-		if agentTokenOK(d, presentedToken(r, false)) {
+		if s.agentTokenOK(r, d) {
 			return d, true
 		}
 		if p := s.authenticate(r, false); p.admin {

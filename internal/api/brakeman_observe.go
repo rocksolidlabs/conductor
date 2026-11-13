@@ -112,7 +112,7 @@ func (s *Server) turnPrincipalOf(r *http.Request) (*turnPrincipal, *apiError) {
 	}
 	d := s.brakeman
 	drv, ok := s.registry.Get(id)
-	if !ok || !agentTokenOK(drv, presentedToken(r, false)) {
+	if !ok || !s.agentTokenOK(r, drv) {
 		// Not the named session's own token: the request is any other's,
 		// the workbench token's or none.
 		return nil, nil

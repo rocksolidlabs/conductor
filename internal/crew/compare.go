@@ -3,6 +3,7 @@ package crew
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"unicode"
@@ -129,6 +130,82 @@ func (r *run) laneOf(m *member) string {
 	}
 	return ""
 }
+
+// Lane is a comparison's lane as the engine keeps it for one session of a
+// compare run (Engine.LaneOf): the run, the session's member and its lane
+// (the lane's candidate task), with the lane of every member and task of
+// the run as the run holds them (laneOf, run.lanes). The API's doors ask
+// it and nothing else which lane a member or a task is in.
+type Lane struct {
+	Run, Member, Candidate string
+	cmp                    Compare
+	members, tasks         map[string]string
+}
+
+// LaneOf is the lane of the session with the id: ok is false for a
+// session that is no member of a comparison's run. r.lanes is set as the
+// run is made, before any session of it is known, and never changed, so a
+// run of no comparison is told without the engine's lock.
+func (e *Engine) LaneOf(sessionID string) (Lane, bool) {
+	v, ok := e.bySession.Load(sessionID)
+	if !ok || v.(sessionMember).r.lanes == nil {
+		return Lane{}, false
+	}
+	sm := v.(sessionMember)
+	r := sm.r
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	l := Lane{Run: r.id, Member: sm.m.def.Name, Candidate: r.laneOf(sm.m), cmp: r.compare.clone(), members: map[string]string{}, tasks: maps.Clone(r.lanes)}
+	for _, m := range r.members {
+		l.members[m.def.Name] = r.laneOf(m)
+	}
+	l.cmp.Candidates = slices.DeleteFunc(l.cmp.Candidates, func(cd Candidate) bool { return cd.Task != l.Candidate || l.Candidate == "" })
+	return l, true
+}
+
+// own reports whether lane is l's own: never for a lane of no name, which
+// the validation leaves to no member.
+func (l Lane) own(lane string) bool { return l.Candidate != "" && lane == l.Candidate }
+
+// OwnMember reports whether the run's member with the name is in l's lane.
+func (l Lane) OwnMember(name string) bool {
+	lane, ok := l.members[name]
+	return ok && l.own(lane)
+}
+
+// OtherMember reports whether the run's member with the name is in
+// another lane than l's; false for a name no member of the run has.
+func (l Lane) OtherMember(name string) bool {
+	lane, ok := l.members[name]
+	return ok && !l.own(lane)
+}
+
+// OwnTask reports whether the run's task with the id is in l's lane.
+func (l Lane) OwnTask(id string) bool {
+	lane, ok := l.tasks[id]
+	return ok && l.own(lane)
+}
+
+// OtherTasks are the run's tasks in other lanes than l's, sorted.
+func (l Lane) OtherTasks() []string {
+	var out []string
+	for id, lane := range l.tasks {
+		if !l.own(lane) {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Compare is the run's compare block with l's own candidate alone.
+func (l Lane) Compare() Compare { return l.cmp.clone() }
+
+// SetCompareOpenForTest lets the engine launch a crew with a compare block
+// (compareOpen), for the tests of another package of what a comparison's
+// run answers, before the plan's row that opens the launch. It is called
+// before the engine launches any run: prepare reads it without a lock.
+func (e *Engine) SetCompareOpenForTest(open bool) { e.compareOpen = open }
 
 // validate checks the compare block of c, a crew with tasks whose tasks
 // have passed their own rules (checkTasks): its bounds, its candidates

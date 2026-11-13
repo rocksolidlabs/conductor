@@ -39,7 +39,7 @@ func (s *Server) turnSession(w http.ResponseWriter, r *http.Request, agentOnly b
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return nil, "", false, false
 	}
-	own = agentTokenOK(d, presentedToken(r, false))
+	own = s.agentTokenOK(r, d)
 	if !own {
 		if _, ok := s.taskSession(w, r, agentOnly); !ok {
 			return nil, "", false, false

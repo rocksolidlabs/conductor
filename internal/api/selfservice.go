@@ -291,7 +291,9 @@ func (s *Server) handleSelfAddMember(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSelfRun answers the calling session's run, its log cut to the last
-// selfRunLogTail entries: 200 {run, member}; 404 no_run.
+// selfRunLogTail entries: 200 {run, member}; 404 no_run. A session of a
+// comparison's lane gets its lane's view of the run (laneRun) instead,
+// whichever token asked.
 func (s *Server) handleSelfRun(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.selfSession(w, r)
 	if !ok {
@@ -302,9 +304,17 @@ func (s *Server) handleSelfRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no_run", "the session is not a member of a run")
 		return
 	}
+	lane, inLane := s.runs.LaneOf(local.Info().ID)
+	if inLane {
+		runID, member = lane.Run, lane.Member
+	}
 	run, ok := s.runs.Get(runID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "no_run", "the run is gone")
+		return
+	}
+	if inLane {
+		writeJSON(w, http.StatusOK, map[string]any{"run": laneRun(run, lane), "member": member})
 		return
 	}
 	if len(run.Log) > selfRunLogTail {

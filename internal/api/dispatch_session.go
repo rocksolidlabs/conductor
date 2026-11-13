@@ -168,7 +168,8 @@ func linkedTicket(ctx context.Context, ds *dispatch.Store, run string) (dispatch
 // no_ticket for a session in no run or a run no live ticket holds; 400
 // invalid_request for any parameter. The reply is bounded as the ticket's
 // own read is, under MaxTicketReply, which dispatch_test.go measures
-// through this route.
+// through this route. A session of a comparison's lane reads it without
+// the other lanes (laneTicket), whichever token asked.
 func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
 	if !ok || brakemanCannot(w, d) {
@@ -216,6 +217,9 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 		noTicket(w, run)
 		return
 	}
+	if lane, inLane := s.runs.LaneOf(d.Info().ID); inLane {
+		v = laneTicket(v, lane)
+	}
 	project, _, _ := dispatch.ParseKey(v.Key)
 	pv, err := ds.Project(ctx, project)
 	if err != nil {
@@ -258,10 +262,12 @@ var beforeSessionComment atomic.Pointer[func()]
 // that operation's receipt whatever the run's link has done since (a
 // repeat on the ticket it went to, or op_conflict for other content, a
 // refusal's as well), and a new operation goes to the ticket that holds
-// the run when it commits.
+// the run when it commits. A session of a comparison's lane is answered
+// 409 lane before anything is read or written (laneComment), whichever
+// token asked.
 func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
-	if !ok || brakemanCannot(w, d) {
+	if !ok || brakemanCannot(w, d) || s.laneComment(w, d) {
 		return
 	}
 	ds, ok := s.dispatchWriter(w)

@@ -54,15 +54,22 @@ type eventRequest struct {
 // route: the agent said it, whoever holds the token.
 const eventActor = "agent"
 
-// agentTokenOK reports whether the presented token is the session's agent token.
-func agentTokenOK(d session.Driver, tok string) bool {
+// agentTokenOK reports whether r presents the agent token of the session
+// d, in its Authorization header, for a route that token may call. It is
+// the one place in this package an agent's token is taken: every route
+// that takes one asks it. A session of a comparison's lane calls only the
+// routes compareDoors opens to it (laneDoorOpen); any other route answers
+// it as a token it does not take.
+func (s *Server) agentTokenOK(r *http.Request, d session.Driver) bool {
+	tok := presentedToken(r, false)
+	var ok bool
 	switch drv := d.(type) {
 	case *session.Local:
-		return drv.AgentTokenOK(tok)
+		ok = drv.AgentTokenOK(tok)
 	case *signal.HostedSession:
-		return drv.AgentTokenOK(tok)
+		ok = drv.AgentTokenOK(tok)
 	}
-	return false
+	return ok && s.laneDoorOpen(r, d.Info().ID)
 }
 
 // reportTarget finds the session a report is about. A session whose launch
@@ -99,7 +106,7 @@ func (s *Server) reportTarget(w http.ResponseWriter, r *http.Request) (session.D
 // (tokenPrincipal), and an agent's hooks, which report often, never wait on
 // one.
 func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d session.Driver) (source string, ok bool) {
-	if agentTokenOK(d, presentedToken(r, false)) {
+	if s.agentTokenOK(r, d) {
 		return session.SourceAPI, true
 	}
 	if p := s.authenticate(r, false); p.admin && !p.yard {
