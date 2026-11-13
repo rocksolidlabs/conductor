@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -78,6 +79,20 @@ func linked(t *testing.T) linkedRepo {
 		"config":      filepath.Join(dir, ".git", "config"),
 		"packed-refs": filepath.Join(dir, ".git", "packed-refs"),
 	}}
+}
+
+// ordinary is a repository with no linked worktree: two commits, the
+// second on crew/core, as linked's reads expect, under the test's own
+// folder.
+func ordinary(t *testing.T) linkedRepo {
+	t.Helper()
+	dir := scratch(t)
+	write(t, dir, "a.txt", "one\n")
+	c1 := commit(t, dir, time.Time{}, "one")
+	gitIn(t, dir, time.Time{}, "checkout", "-q", "-b", "crew/core")
+	write(t, dir, "a.txt", "two\n")
+	c2 := commit(t, dir, time.Time{}, "two")
+	return linkedRepo{wt: dir, c1: c1, c2: c2}
 }
 
 // readers are the package's four reads of a repository.
@@ -285,6 +300,17 @@ func TestARefusalSaysItsCause(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"packed-refs a socket", "packed-refs is a socket", func(t *testing.T, r linkedRepo) {
+			if err := os.Remove(r.files["packed-refs"]); err != nil {
+				t.Fatal(err)
+			}
+			socket(t, r.files["packed-refs"])
+		}},
+		{".git names a regular file", "the git directory .git names is a file, not a folder", func(t *testing.T, r linkedRepo) {
+			file := filepath.Join(t.TempDir(), "git")
+			write(t, filepath.Dir(file), "git", "a regular file\n")
+			write(t, r.wt, ".git", "gitdir: "+file+"\n")
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -296,7 +322,8 @@ func TestARefusalSaysItsCause(t *testing.T) {
 			}
 		})
 	}
-	for n, want := range map[int64]string{5<<20 + 1<<19: "5.5 MiB", maxConfig + 1: "just over 16 MiB", maxSmall + 1: "just over 64 KiB", 1<<20 - 1: "1023.9 KiB", 12: "12 bytes"} {
+	for n, want := range map[int64]string{5<<20 + 1<<19: "5.5 MiB", maxConfig + 1: "just over 16 MiB", maxSmall + 1: "just over 64 KiB", 1<<20 - 1: "1023.9 KiB", 12: "12 bytes",
+		maxConfig: "16 MiB", maxSmall: "64 KiB", 1 << 20: "1 MiB", 1: "1 byte", 0: "0 bytes"} {
 		if got := units(n); got != want {
 			t.Errorf("units(%d) = %q, want %q", n, got, want)
 		}
@@ -648,9 +675,9 @@ func TestALinkOutOfTheGitDirectoryIsRefused(t *testing.T) {
 	})
 }
 
-// The opener follows a link within its folder (HEAD, to a regular file
-// beside it) and reads it; a named pipe (under the test's own folder) is
-// refused by the look, before any open.
+// The opener follows a relative link within its folder (HEAD, to a regular
+// file beside it) and reads it; a named pipe (under the test's own folder)
+// is refused by the look, before any open.
 func TestTheOpenerFollowsALinkWithinItsFolderAndRefusesAPipe(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "head-data", "ref: refs/heads/main\n")
@@ -671,5 +698,213 @@ func TestTheOpenerFollowsALinkWithinItsFolderAndRefusesAPipe(t *testing.T) {
 	// Refused by the look (its kind), not by the look at the open file.
 	if _, err := fs.Open("pipe"); !errors.Is(seen.first(), ErrUnreadable) || err == nil || !strings.HasSuffix(err.Error(), ": pipe is a named pipe") {
 		t.Fatalf("open pipe: %v, noted %v", err, seen.first())
+	}
+}
+
+// socket makes a unix socket at path and closes it: bound through a link
+// to path's folder from a short folder of the test's own, since a socket's
+// path is at most about a hundred bytes.
+func socket(t *testing.T, path string) {
+	t.Helper()
+	short, err := os.MkdirTemp("", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(short) })
+	link := filepath.Join(short, "d")
+	if err := os.Symlink(filepath.Dir(path), link); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if err := syscall.Bind(fd, &syscall.SockaddrUnix{Name: filepath.Join(link, filepath.Base(path))}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An ordinary repository whose .git is a link is refused by each of the
+// four reads, wherever the link leads. A relative link to a folder inside
+// the working folder is followed by the folder's root to a folder, and
+// under refuses it, looked at without following it: ".git is a link". A
+// link to a git directory elsewhere, written as an absolute path, is
+// refused by the root's look at .git before under, in that look's words.
+// Each repository is read before its .git is made a link.
+func TestADotGitThatIsALinkIsRefused(t *testing.T) {
+	const prefix = "a file of the repository was not read: "
+	for _, c := range []struct {
+		name, want string
+		elsewhere  bool
+	}{
+		{"a relative link to a folder inside the working folder", ".git is a link", false},
+		{"a link to a git directory elsewhere", ".git is behind a link that is not followed: it leads out of its folder or is written as an absolute path", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := ordinary(t)
+			for _, rd := range readers {
+				if err := rd.read(context.Background(), r); err != nil {
+					t.Fatalf("%s before the change: %v", rd.name, err)
+				}
+			}
+			target, moved := "git-data", filepath.Join(r.wt, "git-data")
+			if c.elsewhere {
+				target = filepath.Join(t.TempDir(), "git")
+				moved = target
+			}
+			if err := os.Rename(filepath.Join(r.wt, ".git"), moved); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(r.wt, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			for _, rd := range readers {
+				if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) || err.Error() != prefix+c.want {
+					t.Errorf("%s: %v, want %q", rd.name, err, prefix+c.want)
+				}
+			}
+		})
+	}
+}
+
+// ReadDir opens the folder it lists as a folder only: a name that is a
+// named pipe or a regular file is refused at once ("not a directory"), and
+// a folder is listed as before, sorted by name.
+func TestReadDirListsAFolderOnly(t *testing.T) {
+	dir := t.TempDir()
+	pipe := fifo(t, filepath.Join(dir, "pipe"))
+	write(t, dir, "file", "a regular file\n")
+	write(t, filepath.Join(dir, "folder"), "b", "b\n")
+	write(t, filepath.Join(dir, "folder"), "a", "a\n")
+	seen := &refusal{}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	for _, name := range []string{"pipe", "file"} {
+		err := within(t, pipe, "ReadDir of "+name, func(context.Context) error {
+			_, err := fs.ReadDir(name)
+			return err
+		})
+		if err == nil || !strings.HasPrefix(err.Error(), "readdir ") || !strings.HasSuffix(err.Error(), "/"+name+": not a directory") {
+			t.Errorf("ReadDir(%q): %v, want it refused as not a directory", name, err)
+		}
+	}
+	list, err := fs.ReadDir("folder")
+	if err != nil || len(list) != 2 || list[0].Name() != "a" || list[1].Name() != "b" {
+		t.Errorf("ReadDir(folder): %v %v, want a and b", list, err)
+	}
+}
+
+// The opener handed a path that is not a folder (a named pipe, a socket, a
+// regular file) looks for the repository from the folder that holds it, as
+// go-git does, and opens nothing at the path: inside a repository's
+// working folder it opens the repository, and in a folder of the test's
+// own outside any repository it answers ErrNotRepo, at once.
+func TestTheOpenerHandedAPathThatIsNotAFolder(t *testing.T) {
+	inside, outside := linked(t).wt, t.TempDir()
+	pipe := fifo(t, filepath.Join(inside, "pipe"))
+	fifo(t, filepath.Join(outside, "pipe"))
+	for _, dir := range []string{inside, outside} {
+		socket(t, filepath.Join(dir, "socket"))
+		write(t, dir, "file", "a regular file\n")
+	}
+	for _, name := range []string{"pipe", "socket", "file"} {
+		for dir, want := range map[string]error{inside: nil, outside: ErrNotRepo} {
+			path := filepath.Join(dir, name)
+			err := within(t, pipe, "the opener handed "+path, func(context.Context) error {
+				_, _, seen, err := open(path)
+				if err == nil {
+					seen.close()
+				}
+				return err
+			})
+			if (err == nil) != (want == nil) || !errors.Is(err, want) {
+				t.Errorf("open(%s): %v, want %v", path, err, want)
+			}
+		}
+	}
+}
+
+// writeEnd waits for made, then until a process has the named pipe at path
+// open for reading (a non-blocking open of it for writing succeeds only
+// then), and is the write end it opened, held so that the reader waits in
+// its read; -1 when ctx ends first.
+func writeEnd(ctx context.Context, path string, made <-chan struct{}) int {
+	select {
+	case <-made:
+	case <-ctx.Done():
+		return -1
+	}
+	for {
+		if fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			return fd
+		}
+		select {
+		case <-ctx.Done():
+			return -1
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// FileAt with config made a named pipe once the repository is open (at the
+// first look at an object, as TestFileAtAnswersItsCapOrTheCallersOwnError
+// makes it) and the caller's context ended while the git binary has the
+// pipe open (writeEnd): FileAt returns the caller's own error, never the
+// cap's, after one opening, and no process has the pipe open once it has
+// returned. The cap is far above the test's waits, so only the caller's
+// context ends git.
+func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
+	r := linked(t)
+	config := r.files["config"]
+	openings := 0
+	made := make(chan struct{})
+	var once sync.Once
+	afterLook = func(rel string) {
+		if rel == "commondir" {
+			openings++
+		}
+		if strings.HasPrefix(rel, "objects/") {
+			once.Do(func() {
+				if err := os.Remove(config); err != nil {
+					t.Error(err)
+				} else if err := syscall.Mkfifo(config, 0o600); err != nil {
+					t.Error(err)
+				}
+				close(made)
+			})
+		}
+	}
+	defer func() { afterLook = nil }()
+	gitCap = 10 * hangWait
+	defer func() { gitCap = maxGitRead }()
+	held := -1
+	err := within(t, config, "config a named pipe git has open, FileAt", func(ctx context.Context) error {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		polled := make(chan int, 1)
+		go func() {
+			polled <- writeEnd(ctx, config, made)
+			cancel()
+		}()
+		_, err := FileAt(ctx, r.wt, r.c2, "a.txt", 100)
+		cancel()
+		held = <-polled
+		return err
+	})
+	if held < 0 {
+		t.Errorf("no process opened config for reading before FileAt returned")
+	} else {
+		syscall.Close(held)
+	}
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap) || openings != 1 {
+		t.Errorf("FileAt: %v after %d openings, want the caller's own error (%v) after one", err, openings, context.Canceled)
+	}
+	if fd, err := syscall.Open(config, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		syscall.Close(fd)
+		t.Errorf("a process still has config open for reading after FileAt returned")
+	} else if err != syscall.ENXIO {
+		t.Errorf("open config for writing: %v, want ENXIO (no reader)", err)
 	}
 }

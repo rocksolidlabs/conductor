@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v5"
 )
@@ -176,17 +178,18 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 	}
 }
 
-// One opener: no function of the package opens a repository, a folder or
-// a file another way than open and careOS. The test reads the package's
-// source files (its tests aside) as text, parsed with go/parser and no
-// types, and checks:
+// One opener: the package's source files (its tests aside), read as text
+// and parsed with go/parser and no types, use the ways to open a
+// repository, a folder or a file that open and careOS use, where they use
+// them, and none of the others. The test checks:
 //
-//   - each name the package uses (a call or a function value), followed to
-//     the identifier it starts at (osfs.Default.Open is osfs's): one in
-//     only is used in the functions it lists alone, and one in never
-//     (os.Open, os.OpenFile, os.ReadFile, os.Lstat, git.PlainOpen and the
-//     rest; anything of ioutil, osfs or go-billy's util; any method of
-//     os.Root named by its type) nowhere;
+//   - each selector chain that starts at an identifier (os.Open,
+//     osfs.Default.Open, fs.root.OpenFile), as written: one in only is
+//     used in the functions it lists alone, and one in never (os.Open,
+//     os.OpenFile, os.ReadFile, os.Lstat, syscall.Open, syscall.Openat,
+//     unix.Openat, unix.Openat2, git.PlainOpen and the rest; anything of
+//     ioutil, osfs or go-billy's util; any method of os.Root named by its
+//     type) nowhere;
 //   - no import of go-billy's osfs or util, or of io/ioutil;
 //   - outside OpenFile and ReadDir, the two functions that open a file, no
 //     call of a method named Open, ReadFile or FS that only does not list:
@@ -197,8 +200,10 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 //   - careOS and careFile have the methods they define and no other (none
 //     promoted from a type either embeds), listed by reflection.
 //
-// A root reached another way (a slice's element, a function's result, an
-// interface) needs types to be seen, and is not checked.
+// It cannot see, from the syntax alone: a root's OpenFile or OpenRoot
+// called through a receiver not named fs (c.root.OpenFile), a root passed
+// as an argument or copied into another value (a composite literal, a
+// slice's element), a function's result, or an interface.
 func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	only := map[string][]string{
 		"git.Open":                         {"openOver"},
@@ -212,7 +217,7 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	}
 	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "git.PlainInit", "git.PlainClone", "filesystem.NewStorage",
 		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.Lstat", "os.NewFile",
-		"syscall.Open", "syscall.Openat", "ioutil.", "osfs.", "util.", "os.Root."} // ending in '.': anything of that package or type
+		"syscall.Open", "syscall.Openat", "unix.Openat", "unix.Openat2", "ioutil.", "osfs.", "util.", "os.Root."} // ending in '.': anything of that package or type
 	imports := []string{"github.com/go-git/go-billy/v5/osfs", "github.com/go-git/go-billy/v5/util", "io/ioutil"}
 	opens := []string{"OpenFile", "ReadDir"}
 	byPath := []string{"Open", "ReadFile", "FS"}
@@ -292,6 +297,36 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("%v's methods are %v, want %v", typ, got, want)
 		}
+	}
+}
+
+// A read started in a folder forty levels beneath a repository's top keeps
+// open only the roots it reads through: the discovery closes each folder
+// it finds no .git in before it looks in the one above (drop), so the
+// opening, told each change of its count (rootsOpen), never holds more
+// than two, the working folder's and its git directory's (an ordinary
+// repository has no common directory), and holds none once the read
+// returns.
+func TestTheDiscoveryKeepsOpenOnlyTheRootsItReadsThrough(t *testing.T) {
+	dir := scratch(t)
+	write(t, dir, "a.txt", "one\n")
+	commit(t, dir, time.Time{}, "one")
+	deep := dir
+	for range 40 {
+		deep = filepath.Join(deep, "d")
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	most, last, changes := 0, -1, 0
+	rootsOpen = func(n int) { most, last, changes = max(most, n), n, changes+1 }
+	defer func() { rootsOpen = nil }()
+	log, err := Commits(context.Background(), deep, "", time.Time{})
+	if err != nil || len(log.Commits) != 1 {
+		t.Fatalf("Commits from forty folders down: %+v %v", log, err)
+	}
+	if most != 2 || last != 0 || changes < 40 {
+		t.Errorf("the read held at most %d roots open at once and %d once it returned (%d changes told); want 2, none, and a change for each folder looked in", most, last, changes)
 	}
 }
 

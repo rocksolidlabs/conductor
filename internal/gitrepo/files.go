@@ -19,8 +19,8 @@ import (
 // ErrUnreadable says a file of the repository was not read; the error
 // that wraps it says why, with the file's name in its folder: not a
 // regular file, longer than the opener reads of a file of its kind
-// (bound), behind a link the opener does not follow, or a folder the
-// repository names that is not a folder.
+// (bound), behind a link the opener does not follow, a .git that is a
+// link, or a folder the repository names that is not a folder.
 var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
@@ -74,11 +74,13 @@ func bound(rel string) int64 {
 // the folder. The root follows a link written as a relative path that
 // stays inside the folder, and the file it leads to is read with the bound
 // of the name asked for; it refuses a link that leads out of the folder
-// and one written as an absolute path, wherever that leads, which careOS
-// notes as the opener's refusal (go-git reads past some failed opens: a
-// loose ref's, to packed-refs). go-billy's chroot over it (billy) only
-// joins names: careOS has no Lstat or Readlink, so the chroot resolves no
-// link and hands it each name unresolved.
+// and a link written as an absolute path at any component of the name, a
+// folder's as well as a file's, wherever it leads, which careOS notes as
+// the opener's refusal (go-git reads past some failed opens: a loose
+// ref's, to packed-refs). A .git that is a link is refused wherever it
+// leads (under). go-billy's chroot over it (billy) only joins names: careOS
+// has no Lstat or Readlink, so the chroot resolves no link and hands it
+// each name unresolved.
 type careOS struct {
 	root *os.Root // nil when the folder did not open: err
 	err  error
@@ -107,6 +109,12 @@ func (fs *careOS) under(name string) *careOS {
 	root, err := fs.root.OpenRoot(dirOnly(name))
 	if looked, look := fs.root.Stat(name); err != nil && look == nil && !looked.IsDir() {
 		err = fs.refuse("%s is %s", name, kind(looked.Mode()))
+	}
+	// A .git that is a link, looked at without following it, is refused
+	// wherever it leads.
+	if at, look := fs.root.Lstat(name); err == nil && look == nil && at.Mode()&os.ModeSymlink != 0 {
+		root.Close()
+		root, err = nil, fs.refuse("%s is a link", name)
 	}
 	return fs.seen.keep(&careOS{root: root, err: fs.judge(name, err), dir: filepath.Join(fs.dir, name), what: gitDir, seen: fs.seen})
 }
@@ -156,8 +164,11 @@ func kind(m os.FileMode) string {
 }
 
 // units is n bytes as a person reads them, in tenths rounded down: 64 KiB,
-// 5.5 MiB, 12 bytes, and "just over 16 MiB" for 16 MiB and a byte.
+// 5.5 MiB, 12 bytes, 1 byte, and "just over 16 MiB" for 16 MiB and a byte.
 func units(n int64) string {
+	if n == 1 {
+		return "1 byte"
+	}
 	for _, u := range []struct {
 		size int64
 		name string
@@ -223,7 +234,8 @@ func (fs *careOS) TempFile(dir, _ string) (billy.File, error) {
 // OpenFile opens name for reading only when the root's look at it finds a
 // regular file, without blocking and without taking a terminal (openFlags),
 // keeps it only when the open file is the file looked at, and reads it
-// within the bound of the name asked for (bound), wherever a link leads.
+// within the bound of the name asked for (bound), wherever a relative link
+// inside the folder leads.
 func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, error) {
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
 		return nil, &os.PathError{Op: "open", Path: name, Err: errReadOnly}
@@ -275,8 +287,8 @@ func (fs *careOS) Stat(name string) (os.FileInfo, error) {
 	return fi, fs.judge(rel, err)
 }
 
-// ReadDir lists the folder name, opened as a file is (openFlags) once the
-// root's look finds a folder.
+// ReadDir lists the folder name, opened as a file is (openFlags) and as a
+// folder only (dirOnly) once the root's look finds a folder.
 func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 	fi, err := fs.Stat(name)
 	if err == nil && !fi.IsDir() {
@@ -286,7 +298,7 @@ func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 		return nil, err
 	}
 	rel, _ := fs.rel(name)
-	f, err := fs.root.OpenFile(rel, openFlags, 0)
+	f, err := fs.root.OpenFile(dirOnly(rel), openFlags, 0)
 	if err != nil {
 		return nil, fs.judge(rel, err)
 	}
@@ -378,7 +390,8 @@ func (f *careFile) Unlock() error { return errReadOnly }
 // refusal keeps the first file an opening refused (ErrUnreadable): go-git
 // goes on past some failed opens (a loose ref's, to packed-refs), so open
 // and read answer with the refusal, not with what go-git made of it. It
-// keeps the opening's roots too, closed once the read is over (close).
+// keeps the opening's roots too, closed once the read is over (close); a
+// folder the discovery found no .git in is closed as it moves up (drop).
 type refusal struct {
 	mu    sync.Mutex
 	err   error
@@ -391,7 +404,20 @@ func (r *refusal) keep(fs *careOS) *careOS {
 	if fs.root != nil {
 		r.roots = append(r.roots, fs.root)
 	}
+	r.told()
 	return fs
+}
+
+// drop closes and forgets fs's root: a folder the discovery looked for
+// .git in and found none.
+func (r *refusal) drop(fs *careOS) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i := slices.Index(r.roots, fs.root); i >= 0 {
+		r.roots = slices.Delete(r.roots, i, i+1)
+		fs.root.Close()
+	}
+	r.told()
 }
 
 func (r *refusal) close() {
@@ -401,6 +427,17 @@ func (r *refusal) close() {
 		root.Close()
 	}
 	r.roots = nil
+	r.told()
+}
+
+// rootsOpen, set by a test, is told how many roots an opening holds open
+// each time the number changes (keep, drop, close).
+var rootsOpen func(n int)
+
+func (r *refusal) told() {
+	if rootsOpen != nil {
+		rootsOpen(len(r.roots))
+	}
 }
 
 func (r *refusal) note(err error) error {
@@ -449,6 +486,7 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			return nil, nil, err
 		}
 		if up := filepath.Dir(p); up != p {
+			seen.drop(fs)
 			p = up
 			continue
 		}
