@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -470,8 +471,10 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 	rec := newReplyRecorder()
 	if next != nil {
 		// The shared route's handler knows the read is a turn's: a run's
-		// read then gives its decisions too (addRunDecisions).
-		next(rec, r.WithContext(context.WithValue(r.Context(), turnReadKey{}, true)))
+		// read then gives its decisions too (addRunDecisions), and what it
+		// notes for the filter reaches it (turnNotes).
+		r = r.WithContext(context.WithValue(r.Context(), turnReadKey{}, turnNotes{}))
+		next(rec, r)
 	} else {
 		own[0](rec, r, o)
 	}
@@ -519,15 +522,24 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 }
 
 // turnReadKey marks a shared read's request as a Brakeman turn's, for
-// the route's own handler (turnReading).
+// the route's own handler (turnReading), with the turn's notes.
 type turnReadKey struct{}
 
-// turnReading reports whether r is a Brakeman turn's shared read, which
-// turnRead has admitted and filters.
-func turnReading(r *http.Request) bool {
-	ok, _ := r.Context().Value(turnReadKey{}).(bool)
-	return ok
+// turnNotes is what a shared route's handler tells its filter of a
+// Brakeman turn's read: by key, the state of the reading each capacity
+// view shows, as the look that made the view answered it (capacityLook).
+// The handler and the filter run one after the other.
+type turnNotes map[capacity.Key]string
+
+// turnNotesOf is the notes of r, a Brakeman turn's shared read, which
+// turnRead has admitted and filters; nil for any other request.
+func turnNotesOf(r *http.Request) turnNotes {
+	n, _ := r.Context().Value(turnReadKey{}).(turnNotes)
+	return n
 }
+
+// turnReading reports whether r is a Brakeman turn's shared read.
+func turnReading(r *http.Request) bool { return turnNotesOf(r) != nil }
 
 // observeError answers an error of a read: a store the server could not
 // open as the other routes answer it, anything else as a failure to read.
@@ -2591,46 +2603,30 @@ var brakemanReads = []sharedRead{
 }
 
 // filterCapacity notes a turn's read of the capacity view: each view that
-// shows a reading, by its ref, at the reading's own state (readingState).
-// The answer is the turn's own already (capacityReply) and passes as it is.
-func filterCapacity(_ *http.Request, o *observer, body []byte) ([]byte, error) {
+// shows a reading, by its ref, at the reading's own state, as the look
+// that made the view answered it (turnNotes). The answer is the turn's own
+// already (capacityReply) and passes as it is.
+func filterCapacity(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	var got struct {
+		brakeman.Capacity
 		Views *[]brakeman.Capacity `json:"views"`
-		Ref   string               `json:"ref"`
-		State string               `json:"state"`
 	}
 	if err := json.Unmarshal(body, &got); err != nil {
 		return nil, fmt.Errorf("the capacity view: %w", err)
 	}
-	views := []brakeman.Capacity{{Ref: got.Ref, State: got.State}}
+	views := []brakeman.Capacity{got.Capacity}
 	if got.Views != nil {
 		views = *got.Views
 	}
+	notes := turnNotesOf(r)
 	for _, v := range views {
-		if v.Ref != "" {
-			o.noteRef(v.Ref, brakeman.ClassCapacity, o.rr.s.readingState(v), "")
+		if v.Ref == "" {
+			continue
 		}
+		state := cmp.Or(notes[capacity.Key{Agent: v.Agent.ID, Account: v.Account.ID}], v.State)
+		o.noteRef(v.Ref, brakeman.ClassCapacity, state, "")
 	}
 	return body, nil
-}
-
-// readingState is the state of the reading v's ref names as the look-up
-// of that reading answers it (Cache.Kept), as a brief citing it resolves
-// it, which a new read of its key under way does not change; v's own once
-// the readings no longer hold it.
-func (s *Server) readingState(v brakeman.Capacity) string {
-	r, err := brakeman.ParseRef(v.Ref)
-	if err != nil || s.capacity == nil || s.capacity.cache == nil {
-		return v.State
-	}
-	at, err := time.Parse(time.RFC3339Nano, r.ReadAt)
-	if err != nil {
-		return v.State
-	}
-	if kept, ok := s.capacity.cache.Kept(capacity.Key{Agent: r.Agent, Account: r.Account}, at); ok {
-		return kept.State
-	}
-	return v.State
 }
 
 // sharedReadReply is the bound the shared read of pattern keeps of its

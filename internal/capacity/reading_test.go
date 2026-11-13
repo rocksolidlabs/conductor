@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"maps"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,15 +126,48 @@ func TestCountsApartFromProvider(t *testing.T) {
 	}
 }
 
+// declaredStates is every State constant reading.go declares, read from
+// its source: the states' own list.
+func declaredStates(t *testing.T) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), "reading.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var states []string
+	for _, d := range f.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range g.Specs {
+			vs := sp.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				if lit, ok := vs.Values[i].(*ast.BasicLit); ok && strings.HasPrefix(name.Name, "State") && lit.Kind == token.STRING {
+					s, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					states = append(states, s)
+				}
+			}
+		}
+	}
+	return states
+}
+
 func TestEveryStateHasWords(t *testing.T) {
-	states := []string{"ok", "reading", "unsupported", "not_installed", "signed_out", "key_paid", "unqualified", "remote", "env_set", "unlisted", "not_owner", "error", "never_read"}
+	states := declaredStates(t)
+	if len(states) < 13 {
+		t.Fatalf("reading.go declares %d states: %v", len(states), states)
+	}
 	for _, s := range states {
 		if StateWords(s) == "" {
 			t.Errorf("%s has no words", s)
 		}
 	}
-	if got := slices.Sorted(maps.Keys(stateWords)); !slices.Equal(got, slices.Sorted(slices.Values(states))) {
-		t.Errorf("the states with words are %v", got)
+	if got := States(); !slices.Equal(got, slices.Sorted(slices.Values(states))) {
+		t.Errorf("the states with words are %v, the states declared %v", got, states)
 	}
 	// A kept reading of every state but ok says why, in its own words when
 	// it has them and in its state's otherwise.

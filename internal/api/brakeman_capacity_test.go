@@ -1,18 +1,24 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +26,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // Brakeman reads capacity (docs/plans/capacity.md, PR-6): a turn reads the
@@ -632,11 +639,11 @@ func mustCapacityRef(t *testing.T, ct *capTurn, ref string) map[string]any {
 	return res
 }
 
-// waitOver makes the waits of ct's capacity end when the test says: each
-// wait ends once the channel over gives at its start is closed.
+// waitOver makes a request's wait end when the test says: each wait ends
+// once the channel over gives at its start is closed.
 func (ct *capTurn) waitOver(over func() <-chan struct{}) {
-	f := func(parent context.Context, _ string) (context.Context, context.CancelFunc) {
-		ctx, cancel := context.WithCancel(parent)
+	f := func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
 		ch := over()
 		go func() {
 			select {
@@ -721,6 +728,50 @@ func (h *heldLookups) reached(t *testing.T) {
 	}
 }
 
+// asked is an ask's answer: its status and request.
+type asked struct {
+	status int
+	req    map[string]any
+}
+
+// askBriefing asks for a briefing under op as the admin, answering on the
+// channel once the server has.
+func (ct *capTurn) askBriefing(op string) <-chan asked {
+	out := make(chan asked, 1)
+	go func() {
+		status, body := ct.send(adminToken, "POST", "/api/brakeman/requests", map[string]any{"opId": op, "kind": "briefing"})
+		req, _ := body["request"].(map[string]any)
+		out <- asked{status, req}
+	}()
+	return out
+}
+
+// answered is the request of an ask answered 201, failing t otherwise.
+func answered(t *testing.T, what string, c <-chan asked) map[string]any {
+	t.Helper()
+	select {
+	case a := <-c:
+		if a.status != http.StatusCreated || a.req == nil {
+			t.Fatalf("%s: %d %v", what, a.status, a.req)
+		}
+		return a.req
+	case <-time.After(hangWait):
+		t.Fatalf("%s never answered", what)
+	}
+	return nil
+}
+
+// noView fails t when req, as answered or as kept, keeps a view.
+func (ct *capTurn) noView(t *testing.T, what string, req map[string]any) {
+	t.Helper()
+	if req["capacity"] != nil {
+		t.Fatalf("%s keeps a view: %v", what, req["capacity"])
+	}
+	if kept := ct.request(t, req["id"].(string)); kept["capacity"] != nil {
+		t.Fatalf("%s keeps a view: %v", what, kept["capacity"])
+	}
+}
+
 // TestARequestsViewIsMadeBeforeAdmission: a request's view is made before
 // the desk's lock is taken, within its one wait. An ask whose look-up is
 // held is queued without a view once the wait is over, and a second ask
@@ -737,41 +788,8 @@ func TestARequestsViewIsMadeBeforeAdmission(t *testing.T) {
 		defer mu.Unlock()
 		return over
 	})
-	type asked struct {
-		status int
-		req    map[string]any
-	}
-	ask := func(op string) <-chan asked {
-		out := make(chan asked, 1)
-		go func() {
-			status, body := ct.send(adminToken, "POST", "/api/brakeman/requests", map[string]any{"opId": op, "kind": "briefing"})
-			req, _ := body["request"].(map[string]any)
-			out <- asked{status, req}
-		}()
-		return out
-	}
-	answer := func(what string, c <-chan asked) map[string]any {
-		t.Helper()
-		select {
-		case a := <-c:
-			if a.status != http.StatusCreated || a.req == nil {
-				t.Fatalf("%s: %d %v", what, a.status, a.req)
-			}
-			return a.req
-		case <-time.After(hangWait):
-			t.Fatalf("%s never answered", what)
-		}
-		return nil
-	}
-	noView := func(what string, req map[string]any) {
-		t.Helper()
-		if req["capacity"] != nil {
-			t.Fatalf("%s keeps a view: %v", what, req["capacity"])
-		}
-		if kept := ct.request(t, req["id"].(string)); kept["capacity"] != nil {
-			t.Fatalf("%s keeps a view: %v", what, kept["capacity"])
-		}
-	}
+	ask, answer := ct.askBriefing, func(what string, c <-chan asked) map[string]any { t.Helper(); return answered(t, what, c) }
+	noView := func(what string, req map[string]any) { t.Helper(); ct.noView(t, what, req) }
 
 	held := holdLookups(t, ct.testEnv, "/bin/sh")
 	first := ask("ask-held")
@@ -813,81 +831,440 @@ func capBrief(refs []string) map[string]any {
 	return map[string]any{"schema": brakeman.BriefSchema, "title": "Capacity", "summary": "What the readings say.", "items": items}
 }
 
-// TestABriefsCapacityRefsLookUpOnce: a brief with as many distinct refs as
-// a brief may hold, every one a capacity: ref and most naming readings the
-// server does not hold. Those resolve at once and look nothing up; for the
-// readings it holds, each agent's program is looked up at most once,
-// within the brief's one wait, and the brief is answered once the wait is
-// over, those refs unavailable then.
-func TestABriefsCapacityRefsLookUpOnce(t *testing.T) {
+// capRef is the ref of k's reading made at at.
+func capRef(k capacity.Key, at time.Time) string {
+	return brakeman.Ref{Kind: brakeman.RefCapacity, Agent: k.Agent, Account: k.Account, ReadAt: at.UTC().Format(time.RFC3339Nano)}.String()
+}
+
+// countLookups answers every look-up of a program from now on, found (the
+// path itself) or not, counting them.
+func countLookups(e *testEnv, found bool) *atomic.Int64 {
+	n := &atomic.Int64{}
+	e.srv.lookups.stub(func(p string) (string, error) {
+		n.Add(1)
+		if !found {
+			return "", exec.ErrNotFound
+		}
+		return p, nil
+	})
+	return n
+}
+
+// jsonTime is a time as encoding/json writes one.
+var jsonTime = regexp.MustCompile(`"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d))"`)
+
+// inUTC fails t unless data holds a time and every time it holds is in
+// UTC.
+func inUTC(t *testing.T, what string, data []byte) {
+	t.Helper()
+	times := jsonTime.FindAllSubmatch(data, -1)
+	if len(times) == 0 {
+		t.Fatalf("%s holds no time: %.300s", what, data)
+	}
+	for _, m := range times {
+		if !bytes.HasSuffix(m[1], []byte("Z")) {
+			t.Errorf("%s writes %s, not in UTC", what, m[1])
+		}
+	}
+}
+
+// TestABriefsCapacityRefsLookNothingUp: a brief with as many distinct refs
+// as a brief may hold, every one a capacity: ref, half of them naming
+// readings the server holds (of agents in the catalog and of agents it no
+// longer lists) and half readings it does not hold: no program is looked
+// up for any, the accounts are read once for the brief, and the refs
+// refused are exactly those whose readings the server does not hold.
+func TestABriefsCapacityRefsLookNothingUp(t *testing.T) {
 	ct := newCapTurn(t)
-	readNow(t, ct.testEnv, "claude-a", ct.account, false)
-	readNow(t, ct.testEnv, "codex-a", capacity.DefaultID, false)
 	ct.turn(t, nil)
-	var cited []string
-	for _, k := range [][2]string{{"claude-a", ct.account}, {"codex-a", capacity.DefaultID}} {
-		cited = append(cited, ct.expectRead(t, viewPath(k[0], k[1]), http.StatusOK, "")["ref"].(string))
+	cache := ct.srv.capacity.cache
+	half := brakeman.MaxBriefRefs / 2
+	keys := []capacity.Key{{Agent: "claude-a", Account: ct.account}, {Agent: "claude-a", Account: capacity.DefaultID}, {Agent: "codex-a", Account: capacity.DefaultID}}
+	for i := 0; len(keys)*capacity.KeepPerKey < half; i++ {
+		keys = append(keys, capacity.Key{Agent: fmt.Sprintf("gone-%d", i), Account: capacity.DefaultID})
 	}
+	var refs []string
+	for len(refs) < half {
+		ct.clock.add(capacity.MinInterval)
+		for _, k := range keys[:min(len(keys), half-len(refs))] {
+			v := cache.Read(t.Context(), k, capacity.ReadOptions{})
+			if v.ReadAt == nil {
+				t.Fatalf("no reading of %v: %+v", k, v)
+			}
+			refs = append(refs, capRef(k, *v.ReadAt))
+		}
+	}
+	never := map[string]bool{}
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	var never []string
-	for i := range brakeman.MaxBriefRefs - len(cited) {
-		never = append(never, "capacity:ghost/default@"+base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
+	for i := range brakeman.MaxBriefRefs - half {
+		ref := "capacity:ghost/default@" + base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano)
+		never[ref] = true
+		refs = append(refs, ref)
 	}
+	looks := countLookups(ct.testEnv, true)
+	reads := ct.srv.capacity.reads.Load()
+	status, out := ct.submit(t, ct.sid, ct.tok, "b-half", capBrief(refs))
+	refused := map[string]bool{}
+	e, _ := out["error"].(map[string]any)
+	list, _ := e["refs"].([]any)
+	for _, b := range list {
+		refused[b.(map[string]any)["ref"].(string)] = true
+	}
+	if status != http.StatusUnprocessableEntity || !maps.Equal(refused, never) {
+		t.Fatalf("%d: %d refs refused, want the %d whose readings the server does not hold: %.300s", status, len(refused), len(never), mustJSON(out))
+	}
+	if n := looks.Load(); n != 0 {
+		t.Errorf("%d look-ups of a program for a brief's capacity refs", n)
+	}
+	if n := ct.srv.capacity.reads.Load() - reads; n != 1 {
+		t.Errorf("the accounts read %d times for one brief", n)
+	}
+}
+
+// TestACapacityRefIsTheReadingHeld: a brief's capacity: ref resolves to
+// the reading the server holds, whatever its account or its agent is now:
+// a reading whose account was removed since names the account by its id
+// alone; one whose agent's program is gone since, one whose key is being
+// read again, and readings in the states that carry no version (signed
+// out, key-paid, unqualified, error) each resolve at the reading's own
+// state, windows and time, those with no version and no readBy. No program
+// is looked up for them, the accounts are read once, and every time the
+// snapshots and the turn's view write is in UTC.
+func TestACapacityRefIsTheReadingHeld(t *testing.T) {
+	ct := newCapTurn(t)
+	reset := time.Now().Add(7 * 24 * time.Hour).In(time.FixedZone("east", 5*3600+1800)).Truncate(time.Second)
+	for _, f := range []*fakeUsage{ct.claude, ct.codex} {
+		f.set(func(f *fakeUsage) { f.report.Windows[0].ResetsAt = &reset })
+	}
+	gone := addAccount(t, ct.testEnv, "claude", "Gone")
+	type cited struct {
+		name, ref, state string
+	}
+	var all []cited
+	read := func(name string, k capacity.Key, state string) cited {
+		t.Helper()
+		ct.clock.add(capacity.MinInterval)
+		v := readNow(t, ct.testEnv, k.Agent, k.Account, false)
+		if v["state"] != state {
+			t.Fatalf("%s: the reading %v, want %s", name, v, state)
+		}
+		c := cited{name: name, ref: capRef(k, readTime(t, v["readAt"])), state: state}
+		all = append(all, c)
+		return c
+	}
+	removed := read("an account removed since", capacity.Key{Agent: "claude-a", Account: gone}, capacity.StateOK)
+	programGone := read("an agent whose program is gone since", capacity.Key{Agent: "codex-a", Account: capacity.DefaultID}, capacity.StateOK)
+	for _, state := range []string{agents.UsageSignedOut, agents.UsageKeyPaid, agents.UsageUnqualified, agents.UsageError} {
+		ct.claude.set(func(f *fakeUsage) { f.report.State = state })
+		read("a reading "+state, capacity.Key{Agent: "claude-a", Account: capacity.DefaultID}, state)
+	}
+	ct.claude.set(func(f *fakeUsage) { f.report.State = agents.UsageOK })
+	underWay := read("a reading whose key is read again", capacity.Key{Agent: "claude-a", Account: ct.account}, capacity.StateOK)
+	if status, _, out := ct.call(t, "DELETE", "/api/accounts/"+gone+"?expectedRev="+strconv.FormatInt(accountsRev(t, ct.testEnv), 10), nil); status != http.StatusNoContent {
+		t.Fatalf("the account's remove: %d %v", status, out)
+	}
+
+	ct.turn(t, nil)
+	_, view := ct.readRaw(t, viewPath("claude-a", ct.account))
+	inUTC(t, "the turn's view", view)
+	gate, called := make(chan struct{}), make(chan struct{}, 1)
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	ct.claude.set(func(f *fakeUsage) { f.gate, f.called = gate, called })
+	ct.clock.add(capacity.MinInterval)
+	done := make(chan int, 1)
+	go func() {
+		status, _ := ct.send(adminToken, "POST", "/api/capacity/read", map[string]any{"agent": "claude-a", "account": ct.account})
+		done <- status
+	}()
+	select {
+	case <-called:
+	case <-time.After(hangWait):
+		t.Fatal("the read never reached the reader")
+	}
+
+	looks := countLookups(ct.testEnv, false)
+	reads := ct.srv.capacity.reads.Load()
+	var refs []string
+	for _, c := range all {
+		refs = append(refs, c.ref)
+	}
+	if status, out := ct.submit(t, ct.sid, ct.tok, "b-held", factBrief(refs...)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	if n := looks.Load(); n != 0 {
+		t.Errorf("%d look-ups of a program for the brief's capacity refs", n)
+	}
+	if n := ct.srv.capacity.reads.Load() - reads; n != 1 {
+		t.Errorf("the accounts read %d times for one brief", n)
+	}
+	got, data := ct.capacityRefs(t)
+	inUTC(t, "the brief's refs", data)
+	for _, c := range all {
+		res := got[c.ref]
+		snap, _ := res["capacity"].(map[string]any)
+		if snap == nil || snap["ref"] != c.ref || snap["state"] != c.state || res["now"].(map[string]any)["state"] != c.state ||
+			!readTime(t, snap["readAt"]).Equal(readAtOf(t, c.ref)) || snap["words"] != capacity.StateWords(c.state) {
+			t.Fatalf("%s: %s", c.name, mustJSON(res))
+		}
+		agent, _ := snap["agent"].(map[string]any)
+		windows, _ := snap["windows"].([]any)
+		if c.state == capacity.StateOK && (agent["version"] != "2.0.0" || snap["readBy"] == nil || len(windows) != 1) {
+			t.Errorf("%s: the reading's version, readBy and window: %s", c.name, mustJSON(snap))
+		}
+		if c.state != capacity.StateOK && (agent["version"] != nil || snap["readBy"] != nil || len(windows) != 0) {
+			t.Errorf("%s: a reading %s carries a version, a readBy or a window: %s", c.name, c.state, mustJSON(snap))
+		}
+	}
+	if acct := got[removed.ref]["capacity"].(map[string]any)["account"].(map[string]any); acct["id"] != gone || acct["label"] != nil || acct["default"] != nil || acct["retired"] != nil {
+		t.Errorf("%s: the account %v", removed.name, acct)
+	}
+	if agent := got[programGone.ref]["capacity"].(map[string]any)["agent"].(map[string]any); agent["name"] != "Codex A" || agent["adapter"] != "codex" {
+		t.Errorf("%s: the agent %v", programGone.name, agent)
+	}
+	if acct := got[underWay.ref]["capacity"].(map[string]any)["account"].(map[string]any); acct["label"] != "Work" {
+		t.Errorf("%s: the account %v", underWay.name, acct)
+	}
+	open()
+	select {
+	case status := <-done:
+		if status != http.StatusAccepted {
+			t.Fatalf("the read: %d", status)
+		}
+	case <-time.After(hangWait):
+		t.Fatal("the read never answered")
+	}
+}
+
+// TestACapacityRefWithTheAccountsUnreadable: with the accounts list
+// unreadable, a brief's capacity: ref resolves to the reading the server
+// holds, its account named by its id alone.
+func TestACapacityRefWithTheAccountsUnreadable(t *testing.T) {
+	ct := newCapTurn(t)
+	k := capacity.Key{Agent: "claude-a", Account: ct.account}
+	ref := capRef(k, readTime(t, readNow(t, ct.testEnv, k.Agent, k.Account, false)["readAt"]))
+	ct.turn(t, nil)
+	file := filepath.Join(ct.srv.store.Dir(), capacity.Dir, capacity.AccountsFile)
+	kept, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("{not the accounts"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ct.submitFact(t, ref)
+	if err := os.WriteFile(file, kept, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := mustCapacityRef(t, ct, ref)["capacity"].(map[string]any)
+	acct, _ := snap["account"].(map[string]any)
+	windows, _ := snap["windows"].([]any)
+	if snap == nil || snap["state"] != capacity.StateOK || len(windows) != 1 || acct["id"] != ct.account || acct["label"] != nil || acct["default"] != nil || acct["retired"] != nil || acct["plan"] != "max" {
+		t.Fatalf("the ref with the accounts unreadable: %s", mustJSON(snap))
+	}
+}
+
+// TestATurnsReadNotesTheStateItsViewWasMadeWith: a turn's read of a view
+// whose key is being read again notes the view's ref at its reading's own
+// state, as the look that made the view answered it, also when the reading
+// leaves the readings between the reply's making and the note.
+func TestATurnsReadNotesTheStateItsViewWasMadeWith(t *testing.T) {
+	ct := newCapTurn(t)
+	k := capacity.Key{Agent: "claude-a", Account: ct.account}
+	at := readTime(t, readNow(t, ct.testEnv, k.Agent, k.Account, false)["readAt"])
+	ct.turn(t, nil)
+	gate, called := make(chan struct{}), make(chan struct{}, 1)
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	ct.claude.set(func(f *fakeUsage) { f.gate, f.called = gate, called })
+	ct.clock.add(capacity.MinInterval)
+	done := make(chan int, 1)
+	go func() {
+		status, _ := ct.send(adminToken, "POST", "/api/capacity/read", map[string]any{"agent": k.Agent, "account": k.Account})
+		done <- status
+	}()
+	select {
+	case <-called:
+	case <-time.After(hangWait):
+		t.Fatal("the read never reached the reader")
+	}
+	cache := ct.srv.capacity.cache
+	atObserve(t, "answered", func() {
+		for i := range capacity.MaxKeys {
+			cache.Read(context.Background(), capacity.Key{Agent: fmt.Sprintf("fill-%d", i), Account: capacity.DefaultID}, capacity.ReadOptions{})
+		}
+	})
+	view := ct.expectRead(t, viewPath(k.Agent, k.Account), http.StatusOK, "")
+	if _, held := cache.Kept(k, at); held {
+		t.Fatal("the reading the view showed is still held")
+	}
+	rd, noted := ct.readOf(t, capRef(k, at))
+	if view["state"] != capacity.StateReading || view["ref"] != capRef(k, at) || !noted || rd.State != capacity.StateOK {
+		t.Fatalf("the view %v of %v; noted %v at %q", view["state"], view["ref"], noted, rd.State)
+	}
+	open()
+	select {
+	case status := <-done:
+		if status != http.StatusAccepted {
+			t.Fatalf("the read: %d", status)
+		}
+	case <-time.After(hangWait):
+		t.Fatal("the read never answered")
+	}
+}
+
+// TestQueuingARequestMovesNoReading: with the readings at their bound, a
+// request queued for the least recently asked key keeps that key's reading
+// as its view and leaves the key the one the admin's next read drops, as a
+// turn's read does.
+func TestQueuingARequestMovesNoReading(t *testing.T) {
+	ct := newCapTurn(t)
+	least := capacity.Key{Agent: "bkcodex", Account: capacity.DefaultID}
+	at := readTime(t, readNow(t, ct.testEnv, least.Agent, least.Account, false)["readAt"])
+	cache := ct.srv.capacity.cache
+	var next capacity.Key
+	var nextAt time.Time
+	for i := range capacity.MaxKeys - 1 {
+		k := capacity.Key{Agent: fmt.Sprintf("fill-%d", i), Account: capacity.DefaultID}
+		v := cache.Read(t.Context(), k, capacity.ReadOptions{})
+		if v.ReadAt == nil {
+			t.Fatalf("no reading of %v: %+v", k, v)
+		}
+		if i == 0 {
+			next, nextAt = k, *v.ReadAt
+		}
+	}
+	ct.enable(t, least.Agent, nil)
+	id := ct.briefing(t)
+	if c, _ := ct.request(t, id)["capacity"].(map[string]any); c == nil || !readTime(t, c["readAt"]).Equal(at) {
+		t.Fatalf("the request's view: %v", c)
+	}
+	readNow(t, ct.testEnv, "codex-a", capacity.DefaultID, false)
+	if _, ok := cache.Kept(least, at); ok {
+		t.Fatal("the key the request's view was made from is still held: queuing the request moved it, and the admin's read dropped another")
+	}
+	if _, ok := cache.Kept(next, nextAt); !ok {
+		t.Fatalf("%v, the next least recently asked, was dropped", next)
+	}
+}
+
+// TestAWakeRequestKeepsNoViewMadeForAnotherConfiguration: the background
+// role's wake request, its view made for a configuration a save replaced
+// before the request was admitted, keeps no view.
+func TestAWakeRequestKeepsNoViewMadeForAnotherConfiguration(t *testing.T) {
+	ct := newCapTurn(t)
+	ct.background(t, "bk", nil)
+	never := make(chan struct{})
+	ct.waitOver(func() <-chan struct{} { return never })
+	held := holdLookups(t, ct.testEnv, "/bin/sh")
+	type fire struct {
+		id  string
+		err error
+	}
+	fired := make(chan fire, 1)
+	go func() {
+		id, err := roleRecords{d: ct.desk}.Fire(crew.Batch{ID: "wb-901", Wakes: []crew.BatchWake{}})
+		fired <- fire{id, err}
+	}()
+	ct.queuing(t)
+	held.reached(t)
+	ct.configure(t, func(c map[string]any) { c["budget"].(map[string]any)["readsPerTurn"] = float64(299) })
+	held.open()
+	select {
+	case f := <-fired:
+		if f.err != nil || f.id == "" {
+			t.Fatalf("the wake request: %q %v", f.id, f.err)
+		}
+		if c := ct.request(t, f.id)["capacity"]; c != nil {
+			t.Fatalf("a wake request whose view was made for the configuration a save replaced keeps a view: %v", c)
+		}
+	case <-time.After(hangWait):
+		t.Fatal("the wake request was never made")
+	}
+}
+
+// TestARequestsWaitEndsWhileTheAccountsAreHeld: a request whose view's
+// accounts read is held (an account's add under way in the store) is
+// answered once its wait is over, with no view, while that read is still
+// held; a second request queued meanwhile keeps no view either.
+func TestARequestsWaitEndsWhileTheAccountsAreHeld(t *testing.T) {
+	ct := newCapTurn(t)
+	ct.enable(t, "bk", nil)
 	over := make(chan struct{})
 	ct.waitOver(func() <-chan struct{} { return over })
-	held := holdLookups(t, ct.testEnv, "/bin/cat")
-	badRefs := func(what string, status int, out map[string]any) map[string]bool {
-		t.Helper()
-		e, _ := out["error"].(map[string]any)
-		list, _ := e["refs"].([]any)
-		if status != http.StatusUnprocessableEntity || len(list) != len(never) {
-			t.Fatalf("%s: %d, %d refs refused, want %d", what, status, len(list), len(never))
-		}
-		bad := map[string]bool{}
-		for _, b := range list {
-			bad[b.(map[string]any)["ref"].(string)] = true
-		}
-		return bad
-	}
-
-	status, out := ct.submit(t, ct.sid, ct.tok, "b-never", capBrief(never))
-	badRefs("readings the server does not hold", status, out)
-	if n := held.of("/bin/cat") + held.of("/nonexistent/claude"); n != 0 {
-		t.Fatalf("%d look-ups for readings the server does not hold", n)
-	}
-
-	type answer struct {
-		status int
-		out    map[string]any
-	}
-	done := make(chan answer, 1)
+	entered, gate := make(chan struct{}), make(chan struct{})
+	var once, opened sync.Once
+	open := func() { opened.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	ct.srv.capacity.seam = func() { once.Do(func() { close(entered); <-gate }) }
+	body := map[string]any{"adapter": "claude", "label": "Held", "folder": realRoot(t, t.TempDir()), "expectedRev": accountsRev(t, ct.testEnv)}
+	added := make(chan int, 1)
 	go func() {
-		status, out := ct.send(ct.tok, "POST", "/api/sessions/"+ct.sid+"/brakeman/brief", map[string]any{"opId": "b-all", "brief": capBrief(append(slices.Clone(cited), never...))})
-		done <- answer{status, out}
+		status, _ := ct.send(adminToken, "POST", "/api/accounts", body)
+		added <- status
 	}()
-	held.reached(t)
 	select {
-	case a := <-done:
-		t.Fatalf("answered while a look-up is held and the wait is not over: %d", a.status)
+	case <-entered:
+	case <-time.After(hangWait):
+		t.Fatal("the add never reached the store")
+	}
+	reads := ct.srv.capacity.reads.Load()
+	first := ct.askBriefing("ask-held")
+	if !waitFor(hangWait, func() bool { return ct.srv.capacity.reads.Load() > reads }) {
+		t.Fatal("the request's view never read the accounts")
+	}
+	select {
+	case a := <-first:
+		t.Fatalf("the ask answered while its accounts read is held and its wait is not over: %d %v", a.status, a.req)
 	default:
 	}
+	ct.noView(t, "a second ask beside the held one", answered(t, "a second ask beside the held one", ct.askBriefing("ask-beside")))
 	close(over)
-	var a answer
+	ct.noView(t, "the ask whose wait is over", answered(t, "the ask whose wait is over", first))
 	select {
-	case a = <-done:
-	case <-time.After(hangWait):
-		t.Fatal("the brief was never answered")
+	case status := <-added:
+		t.Fatalf("the add ended (%d) before its gate opened", status)
+	default:
 	}
-	bad := badRefs("the readings held and not", a.status, a.out)
-	for _, ref := range cited {
-		if bad[ref] {
-			t.Fatalf("%s, a reading the server holds, refused", ref)
+	open()
+	select {
+	case status := <-added:
+		if status != http.StatusCreated {
+			t.Fatalf("the add: %d", status)
 		}
+	case <-time.After(hangWait):
+		t.Fatal("the add never answered")
 	}
-	if n := held.of("/bin/cat"); n < 1 || n > len(cited) {
-		t.Fatalf("%d look-ups of the held readings' program, want 1 to %d", n, len(cited))
+	if !waitFor(hangWait, func() bool { return len(ct.srv.capacity.queuing) == 0 }) {
+		t.Fatal("the view's slot was never given back")
 	}
-	if n := held.of("/nonexistent/claude"); n != 0 {
-		t.Fatalf("%d look-ups for readings the server does not hold", n)
+}
+
+// TestABriefsReceiptIsTheTurns: the guide's receipt for a brief's submit
+// names the fields a turn is told of its request, never the request as it
+// is kept.
+func TestABriefsReceiptIsTheTurns(t *testing.T) {
+	ops := Operations()
+	i := slices.IndexFunc(ops, func(o Operation) bool { return o.Name == "brief_submit" })
+	if i < 0 {
+		t.Fatal("no brief_submit")
+	}
+	receipts := guideReceipts()
+	j := slices.IndexFunc(receipts, func(r guideReceipt) bool { return r.Name == ops[i].Receipt })
+	if j < 0 {
+		t.Fatalf("brief_submit's receipt %q is not in the receipts section", ops[i].Receipt)
+	}
+	names := func(fs []guideField) []string {
+		var out []string
+		for _, f := range fs {
+			out = append(out, f.Name)
+		}
+		return out
+	}
+	got, want := names(receipts[j].Fields), names(receiptFields(reflect.TypeFor[turnRequest]()))
+	if !slices.Equal(got, want) || slices.Contains(got, "capacity") {
+		t.Fatalf("brief_submit's receipt %s names %v, want the turn's %v", ops[i].Receipt, got, want)
 	}
 }

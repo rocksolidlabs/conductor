@@ -108,30 +108,36 @@ type capacityDesk struct {
 
 	// queuing is the one slot a request's view is made in (queuedView).
 	queuing chan struct{}
+	// reads counts the accounts reads made for views and snapshots
+	// (accounts).
+	reads atomic.Int64
 
 	// The tests' seams: seam runs inside an add's write, under the store's
 	// lock (Facts.CheckAccountDir); closing as close takes the store's gate;
-	// waitOver, when set, makes the context of the wait it names (wait),
+	// waitOver, when set, makes the context of a request's wait (wait),
 	// which then ends when the test says, never by the clock.
 	seam, closing func()
-	waitOver      atomic.Pointer[func(parent context.Context, what string) (context.Context, context.CancelFunc)]
+	waitOver      atomic.Pointer[func() (context.Context, context.CancelFunc)]
 }
 
-// The waits a view made for Brakeman is made within (docs/protocol.md,
-// Brakeman): a request's, as it is queued, every step of it; and the
-// look-ups of a brief's capacity: refs, the whole brief's.
-const (
-	queuedCapacityWait = 500 * time.Millisecond
-	briefCapacityWait  = 2 * time.Second
-)
+// queuedCapacityWait is the one wait a request's view is made within as
+// it is queued, every step of it (docs/protocol.md, Brakeman).
+const queuedCapacityWait = 500 * time.Millisecond
 
-// wait is the context of the wait named what, under parent: it ends after
-// dur, or as a test's waitOver makes it.
-func (d *capacityDesk) wait(parent context.Context, what string, dur time.Duration) (context.Context, context.CancelFunc) {
+// accounts reads the accounts list for a view or a snapshot, counting the
+// read (reads, which the tests count).
+func (d *capacityDesk) accounts() (capacity.Accounts, error) {
+	d.reads.Add(1)
+	return d.st.Accounts()
+}
+
+// wait is the context of a request's wait: it ends after
+// queuedCapacityWait, or as a test's waitOver makes it.
+func (d *capacityDesk) wait() (context.Context, context.CancelFunc) {
 	if f := d.waitOver.Load(); f != nil {
-		return (*f)(parent, what)
+		return (*f)()
 	}
-	return context.WithTimeout(parent, dur)
+	return context.WithTimeout(context.Background(), queuedCapacityWait)
 }
 
 // accountReading is an account's last reading as GET /api/accounts shows it.
@@ -636,28 +642,14 @@ var viewLaunches = []string{"session", "legacy", "managed", "remote"}
 // read gives (unsupported, not installed, remote, env_set, not_owner) is
 // answered without asking either.
 func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capacityQuery, read func(capacity.Key) capacity.View) (capacity.View, *apiError) {
-	var f viewFacts
+	ad, hasAd := agents.Get(agent.Adapter)
+	var doc capacity.Accounts
 	if d.st != nil {
 		var err error
-		if f.doc, err = d.st.Accounts(); err != nil {
+		if doc, err = d.accounts(); err != nil {
 			return capacity.View{}, newAPIError(http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
 		}
 	}
-	return d.viewWith(ctx, f, agent, q, read)
-}
-
-// viewFacts are what a view is made from beside the readings: the
-// accounts, and whether the agent's program is installed when that was
-// looked up already (nil: capacityReadable, as the view needs it).
-type viewFacts struct {
-	doc      capacity.Accounts
-	readable *bool
-}
-
-// viewWith is viewOf from the facts f.
-func (d *capacityDesk) viewWith(ctx context.Context, f viewFacts, agent catalog.Agent, q capacityQuery, read func(capacity.Key) capacity.View) (capacity.View, *apiError) {
-	ad, hasAd := agents.Get(agent.Adapter)
-	doc := f.doc
 	if q.account != "" && !capacity.ValidID(q.account) {
 		return capacity.View{}, newAPIError(http.StatusBadRequest, "invalid_account", "an account is default or a- and 12 of a-z 2-7")
 	}
@@ -704,7 +696,7 @@ func (d *capacityDesk) viewWith(ctx context.Context, f viewFacts, agent catalog.
 		state = capacity.StateRemote
 	case rd == nil || rd.Read == nil:
 		state = capacity.StateUnsupported
-	case f.readable != nil && !*f.readable, f.readable == nil && !d.s.capacityReadable(ctx, agent):
+	case !d.s.capacityReadable(ctx, agent):
 		state = capacity.StateNotInstalled
 	case setsLogin || (pinned != "" && id != capacity.DefaultID):
 		state = capacity.StateEnvSet
@@ -796,7 +788,8 @@ func writeCapacityJSON(w http.ResponseWriter, status int, v any, bound int) {
 // brakemanReads) is answered each view as brakeman.CapacityOf makes it,
 // and a server with no capacity in fixed words.
 func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
-	turn := turnReading(r)
+	notes := turnNotesOf(r)
+	turn := notes != nil
 	if turn && (s.capacity == nil || s.capacity.st == nil) {
 		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "this server keeps no capacity it can read")
 		return
@@ -821,7 +814,7 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		v, aerr := s.capacity.viewOf(r.Context(), agent, vq, s.capacityLook(turn))
+		v, aerr := s.capacity.viewOf(r.Context(), agent, vq, s.capacityLook(notes))
 		if aerr != nil {
 			refuse(w, aerr.status, aerr.Code, aerr.Message)
 			return
@@ -847,7 +840,7 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "invalid_request", "after is the next a page gave: an agent's id, /, an account's")
 		return
 	}
-	s.capacityPage(w, r, vq, after, limit, turn)
+	s.capacityPage(w, r, vq, after, limit, notes)
 }
 
 // capacityReply is v as the caller reads it: a Brakeman turn (turn) as
@@ -860,13 +853,17 @@ func capacityReply(turn bool, v capacity.View) any {
 }
 
 // capacityLook is how the route looks a view's reading up for its caller:
-// for a Brakeman turn (turn) with Cache.Latest, which is no ask of the key
-// and moves no key's place; for the admin as the cache's View, an ask.
-func (s *Server) capacityLook(turn bool) func(capacity.Key) capacity.View {
-	if turn {
-		return s.capacity.cache.Latest
+// for a Brakeman turn (notes) with Cache.Latest, which is no ask of the key
+// and moves no key's place, noting the state of the reading the view shows
+// as that same look answers it; for the admin as the cache's View, an ask.
+func (s *Server) capacityLook(notes turnNotes) func(capacity.Key) capacity.View {
+	if notes == nil {
+		return nil
 	}
-	return nil
+	return func(k capacity.Key) (v capacity.View) {
+		v, notes[k] = s.capacity.cache.Latest(k)
+		return v
+	}
 }
 
 // capacityQueryOf is r's query as the repository's bounded parser reads it
@@ -900,8 +897,9 @@ func (s *Server) capacityAgent(w http.ResponseWriter, id string) (catalog.Agent,
 // names ("agent/account"), until limit or until the next would pass
 // maxCapacityPage, but at least one; next names the last key given when
 // more follow. Each view is as capacityReply gives it to the caller.
-func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacityQuery, after string, limit int, turn bool) {
-	doc, err := s.capacity.st.Accounts()
+func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacityQuery, after string, limit int, notes turnNotes) {
+	turn := notes != nil
+	doc, err := s.capacity.accounts()
 	if err != nil {
 		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
 		return
@@ -938,7 +936,7 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 		agent, _ := s.Catalog().Get(k.Agent)
 		q := vq // the page's own question, the account alone replaced
 		q.account = k.Account
-		v, aerr := s.capacity.viewOf(r.Context(), agent, q, s.capacityLook(turn))
+		v, aerr := s.capacity.viewOf(r.Context(), agent, q, s.capacityLook(notes))
 		if aerr != nil {
 			continue
 		}
@@ -956,60 +954,32 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 	writeCapacityJSON(w, http.StatusOK, page, maxCapacityPage)
 }
 
-// keptCapacity is what a brief's capacity: ref resolves to: kept, the
-// reading of agent on account the readings keep (Cache.Kept), as the view
-// made from f shows it and as Brakeman reads it (brakeman.CapacityOf), its
-// counts counted at now. It reads nothing. ok is false for an account not
-// there now and a view no read gives.
-func (d *capacityDesk) keptCapacity(ctx context.Context, f viewFacts, agent catalog.Agent, account string, kept capacity.View, now time.Time) (brakeman.Capacity, bool) {
-	asked := false
-	v, aerr := d.viewWith(ctx, f, agent, capacityQuery{account: account, launch: "session"}, func(capacity.Key) capacity.View {
-		asked = true
-		return kept
-	})
-	if aerr != nil || !asked {
-		return brakeman.Capacity{}, false
+// snapshot is what a brief's capacity: ref resolves to, as Brakeman reads
+// it (brakeman.CapacityOf), made from kept, the reading the readings hold
+// (Cache.Kept: its state, plan, windows, credits, limits, time, what read
+// it and its version, none when it carries none), with the agent's id,
+// name and adapter from its catalog entry, the account's label, default
+// and retired marks from doc when doc names the account (doc nil: the
+// accounts could not be read), and this server's counts of the key,
+// counted at now. Whatever the agent or the account is now, nothing is
+// read or looked up for it: an agent or account gone since is named by
+// its id alone.
+func (d *capacityDesk) snapshot(kept capacity.View, doc *capacity.Accounts, now time.Time) brakeman.Capacity {
+	k := capacity.Key{Agent: kept.Agent.ID, Account: kept.Account.ID}
+	v := kept
+	adapter := ""
+	if agent, ok := d.s.Catalog().Get(k.Agent); ok {
+		v.Agent.Name, v.Agent.Adapter, adapter = agent.Name, agent.Adapter, agent.Adapter
 	}
-	return brakeman.CapacityOf(v, now), true
-}
-
-// capacityLooks are one brief's look-ups for its capacity: refs: the
-// accounts, read once, and each agent's program, looked up once; none
-// started past briefCapacityWait from the first, and one under way ends
-// with it.
-type capacityLooks struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	doc      *capacity.Accounts
-	readable map[string]*bool // by agent; nil: not known within the wait
-}
-
-// facts are what a view of agent is made from (viewWith), as l looked
-// them up; false past the wait, or when they could not be read in it.
-func (l *capacityLooks) facts(s *Server, agent catalog.Agent) (viewFacts, bool) {
-	if l.ctx.Err() != nil {
-		return viewFacts{}, false
-	}
-	if l.doc == nil {
-		doc, err := s.capacity.st.Accounts()
-		if err != nil {
-			l.cancel() // read once: the brief's other refs are unavailable too
-			return viewFacts{}, false
+	if doc != nil {
+		if i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.ID == k.Account }); i >= 0 {
+			a := doc.Accounts[i]
+			v.Account.Label, v.Account.Retired, adapter = a.Label, a.Retired, a.Adapter
 		}
-		l.doc = &doc
+		v.Account.Default = adapter != "" && capacity.DefaultOf(*doc, adapter) == k.Account
 	}
-	readable, done := l.readable[agent.ID]
-	if !done {
-		ok, known := len(agent.Command) > 0 && !relativePath(agent.Command[0]), true
-		if ok {
-			ok, known = s.lookups.installedKnown(l.ctx, agent.Command[0])
-		}
-		if known {
-			readable = &ok
-		}
-		l.readable[agent.ID] = readable
-	}
-	return viewFacts{doc: *l.doc, readable: readable}, readable != nil && l.ctx.Err() == nil
+	v.Counts = d.counts(k)
+	return brakeman.CapacityOf(v, now)
 }
 
 // queuedView is the view a request asked now keeps (queuedCapacity) and
@@ -1029,7 +999,7 @@ func (s *Server) queuedView() (*brakeman.Capacity, int64) {
 	default:
 		return nil, 0
 	}
-	ctx, cancel := d.wait(context.Background(), "queued", queuedCapacityWait)
+	ctx, cancel := d.wait()
 	defer cancel()
 	made := make(chan *brakeman.Capacity, 1)
 	go func() {
@@ -1051,9 +1021,11 @@ func (s *Server) queuedView() (*brakeman.Capacity, int64) {
 // is (none: the agent's own login; else the adapter's registered account
 // that holds the folder, looked up as the turn's binding looks it up,
 // boundFolder; else a folder not in Accounts, unlisted, never read), from
-// the readings kept, reading nothing; nil on a server that keeps no
-// capacity, for an agent not in the catalog, or while the accounts or the
-// view cannot be read. Its program's look-up ends with ctx.
+// the readings kept, looked up as a turn's read looks them up
+// (Cache.Latest: reading nothing, asking none, so no key's place moves);
+// nil on a server that keeps no capacity, for an agent not in the catalog,
+// or while the accounts or the view cannot be read. Its program's look-up
+// ends with ctx.
 func (s *Server) queuedCapacity(ctx context.Context, cfg brakeman.Config) *brakeman.Capacity {
 	d := s.capacity
 	agent, ok := s.Catalog().Get(cfg.AgentID)
@@ -1062,7 +1034,7 @@ func (s *Server) queuedCapacity(ctx context.Context, cfg brakeman.Config) *brake
 	}
 	account := capacity.DefaultID
 	if cfg.Account != "" {
-		doc, err := d.st.Accounts()
+		doc, err := d.accounts()
 		if err != nil {
 			return nil
 		}
@@ -1076,7 +1048,11 @@ func (s *Server) queuedCapacity(ctx context.Context, cfg brakeman.Config) *brake
 		Counts: d.counts(capacity.Key{Agent: agent.ID, Account: account})}
 	if account != session.SourceUnlisted {
 		var aerr *apiError
-		if v, aerr = d.viewOf(ctx, agent, capacityQuery{account: account, launch: "session"}, nil); aerr != nil {
+		latest := func(k capacity.Key) capacity.View {
+			v, _ := d.cache.Latest(k)
+			return v
+		}
+		if v, aerr = d.viewOf(ctx, agent, capacityQuery{account: account, launch: "session"}, latest); aerr != nil {
 			return nil
 		}
 	}

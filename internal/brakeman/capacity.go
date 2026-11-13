@@ -66,7 +66,8 @@ type CapacityAccount struct {
 
 // CapacityOf is v as Brakeman reads it, its counts counted at at: each
 // field taken by name from v, the words the state's own, a version past
-// capacity.MaxVersion left out, and the ref of the reading v shows.
+// capacity.MaxVersion left out, every time in UTC, and the ref of the
+// reading v shows.
 func CapacityOf(v capacity.View, at time.Time) Capacity {
 	c := Capacity{
 		Agent:     CapacityAgent{ID: v.Agent.ID, Name: v.Agent.Name, Adapter: v.Agent.Adapter},
@@ -77,7 +78,7 @@ func CapacityOf(v capacity.View, at time.Time) Capacity {
 		Windows:   []capacity.Window{},
 		Credits:   []capacity.Credit{},
 		Limits:    capacity.Limits{Reached: v.Limits.Reached, SpendControl: own(v.Limits.SpendControl), OrdinaryAllowed: own(v.Limits.OrdinaryAllowed)},
-		Counts:    capacity.Counts{Running: v.Counts.Running, Started5h: v.Counts.Started5h, Started7d: v.Counts.Started7d, Since: own(v.Counts.Since)},
+		Counts:    capacity.Counts{Running: v.Counts.Running, Started5h: v.Counts.Started5h, Started7d: v.Counts.Started7d, Since: utc(v.Counts.Since)},
 		CountedAt: at.UTC(),
 		Fresh:     v.Fresh,
 	}
@@ -85,7 +86,7 @@ func CapacityOf(v capacity.View, at time.Time) Capacity {
 		c.Agent.Version = v.Agent.Version
 	}
 	for _, w := range v.Windows {
-		c.Windows = append(c.Windows, capacity.Window{Kind: w.Kind, Name: w.Name, Minutes: w.Minutes, Percent: w.Percent, ResetsAt: own(w.ResetsAt), Severity: w.Severity, Active: own(w.Active), Limit: w.Limit})
+		c.Windows = append(c.Windows, capacity.Window{Kind: w.Kind, Name: w.Name, Minutes: w.Minutes, Percent: w.Percent, ResetsAt: utc(w.ResetsAt), Severity: w.Severity, Active: own(w.Active), Limit: w.Limit})
 	}
 	for _, cr := range v.Credits {
 		c.Credits = append(c.Credits, capacity.Credit{Kind: cr.Kind, Enabled: own(cr.Enabled), Used: own(cr.Used), Limit: own(cr.Limit), Balance: own(cr.Balance), Unlimited: cr.Unlimited, Currency: cr.Currency})
@@ -110,6 +111,15 @@ func own[T any](p *T) *T {
 	}
 	v := *p
 	return &v
+}
+
+// utc is a copy of the time p points to, in UTC.
+func utc(p *time.Time) *time.Time {
+	if p == nil {
+		return nil
+	}
+	t := p.UTC()
+	return &t
 }
 
 // checkCapacity refuses a Capacity past MaxCapacity as encoded (field

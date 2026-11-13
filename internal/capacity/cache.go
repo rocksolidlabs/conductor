@@ -354,11 +354,17 @@ func (c *Cache) Kept(k Key, at time.Time) (View, bool) {
 
 // Latest answers k's View as View does, reading nothing, but is no ask of
 // k: it moves no key's place (a Brakeman turn's read, docs/plans/
-// capacity.md, PR-6).
-func (c *Cache) Latest(k Key) View {
+// capacity.md, PR-6). With it, from the same look under the same lock,
+// the state of the kept reading the View shows ("" for none), which a
+// read under way does not change.
+func (c *Cache) Latest(k Key) (View, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.viewLocked(k, c.clock.Now())
+	state := ""
+	if e := c.keys[k]; e != nil {
+		state = e.readings[len(e.readings)-1].State
+	}
+	return c.viewLocked(k, c.clock.Now()), state
 }
 
 func (c *Cache) viewLocked(k Key, now time.Time) View {
