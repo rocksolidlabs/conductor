@@ -1,10 +1,13 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -236,28 +239,46 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 			return "", "", refuse(RefusalInvalid, "%s is not a full commit id", sha.what)
 		}
 	}
-	// A copy: the caller's read, which two calls may share, is never
-	// changed under it.
-	list := slices.Clone(r.Checks)
+	if checks, err = encodeChecks(r.Checks); err != nil {
+		return "", "", err
+	}
+	if len(checks) > MaxLinkChecksJSON {
+		return "", "", refuse(RefusalBound, "the read's checks are %d bytes, more than %d", len(checks), MaxLinkChecksJSON)
+	}
+	if r.Incomplete != nil {
+		if incomplete, err = encodeIncomplete(*r.Incomplete); err != nil {
+			return "", "", err
+		}
+	}
+	return checks, incomplete, nil
+}
+
+// encodeChecks checks a read's checks and gives them as their column holds
+// them, the one measure of them (encodeLinkRead's and FitChecks'): each
+// check's texts checked and normalised (a name and an app address-free,
+// within their bound; a page kept only whole), on a copy (the caller's
+// checks, which two calls may share, are never changed under it).
+func encodeChecks(checks []LinkCheck) (string, error) {
+	list := slices.Clone(checks)
 	if list == nil {
 		list = []LinkCheck{}
 	}
 	for i, c := range list {
 		if err := checkRemoteID("a check's id", c.ID); err != nil || c.ID == "" {
-			return "", "", refuse(RefusalInvalid, "check %d's id is not 1 to %d bytes of printable ASCII", i, MaxRemoteID)
+			return "", refuse(RefusalInvalid, "check %d's id is not 1 to %d bytes of printable ASCII", i, MaxRemoteID)
 		}
 		for _, f := range []struct {
 			what, v string
 			n       int
 		}{{"a check's name", c.Name, MaxCheckName}, {"a check's app", c.App, MaxCheckName}, {"a check's status", c.Status, 40}, {"a check's conclusion", c.Conclusion, 40}} {
 			if err := checkText(f.what, f.v, f.n); err != nil {
-				return "", "", err
+				return "", err
 			}
 		}
 		// A state is the system's word, never an address; a name is words,
 		// kept address-free (addressFree), within its bound.
 		if holdsAddress(c.Status) || holdsAddress(c.Conclusion) {
-			return "", "", refuse(RefusalInvalid, "check %d's state holds an address", i)
+			return "", refuse(RefusalInvalid, "check %d's state holds an address", i)
 		}
 		list[i].Name, list[i].App = cutBytes(addressFree(c.Name), MaxCheckName), cutBytes(addressFree(c.App), MaxCheckName)
 		if c.URL != "" {
@@ -272,18 +293,48 @@ func encodeLinkRead(r LinkRead) (checks, incomplete string, err error) {
 		}
 		list[i].CompletedAt = c.CompletedAt.UTC()
 	}
-	if checks, err = encodeValue(list); err != nil {
-		return "", "", err
+	return encodeValue(list)
+}
+
+// FitChecks is a link's checks and why they are incomplete as RecordRead
+// keeps them, measured as it measures them (encodeChecks, after its own
+// normalisation of each text). A set within MaxLinkChecks and
+// MaxLinkChecksJSON is given back as it is; one past either is ordered
+// failures first and cut from its end until it is within both, the cut
+// said as a reason after words and counted in omitted. The reasons are
+// fitted as FitIncomplete fits them; none is nil. The whole set is
+// encoded once before anything is cut: a set with a text the store's
+// check refuses (encodeChecks refuses only texts, never a set's size or
+// count) is given back as it is, whatever its count, its reasons as for a
+// set within both, for RecordRead to refuse. Only a set every text of
+// which the store takes is fitted.
+func FitChecks(checks []LinkCheck, words []string, omitted int) ([]LinkCheck, *ChecksIncomplete) {
+	past := func(l []LinkCheck) bool {
+		enc, err := encodeChecks(l)
+		return len(l) > MaxLinkChecks || err == nil && len(enc) > MaxLinkChecksJSON
 	}
-	if len(checks) > MaxLinkChecksJSON {
-		return "", "", refuse(RefusalBound, "the read's checks are %d bytes, more than %d", len(checks), MaxLinkChecksJSON)
-	}
-	if r.Incomplete != nil {
-		if incomplete, err = encodeIncomplete(*r.Incomplete); err != nil {
-			return "", "", err
+	rank := func(c LinkCheck) int {
+		if c.classify() == "failed" {
+			return 0
 		}
+		return 1
 	}
-	return checks, incomplete, nil
+	kept := checks
+	whole, err := encodeChecks(checks)
+	if err == nil && (len(checks) > MaxLinkChecks || len(whole) > MaxLinkChecksJSON) {
+		kept = slices.Clone(checks)
+		slices.SortStableFunc(kept, func(a, b LinkCheck) int { return cmp.Compare(rank(a), rank(b)) })
+		// The longest start of it within both: a longer start is never
+		// shorter as encoded.
+		kept = kept[:sort.Search(len(kept), func(n int) bool { return past(kept[:n+1]) })]
+		left := len(checks) - len(kept)
+		words = append(slices.Clip(words), fmt.Sprintf("%d checks left out to keep the list within %d checks and %d KiB, failures kept first", left, MaxLinkChecks, MaxLinkChecksJSON>>10))
+		omitted += left
+	}
+	if len(words) == 0 {
+		return kept, nil
+	}
+	return kept, FitIncomplete(words, omitted)
 }
 
 // encodeIncomplete checks why a read's checks are incomplete and gives it
