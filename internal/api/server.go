@@ -1020,6 +1020,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeDispatch(mux)
 	// An attempt's preview label (preview_label.go), the admin's alone.
 	s.routePreviewLabel(mux)
+	s.routeCaptures(mux) // a preview's captures (captures.go), the admin's alone
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
