@@ -1,5 +1,5 @@
 import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
-import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
+import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, CrewCompare, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
 import type { DecisionSummary, TaskHold } from '~/utils/decisions'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
@@ -478,6 +478,8 @@ export interface CrewInfo {
   setup?: CrewCheck[]
   /** The crew's project manifest; only with tasks. The whole manifest is at most 64 KiB as JSON. */
   manifest?: CrewManifest
+  /** A comparison's block; only with tasks. The editor has no form for it: a save sends it back as it was read. */
+  compare?: CrewCompare
   /** The server's count of the crew's manifest changes (`crew:<revision>` in a receipt): never sent back. */
   manifestRevision?: number
   createdAt: string
