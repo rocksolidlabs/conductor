@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -32,10 +33,85 @@ import (
 // reads; nil outside tests. scanLimit stands in for ledger.MaxOpenScan;
 // afterList runs between the list's ledger read and its reply, afterRead
 // between a decision's read and its judgement (the read's and the
-// respond route's).
+// respond route's); working once a request's place is taken
+// (decideWorked), before its work.
 type decideSeams struct {
-	scanLimit            int
-	afterList, afterRead func()
+	scanLimit                     int
+	afterList, afterRead, working func()
+}
+
+// maxDecideWorked is how many of one subject's decide requests are worked
+// at once: the decide page has at most its list's read and one read of
+// each of its four cards out at once, an answer and GET /api/me beside
+// them, so two tabs of it fit.
+const maxDecideWorked = 16
+
+// decideWorking counts the decide requests being worked (decideWorked) by
+// subject; a subject has an entry only while one of its requests is.
+type decideWorking struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// decideWorked runs work, a decide principal's request's own work once its
+// body has been read whole, in one of its subject's maxDecideWorked
+// places, or answers 429 when all are taken, nothing read or written. The
+// place is let go once work has made its reply, on every way out of it,
+// and the reply is written after: a request is counted while the server
+// works on it, never while it is received or sent.
+func (s *Server) decideWorked(w http.ResponseWriter, p principal, work func(http.ResponseWriter)) {
+	c := &s.decideWork
+	c.mu.Lock()
+	taken := c.n[p.subject] < maxDecideWorked
+	if taken {
+		if c.n == nil {
+			c.n = map[string]int{}
+		}
+		c.n[p.subject]++
+	}
+	c.mu.Unlock()
+	if !taken {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many of your requests are being worked on: send this one again once one is answered")
+		return
+	}
+	reply := &madeReply{header: w.Header()}
+	func() {
+		defer func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if c.n[p.subject]--; c.n[p.subject] == 0 {
+				delete(c.n, p.subject)
+			}
+		}()
+		s.decideHook(func(h *decideSeams) func() { return h.working })
+		work(reply)
+	}()
+	if reply.status != 0 {
+		w.WriteHeader(reply.status)
+		_, _ = w.Write(reply.body.Bytes())
+	}
+}
+
+// madeReply is a reply made whole before any of it is written: its status
+// and its bytes. Its header is the reply's own, which nothing sends before
+// its status is written.
+type madeReply struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (m *madeReply) Header() http.Header { return m.header }
+
+func (m *madeReply) WriteHeader(status int) {
+	if m.status == 0 {
+		m.status = status
+	}
+}
+
+func (m *madeReply) Write(b []byte) (int, error) {
+	m.WriteHeader(http.StatusOK)
+	return m.body.Write(b)
 }
 
 // decideListing is the subjects whose list read is in flight, one each at
@@ -158,8 +234,8 @@ func decideNotFound(w http.ResponseWriter) {
 // proto.MaxDecideListEntries, cut when one more admitted was met or the
 // read reached its own bound first. The admin is 403 not_decide, nothing
 // read. One subject has one list read in flight at most (decideLists):
-// another while it is is 429, nothing read. The list it answers is made
-// inside that guard and written after it.
+// another while it is is 429, nothing read. The list it answers, or its
+// 503, is made inside that guard and written after it.
 func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 	p := principalOf(r)
 	if !p.decider() {
@@ -169,6 +245,11 @@ func (s *Server) handleDecideList(w http.ResponseWriter, r *http.Request) {
 	if !decideNoQuery(w, r) {
 		return
 	}
+	s.decideWorked(w, p, func(w http.ResponseWriter) { s.decideList(w, r, p) })
+}
+
+// decideList is the list's work, in its subject's place (decideWorked).
+func (s *Server) decideList(w http.ResponseWriter, r *http.Request, p principal) {
 	ld, ok := s.decisionLedger(w)
 	if !ok {
 		return
@@ -215,11 +296,11 @@ func (s *Server) decideRead(w http.ResponseWriter, r *http.Request, p principal)
 	if !decideNoQuery(w, r) {
 		return
 	}
-	rec, a, ok := s.admittedRecord(w, r, p)
-	if !ok {
-		return
-	}
-	s.writeBounded(w, http.StatusOK, decideView(rec, admittee(p), a), proto.MaxDecideView)
+	s.decideWorked(w, p, func(w http.ResponseWriter) {
+		if rec, a, ok := s.admittedRecord(w, r, p); ok {
+			s.writeBounded(w, http.StatusOK, decideView(rec, admittee(p), a), proto.MaxDecideView)
+		}
+	})
 }
 
 // admittedRecord is the decision the path names, read whole once, and what
@@ -274,6 +355,19 @@ func (s *Server) decideRespond(w http.ResponseWriter, r *http.Request, p princip
 		return
 	}
 	resp := decideResponse(body, p)
+	s.decideWorked(w, p, func(w http.ResponseWriter) { s.decideAnswer(w, r, p, resp) })
+}
+
+// decideAnswer is the respond route's work once its body is read whole,
+// in its subject's place (decideWorked). The pass is asked about first, as
+// the gate asks (authenticate): one the provider no longer admits as the
+// same subject with the decide grant is answered as the gate answers it,
+// nothing read or recorded.
+func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principal, resp crew.Response) {
+	if again := s.authenticate(r, false); !again.decide || again.subject != p.subject {
+		s.unauthorized(w, r)
+		return
+	}
 	rec, a, ok := s.admittedRecord(w, r, p)
 	if !ok {
 		return
