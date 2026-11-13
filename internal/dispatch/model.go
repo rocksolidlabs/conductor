@@ -472,9 +472,13 @@ const (
 	MaxHints             = 8
 	MaxHintFile          = 1 << 10
 	MaxHintComponent     = 256
+	// MaxHintLine bounds a hint's and a source's line and column, and an
+	// element's motion: the largest integer the bridge's JavaScript holds
+	// exactly, its own bound.
+	MaxHintLine = 1<<53 - 1
 	// MaxElementWord bounds the report's short words the plan names no
-	// bound for: a state's words, a style's property, a hint's how, a cut's
-	// step.
+	// bound for: a style's property, a hint's how, a cut's step (a state's
+	// words are bound as a name is, the bridge's own bound).
 	MaxElementWord = 64
 	// MaxChangedPaths and MaxChangedPathsBytes cut a tree's changed paths,
 	// at whichever comes first, as encoded; the count stays whole.

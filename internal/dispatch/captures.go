@@ -120,7 +120,8 @@ func (s *Store) withUpload(ctx context.Context, op Op, intent string, args captu
 // CreateCapture records a capture (capture.create), received the digest
 // of the client's request, n the client's words, f what the API read, and
 // image the screenshot's PNG (nil for none: n says why). Everything is
-// checked first (checkCapture: every bound, the one moment, the origin);
+// checked first (checkCapture: CheckNewCapture's rules first, then the
+// origin and the facts);
 // the screenshot is a PNG of at most MaxCaptureImage bytes and
 // MaxCaptureImageSide pixels a side, its size read from its header before
 // it is published, its regions within it; then one transaction writes the
@@ -378,13 +379,16 @@ func (t *tx) liveCapture(id string) (Capture, error) {
 // each one it holds named by its place (K) with its note, and a region's
 // rectangle within the screenshot, or a new region (K 0); one left out is
 // removed. An element keeps its report, moment and sources as saved, and a
-// new element's report is refused invalid ("Capture again"). One
-// transaction writes a version of each annotation that changed, a new set
-// and the pointer, and bumps the capture's rev. Refused stale_revision for
-// another revision, not_found for a deleted capture, bound past
-// MaxAnnotationSets.
+// new element's report is refused invalid ("Capture again"). The edit is
+// checked first as it is handed in (CheckCaptureEdit). One transaction
+// writes a version of each annotation that changed, a new set and the
+// pointer, and bumps the capture's rev. Refused stale_revision for another
+// revision, not_found for a deleted capture, bound past MaxAnnotationSets.
 func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expectedRev int64, edits []AnnotationEdit) (Receipt, error) {
 	return s.withUpload(ctx, op, IntentCaptureEdit, captureArgs{ID: id, Received: digest}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
+		if err := CheckCaptureEdit(edits); err != nil {
+			return err
+		}
 		c, err := t.liveCapture(id)
 		if err != nil {
 			return err

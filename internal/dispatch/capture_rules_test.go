@@ -50,12 +50,12 @@ func candidateCapture() (NewCapture, CaptureFacts) {
 	return n, f
 }
 
-// The privacy rule compares names in one form: an element's tag and an
-// attribute's name are refused unless they are of the forms the rule
-// allows (TestANameIsWhatTheListOfNamesAllows walks their alphabet), and
-// an input's (its local name, without regard to case, with a prefix or
-// none) value, or a password field's, is never kept; legal names of every
-// case are kept as given.
+// The privacy rule compares names in one form: an element whose tag or an
+// attribute's name is not of the forms the rule allows keeps no value
+// (TestANameIsWhatTheListOfNamesAllows walks their alphabet), a name with
+// a control character is refused, and an input's (its local name, without
+// regard to case, with a prefix or none) value, or a password field's, is
+// never kept; legal names of every case are kept as given.
 func TestThePrivacyRuleComparesNamesInOneForm(t *testing.T) {
 	type attr = [2]string
 	value := attr{"value", "hunter2"}
@@ -73,23 +73,28 @@ func TestThePrivacyRuleComparesNamesInOneForm(t *testing.T) {
 	}
 	// Not names: white space of each kind before, inside and after.
 	for _, ws := range []string{" ", "\t", "\n", "\r", " ", " ", "　", "\x00", "\x1b"} {
+		// A control character is refused wherever it is; a name of another
+		// form is kept, and its element keeps no value.
+		control := strings.ContainsFunc(ws, unicode.IsControl)
 		add(false, ws+"input", value)
 		add(false, "input"+ws, value)
 		add(false, "in"+ws+"put", value)
-		add(false, "div", attr{ws + "value", "v"})
-		add(false, "div", attr{"value" + ws, "v"})
-		add(false, "div", attr{"va" + ws + "lue", "v"})
+		add(!control, "in"+ws+"put", attr{"title", "x"})
+		add(false, "div", attr{ws + "value", "v"}, value)
+		add(!control, "div", attr{"value" + ws, "v"})
+		add(!control, "div", attr{"va" + ws + "lue", "v"})
 	}
 	add(false, "", value)
-	// Not names: a delimiter, a trailing colon, two prefixes, a start that
-	// no name has; refused for the name itself, whatever it holds.
+	// Names of no form: a delimiter, a trailing colon, two prefixes, a
+	// start that no name has: kept, and their element keeps no value.
 	for _, tag := range []string{"input/", "input:", "input>", `input"`, "input=", "a:b:Input", ":input", "-input", "1input", "a:b:div", "svg:", "div/"} {
 		add(false, tag, value)
-		add(false, tag, attr{"title", "x"})
+		add(true, tag, attr{"title", "x"})
 	}
 	for _, name := range []string{"value/", "value:", "value=", `value"`, "value'", "value>", "x:", ":", "-value", "1value"} {
 		add(false, "input", attr{name, "hunter2"})
-		add(false, "div", attr{name, "v"})
+		add(false, "div", attr{name, "v"}, value)
+		add(true, "div", attr{name, "v"})
 	}
 	// An input in any case and with any prefix keeps no value, whatever
 	// its type says (missing, misspelt, a password in any case), the value
@@ -197,11 +202,59 @@ func firstBeyondASCII(tab *unicode.RangeTable) (rune, bool) {
 	return 0, false
 }
 
+// A report's text made storable is never longer as encoded, and what it
+// gives a report is taken by the store: a carriage return is a line feed,
+// each other control character but a tab and a line feed a space, a run
+// of bytes that is not UTF-8 one space.
+func TestAReportTextIsMadeStorable(t *testing.T) {
+	for _, c := range []struct{ in, out string }{
+		{"a\r\nb", "a\n\nb"}, {"tab\tline\n", "tab\tline\n"}, {"\x00\x01\x1b\x7f", "    "}, {"\u0085x", " x"},
+		{"bad\xff\xfebytes", "bad bytes"}, {"plain   kept", "plain   kept"},
+	} {
+		got := ReportText(c.in)
+		if got != c.out || measure(got) > measure(c.in) {
+			t.Errorf("%q: %q (%d bytes as encoded, from %d), want %q", c.in, got, measure(got), measure(c.in), c.out)
+		}
+	}
+	n, f := testCapture(false)
+	e := element(&n)
+	e.HTML, e.Neighbourhood, e.Text = ReportText("<p>\r\n\x01</p>"), ReportText("a\rb"), ReportText("x\x02y")
+	e.Attributes = [][2]string{{"title", ReportText("one\r\ntwo")}}
+	moment(&n)
+	if got := refusedAs(t, n, f, false); got != "" {
+		t.Fatalf("a report's texts made storable: refused %s", got)
+	}
+}
+
+// The pure checks are the store's own: what CheckNewCapture refuses,
+// checkCapture refuses with the same words whatever the facts, and an
+// edit CheckCaptureEdit refuses is refused by EditCapture with its words.
+func TestThePureChecksAreTheStores(t *testing.T) {
+	n, f := testCapture(false)
+	element(&n).Measured = MaxElementReport + 1
+	moment(&n)
+	pure := CheckNewCapture(n, false)
+	_, _, withFacts := checkCapture(n, f, false)
+	_, _, noFacts := checkCapture(n, CaptureFacts{}, false)
+	if pure == nil || withFacts == nil || noFacts == nil || pure.Error() != withFacts.Error() || pure.Error() != noFacts.Error() {
+		t.Fatalf("the pure check %v, with the facts %v, with none %v", pure, withFacts, noFacts)
+	}
+	edits := []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: strings.Repeat("a", MaxAnnotationNote+1)}}
+	var editErr *Refusal
+	errors.As(CheckCaptureEdit(edits), &editErr)
+	s := openStore(t, storeDir(t))
+	rc, err := s.EditCapture(t.Context(), Op{Actor: "admin", ID: "edit-1"}, strings.Repeat("a", 64), strings.Repeat("b", 16), 1, edits)
+	if editErr == nil || err != nil || rc.Status != StatusFailed || rc.Error != editErr.Words || rc.Refusal != editErr.Code {
+		t.Fatalf("the edit's pure check %v; the store's %+v %v", editErr, rc, err)
+	}
+}
+
 // A name is what the list of names allows and nothing else, walked
 // through the alphabet: each rune at the start, in the middle and at the
 // end of an input's tag, of the value attribute's name, of the type
 // attribute's name, and of a type's password. A rune outside the form's
-// alphabet refuses the report; a spelling of the form whose local name
+// alphabet keeps the value out (the report is refused for it); a spelling
+// of the form whose local name
 // is still the one the rule compares (without regard to ASCII case) keeps
 // no value; any other spelling of the form is plainly another name, kept.
 // A type's value is judged by its ASCII letters alone: any rune but a
