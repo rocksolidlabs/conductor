@@ -4648,6 +4648,110 @@ commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
 
+#### The preview label
+
+The label of an attempt's preview (`docs/plans/browser-evidence.md`) is
+the admin's (a share link, a session's token, a host token and a
+Brakeman turn answer `401`) and a switchyard's `403 switchyard`.
+
+`GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
+(no parameter) answers the attempt's worktree preview while it is
+offered: `{url, tree: "worktree", commit, content, changed,
+changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
+unread?}`; `404 no_preview` when it is not open. `url` is the preview
+with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
+place its value leaves the server: every other field is scrubbed of the
+secret of every tree the engine holds one for (in any case, made
+`${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
+The revision is read now: `commit` HEAD's commit as the read recorded
+it, `content` the tree id of everything the tree holds that git would
+see (uncommitted edits and new files that are not ignored; a file at a
+path longer than the system lets a program name, 4,096 bytes on Linux
+and 1,024 on a Mac, is left out of `changed` and of `content`, as it is
+left out of `git status`), `changed` every path that differs from that
+commit counted, `changedPaths` the
+first of them within 200 and 16 KiB as encoded (a path with a control
+character left out, still counted), `changedCut` when some are left
+out. A read that fails, passes 5 s or ends after the server's stop began
+answers `content` `""`, no changed path and `unread` in words, and the
+server logs it by its kind alone (late, not a repository, refused, git
+failed), never with git's message.
+
+Where a read runs. A tree's read is git's, run in the tree's directory
+as the server opened it, with the tree's own `.git` and the work tree
+named outright (`-C <opened> --git-dir=<opened>/.git
+--work-tree=<opened>`): on Linux `<opened>` is the open handle,
+elsewhere the tree's path, which is compared again after the read. git
+looks for no repository: a `.git` that is a gitfile (a linked worktree)
+is followed, one that is a directory is opened, and a tree with no
+`.git` at its top is not read (not a repository). The git directory that
+`.git` names is the one git reads, and its configuration applies, as for
+the engine's own comparison of a checkout, save the forced settings: the
+stat settings (the stat data trusted in full), the sparse checkout
+(none), the split index (none) and, where the file system keeps it, the
+executable bit (`core.fileMode` true); every other setting of the
+repository's configuration applies.
+
+What the server itself opens: the run's working directory, opened as a
+folder only, and from it the tree reached one name at a time, each looked
+at without following it, a directory, opened through the one before it as
+a folder only and the directory that was looked at. A name that is no
+folder at the moment of its open fails at once and the tree is not read
+(for the run's working directory the system's error, logged as `git
+failed`; for a name beneath it the read is refused). A name that is a
+link, or anything else than a folder, at its look is not read; a link
+put in place of a name between its look and its open is followed only
+when it leads to the very directory that was looked at, and any other is
+refused. For the look at whether the file system keeps the executable
+bit, once per index, it makes one new file of its own in the tree and
+removes it, as the engine's comparison of a checkout does. Every
+existing file of a tree and of its git directory is opened by git.
+
+The commands, with the recorded commit id where they name one:
+`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`, `add
+-A`, `write-tree` and `diff --cached --name-only -z <commit>`, with
+`GIT_NO_REPLACE_OBJECTS=1` and literal pathspecs. Each of a read's own
+commands writes its answer and its error stream within a bound: an id at
+1 KiB, the diff as it comes within the paths' bounds, git's error stream
+at its first 4 KiB. The filter look-up before a command (which turns the
+repository's filters off) is `main`'s and holds what git answers. A
+source's class, for the captures (a later row), is
+read the same way at the commit the read recorded: `ls-tree` of that
+commit for exactly the paths given, and `check-ignore` with them on its
+input (it takes no literal pathspec, so a path that begins with `:` is
+not given to it), each answer read within an entry and its bytes for
+each path, past which the class is not known.
+
+The kept indexes. The index is the server's own: one file, in a folder
+under the server's temporary directory, made the recorded commit's
+entries again at every read, so a read is the tree at that read alone.
+Edited and new files are hashed at every read; a tracked file whose
+bytes and stat data did not change since the last read is not hashed
+again, as `git status` works, so a change of the attributes that say how
+a file is recorded shows for the files that change after it. (The
+engine's comparison of a checkout, which decides a candidate, reads with
+a fresh index.) One read of a tree runs at a
+time, so a lock of its index found as a read starts is one a cut read
+left: the index and its lock are dropped and the read starts from none.
+At most eight indexes are kept: an index a read holds or waits for is
+never let go, the least recently read of the others is to make room, and
+with all eight held a read of a ninth tree waits within its 5 s and then
+answers unread. They are not removed when a preview closes. A read's
+commands are ended at 5 s, the wait for a tree's turn counted in them.
+The server's stop is marked as it begins, before any of its waits, and
+removes the folder of indexes. A read that begins once the stop has begun
+makes no folder and no index. A read under way when the stop begins may
+still run its commands and write its own index until the stop removes the
+folder; it asks the mark after its last command, and its label is unread.
+A server ended without its stop leaves the folder to the system's
+cleanup.
+
+Where this differs from the plan: the label is the admin's alone until
+the row of the shared read; the classes are read by two commands over
+the exact paths; the index is made the commit's again with `read-tree
+--reset`; at most eight indexes are kept, the least recently read let
+go, where the plan keeps one for the open preview's life.
+
 #### GitHub tokens
 
 A person's own GitHub token (`docs/plans/tracker-linking.md`), for
@@ -6132,7 +6236,8 @@ bound `pinned` or `launch_env` as any such launch is, and a folder of a
 retired account is refused `400 invalid_account` (a new launch binds no
 retired account). A folder variable that is not a whole path names the
 folder under the one the process starts in, and that is the folder bound
-and compared; a crew member of such an entry, bound before it has a
+and compared; a crew member of such an entry, or of one whose home is not
+a whole path while the folder variable is unset, bound before it has a
 folder, is refused `400 invalid_account`. A crew member
 names `account` and `model` beside its agent; a launch of the crew (`POST
 /api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
@@ -6158,24 +6263,67 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
+A launch of this server holds every registered account whose folder it
+runs in, as the launch's own adapter's folder variable or home says
+where that is. What it holds, and the one account its session is counted
+on, are decided when the launch is reserved, before its process starts,
+and kept until the process has ended. A launch runs in an account's
+folder when it names the account, or the folder its process runs in (its
+adapter's folder variable's as the process sees it, else the agent's own
+under its home; one that is not a whole path is read under the folder it
+starts in both as written and cleaned) is the account's, whatever the
+account's adapter: it holds every such account, whether or not its
+session is registered (its registration refused and its stop failed
+among them). The ids of the accounts it holds, and the one account it is
+counted on, are kept in memory with its session, never written or
+answered: for a session, no folder is asked about again after the
+reservation (a kept run's member between attempts is judged at the
+remove by its binding, below). Its session is counted on the account the
+launch names, else the first account of its own adapter among those it
+holds, else its binding's own id (`default` for the agent's own login,
+or `unlisted`); its running count and its start counts are on that one
+account. Holding and counting are two questions, since one folder can be
+more than one account's.
+
+- An account registered on a folder after a launch into it was reserved
+  is not held by that launch, and the launch stays counted where it was
+  counted.
+- Where the accounts cannot be read, or on a server that does not own
+  them, a launch holds nothing by folder (a remove is refused while that
+  lasts).
+- A usage read is not a launch and holds nothing.
+- A launch on another Runtime is held and counted as one that runs here.
+- A home that an entry or a launch sets moves the agent's own folder, and
+  the binding's `source` still says the agent's own login.
+- A program whose entry names no adapter, or another adapter's folder
+  variable, is not read for a folder: Conductor does not know what such a
+  program reads, and it holds nothing by folder.
+- A home set to nothing is read as not set: the tool's own folder is then
+  found as it is for a launch that sets no home.
+- For what a launch holds and where it is counted, a folder is an
+  account's when the file system says it is the same directory at the
+  reservation, however it is written, and a folder that does not exist
+  yet is compared by its path as written, cleaned. The folder Brakeman's
+  turn wants is looked up for its binding as before: the paths the same
+  cleaned, or the same where links lead.
+- A launch whose binding is `unlisted` is counted on its own adapter's
+  account when the reservation holds one on that folder, else on
+  `unlisted`.
+
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch that names the account (or takes it as its
-adapter's default) is under way, from its reservation until its process
-has ended, whether or not its session was registered (its registration
-refused and its stop failed among them), a registered server session's
-process bound to it still runs (its stop failed, or it was removed from
-the listing), an engine run not ended, or a ledger run running or
-interrupted, and continued by no other run, is bound to it (one whose
-crew cannot be read holds every account); a stopped or finished run is no
-bar (continuing it is refused `account_gone`), and a kept run that
-another run has continued holds nothing. A registered session, and a
-member of a run not ended (the engine's, or the ledger's as above), whose
-binding is `pinned` (its entry or the server's passthrough sets the login,
-and the launch's own environment sets none of its login variables) to a
-folder that a registered account holds, holds that account, its `source`
-still what the environment says, and such a session is counted on it. For a login that an entry, the
-passthrough or a launch's own environment sets, what is held and counted
-begins at the session's registration and follows what the binding keeps.
+most 10, while a launch holds the account so, a registered server
+session that held it at its launch still has a process running (its stop
+failed, or it was removed from the listing), or an engine run not ended, or a
+ledger run running or interrupted, and continued by no other run, has a
+member whose binding names it or keeps its folder (the same directory, as
+the file system says at the remove, however either is written; one whose
+crew cannot be read holds every account); a stopped or finished run is no bar
+(continuing it is refused `account_gone`), and a kept run that another
+run has continued holds nothing. A run keeps a member on the agent's own
+login as no binding, and one bound `launch_env`, or `pinned` by a key
+alone, with no folder: such a member holds the account of its folder
+through its launches, and nothing between a kept run's attempts, when
+nothing runs in the folder.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -6222,8 +6370,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account, and one bound `pinned` to the account's folder
-(Capacity's binding paragraph above). `host.kind` is `native`
+counted on the account, whatever its `source` (Capacity's binding
+paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage
