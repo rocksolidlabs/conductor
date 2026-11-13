@@ -3,7 +3,6 @@ package crew
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
@@ -592,19 +590,19 @@ func bounded(paths []string) []string {
 }
 
 // modesKept reports whether the filesystem under dir keeps the executable
-// bit, by setting it on a file made there for the look and removed.
+// bit, by setting it on a file made there for the look, through the file
+// it opened, and removed.
 func modesKept(dir string) bool {
 	f, err := os.CreateTemp(dir, ".conductor-mode-")
 	if err != nil {
 		return false
 	}
-	name := f.Name()
-	f.Close()
-	defer os.Remove(name)
-	if err := os.Chmod(name, 0o755); err != nil {
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(0o755); err != nil {
 		return false
 	}
-	fi, err := os.Lstat(name)
+	fi, err := f.Stat()
 	return err == nil && fi.Mode().Perm()&0o100 != 0
 }
 
@@ -724,44 +722,34 @@ const (
 	treeReadPathMax   = 64 << 10
 )
 
-// Why a read refused a tree: it is not reached as the engine made it, or
-// it is not a worktree of the run's own repository.
-var (
-	ErrTreeMoved       = errors.New("the tree is not reached as the engine made it")
-	ErrTreeNotWorktree = errors.New("the tree is not a worktree of the run's repository")
-)
-
-// maxGitFile bounds a .git file and a gitdir file as a tree's open reads
-// them.
-const maxGitFile = 4 << 10
+// ErrTreeMoved is a read that refused a tree: it is not reached as the
+// engine made it.
+var ErrTreeMoved = errors.New("the tree is not reached as the engine made it")
 
 // Tree is an attempt's worktree opened for a read (OpenTree): its
 // directory held open; at, a path that names that open directory
-// (gitcli.OpenedPath), the work tree of every git command of the read;
-// gitDir, the git directory each names; and whether the file system of
-// the run's worktrees folder keeps symbolic links.
+// (gitcli.OpenedPath: on Linux the open handle, elsewhere its path,
+// compared again after the read by Still), where every git command of the
+// read runs and the work tree it names; and above, the directory that
+// holds the tree (the engine's own path for it), git's ceiling, so that
+// git looks for the repository in the tree alone.
 type Tree struct {
-	dir    *os.File
-	at     string
-	still  func() bool
-	gitDir string
-	links  bool
+	dir   *os.File
+	at    string
+	still func() bool
+	above string
 }
 
 // OpenTree resolves where a read of the worktree at dir, which the engine
-// made under root (the run's working directory), runs. From root, each
-// name of dir under it is looked at without following it, must be a
-// directory, is opened through the one before it and must be the
-// directory that was looked at (os.SameFile): anything else is
-// ErrTreeMoved. The git directory is the one the tree's .git file names
-// (read through the opened tree, at most maxGitFile), taken only when it
-// is a directory directly under worktrees in the common git directory of
-// root's repository and its own gitdir file names this tree's .git back
-// (the same file, whatever path leads to it): no .git file, a .git
-// directory or any other git directory is ErrTreeNotWorktree, and no git
-// command runs in the tree. The file system's links are looked at with a
-// link made and removed in the folder the tree is in, never in the tree.
-func OpenTree(ctx context.Context, root, dir string) (*Tree, error) {
+// made under root (the run's working directory, an absolute path), runs. From root, each name of dir under it is looked at without
+// following it, must be a directory, is opened through the one before it
+// and must be the directory that was looked at (os.SameFile): anything
+// else is ErrTreeMoved. The server opens nothing else in the tree: the
+// tree's own .git says which git directory git reads, and that
+// directory's configuration applies, as for the engine's comparison of a
+// checkout (checkoutIntact); a tree with no .git of its own is no
+// repository to git (gitcli.ErrNotRepo).
+func OpenTree(root, dir string) (*Tree, error) {
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return nil, ErrTreeMoved
@@ -770,13 +758,7 @@ func OpenTree(ctx context.Context, root, dir string) (*Tree, error) {
 	if err != nil {
 		return nil, err
 	}
-	var parent *os.Root
-	defer func() {
-		cur.Close()
-		if parent != nil {
-			parent.Close()
-		}
-	}()
+	defer func() { cur.Close() }()
 	for _, name := range strings.Split(rel, string(filepath.Separator)) {
 		fi, err := cur.Lstat(name)
 		if err != nil || !fi.IsDir() {
@@ -790,97 +772,16 @@ func OpenTree(ctx context.Context, root, dir string) (*Tree, error) {
 			next.Close()
 			return nil, ErrTreeMoved
 		}
-		if parent != nil {
-			parent.Close()
-		}
-		parent, cur = cur, next
-	}
-	gitDir, err := treeGitDir(ctx, cur, root, dir)
-	if err != nil {
-		return nil, err
+		cur.Close()
+		cur = next
 	}
 	f, err := cur.Open(".")
 	if err != nil {
 		return nil, err
 	}
-	t := &Tree{dir: f, gitDir: gitDir, links: linksKept(parent)}
+	t := &Tree{dir: f, above: filepath.Dir(dir)}
 	t.at, t.still = gitcli.OpenedPath(f, dir)
 	return t, nil
-}
-
-// treeGitDir is the git directory of the tree open at tree (its path
-// dir), as OpenTree takes it; the common git directory is read in root.
-func treeGitDir(ctx context.Context, tree *os.Root, root, dir string) (string, error) {
-	named, dotGit, err := readGitFile(tree, ".git")
-	if err != nil {
-		return "", err
-	}
-	text, ok := strings.CutPrefix(named, "gitdir: ")
-	if !ok {
-		return "", ErrTreeNotWorktree
-	}
-	gitDir := filepath.Clean(text)
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(dir, gitDir)
-	}
-	common, err := gitcli.Run(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", err
-	}
-	gi, gerr := os.Lstat(gitDir)
-	pi, perr := os.Stat(filepath.Dir(gitDir))
-	wi, werr := os.Stat(filepath.Join(strings.TrimSpace(common), "worktrees"))
-	if gerr != nil || perr != nil || werr != nil || !gi.IsDir() || !os.SameFile(pi, wi) {
-		return "", ErrTreeNotWorktree
-	}
-	g, err := os.OpenRoot(gitDir)
-	if err != nil {
-		return "", ErrTreeNotWorktree
-	}
-	defer g.Close()
-	back, _, err := readGitFile(g, "gitdir")
-	if err != nil {
-		return "", err
-	}
-	if !filepath.IsAbs(back) {
-		back = filepath.Join(gitDir, back)
-	}
-	if bi, err := os.Stat(back); err != nil || !os.SameFile(bi, dotGit) {
-		return "", ErrTreeNotWorktree
-	}
-	return gitDir, nil
-}
-
-// readGitFile reads the file name in root, a regular file and not a link,
-// at most maxGitFile, as git reads a .git or a gitdir file: its text
-// without the white space it ends with; and the file's identity.
-func readGitFile(root *os.Root, name string) (string, os.FileInfo, error) {
-	fi, err := root.Lstat(name)
-	if err != nil || !fi.Mode().IsRegular() {
-		return "", nil, ErrTreeNotWorktree
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		return "", nil, ErrTreeNotWorktree
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxGitFile+1))
-	if got, serr := f.Stat(); err != nil || serr != nil || len(b) > maxGitFile || !os.SameFile(fi, got) {
-		return "", nil, ErrTreeNotWorktree
-	}
-	return strings.TrimRightFunc(string(b), unicode.IsSpace), fi, nil
-}
-
-// linksKept reports whether the file system of the folder open at r keeps
-// symbolic links, by making one there for the look and removing it.
-func linksKept(r *os.Root) bool {
-	name := ".conductor-link-" + rand.Text()
-	if r.Symlink(".", name) != nil {
-		return false
-	}
-	defer r.Remove(name)
-	fi, err := r.Lstat(name)
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
 // Close lets the tree's directory go.
@@ -902,18 +803,18 @@ type TreeIndex struct {
 }
 
 // env is the environment of git in a read of t in ix: the reader's own
-// index, no replacement object, every pathspec literal, and the
+// index, one file (no split index), no replacement object, every
+// pathspec literal, no repository looked for above the tree, and the
 // configuration that would let a command in the tree hide a change from
-// it set back (the stat data trusted in full, no sparse checkout, links
-// as the file system keeps them, the executable bit kept where the file
-// system keeps it).
+// it set back (the stat data trusted in full, no sparse checkout, the
+// executable bit kept where the file system keeps it).
 func (t *Tree) env(ix *TreeIndex) map[string]string {
 	if !ix.looked {
 		ix.modes, ix.looked = modesKept(t.at), true
 	}
-	env := map[string]string{"GIT_INDEX_FILE": ix.Path, "GIT_LITERAL_PATHSPECS": "1", "GIT_NO_REPLACE_OBJECTS": "1"}
+	env := map[string]string{"GIT_INDEX_FILE": ix.Path, "GIT_LITERAL_PATHSPECS": "1", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_CEILING_DIRECTORIES": t.above}
 	cfg := [][2]string{{"core.ignoreStat", "false"}, {"core.checkStat", "default"}, {"core.trustctime", "true"}, {"core.sparseCheckout", "false"},
-		{"core.symlinks", strconv.FormatBool(t.links)}}
+		{"core.splitIndex", "false"}}
 	if ix.modes {
 		cfg = append(cfg, [2]string{"core.fileMode", "true"})
 	}
@@ -938,24 +839,38 @@ func (t *Tree) git(ctx context.Context, ix *TreeIndex, in io.Reader, w io.Writer
 		// (TreeClasses).
 		delete(env, "GIT_LITERAL_PATHSPECS")
 	}
-	return treeGit(ctx, t.gitDir, t.at, env, in, w, args...)
+	return treeGit(ctx, t.at, env, in, w, args...)
 }
 
+// SetTreeGitForTest makes run the runner of every git command of a
+// tree's read, until the returned function puts the one before back.
+func SetTreeGitForTest(run func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error) (restore func()) {
+	prev := treeGit
+	treeGit = run
+	return func() { treeGit = prev }
+}
+
+// maxTreeID bounds what a read keeps of a command that answers an id.
+const maxTreeID = 1 << 10
+
 // TreeRevision reads the tree t as it is now, in the index ix, through
-// git with argv in the C locale, every command naming the tree's git
-// directory and work tree outright (gitcli.RunTree): rev-parse HEAD;
-// read-tree --reset HEAD, the one-tree merge of -m that discards what it
+// git with argv in the C locale, every command run in the tree's opened
+// directory with the work tree named outright (gitcli.RunTree):
+// rev-parse --verify HEAD^{commit}, the commit recorded; read-tree
+// --reset of that commit, the one-tree merge of -m that discards what it
 // cannot merge instead of failing (an entry an earlier read staged whose
-// file has changed again), so the index is HEAD's entries again, each
-// keeping its stat data only where the entry is HEAD's, and nothing an
-// earlier read staged survives into this one; add -A, the ignored paths
-// aside; write-tree, the content; and diff --cached --name-only -z HEAD,
-// read as it comes, counted whole and kept to its bounds. Reads of one
-// index run one at a time, so a lock of the index's there as a read
-// starts is one a cut read left: the index and its lock are dropped, and
-// the read starts from none. Its time is ctx's. A read that cannot name
-// HEAD's commit is an error; one that fails after gives the commit with
-// no content.
+// file has changed again), so the index is the commit's entries again,
+// each keeping its stat data only where the entry is the commit's, and
+// nothing an earlier read staged survives into this one; add -A, the
+// ignored paths aside; write-tree, the content; and diff --cached
+// --name-only -z of the commit. What each writes is bounded by its
+// writer: an id is kept within maxTreeID, add -A's and read-tree's output
+// is dropped, and the diff's is read as it comes, counted whole and kept
+// to its bounds (pathList). Reads of one index run one at a time, so a
+// lock of the index's there as a read starts is one a cut read left: the
+// index and its lock are dropped, and the read starts from none. Its time
+// is ctx's. A read that cannot name HEAD's commit is an error; one that
+// fails after gives the commit with no content.
 func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
 	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
 		_ = os.Remove(ix.Path)
@@ -963,8 +878,8 @@ func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error)
 			return TreeRead{}, err
 		}
 	}
-	var head strings.Builder
-	if err := t.git(ctx, ix, nil, &head, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+	head := &gitcli.Head{N: maxTreeID}
+	if err := t.git(ctx, ix, nil, head, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 		return TreeRead{}, err
 	}
 	out := TreeRead{Commit: strings.TrimSpace(head.String())}
@@ -973,8 +888,8 @@ func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error)
 			return out, err
 		}
 	}
-	var tree strings.Builder
-	if err := t.git(ctx, ix, nil, &tree, "write-tree"); err != nil {
+	tree := &gitcli.Head{N: maxTreeID}
+	if err := t.git(ctx, ix, nil, tree, "write-tree"); err != nil {
 		return out, err
 	}
 	paths := &pathList{}

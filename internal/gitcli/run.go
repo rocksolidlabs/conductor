@@ -183,25 +183,44 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 	return nil
 }
 
-// RunTree runs git with args in the working tree workTree whose git
-// directory is gitDir, both named outright (-C workTree --git-dir
-// --work-tree, as AddWorktree's checkout names them), so that git looks
-// for no repository and takes no working tree from any configuration:
-// with env set in git's environment beside the safe one, in (nil for
-// none) on its standard input and its standard output written to w as it
-// comes. It is how a tree's read runs git (crew.TreeRevision).
-func RunTree(ctx context.Context, gitDir, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
-	loc := []string{"-C", workTree, "--git-dir=" + gitDir, "--work-tree=" + workTree}
+// RunTree runs git with args in the work tree workTree, named outright
+// (-C workTree --work-tree=workTree), so that no configuration names
+// another work tree; git finds the git directory from the tree's .git,
+// as it does for Run: with env set in git's environment beside the safe
+// one, in (nil for none) on its standard input and its standard output
+// written to w as it comes (w bounds what it keeps). Of its error stream
+// the first maxStderr bytes are kept for the error. It is how a tree's
+// read runs git (crew.TreeRevision).
+func RunTree(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	loc := []string{"-C", workTree, "--work-tree=" + workTree}
 	argv, err := argvFor(ctx, "", loc, args)
 	if err != nil {
 		return err
 	}
-	var stderr bytes.Buffer
-	if err := execGitIO(ctx, "", argv, env, in, w, &stderr); err != nil {
+	stderr := &Head{N: maxStderr}
+	if err := execGitIO(ctx, "", argv, env, in, w, stderr); err != nil {
 		return gitError(ctx, args[0], stderr.String(), err)
 	}
 	return nil
 }
+
+// maxStderr bounds what RunTree keeps of git's error stream.
+const maxStderr = 4 << 10
+
+// Head is a writer that keeps the first N bytes written to it and drops
+// the rest, every write taken whole.
+type Head struct {
+	N   int
+	buf []byte
+}
+
+func (h *Head) Write(p []byte) (int, error) {
+	h.buf = append(h.buf, p[:min(len(p), max(h.N-len(h.buf), 0))]...)
+	return len(p), nil
+}
+
+// String is what h kept.
+func (h *Head) String() string { return string(h.buf) }
 
 // runEnv is run with env set in git's environment beside the safe one, in
 // the working directory cwd ("" for the server's own: loc then points git

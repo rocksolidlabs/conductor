@@ -168,8 +168,10 @@ func (tr *treeReads) give(e *treeEntry, held bool) {
 	}
 }
 
-// close begins the stop: the reads' indexes are removed, a read waiting
-// for room is let go, and no later read makes anything.
+// close begins the stop: it is marked first, then the reads' indexes are
+// removed, a read waiting for room is let go, and no later read makes
+// anything. A read whose commands end after the mark is unread
+// (stopping).
 func (tr *treeReads) close() {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
@@ -181,11 +183,20 @@ func (tr *treeReads) close() {
 	}
 }
 
+// stopping reports whether the stop has begun, under the reads' lock: a
+// read asks it after its last git command, and a read it answers true for
+// is unread, its index perhaps removed while it ran.
+func (tr *treeReads) stopping() bool {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.stopped
+}
+
 // read reads the worktree of wp now (crew.TreeRevision) in its entry,
 // opened as the engine made it (crew.OpenTree: a tree that cannot be
-// reached so, or is not a worktree of the run's repository, is not read).
-// A read that ends past labelReadWait or fails after naming HEAD gives the
-// commit with no content and the error.
+// reached so is not read). A read that ends past labelReadWait, fails
+// after naming HEAD, or ends once the stop has begun (errReadsStopped)
+// gives the commit alone and the error.
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.TreeRead, error) {
 	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
 	defer cancel()
@@ -194,7 +205,7 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.Tr
 		return crew.TreeRead{}, err
 	}
 	defer tr.give(e, true)
-	t, err := crew.OpenTree(ctx, wp.Root, wp.Dir)
+	t, err := crew.OpenTree(wp.Root, wp.Dir)
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
@@ -203,10 +214,13 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.Tr
 	if err == nil && !t.Still() {
 		err = crew.ErrTreeMoved
 	}
-	if err != nil {
-		read.Content = ""
+	if err == nil && tr.stopping() {
+		err = errReadsStopped
 	}
-	return read, err
+	if err != nil {
+		return crew.TreeRead{Commit: read.Commit}, err
+	}
+	return read, nil
 }
 
 // previewLabel is an attempt's preview label: the URL to open (the
@@ -287,7 +301,7 @@ func readFailure(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return "late"
-	case errors.Is(err, crew.ErrTreeNotWorktree), errors.Is(err, gitcli.ErrNotRepo):
+	case errors.Is(err, gitcli.ErrNotRepo):
 		return "not a repository"
 	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped):
 		return "refused"

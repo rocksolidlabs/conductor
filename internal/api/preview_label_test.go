@@ -19,6 +19,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
 
 // previewedCrew is servedCrew whose preview names the tree's secret in its
@@ -61,7 +62,13 @@ func previewEnvLogging(t *testing.T, files map[string]string, logs io.Writer) *p
 	if len(files) > 0 {
 		gitIn(t, e.root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "files")
 	}
-	run, release, err := e.srv.runs.LaunchNamed(t.Context(), previewedCrew(e.root), "")
+	return launchPreview(t, e, previewedCrew(e.root))
+}
+
+// launchPreview launches c in e and waits for its attempt's preview.
+func launchPreview(t *testing.T, e *testEnv, c crew.Crew) *previewed {
+	t.Helper()
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
 	release()
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +213,102 @@ func TestTheLabelsChangedPathsHoldNoSecret(t *testing.T) {
 	if status != http.StatusOK || strings.Contains(strings.ToLower(rest), p.secret) ||
 		fmt.Sprint(out["changedPaths"]) != "[a-${CONDUCTOR_TREE_SECRET}.txt b-${CONDUCTOR_TREE_SECRET}.txt]" {
 		t.Fatalf("the label: %d %s", status, data)
+	}
+}
+
+// A changed path whose name holds the secret of ANOTHER tree the engine
+// holds is named with the secret's name in the first tree's label.
+func TestTheLabelsChangedPathsHoldNoOtherTreesSecret(t *testing.T) {
+	p := previewEnv(t, nil)
+	c := previewedCrew(p.e.root)
+	c.ID, c.Name = "previewed-too", "Previewed too"
+	q := launchPreview(t, p.e, c)
+	if q.secret == p.secret {
+		t.Fatal("the two trees have one secret")
+	}
+	writeIn(t, p.dir, "c-"+q.secret+".txt", "x\n")
+	status, data, out := p.e.callAs(t, adminToken, "GET", "/api/runs/"+p.run+"/tasks/build/attempts/1/preview", nil)
+	if status != http.StatusOK || strings.Contains(strings.ToLower(string(data)), q.secret) ||
+		fmt.Sprint(out["changedPaths"]) != "[c-${CONDUCTOR_TREE_SECRET}.txt]" {
+		t.Fatalf("the first tree's label: %d %s", status, data)
+	}
+}
+
+// A tree whose .git is gone, inside the run's checkout, is not read as
+// that checkout: git looks for a repository in the tree alone, the label
+// is unread and the log names the kind.
+func TestALabelOfATreeWithNoGitOfItsOwnIsUnread(t *testing.T) {
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, nil, logs)
+	dotGit, aside := filepath.Join(p.dir, ".git"), filepath.Join(p.e.root, "dotgit-aside")
+	if err := os.Rename(dotGit, aside); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Rename(aside, dotGit) })
+	writeIn(t, p.dir, "new.txt", "x\n")
+	if l := p.label(t); l["unread"] != "the tree could not be read" || l["commit"] != "" || l["content"] != "" || l["changed"] != float64(0) {
+		t.Fatalf("the label: %v", l)
+	}
+	if !strings.Contains(logs.String(), `why="not a repository"`) {
+		t.Fatalf("the log: %s", logs.String())
+	}
+}
+
+// A read held between write-tree and the diff while the server's stop
+// begins (close removes the indexes) is unread once it is let go: its
+// diff ran with the index gone, and the stop's mark is asked after it.
+func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, nil, logs)
+	at, release := make(chan struct{}), make(chan struct{})
+	held := false
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		if args[0] == "diff" && !held {
+			held = true
+			close(at)
+			<-release
+		}
+		return gitcli.RunTree(ctx, workTree, env, in, w, args...)
+	}))
+	type answer struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		req, err := http.NewRequest("GET", p.e.http.URL+"/api/runs/"+p.run+"/tasks/build/attempts/1/preview", nil)
+		if err != nil {
+			done <- answer{err: err}
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		resp, err := p.e.client.Do(req)
+		if err != nil {
+			done <- answer{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		done <- answer{resp.StatusCode, b, err}
+	}()
+	select {
+	case <-at:
+	case a := <-done:
+		t.Fatalf("answered before the diff: %d %s %v", a.status, a.body, a.err)
+	}
+	p.e.srv.trees.close()
+	close(release)
+	a := <-done
+	var l map[string]any
+	if a.err != nil || a.status != http.StatusOK || json.Unmarshal(a.body, &l) != nil {
+		t.Fatalf("the label: %d %s %v", a.status, a.body, a.err)
+	}
+	if l["unread"] != "the tree could not be read" || l["content"] != "" || l["changed"] != float64(0) || fmt.Sprint(l["changedPaths"]) != "[]" {
+		t.Fatalf("the label read across the stop: %s", a.body)
+	}
+	if !strings.Contains(logs.String(), `why=refused`) {
+		t.Fatalf("the log: %s", logs.String())
 	}
 }
 

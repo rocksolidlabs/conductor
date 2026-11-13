@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -452,10 +454,11 @@ func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T
 	r.NoneFired(t, "worktree add")
 }
 
-// RunTree runs git with the git directory and the work tree it is given,
-// whatever core.worktree the repository sets, with its input given and
-// its output written as it comes, and starts no program the repository
-// names.
+// RunTree runs git in the work tree it is given, whatever core.worktree
+// the worktree's own configuration sets: the tree's own new file is
+// listed and nothing of the folder core.worktree names; its input is
+// given and its output written as it comes, and it starts no program the
+// repository names.
 func TestRunTreeRunsWhereItIsToldWhateverCoreWorktreeSays(t *testing.T) {
 	r := gitclitest.New(t, gitclitest.Options{})
 	ctx := context.Background()
@@ -466,18 +469,54 @@ func TestRunTreeRunsWhereItIsToldWhateverCoreWorktreeSays(t *testing.T) {
 	gitclitest.Git(t, r.Dir, "config", "core.repositoryformatversion", "1")
 	gitclitest.Git(t, r.Dir, "config", "extensions.worktreeConfig", "true")
 	gitclitest.Git(t, wt, "config", "--worktree", "core.worktree", r.Dir)
-	gitDir := filepath.Join(r.Dir, ".git", "worktrees", "lead")
-	var top, id bytes.Buffer
-	if err := RunTree(ctx, gitDir, wt, map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}, nil, &top, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(top.String()) != wt {
+	for _, p := range []string{filepath.Join(wt, "mine.txt"), filepath.Join(r.Dir, "other.txt")} {
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var top, id, others bytes.Buffer
+	if err := RunTree(ctx, wt, map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}, nil, &top, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(top.String()) != wt {
 		t.Fatalf("the top: %q %v", top.String(), err)
 	}
-	if err := RunTree(ctx, gitDir, wt, nil, strings.NewReader("one\n"), &id, "hash-object", "--stdin"); err != nil || strings.TrimSpace(id.String()) != "5626abf0f72e58d7a153368ba57db4c673c0e171" {
+	if err := RunTree(ctx, wt, nil, nil, &others, "ls-files", "--others", "--exclude-standard", "-z"); err != nil || others.String() != "mine.txt\x00" {
+		t.Fatalf("the new files: %q %v", others.String(), err)
+	}
+	if err := RunTree(ctx, wt, nil, strings.NewReader("one\n"), &id, "hash-object", "--stdin"); err != nil || strings.TrimSpace(id.String()) != "5626abf0f72e58d7a153368ba57db4c673c0e171" {
 		t.Fatalf("the input's id: %q %v", id.String(), err)
 	}
 	if out, err := Run(ctx, wt, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(out) != r.Dir {
 		t.Fatalf("git with no work tree named: %q %v (the repository's core.worktree is not in force)", out, err)
 	}
 	r.NoneFired(t, "RunTree")
+}
+
+// RunTree keeps the first maxStderr bytes of git's error stream: an
+// attributes file of 3,000 lines git warns about (about 300 KB of
+// warnings) and a file git cannot open fail add with an error within the
+// bound.
+func TestRunTreeKeepsTheFirstOfGitsErrorStream(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	if err := os.WriteFile(filepath.Join(r.Dir, ".gitattributes"), []byte(strings.Repeat("!x text\n", 3000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closed := filepath.Join(r.Dir, "closed.txt")
+	if err := os.WriteFile(closed, []byte("x\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o644) })
+	env := map[string]string{"GIT_INDEX_FILE": filepath.Join(t.TempDir(), "index")}
+	err := RunTree(ctx, r.Dir, env, nil, io.Discard, "add", "-A")
+	if err == nil || len(err.Error()) > maxStderr {
+		t.Fatalf("the failed add: %d bytes of error, %v", len(fmt.Sprint(err)), err != nil)
+	}
+	h := &Head{N: 4}
+	if n, err := h.Write([]byte("abcdef")); n != 6 || err != nil || h.String() != "abcd" {
+		t.Fatalf("a head of 4: %d %v %q", n, err, h.String())
+	}
 }
 
 // filterNames reads the names a configuration gives a filter program,
