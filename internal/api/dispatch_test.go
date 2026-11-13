@@ -1488,8 +1488,19 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// A link's read reads an external link of the ticket's, never read.
 	linkRead := "/api/dispatch/tickets/CND-1/links/" + doneOf(t)(e.srv.dispatch.AddLink(context.Background(), adminOp(""), "CND-1",
 		dispatch.NewLink{Kind: dispatch.LinkExternal, URL: "https://github.com/octo/app/issues/1"}, nil)).ID + "/read"
+	// A publication's read reads a publication of the ticket's, prepared
+	// through the store to an external link read once.
+	pubLink := doneOf(t)(e.srv.dispatch.AddLink(context.Background(), adminOp(""), "CND-1",
+		dispatch.NewLink{Kind: dispatch.LinkExternal, URL: "https://github.com/octo/app/issues/2"}, nil)).ID
+	if err := e.srv.dispatch.RecordRead(context.Background(), pubLink, dispatch.LinkRead{System: "github", Host: "github.com", Kind: "issue", NodeID: "I_2",
+		State: "open", Checks: []dispatch.LinkCheck{}, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	publication := "/api/dispatch/publications/" + doneOf(t)(e.srv.dispatch.PreparePublication(context.Background(), adminOp(""), dispatch.PublicationArgs{Key: "CND-1",
+		Target: "link:" + pubLink, Body: "b"}, dispatch.PublicationTarget{NodeID: "I_2", SpaceID: "4000001", Kind: "issue", URL: "https://github.com/octo/app/issues/2",
+		Ref: "octo/app#2"}, func(id string) string { return "<!-- conductor-publication:" + id + " -->" })).ID
 	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment,
-		"/api/dispatch/tickets/CND-1/plans", plan, launch, review, linkRead}
+		"/api/dispatch/tickets/CND-1/plans", plan, launch, review, linkRead, publication, "/api/dispatch/tickets/CND-1/publish/offer"}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
@@ -1518,6 +1529,9 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			if strings.HasSuffix(path, "/read") {
 				path = linkRead
 			}
+			if strings.HasPrefix(path, "/api/dispatch/publications/") {
+				path = publication
+			}
 			e.expect(t, method, path, nil, http.StatusOK, "")
 		}
 		sep := "?"
@@ -1532,7 +1546,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 20 {
+	if reads != 23 {
 		t.Fatalf("%d reads", reads)
 	}
 }

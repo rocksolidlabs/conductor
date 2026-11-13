@@ -474,13 +474,16 @@ func (s *Server) handlePublications(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	q := r.URL.Query()
-	cursor, needYou := q.Get("cursor"), q.Get("needYou")
-	for k, v := range q {
-		if (k != "cursor" && k != "needYou") || len(v) != 1 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "the query is cursor and needYou, each at most once")
-			return
+	q, err := readQuery(r, "cursor", "needYou")
+	var cursor, needYou string
+	if err == nil {
+		if cursor, err = q.one("cursor"); err == nil {
+			needYou, err = q.one("needYou")
 		}
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
 	}
 	if cursor != "" && !dispatch.ValidID(cursor) || needYou != "" && needYou != "1" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "cursor is a publication's id; needYou is 1")
