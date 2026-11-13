@@ -17,14 +17,19 @@ const recommended = computed(() => v.value?.options?.[v.value.recommendation ?? 
 const ready = computed(() => props.card.draft.choice !== undefined || (v.value?.type === 'clarification' && !!props.card.draft.text.trim()))
 const locked = computed(() => !props.answerable || !!props.card.sent)
 const outcome = computed(() => (v.value ? decideOutcomeWords(v.value) : ''))
-const asked = computed(() => (v.value?.createdAt ? new Date(v.value.createdAt).toLocaleString() : ''))
+const asked = computed(() => {
+  const t = Date.parse(v.value?.createdAt ?? '')
+  return Number.isFinite(t) ? new Date(t).toLocaleString() : ''
+})
+/** The type, drawn only when it is one the protocol names. */
+const type = computed(() => (['clarification', 'approval', 'assignment'].includes(v.value?.type ?? '') ? v.value!.type : ''))
 </script>
 
 <template>
   <article class="flex min-w-0 flex-col gap-3 rounded-lg border border-default bg-default p-4 text-sm" data-decide-card :data-decision-id="card.id">
     <header class="flex min-w-0 flex-wrap items-center gap-2">
       <span class="font-mono font-semibold text-highlighted">{{ card.id }}</span>
-      <UBadge v-if="v?.type" :label="v.type" color="neutral" variant="subtle" size="sm" />
+      <UBadge v-if="type" :label="type" color="neutral" variant="subtle" size="sm" />
       <span class="flex-1" />
       <UButton v-if="closable" label="Close" color="neutral" variant="ghost" size="sm" class="min-h-11" data-decide-close @click="$emit('close')" />
       <UButton v-if="card.end" label="Dismiss" color="neutral" variant="ghost" size="sm" class="min-h-11" data-decide-dismiss @click="$emit('dismiss')" />
@@ -36,7 +41,8 @@ const asked = computed(() => (v.value?.createdAt ? new Date(v.value.createdAt).t
     <UAlert v-if="card.unknown" color="warning" variant="subtle" icon="i-lucide-circle-help" :title="card.unknown" data-decide-unknown />
     <UAlert v-if="card.refused" color="error" variant="subtle" icon="i-lucide-circle-x" :title="card.refused" data-decide-refused />
     <UAlert v-if="outcome" :color="v?.outcome === 'applied' || v?.outcome === 'waiting' ? 'success' : 'neutral'" variant="subtle" icon="i-lucide-info" :title="outcome" data-decide-outcome />
-    <p v-if="!v && !card.end && !ended" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading {{ card.id }}…</p>
+    <UAlert v-if="!v && !card.end && !ended && card.failed" color="warning" variant="subtle" icon="i-lucide-loader-circle" :title="`${card.id} could not be read. Trying again.`" data-decide-read-failed />
+    <p v-else-if="!v && !card.end && !ended" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading {{ card.id }}…</p>
 
     <template v-if="v?.question">
       <p class="break-words text-base font-medium text-highlighted" data-decide-question>{{ v.question }}</p>
@@ -58,7 +64,7 @@ const asked = computed(() => (v.value?.createdAt ? new Date(v.value.createdAt).t
       </dl>
     </template>
 
-    <!-- An answer held whose outcome is not known keeps its Send again, whatever a read has shown of the decision since. -->
+    <!-- An answer held whose outcome is not known keeps its form, whatever a read has shown of the decision since; Send again is offered as useDecide's answerable says. -->
     <form v-if="v?.state === 'open' || card.sent" class="flex min-w-0 flex-col gap-3" data-decide-form @submit.prevent="$emit('send')">
       <URadioGroup v-if="options.length" v-model="card.draft.choice" :items="options" :disabled="locked" legend="Your choice" :ui="{ root: 'min-w-0', fieldset: 'min-w-0', item: 'min-w-0', wrapper: 'min-w-0', label: '[overflow-wrap:anywhere]', description: '[overflow-wrap:anywhere]' }" data-decide-options />
       <UFormField v-if="v?.type === 'clarification'" label="Your answer">

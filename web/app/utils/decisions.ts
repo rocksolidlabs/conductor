@@ -524,6 +524,7 @@ export function decideWords(code: string, did: string): string {
     stale_policy: `${did} was opened under another policy and cannot be answered here.`,
     invalid: `This answer does not fit ${did}: check the choice and the text.`,
     decision_limit: `${did} takes no more answers.`,
+    // The page's own words for a reply that does not say whether the answer was recorded.
     decision_moved: `Not known whether your answer to ${did} was recorded: send it again.`,
     rate_limited: `The server is working on other requests of yours: send your answer to ${did} again in a moment.`,
   }
@@ -534,13 +535,14 @@ export function decideWords(code: string, did: string): string {
 export const DECIDE_JUDGING: readonly string[] = ['decision_answered', 'decision_closed', 'stale_decision', 'not_approver', 'response_conflict', 'not_held', 'stale_policy', 'invalid', 'decision_limit']
 
 /**
- * What a respond reply says of the answer it was sent: taken (a 2xx with its receipt), refused by the decision (a 4xx with a code that
- * judges it), gone (404), ended (401), or anything else not known, the answer held and sent again under the same response id.
+ * What a respond reply says of the answer `responseId` it was sent: taken (a 2xx whose receipt names that response id), refused by the
+ * decision (a 4xx with a code that judges it), gone (404), ended (401), or anything else not known, the answer held and sent again
+ * under the same response id.
  */
-export function respondOutcome(status: number, body: { receipt?: { responseId?: unknown }; error?: { code?: unknown } } | undefined): 'taken' | 'refused' | 'gone' | 'ended' | 'unknown' {
+export function respondOutcome(status: number, body: { receipt?: { responseId?: unknown }; error?: { code?: unknown } } | undefined, responseId: string): 'taken' | 'refused' | 'gone' | 'ended' | 'unknown' {
   if (status === 401) return 'ended'
   if (status === 404) return 'gone'
-  if (status >= 200 && status < 300 && typeof body?.receipt?.responseId === 'string') return 'taken'
+  if (status >= 200 && status < 300 && body?.receipt?.responseId === responseId) return 'taken'
   const code = body?.error?.code
   return status >= 400 && status < 500 && typeof code === 'string' && DECIDE_JUDGING.includes(code) ? 'refused' : 'unknown'
 }

@@ -5891,14 +5891,22 @@ are being worked on: send this one again once one is answered"), the ledger
 not read and nothing written. The admin is not counted. Its pass reaches the
 app in the URL fragment, the key `pass` beside the
 desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
-taken out of the address bar before anything else runs, kept for the tab
-(`sessionStorage`) until its first `401`, and sent only in the `Authorization`
-header of the four routes, never in a URL. The decide page (`/decide`,
-`/decide/<did>`, drawn for a tab that holds a pass and no workbench token)
-reads the list and each open card, at most four cards open, each one at a
-time, the next due 10 s after the last began while the tab is shown and at
-once when it is shown again, each bounded at 10 s; a view no read has renewed
-for 25 s cannot be answered there (`DECIDE_*` in `web/app/utils/protocol.ts`).
+a navigation the browser starts (a load, a fragment change, back or forward)
+never lets the app's router read a fragment that carries either key, in any
+spelling: the fragment is taken out of the address before the app's router
+reads it, and one that arrives after the load loads the page again at the
+clean address; a fragment that holds both keys gives neither. The pass is
+kept for the tab (`sessionStorage`) until its first `401`, and sent only in
+the `Authorization` header of the four routes, never in a URL. The decide
+page (`/decide`, `/decide/<did>`, drawn for a tab that holds a pass and no
+workbench token) reads the list and each open card, at most four cards open,
+each one at a time, the next due 10 s after the last began while the tab is
+shown and at once when it is shown again, each bounded at 10 s; one answer is
+on its way at a time for the whole page, so a tab has at most six requests
+out at once. A new answer is sent only on a view a read renewed in the last
+25 s on both the steady clock and the wall clock; an answer whose outcome is
+not known is sent again whatever the view's age (`DECIDE_*` in
+`web/app/utils/protocol.ts`).
 
 | Route | Who | Body → reply |
 |---|---|---|

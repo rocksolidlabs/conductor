@@ -406,14 +406,14 @@ describe('whom a decision is for', () => {
     expect(decideOutcomeWords({ id: 'dr-7', outcome: 'refused', outcomeCode: 'decision_closed' })).toBe('dr-7 was closed before your answer.')
     expect(decideOutcomeWords({ id: 'dr-7' })).toBe('')
   })
-  it('turns a respond reply into one of five outcomes, letting an answer go only at a reply that judges it', () => {
+  it('turns a respond reply into one of five outcomes, letting an answer go only at a reply that judges it or names its response id', () => {
     const err = (code?: string) => ({ error: { code } })
-    expect(respondOutcome(201, { receipt: { responseId: 'r1' } })).toBe('taken')
-    expect(respondOutcome(200, { receipt: { responseId: 'r1' } })).toBe('taken')
-    for (const code of DECIDE_JUDGING) expect(respondOutcome(code === 'not_approver' ? 403 : code === 'decision_limit' ? 429 : code === 'invalid' ? 400 : 409, err(code))).toBe('refused')
-    expect(respondOutcome(404, err('not_found'))).toBe('gone')
-    expect(respondOutcome(401, err('unauthorized'))).toBe('ended')
-    for (const [status, body] of [[429, err('rate_limited')], [503, err('decision_moved')], [500, err('internal')], [400, err('invalid_request')], [409, err()], [403, err('switchyard')], [200, {}], [0, undefined]] as const) expect(respondOutcome(status, body)).toBe('unknown')
+    expect(respondOutcome(201, { receipt: { responseId: 'r1' } }, 'r1')).toBe('taken')
+    expect(respondOutcome(200, { receipt: { responseId: 'r1' } }, 'r1')).toBe('taken')
+    for (const code of DECIDE_JUDGING) expect(respondOutcome(code === 'not_approver' ? 403 : code === 'decision_limit' ? 429 : code === 'invalid' ? 400 : 409, err(code), 'r1')).toBe('refused')
+    expect(respondOutcome(404, err('not_found'), 'r1')).toBe('gone')
+    expect(respondOutcome(401, err('unauthorized'), 'r1')).toBe('ended')
+    for (const [status, body] of [[429, err('rate_limited')], [503, err('decision_moved')], [500, err('internal')], [400, err('invalid_request')], [409, err()], [403, err('switchyard')], [200, {}], [0, undefined], [201, { receipt: { responseId: 'r2' } }], [200, { receipt: {} }]] as const) expect(respondOutcome(status, body, 'r1')).toBe('unknown')
   })
   it("keeps the receipt's for beside who answered", () => {
     const d = decision({ state: 'answered', request: { ...decision().request, for: forNate }, responses: [{ ...recorded, for: { person: 'nate', responsibility: 'architecture' } }] })

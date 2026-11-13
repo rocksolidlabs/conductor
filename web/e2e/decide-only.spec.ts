@@ -1,5 +1,6 @@
 import type { Browser, BrowserContext, Page, Request, Route } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { addressHeld, fragmentChanged, recorder } from './fragment-helpers'
 
 // The decide page and a pass taken from the fragment (docs/plans/decide-grant.md, "web/app", Tests per surface): on the shipped
 // build, which registers no identity provider, so the real server refuses every pass (`401`); the page's own behaviour is proved
@@ -7,6 +8,8 @@ import { expect, test } from './fixtures'
 // driven by a `focus` event the spec dispatches once the page has drawn who is signed in.
 
 const PASS = 'e2e.pass-of_ana.7'
+/** Another person's pass: the stub answers `/api/me` by the pass it is sent. */
+const OTHER = 'e2e.pass-of_bo.9'
 const ENDED = 'Your access to this server has ended. Open it again from your workspace page.'
 const FOUR = [/^\/api\/me$/, /^\/api\/me\/decisions$/, /^\/api\/decisions\/dr-\d+$/, /^\/api\/decisions\/dr-\d+\/respond$/]
 
@@ -23,15 +26,15 @@ async function tab(browser: Browser, workbenchToken?: string): Promise<{ ctx: Br
   return { ctx, page, sent }
 }
 
-/** Every request: the pass in no URL; none to an events stream; every one to the API one of the four, the pass in its header. */
-async function checkSent(sent: Request[]) {
+/** Every request: no pass in a URL; none to an events stream; every one to the API one of the four, a pass of `passes` in its header. */
+async function checkSent(sent: Request[], passes = [PASS]) {
   for (const r of sent) {
     const u = new URL(r.url())
-    expect(r.url(), 'the pass in a URL').not.toContain(PASS)
+    for (const p of [PASS, OTHER]) expect(r.url(), 'a pass in a URL').not.toContain(p)
     expect(u.pathname).not.toMatch(/events/)
     if (!u.pathname.startsWith('/api/')) continue
     expect(FOUR.some((re) => re.test(u.pathname)), u.pathname).toBe(true)
-    expect(await r.headerValue('authorization')).toBe(`Bearer ${PASS}`)
+    expect(passes.map((p) => `Bearer ${p}`)).toContain(await r.headerValue('authorization'))
   }
 }
 
@@ -43,6 +46,8 @@ function stub(page: Page) {
     respond: async (_id: string, _body: string, route: Route) => route.abort(),
     statuses: [] as number[],
     listStatus: 200,
+    /** `/api/me`'s refusal while set: its status and body. */
+    meRefusal: null as null | { status: number; body: unknown },
   }
   const reply = (route: Route, status: number, body: unknown) => {
     s.statuses.push(status)
@@ -54,7 +59,12 @@ function stub(page: Page) {
       async (route) => {
         const path = new URL(route.request().url()).pathname
         let m: RegExpExecArray | null
-        if (path === '/api/me') return reply(route, 200, { subject: 'ana', name: 'Ana​ ', grants: ['decide'] })
+        if (path === '/api/me') {
+          if (s.meRefusal) return reply(route, s.meRefusal.status, s.meRefusal.body)
+          const auth = await route.request().headerValue('authorization')
+          if (auth === `Bearer ${OTHER}`) return reply(route, 200, { subject: 'bo', name: 'Bo', grants: ['decide'] })
+          return reply(route, 200, { subject: 'ana', name: 'Ana​ ', grants: ['decide'] })
+        }
         if (path === '/api/me/decisions') return reply(route, s.listStatus, s.listStatus === 200 ? s.list : { error: { code: 'ledger_unavailable', message: 'the decisions could not be read' } })
         if ((m = /^\/api\/decisions\/(dr-\d+)$/.exec(path))) {
           const v = s.views.get(m[1]!) ?? { status: 404, body: { error: { code: 'not_found', message: 'no such decision' } } }
@@ -71,15 +81,105 @@ const card = (page: Page, id: string) => page.locator(`[data-decide-card][data-d
 /** A read of the list and the open cards, driven by the window's focus once the page is drawn. */
 const focus = (page: Page) => page.evaluate(() => window.dispatchEvent(new Event('focus')))
 
-/** Everything of the page that could hold an address: the address bar, the history's state, the Navigation API's entries, and the router's route and the one it was redirected from. */
-const addressHeld = (page: Page) =>
-  page.evaluate(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const route = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$router.currentRoute.value
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entries = ((window as any).navigation?.entries() ?? []).map((e: { url: string }) => e.url)
-    return [location.href, JSON.stringify(history.state), ...entries, route.fullPath, route.redirectedFrom?.fullPath ?? ''].join(' ')
+const signedIn = (page: Page) => page.locator('[data-decide-signed-in]')
+
+test('a pass in a fragment that arrives after the load, in any spelling: the page loads again signed in with it, and nothing of the page holds it', async ({ browser }) => {
+  for (const fragment of [`pass=${OTHER}`, `%70ass=${OTHER}`, `%70ass=${OTHER}&%E0`]) {
+    const { ctx, page, sent } = await tab(browser)
+    const rec = await recorder(page)
+    await stub(page)
+    await page.goto(`/decide#pass=${PASS}`)
+    await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    await expect(page.getByText('Nothing awaits your answer here.')).toBeVisible()
+
+    // A fragment with no key goes to the router: both listeners run, the plugin's (capture) first.
+    const plain = await fragmentChanged(page, rec, 'x=1', false)
+    expect(plain.capture, 'one capture listener of popstate').toHaveLength(1)
+    expect(plain.bubble.length, "the router's listener").toBeGreaterThan(0)
+    expect(plain.after.filter((l) => l.startsWith('ran ')), 'the order the browser ran them in').toEqual([plain.capture[0]!, ...plain.bubble].map((i) => `ran ${i}`))
+
+    // A fragment with the key: the plugin's listener alone, the address rewritten, the page loaded again.
+    const keyed = await fragmentChanged(page, rec, fragment, true)
+    expect(keyed.after.filter((l) => l.startsWith('ran ') || l.startsWith('route ')), fragment).toEqual([`ran ${keyed.capture[0]}`])
+    await expect(signedIn(page)).toHaveText('Signed in as Bo')
+    expect(await page.evaluate(() => sessionStorage.getItem('conductor.identityPass'))).toBe(OTHER)
+    for (const step of ['loaded again', 'back', 'forward'] as const) {
+      if (step === 'back') await page.goBack()
+      if (step === 'forward') await page.goForward()
+      await expect(signedIn(page)).toHaveText('Signed in as Bo')
+      const held = await addressHeld(page)
+      for (const p of [PASS, OTHER]) {
+        expect(held, `${fragment}, ${step}`).not.toContain(p)
+        expect(rec.since(), `${fragment}, ${step}`).not.toContain(p)
+      }
+      // Back is the entry of the fragment with no key.
+      expect(new URL(page.url()).hash).toBe(step === 'back' ? '#x=1' : '')
+    }
+    await checkSent(sent, [PASS, OTHER])
+    await ctx.close()
+  }
+})
+
+test('a fragment that holds both keys, at a load and later: neither is taken, and the address is clean', async ({ browser, state }) => {
+  const both = `pass=${OTHER}&token=${state.token}`
+  const stores = (page: Page) => page.evaluate(() => [sessionStorage.getItem('conductor.identityPass'), localStorage.getItem('conductor.workbenchToken')])
+
+  const first = await tab(browser)
+  const rec1 = await recorder(first.page)
+  await stub(first.page)
+  await first.page.goto(`/decide#${both}`)
+  await expect(first.page.getByText(ENDED)).toBeVisible()
+  expect(await stores(first.page)).toEqual([null, null])
+  const held1 = await addressHeld(first.page)
+  for (const secret of [OTHER, state.token]) {
+    expect(held1).not.toContain(secret)
+    expect(rec1.since()).not.toContain(secret)
+  }
+  for (const r of first.sent) {
+    for (const secret of [OTHER, state.token]) expect(r.url()).not.toContain(secret)
+    expect([`Bearer ${OTHER}`, `Bearer ${state.token}`]).not.toContain(await r.headerValue('authorization'))
+  }
+  await first.ctx.close()
+
+  const { ctx, page, sent } = await tab(browser)
+  const rec = await recorder(page)
+  await stub(page)
+  await page.goto(`/decide#pass=${PASS}`)
+  await expect(signedIn(page)).toHaveText('Signed in as Ana')
+  await fragmentChanged(page, rec, both, true)
+  await expect(signedIn(page)).toHaveText('Signed in as Ana')
+  expect(await stores(page)).toEqual([PASS, null])
+  const held = await addressHeld(page)
+  for (const secret of [PASS, OTHER, state.token]) {
+    expect(held).not.toContain(secret)
+    expect(rec.since()).not.toContain(secret)
+  }
+  expect(new URL(page.url()).hash).toBe('')
+  await checkSent(sent)
+  await ctx.close()
+})
+
+test('at 390 wide: a type the protocol does not name and a time that does not parse draw nothing, and nothing is wider than the card', async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const { s } = await stub(page)
+  s.list = { decisions: [{ id: 'dr-7', rev: 1 }] }
+  s.views.set('dr-7', { status: 200, body: approval('dr-7', 1, { type: 'x'.repeat(400), createdAt: 'not-a-time', question: 'q'.repeat(400) }) })
+  await page.goto(`/decide#pass=${PASS}`)
+  const c = card(page, 'dr-7')
+  await expect(c.locator('[data-decide-question]')).toBeVisible()
+  await expect(c.getByText('Invalid Date')).toHaveCount(0)
+  await expect(c.getByText(/^Asked /)).toHaveCount(0)
+  await expect(c.getByText('x'.repeat(400))).toHaveCount(0)
+  const past = await c.evaluate((el) => {
+    const box = el.getBoundingClientRect()
+    return Array.from(el.querySelectorAll('*')).filter((e) => e.getBoundingClientRect().right > box.right + 0.5).map((e) => `${e.tagName} ${e.getAttribute('class')}`)
   })
+  expect(past).toEqual([])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await checkSent(sent)
+  await ctx.close()
+})
 
 test('the pass in the fragment, in any spelling: once the page has drawn, no address, history state or route holds it', async ({ browser }) => {
   for (const fragment of [`pass=${PASS}`, `%70ass=${PASS}`, `%70ass=${PASS}&%E0`, `%70ass=${PASS}&%`]) {
@@ -121,6 +221,37 @@ test('at 390 wide: a list that fails from its first read says so, the title, and
   expect(past).toEqual([])
   await checkSent(sent)
   await ctx.close()
+})
+
+test('a read that fails before it ever succeeded says so where its result goes: who the pass is, a card, and a refusal', async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  const { s } = await stub(page)
+  s.meRefusal = { status: 503, body: { error: { code: 'ledger_unavailable', message: '' } } }
+  s.list = { decisions: [{ id: 'dr-7', rev: 1 }] }
+  s.views.set('dr-7', { status: 503, body: { error: { code: 'ledger_unavailable', message: '' } } })
+  await page.goto(`/decide/dr-7#pass=${PASS}`)
+  await expect(page.locator('[data-decide-me-failed]')).toContainText('Your access could not be checked. Trying again.')
+  await expect(page.getByText('Checking your access…')).toHaveCount(0)
+  s.meRefusal = null
+  await focus(page)
+  await expect(signedIn(page)).toHaveText('Signed in as Ana')
+  await expect(page.locator('[data-decide-me-failed]')).toHaveCount(0)
+  await expect(card(page, 'dr-7').locator('[data-decide-read-failed]')).toContainText('dr-7 could not be read. Trying again.')
+  s.views.set('dr-7', { status: 200, body: approval('dr-7') })
+  await focus(page)
+  await expect(card(page, 'dr-7').getByText('May dr-7 go out?')).toBeVisible()
+  await expect(card(page, 'dr-7').locator('[data-decide-read-failed]')).toHaveCount(0)
+  await checkSent(sent)
+  await ctx.close()
+
+  const refused = await tab(browser)
+  const r = await stub(refused.page)
+  r.s.meRefusal = { status: 403, body: { error: { code: 'switchyard', message: 'this server coordinates hosted sessions and launches none' } } }
+  await refused.page.goto(`/decide#pass=${PASS}`)
+  await expect(refused.page.locator('[data-decide-list-refused]')).toContainText('This server serves no decisions to this pass.')
+  await expect(refused.page.getByText('Checking your access…')).toHaveCount(0)
+  await checkSent(refused.sent)
+  await refused.ctx.close()
 })
 
 test('against the server as shipped: the pass leaves the address bar, the server refuses it, the page says access ended', async ({ browser }) => {

@@ -33,8 +33,9 @@ const full = computed(() => d.openCount() >= DECIDE_CARDS)
 
       <UAlert v-if="page.ended" color="error" variant="subtle" icon="i-lucide-log-out" title="Your access to this server has ended. Open it again from your workspace page." data-decide-ended />
       <UAlert v-else-if="page.notForIt" color="warning" variant="subtle" icon="i-lucide-shield-alert" title="This page answers a decision routed to you; this pass is not for it." data-decide-not-for-it />
-      <p v-else-if="!page.me" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking your access…</p>
       <UAlert v-else-if="page.list.refused" color="warning" variant="subtle" icon="i-lucide-circle-slash" title="This server serves no decisions to this pass." data-decide-list-refused />
+      <UAlert v-else-if="!page.me && page.meFailed" color="warning" variant="subtle" icon="i-lucide-loader-circle" title="Your access could not be checked. Trying again." data-decide-me-failed />
+      <p v-else-if="!page.me" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Checking your access…</p>
       <UAlert v-else-if="page.list.failed" color="warning" variant="subtle" icon="i-lucide-loader-circle" title="The decisions awaiting you could not be read. Trying again." data-decide-list-failed />
 
       <DecideCard v-for="c in shown" :key="c.id" :card="c" :answerable="d.answerable(c)" :closable="d.closable(c)" :ended="page.ended" @send="d.send(c.id)" @close="d.close(c.id)" @dismiss="d.dismiss(c.id)" />

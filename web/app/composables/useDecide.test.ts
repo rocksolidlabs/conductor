@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDecide, type DecideEnv } from './useDecide'
 import type { DecideReceipt, DecideView } from '~/utils/protocol'
-import { MAX_DECIDE_LIST, MAX_DECIDE_REPLY, MAX_DECIDE_VIEW, MAX_ME_REPLY } from '~/utils/protocol'
+import { MAX_DECIDE_LIST, MAX_DECIDE_LIST_ENTRIES, MAX_DECIDE_REPLY, MAX_DECIDE_VIEW, MAX_ME_REPLY } from '~/utils/protocol'
 
 // The decide page's client (docs/plans/decide-grant.md, "web/app"), on vitest's fake clock over a fake fetch whose replies the test
 // gives one by one: the four routes alone, the pass in the header and in no URL, the request's options (checked after every test);
-// the list's and each card's reads one at a time on their own schedules; the freshness window on the page's monotonic clock; the
+// the list's and each card's reads one at a time on their own schedules; the freshness window on the steady and the wall clock; the
 // one order a card's replies pass; and what the page keeps of an answer.
 
 const PASS = 'pass.of-ana_1'
@@ -61,10 +61,14 @@ beforeEach(() => {
     base: '',
     doc: Object.assign(new EventTarget(), { visibilityState: 'visible' }),
     win: new EventTarget() as unknown as Window,
-    // The page's clock: vitest's fake performance.now(), which setting the system's time does not move, begun before the page.
-    now: () => 60_000 + performance.now(),
+    // The steady clock: vitest's fake performance.now(), which setting the system's time does not move, begun before the page, and
+    // moved on its own by `steadySkew`; the wall clock: vitest's fake Date.now(), moved on its own by vi.setSystemTime.
+    now: () => 60_000 + performance.now() + steadySkew,
+    wall: () => Date.now(),
   } as typeof env
+  steadySkew = 0
 })
+let steadySkew = 0
 
 afterEach(() => {
   // Every request: one of the four routes, the pass in its Authorization header and in no URL, no redirect followed, no cache, and no
@@ -230,6 +234,67 @@ describe('the reads', () => {
     d.stop()
   })
 
+  it('starts no list request when the tab was hidden before /api/me was answered, says nothing failed, and starts it once shown', async () => {
+    const d = createDecide(env)
+    d.start()
+    env.doc.visibilityState = 'hidden'
+    await answer('/api/me', 200, ME)
+    expect(count('/api/me/decisions')).toBe(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(count('/api/me/decisions')).toBe(0)
+    expect(d.page).toMatchObject({ meFailed: false, list: { failed: false, refused: false } })
+    env.doc.visibilityState = 'visible'
+    env.doc.dispatchEvent(new Event('visibilitychange'))
+    expect(out('/api/me/decisions')).toHaveLength(1)
+    expect(count('/api/me')).toBe(1)
+    d.stop()
+  })
+
+  it('takes no entry of a list reply past MAX_DECIDE_LIST_ENTRIES: a failed read', async () => {
+    const d = createDecide(env)
+    d.start()
+    await answer('/api/me', 200, ME)
+    await answer('/api/me/decisions', 200, list(...Array.from({ length: MAX_DECIDE_LIST_ENTRIES + 1 }, (_, i): [string, number] => [`dr-${i + 1}`, 1])))
+    expect(d.page.list).toMatchObject({ loaded: false, failed: true, entries: [] })
+    expect(d.page.cards).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await answer('/api/me/decisions', 200, list(...Array.from({ length: MAX_DECIDE_LIST_ENTRIES }, (_, i): [string, number] => [`dr-${i + 1}`, 1])))
+    expect(d.page.list).toMatchObject({ loaded: true, failed: false })
+    expect(d.page.list.entries).toHaveLength(MAX_DECIDE_LIST_ENTRIES)
+    d.stop()
+  })
+
+  it('says a failed read of who the pass is and of a card before either succeeded, and clears each at its first success', async () => {
+    const d = createDecide(env, 'dr-7')
+    d.start()
+    await answer('/api/me', 503, { error: { code: 'ledger_unavailable', message: '' } })
+    expect(d.page).toMatchObject({ me: null, meFailed: true, list: { failed: false, refused: false } })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await answer('/api/me', 200, ME)
+    expect(d.page.meFailed).toBe(false)
+    await answer('/api/decisions/dr-7', 503, { error: { code: 'ledger_unavailable', message: '' } })
+    expect(card(d, 'dr-7')).toMatchObject({ view: null, failed: true, end: '' })
+    await answer('/api/me/decisions', 200, list(['dr-7', 1]))
+    await vi.advanceTimersByTimeAsync(10_000)
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 1))
+    expect(card(d, 'dr-7')).toMatchObject({ failed: false, view: { rev: 1 } })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await answer('/api/decisions/dr-7', 503, { error: { code: 'ledger_unavailable', message: '' } })
+    expect(card(d, 'dr-7').failed).toBe(false)
+    d.stop()
+  })
+
+  it('reads no more after a 403 with a code to /api/me, and says the refusal', async () => {
+    const d = createDecide(env, 'dr-7')
+    d.start()
+    await answer('/api/me', 403, { error: { code: 'switchyard', message: 'this server coordinates hosted sessions and launches none' } })
+    expect(d.page).toMatchObject({ me: null, meFailed: false, list: { refused: true } })
+    await vi.advanceTimersByTimeAsync(60_000)
+    env.win.dispatchEvent(new Event('focus'))
+    expect(reqs.map((r) => r.path)).toEqual(['/api/me'])
+    d.stop()
+  })
+
   it("stops reading the list or a card the server refuses (403 with its code), and says so", async () => {
     const d = await boot()
     env.win.dispatchEvent(new Event('focus'))
@@ -302,15 +367,47 @@ describe('freshness', () => {
     d.stop()
   })
 
-  it('measures the window and the schedule on a clock that does not go back: the wall clock set back an hour moves neither', async () => {
+  it('keeps the schedule on the steady clock, and suspends a card when the wall clock is set back an hour until the next read renews it', async () => {
     const d = await boot()
     const c = card(d, 'dr-7')
+    c.draft.choice = 0
     vi.setSystemTime(Date.now() - 3_600_000)
+    await d.send('dr-7')
+    expect(c.suspended).toBe(true)
+    expect(count('/api/decisions/dr-7/respond')).toBe(0)
     const lists = count('/api/me/decisions')
-    await vi.advanceTimersByTimeAsync(25_000)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(count('/api/me/decisions')).toBe(lists + 1)
+    await answer('/api/decisions/dr-7', 200, open('dr-7', 1))
     expect(c.suspended).toBe(false)
-    expect(count('/api/me/decisions')).toBeGreaterThan(lists)
-    await vi.advanceTimersByTimeAsync(1)
+    expect(d.answerable(c)).toBe(true)
+    d.stop()
+  })
+
+  it('suspends a card when judged after the wall clock moved an hour on and the steady clock two seconds, with no timer fired', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 0
+    expect(d.answerable(c)).toBe(true)
+    steadySkew = 2_000
+    vi.setSystemTime(Date.now() + 3_600_000)
+    await d.send('dr-7')
+    expect(c.suspended).toBe(true)
+    expect(d.answerable(c)).toBe(false)
+    expect(count('/api/decisions/dr-7/respond')).toBe(0)
+    d.stop()
+  })
+
+  it('keeps a card fresh while neither clock moves oddly, and suspends it on both together just past 25 s', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    steadySkew = 24_000
+    vi.setSystemTime(Date.now() + 24_000)
+    d.shown()
+    expect(c.suspended).toBe(false)
+    steadySkew = 25_001
+    vi.setSystemTime(Date.now() + 1_001)
+    d.shown()
     expect(c.suspended).toBe(true)
     d.stop()
   })
@@ -439,6 +536,40 @@ describe('a stopped page and a closed card', () => {
       d.close('dr-7')
       await flush()
       expect(c).toMatchObject({ open: false, end: '', view: { rev: 1, state: 'open' } })
+      d.stop()
+    })
+  }
+
+  for (const [what, status, body] of [
+    ['404', 404, () => ({ error: { code: 'not_found', message: 'no such decision' } })],
+    ['201 with a final outcome', 201, (id: string) => ({ receipt: receipt(id), decision: { id: 'dr-7', rev: 9, own: [receipt(id)], outcome: 'applied' } })],
+  ] as const) {
+    it(`leaves the card that replaced a dismissed one as it is, and reading, when the dismissed card's send lands ${what}`, async () => {
+      const d = await boot()
+      const old = card(d, 'dr-7')
+      old.draft.choice = 0
+      void d.send('dr-7')
+      const held = out('/api/decisions/dr-7/respond')[0]!
+      const id = JSON.parse(held.body!).responseId
+      env.win.dispatchEvent(new Event('focus'))
+      await answer('/api/decisions/dr-7', 404, { error: { code: 'not_found', message: 'no such decision' } })
+      d.dismiss('dr-7')
+      // The list read the focus started, answered: the same decision, opened again as a new card.
+      await answer('/api/me/decisions', 200, list(['dr-7', 2]))
+      const c = card(d, 'dr-7')
+      expect(c).not.toBe(old)
+      await answer('/api/decisions/dr-7', 200, open('dr-7', 2))
+      held.reply(status, body(id))
+      await flush()
+      expect(c).toMatchObject({ end: '', sent: '', unknown: '', refused: '', view: { rev: 2, state: 'open' } })
+      const reads = count('/api/decisions/dr-7')
+      for (let i = 1; i <= 3; i++) {
+        await vi.advanceTimersByTimeAsync(10_000)
+        expect(count('/api/decisions/dr-7')).toBe(reads + i)
+        await answer('/api/decisions/dr-7', 200, open('dr-7', 2))
+        for (const r of out('/api/me/decisions')) r.reply(200, list(['dr-7', 2]))
+        await flush()
+      }
       d.stop()
     })
   }
@@ -746,17 +877,100 @@ describe('what the page keeps of an answer', () => {
     d.stop()
   })
 
-  it('keeps the draft and the answer held at a send answered 404, and answers no more', async () => {
+  it('keeps the draft and the answer held at a send answered 404, offers no Send again, and says it cannot be learned here', async () => {
     const d = await boot()
     const c = card(d, 'dr-7')
     c.draft.choice = 1
     void d.send('dr-7')
     const first = out('/api/decisions/dr-7/respond')[0]!.body!
     await answer('/api/decisions/dr-7/respond', 404, { error: { code: 'not_found', message: 'no such decision' } })
-    expect(c).toMatchObject({ end: 'gone', sent: first, draft: { choice: 1 } })
+    expect(c).toMatchObject({ end: 'gone', sent: first, draft: { choice: 1 }, unknown: 'Whether your answer to dr-7 was recorded cannot be learned here.' })
     expect(d.answerable(c)).toBe(false)
     await d.send('dr-7')
     expect(count('/api/decisions/dr-7/respond')).toBe(1)
+    d.stop()
+  })
+
+  it('says a held answer cannot be learned here once a read answers 404, and when its send then lands with no answer', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 1
+    void d.send('dr-7')
+    out('/api/decisions/dr-7/respond')[0]!.fail()
+    await flush()
+    expect(c.unknown).toBe(NOT_KNOWN)
+    void d.send('dr-7')
+    env.win.dispatchEvent(new Event('focus'))
+    await answer('/api/decisions/dr-7', 404, { error: { code: 'not_found', message: 'no such decision' } })
+    expect(c.unknown).toBe('Whether your answer to dr-7 was recorded cannot be learned here.')
+    await answer('/api/decisions/dr-7/respond', 503, { error: { code: 'decision_moved', message: '' } })
+    expect(c).toMatchObject({ end: 'gone', unknown: 'Whether your answer to dr-7 was recorded cannot be learned here.' })
+    expect(d.answerable(c)).toBe(false)
+    d.stop()
+  })
+
+  for (const outcome of ['applied', 'not_used'] as const) {
+    for (const [reply, status, then] of [
+      ['409 decision_answered', 409, 'released'],
+      ['200 with its own receipt', 200, 'settled'],
+    ] as const) {
+      it(`offers Send again after a read shows ${outcome} with no receipt of the answer held: the same id and body, then ${reply} ${then} it`, async () => {
+        const d = await boot()
+        const c = card(d, 'dr-7')
+        c.draft.choice = 0
+        void d.send('dr-7')
+        const first = out('/api/decisions/dr-7/respond')[0]!.body!
+        const id = JSON.parse(first).responseId
+        out('/api/decisions/dr-7/respond')[0]!.fail()
+        await flush()
+        env.win.dispatchEvent(new Event('focus'))
+        await answer('/api/decisions/dr-7', 200, { id: 'dr-7', rev: 4, own: [receipt('another-tab')], outcome })
+        expect(c).toMatchObject({ end: outcome, sent: first, unknown: NOT_KNOWN })
+        expect(d.answerable(c)).toBe(true)
+        void d.send('dr-7')
+        expect(out('/api/decisions/dr-7/respond')[0]!.body).toBe(first)
+        if (status === 409) {
+          await answer('/api/decisions/dr-7/respond', 409, { error: { code: 'decision_answered', message: '' }, receipt: receipt(id, { status: 'refused', code: 'decision_answered' }) })
+          expect(c).toMatchObject({ sent: '', unknown: '', refused: 'dr-7 was answered before your answer reached it.' })
+        } else {
+          await answer('/api/decisions/dr-7/respond', 200, { receipt: { ...receipt(id), repeat: true }, decision: { id: 'dr-7', rev: 5, own: [receipt(id)], outcome } })
+          expect(c).toMatchObject({ sent: '', unknown: '', refused: '' })
+        }
+        expect(d.answerable(c)).toBe(false)
+        d.stop()
+      })
+    }
+  }
+
+  it('holds an answer whose 2xx receipt names another response id, and sends the same id and body next', async () => {
+    const d = await boot()
+    const c = card(d, 'dr-7')
+    c.draft.choice = 0
+    void d.send('dr-7')
+    const first = out('/api/decisions/dr-7/respond')[0]!.body!
+    await answer('/api/decisions/dr-7/respond', 201, { receipt: receipt('another-tab'), decision: { id: 'dr-7', rev: 2, own: [receipt('another-tab')], outcome: 'waiting' } })
+    expect(c).toMatchObject({ sent: first, unknown: NOT_KNOWN })
+    expect(d.answerable(c)).toBe(true)
+    void d.send('dr-7')
+    expect(out('/api/decisions/dr-7/respond')[0]!.body).toBe(first)
+    d.stop()
+  })
+
+  it('has one answer on its way at a time for the whole page: a second card sends only once the first has an outcome', async () => {
+    const d = await boot(undefined, [['dr-8', 1], ['dr-7', 1]])
+    card(d, 'dr-7').draft.choice = 0
+    card(d, 'dr-8').draft.choice = 1
+    void d.send('dr-7')
+    expect(d.answerable(card(d, 'dr-8'))).toBe(false)
+    await d.send('dr-8')
+    const posts = () => reqs.filter((r) => r.path.endsWith('/respond'))
+    expect(posts().map((r) => r.path)).toEqual(['/api/decisions/dr-7/respond'])
+    out('/api/decisions/dr-7/respond')[0]!.fail()
+    await flush()
+    expect(d.answerable(card(d, 'dr-8'))).toBe(true)
+    void d.send('dr-8')
+    expect(posts().map((r) => r.path)).toEqual(['/api/decisions/dr-7/respond', '/api/decisions/dr-8/respond'])
+    expect(d.answerable(card(d, 'dr-7'))).toBe(false)
     d.stop()
   })
 
