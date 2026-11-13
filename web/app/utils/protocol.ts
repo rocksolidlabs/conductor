@@ -330,9 +330,9 @@ export type SignInState = 'signed-out' | 'starting' | 'code' | 'signed-in'
  * `GET`, `POST` and `DELETE /api/signin` (admin): the identity provider's sign-in, or `{supported: false}` where none is offered; at
  * most MAX_SIGNIN_REPLY bytes. `who` only in `signed-in`; `code`, `url` (https, by the rule docs/protocol.md states) and `expires`
  * (RFC 3339, in UTC) only in `code`; `why` in any; `who` and `why` one line with no control character, sent without their
- * characters of Unicode's Cf, Zl and Zp and the space around them. A 503 is SIGNIN_UNAVAILABLE_CODE (the provider was not asked,
- * refused, or gave a status the server does not take) or SIGNIN_STATUS_UNKNOWN_CODE (a begin or a sign-out that may have been taken,
- * its status not known yet).
+ * characters of Unicode's Cf, Zl and Zp, and trimmed of white space at both ends. A 503 is SIGNIN_UNAVAILABLE_CODE (the
+ * provider was not asked, refused, or gave a status the server does not take) or SIGNIN_STATUS_UNKNOWN_CODE (a begin or a
+ * sign-out that may have been taken, its status not known yet).
  */
 export interface SignInReply {
   supported: boolean

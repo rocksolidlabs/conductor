@@ -444,8 +444,7 @@ func decideResponse(b decideBody, p principal) crew.Response {
 }
 
 // shownText is a provider's text as it is shown: without its characters
-// of Unicode's Cf, Zl and Zp and the space around it; every other
-// character as given.
+// of Unicode's Cf, Zl and Zp, and trimmed of white space at both ends.
 func shownText(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
