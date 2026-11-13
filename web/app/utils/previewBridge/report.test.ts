@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ELEMENT_BOUNDS as B, ELEMENT_CUTS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, validElement, type ElementReport } from '../protocol'
-import { FakeDoc, h, plainText } from './fakeDom'
+import { FakeDoc, h, plainText, type FakeEl } from './fakeDom'
 import { fixture } from './fixture'
 import { REPORT_STYLES, boundFields, cutEnd, cutReport, cutStart, markup, readElement, tagWithin } from './report'
 import type { Doc, El } from './select'
@@ -200,6 +200,39 @@ describe('the reading of an element', () => {
     const d = new FakeDoc(h('html', {}, h('body', {}, f)))
     const name = (e: El) => readElement(e, { doc: d as unknown as Doc, win: win() }).name
     expect([second, byToken, byList].map((e) => name(e as unknown as El))).toEqual(['', 'Own', 'Kept'])
+  })
+
+  it('names by an id, a for or an aria-labelledby id only the element the page wrote it for, a list split on HTML’s white space alone', () => {
+    const atBound = 'b'.repeat(B.name)
+    const [first, second] = [h('input', { id: 'x\uD800' }), h('input', { id: 'x\uD801' })]
+    const byLone = h('button', { 'aria-labelledby': 'x\uD802' }, 'Own')
+    const byNbsp = h('button', { 'aria-labelledby': 'a b' }, 'Own')
+    const bySpaces = h('button', { 'aria-labelledby': 'a\t\n\f\r b' }, 'Own')
+    const atBoundInput = h('input', { id: atBound })
+    const byToken = h('button', { 'aria-labelledby': atBound }, 'Own')
+    const byTail = h('button', { 'aria-labelledby': ' '.repeat(B.name - 4) + 'tail' }, 'Own')
+    const f = h('form', {},
+      h('label', { for: 'x\uD800' }, 'First'), first, h('label', { for: 'x\uD801' }, 'Second'), second,
+      h('span', { id: 'x�' }, 'Replacement'), h('span', { id: 'a' }, 'A-text'), h('span', { id: 'b' }, 'B-text'), h('span', { id: 'a b' }, 'Nbsp-text'),
+      h('span', { id: 'tail' }, 'Tail'), h('span', { id: atBound }, 'ByToken'), h('label', { for: atBound }, 'AtBound'), atBoundInput,
+      byLone, byNbsp, bySpaces, byToken, byTail)
+    const d = new FakeDoc(h('html', {}, h('body', {}, f)))
+    const name = (e: El) => readElement(e, { doc: d as unknown as Doc, win: win() }).name
+    expect([first, second, byLone, byNbsp, bySpaces, atBoundInput, byToken, byTail].map((e) => name(e as unknown as El))).toEqual([
+      '', '', 'Own', 'Nbsp-text', 'A-text B-text', 'AtBound', 'ByToken', 'Tail',
+    ])
+  })
+
+  it('reads a list of 60 linked items whole in its text, in a name it gives and in a label’s text', () => {
+    const items = () => h('ul', { id: 'list' }, ...Array.from({ length: 60 }, (_, i) => h('li', {}, h('a', { href: `#${i}` }, `Item ${String(i).padStart(2, '0')}`))))
+    const list = items()
+    const named = h('button', { 'aria-labelledby': 'list' })
+    const field = h('input', { name: 'q' })
+    const label = h('label', {}, items(), field)
+    const d = new FakeDoc(h('html', {}, h('body', {}, list, named, label)))
+    const read = (e: FakeEl) => readElement(e as unknown as El, { doc: d as unknown as Doc, win: win() })
+    const whole = Array.from({ length: 60 }, (_, i) => `Item ${String(i).padStart(2, '0')}`).join('')
+    expect([read(list).text, read(named).name, read(field).name]).toEqual([whole, whole, whole])
   })
 
   it('makes every string it reads from the page well-formed before it measures or cuts it, and bounds the lists as it reads them', () => {
