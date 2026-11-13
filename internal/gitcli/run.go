@@ -195,21 +195,86 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 // comes (w bounds what it keeps). Of its error stream the first
 // maxStderr bytes are kept for the error. It is how a tree's read runs
 // git (crew.TreeRevision).
-func RunTree(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+//
+// objects is a folder of the caller's own, an absolute path, which must
+// be a folder as git starts (looked at without following it; anything
+// else is refused, ErrNoObjects, and no git runs): git writes every
+// object of the command there
+// (GIT_OBJECT_DIRECTORY) and finds the repository's objects through the
+// repository's own store, named as an alternate it only reads
+// (GIT_ALTERNATE_OBJECT_DIRECTORIES), so nothing the command writes goes
+// into the repository. The store is the one git names for the tree, asked
+// first at the same location (rev-parse --git-path objects, which runs no
+// filter and reads no file of the work tree), within maxStorePath. A
+// tree's read names each changed file by its hash (update-index
+// --info-only) and writes trees alone, so its folder, one of the server's
+// own in its temporary directory, holds no file's content.
+func RunTree(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	if !filepath.IsAbs(objects) {
+		return fmt.Errorf("git: the folder of a tree's objects %q is not an absolute path", objects)
+	}
+	if fi, err := os.Lstat(objects); err != nil || !fi.IsDir() {
+		return ErrNoObjects
+	}
 	loc := []string{"-C", workTree, "--git-dir=" + filepath.Join(workTree, ".git"), "--work-tree=" + workTree}
-	argv, err := argvFor(ctx, "", loc, args)
+	store, stderr := &Head{N: maxStorePath + 1}, &Head{N: maxStderr}
+	argv, err := argvFor(ctx, "", loc, []string{"rev-parse", "--git-path", "objects"})
+	if err == nil {
+		err = execGitIO(ctx, "", argv, nil, nil, store, stderr)
+	}
 	if err != nil {
+		return gitError(ctx, "rev-parse", stderr.String(), err)
+	}
+	path := strings.TrimSuffix(store.String(), "\n")
+	if len(path) > maxStorePath || path == "" {
+		return fmt.Errorf("git rev-parse: the object store's path is empty or past %d bytes", maxStorePath)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workTree, path)
+	}
+	set := map[string]string{}
+	maps.Copy(set, env)
+	set["GIT_OBJECT_DIRECTORY"], set["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = objects, quoteAlternate(path)
+	if argv, err = argvFor(ctx, "", loc, args); err != nil {
 		return err
 	}
-	stderr := &Head{N: maxStderr}
-	if err := execGitIO(ctx, "", argv, env, in, w, stderr); err != nil {
+	stderr = &Head{N: maxStderr}
+	if err := execGitIO(ctx, "", argv, set, in, w, stderr); err != nil {
 		return gitError(ctx, args[0], stderr.String(), err)
 	}
 	return nil
 }
 
+// ErrNoObjects is RunTree refusing a run whose folder of objects is not a
+// folder: no git is started.
+var ErrNoObjects = errors.New("git: refused: the folder of a tree's objects is not there")
+
 // maxStderr bounds what RunTree keeps of git's error stream.
 const maxStderr = 4 << 10
+
+// maxStorePath bounds the path of the object store RunTree reads from.
+const maxStorePath = 4 << 10
+
+// quoteAlternate is path as one entry of GIT_ALTERNATE_OBJECT_DIRECTORIES,
+// quoted as git unquotes it (a C string), so that no separator in the
+// path (":", ";" on Windows) splits it.
+func quoteAlternate(path string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, c := range []byte(path) {
+		switch {
+		case c == '"' || c == '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c < 0x20 || c == 0x7f:
+			fmt.Fprintf(&b, "\\%03o", c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
 
 // Head is a writer that keeps the first N bytes written to it and drops
 // the rest, every write taken whole.
@@ -439,15 +504,25 @@ func filterArgs(ctx context.Context, cwd string, loc, args []string) ([]string, 
 // filterKeys matches the keys that give a filter a program.
 const filterKeys = `^filter\..*\.(clean|smudge|process)$`
 
+// maxFilterAnswer bounds what filterNames reads of git's answer, the keys
+// that give a filter a program: an answer past it is refused whole, and
+// the command is not run.
+const maxFilterAnswer = 64 << 10
+
 // filterNames lists the names of the filters the configuration where loc
 // points gives a program, each once, the empty name too ([filter ""],
-// which the attribute filter= selects).
+// which the attribute filter= selects), from an answer within
+// maxFilterAnswer.
 func filterNames(ctx context.Context, cwd string, loc []string) ([]string, error) {
 	argv := append(baseArgs(), loc...)
 	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
-	out, stderr, err := execGit(ctx, cwd, argv, nil)
+	answer, errs := &Head{N: maxFilterAnswer + 1}, &Head{N: maxStderr}
+	err := execGitTo(ctx, cwd, argv, nil, answer, errs)
+	out, stderr := answer.String(), errs.String()
 	var exit *exec.ExitError
 	switch {
+	case err == nil && len(out) > maxFilterAnswer:
+		return nil, fmt.Errorf("git: the configuration's filter keys pass %d bytes", maxFilterAnswer)
 	case err == nil:
 	case ctx.Err() != nil:
 		return nil, ctx.Err()

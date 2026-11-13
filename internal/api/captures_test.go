@@ -512,9 +512,9 @@ func TestACaptureIsOneMoment(t *testing.T) {
 func countTreeGit(t *testing.T) *atomic.Int64 {
 	t.Helper()
 	n := &atomic.Int64{}
-	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 		n.Add(1)
-		return gitcli.RunTree(ctx, workTree, env, in, w, args...)
+		return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
 	}))
 	return n
 }
