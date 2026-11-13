@@ -183,6 +183,49 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 	return nil
 }
 
+// RunTree runs git with args in the work tree workTree, with the tree's
+// own .git and the work tree named outright (-C workTree
+// --git-dir=workTree/.git --work-tree=workTree), so that git looks for no
+// repository and no configuration names another work tree: a .git that
+// is a gitfile is followed, one that is a directory is opened, and a tree
+// with no .git at its top is no repository (ErrNotRepo). The filter
+// look-up before the command (filterArgs) takes the same location. env
+// is set in git's environment beside the safe one, in (nil for none) is
+// on its standard input and its standard output is written to w as it
+// comes (w bounds what it keeps). Of its error stream the first
+// maxStderr bytes are kept for the error. It is how a tree's read runs
+// git (crew.TreeRevision).
+func RunTree(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	loc := []string{"-C", workTree, "--git-dir=" + filepath.Join(workTree, ".git"), "--work-tree=" + workTree}
+	argv, err := argvFor(ctx, "", loc, args)
+	if err != nil {
+		return err
+	}
+	stderr := &Head{N: maxStderr}
+	if err := execGitIO(ctx, "", argv, env, in, w, stderr); err != nil {
+		return gitError(ctx, args[0], stderr.String(), err)
+	}
+	return nil
+}
+
+// maxStderr bounds what RunTree keeps of git's error stream.
+const maxStderr = 4 << 10
+
+// Head is a writer that keeps the first N bytes written to it and drops
+// the rest, every write taken whole.
+type Head struct {
+	N   int
+	buf []byte
+}
+
+func (h *Head) Write(p []byte) (int, error) {
+	h.buf = append(h.buf, p[:min(len(p), max(h.N-len(h.buf), 0))]...)
+	return len(p), nil
+}
+
+// String is what h kept.
+func (h *Head) String() string { return string(h.buf) }
+
 // runEnv is run with env set in git's environment beside the safe one, in
 // the working directory cwd ("" for the server's own: loc then points git
 // where it runs).
@@ -299,8 +342,15 @@ func execGit(ctx context.Context, cwd string, argv []string, env map[string]stri
 
 // execGitTo is execGit with its output written to stdout and stderr.
 func execGitTo(ctx context.Context, cwd string, argv []string, env map[string]string, stdout, stderr io.Writer) error {
+	return execGitIO(ctx, cwd, argv, env, nil, stdout, stderr)
+}
+
+// execGitIO is execGitTo with stdin on git's standard input (nil for
+// none).
+func execGitIO(ctx context.Context, cwd string, argv []string, env map[string]string, stdin io.Reader, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = cwd
+	cmd.Stdin = stdin
 	set := safeEnv
 	if len(env) > 0 {
 		set = maps.Clone(safeEnv)
