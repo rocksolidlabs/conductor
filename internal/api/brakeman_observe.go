@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -2590,8 +2591,8 @@ var brakemanReads = []sharedRead{
 }
 
 // filterCapacity notes a turn's read of the capacity view: each view that
-// shows a reading, by its ref, at its state. The answer is the turn's own
-// already (capacityReply) and passes as it is.
+// shows a reading, by its ref, at the reading's own state (readingState).
+// The answer is the turn's own already (capacityReply) and passes as it is.
 func filterCapacity(_ *http.Request, o *observer, body []byte) ([]byte, error) {
 	var got struct {
 		Views *[]brakeman.Capacity `json:"views"`
@@ -2607,10 +2608,29 @@ func filterCapacity(_ *http.Request, o *observer, body []byte) ([]byte, error) {
 	}
 	for _, v := range views {
 		if v.Ref != "" {
-			o.noteRef(v.Ref, brakeman.ClassCapacity, v.State, "")
+			o.noteRef(v.Ref, brakeman.ClassCapacity, o.rr.s.readingState(v), "")
 		}
 	}
 	return body, nil
+}
+
+// readingState is the state of the reading v's ref names as the look-up
+// of that reading answers it (Cache.Kept), as a brief citing it resolves
+// it, which a new read of its key under way does not change; v's own once
+// the readings no longer hold it.
+func (s *Server) readingState(v brakeman.Capacity) string {
+	r, err := brakeman.ParseRef(v.Ref)
+	if err != nil || s.capacity == nil || s.capacity.cache == nil {
+		return v.State
+	}
+	at, err := time.Parse(time.RFC3339Nano, r.ReadAt)
+	if err != nil {
+		return v.State
+	}
+	if kept, ok := s.capacity.cache.Kept(capacity.Key{Agent: r.Agent, Account: r.Account}, at); ok {
+		return kept.State
+	}
+	return v.State
 }
 
 // sharedReadReply is the bound the shared read of pattern keeps of its

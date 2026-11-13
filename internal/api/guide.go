@@ -19,6 +19,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
@@ -350,7 +351,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// words are), a draft crew's crew the body crew_create takes;
 		// the operations section, which tools/list need not repeat,
 		// points to the briefs section for it.
-		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman", agentOnly: true,
+		{Name: "brief_submit", MCP: "brief_submit", Scope: "observe", Method: http.MethodPost, Path: sessions + "/brakeman/brief", needs: needLauncher, Receipt: "brakeman_turn", agentOnly: true,
 			Summary:     "Submit your turn's one brief (brakeman.brief/1): every fact names its evidence, every ref resolves in your scope; the same opId again answers it.",
 			Description: "Submit your Brakeman turn's one brief, schema brakeman.brief/1: a title, your reading (summary), and at least one item (facts with evidence refs, interpretations naming facts, proposals naming an operation of the guide, outcomes naming a receipt, decision cards, drafts); a briefing holds at least one fact. The brief's input schema gives every item kind with its fields, bounds and an example, and the ref forms; the guide's briefs section says the same in words. Every ref must resolve inside your scope and visibility, and a revision you name must be the one you read; a refusal names what to fix. The same opId and brief again answer the kept one. Your turn ends once it is kept.",
 			CLI:         []string{"conductor", "brakeman", "brief", "--file", "BRIEF.json"},
@@ -1356,7 +1357,8 @@ type guideReceipt struct {
 // read from their types.
 func guideReceipts() []guideReceipt {
 	return []guideReceipt{
-		{Name: "brakeman", About: "a Brakeman request's, kept under its opId: the same opId again answers the same request, and the same brief's opId again the kept brief", Fields: receiptFields(reflect.TypeFor[brakeman.Request]())},
+		{Name: "brakeman", About: "a Brakeman request's, kept under its opId: the same opId again answers the same request", Fields: receiptFields(reflect.TypeFor[brakeman.Request]())},
+		{Name: "brakeman_turn", About: "a Brakeman turn's brief, kept under its opId: the same opId and brief again answer the request as the turn is told it, brakeman_request's fields without its subjects, last briefing, batch and notes", Fields: receiptFields(reflect.TypeFor[turnRequest]())},
 		{Name: "ledger", About: "a run command's (pause, unpause, cancel, retry, accept), kept in the ledger under its actor and commandId: the same command again answers the same receipt, repeat true; a decision's response and operation are kept there the same way, under responseId, commandId or opId", Fields: receiptFields(reflect.TypeFor[crew.Receipt]())},
 		{Name: "dispatch", About: "a Dispatch operation's, kept under its actor and opId: the same opId again answers it, repeat true", Fields: receiptFields(reflect.TypeFor[dispatch.Receipt]())},
 	}
@@ -1514,12 +1516,15 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 
 // guideCapacity is the capacity section (docs/plans/capacity.md, PR-6):
 // what an agent's capacity view holds, that a window not reported is
-// unknown, and what Brakeman may propose from it (the plan's Owner
-// decisions, 11). The same for every caller.
+// unknown, every state a view can carry with its words (from the states'
+// own table, capacity.States), and what Brakeman may propose from it (the
+// plan's Owner decisions, 11). The same for every caller.
 var guideCapacity = struct {
-	Holds     []string `json:"holds"`
-	Unknown   string   `json:"unknown"`
-	Proposals []string `json:"proposals"`
+	Holds     []string          `json:"holds"`
+	Unknown   string            `json:"unknown"`
+	States    map[string]string `json:"states"`
+	Reading   string            `json:"reading"`
+	Proposals []string          `json:"proposals"`
 }{
 	Holds: []string{
 		"A view is one agent on one account: the agent and its version, the account's id and label (its default, or retired), where a launch would run (native, undetermined or remote), the plan the agent's own tool reported, its state with that state's words, and how fresh it is.",
@@ -1528,12 +1533,24 @@ var guideCapacity = struct {
 		"readAt and readBy say when the reading was made and by which version of the agent's tool. A view is the last reading the server keeps: reading it starts no read, and the server keeps readings in memory only, so a restart forgets them.",
 		"Each view that shows a reading carries its ref, capacity:<agent>/<account>@<readAt>, which a fact cites: the brief keeps that reading as you read it.",
 	},
-	Unknown: "A window the provider did not report is not in windows and is unknown, never zero; a state other than ok (never_read, unsupported, signed_out, key_paid, unqualified, remote, env_set, unlisted, not_owner, error) says why nothing is known.",
+	Unknown: "A window the provider did not report is not in windows and is unknown, never zero. A view's state is one of states, each with its words: any but ok and reading says why the provider's figures are not known.",
+	States:  guideCapStates(),
+	Reading: "reading: a new read of the key is under way; the view still shows the last reading's figures, its readAt and its ref until the new one is kept, and a brief citing that ref keeps that reading at its own state.",
 	Proposals: []string{
 		"You may propose waiting for a named reset, holding or pausing named runs or launches, fewer members at once, or a permitted alternative: another model on the same account, or another agent the crew or the person already configured for the work.",
 		"Never propose another account of the same provider because this one is near its limit: capacity informs a person's planning, it moves no work.",
 		"A proposal launches, reserves and binds nothing: a person acts on it through the operation's own route.",
 	},
+}
+
+// guideCapStates is every state of a view with its words, from the states'
+// own table (capacity.States).
+func guideCapStates() map[string]string {
+	out := map[string]string{}
+	for _, s := range capacity.States() {
+		out[s] = capacity.StateWords(s)
+	}
+	return out
 }
 
 // guideBriefs is the briefs section: a Brakeman brief's shape in words

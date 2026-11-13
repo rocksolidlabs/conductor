@@ -680,6 +680,7 @@ func wakeOpID(batch string, k int) string {
 // is tried again.
 func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 	d := rr.d
+	view, viewRev := d.s.queuedView() // before admission, as an ask's
 	d.admit.Lock()
 	defer d.admit.Unlock()
 	if d.closing.Load() {
@@ -700,7 +701,7 @@ func (rr roleRecords) Fire(b crew.Batch) (string, error) {
 			}
 			continue
 		}
-		id, err = rr.make(in)
+		id, err = rr.make(in, view, viewRev)
 		if errors.Is(err, brakeman.ErrOpConflict) {
 			// Another request's op id, that request pruned since.
 			continue
@@ -749,9 +750,10 @@ func (rr roleRecords) madeUnder(op, batch string) (string, bool, error) {
 }
 
 // make keeps the wake request in, once Brakeman runs in the background
-// and the desk, the queue and the day's budget have room for it. The
+// and the desk, the queue and the day's budget have room for it, keeping
+// view when it was made for the configuration's rev now (queuedView). The
 // caller holds admit.
-func (rr roleRecords) make(in brakeman.Request) (string, error) {
+func (rr roleRecords) make(in brakeman.Request, view *brakeman.Capacity, viewRev int64) (string, error) {
 	d := rr.d
 	cfg, err := d.st.Config()
 	if err != nil {
@@ -760,7 +762,9 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 	if !cfg.Background() {
 		return "", &crew.RoleRefused{Why: "Brakeman is off, or not in the background", Reason: crew.ReasonOff}
 	}
-	in.Capacity = d.s.queuedCapacity(cfg)
+	if cfg.Rev == viewRev {
+		in.Capacity = view
+	}
 	now := d.now()
 	d.mu.Lock()
 	defer d.mu.Unlock()

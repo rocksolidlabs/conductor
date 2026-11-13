@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -226,6 +227,11 @@ func (rr *refResolver) resolveAll(ctx context.Context, b brakeman.Brief) ([]brak
 		bad  []badRef
 		done = map[brakeman.Ref]int{}
 	)
+	defer func() {
+		if rr.capacity != nil {
+			rr.capacity.cancel()
+		}
+	}()
 	for _, it := range b.Items {
 		for _, ref := range it.Refs() {
 			if _, ok := done[ref]; ok {
@@ -325,6 +331,9 @@ type refResolver struct {
 	// between a candidate's task row and its attempt rows (candidate), so
 	// a test commits a transition between the two.
 	taskRead func()
+	// capacity is the look-ups of the capacity: refs it resolved, nil
+	// before the first (lookupCapacity).
+	capacity *capacityLooks
 }
 
 // errRefStore is a store a ref's record is in that this server could not
@@ -553,14 +562,31 @@ func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, 
 }
 
 // lookupCapacity finds a capacity: ref's reading in the readings the
-// server keeps (keptCapacity): found, its state now its view's and its
-// snapshot the view as the turn reads it; not found once it has left them.
+// server keeps, first and at once: not found once it has left them, and
+// nothing else looked up for it. One they keep is found, its state now its
+// view's and its snapshot the view as the turn reads it (keptCapacity),
+// from what the brief's look-ups found (capacityLooks): unavailable when
+// they found nothing within the brief's wait.
 func (rr *refResolver) lookupCapacity(ctx context.Context, ref brakeman.Ref) refFound {
+	d := rr.s.capacity
 	at, err := time.Parse(time.RFC3339Nano, ref.ReadAt)
-	if err != nil {
+	if d == nil || d.st == nil || err != nil {
 		return refFound{}
 	}
-	c, ok := rr.s.keptCapacity(ctx, ref.Agent, ref.Account, at, rr.at)
+	kept, held := d.cache.Kept(capacity.Key{Agent: ref.Agent, Account: ref.Account}, at)
+	agent, ok := rr.s.Catalog().Get(ref.Agent)
+	if !held || !ok {
+		return refFound{}
+	}
+	if rr.capacity == nil {
+		lctx, cancel := d.wait(ctx, "brief", briefCapacityWait)
+		rr.capacity = &capacityLooks{ctx: lctx, cancel: cancel, readable: map[string]*bool{}}
+	}
+	f, ok := rr.capacity.facts(rr.s, agent)
+	if !ok {
+		return refFound{unavailable: true}
+	}
+	c, ok := d.keptCapacity(rr.capacity.ctx, f, agent, ref.Account, kept, rr.at)
 	if !ok {
 		return refFound{}
 	}

@@ -352,6 +352,15 @@ func (c *Cache) Kept(k Key, at time.Time) (View, bool) {
 	return View{}, false
 }
 
+// Latest answers k's View as View does, reading nothing, but is no ask of
+// k: it moves no key's place (a Brakeman turn's read, docs/plans/
+// capacity.md, PR-6).
+func (c *Cache) Latest(k Key) View {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.viewLocked(k, c.clock.Now())
+}
+
 func (c *Cache) viewLocked(k Key, now time.Time) View {
 	var v View
 	if e := c.keys[k]; e != nil {
