@@ -227,6 +227,18 @@ func (fs *careOS) MkdirAll(name string, _ os.FileMode) error {
 	return &os.PathError{Op: "mkdir", Path: name, Err: errReadOnly}
 }
 
+func (fs *careOS) Symlink(_, link string) error {
+	return &os.PathError{Op: "symlink", Path: link, Err: errReadOnly}
+}
+
+func (fs *careOS) Chmod(name string, _ os.FileMode) error {
+	return &os.PathError{Op: "chmod", Path: name, Err: errReadOnly}
+}
+
+func (fs *careOS) RemoveAll(name string) error {
+	return &os.PathError{Op: "removeall", Path: name, Err: errReadOnly}
+}
+
 // careFile is a file careOS opened: what is read of it, by Read and ReadAt
 // together, stops at its bound with ErrUnreadable (left, -1 for none).
 type careFile struct {

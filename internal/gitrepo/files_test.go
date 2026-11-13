@@ -86,6 +86,49 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 	}
 }
 
+// The file system the package hands go-git only reads: every way to change
+// a folder refuses, by the type itself and through the chroot over it, and
+// the folder is as it was.
+func TestTheFileSystemRefusesEveryChange(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "HEAD", "ref: refs/heads/main\n")
+	seen := &refusal{}
+	defer seen.close()
+	fs := careFS(dir, seen)
+	at := func(name string) string { return filepath.Join(dir, name) }
+	for op, err := range map[string]error{
+		"Rename":    fs.Rename(at("HEAD"), at("moved")),
+		"Remove":    fs.Remove(at("HEAD")),
+		"RemoveAll": fs.RemoveAll(dir),
+		"MkdirAll":  fs.MkdirAll(at("made"), 0o755),
+		"Symlink":   fs.Symlink("HEAD", at("link")),
+		"Chmod":     fs.Chmod(at("HEAD"), 0o600),
+	} {
+		if !errors.Is(err, errReadOnly) {
+			t.Errorf("%s: %v, want the read-only refusal", op, err)
+		}
+	}
+	b := fs.billy()
+	for op, err := range map[string]error{
+		"Rename":   b.Rename("HEAD", "moved"),
+		"Remove":   b.Remove("HEAD"),
+		"MkdirAll": b.MkdirAll("made", 0o755),
+		"Symlink":  b.Symlink("HEAD", "link"),
+		"Chmod":    b.(billy.Chmod).Chmod("HEAD", 0o600),
+	} {
+		if err == nil {
+			t.Errorf("%s through the chroot was made", op)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "HEAD" {
+		t.Errorf("the folder holds %v (%v), want HEAD alone", entries, err)
+	}
+	if fi, err := os.Stat(at("HEAD")); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("HEAD: %v %v, want it as written", fi, err)
+	}
+}
+
 // The file opened is the file the root looked at: one put in its place
 // between the look and the open is refused, as the file it is.
 func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
