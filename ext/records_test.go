@@ -62,6 +62,7 @@ var records = []any{
 	&ext.SubmitResult{Status: "entered"},
 	&ext.TurnLaunch{Agent: "claude", Model: "opus", AllowTools: true, Folder: "/src", Reads: []string{"/home/me"}, Line: "Brakeman request br-1", Label: "Brakeman · briefing br-1", Request: "br-1"},
 	&ext.ApprovedLaunch{Ticket: "CND-12", Plan: "0123456789abcdef", ExpectedRev: 3, OpID: "op-1", Label: "nightly", By: principal},
+	&ext.SignInStatus{State: ext.SignInCode, Who: "Ada", Code: "WDJB-MJHT", URL: "https://id.example.com/device", Expires: at, Why: "enter the code"},
 }
 
 func TestRecordsRoundTrip(t *testing.T) {
