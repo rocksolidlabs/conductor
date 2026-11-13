@@ -192,7 +192,8 @@ function savedToast(outcome: string) {
 const route = useRoute()
 const router = useRouter()
 const brakeman = useBrakeman()
-const sections = computed(() => shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, ice: !!ice.value, agents: agents.value.length, brakeman: brakeman.available.value !== false }))
+const accounts = useAccounts()
+const sections = computed(() => shownSections({ desktop: desktop.isDesktop.value, platform: desktop.bridge.value?.platform, ice: !!ice.value, agents: agents.value.length, brakeman: brakeman.available.value !== false, accounts: accounts.available.value !== false }))
 const layout = ref<HTMLElement | null>(null)
 const nav = ref<HTMLElement | null>(null)
 const current = ref<SettingsSectionId | null>(null)
@@ -382,11 +383,12 @@ usePalette().registerPage(() => {
     <template #body>
       <!--
         The sections stay one column of cards that reads top to bottom (#366: two columns left a blank beside every short card), as
-        wide as the panel up to 80rem (#433). In a browser there is no navigation: the notice, Brakeman and The app, stacked.
+        wide as the panel up to 80rem (#433). In a browser there is no navigation: the notice, Accounts, Brakeman and The app, stacked.
       -->
       <div v-if="!desktop.isDesktop.value" class="@container mx-auto flex w-full max-w-7xl flex-col gap-5" data-settings-sections>
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
-        <!-- Brakeman's configuration is the server's own, saved through its route: here in a browser too. -->
+        <!-- The accounts and Brakeman's configuration are the server's own, changed through its routes: here in a browser too. -->
+        <AccountsCard data-settings-section="accounts" />
         <BrakemanSettings ref="brakemanCard" data-settings-section="brakeman" />
         <SignInCard />
         <AboutCard data-settings-section="app" />
@@ -520,6 +522,8 @@ usePalette().registerPage(() => {
             </li>
           </ul>
         </UCard>
+
+        <AccountsCard :class="sectionClass" data-settings-section="accounts" />
 
         <BrakemanSettings ref="brakemanCard" :class="sectionClass" data-settings-section="brakeman" />
 
