@@ -112,10 +112,16 @@ func (s *Server) turnPrincipalOf(r *http.Request) (*turnPrincipal, *apiError) {
 	}
 	d := s.brakeman
 	drv, ok := s.registry.Get(id)
-	if !ok || !s.agentTokenOK(r, drv) {
+	if !ok {
+		return nil, nil
+	}
+	switch s.agentTokenOK(r, drv) {
+	case notAgentToken:
 		// Not the named session's own token: the request is any other's,
 		// the workbench token's or none.
 		return nil, nil
+	case agentTokenLaneClosed:
+		return nil, laneClosed()
 	}
 	ref := drv.Info().Crew
 	if ref == nil || ref.Brakeman == nil {

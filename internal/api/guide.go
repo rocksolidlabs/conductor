@@ -152,6 +152,10 @@ var guideRules = []string{
 	"A question goes to a person with ask; in a managed run, one whose answer the work must wait for goes with decision_request.",
 }
 
+// laneGuideRules are the guide's lines for a session of a comparison's
+// lane, which asks every question with ask.
+var laneGuideRules = []string{guideRules[0], guideRules[1], "A question goes to a person with ask."}
+
 // mcpObject and mcpString build the MCP tools' schemas, as tools/list
 // has always given them.
 func mcpObject(props map[string]any, required ...string) map[string]any {
@@ -955,6 +959,9 @@ type guideCaller struct {
 	// local says the session is a server session (not hosted); managed
 	// that its run is a managed one; brakeman that it is a Brakeman turn's.
 	local, managed, brakeman bool
+	// lane is what the session is to a comparison's doors (laneOf): a
+	// lane's session is listed only the operations compareDoors serves it.
+	lane laneFact
 	// acts is a Brakeman turn's operations granted, the snapshot its turn
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
@@ -982,6 +989,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	id := d.Info().ID
 	c := guideCaller{Kind: "session", Session: id, Scopes: []string{"session"}}
 	_, c.local = d.(*session.Local)
+	_, c.lane = s.laneOf(d)
 	run, member, inRun := s.runs.MemberOf(id)
 	if !inRun {
 		c.Kinds = append(c.Kinds, "plain")
@@ -1049,7 +1057,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) {
+	if !s.reaches(c, op) || !laneServes(c.lane, op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {
@@ -1530,6 +1538,9 @@ func briefSubmitSchema() map[string]any {
 func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
 	ov := guideOverview{Caller: c, Report: guideReport, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
+	if c.lane != noLane {
+		ov.Rules = laneGuideRules
+	}
 	if ops, ok := content["operations"].([]Operation); ok {
 		for _, op := range ops {
 			ov.May = append(ov.May, op.Name)

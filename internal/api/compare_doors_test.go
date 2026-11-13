@@ -2,43 +2,76 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"io/fs"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
-// compareEnv is a server with Dispatch's store running a comparison's run
-// (two candidates, approach-a by cand-a and approach-b by cand-b, each
-// reviewed, review-a by rev-a and review-b by rev-b) beside an ordinary
-// managed run (build by lead, docs by writer): approach-a's, approach-b's
-// and build's sessions, each with its token. Both runs are stopped when the
-// test ends, before its folders go.
+// compareEnv is a server with Dispatch's store whose ticket CND-1
+// launched a comparison's run (two candidates, approach-a by cand-a and
+// approach-b by cand-b, each reviewed, review-a by rev-a and review-b by
+// rev-b), beside an ordinary managed run linked to the same ticket (build
+// by lead, docs by writer): approach-a's, approach-b's and build's
+// sessions, each with its token. Every run the engine holds is stopped
+// when the test ends, before its folders go.
 type compareEnv struct {
 	*testEnv
-	run, plain           string
+	run, plain, launch   string
 	a, b, member         string
 	aTok, bTok, plainTok string
 }
 
-func newCompareEnv(t *testing.T) *compareEnv {
+// compareOpts shapes a compareEnv.
+type compareOpts struct {
+	// identity is the server's identity provider; none for nil.
+	identity ext.IdentityProvider
+	// beforeLaunch writes on CND-1 before the comparison is launched.
+	beforeLaunch func(ce *compareEnv)
+	// launched is set as the launcher's seam (launchGate.launched) before
+	// the runs launch, and the env then waits for no session: the test
+	// does, at its seam.
+	launched func(crew.LaunchSpec, string)
+}
+
+func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	t.Helper()
-	e := readyEnv(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") })
-	e.gitRepo(t)
+	var opts []Option
+	if o.identity != nil {
+		opts = append(opts, withIdentity(o.identity))
+	}
+	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") }, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		[]catalog.Agent{readyCat}, opts...)
 	// Every refusal is the token's: the per-client limiter would answer
 	// some with 429.
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
-	c, err := crew.CompareTemplate(crew.CompareSpec{Name: "Compare", Cwd: e.root, Goal: "Make the lookup fast.", Instructions: "Make it fast.",
+	repo := filepath.Join(e.root, "repo")
+	planRepo(t, repo)
+	e.newDispatchProject(t, "CND", map[string]any{"cwd": repo})
+	e.newDispatchTicket(t, "CND", "Fast lookup", map[string]any{"description": "Make the lookup fast.", "acceptance": "It is fast."})
+	c, err := crew.CompareTemplate(crew.CompareSpec{Name: "Compare", Cwd: repo, Goal: "Make the lookup fast.", Instructions: "Make it fast.",
 		Criteria:   []crew.Criterion{{ID: "fast", Text: "The lookup is fast."}},
 		Checks:     []crew.Check{{ID: "ok", Argv: []string{"true"}}},
 		Candidates: []crew.CandidateSpec{{AgentID: "ready-cat", Approach: "Cache every answer."}, {AgentID: "ready-cat", Approach: "Index the table."}},
@@ -46,69 +79,107 @@ func newCompareEnv(t *testing.T) *compareEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.ID = "cmp"
-	e.srv.runs.SetCompareOpenForTest(true)
+	saved, err := e.srv.crews.Create(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": opID(), "crew": saved.ID}, http.StatusCreated, ""), "plan")["id"].(string)
+	e.expect(t, "POST", "/api/dispatch/plans/"+plan+"/approve", map[string]any{"opId": opID(), "byName": "Nate", "note": "Go."}, http.StatusOK, "")
 	ce := &compareEnv{testEnv: e}
-	for _, cr := range []crew.Crew{c, managedCrew(e.root)} {
-		run, release, err := e.srv.runs.LaunchNamed(t.Context(), cr, "")
-		release()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
-		if cr.Compare != nil {
-			ce.run = run.ID
-		} else {
-			ce.plain = run.ID
-		}
+	srv := e.srv
+	t.Cleanup(func() { stopEveryRun(srv) })
+	if o.beforeLaunch != nil {
+		o.beforeLaunch(ce)
 	}
-	session := func(run, task string) (string, string) {
-		sid := runningAttempt(t, e, run, task, 1)["sessionId"].(string)
-		return sid, e.agentToken(sid)
+	if o.launched != nil {
+		srv.launches.setSeams(func(g *launchGate) { g.launched = o.launched })
 	}
-	ce.a, ce.aTok = session(ce.run, "approach-a")
-	ce.b, ce.bTok = session(ce.run, "approach-b")
-	ce.member, ce.plainTok = session(ce.plain, "build")
+	srv.runs.SetCompareOpenForTest(true)
+	launch := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": plan}, http.StatusCreated, ""), "launch")
+	ce.run, ce.launch = launch["runId"].(string), launch["id"].(string)
+	plain, release, err := srv.runs.LaunchNamed(t.Context(), managedCrew(repo), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ce.plain = plain.ID
+	e.expect(t, "POST", "/api/dispatch/tickets/CND-1/links", map[string]any{"opId": opID(), "kind": "run", "ref": ce.plain}, http.StatusCreated, "")
+	if o.launched == nil {
+		ce.a, ce.aTok = ce.session(t, ce.run, "approach-a")
+		ce.b, ce.bTok = ce.session(t, ce.run, "approach-b")
+		ce.member, ce.plainTok = ce.session(t, ce.plain, "build")
+	}
 	return ce
 }
 
-// ticket is a ticket both runs are linked to.
-func (ce *compareEnv) ticket(t *testing.T) string {
+// session is the task's first attempt's session once it runs, and its
+// token.
+func (ce *compareEnv) session(t *testing.T, run, task string) (string, string) {
 	t.Helper()
-	ce.newDispatchProject(t, "CMP", nil)
-	key := ce.newDispatchTicket(t, "CMP", "Fast lookup", nil)["key"].(string)
-	for _, run := range []string{ce.run, ce.plain} {
-		ce.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "run", "ref": run}, http.StatusCreated, "")
-	}
-	return key
+	sid := runningAttempt(t, ce.testEnv, run, task, 1)["sessionId"].(string)
+	return sid, ce.agentToken(sid)
 }
 
-// approach-b's session reads its run as its lane: the run's id, name,
-// goal and state, its own lane's members and tasks, the block with its own
-// candidate; nothing of approach-a's lane and no log, whichever token
-// asks. An ordinary run's member reads its whole run as before.
+// door is a call of one of compareDoors' patterns: the path with the
+// session sid and the run, and a body every route refuses after its
+// token is taken (an unknown field), so that nothing is written.
+func (ce *compareEnv) door(pattern, sid, run string) (method, path string, body []byte) {
+	method, path, _ = strings.Cut(pattern, " ")
+	for k, v := range map[string]string{"{run}": run, "{task}": "approach-b", "{n}": "1", "{key}": "CND-1", "{did}": "dr-none", "{command}": "c-none", "{id}/{k}": "s-none/1"} {
+		path = strings.ReplaceAll(path, k, v)
+	}
+	path = strings.ReplaceAll(path, "{id}", sid)
+	if method != http.MethodGet {
+		body = []byte(`{"notAField":1}`)
+	}
+	return method, path, body
+}
+
+// callDoor calls the pattern with the token for the session sid, naming
+// sid in X-Conductor-Session as a Brakeman turn's client does.
+func (ce *compareEnv) callDoor(t *testing.T, tok, pattern, sid string) (int, []byte, map[string]any) {
+	t.Helper()
+	method, path, body := ce.door(pattern, sid, ce.run)
+	return ce.callAsTurn(t, tok, sid, method, path, body)
+}
+
+// laneRefused fails t unless the reply is the refusal of a door closed to
+// a comparison's lane: 409 lane, in its one sentence.
+func laneRefused(t *testing.T, what string, status int, raw []byte, out map[string]any) {
+	t.Helper()
+	if status != http.StatusConflict || errorCode(out) != "lane" || apiMessage(out) != laneClosedWords {
+		t.Errorf("%s: %d %s, want 409 lane %q", what, status, raw, laneClosedWords)
+	}
+}
+
+// guardServed reports whether the reply is past the token's guard: neither
+// a 401 nor the refusal of a door closed to a comparison's lane.
+func guardServed(status int, out map[string]any) bool {
+	return status != http.StatusUnauthorized && (errorCode(out) != "lane" || apiMessage(out) != laneClosedWords)
+}
+
+// approach-b's session reads its run as its lane: the run's id, name and
+// goal, its own lane's members and tasks, each with its own state, the
+// block with its own candidate; nothing of approach-a's lane, no state or
+// outcome of the whole run and no log, whichever token asks. An ordinary
+// run's member reads its whole run as before.
 func TestRunStatusShowsOneLane(t *testing.T) {
-	ce := newCompareEnv(t)
+	ce := newCompareEnv(t, compareOpts{})
 	aWorktree := runningAttempt(t, ce.testEnv, ce.run, "approach-a", 1)["worktree"].(string)
 	for _, tok := range []string{ce.bTok, adminToken} {
 		_, raw, out := ce.callAs(t, tok, "GET", "/api/sessions/"+ce.b+"/run", nil)
 		run, _ := out["run"].(map[string]any)
-		if out["member"] != "cand-b" || run["id"] != ce.run || run["name"] != "Compare" || run["goal"] != "Make the lookup fast." || run["state"] != crew.RunRunning {
+		if out["member"] != "cand-b" || run["id"] != ce.run || run["goal"] != "Make the lookup fast." {
 			t.Fatalf("the lane's run: %s", raw)
 		}
-		var keys []string
-		for k := range run {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		if !slices.Equal(keys, []string{"compare", "goal", "id", "members", "name", "state", "tasks"}) {
+		if keys := slices.Sorted(maps.Keys(run)); !slices.Equal(keys, []string{"compare", "goal", "id", "members", "name", "tasks"}) {
 			t.Fatalf("the lane's run has %v", keys)
 		}
 		if got := fieldsOf(run["members"], "name"); !slices.Equal(got, []string{"cand-b", "rev-b"}) {
 			t.Fatalf("members %v", got)
 		}
-		if got := fieldsOf(run["tasks"], "id"); !slices.Equal(got, []string{"approach-b", "review-b"}) {
-			t.Fatalf("tasks %v", got)
+		if got := fieldsOf(run["tasks"], "id"); !slices.Equal(got, []string{"approach-b", "review-b"}) || fieldsOf(run["tasks"], "state")[0] != "running" {
+			t.Fatalf("tasks %v: %s", got, raw)
 		}
 		cmp, _ := run["compare"].(map[string]any)
 		if cands, _ := cmp["candidates"].([]any); len(cands) != 1 || cands[0].(map[string]any)["task"] != "approach-b" || cands[0].(map[string]any)["approach"] != "Index the table." || len(cmp["criteria"].([]any)) != 1 {
@@ -122,7 +193,7 @@ func TestRunStatusShowsOneLane(t *testing.T) {
 	}
 	_, raw, out := ce.callAs(t, ce.plainTok, "GET", "/api/sessions/"+ce.member+"/run", nil)
 	run, _ := out["run"].(map[string]any)
-	if _, log := run["log"]; !log || !slices.Equal(fieldsOf(run["tasks"], "id"), []string{"build", "docs"}) || out["member"] != "lead" {
+	if _, log := run["log"]; !log || run["state"] != crew.RunRunning || !slices.Equal(fieldsOf(run["tasks"], "id"), []string{"build", "docs"}) || out["member"] != "lead" {
 		t.Fatalf("an ordinary run's member: %s", raw)
 	}
 }
@@ -137,71 +208,135 @@ func fieldsOf(list any, field string) []string {
 	return out
 }
 
-// approach-b's ticket read leaves out the comments approach-a's lane's
-// members made and the links naming approach-a's lane's branches or
-// candidates, with their reads; a person's comments, its own lane's and
-// another run's member's stay. An ordinary run's member reads them all.
-func TestTicketReadHidesOtherLanes(t *testing.T) {
-	ce := newCompareEnv(t)
-	key := ce.ticket(t)
-	ce.expect(t, "POST", "/api/dispatch/tickets/"+key+"/comments", map[string]any{"opId": opID(), "body": "a person's"}, http.StatusCreated, "")
-	for _, actor := range []string{"agent:cand-a", "agent:rev-a", "agent:cand-b", "agent:lead"} {
-		if _, err := ce.srv.dispatch.AddComment(context.Background(), dispatch.Op{Actor: actor, ID: opID()}, key, "by "+actor); err != nil {
+// addLink adds a link to CND-1 as the admin and returns its id; with a
+// node, a read of a pull request is recorded for it.
+func (ce *compareEnv) addLink(t *testing.T, fields map[string]any, node string) string {
+	t.Helper()
+	body := maps.Clone(fields)
+	body["opId"] = opID()
+	id := receiptOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/links", body, http.StatusCreated, ""))["id"].(string)
+	if node != "" {
+		read := dispatch.LinkRead{System: "github", Host: "github.com", Kind: dispatch.ExternalChange, NodeID: node, State: "open", HeadSha: strings.Repeat("c", 40), UpdatedAt: time.Now().UTC()}
+		if err := ce.srv.dispatch.RecordRead(context.Background(), id, read); err != nil {
 			t.Fatal(err)
 		}
 	}
-	branch := func(task string) string { return "crew/" + ce.run + "/" + task + ".1" }
-	links := map[string]map[string]any{
-		"a-url":     {"kind": "delivery", "url": "https://example.test/compare/main..." + branch("approach-a")},
-		"a-escaped": {"kind": "delivery", "url": "https://example.test/tree/" + strings.ReplaceAll(branch("review-a"), "/", "%2F")},
-		"a-note":    {"kind": "delivery", "url": "https://example.test/pull/1", "note": "from " + branch("approach-a")},
-		"b-url":     {"kind": "delivery", "url": "https://example.test/compare/main..." + branch("approach-b")},
+	return id
+}
+
+// addComment comments on CND-1 straight in the store, as the actor.
+func (ce *compareEnv) addComment(t *testing.T, actor, body string) {
+	t.Helper()
+	if _, err := ce.srv.dispatch.AddComment(context.Background(), dispatch.Op{Actor: actor, ID: opID()}, "CND-1", body); err != nil {
+		t.Fatal(err)
 	}
-	for name, l := range links {
-		l["opId"] = opID()
-		l["ref"] = name
-		ce.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", l, http.StatusCreated, "")
+}
+
+// objectKeys is the keys of a JSON object, sorted.
+func objectKeys(v any) []string {
+	m, _ := v.(map[string]any)
+	return slices.Sorted(maps.Keys(m))
+}
+
+// A lane reads its ticket as it stood at its run's launch, and people's
+// comments since: before the launch, a person's comment, an earlier run's
+// agent's comment under a name a member of this run has, and a link with
+// its read; since, a person's comment. Nothing added since but that
+// comment (an agent's comment, delivery links of another lane's branch,
+// as written, percent-escaped and a pull request naming no branch, with
+// its read, an attachment) and nothing worked out over the ticket now (its
+// close state, which names those deliveries, its status, revision and
+// counts) is in the reply, whichever token asks, and the reply holds no
+// field outside its whitelist. An ordinary run's member reads the ticket
+// as the admin's ticket read gives it.
+func TestTicketReadHidesOtherLanes(t *testing.T) {
+	var before string
+	ce := newCompareEnv(t, compareOpts{beforeLaunch: func(ce *compareEnv) {
+		ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, before"}, http.StatusCreated, "")
+		ce.addComment(t, "agent:cand-a", "an earlier run's")
+		before = ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/7"}, "PR_7")
+	}})
+	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, since"}, http.StatusCreated, "")
+	ce.addComment(t, "agent:lead", "an agent's, since")
+	branch := "crew/" + ce.run + "/approach-a.1"
+	escaped := strings.ReplaceAll(branch, "/", "%2F")
+	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/compare/main..." + branch}, "")
+	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/tree/" + escaped}, "")
+	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/12"}, "PR_12")
+	if _, _, err := ce.srv.dispatch.AddAttachment(context.Background(), adminOp("Nate"), "CND-1", "notes.txt", "text/plain", strings.NewReader("since")); err != nil {
+		t.Fatal(err)
 	}
-	read := func(tok, sid string) (authors, refs []string) {
-		tk := entityOf(t, ce.expectAs(t, tok, "GET", "/api/sessions/"+sid+"/ticket", nil, http.StatusOK, ""), "ticket")
-		authors, refs = fieldsOf(tk["comments"], "author"), fieldsOf(tk["links"], "ref")
-		slices.Sort(authors)
-		slices.Sort(refs)
-		return authors, refs
-	}
-	kept := []string{"b-url", ce.plain, ce.run}
-	slices.Sort(kept)
-	for _, tok := range []string{ce.bTok, adminToken} {
-		authors, refs := read(tok, ce.b)
-		if !slices.Equal(authors, []string{adminActor, "agent:cand-b", "agent:lead"}) || !slices.Equal(refs, kept) {
-			t.Fatalf("approach-b's read: %v %v", authors, refs)
-		}
-	}
-	authors, refs := read(ce.plainTok, ce.member)
-	if len(authors) != 5 || len(refs) != 6 {
-		t.Fatalf("an ordinary run's member's read: %v %v", authors, refs)
+	// The admin's read of the ticket now: its close state names the
+	// deliveries added since.
+	whole := entityOf(t, ce.expect(t, "GET", "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket")
+	if why, _ := json.Marshal(whole["close"]); !strings.Contains(string(why), "example.test") {
+		t.Fatalf("the ticket's close state names no delivery: %s", why)
 	}
 
-	// A delivery's candidate of another lane, and the link's read, go too.
-	lane, ok := ce.srv.runs.LaneOf(ce.b)
-	if !ok {
-		t.Fatal("approach-b's session is in no lane")
+	for _, tok := range []string{ce.bTok, adminToken} {
+		_, raw, out := ce.callAs(t, tok, "GET", "/api/sessions/"+ce.b+"/ticket", nil)
+		tk, _ := out["ticket"].(map[string]any)
+		if tk == nil {
+			t.Fatalf("approach-b's read: %s", raw)
+		}
+		if keys := objectKeys(out); !slices.Equal(keys, []string{"launch", "ticket"}) {
+			t.Fatalf("the reply has %v", keys)
+		}
+		if keys := objectKeys(out["launch"]); !slices.Equal(keys, []string{"digest", "id", "plan", "rev"}) || out["launch"].(map[string]any)["id"] != ce.launch {
+			t.Fatalf("the launch: %v", out["launch"])
+		}
+		if keys := objectKeys(tk); !slices.Equal(keys, []string{"acceptance", "attachments", "comments", "description", "id", "key", "linkReads", "links", "number", "title"}) {
+			t.Fatalf("the ticket has %v", keys)
+		}
+		if tk["key"] != "CND-1" || tk["title"] != "Fast lookup" || tk["description"] != "Make the lookup fast." || tk["acceptance"] != "It is fast." {
+			t.Fatalf("the ticket's statement: %s", raw)
+		}
+		if got := fieldsOf(tk["comments"], "body"); !slices.Equal(got, []string{"a person's, before", "an earlier run's", "a person's, since"}) {
+			t.Fatalf("the comments: %v", got)
+		}
+		for _, c := range tk["comments"].([]any) {
+			for _, k := range objectKeys(c) {
+				if !slices.Contains([]string{"author", "body", "by", "createdAt", "editedAt", "id"}, k) {
+					t.Fatalf("a comment's %s: %v", k, c)
+				}
+			}
+		}
+		if got := fieldsOf(tk["links"], "id"); !slices.Equal(got, []string{before}) || len(tk["attachments"].([]any)) != 0 {
+			t.Fatalf("the links %v, the attachments %v", got, tk["attachments"])
+		}
+		for _, k := range objectKeys(tk["links"].([]any)[0]) {
+			if !slices.Contains([]string{"candidate", "createdAt", "createdBy", "deletedAt", "id", "kind", "note", "ref", "url", "verified"}, k) {
+				t.Fatalf("a link's %s: %v", k, tk["links"])
+			}
+		}
+		reads, _ := tk["linkReads"].(map[string]any)
+		if objectKeys(reads)[0] != before || len(reads) != 1 || reads[before].(map[string]any)["state"] != "open" {
+			t.Fatalf("the links' reads: %v", reads)
+		}
+		for _, k := range objectKeys(reads[before]) {
+			if !slices.Contains([]string{"checks", "error", "headSha", "merged", "mergeSha", "mergedAt", "readAt", "state", "updatedAt"}, k) {
+				t.Fatalf("a read's %s: %v", k, reads)
+			}
+		}
+		for _, other := range []string{"approach-a", branch, escaped, "example.test/compare", "example.test/tree", "example.test/pull/12", "notes.txt", "an agent's, since"} {
+			if strings.Contains(string(raw), other) {
+				t.Fatalf("the lane's ticket names %q: %s", other, raw)
+			}
+		}
 	}
-	commit := strings.Repeat("a", 40)
-	v := laneTicket(dispatch.TicketView{
-		Links:     []dispatch.Link{{ID: "l-a", Candidate: ce.run + "/approach-a/1@" + commit}, {ID: "l-b", Candidate: ce.run + "/approach-b/1@" + commit}},
-		LinkReads: map[string]dispatch.LinkReadSummary{"l-a": {State: "open"}, "l-b": {State: "open"}},
-	}, lane)
-	if len(v.Links) != 1 || v.Links[0].ID != "l-b" || len(v.LinkReads) != 1 || v.LinkReads["l-b"].State != "open" {
-		t.Fatalf("the candidates' links: %+v %+v", v.Links, v.LinkReads)
+
+	_, raw, out := ce.callAs(t, ce.plainTok, "GET", "/api/sessions/"+ce.member+"/ticket", nil)
+	got, _ := json.Marshal(out["ticket"])
+	want, _ := json.Marshal(whole)
+	if string(got) != string(want) || !strings.Contains(string(raw), branch) {
+		t.Fatalf("an ordinary run's member's read:\n%s\nthe admin's:\n%s", got, want)
 	}
 }
 
 // Every lane's session is refused a ticket comment, 409 lane, whichever
 // token asks, and nothing is written; an ordinary run's member comments.
 func TestTicketCommentIsRefusedToALane(t *testing.T) {
-	ce := newCompareEnv(t)
-	key := ce.ticket(t)
+	ce := newCompareEnv(t, compareOpts{})
 	for _, s := range []struct{ sid, tok, actor string }{{ce.a, ce.aTok, "agent:cand-a"}, {ce.b, ce.bTok, "agent:cand-b"}} {
 		for _, tok := range []string{s.tok, adminToken} {
 			op := opID()
@@ -214,7 +349,7 @@ func TestTicketCommentIsRefusedToALane(t *testing.T) {
 			}
 		}
 	}
-	if cs := entityOf(t, ce.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")["comments"].([]any); len(cs) != 0 {
+	if cs := entityOf(t, ce.expect(t, "GET", "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket")["comments"].([]any); len(cs) != 0 {
 		t.Fatalf("the ticket's comments: %v", cs)
 	}
 	ce.expectAs(t, ce.plainTok, "POST", "/api/sessions/"+ce.member+"/ticket/comments", map[string]any{"opId": opID(), "body": "built"}, http.StatusCreated, "")
@@ -223,13 +358,55 @@ func TestTicketCommentIsRefusedToALane(t *testing.T) {
 // agentScopes are the scopes of the operations an agent's token calls.
 var agentScopes = []string{"session", "task", "ticket", "observe", "act"}
 
+// registeredPatterns is every pattern the server's mux is given: the
+// literal patterns of the package's HandleFunc and Handle calls, and
+// Dispatch's routes.
+func registeredPatterns(t *testing.T, s *Server) []string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{decisionRoutePattern: true}
+	for _, r := range s.dispatchRoutes() {
+		seen[r.pattern] = true
+	}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "HandleFunc" || sel.Sel.Name == "Handle") {
+				if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					seen[strings.Trim(lit.Value, "`\"")] = true
+				}
+			}
+			return true
+		})
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
 // Every route an agent's token may call has its rule in compareDoors, and
-// every entry is such a route: the guide's operations of the agent's
-// scopes, the granted acts' routes and Brakeman's shared reads. DR1's
-// decision tools and the self-service that forms or grows a crew are
-// refused; a candidate's token is answered so by them, its own tools
-// serve it, and an ordinary run's member is served by each.
+// the table answers a lane as it says, entry by entry: each entry is such
+// a route (the guide's operations of the agent's scopes, the granted
+// acts' routes, Brakeman's shared reads); a lane's own token is served
+// every own and lane entry and refused every other, 409 lane in one
+// sentence; the same token on another lane's session is refused every
+// entry, 401, as a token the route does not take; and a route the server
+// registers that the table does not list answers an ordinary run's
+// member's agent token as it answers a token that is nobody's.
 func TestEveryAgentDoorIsListed(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
 	routes := map[string]bool{}
 	for _, op := range operationsTable() {
 		if slices.Contains(agentScopes, op.Scope) && op.Path != "" {
@@ -253,54 +430,46 @@ func TestEveryAgentDoorIsListed(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"POST /api/sessions/{id}/decisions", "GET /api/sessions/{id}/decisions", "GET /api/sessions/{id}/decisions/{did}",
-		"POST /api/sessions/{id}/decisions/{did}/withdraw", "POST /api/sessions/{id}/crew", "POST /api/sessions/{id}/run/members"} {
+		"POST /api/sessions/{id}/decisions/{did}/withdraw", "POST /api/sessions/{id}/crew", "POST /api/sessions/{id}/run/members", "POST /api/sessions/{id}/links/agent"} {
 		if rule, ok := compareDoors[p]; !ok || rule != doorRefused {
 			t.Errorf("%s is %v, not refused", p, rule)
 		}
 	}
 
-	ce := newCompareEnv(t)
-	for _, c := range []struct {
-		method, path string
-		body         any
-		// plain is what an ordinary run's member is answered.
-		status int
-		code   string
-	}{
-		{"POST", "/decisions", map[string]any{"requestId": "r1", "type": "clarification", "question": "Which?"}, http.StatusCreated, ""},
-		{"GET", "/decisions", nil, http.StatusOK, ""},
-		{"GET", "/decisions/dr-404", nil, http.StatusNotFound, "not_found"},
-		{"POST", "/decisions/dr-404/withdraw", map[string]any{}, http.StatusNotFound, "not_found"},
-		{"POST", "/crew", map[string]any{"name": "x", "self": "me", "members": []any{map[string]any{"name": "me", "agentId": "ready-cat"}}}, http.StatusConflict, "in_a_run"},
-		{"POST", "/run/members", map[string]any{"name": "x", "agentId": "ready-cat", "start": map[string]any{"when": "manual"}}, http.StatusConflict, "managed_run"},
-	} {
-		ce.expectAs(t, ce.bTok, c.method, "/api/sessions/"+ce.b+c.path, c.body, http.StatusUnauthorized, "unauthorized")
-		ce.expectAs(t, ce.plainTok, c.method, "/api/sessions/"+ce.member+c.path, c.body, c.status, c.code)
-	}
-	for _, c := range []struct {
-		method, path string
-		body         any
-		status       int
-	}{
-		{"POST", "/events", map[string]any{"type": "progress", "message": "halfway"}, http.StatusAccepted},
-		{"POST", "/attention", map[string]any{"state": "working"}, http.StatusOK},
-		{"GET", "/guide", nil, http.StatusOK},
-		{"POST", "/links/agent", map[string]any{}, http.StatusCreated},
-		{"GET", "/task", nil, http.StatusOK},
-	} {
-		for _, s := range []struct{ sid, tok string }{{ce.b, ce.bTok}, {ce.member, ce.plainTok}} {
-			ce.expectAs(t, s.tok, c.method, "/api/sessions/"+s.sid+c.path, c.body, c.status, "")
+	for _, p := range slices.Sorted(maps.Keys(compareDoors)) {
+		status, raw, out := ce.callDoor(t, ce.bTok, p, ce.b)
+		switch rule := compareDoors[p]; {
+		case rule == doorRefused:
+			laneRefused(t, p+" for its lane", status, raw, out)
+		case !guardServed(status, out):
+			t.Errorf("%s: approach-b's token on its session is refused: %d %s", p, status, raw)
+		}
+		if status, raw, _ := ce.callDoor(t, ce.bTok, p, ce.a); status != http.StatusUnauthorized {
+			t.Errorf("%s: approach-b's token on approach-a's session: %d %s", p, status, raw)
 		}
 	}
-	// An admin route a Brakeman turn's token reads refuses a candidate's
-	// token as any agent's.
-	ce.expectAs(t, ce.bTok, "GET", "/api/runs/"+ce.run, nil, http.StatusUnauthorized, "")
+
+	nobody := "agent-token-of-no-session"
+	for _, p := range registeredPatterns(t, ce.srv) {
+		if _, listed := compareDoors[p]; listed {
+			continue
+		}
+		method, path, body := ce.door(p, ce.member, ce.plain)
+		if !strings.HasPrefix(path, "/") {
+			method, path = http.MethodGet, p
+		}
+		got, raw, _ := ce.callAsTurn(t, ce.plainTok, ce.member, method, path, body)
+		want, wantRaw, _ := ce.callAsTurn(t, nobody, ce.member, method, path, body)
+		if got != want {
+			t.Errorf("%s is not in compareDoors and takes an agent's token: %d %.200s, a token of no session %d %.200s", p, got, raw, want, wantRaw)
+		}
+	}
 }
 
 // The session read and the files route take no agent token: a candidate's
 // and an ordinary run's member's are refused 401, as every agent's.
 func TestTheSessionReadsTakeNoAgentToken(t *testing.T) {
-	ce := newCompareEnv(t)
+	ce := newCompareEnv(t, compareOpts{})
 	for _, s := range []struct{ sid, tok string }{{ce.a, ce.aTok}, {ce.b, ce.bTok}, {ce.member, ce.plainTok}} {
 		for _, path := range []string{"/api/sessions/" + s.sid, "/api/sessions/" + s.sid + "/files?path=README"} {
 			ce.expectAs(t, s.tok, "GET", path, nil, http.StatusUnauthorized, "unauthorized")
@@ -308,55 +477,315 @@ func TestTheSessionReadsTakeNoAgentToken(t *testing.T) {
 	}
 }
 
-// No file of the package takes a session's agent token but agentTokenOK,
-// where a comparison's lanes are held to compareDoors.
-func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+// A session is a lane's from its launch: held by the launcher after its
+// session exists and before the engine records its attempt, approach-b's
+// session is refused every door the table refuses, 409 lane, reads its
+// lane's run and ticket and is refused a ticket comment with nothing
+// written, as once it runs; build's session, held the same way, is no
+// lane's, and is answered as any session.
+func TestALaneIsALaneFromItsLaunch(t *testing.T) {
+	held := make(chan string, 2)
+	release := make(chan struct{})
+	ce := newCompareEnv(t, compareOpts{launched: func(spec crew.LaunchSpec, id string) {
+		if spec.Ref.Attempt == 1 && (spec.Ref.Task == "approach-b" || spec.Ref.Task == "build") {
+			held <- spec.Ref.Task + " " + id
+			<-release
+		}
+	}})
+	var once bool
+	unhold := func() {
+		if !once {
+			once = true
+			close(release)
+		}
 	}
-	fset := token.NewFileSet()
-	inGuard := 0
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
+	t.Cleanup(unhold)
+	ids := map[string]string{}
+	for range 2 {
+		task, id, _ := strings.Cut(<-held, " ")
+		ids[task] = id
+	}
+	b, member := ids["approach-b"], ids["build"]
+	bTok, plainTok := ce.agentToken(b), ce.agentToken(member)
+	for _, sid := range []string{b, member} {
+		if run, _, ok := ce.srv.runs.MemberOf(sid); ok {
+			t.Fatalf("%s is the engine's already, of %s", sid, run)
+		}
+	}
+	walk := func(when string) {
+		t.Helper()
+		for _, p := range slices.Sorted(maps.Keys(compareDoors)) {
+			status, raw, out := ce.callDoor(t, bTok, p, b)
+			if compareDoors[p] == doorRefused {
+				laneRefused(t, when+": "+p, status, raw, out)
+			} else if !guardServed(status, out) {
+				t.Errorf("%s: %s refused approach-b's token: %d %s", when, p, status, raw)
+			}
+			if status, raw, out := ce.callDoor(t, plainTok, p, member); errorCode(out) == "lane" {
+				t.Errorf("%s: %s answered build's token as a lane's: %d %s", when, p, status, raw)
+			}
+		}
+		_, raw, out := ce.callAs(t, bTok, "GET", "/api/sessions/"+b+"/run", nil)
+		if run, _ := out["run"].(map[string]any); run == nil || out["member"] != "cand-b" || !slices.Equal(fieldsOf(run["tasks"], "id"), []string{"approach-b", "review-b"}) {
+			t.Errorf("%s: approach-b's run: %s", when, raw)
+		}
+		_, raw, out = ce.callAs(t, bTok, "GET", "/api/sessions/"+b+"/ticket", nil)
+		if keys := objectKeys(out); !slices.Equal(keys, []string{"launch", "ticket"}) {
+			t.Errorf("%s: approach-b's ticket: %s", when, raw)
+		}
+		op := opID()
+		ce.expectAs(t, bTok, "POST", "/api/sessions/"+b+"/ticket/comments", map[string]any{"opId": op, "body": "mine"}, http.StatusConflict, "lane")
+		if _, found, err := ce.srv.dispatch.Receipt(context.Background(), "agent:cand-b", op); err != nil || found {
+			t.Errorf("%s: a receipt for the refused comment: %v %v", when, found, err)
+		}
+	}
+	walk("held")
+	// build's session is no member of its run yet: the run's read answers
+	// it 404 no_run, its ticket's 404 no_ticket, as on main.
+	ce.expectAs(t, plainTok, "GET", "/api/sessions/"+member+"/run", nil, http.StatusNotFound, "no_run")
+	ce.expectAs(t, plainTok, "GET", "/api/sessions/"+member+"/ticket", nil, http.StatusNotFound, "no_ticket")
+	unhold()
+	runningAttempt(t, ce.testEnv, ce.run, "approach-b", 1)
+	runningAttempt(t, ce.testEnv, ce.plain, "build", 1)
+	walk("running")
+	ce.expectAs(t, plainTok, "GET", "/api/sessions/"+member+"/run", nil, http.StatusOK, "")
+}
+
+// A comparison's session whose run the engine no longer holds (stopped
+// and forgotten, as an ended run is evicted) cannot be told its lane: its
+// own token is refused every door, 409 lane, and its run and ticket read
+// refuse the admin's token too, never the whole run or ticket. build's
+// session, its run forgotten the same way, is answered as on main: 404
+// no_run, 404 no_ticket, and no door answers it as a lane's.
+func TestALaneWhoseRunIsGoneIsRefusedEveryDoor(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	for _, run := range []string{ce.run, ce.plain} {
+		if err := ce.srv.runs.Stop(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+		ce.srv.runs.ForgetForTest(run)
+	}
+	for _, p := range slices.Sorted(maps.Keys(compareDoors)) {
+		status, raw, out := ce.callDoor(t, ce.bTok, p, ce.b)
+		laneRefused(t, p, status, raw, out)
+		if status, raw, out := ce.callDoor(t, ce.plainTok, p, ce.member); errorCode(out) == "lane" {
+			t.Errorf("%s answered build's token as a lane's: %d %s", p, status, raw)
+		}
+	}
+	for _, path := range []string{"/run", "/ticket"} {
+		status, raw, out := ce.callAs(t, adminToken, "GET", "/api/sessions/"+ce.b+path, nil)
+		laneRefused(t, "the admin's "+path, status, raw, out)
+	}
+	ce.expectAs(t, ce.plainTok, "GET", "/api/sessions/"+ce.member+"/run", nil, http.StatusNotFound, "no_run")
+	ce.expectAs(t, ce.plainTok, "GET", "/api/sessions/"+ce.member+"/ticket", nil, http.StatusNotFound, "no_ticket")
+}
+
+// A lane's own token on a door closed to its lane is answered 409 lane at
+// once: through a walk of every such door, the identity provider is asked
+// about no token. The same token on another session is answered as on
+// main: 401, after the provider is asked.
+func TestALaneRefusalAsksNoIdentityProvider(t *testing.T) {
+	idp := &tokenIdentity{}
+	ce := newCompareEnv(t, compareOpts{identity: idp})
+	asked := len(idp.askedTokens())
+	for _, p := range slices.Sorted(maps.Keys(compareDoors)) {
+		if compareDoors[p] != doorRefused {
 			continue
 		}
-		src, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
+		status, raw, out := ce.callDoor(t, ce.bTok, p, ce.b)
+		laneRefused(t, p, status, raw, out)
+	}
+	if got := idp.askedTokens()[asked:]; len(got) != 0 {
+		t.Fatalf("the provider was asked %d times", len(got))
+	}
+	ce.expectAs(t, ce.bTok, "POST", "/api/sessions/"+ce.member+"/decisions", map[string]any{}, http.StatusUnauthorized, "unauthorized")
+	ce.expectAs(t, ce.bTok, "POST", "/api/sessions/"+ce.member+"/crew", map[string]any{}, http.StatusUnauthorized, "unauthorized")
+	if got := idp.askedTokens()[asked:]; !slices.Contains(got, ce.bTok) {
+		t.Fatalf("the provider was not asked about a token another session's route does not take: %d", len(got))
+	}
+}
+
+// A lane's session guide lists only the operations the table serves it,
+// and tells it to ask its questions with ask; an ordinary run's member's
+// guide lists the decision tools as before.
+func TestALaneIsGuidedOnlyToWhatItIsServed(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	ops := map[string]string{}
+	for _, op := range operationsTable() {
+		ops[op.Name] = op.Method + " " + op.Path
+	}
+	read := func(tok, sid string) (may, rules []string) {
+		ov := entityOf(t, ce.expectAs(t, tok, "GET", "/api/sessions/"+sid+"/guide", nil, http.StatusOK, ""), "overview")
+		for _, v := range ov["may"].([]any) {
+			may = append(may, v.(string))
 		}
-		f, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			t.Fatal(err)
+		for _, v := range ov["rules"].([]any) {
+			rules = append(rules, v.(string))
 		}
+		return may, rules
+	}
+	may, rules := read(ce.bTok, ce.b)
+	for _, name := range may {
+		if compareDoors[ops[name]] == doorRefused {
+			t.Errorf("the lane's guide lists %s (%s)", name, ops[name])
+		}
+	}
+	if !slices.Contains(may, "ask") || !slices.Contains(may, "task_result") || rules[len(rules)-1] != "A question goes to a person with ask." {
+		t.Fatalf("the lane's guide: %v %v", may, rules)
+	}
+	may, _ = read(ce.plainTok, ce.member)
+	if !slices.Contains(may, "decision_request") || !slices.Contains(may, "link") {
+		t.Fatalf("an ordinary member's guide: %v", may)
+	}
+}
+
+// A lane's member mints no link to its session (409 lane), and no route
+// its token is served answers it a credential for a viewer's connection;
+// an ordinary run's member mints one.
+func TestALaneGetsNoViewerCredential(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	status, raw, out := ce.callAs(t, ce.bTok, "POST", "/api/sessions/"+ce.b+"/links/agent", map[string]any{})
+	laneRefused(t, "links/agent", status, raw, out)
+	for _, p := range slices.Sorted(maps.Keys(compareDoors)) {
+		if compareDoors[p] == doorRefused {
+			continue
+		}
+		method, path, _ := ce.door(p, ce.b, ce.run)
+		var body any
+		switch p {
+		case "POST /api/sessions/{id}/events":
+			body = map[string]any{"type": "progress", "message": "halfway"}
+		case "POST /api/sessions/{id}/attention":
+			body = map[string]any{"state": "working"}
+		case "POST /api/sessions/{id}/messages":
+			body = map[string]any{"to": "rev-b", "text": "ready soon"}
+		case "POST /api/sessions/{id}/open":
+			body = map[string]any{"url": "https://example.test/"}
+		case "GET /api/sessions/{id}/guide", "GET /api/sessions/{id}/task", "GET /api/sessions/{id}/inbox", "GET /api/sessions/{id}/run", "GET /api/sessions/{id}/ticket":
+		default:
+			body = map[string]any{"notAField": 1}
+		}
+		status, raw, out := ce.callAs(t, ce.bTok, method, path, body)
+		if !guardServed(status, out) || out["token"] != nil || strings.Contains(string(raw), "/join/") {
+			t.Errorf("%s: %d %s", p, status, raw)
+		}
+	}
+	if links := ce.srv.links.ListBySession(ce.b); len(links) != 0 {
+		t.Fatalf("approach-b's session has links: %v", links)
+	}
+	if links := ce.srv.links.ListByRun(ce.run); len(links) != 0 {
+		t.Fatalf("the comparison's run has links: %v", links)
+	}
+	if out := ce.expectAs(t, ce.plainTok, "POST", "/api/sessions/"+ce.member+"/links/agent", map[string]any{}, http.StatusCreated, ""); out["token"] == nil {
+		t.Fatalf("an ordinary member's link: %v", out)
+	}
+}
+
+// One lane's view of its run is the same, byte for byte, while another
+// lane's member asks a question, its attempt fails, and its tasks are
+// cancelled and end: it holds nothing worked out over the whole run.
+func TestALanesViewStaysWhileAnotherLaneEnds(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	view := func() string {
+		t.Helper()
+		status, raw, _ := ce.callAs(t, ce.bTok, "GET", "/api/sessions/"+ce.b+"/run", nil)
+		if status != http.StatusOK {
+			t.Fatalf("approach-b's view: %d %s", status, raw)
+		}
+		return string(raw)
+	}
+	first := view()
+	same := func(step string) {
+		t.Helper()
+		if got := view(); got != first {
+			t.Fatalf("approach-b's view changed as %s:\n%s\n%s", step, first, got)
+		}
+	}
+	ce.expectAs(t, ce.aTok, "POST", "/api/sessions/"+ce.a+"/attention", map[string]any{"state": "needs_input", "message": "Which index?", "ask": true}, http.StatusOK, "")
+	same("approach-a's member asks")
+	ce.expect(t, "DELETE", "/api/sessions/"+ce.a, nil, http.StatusOK, "")
+	ledgerAttemptIn(t, ce.srv, ce.run, "approach-a", 1, ledger.AttemptFailed)
+	same("approach-a's attempt fails")
+	command(t, ce.testEnv, ce.run, "tasks/approach-a/cancel")
+	taskVia(t, ce.testEnv, ce.run, "approach-a", "cancelled", func(task map[string]any) bool { return task["state"] == ledger.TaskCancelled })
+	same("approach-a is cancelled")
+	command(t, ce.testEnv, ce.run, "tasks/review-a/cancel")
+	taskVia(t, ce.testEnv, ce.run, "review-a", "cancelled", func(task map[string]any) bool { return task["state"] == ledger.TaskCancelled })
+	same("review-a is cancelled, and approach-a's lane has ended")
+}
+
+// tokenReaders are the methods that read a session's agent token: each
+// is called only by agentTokenOK, in internal/api/attention.go.
+var tokenReaders = []string{"AgentTokenOK"}
+
+// No file under internal/ reads a session's agent token but agentTokenOK,
+// where a comparison's lanes are held to compareDoors: no call, method
+// value or other selector of a token method elsewhere, in this package or
+// any other; and the token methods of a server session and a hosted one
+// are the ones named here, so a new reader is a new name this test knows.
+func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
+	inGuard := 0
+	fset := token.NewFileSet()
+	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		guard := filepath.ToSlash(path) == "../api/attention.go"
 		for _, decl := range f.Decls {
 			fn, _ := decl.(*ast.FuncDecl)
 			ast.Inspect(decl, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || !slices.Contains(tokenReaders, sel.Sel.Name) {
 					return true
 				}
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "AgentTokenOK" {
-					if fn == nil || fn.Name.Name != "agentTokenOK" || fn.Recv == nil {
-						t.Errorf("%s: an agent token is taken outside agentTokenOK", fset.Position(call.Pos()))
-					} else {
-						inGuard++
-					}
+				if guard && fn != nil && fn.Name.Name == "agentTokenOK" && fn.Recv != nil {
+					inGuard++
+				} else {
+					t.Errorf("%s: an agent token is read outside agentTokenOK", fset.Position(sel.Pos()))
 				}
 				return true
 			})
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if inGuard == 0 {
-		t.Fatal("agentTokenOK takes no agent token")
+	if inGuard != 2 {
+		t.Fatalf("agentTokenOK reads the token %d times, not 2 (a server session's, a hosted one's)", inGuard)
+	}
+	token := regexp.MustCompile(`(?i)agenttoken`)
+	for _, c := range []struct {
+		typ  reflect.Type
+		want []string
+	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
+		var got []string
+		for i := range c.typ.NumMethod() {
+			if name := c.typ.Method(i).Name; token.MatchString(name) {
+				got = append(got, name)
+			}
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s's token methods are %v, not %v", c.typ, got, c.want)
+		}
 	}
 }
 
 // Three routes no entry names, one through taskSession, one through
 // attentionPrincipal and one through agentTokenOK itself, refuse a
-// candidate's token 401 and serve an ordinary run's member.
+// candidate's token 409 lane and serve an ordinary run's member.
 func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
-	ce := newCompareEnv(t)
+	ce := newCompareEnv(t, compareOpts{})
 	s := ce.srv
 	mux := http.NewServeMux()
 	served := func(w http.ResponseWriter) { writeJSON(w, http.StatusOK, map[string]any{"served": true}) }
@@ -373,29 +802,38 @@ func TestAnUnlistedDoorIsClosedToALane(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("GET /api/sessions/{id}/unlisted-token", func(w http.ResponseWriter, r *http.Request) {
-		if d, ok := s.registry.Get(r.PathValue("id")); ok && s.agentTokenOK(r, d) {
-			served(w)
+		d, ok := s.registry.Get(r.PathValue("id"))
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", "no such session")
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "unauthorized", "agent token required")
+		switch s.agentTokenOK(r, d) {
+		case agentTokenServed:
+			served(w)
+		case agentTokenLaneClosed:
+			writeLaneClosed(w)
+		default:
+			writeError(w, http.StatusUnauthorized, "unauthorized", "agent token required")
+		}
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	call := func(tok, sid, route string) int {
+	call := func(tok, sid, route string) (int, map[string]any) {
 		req, _ := http.NewRequest("GET", srv.URL+"/api/sessions/"+sid+"/"+route, nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp.Body.Close()
-		return resp.StatusCode
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
 	}
 	for _, route := range []string{"unlisted-task", "unlisted-attention", "unlisted-token"} {
-		if got := call(ce.aTok, ce.a, route); got != http.StatusUnauthorized {
-			t.Errorf("%s: a candidate's token answered %d", route, got)
-		}
-		if got := call(ce.plainTok, ce.member, route); got != http.StatusOK {
+		status, out := call(ce.aTok, ce.a, route)
+		laneRefused(t, route, status, nil, out)
+		if got, _ := call(ce.plainTok, ce.member, route); got != http.StatusOK {
 			t.Errorf("%s: an ordinary run's member's token answered %d", route, got)
 		}
 	}

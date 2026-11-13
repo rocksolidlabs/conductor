@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A compare crew (docs/plans/compare-crew.md, Program item CP1): an
@@ -131,31 +133,46 @@ func (r *run) laneOf(m *member) string {
 	return ""
 }
 
-// Lane is a comparison's lane as the engine keeps it for one session of a
-// compare run (Engine.LaneOf): the run, the session's member and its lane
-// (the lane's candidate task), with the lane of every member and task of
-// the run as the run holds them (laneOf, run.lanes). The API's doors ask
-// it and nothing else which lane a member or a task is in.
+// crewRef is the crew reference of a session the run launches for its
+// member with the name, at the task's attempt n (none for a member's own
+// session): in a comparison's run, it carries the member's lane (laneOf),
+// decided here, once, as the session is launched, so the session holds it
+// from its creation (session.CrewRef.Lane). r.lanes and r.plan are set as
+// the run is made and never changed, so no lock is needed.
+func (r *run) crewRef(m *member, task string, n int) session.CrewRef {
+	ref := session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: task, Attempt: n}
+	if r.lanes != nil {
+		ref.Lane = &session.LaneMark{Candidate: r.laneOf(m)}
+	}
+	return ref
+}
+
+// Lane is a comparison's lane as one of its sessions works in it
+// (Engine.LaneOf): the run, the session's member and its lane (the lane's
+// candidate task), with the lane of every member and task of the run as
+// the run holds them (laneOf, run.lanes). The API's doors ask it and
+// nothing else which lane a member or a task is in.
 type Lane struct {
 	Run, Member, Candidate string
 	cmp                    Compare
 	members, tasks         map[string]string
 }
 
-// LaneOf is the lane of the session with the id: ok is false for a
-// session that is no member of a comparison's run. r.lanes is set as the
-// run is made, before any session of it is known, and never changed, so a
-// run of no comparison is told without the engine's lock.
-func (e *Engine) LaneOf(sessionID string) (Lane, bool) {
-	v, ok := e.bySession.Load(sessionID)
-	if !ok || v.(sessionMember).r.lanes == nil {
+// LaneOf is the lane of a comparison's session, from its crew reference
+// (the lane the engine gave it at its launch, crewRef): ok is false for a
+// reference that carries no lane, and for a run the engine no longer holds
+// or that holds no lanes, whose lanes cannot be told now.
+func (e *Engine) LaneOf(ref session.CrewRef) (Lane, bool) {
+	if ref.Lane == nil {
 		return Lane{}, false
 	}
-	sm := v.(sessionMember)
-	r := sm.r
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	l := Lane{Run: r.id, Member: sm.m.def.Name, Candidate: r.laneOf(sm.m), cmp: r.compare.clone(), members: map[string]string{}, tasks: maps.Clone(r.lanes)}
+	r, ok := e.runs[ref.RunID]
+	if !ok || r.lanes == nil {
+		return Lane{}, false
+	}
+	l := Lane{Run: r.id, Member: ref.Member, Candidate: ref.Lane.Candidate, cmp: r.compare.clone(), members: map[string]string{}, tasks: maps.Clone(r.lanes)}
 	for _, m := range r.members {
 		l.members[m.def.Name] = r.laneOf(m)
 	}
@@ -173,29 +190,10 @@ func (l Lane) OwnMember(name string) bool {
 	return ok && l.own(lane)
 }
 
-// OtherMember reports whether the run's member with the name is in
-// another lane than l's; false for a name no member of the run has.
-func (l Lane) OtherMember(name string) bool {
-	lane, ok := l.members[name]
-	return ok && !l.own(lane)
-}
-
 // OwnTask reports whether the run's task with the id is in l's lane.
 func (l Lane) OwnTask(id string) bool {
 	lane, ok := l.tasks[id]
 	return ok && l.own(lane)
-}
-
-// OtherTasks are the run's tasks in other lanes than l's, sorted.
-func (l Lane) OtherTasks() []string {
-	var out []string
-	for id, lane := range l.tasks {
-		if !l.own(lane) {
-			out = append(out, id)
-		}
-	}
-	slices.Sort(out)
-	return out
 }
 
 // Compare is the run's compare block with l's own candidate alone.

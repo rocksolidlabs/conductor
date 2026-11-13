@@ -168,8 +168,9 @@ func linkedTicket(ctx context.Context, ds *dispatch.Store, run string) (dispatch
 // no_ticket for a session in no run or a run no live ticket holds; 400
 // invalid_request for any parameter. The reply is bounded as the ticket's
 // own read is, under MaxTicketReply, which dispatch_test.go measures
-// through this route. A session of a comparison's lane reads it without
-// the other lanes (laneTicket), whichever token asked.
+// through this route. A session of a comparison's lane reads it as it
+// stood at its run's launch, with people's comments since (laneTicket),
+// whichever token asked.
 func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
 	if !ok || brakemanCannot(w, d) {
@@ -177,6 +178,14 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	ds, ok := s.dispatchStore(w)
 	if !ok || !noQuery(w, r) {
+		return
+	}
+	switch lane, st := s.laneOf(d); st {
+	case inLane:
+		s.laneTicket(w, r, ds, lane)
+		return
+	case laneUnknown:
+		writeLaneClosed(w)
 		return
 	}
 	run, _, ok := s.sessionRun(w, d.Info().ID)
@@ -216,9 +225,6 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		noTicket(w, run)
 		return
-	}
-	if lane, inLane := s.runs.LaneOf(d.Info().ID); inLane {
-		v = laneTicket(v, lane)
 	}
 	project, _, _ := dispatch.ParseKey(v.Key)
 	pv, err := ds.Project(ctx, project)

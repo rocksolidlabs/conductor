@@ -30,8 +30,12 @@ func (s *Server) taskSession(w http.ResponseWriter, r *http.Request, agentOnly b
 	if agentOnly {
 		// A result is always the agent's own: the workbench token submits
 		// none, so a person cannot finish a task for an agent by mistake.
-		if s.agentTokenOK(r, d) {
+		switch s.agentTokenOK(r, d) {
+		case agentTokenServed:
 			return d, true
+		case agentTokenLaneClosed:
+			writeLaneClosed(w)
+			return nil, false
 		}
 		if p := s.authenticate(r, false); p.admin {
 			writeError(w, http.StatusForbidden, "agent_only", "a result is submitted by the attempt's own session, with its token")

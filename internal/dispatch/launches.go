@@ -711,6 +711,52 @@ func (s *Store) PendingLaunches(ctx context.Context) ([]LaunchSummary, error) {
 	return answer(out, err)
 }
 
+// AtLaunch is what the ticket of a launch held as the launch was made
+// (Store.AtLaunch): its statement as the launch's package carries it, and
+// the ids of its comments, links and attachments made before the launch.
+type AtLaunch struct {
+	Ticket PackageTicket
+	Before map[string]bool
+}
+
+// AtLaunch reads what the ticket of the launch with the id held as the
+// launch was made: the package's ticket, and the comments, links and
+// attachments whose create or add row comes before the launch's create
+// row by the local seq, the mark ChangedSince counts from; one made on
+// another replica and merged here after the launch comes after it.
+// ErrNotFound when there is no such launch.
+func (s *Store) AtLaunch(ctx context.Context, id string) (AtLaunch, error) {
+	out := AtLaunch{Before: map[string]bool{}}
+	err := s.read(ctx, func(q queryer) error {
+		if schemaOf(q) < 2 {
+			return ErrNotFound
+		}
+		var ticketID, pkg string
+		switch err := q.QueryRowContext(ctx, "SELECT ticket_id, package FROM launches WHERE id = ?", id).Scan(&ticketID, &pkg); {
+		case isNoRows(err):
+			return ErrNotFound
+		case err != nil:
+			return err
+		}
+		var launched struct {
+			Ticket PackageTicket `json:"ticket"`
+		}
+		if err := json.Unmarshal([]byte(pkg), &launched); err != nil {
+			return fmt.Errorf("dispatch: the package of launch %s: %w", id, err)
+		}
+		out.Ticket = launched.Ticket
+		ids, err := readTexts(ctx, q, `SELECT CASE WHEN entity = ? THEN entity_id ELSE COALESCE(json_extract(value, '$.id'), '') END FROM changes
+			WHERE ticket_id = ? AND seq < (SELECT COALESCE(MIN(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND op = ?)
+			AND ((entity = ? AND op = ?) OR (entity = ? AND entity_id = ? AND op = ? AND field IN ('links', 'attachments')))`,
+			EntityComment, ticketID, EntityLaunch, id, OpCreate, EntityComment, OpCreate, EntityTicket, ticketID, OpAdd)
+		for _, v := range ids {
+			out.Before[v] = v != ""
+		}
+		return err
+	})
+	return answer(out, err)
+}
+
 // ChangedSince reads what changed of the ticket of the launch with the id
 // since the launch (LaunchChanges): the intent fields set in the ticket's
 // change rows after the launch's create row, by the local seq (a set, or

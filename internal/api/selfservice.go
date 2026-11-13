@@ -299,22 +299,25 @@ func (s *Server) handleSelfRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	switch lane, st := s.laneOf(local); st {
+	case inLane:
+		if run, ok := s.runs.Get(lane.Run); ok {
+			writeJSON(w, http.StatusOK, map[string]any{"run": laneRun(run, lane), "member": lane.Member})
+			return
+		}
+		fallthrough
+	case laneUnknown:
+		writeLaneClosed(w)
+		return
+	}
 	runID, member, inRun := s.runs.MemberOf(local.Info().ID)
 	if !inRun {
 		writeError(w, http.StatusNotFound, "no_run", "the session is not a member of a run")
 		return
 	}
-	lane, inLane := s.runs.LaneOf(local.Info().ID)
-	if inLane {
-		runID, member = lane.Run, lane.Member
-	}
 	run, ok := s.runs.Get(runID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "no_run", "the run is gone")
-		return
-	}
-	if inLane {
-		writeJSON(w, http.StatusOK, map[string]any{"run": laneRun(run, lane), "member": member})
 		return
 	}
 	if len(run.Log) > selfRunLogTail {

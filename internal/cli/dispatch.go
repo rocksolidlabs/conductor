@@ -918,8 +918,11 @@ func size(n int64) string {
 func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 	fmt.Fprintf(w, "# %s: %s\n\n", oneLine(v.Key), oneLine(v.Title))
 	field := func(name, value string) { fmt.Fprintf(w, "- %s: %s\n", name, value) }
-	field("status", oneLine(v.Status))
-	field("priority", priorityWord(v.Priority))
+	if v.Status != "" {
+		// A comparison's lane reads the ticket without its status.
+		field("status", oneLine(v.Status))
+		field("priority", priorityWord(v.Priority))
+	}
 	if v.Horizon != "" {
 		field("horizon", oneLine(v.Horizon))
 	}
@@ -1033,6 +1036,10 @@ func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 				continue
 			}
 			head := fmt.Sprintf("### #%d %s, %s", c.N, oneLine(cmp.Or(c.By, c.Author)), when(c.CreatedAt))
+			if c.N == 0 {
+				// A comparison's lane reads its comments without numbers.
+				head = fmt.Sprintf("### %s, %s", oneLine(cmp.Or(c.By, c.Author)), when(c.CreatedAt))
+			}
 			if !c.EditedAt.IsZero() {
 				head += ", edited"
 			}
