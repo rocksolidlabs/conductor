@@ -378,18 +378,26 @@ func (s *Server) trackerLog(r *http.Request, ref tracker.Ref, status int) {
 // (a client gone mid-way leaves the operation whole, its resend answered
 // by the receipt), bounded by its deadline, and made of the server's stop
 // (externalState.stopping), so it has ended already when the stop began
-// before it, and ends a moment after the stop for a route begun before.
+// before it, and ends with the stop for a route begun before.
 func (s *Server) trackerContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(stopValues{s.external.stopping(), r.Context()}, d)
 }
 
-// stopValues is the server's stop with a request's values.
+// stopValues is the server's stop with a request's values. The stop's own
+// values are asked first, so the context package finds the stop as the
+// parent it cancels with (the stop ends it in its own cancel, not from a
+// goroutine after), and the request's after.
 type stopValues struct {
 	context.Context
 	values context.Context
 }
 
-func (c stopValues) Value(key any) any { return c.values.Value(key) }
+func (c stopValues) Value(key any) any {
+	if v := c.Context.Value(key); v != nil {
+		return v
+	}
+	return c.values.Value(key)
+}
 
 // The bodies of this file's writes.
 type (
@@ -1173,10 +1181,9 @@ func (s *Server) readLinkIn(rctx, ctx context.Context, ds *dispatch.Store, key, 
 			lr.Checks = append(lr.Checks, dispatch.LinkCheck{ID: c.ID, Name: dispatch.Storable(c.Name, dispatch.MaxCheckName, false), Status: checkWord(c.Status),
 				Conclusion: checkWord(c.Conclusion), URL: c.URL, App: dispatch.Storable(c.App, dispatch.MaxCheckName, false), HasLog: c.HasLog, CompletedAt: c.CompletedAt})
 		}
-		if len(set.Incomplete) > 0 {
-			// Cut to what the store keeps, measured as it measures.
-			lr.Incomplete = dispatch.FitIncomplete(set.Incomplete, set.Omitted)
-		}
+		// The checks and the reasons cut to what the store keeps, measured
+		// as the store measures them.
+		lr.Checks, lr.Incomplete = dispatch.FitChecks(lr.Checks, set.Incomplete, set.Omitted)
 	}
 	err = ds.RecordRead(wctx, linkID, lr)
 	if ref := (*dispatch.Refusal)(nil); errors.As(err, &ref) && ref.Code != dispatch.RefusalNotFound && ref.Code != dispatch.RefusalStaleRead {
@@ -1326,14 +1333,14 @@ func (s *Server) readAddedLink(ds *dispatch.Store, key string, l dispatch.NewLin
 // read, the store's rule alone decides: an edit answered from its receipt;
 // a ticket done, deleted or at another revision when the route looked;
 // the route's own look at the project, the receipt or the ticket failed
-// (a request whose client left before the route read the project among
-// them; once the server has begun to stop, a busy route's 503, nothing
+// (once the server has begun to stop, a busy route's 503, nothing
 // closed); or the ticket or its policy changed between the route's look
-// and the store's edit. The project is read under the request's own
-// context, so an edit to done in a project without merged goes to the
-// store as any edit does (and a client that leaves before that read
-// leaves the close to the store's rule alone); the stop's context is
-// taken once merged is found. False once it answered.
+// and the store's edit. The project is read under the request's values
+// and not its end, within the route's budget, and before the stop's
+// context is taken, so an edit to done in a project without merged goes
+// to the store as any edit does, and a client that leaves before that
+// read leaves the route's reads as they are for one that stays; the
+// stop's context is taken once merged is found. False once it answered.
 func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, key string, op dispatch.Op, e dispatch.TicketEdit) bool {
 	if e.Set.Status == nil || *e.Set.Status != dispatch.TicketDone {
 		return true
@@ -1347,15 +1354,21 @@ func (s *Server) readForClose(w http.ResponseWriter, r *http.Request, ds *dispat
 		return false
 	}
 	project, _, _ := dispatch.ParseKey(key)
-	pv, err := ds.Project(r.Context(), project)
+	caps := s.trackerCaps()
+	// The route's budget from here, the look at the project in it: that
+	// look keeps the request's values and not its end, so a client that
+	// leaves does not keep the route from reading.
+	deadline := time.Now().Add(caps.busy + caps.merged + caps.write)
+	lctx, lcancel := context.WithDeadline(context.WithoutCancel(r.Context()), deadline)
+	pv, err := ds.Project(lctx, project)
+	lcancel()
 	switch {
 	case err != nil:
 		return running()
 	case !slices.Contains(pv.Project.CloseRequires, dispatch.RequireMerged):
 		return true
 	}
-	caps := s.trackerCaps()
-	ctx, cancel := s.trackerContext(r, caps.busy+caps.merged+caps.write)
+	ctx, cancel := s.trackerContext(r, time.Until(deadline))
 	defer cancel()
 	// The locks' waits and the reads in one phase, each read within the
 	// merged reads' cap; each record within a write's cap of its own after.
