@@ -2,9 +2,9 @@
 // 12, F5): the commits on the checked-out branch since a time or a base,
 // and one commit's files with their added and removed lines against its
 // first parent. No git binary is needed for them; a crew's linked worktree
-// opens through its common directory. FileAt finds a file's blob with
-// go-git and reads its size and head through the git binary (blobAt says
-// why). The working tree's status
+// opens through its common directory. A comparison and FileAt find their
+// files' blobs with go-git and read their sizes and contents through the
+// git binary (sizes, blobs, which say why). The working tree's status
 // and a file at a revision stay with internal/gitcli, which the git binary
 // does faster.
 package gitrepo
@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -261,8 +262,8 @@ func gone(err error) bool {
 }
 
 // largeObject is the size past which an object is read as a stream rather
-// than whole (a commit's and a comparison's files, diffTrees). FileAt
-// reads no blob through go-git (blobAt).
+// than whole (the files the search for renames reads, withRenames). No
+// other blob is read through go-git (blobs).
 const largeObject = 256 << 10
 
 // Commits lists the commits on HEAD newest first: those after base's merge
@@ -365,7 +366,7 @@ func commitDetail(ctx context.Context, seen *refusal, r *git.Repository, top, re
 			return out, err
 		}
 	}
-	return diffTrees(ctx, seen, r.Storer, out, parentTree, tree)
+	return diffTrees(ctx, seen, r.Storer, top, out, parentTree, tree)
 }
 
 // Compare is the files that differ between the trees of the commits from
@@ -400,7 +401,7 @@ func compare(ctx context.Context, seen *refusal, r *git.Repository, top, from, t
 	if err != nil {
 		return out, err
 	}
-	return diffTrees(ctx, seen, r.Storer, out, fromTree, toTree)
+	return diffTrees(ctx, seen, r.Storer, top, out, fromTree, toTree)
 }
 
 // File is a file's bytes at a commit (FileAt): at most the bound asked,
@@ -416,17 +417,17 @@ type File struct {
 // FileAt reads the file at path (relative to the repository's top, with
 // '/') in the tree of the commit id (a full object id, read by id), at
 // most limit bytes of it, the memory it takes bounded by about that,
-// however large the file and however it is stored (blobAt). A link is its
+// however large the file and however it is stored (blobs). A link is its
 // target's text, as git keeps it, never followed. ErrNoCommit (wrapped)
 // for an id the repository has no commit of, ErrNoFile for a path the
 // commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
-	return read(ctx, dir, func(r *git.Repository, _ string, _ *refusal) (File, error) {
-		return fileAt(ctx, r, dir, id, path, limit)
+	return read(ctx, dir, func(r *git.Repository, top string, _ *refusal) (File, error) {
+		return fileAt(ctx, r, top, id, path, limit)
 	})
 }
 
-func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit int) (File, error) {
+func fileAt(ctx context.Context, r *git.Repository, top, id, path string, limit int) (File, error) {
 	c, err := commitByID(r, id)
 	if err != nil {
 		return File{}, err
@@ -448,21 +449,25 @@ func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit 
 		return File{}, err
 	}
 	// The size, then the object read once, at most what the reply and
-	// git's binary sniff need of it (blobAt), by the git binary, which
+	// git's binary sniff need of it (blobs), by the git binary, which
 	// opens the repository's files itself: it is ended at its cap,
 	// whatever ctx allows.
 	ctx, cancel := context.WithTimeoutCause(ctx, gitCap, ErrGitCap)
 	defer cancel()
-	size, err := blobSize(ctx, dir, e.Hash)
+	size, err := sizes(ctx, top, []plumbing.Hash{e.Hash})
+	if err == nil && size[0] < 0 {
+		err = fmt.Errorf("git cat-file --batch-check: no blob %s", e.Hash)
+	}
 	if err != nil {
 		return File{}, atCap(ctx, err)
 	}
-	out := File{Size: size}
-	b, err := blobAt(ctx, dir, e.Hash, min(max(int64(limit)+1, sniffLen), size))
-	if err != nil {
+	out := File{Size: size[0]}
+	var b []byte
+	head := blob{e.Hash, size[0], min(max(int64(limit)+1, sniffLen), size[0])}
+	if err := blobs(ctx, top, []blob{head}, func(_ int, got []byte) error { b = got; return nil }); err != nil {
 		return File{}, atCap(ctx, err)
 	}
-	if bytes.IndexByte(b[:min(len(b), sniffLen)], 0) >= 0 {
+	if binary(b) {
 		out.Binary = true
 		return out, nil
 	}
@@ -530,45 +535,147 @@ func entryAt(r *git.Repository, tree *object.Tree, path string) (object.TreeEntr
 	return object.TreeEntry{}, ErrNoFile
 }
 
-// blobSize is the size of the blob h as git records it (git cat-file -s,
-// through gitcli, replacements off): git, a process of its own, works the
-// size out of a delta, which go-git does by inflating the delta whole in
-// this process (entryAt).
-func blobSize(ctx context.Context, dir string, h plumbing.Hash) (int64, error) {
-	out, err := gitcli.RunEnv(ctx, dir, noReplace, "cat-file", "-s", h.String())
-	if err != nil {
-		return 0, err
+// runGit is how the package runs git: gitcli's RunTree, in the working
+// tree the read opened (top) with its own .git, the read's context its
+// end; a test sets it.
+var runGit = gitcli.RunTree
+
+// sizes is the size of each blob of hs as git records it, -1 for one git
+// cannot say (not there, not a blob), from one git (git cat-file
+// --batch-check, the ids in full on its input, replacements off): git, a
+// process of its own, works a delta's size out of the delta's first bytes,
+// which go-git does by inflating the delta whole in this process
+// (entryAt). What git answers is kept up to checkLine bytes an id.
+func sizes(ctx context.Context, top string, hs []plumbing.Hash) ([]int64, error) {
+	out := make([]int64, len(hs))
+	if len(hs) == 0 {
+		return out, nil
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("git cat-file -s %s: %q is not a size", h, out)
+	w := &headWriter{b: make([]byte, 0, len(hs)*checkLine)}
+	if err := runGit(ctx, top, noReplace, ids(hs), w, "cat-file", "--batch-check"); err != nil {
+		return nil, err
 	}
-	return n, nil
+	lines := strings.SplitAfter(string(w.b), "\n")
+	if len(lines) != len(hs)+1 || lines[len(hs)] != "" {
+		return nil, fmt.Errorf("git cat-file --batch-check answered %d lines for %d ids", len(lines)-1, len(hs))
+	}
+	for i, line := range lines[:len(hs)] {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != hs[i].String() {
+			return nil, fmt.Errorf("git cat-file --batch-check answered %q for %s", line, hs[i])
+		}
+		out[i] = -1
+		if n, err := strconv.ParseInt(f[len(f)-1], 10, 64); err == nil && n >= 0 && len(f) == 3 && f[1] == "blob" {
+			out[i] = n
+		}
+	}
+	return out, nil
 }
 
-// blobAt is the first n bytes of the blob h (n at most its size, from
-// blobSize), read by the git binary (git cat-file blob, its id in full,
-// through gitcli), its output stopped once n bytes are in: git, a process
-// of its own that ends with the read, resolves a delta and its base,
-// whatever their sizes, with replacements off (noReplace). This process
-// holds the n bytes and the pipe's buffers, never the blob, its delta or
-// its base: go-git reads a delta's base whole (a packed blob stored as a
-// delta of a 32 MiB one, 165 MiB allocated for its first MiB, measured
-// with go-git v5.19.3), and a delta's instructions whole for its size,
-// whatever the blob's size.
-func blobAt(ctx context.Context, dir string, h plumbing.Hash, n int64) ([]byte, error) {
-	w := &headWriter{b: make([]byte, 0, n)}
-	if n == 0 {
-		return w.b, nil
+// checkLine bounds a line of git cat-file --batch-check: an id, a type, a
+// size of twenty digits, two spaces and a newline.
+const checkLine = 40 + 6 + 20 + 3
+
+// ids is hs, an id in full a line, for git's input.
+func ids(hs []plumbing.Hash) io.Reader {
+	var b strings.Builder
+	for _, h := range hs {
+		b.WriteString(h.String() + "\n")
 	}
-	err := gitcli.RunToEnv(ctx, dir, noReplace, w, "cat-file", "blob", h.String())
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	return strings.NewReader(b.String())
+}
+
+// blob is a blob blobs reads: its id, its size (sizes) and how much of it
+// is kept, n, at most its size.
+type blob struct {
+	h       plumbing.Hash
+	size, n int64
+}
+
+// blobs reads the blobs of want, in their order, from one git (git
+// cat-file --batch, the ids in full on its input, replacements off), each
+// to exactly its size, its header checked against its id and size, and
+// hands each to each as it is read; an error of each ends the read with
+// it. A blob kept in part (n below its size) is the last read: git is
+// ended once its n bytes are in. git, a process of its own that ends
+// with the read, resolves a delta and its base, whatever their sizes.
+// This process holds what each keeps and the pipe's buffers, never a
+// blob past its n, its delta or its base: go-git reads a delta's base
+// whole (a packed blob stored as a delta of a 32 MiB one, 165 MiB
+// allocated for its first MiB, measured with go-git v5.19.3), and a
+// delta's instructions whole for its size, whatever the blob's size.
+func blobs(ctx context.Context, top string, want []blob, each func(i int, b []byte) error) error {
+	if len(want) == 0 {
+		return nil
 	}
-	if err != nil && !w.full() {
-		return nil, err
+	hs := make([]plumbing.Hash, len(want))
+	for i, w := range want {
+		hs[i] = w.h
 	}
-	return w.b, nil
+	r := &batch{want: want, each: each}
+	err := runGit(ctx, top, noReplace, ids(hs), r, "cat-file", "--batch")
+	switch {
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case r.err != nil:
+		return r.err
+	case r.i < len(want):
+		return cmp.Or(err, fmt.Errorf("git cat-file --batch answered %d blobs of %d", r.i, len(want)))
+	}
+	return nil
+}
+
+// batch is git cat-file --batch's output as blobs reads it: for each blob,
+// its header, its bytes and a newline.
+type batch struct {
+	want []blob
+	each func(int, []byte) error
+	i    int    // the blob being read; len(want) once all are, or one in part
+	at   int64  // the bytes of its header and its content read
+	b    []byte // what is kept of it
+	err  error  // what ended the read, git ended at a blob kept in part aside
+}
+
+func (r *batch) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		if r.i == len(r.want) {
+			r.err = errors.New("git cat-file --batch answered more than was asked")
+			return n - len(p), r.err
+		}
+		w := r.want[r.i]
+		head := fmt.Sprintf("%s blob %d\n", w.h, w.size)
+		switch end := int64(len(head)) + w.size; {
+		case r.at < int64(len(head)):
+			k := min(int64(len(p)), int64(len(head))-r.at)
+			if string(p[:k]) != head[r.at:r.at+k] {
+				r.err = fmt.Errorf("git cat-file --batch answered other than %q", head[:len(head)-1])
+				return n - len(p), r.err
+			}
+			if r.at, p = r.at+k, p[k:]; r.at == int64(len(head)) {
+				r.b = make([]byte, 0, w.n)
+			}
+		case r.at < end:
+			k := min(int64(len(p)), end-r.at)
+			r.b = append(r.b, p[:min(k, w.n-int64(len(r.b)))]...)
+			r.at, p = r.at+k, p[k:]
+		case p[0] != '\n':
+			r.err = fmt.Errorf("git cat-file --batch answered no newline after %s", w.h)
+			return n - len(p), r.err
+		default:
+			p = p[1:]
+			if r.err = r.each(r.i, r.b); r.err != nil {
+				return n - len(p), r.err
+			}
+			r.i, r.at, r.b = r.i+1, 0, nil
+			continue
+		}
+		if r.at >= int64(len(head)) && int64(len(r.b)) == w.n && w.n < w.size {
+			r.i, r.err = len(r.want), r.each(r.i, r.b)
+			return n - len(p), cmp.Or(r.err, errHeadFull)
+		}
+	}
+	return n, nil
 }
 
 // noReplace turns off git's replacement objects (refs/replace) for the
@@ -581,8 +688,6 @@ var noReplace = map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}
 type headWriter struct{ b []byte }
 
 var errHeadFull = errors.New("the head is read")
-
-func (w *headWriter) full() bool { return len(w.b) == cap(w.b) }
 
 func (w *headWriter) Write(p []byte) (int, error) {
 	room := cap(w.b) - len(w.b)
@@ -597,6 +702,10 @@ func (w *headWriter) Write(p []byte) (int, error) {
 // sniffLen is how much of a file git reads to call it binary (a NUL in its
 // first 8,000 bytes).
 const sniffLen = 8000
+
+// binary reports whether git would call a file whose first bytes are b
+// binary.
+func binary(b []byte) bool { return bytes.IndexByte(b[:min(len(b), sniffLen)], 0) >= 0 }
 
 // commitByID is the commit whose full object id is id: ErrNoCommit
 // (wrapped) when the repository has none, an error for an id that is not
@@ -636,9 +745,13 @@ func fullID(s string) bool {
 // diffTrees is out with the files that differ between the trees from (nil
 // for none: every file added) and to, renames found where they are looked
 // for (withRenames), each with its counts (lineDiff), the read's context
-// asked between two files (ended), and by each step that reads an object:
-// CommitDetail's and Compare's walk.
-func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer, out Detail, from, to *object.Tree) (Detail, error) {
+// asked by each step that reads an object, CommitDetail's and Compare's
+// walk, and between two files (ended). The sizes of the files' sides come
+// from one git and their contents from one more, in top (sizes, blobs): a
+// file with a side that is not a file (a submodule), past MaxDiffed or
+// whose size git cannot say is listed without its lines, its content not
+// read. git is handed at most two ids a file, of at most MaxFiles files.
+func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer, top string, out Detail, from, to *object.Tree) (Detail, error) {
 	plain, err := object.DiffTreeContext(ctx, from, to)
 	if err != nil {
 		return out, err
@@ -648,11 +761,9 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 	if len(changes) > MaxFiles {
 		changes, out.Truncated = changes[:MaxFiles], true
 	}
-	left := MaxCompareDiff
-	for _, ch := range changes {
-		if err := seen.ended(); err != nil {
-			return out, err
-		}
+	var hs []plumbing.Hash
+	var of []int // the file of each of hs
+	for i, ch := range changes {
 		fc := Change{}
 		switch {
 		case ch.From.Name == "":
@@ -664,18 +775,60 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 		default:
 			fc.Status, fc.Path = "M", ch.To.Name
 		}
-		from, to, err := ch.Files()
-		if err != nil {
-			return out, err
+		sides := slices.DeleteFunc([]object.ChangeEntry{ch.From, ch.To}, func(e object.ChangeEntry) bool { return e.Name == "" })
+		fc.Binary = slices.ContainsFunc(sides, func(e object.ChangeEntry) bool { return !e.TreeEntry.Mode.IsFile() })
+		for _, e := range sides {
+			if !fc.Binary {
+				hs, of = append(hs, e.TreeEntry.Hash), append(of, i)
+			}
 		}
-		if (from != nil && from.Size > MaxDiffed) || (to != nil && to.Size > MaxDiffed) {
-			fc.Binary = true // too large to count; shown without its lines
-		} else if fc.Added, fc.Removed, fc.Binary, err = lineDiff(from, to, &left); err != nil {
-			return out, err
+		out.Changes = append(out.Changes, fc)
+	}
+	if err := seen.ended(); err != nil {
+		return out, err
+	}
+	size, err := sizes(ctx, top, hs)
+	if err != nil {
+		return out, err
+	}
+	for j, n := range size {
+		if n < 0 || n > MaxDiffed {
+			out.Changes[of[j]].Binary = true // shown without its lines
 		}
+	}
+	var want []blob
+	var wantOf []int
+	for j, h := range hs {
+		if !out.Changes[of[j]].Binary {
+			want, wantOf = append(want, blob{h, size[j], size[j]}), append(wantOf, of[j])
+		}
+	}
+	left := MaxCompareDiff
+	var got [][]byte // the sides read of the file being read
+	err = blobs(ctx, top, want, func(k int, b []byte) error {
+		if got = append(got, b); k+1 < len(want) && wantOf[k+1] == wantOf[k] {
+			return nil
+		}
+		if err := seen.ended(); err != nil {
+			return err
+		}
+		ch, fc := changes[wantOf[k]], &out.Changes[wantOf[k]]
+		from, to := got[0], got[len(got)-1]
+		if ch.From.Name == "" {
+			from = nil
+		} else if ch.To.Name == "" {
+			to = nil
+		}
+		fc.Added, fc.Removed, fc.Binary = lineDiff(from, to, &left)
+		got = nil
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	for _, fc := range out.Changes {
 		out.Added += fc.Added
 		out.Removed += fc.Removed
-		out.Changes = append(out.Changes, fc)
 	}
 	return out, nil
 }
@@ -778,10 +931,10 @@ func renamesCut(plain, changes object.Changes, looked, dropped bool) bool {
 	})
 }
 
-// lineDiff is the lines added and removed between the files from and to
-// (nil for none), counted as go-git's patch counts them
-// (Change.PatchContext): binary, with no lines, when a side is binary or
-// the diff has nothing to compare. The lines the two sides share at their
+// lineDiff is the lines added and removed between the files whose bytes
+// are from and to (nil for none), counted as go-git's patch counts them
+// (Change.PatchContext): binary, with no lines, when a side is binary as
+// git judges it (binary) or the diff has nothing to compare. The lines the two sides share at their
 // start, and then at their end, are set aside first (setAside), as the
 // diff sets them aside itself, so they add nothing to either count. The
 // diff, go-git's own (diffLines), is given what is left when neither side
@@ -790,17 +943,11 @@ func renamesCut(plain, changes object.Changes, looked, dropped bool) bool {
 // past MaxDiffLines, and one whose diff took its time, finished or not,
 // is listed without its lines. Equal texts, and two empty ones, are
 // judged whole, before anything is set aside.
-func lineDiff(from, to *object.File, left *time.Duration) (added, removed int, binary bool, err error) {
-	a, binary, err := text(from)
-	if err != nil || binary {
-		return 0, 0, binary, err
+func lineDiff(from, to []byte, left *time.Duration) (added, removed int, isBinary bool) {
+	if binary(from) || binary(to) {
+		return 0, 0, true
 	}
-	b, binary, err := text(to)
-	if err != nil || binary {
-		return 0, 0, binary, err
-	}
-	added, removed, binary = counts(a, b, left)
-	return added, removed, binary, nil
+	return counts(string(from), string(to), left)
 }
 
 // counts is lineDiff's counts of the texts a and b: a side with no line
@@ -862,19 +1009,6 @@ func setAside(a, b string) (string, string) {
 		a, b = a[:len(a)-len(line)], b[:rest]
 	}
 	return a, b
-}
-
-// text is f's content, or binary when git would call it so ("" for no
-// file).
-func text(f *object.File) (string, bool, error) {
-	if f == nil {
-		return "", false, nil
-	}
-	if binary, err := f.IsBinary(); err != nil || binary {
-		return "", binary, err
-	}
-	s, err := f.Contents()
-	return s, false, err
 }
 
 func summary(c *object.Commit, withBody bool) Commit {

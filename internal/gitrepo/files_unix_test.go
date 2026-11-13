@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -136,8 +137,8 @@ var readers = []struct {
 // regular file past its bound: each of the package's four reads that opens
 // it returns at once with the package's refusal. Compare and FileAt read
 // commits by id and open no ref through the package, so packed-refs is
-// Commits' and CommitDetail's here (FileAt's git binary opens it itself:
-// TestFileAtsGitIsEndedAtItsCap).
+// Commits' and CommitDetail's here (nor does the git binary that reads
+// their files: TestGitReadsAnObjectByItsIDWithoutOpeningARef).
 func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.T) {
 	limits := map[string]int64{".git": maxSmall, "commondir": maxSmall, "HEAD": maxSmall, "config": maxConfig, "packed-refs": maxPackedRefs}
 	kinds := []struct {
@@ -201,14 +202,15 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 	}
 }
 
-// FileAt's git binary opens the repository's files itself and is ended at
-// its cap whatever context FileAt is given: with packed-refs a named pipe
-// with no writer (git opens it to see whether the id is also a ref's
-// name), FileAt returns the cap's error and no git is left holding the
-// pipe; Commits and CommitDetail refuse the pipe at once, and Compare,
-// which opens no ref, reads. A repository as git wrote it is read with
-// the product's cap.
-func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
+// The git binary that reads FileAt's and a comparison's files opens the
+// repository's files itself, and its batch reads look an object up by its
+// id alone, never as a ref's name: with packed-refs a named pipe with no
+// writer, FileAt and Compare read (FileAt's cap, shortened, would end a
+// git that waited in its open: TestFileAtAnswersItsCapOrTheCallersOwnError)
+// and no git is left holding the pipe; Commits and CommitDetail refuse the
+// pipe at once. A repository as git wrote it is read with the product's
+// cap.
+func TestGitReadsAnObjectByItsIDWithoutOpeningARef(t *testing.T) {
 	r := linked(t)
 	pipe := r.files["packed-refs"]
 	if err := os.Remove(pipe); err != nil {
@@ -219,21 +221,21 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 	}
 	gitCap = time.Second
 	defer func() { gitCap = maxGitRead }()
-	want := map[string]error{"FileAt": ErrGitCap, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
+	want := map[string]error{"FileAt": nil, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
 	for _, rd := range readers {
 		err := within(t, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
 		if !errors.Is(err, want[rd.name]) || (err == nil) != (want[rd.name] == nil) {
 			t.Errorf("%s: %v, want %v", rd.name, err, want[rd.name])
 		}
-		if rd.name != "FileAt" {
+		if rd.name != "FileAt" && rd.name != "Compare" {
 			continue
 		}
-		// FileAt returns once gitcli has waited for its git: a process
+		// The read returns once gitcli has waited for its git: a process
 		// with the pipe open for reading, or waiting in its open, would
 		// let a writer open it.
 		if fd, err := syscall.Open(pipe, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			syscall.Close(fd)
-			t.Errorf("a process still has packed-refs open for reading after FileAt returned")
+			t.Errorf("a process still has packed-refs open for reading after %s returned", rd.name)
 		} else if err != syscall.ENXIO {
 			t.Errorf("open packed-refs for writing: %v, want ENXIO (no reader)", err)
 		}
@@ -1154,7 +1156,8 @@ func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 // a revision's name that names nothing (which go-git goes on trying); in
 // Commits at the second commit of its walk to the merge base with main
 // (which takes no context: it would read the third); in Compare at the
-// second file of the comparison.
+// second commit's tree, the last object go-git reads of it (the git binary
+// reads its files: TestAComparisonEndsWithItsContextWhileGitIsHeld).
 func TestAReadEndsWithItsContext(t *testing.T) {
 	r := ordinary(t)
 	gitIn(t, r.wt, time.Time{}, "pack-refs", "--all")
@@ -1180,7 +1183,7 @@ func TestAReadEndsWithItsContext(t *testing.T) {
 			_, err := Commits(ctx, r.wt, "main", time.Time{})
 			return err
 		}},
-		{"Compare", object(c3 + ":f1.txt"), func(ctx context.Context) error {
+		{"Compare", object(c3 + "^{tree}"), func(ctx context.Context) error {
 			_, err := Compare(ctx, r.wt, r.c2, c3)
 			return err
 		}},
@@ -1206,6 +1209,79 @@ func TestAReadEndsWithItsContext(t *testing.T) {
 		}
 		if left := leftBehind(); len(left) > 0 {
 			t.Errorf("%s left %d goroutines behind:\n%s", c.name, len(left), strings.Join(left, "\n\n"))
+		}
+	}
+}
+
+// heldInput is git's input held at the seam: its first read closes held,
+// and every read waits for the run's context to end and answers its error.
+type heldInput struct {
+	ctx  context.Context
+	held chan struct{}
+	once sync.Once
+}
+
+func (h *heldInput) Read([]byte) (int, error) {
+	h.once.Do(func() { close(h.held) })
+	<-h.ctx.Done()
+	return 0, h.ctx.Err()
+}
+
+// A comparison whose context ends while its git is held, started and
+// waiting on its input (held at the seam, runGit), answers the context's
+// error once gitcli has ended and waited for that git (the run is back
+// before the read), starts no diff and leaves no goroutine behind (none
+// waits on a process or on git's input): in Compare and in CommitDetail,
+// git held as it reads the files' sizes and as it reads their contents.
+func TestAComparisonEndsWithItsContextWhileGitIsHeld(t *testing.T) {
+	dir, c1, c2 := changedFiles(t, 3)
+	for _, at := range []string{"--batch-check", "--batch"} {
+		for name, read := range map[string]func(ctx context.Context) error{
+			"Compare": func(ctx context.Context) error {
+				_, err := Compare(ctx, dir, c1, c2)
+				return err
+			},
+			"CommitDetail": func(ctx context.Context) error {
+				_, err := CommitDetail(ctx, dir, c2)
+				return err
+			},
+		} {
+			t.Run(name+", git "+at+" held", func(t *testing.T) {
+				held := make(chan struct{})
+				runs := watchGit(t, func(ctx context.Context, args []string, in io.Reader) io.Reader {
+					if args[len(args)-1] != at {
+						return in
+					}
+					return &heldInput{ctx: ctx, held: held}
+				})
+				diffs := fakeClock(t, func(int) time.Duration { return 0 }, nil)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- read(ctx) }()
+				select {
+				case <-held:
+				case err := <-done:
+					t.Fatalf("back before git was held: %v (git ran %q)", err, argsOf(*runs))
+				}
+				cancel()
+				err := <-done
+				last := (*runs)[len(*runs)-1]
+				if !errors.Is(err, context.Canceled) || last.args[len(last.args)-1] != at || !last.returned || last.err == nil || *diffs != 0 {
+					t.Errorf("%v, git ran %q, the held run back %v with %v, %d diffs started; want the context's error, the held run back with an error, no diff", err, argsOf(*runs), last.returned, last.err, *diffs)
+				}
+				// The run's own goroutines (os/exec's) may still be on
+				// their way out of their last send once Wait has
+				// returned: none may stay.
+				left := leftBehind()
+				for give := time.After(hangWait); len(left) > 0; left = leftBehind() {
+					select {
+					case <-give:
+						t.Fatalf("%d goroutines left behind %v after the read returned:\n%s", len(left), hangWait, strings.Join(left, "\n\n"))
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			})
 		}
 	}
 }
