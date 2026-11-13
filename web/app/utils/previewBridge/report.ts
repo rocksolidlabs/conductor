@@ -1,6 +1,6 @@
 import { ELEMENT_BOUNDS, MAX_ELEMENT_REPORT, measuredBytes, previewMeasure, wellFormed, type ElementCut, type ElementReport } from '../protocol'
 import { hintsOf } from './hints'
-import { nameOf, pageText, selectorFor, up, walkTree, type Doc, type El } from './select'
+import { nameOf, pageIds, pageText, selectorFor, up, walkTree, type Doc, type El } from './select'
 
 /**
  * The bridge's report of one element (docs/protocol.md, Preview bridge): read from the page by bounded walks, lists read by index
@@ -184,8 +184,11 @@ export const CONTROL_ATTRIBUTES = ['type', 'name', 'id', 'class', 'role', 'conte
 /** Of a script, a style and a template, the tag and attributes alone; a void element has no end tag. */
 const CODE = new Set(['script', 'style', 'template'])
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr'])
-/** The walks' bounds in links followed (a text or a name, the label for an id, a subtree's animations); the most aria-labelledby ids and animations of one element. */
-const [TEXT_NODES, LABEL_NODES, MOTION, LABELLED_BY] = [256, 256, 64, 8] as const
+/**
+ * The walks' bounds in links followed (a text or a name, the label for an id, a subtree's animations), set so that a text's bound in
+ * bytes is what usually ends it; the most aria-labelledby ids and animations of one element.
+ */
+export const [TEXT_NODES, LABEL_NODES, MOTION, LABELLED_BY] = [1024, 1024, 64, 8] as const
 
 const isControl = (e: El) => CONTROLS.has(nameOf(e, 16)) || (e as HTMLElement).isContentEditable === true
 /** Whether nothing of e's content is written: a control's, a script's, a style's, a template's. */
@@ -259,7 +262,7 @@ function labelFor(el: El, id: string): El | null {
   let top = el
   for (let i = 0; i < 3 && top.parentElement; i++) top = top.parentElement
   let found = null as El | null
-  const visit = (e: El) => (nameOf(e, 8) === 'label' && pageText(e.getAttribute('for'), B.name) === id ? ((found = e), null) : true)
+  const visit = (e: El) => (nameOf(e, 8) === 'label' && pageIds(e.getAttribute('for'), B.name)[0] === id ? ((found = e), null) : true)
   walkTree(top, LABEL_NODES, (n) => n.nodeType === 1 && visit(n as El))
   return found
 }
@@ -268,14 +271,12 @@ function labelFor(el: El, id: string): El | null {
 export function accessibleName(el: El, doc: Doc): string {
   const label = pageText(el.getAttribute('aria-label'), B.name).trim()
   if (label) return label
-  // A value past its bound names nothing: a list's last token, an id (and so a label's for, which must equal it).
-  const listed = pageText(el.getAttribute('aria-labelledby'), B.name)
-  const tokens = listed.split(/\s+/).filter(Boolean)
-  if (listed.length > B.name) tokens.pop()
+  // A value names its own element or none (pageIds): an id, a label's for, aria-labelledby's ids.
+  const tokens = pageIds(el.getAttribute('aria-labelledby'), B.name, true)
   const names = [...new Set(tokens)].slice(0, LABELLED_BY).map((id) => doc.getElementById(id)).flatMap((e) => (e ? [textOf(e, B.name)] : [])).filter(Boolean)
   if (names.length) return names.join(' ')
-  const id = pageText(el.id, B.name)
-  return textOf((id && id.length <= B.name && labelFor(el, id)) || up(el, (e) => nameOf(e, 8) === 'label') || el, B.name)
+  const [id] = pageIds(el.id, B.name)
+  return textOf((id && labelFor(el, id)) || up(el, (e) => nameOf(e, 8) === 'label') || el, B.name)
 }
 
 function ancestorOf(a: El): ElementReport['ancestors'][number] {
