@@ -23,8 +23,8 @@ function readStored(): string {
 /**
  * The workbench token typed by the operator, kept in localStorage for this browser; in the desktop app, the token the shell minted for
  * this run, read from its bridge and kept in memory only. A link's token is sent by the page it came with and kept once the server
- * accepts it, while the browser keeps no other (`fromLink`, `answered`); the token the browser keeps is changed by the operator alone
- * (`set`, `clear`).
+ * accepts it, when a read of the browser's storage finds no other (`fromLink`, `answered`); the token the browser keeps is changed by
+ * the operator alone (`set`, `clear`).
  */
 export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
@@ -47,14 +47,17 @@ export function useWorkbenchToken() {
       .catch(() => {})
   }
 
-  /** What this browser's storage holds, '' for none or when it refuses to be read. */
-  function inStorage(): string {
+  /** What this browser's storage holds: '' for none, null when it cannot be read. */
+  function inStorage(): string | null {
     try {
       return localStorage.getItem(STORAGE_KEY) ?? ''
     } catch {
-      return ''
+      return null
     }
   }
+
+  /** The token this browser keeps, which the gate's draft starts from: '' when it keeps none or cannot be read, and in the desktop app. */
+  const kept = () => (desktop ? '' : (inStorage() ?? ''))
 
   /** Keeps `value` in this browser's storage ('' removes it); a browser that refuses keeps what it kept. */
   function keep(value: string) {
@@ -66,7 +69,7 @@ export function useWorkbenchToken() {
     }
   }
 
-  /** The operator's token: sent and kept at once. */
+  /** The operator's token: sent and kept at once, with no refusal against it. */
   function set(value: string) {
     token.value = value.trim()
     standing.value = ''
@@ -82,19 +85,22 @@ export function useWorkbenchToken() {
   const holds = () => !!token.value && standing.value !== 'refused'
 
   /**
-   * A link's token, at a load: sent by this page, kept once the server accepts it (`answered`), the browser's storage as it was until
-   * then. In the desktop app, held as the operator's.
+   * A link's token, at a load: the token this page holds (at a load, the kept one) changes nothing; any other is sent by this page and
+   * tried, kept once the server accepts it (`answered`), the browser's storage as it was until then. In the desktop app the bridge's
+   * token is the workbench's, and a link's is dropped.
    */
   function fromLink(value: string) {
-    if (!value) return
-    if (desktop) return set(value)
-    standing.value = value === inStorage() ? '' : 'trying'
+    if (!value || desktop || value === token.value) return
+    standing.value = 'trying'
     token.value = value
   }
 
-  /** A link's token that arrives after the load: taken as a load's only while this page holds none (the gate asks for one); else dropped. */
+  /**
+   * A link's token that arrives after the load, on an address that is not a decide address (the fragment plugin): taken as a load's
+   * only while this page holds none, or one it has seen refused; else dropped. This page's own token, refused or not, changes nothing.
+   */
   function fromLaterLink(value: string) {
-    if (!desktop && !holds()) fromLink(value)
+    if (!holds()) fromLink(value)
   }
 
   /**
@@ -104,9 +110,10 @@ export function useWorkbenchToken() {
   const operator = () => holds() && standing.value !== 'dropped'
 
   /**
-   * An answer to a request sent with `sent`, the token this page held as it sent it: `accepted` (a success of the events stream, which
-   * the server gives to an operator's credential; openEvents) or refused (a 401 of any request). An answer for a token since replaced
-   * decides nothing (#281). An accepted link's token is kept while the browser keeps no token, and the gate is done. A refused link's
+   * An answer to a request sent with `sent`, the token this page held as it sent it: `accepted` (the events stream itself answering,
+   * which the server does for an operator's credential; openEvents) or refused (a 401 of any request). An answer for a token since
+   * replaced decides nothing (#281). An accepted link's token is kept when a read of the browser's storage finds no token (one that
+   * cannot be read keeps nothing), and the gate is done. A refused link's
    * token is dropped: the page loads again at its address and sends the token the browser keeps. Any other refused token stays as the
    * browser keeps it, and the gate asks for another; a request no token went with is refused for the one held when none is.
    */
@@ -115,7 +122,7 @@ export function useWorkbenchToken() {
     if (standing.value === 'trying') {
       standing.value = accepted ? '' : 'dropped'
       if (!accepted) return location.reload()
-      if (!inStorage()) keep(sent)
+      if (inStorage() === '') keep(sent)
       needsToken.value = false
     } else if (!accepted) {
       standing.value = 'refused'
@@ -129,6 +136,7 @@ export function useWorkbenchToken() {
     needsToken,
     set,
     clear,
+    kept,
     fromLink,
     fromLaterLink,
     operator,

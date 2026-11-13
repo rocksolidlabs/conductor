@@ -765,12 +765,14 @@ pass is held:
   never to what the running page holds and sends, and the page loads
   again at the clean address (`location.reload()`) only when that write
   was taken and changed what the storage held. A workbench token is
-  taken as a load's link by a page that holds none (the gate asks), and
-  changes nothing in a page that holds one, with no load either way
-  (`fromLaterLink`, #882). In the desktop
+  taken as a load's link by a page that holds none, or one it has seen
+  refused (the gate asks), with no load while it is tried or once it is
+  accepted, and changes nothing in a page that holds another, when it
+  is the page's own, or on a decide address (`decideAddress`, the
+  guard's own test of one; `fromLaterLink`, #882). In the desktop
   app, which keeps the workbench token in memory from its bridge and
-  not in the browser's storage, a later link's token is written nowhere
-  and changes nothing. A fragment that
+  not in the browser's storage, a link's token is written nowhere
+  and changes nothing, at a load or later. A fragment that
   takes nothing, one that carries the credential the storage already
   holds, and a write the browser refuses leave the page as it is,
   drafts and an answer held with it; a load drops what the page held

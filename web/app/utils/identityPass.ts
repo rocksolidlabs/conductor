@@ -51,6 +51,9 @@ export function takeCredentials(href: string): { token: string; pass: string; hr
   return { token: tokenFromFragment(hash), pass: passFromFragment(hash), href: u.toString() }
 }
 
+/** A decide address, `/decide` or `/decide/<one segment>` (the segment in [1]); null for any other path. */
+export const decideAddress = (pathname: string) => /^\/decide(?:\/([^/]+))?\/?$/.exec(pathname)
+
 /**
  * Where a navigation to `fullPath` goes, the decide middleware's rule (null: where it was going). A workbench token held (or in the
  * fragment) wins: `/decide/<did>` opens the operator's page of that decision, `/decide` the operator's decision page. A pass alone:
@@ -62,7 +65,7 @@ export function decideRedirect(fullPath: string, hasToken: boolean, hasPass: boo
   const rest = withoutCredentials(u.hash)
   const token = hasToken || !!tokenFromFragment(u.hash)
   const pass = hasPass || !!passFromFragment(u.hash)
-  const decide = /^\/decide(?:\/([^/]+))?\/?$/.exec(u.pathname)
+  const decide = decideAddress(u.pathname)
   let to: string | null = null
   if (token && decide) to = isDecisionId(decide[1]) ? `/decisions?item=decision:${decide[1]}` : '/decisions'
   else if (!token && pass && !decide) {

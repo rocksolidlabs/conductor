@@ -15,7 +15,11 @@ const LATER = 'later-token-0123456789'
 class FakeStorage {
   m = new Map<string, string>()
   refuse = false
-  getItem = (k: string) => this.m.get(k) ?? null
+  refuseReads = false
+  getItem = (k: string) => {
+    if (this.refuseReads) throw new DOMException('refused', 'SecurityError')
+    return this.m.get(k) ?? null
+  }
   setItem = (k: string, v: string) => {
     if (this.refuse) throw new DOMException('refused', 'QuotaExceededError')
     this.m.set(k, v)
@@ -130,6 +134,26 @@ describe("a load with a link's token", () => {
     expect(s.token.value).toBe(LINKED)
     expect(s.operator()).toBe(true)
   })
+
+  it('accepted while the storage cannot be read, though it can be written: nothing is kept, and the page sends it', () => {
+    const s = load(LINKED)
+    local.refuseReads = true
+    s.answered(LINKED, true)
+    expect(local.m.size).toBe(0)
+    expect(s.token.value).toBe(LINKED)
+    expect(s.needsToken.value).toBe(false)
+    expect(s.kept()).toBe('')
+  })
+
+  it('the gate\'s draft starts from what the browser keeps: the kept token while the page sends an accepted link\'s, else nothing', () => {
+    local.setItem(KEY, KEPT)
+    const s = load(LINKED)
+    s.answered(LINKED, true)
+    expect(s.token.value).toBe(LINKED)
+    expect(s.kept()).toBe(KEPT)
+    local.removeItem(KEY)
+    expect(s.kept()).toBe('')
+  })
 })
 
 describe('a token the browser keeps', () => {
@@ -166,6 +190,32 @@ describe('a token the browser keeps', () => {
     expect(local.getItem(KEY)).toBe(KEPT)
     expect(s.needsToken.value).toBe(false)
     expect(s.operator()).toBe(true)
+  })
+
+  it("refused late, for the token before the one the operator saved and the browser kept: the page's token and the storage stay, and nothing is asked", () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    s.set(LATER)
+    s.answered(KEPT, false)
+    expect(s.token.value).toBe(LATER)
+    expect(local.getItem(KEY)).toBe(LATER)
+    expect(s.needsToken.value).toBe(false)
+    expect(s.operator()).toBe(true)
+  })
+
+  it('refused, then a token saved at the gate: the page is the operator\'s again, and a 401 for the saved token asks at the gate with no load', () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    s.answered(KEPT, false)
+    expect(s.operator()).toBe(false)
+    s.set(LATER)
+    expect(s.operator()).toBe(true)
+    expect(s.needsToken.value).toBe(false)
+    s.answered(LATER, false)
+    expect(s.needsToken.value).toBe(true)
+    expect(s.operator()).toBe(false)
+    expect(reload).not.toHaveBeenCalled()
+    expect(local.getItem(KEY)).toBe(LATER)
   })
 
   it('is forgotten by "Forget token": nothing sent, nothing kept, and a later link is then taken', () => {
@@ -221,6 +271,32 @@ describe("a later link's token", () => {
     expect(s.token.value).toBe(LATER)
     expect(local.getItem(KEY)).toBe(KEPT)
     expect(s.needsToken.value).toBe(false)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it("in a page whose kept token was refused, carrying that token: nothing changes, the refusal stands and the gate still asks", () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    s.answered(KEPT, false)
+    s.fromLaterLink(KEPT)
+    expect(s.token.value).toBe(KEPT)
+    expect(s.operator()).toBe(false)
+    expect(s.needsToken.value).toBe(true)
+    s.answered(KEPT, false)
+    expect(reload).not.toHaveBeenCalled()
+    expect(local.getItem(KEY)).toBe(KEPT)
+  })
+
+  it('in a page at the gate that holds none, carrying the token another tab has since saved: tried; accepted, the gate is done and the storage is as it was', () => {
+    const s = load()
+    s.needsToken.value = true
+    local.setItem(KEY, KEPT)
+    s.fromLaterLink(KEPT)
+    expect(s.token.value).toBe(KEPT)
+    expect(s.operator()).toBe(true)
+    s.answered(KEPT, true)
+    expect(s.needsToken.value).toBe(false)
+    expect(local.getItem(KEY)).toBe(KEPT)
     expect(reload).not.toHaveBeenCalled()
   })
 

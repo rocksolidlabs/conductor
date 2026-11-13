@@ -70,8 +70,8 @@ export function useApi() {
    * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 is told to the
    * workbench token's store only when the request carried that token, as `sent` (admin.answered judges it by that token, not by the
    * one held when the reply lands); a token of the caller's own (`explicitToken`) is told nothing. A success here accepts no token:
-   * routes beside the workbench's admit other credentials too; the events stream's success, which the server gives to an operator's
-   * credential alone, does (openEvents).
+   * routes beside the workbench's admit other credentials too; the events stream itself answering, which the server does for an
+   * operator's credential alone, does (openEvents).
    */
   function normalise(e: unknown, explicitToken: boolean, sent: string): ApiError {
     const fe = e as FetchError<unknown>

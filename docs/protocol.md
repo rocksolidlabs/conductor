@@ -6003,21 +6003,27 @@ never lets the app's router read a fragment that carries either key, in any
 spelling: the fragment is taken out of the address before the app's router
 reads it. A pass that arrives after the load is written to the tab's
 storage for it alone and loads the page again at the clean address only
-when it changed what that storage held. A link's workbench token is sent by
-the page it came with and kept in the browser's storage once the server
-accepts it, while that storage holds no other token: accepted means the
-events stream (`GET /api/events`) answers it with success, which the server
-gives to an operator's credential (the workbench token, and, where an
-identity provider is registered, a credential the provider admits with the
-admin grant); a reply of that stream that is neither success nor `401`
+when it changed what that storage held. A link's workbench token, unless it
+is the token the page already holds, is sent by the page it came with and
+kept in the browser's storage once the server accepts it, when a read of
+that storage finds no other token (one that cannot be read keeps nothing):
+accepted means the events stream (`GET /api/events`) itself answers it
+(`200`, not reached through a redirect, `Content-Type: text/event-stream`),
+which the server does for an operator's credential (the workbench token,
+and, where an identity provider is registered, a credential the provider
+admits with the admin grant); any other reply of that stream but `401`
 decides nothing. Refused (`401`, by any route), a link's token is dropped
 and the page loads again with the token the browser keeps; a kept token
 refused stays kept, and the page asks for another. A workbench token that
-arrives after the load is taken, with no load, by a page that holds none,
-and changes nothing in a page that holds one. In the desktop app the
-workbench token is kept in memory from the app's bridge, not in the
-browser's storage, and a link's token changes nothing there; a fragment
-that holds both keys gives neither. The pass is kept for the tab
+arrives after the load is taken by a page that holds none, or one it has
+seen refused, with no load while it is tried or once it is accepted (its
+refusal loads the page once, as a load's does), and changes nothing in a
+page that holds another, when it is the page's own, or on a decide address.
+In the desktop app the workbench token is the app's bridge's, kept in
+memory, not in the browser's storage, and a link's token changes nothing
+there, at a load or later; a fragment that holds both keys gives neither.
+Every load removes `nuxt:reload:state`, the page's state Nuxt's own reload
+leaves in the tab's storage, which nothing in the app reads back. The pass is kept for the tab
 (`sessionStorage`) until a `401` to a request sent with it, or until a
 later link stores another, and sent only in
 the `Authorization` header of the four routes, never in a URL. The decide

@@ -159,6 +159,39 @@ test('a fragment that holds both keys, at a load and later: neither is taken, an
   await ctx.close()
 })
 
+test("a later workbench link on a decide address, in a tab with a pass and in one with none: the address rewritten, no load, the decide page as it was, and the link's token neither held nor sent", async ({ browser, state }) => {
+  const stores = (page: Page) => page.evaluate(() => [sessionStorage.getItem('conductor.identityPass'), localStorage.getItem('conductor.workbenchToken')])
+  /** The token the page sends and what its store knows of it, read off the page's state: ['', ''] holds none, so the guard's `operator()` is false. */
+  const workbench = (page: Page) =>
+    page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const s = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state
+      return [s.$sworkbenchToken, s.$sworkbenchTokenStanding] as string[]
+    })
+  for (const pass of [true, false]) {
+    const { ctx, page, sent } = await tab(browser)
+    const rec = await recorder(page)
+    if (pass) await stub(page)
+    await page.goto(pass ? `/decide/dr-7#pass=${PASS}` : '/decide/dr-7')
+    await expect(page.locator('[data-decide-page]')).toBeVisible()
+    if (pass) await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    const before = await stores(page)
+    expect(before).toEqual([pass ? PASS : null, null])
+    await fragmentChanged(page, rec, `token=${state.token}`, 'kept')
+    expect(await workbench(page), `pass: ${pass}`).toEqual(['', ''])
+    expect(new URL(page.url()).pathname).toBe('/decide/dr-7')
+    await expect(page.locator('[data-decide-page]')).toBeVisible()
+    if (pass) await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    expect(await stores(page)).toEqual(before)
+    expect(sent.filter((r) => r.resourceType() === 'document')).toHaveLength(1)
+    for (const r of await apiSent(sent, 0)) expect(r.auth, r.path).not.toBe(`Bearer ${state.token}`)
+    expect(await addressHeld(page)).not.toContain(state.token)
+    expect(rec.since()).not.toContain(state.token)
+    if (pass) await checkSent(sent)
+    await ctx.close()
+  }
+})
+
 /** The pass the tab's storage holds, for the page loaded next. */
 const passStored = (page: Page) => page.evaluate(() => sessionStorage.getItem('conductor.identityPass'))
 /** A decide page signed in as Ana with dr-7 drawn and a draft typed into it; the four routes stubbed. */

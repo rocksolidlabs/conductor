@@ -1,4 +1,4 @@
-import type { Page, Request } from '@playwright/test'
+import type { Browser, BrowserContext, Page, Request } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { addressHeld, apiSent, fragmentChanged, recorder } from './fragment-helpers'
 
@@ -19,6 +19,37 @@ const standing = (page: Page) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state.$sworkbenchTokenStanding as string
   })
+/** The token the page sends, read off the page's state ('' none). */
+const held = (page: Page) =>
+  page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state.$sworkbenchToken as string
+  })
+/**
+ * Another tab of `ctx` saving `token` in the browser's storage, as the gate of that tab does: a page of its own at an address of the
+ * server's origin the test answers itself, so nothing of the app runs there.
+ */
+async function savedByAnotherTab(ctx: BrowserContext, token: string) {
+  await ctx.route('**/e2e-another-tab', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>another tab</title>' }))
+  const other = await ctx.newPage()
+  await other.goto('/e2e-another-tab')
+  await other.evaluate((t) => localStorage.setItem('conductor.workbenchToken', t), token)
+  await other.close()
+}
+/** A fresh context whose browser keeps `token`: its first page opens with it kept. */
+async function keeping(browser: Browser, token: string) {
+  const ctx = await browser.newContext()
+  await savedByAnotherTab(ctx, token)
+  return ctx
+}
+/** The gate opened from the account menu: what its field holds as it opens. */
+async function gateOpened(page: Page) {
+  await page.locator('[data-header-account]').click()
+  await page.getByRole('menuitem', { name: /Workbench token/ }).click()
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await expect(gate).toBeVisible()
+  return gate.locator('input')
+}
 /** A read the page sends now: the inbox reads again when the tab is shown. */
 const shown = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
 const documents = (sent: Request[]) => sent.filter((r) => r.resourceType() === 'document').length
@@ -56,11 +87,13 @@ async function holdSentWith(page: Page, token: string) {
 // The workbench's own link, the token in the URL fragment ("Open in browser" from the desktop app opens `/#token=…`): taken out of
 // the address before Nuxt's router reads it, in any spelling of its key, at a load and when the fragment arrives later in a tab
 // already open, so no address, history state or entry of the page's, or route holds it; the browser's own global history and its
-// first-navigation entry are the browser's. A link's token is sent by the page it came with and kept once the server accepts it while
-// the browser keeps no other token; one the server refuses is dropped, and the page loads again with the token the browser keeps. A
-// later link's token is taken by a page that holds none (the gate asks), with no load, and changes nothing in a page that holds one.
-// The tab's own storage holds nothing of the workbench token's. A fresh context each time, with no token stored. Requests are held
-// through the test's own routes, never on the clock.
+// first-navigation entry are the browser's. A link's token other than the page's own is sent by the page it came with and kept once
+// the events stream accepts it while the browser keeps no other token; one the server refuses is dropped, and the page loads again
+// with the token the browser keeps. A later link's token is taken by a page that holds none or one it has seen refused (the gate
+// asks), with no load while it is tried, and changes nothing in a page that holds one, when it is the page's own, or on a decide
+// address (decide-only.spec.ts). The gate's field starts from what the browser keeps. The tab's own storage holds nothing of the
+// workbench token's. A fresh context each time, with no token stored unless the test keeps one. Requests are held through the
+// test's own routes, never on the clock.
 
 test("the workbench token in the fragment, in any spelling: signed in, kept, and no address, history state or entry of the page's, or route holds it", async ({ browser, state }) => {
   const token = state.token
@@ -149,9 +182,12 @@ test('a later link with the same workbench token, a value not shaped as one, or 
     const rec = await recorder(page)
     await page.goto(`/#token=${token}`)
     await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+    // The load's token accepted and kept before the later fragment arrives.
+    await expect.poll(() => stored(page), fragment).toBe(token)
     await fragmentChanged(page, rec, fragment, 'kept')
     await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
     expect(await stored(page), fragment).toBe(token)
+    expect(await standing(page), fragment).toBe('')
     expect(await page.evaluate(() => sessionStorage.getItem('conductor.identityPass')), fragment).toBeNull()
     await ctx.close()
   }
@@ -187,6 +223,9 @@ test("with this browser's storage refusing the token: the token of the load is h
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   await expect(page.getByRole('dialog', { name: 'Workbench token' })).toHaveCount(0)
   expect(await addressHeld(page)).not.toContain(UNKNOWN)
+  // The browser keeps nothing: the gate, opened, starts empty, though the page sends the load's token.
+  await expect(await gateOpened(page)).toHaveValue('')
+  expect(await held(page)).toBe(token)
   await ctx.close()
 })
 
@@ -206,32 +245,138 @@ test("a link's token and nothing kept: not kept while its first answers are held
   await ctx.close()
 })
 
-test("a link's token accepted while the browser keeps another: the page is signed in with the link's, and the browser keeps the other, before and after a load without the link", async ({ browser, state }) => {
+test("a load with a link's token while the browser keeps another: accepted, the page is signed in with the link's and the browser keeps the other; the gate, opened, starts from the kept one, and Save with nothing typed keeps it as it was", async ({ browser, state }) => {
   const token = state.token
-  const ctx = await browser.newContext()
+  const ctx = await keeping(browser, UNKNOWN)
   const page = await ctx.newPage()
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
   const gate = page.getByRole('dialog', { name: 'Workbench token' })
-  await page.goto('/')
-  await expect(gate).toBeVisible()
-  await page.evaluate((t) => localStorage.setItem('conductor.workbenchToken', t), UNKNOWN)
-  const from = sent.length
+  // The page's first navigation is the link: a load.
   await page.goto(`/#token=${token}`)
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  expect(documents(sent)).toBe(1)
   // The link's token accepted: the store no longer tries it.
   await expect.poll(() => standing(page)).toBe('')
   expect(await stored(page)).toBe(UNKNOWN)
-  await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
-  expect(triedSince(sent, from), 'the kept token sent').toBe(false)
+  await expect.poll(() => signedInSince(sent, 0, token)).toBe(true)
+  expect(triedSince(sent, 0), 'the kept token sent').toBe(false)
   await expect(gate).toHaveCount(0)
   await tabHoldsNoToken(page, token, UNKNOWN)
+  const field = await gateOpened(page)
+  await expect(field).toHaveValue(UNKNOWN)
+  await gate.getByRole('button', { name: 'Save' }).click()
+  // Saved: the page sends the kept token, the server refuses it, and the gate asks; the browser keeps what it kept.
+  await expect.poll(() => held(page)).toBe(UNKNOWN)
+  await expect.poll(() => standing(page)).toBe('refused')
+  await expect(gate).toBeVisible()
+  expect(await stored(page)).toBe(UNKNOWN)
+  expect(documents(sent)).toBe(1)
   // A load without the link sends the token the browser keeps; the server refuses it, and the gate asks.
   const again = sent.length
   await page.reload()
   await expect(gate).toBeVisible()
   expect(triedSince(sent, again), 'the kept token sent').toBe(true)
   expect(await stored(page)).toBe(UNKNOWN)
+  await ctx.close()
+})
+
+test("a later link in a tab at the gate, after another tab saved another token: the page is signed in with the link's, with no load, and the browser keeps the other", async ({ browser, state }) => {
+  const token = state.token
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  const sent: Request[] = []
+  page.on('request', (r) => sent.push(r))
+  const rec = await recorder(page)
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await page.goto('/')
+  await expect(gate).toBeVisible()
+  await savedByAnotherTab(ctx, UNKNOWN)
+  const from = sent.length
+  await fragmentChanged(page, rec, `token=${token}`, 'kept')
+  await expect.poll(() => standing(page)).toBe('')
+  expect(await stored(page)).toBe(UNKNOWN)
+  await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
+  expect(triedSince(sent, 0), 'the kept token sent').toBe(false)
+  await expect(gate).toHaveCount(0)
+  expect(documents(sent)).toBe(1)
+  await tabHoldsNoToken(page, token, UNKNOWN)
+  await ctx.close()
+})
+
+test("a later link in a tab at the gate that holds none, carrying the token another tab saved meanwhile: tried with no load; accepted, the gate is gone and the browser keeps it as it was", async ({ browser, state }) => {
+  const token = state.token
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  const sent: Request[] = []
+  page.on('request', (r) => sent.push(r))
+  const rec = await recorder(page)
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await page.goto('/')
+  await expect(gate).toBeVisible()
+  await savedByAnotherTab(ctx, token)
+  const from = sent.length
+  await fragmentChanged(page, rec, `token=${token}`, 'kept')
+  await expect(gate).toHaveCount(0)
+  await expect.poll(() => standing(page)).toBe('')
+  await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
+  expect(await stored(page)).toBe(token)
+  expect(documents(sent)).toBe(1)
+  await ctx.close()
+})
+
+test("a load with a link carrying the kept token: nothing changes, and the server's refusal asks at the gate with no load", async ({ browser }) => {
+  const ctx = await keeping(browser, UNKNOWN)
+  const page = await ctx.newPage()
+  const sent: Request[] = []
+  page.on('request', (r) => sent.push(r))
+  const rec = await recorder(page)
+  await page.goto(`/#token=${UNKNOWN}`)
+  await expect(page.getByRole('dialog', { name: 'Workbench token' })).toBeVisible()
+  await expect.poll(() => standing(page)).toBe('refused')
+  expect(documents(sent)).toBe(1)
+  expect(rec.lines.filter((l) => l.startsWith('reload '))).toEqual([])
+  expect(await stored(page)).toBe(UNKNOWN)
+  expect(await addressHeld(page)).not.toContain(UNKNOWN)
+  await ctx.close()
+})
+
+test("a later link in a page whose kept token the server refused: carrying that token, nothing changes and the gate still asks; carrying another, it is tried with no load, and once accepted the gate is gone and the browser keeps the refused one", async ({ browser, state }) => {
+  const token = state.token
+  const ctx = await keeping(browser, UNKNOWN)
+  const page = await ctx.newPage()
+  const sent: Request[] = []
+  page.on('request', (r) => sent.push(r))
+  const rec = await recorder(page)
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  await page.goto('/')
+  await expect(gate).toBeVisible()
+  await expect.poll(() => standing(page)).toBe('refused')
+  await fragmentChanged(page, rec, `token=${UNKNOWN}`, 'kept')
+  expect(await standing(page)).toBe('refused')
+  expect(await held(page)).toBe(UNKNOWN)
+  await expect(gate).toBeVisible()
+  expect(await stored(page)).toBe(UNKNOWN)
+  const from = sent.length
+  await fragmentChanged(page, rec, `token=${token}`, 'kept')
+  await expect(gate).toHaveCount(0)
+  await expect.poll(() => standing(page)).toBe('')
+  await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
+  expect(await stored(page)).toBe(UNKNOWN)
+  expect(documents(sent)).toBe(1)
+  await tabHoldsNoToken(page, token, UNKNOWN)
+  await ctx.close()
+})
+
+test("at every load the framework's reload state is gone from the tab's storage", async ({ browser, state }) => {
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  await page.goto(`/#token=${state.token}`)
+  await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  await page.evaluate(() => sessionStorage.setItem('nuxt:reload:state', JSON.stringify({ state: { $se2e: 'left by a reload' } })))
+  await page.reload()
+  await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  expect(await page.evaluate(() => sessionStorage.getItem('nuxt:reload:state'))).toBeNull()
   await ctx.close()
 })
 
@@ -323,16 +468,21 @@ test("a decide address opened with a workbench link, nothing kept: the operator'
   await refused.close()
 })
 
-test("in the desktop app the bridge's token is the workbench's: a link's token is kept nowhere, and a later link changes nothing", async ({ browser, state }) => {
+test("in the desktop app the bridge's token is the workbench's: a load's link and a later one change nothing, and every request carries the bridge's token or none", async ({ browser, state }) => {
   const token = state.token
   const ctx = await browser.newContext()
   const page = await ctx.newPage()
   await page.addInitScript(
     ({ token, url }) => {
-      ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+      // The bridge answers with its token once the test releases it, so the page runs a while with the link's token in its address.
+      const w = window as unknown as { conductorDesktop: unknown; __releaseBridge: () => void }
+      let release = () => {}
+      const answered = new Promise<string>((r) => (release = () => r(token)))
+      w.__releaseBridge = () => release()
+      w.conductorDesktop = {
         version: 'e2e',
         platform: 'linux',
-        token: async () => token,
+        token: () => answered,
         openExternal: async () => {},
         openUrl: async () => ({ outcome: 'browser' }),
         browsers: async () => [],
@@ -355,6 +505,11 @@ test("in the desktop app the bridge's token is the workbench's: a link's token i
   const rec = await recorder(page)
   await page.goto(`/#token=${UNKNOWN}`)
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  // Drawn while the bridge has not answered: the page holds no token, the link's dropped.
+  expect(await held(page)).toBe('')
+  await page.evaluate(() => (window as unknown as { __releaseBridge: () => void }).__releaseBridge())
+  await expect.poll(() => held(page)).toBe(token)
+  await shown(page)
   await expect.poll(() => signedInSince(sent, 0, token)).toBe(true)
   await fragmentChanged(page, rec, `token=${UNKNOWN}`, 'kept')
   const from = sent.length

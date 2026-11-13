@@ -81,18 +81,20 @@ interface AttentionStore {
 
 /**
  * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). The server answers it
- * with success for an operator's credential alone (the workbench token, and, where an identity provider is registered, a credential the
- * provider admits with the admin grant), so its success is the acceptance that keeps a link's token. Success and refusal are that
- * token's, judged by `admin.answered` when they land, so a reply for a token since replaced does not ask for the token again (#281);
- * any other reply (another status, or none) decides nothing. A page in a desktop app that opens agents' links says so (#436): while
- * it streams, an agent's link waits for its claim.
+ * with the stream for an operator's credential alone (the workbench token, and, where an identity provider is registered, a credential
+ * the provider admits with the admin grant), so the stream itself answering (200, not reached through a redirect, `text/event-stream`)
+ * is the acceptance that keeps a link's token. Acceptance and refusal are that token's, judged by `admin.answered` when they land, so a
+ * reply for a token since replaced does not ask for the token again (#281); any other reply (another status or type, a redirect, or
+ * none) decides nothing. A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
+ * its claim.
  */
 export async function openEvents(url: string, admin: { token: Ref<string>; answered: (sent: string, accepted: boolean) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {
   const sent = admin.token.value
   const headers: Record<string, string> = { Authorization: `Bearer ${sent}` }
   if (desktop) headers['X-Conductor-Desktop'] = '1'
   const res = await fetch(url, { headers, signal })
-  if (res.ok || res.status === 401) admin.answered(sent, res.ok)
+  const accepted = res.status === 200 && !res.redirected && res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'text/event-stream'
+  if (accepted || res.status === 401) admin.answered(sent, accepted)
   return res.status === 401 ? null : res
 }
 
