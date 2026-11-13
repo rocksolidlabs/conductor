@@ -811,19 +811,47 @@ func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 	}
 }
 
-// A folder beneath a repository whose .git is a link to a place that does
-// not exist, written as an absolute path or as a relative path out of the
-// folder, holds a .git to the discovery, which looks without following a
-// link: each of the four reads, started in that folder, is refused as the
-// opener refuses such a link.
+// A folder beneath a repository whose .git is a link that leads to nothing
+// holds a .git to the discovery, which looks without following a link and
+// looks above a folder only when it has no .git entry: each of the four
+// reads, started in that folder, is refused, and none reads the repository
+// above. A link to a place that does not exist, written as an absolute path
+// or as a relative path out of the folder, is refused as the opener refuses
+// such a link; a relative link inside the folder to a name that is not
+// there, to a deeper path that is not there, through a second relative link
+// to a name that is not there, and to a git directory removed after the
+// link was made, as a .git that leads to nothing; a link to itself, with
+// the system's answer to a loop of links.
 func TestADotGitLinkToNothingBeneathARepositoryIsRefused(t *testing.T) {
-	const want = "a file of the repository was not read: .git is behind a link that is not followed: it leads out of its folder or is written as an absolute path"
+	const prefix = "a file of the repository was not read: "
+	const notFollowed = prefix + ".git is behind a link that is not followed: it leads out of its folder or is written as an absolute path"
+	const toNothing = prefix + ".git leads to nothing in its folder"
 	for _, c := range []struct {
-		name   string
-		target func(t *testing.T) string
+		name string
+		// link makes the links on the way in the folder sub and is what
+		// .git's link is written as.
+		link func(t *testing.T, sub string) string
+		// refused says whether err is the refusal wanted.
+		want    string
+		refused func(err error) bool
 	}{
-		{"an absolute link", func(t *testing.T) string { return filepath.Join(t.TempDir(), "nowhere", "git") }},
-		{"a relative link out of the folder", func(*testing.T) string { return filepath.Join("..", "nowhere", "git") }},
+		{"an absolute link", func(t *testing.T, _ string) string { return filepath.Join(t.TempDir(), "nowhere", "git") }, notFollowed, nil},
+		{"a relative link out of the folder", func(*testing.T, string) string { return filepath.Join("..", "nowhere", "git") }, notFollowed, nil},
+		{"a relative link to a name that is not there", func(*testing.T, string) string { return "nothing-here" }, toNothing, nil},
+		{"a relative link to a deeper path that is not there", func(*testing.T, string) string { return filepath.Join("a", "b", "git") }, toNothing, nil},
+		{"a chain of two relative links that ends at a name that is not there", func(t *testing.T, sub string) string {
+			if err := os.Symlink("nothing-here", filepath.Join(sub, "git-link")); err != nil {
+				t.Fatal(err)
+			}
+			return "git-link"
+		}, toNothing, nil},
+		{"a relative link to a git directory removed after the link was made", func(t *testing.T, sub string) string {
+			gitIn(t, sub, time.Time{}, "init", "-q", "--bare", "git-data")
+			return "git-data" // removed once .git's link is made (below)
+		}, toNothing, nil},
+		{"a link to itself", func(*testing.T, string) string { return ".git" }, "too many levels of symbolic links", func(err error) bool {
+			return errors.Is(err, syscall.ELOOP)
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -832,16 +860,39 @@ func TestADotGitLinkToNothingBeneathARepositoryIsRefused(t *testing.T) {
 			if err := os.Mkdir(sub, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(c.target(t), filepath.Join(sub, ".git")); err != nil {
+			if err := os.Symlink(c.link(t, sub), filepath.Join(sub, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			// The git directory a case made, removed after the link to it.
+			if err := os.RemoveAll(filepath.Join(sub, "git-data")); err != nil {
 				t.Fatal(err)
 			}
 			r.wt = sub
 			for _, rd := range readers {
-				if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) || err.Error() != want {
-					t.Errorf("%s: %v, want %q", rd.name, err, want)
+				err := rd.read(context.Background(), r)
+				if c.refused == nil && (!errors.Is(err, ErrUnreadable) || err.Error() != c.want) {
+					t.Errorf("%s: %v, want %q", rd.name, err, c.want)
+				}
+				if c.refused != nil && (!c.refused(err) || !strings.HasSuffix(err.Error(), c.want)) {
+					t.Errorf("%s: %v, want an error that ends %q", rd.name, err, c.want)
 				}
 			}
 		})
+	}
+}
+
+// A folder beneath a repository that has no .git entry is looked above:
+// each of the four reads, started in it, reads the repository above.
+func TestAFolderWithNoDotGitBeneathARepositoryReadsTheOneAbove(t *testing.T) {
+	r := ordinary(t)
+	r.wt = filepath.Join(r.wt, "sub")
+	if err := os.Mkdir(r.wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rd := range readers {
+		if err := rd.read(context.Background(), r); err != nil {
+			t.Errorf("%s: %v, want the repository above read", rd.name, err)
+		}
 	}
 }
 

@@ -21,7 +21,8 @@ import (
 // that wraps it says why, with the file's name in its folder: not a
 // regular file, longer than the opener reads of a file of its kind
 // (bound), behind a link the opener does not follow, a .git folder that is
-// a link, or a folder the repository names that is not a folder.
+// a link, a .git that leads to nothing (gitDirs), or a folder the
+// repository names that is not a folder.
 var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
@@ -94,8 +95,10 @@ func bound(rel string) int64 {
 // folder as ".git is a link" (under, which looks at .git without following
 // it), and one that leads out of the working folder or is written as an
 // absolute path as a link that is not followed, by the look that meets it
-// first (gitDirs' look at .git). A linked worktree's .git file that is a
-// relative link to a file inside the worktree is read, as go-git reads it.
+// first (gitDirs' look at .git); a .git that leads to nothing in the
+// working folder is refused as ".git leads to nothing" (gitDirs). A linked
+// worktree's .git file that is a relative link to a file inside the
+// worktree is read, as go-git reads it.
 // go-billy's chroot over careOS (billy) only joins names: careOS has no
 // Lstat or Readlink, so the chroot resolves no link and hands it each name
 // unresolved.
@@ -454,8 +457,7 @@ func (f *careFile) Unlock() error { return errReadOnly }
 // has ended answers the context's error, whichever of the two was kept
 // first (read); one whose context has not answers the first file refused.
 // It keeps the opening's roots too, closed once the read is over
-// (close); a folder whose .git is gone by the root's look is closed as
-// the discovery moves up (drop).
+// (close).
 type refusal struct {
 	mu    sync.Mutex
 	err   error
@@ -512,18 +514,6 @@ func (r *refusal) keep(fs *careOS) *careOS {
 	return fs
 }
 
-// drop closes and forgets fs's root: a folder whose .git the discovery's
-// look found and the root's look did not (gone between the two).
-func (r *refusal) drop(fs *careOS) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if i := slices.Index(r.roots, fs.root); i >= 0 {
-		r.roots = slices.Delete(r.roots, i, i+1)
-		fs.root.Close()
-	}
-	r.told()
-}
-
 func (r *refusal) close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -535,7 +525,7 @@ func (r *refusal) close() {
 }
 
 // rootsOpen, set by a test, is told how many roots an opening holds open
-// each time the number changes (keep, drop, close).
+// each time the number changes (keep, close).
 var rootsOpen func(n int)
 
 func (r *refusal) told() {
@@ -567,11 +557,14 @@ func (r *refusal) first() error {
 // tree, when no folder up to it has a .git. Whether a folder holds a .git
 // is a look that does not follow a link (an lstat), which needs the folder
 // entered, not listed: a .git that is a link, whatever it leads to, or to
-// nothing, is a .git there, and the root's look that follows judges it. A
-// root is opened only for the folder that holds it (and for the root of
-// the file system, when no folder up to it does). The read's context is asked
-// at each folder before its looks (ended), and a look that failed once it
-// had ended answers its error.
+// nothing, is a .git there, and the root's look that follows judges it.
+// The discovery looks above a folder only when the folder has no .git
+// entry: a .git the root's look finds nothing behind (a link that leads
+// to nothing in its folder) is refused, as a .git the opener cannot read
+// is. A root is opened only for the folder that holds it (and for the root
+// of the file system, when no folder up to it does). The read's context is
+// asked at each folder before its looks (ended), and a look that failed
+// once it had ended answers its error.
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 	p, err := filepath.Abs(dir)
 	if err != nil {
@@ -591,11 +584,12 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			return nil, nil, seen.or(err)
 		}
 		up := filepath.Dir(p)
-		if _, err := os.Lstat(filepath.Join(folder, git.GitDirName)); os.IsNotExist(err) && up != p {
+		_, look := os.Lstat(filepath.Join(folder, git.GitDirName))
+		if os.IsNotExist(look) && up != p {
 			p = up
 			continue
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, nil, seen.or(err)
+		} else if look != nil && !os.IsNotExist(look) {
+			return nil, nil, seen.or(look)
 		}
 		fs := careFS(folder, itsFolder, seen)
 		fi, err := fs.Stat(filepath.Join(fs.dir, git.GitDirName))
@@ -609,10 +603,8 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 		if !os.IsNotExist(err) {
 			return nil, nil, seen.or(err)
 		}
-		if up != p {
-			seen.drop(fs)
-			p = up
-			continue
+		if look == nil {
+			return nil, nil, fs.refuse("%s leads to nothing in %s", git.GitDirName, fs.what)
 		}
 		return fs.billy(), nil, nil
 	}

@@ -189,8 +189,9 @@ var errTooManyFiles = errors.New("too many files")
 
 // renamedTo is path's new path between the commits from and to, as
 // Compare finds renames: "" when it was not renamed, and whether Compare
-// listed every file and looked for renames among them all (a rename past
-// either bound is not found).
+// listed every file and its renames were not cut: where they were cut
+// (gitrepo.Detail.RenamesCut), whether a deleted file moved is not known,
+// because renames were not looked for or not told apart there.
 func (l *locator) renamedTo(ctx context.Context, repo, from, to, path string) (string, bool, error) {
 	k := [3]string{repo, from, to}
 	d, ok := l.diffs[k]
@@ -251,7 +252,7 @@ func (l *locator) locate(ctx context.Context, f dispatch.Finding, c dispatch.Can
 		case rerr != nil:
 			return unknownOf(rerr)
 		case to == "" && !whole:
-			return &locatedState{State: locatedUnknown, Why: "more files changed than a rename is looked for in"}
+			return &locatedState{State: locatedUnknown, Why: "whether it moved is not known: renames were not looked for or not told apart here"}
 		case to == "":
 			return &locatedState{State: locatedFileGone}
 		case len(to) > dispatch.MaxFindingPath:

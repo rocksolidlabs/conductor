@@ -128,7 +128,7 @@ func TestLocateSaysNotKnownWhereRenamesWereNotLookedFor(t *testing.T) {
 		st := l.locate(t.Context(), f, dispatch.Candidate{Run: "r", Commit: to})
 		want := locatedState{State: locatedFileGone}
 		if cut {
-			want = locatedState{State: locatedUnknown, Why: "more files changed than a rename is looked for in"}
+			want = locatedState{State: locatedUnknown, Why: "whether it moved is not known: renames were not looked for or not told apart here"}
 		}
 		if st == nil || *st != want {
 			t.Errorf("renames cut %v: %+v, want %+v", cut, st, want)
@@ -182,19 +182,19 @@ func gitHistory(t *testing.T, steps ...map[string]gitFile) (string, []string) {
 // Files moved, deleted and added between two commits of a real repository,
 // compared by gitrepo.Compare and located by the locator: the comparison
 // holds every path that left the first commit and every path that came
-// into the second, and a file moved is located renamed to where it went,
-// or not known where renames were cut, and never gone; a file deleted is
-// gone where renames were not cut. Many files of one content moved with
-// more of it deleted, files of one content and one mode moved (ordinary,
-// executable, links), and an ordinary file moved and changed a little are
-// found renamed. Not known: an executable file moved and changed a
-// little, an executable file moved unchanged as an ordinary one, one
-// content deleted twice and added once under an unrelated name, and 101
-// files moved and changed a little. A file deleted while an unrelated one
-// is added, and a file deleted alone, are gone.
-func TestLocateNeverSaysAMovedFileIsGone(t *testing.T) {
+// into the second; a file moved is located renamed to where it went where
+// go-git found the move, and not known where the search was cut; a file
+// deleted is gone where renames were not cut. Found renamed: many files of
+// one content moved with more of it deleted, files of one content and one
+// mode moved (ordinary, executable, links), and an ordinary file moved and
+// changed a little. Not known, the search cut: an executable file moved
+// and changed a little, an executable file moved unchanged as an ordinary
+// one, one content deleted twice and added once under an unrelated name,
+// and 101 files moved and changed a little. A file deleted while an
+// unrelated one is added, and a file deleted alone, are gone.
+func TestLocateSaysRenamedWhereGoGitFoundTheMoveAndNotKnownWhereTheSearchWasCut(t *testing.T) {
 	ctx := t.Context()
-	const cutWhy = "more files changed than a rename is looked for in"
+	const cutWhy = "whether it moved is not known: renames were not looked for or not told apart here"
 	// files is n files under folder, from the from'th, of one mode, each
 	// holding body(i).
 	files := func(folder string, from, n int, mode string, body func(i int) string) map[string]gitFile {

@@ -329,9 +329,13 @@ func TestReadsSurviveARepackBetweenThem(t *testing.T) {
 // second opening, as the second run of Compare's function reads its first
 // commit (afterCommit), or after that run, as the second opening is closed
 // (rootsOpen). Its context not ended, the same read answers the
-// comparison.
+// comparison. A second opening that fails (HEAD removed as the first
+// opening is closed) answers the opening's error, ErrNotRepo; the same
+// opening failed, and the context ended as that failed opening is closed,
+// before the read answers, the context's error.
 func TestASecondAttemptAnswersItsContextsError(t *testing.T) {
-	for _, at := range []string{"never", "after the second opening", "after the second run of its function"} {
+	const failed, failedEnded = "the second opening failed", "the second opening failed, and the context ended as it was closed"
+	for _, at := range []string{"never", "after the second opening", "after the second run of its function", failed, failedEnded} {
 		dir := scratch(t)
 		write(t, dir, "a.txt", "one\n")
 		base := commit(t, dir, time.Time{}, "base")
@@ -351,19 +355,36 @@ func TestASecondAttemptAnswersItsContextsError(t *testing.T) {
 			if n > 0 {
 				return
 			}
-			if closes++; closes == 2 && at == "after the second run of its function" {
+			closes++
+			switch {
+			case closes == 1 && (at == failed || at == failedEnded):
+				if err := os.Remove(filepath.Join(dir, ".git", "HEAD")); err != nil {
+					t.Error(err)
+				}
+			case closes == 2 && (at == "after the second run of its function" || at == failedEnded):
 				cancel()
 			}
 		}
 		d, err := Compare(ctx, dir, base, head)
 		afterCommit, rootsOpen = nil, nil
 		cancel()
-		if at == "never" {
+		switch at {
+		case "never":
 			if err != nil || len(d.Changes) != 1 || commits != 3 || closes != 2 {
 				t.Errorf("its context not ended: %+v, %v, %d commits read, %d openings closed; want the comparison, 3 and 2", d.Changes, err, commits, closes)
 			}
-		} else if !errors.Is(err, context.Canceled) || commits < 2 || closes != 2 {
-			t.Errorf("its context ended %s: %v, %d commits read, %d openings closed; want the context's error, a second attempt and 2", at, err, commits, closes)
+		case failed:
+			if !errors.Is(err, ErrNotRepo) || commits != 1 || closes != 2 {
+				t.Errorf("%s: %v, %d commits read, %d openings closed; want ErrNotRepo, 1 and 2", at, err, commits, closes)
+			}
+		case failedEnded:
+			if !errors.Is(err, context.Canceled) || commits != 1 || closes != 2 {
+				t.Errorf("%s: %v, %d commits read, %d openings closed; want the context's error, 1 and 2", at, err, commits, closes)
+			}
+		default:
+			if !errors.Is(err, context.Canceled) || commits < 2 || closes != 2 {
+				t.Errorf("its context ended %s: %v, %d commits read, %d openings closed; want the context's error, a second attempt and 2", at, err, commits, closes)
+			}
 		}
 	}
 }

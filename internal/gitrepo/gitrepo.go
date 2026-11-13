@@ -70,10 +70,13 @@ const (
 	// every file is listed as added or deleted, with its lines, and
 	// Detail.RenamesCut says so. The search hashes each deleted ordinary
 	// file once and each added one once for each deleted file of a size
-	// near its own: at MaxRenamedBytes, 100 files deleted and 100 added,
-	// all of one size, took it 1.1 s at a load average of 3 to 4 on 64
-	// cores, the slowest arrangement measured. It runs before the line
-	// diffs, outside their time.
+	// near its own: at the bound, on a machine of 64 cores at a load
+	// average of 15, it took about 1.5 s for files all of one size and up
+	// to about 7 s in the slowest arrangement measured (about 760 MiB
+	// allocated in all, a peak of 17 MiB held). Its time is beside the
+	// comparison's time for line diffs (MaxCompareDiff), not inside it:
+	// it runs before them, and it ends with the read's context, at its
+	// next read of an object (ending, careOS).
 	MaxRenamed      = 100
 	MaxRenamedBytes = 1 << 20
 	shortLen        = 7
@@ -144,7 +147,9 @@ type Detail struct {
 // linked worktree through its common directory, as go-git's
 // PlainOpenWithOptions finds it with DetectDotGit and
 // EnableDotGitCommonDir (gitDirs, commonDir), every file of it opened
-// through careOS: the one way the package opens a repository. ErrNotRepo
+// through careOS: the one way the package opens a repository. The
+// discovery looks above a folder only when the folder has no .git entry;
+// a .git that leads to nothing is refused. ErrNotRepo
 // when there is none; ErrUnreadable (wrapped) when one of its files was
 // refused, whatever go-git made of the refusal; ctx's error once ctx has
 // ended (ended); seen keeps those of the reads that follow.

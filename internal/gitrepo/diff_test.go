@@ -17,10 +17,19 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	godiff "github.com/go-git/go-git/v5/utils/diff"
 	"github.com/sergi/go-diff/diffmatchpatch"
+)
+
+// The package's seams as it sets them, read once, as the package is
+// initialized, before any test runs: a test that swaps a seam restores the
+// value it found, and the tests of the defaults compare with these.
+var (
+	defaultDiffLines     = diffLines
+	defaultDetectRenames = detectRenames
 )
 
 // numbered is n lines, "line 0" on, the last one last.
@@ -339,7 +348,7 @@ func handed(t *testing.T) *counted {
 		seen.limit = append(seen.limit, limit)
 		return diff(a, b, limit)
 	}
-	t.Cleanup(func() { diffLines = godiff.DoWithTimeout })
+	t.Cleanup(func() { diffLines = diff })
 	return seen
 }
 
@@ -519,21 +528,33 @@ func TestRenamesAmongFiftyFilesAreFoundAsBefore(t *testing.T) {
 }
 
 // searched counts the runs of go-git's search for renames (detectRenames),
-// each run handed on to the search, its answer then changed by answer
-// when answer is set.
-func searched(t *testing.T, answer func(object.Changes) object.Changes) *int {
+// each run handed on to the search detectRenames was when searched was
+// called, its answer then changed by answer when answer is set.
+func searched(t *testing.T, answer func(object.Changes, error) (object.Changes, error)) *int {
 	t.Helper()
-	runs := new(int)
+	runs, search := new(int), detectRenames
 	detectRenames = func(plain object.Changes, opts *object.DiffTreeOptions) (object.Changes, error) {
 		*runs++
-		got, err := object.DetectRenames(plain, opts)
+		got, err := search(plain, opts)
 		if answer != nil {
-			got = answer(got)
+			got, err = answer(got, err)
 		}
 		return got, err
 	}
-	t.Cleanup(func() { detectRenames = object.DetectRenames })
+	t.Cleanup(func() { detectRenames = search })
 	return runs
+}
+
+// notSearched fails the test at once when the search for renames is
+// called (detectRenames), for what, and answers without searching.
+func notSearched(t *testing.T, what string) {
+	t.Helper()
+	search := detectRenames
+	detectRenames = func(plain object.Changes, _ *object.DiffTreeOptions) (object.Changes, error) {
+		t.Errorf("%s: the search for renames was called", what)
+		return nil, errors.New("not searched")
+	}
+	t.Cleanup(func() { detectRenames = search })
 }
 
 // statuses is how many files d lists of each status.
@@ -549,8 +570,9 @@ func statuses(d Detail) map[string]int {
 // each its own content, are searched for once and found, every one; 101
 // files moved and changed a little (past MaxRenamed), and 100 files of
 // 256 KiB moved and changed a little (past MaxRenamedBytes), are listed
-// deleted and added, the search not run, and the answer says renames were
-// cut.
+// deleted and added, the search not called (a call fails the test at once
+// and answers without searching, notSearched), and the answer says renames
+// were cut.
 func TestRenamesAreLookedForOnlyInASmallComparison(t *testing.T) {
 	own := func(i int) string { return fmt.Sprintf("the content of file %d\n", i) }
 	large := func(i int) string {
@@ -575,45 +597,118 @@ func TestRenamesAreLookedForOnlyInASmallComparison(t *testing.T) {
 		{"101 files moved and changed a little", 101, own, func(i int) string { return own(i) + "and a line more\n" }, 0, map[string]int{"A": 101, "D": 101}, true},
 		{"100 files of 256 KiB moved and changed a little", 100, large, func(i int) string { return "a first line\n" + large(i) }, 0, map[string]int{"A": 100, "D": 100}, true},
 	} {
-		dir, c1, c2 := movedFiles(t, c.n, c.body, c.moved)
-		runs := searched(t, nil)
-		d, err := Compare(context.Background(), dir, c1, c2)
-		if err != nil || *runs != c.runs || !maps.Equal(statuses(d), c.want) || d.RenamesCut != c.cut {
-			t.Errorf("%s: searched %d times, %v, renames cut %v, %v; want searched %d times, %v, renames cut %v", c.name, *runs, statuses(d), d.RenamesCut, err, c.runs, c.want, c.cut)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			dir, c1, c2 := movedFiles(t, c.n, c.body, c.moved)
+			runs := new(int)
+			if c.runs == 0 {
+				notSearched(t, c.name)
+			} else {
+				runs = searched(t, nil)
+			}
+			d, err := Compare(context.Background(), dir, c1, c2)
+			if err != nil || *runs != c.runs || !maps.Equal(statuses(d), c.want) || d.RenamesCut != c.cut {
+				t.Errorf("%s: searched %d times, %v, renames cut %v, %v; want searched %d times, %v, renames cut %v", c.name, *runs, statuses(d), d.RenamesCut, err, c.runs, c.want, c.cut)
+			}
+		})
 	}
 }
 
 // An answer of the search that does not hold every path of the comparison
-// once (a path left out, a path twice) is not taken: the comparison is
-// listed without renames, and the answer says renames were cut, though the
-// two files are of different contents and ordinary ones.
+// once as the comparison has it (a path left out, a path twice, the entry
+// of a path changed in place turned into something else, a rename whose
+// source's id is not the deleted file's), and an answer that comes with an
+// error, is not taken: the comparison is listed without renames, and the
+// answer says renames were cut. The comparison changes a file in place,
+// moves one unchanged, deletes one and adds an unrelated one; go-git's own
+// answer, taken, lists the move as a rename, and renames are not cut.
 func TestASearchsAnswerIsTakenOnlyWhenItHoldsEveryPath(t *testing.T) {
 	dir := scratch(t)
 	write(t, dir, "gone.txt", "a file that goes\n")
+	write(t, dir, "keep.txt", "kept\n")
+	write(t, dir, "moved.txt", "a file that moves\n")
 	c1 := commit(t, dir, time.Time{}, "one")
 	os.Remove(filepath.Join(dir, "gone.txt"))
+	write(t, dir, "keep.txt", "kept, changed\n")
+	if err := os.Rename(filepath.Join(dir, "moved.txt"), filepath.Join(dir, "there.txt")); err != nil {
+		t.Fatal(err)
+	}
 	write(t, dir, "other.txt", "1\n2\n3\n")
 	c2 := commit(t, dir, time.Time{}, "two")
-	want := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "other.txt", Status: "A", Added: 3}}
-	for name, answer := range map[string]func(object.Changes) object.Changes{
-		"as go-git answers it": nil,
-		"a path left out":      func(ch object.Changes) object.Changes { return ch[:len(ch)-1] },
-		"a path twice":         func(ch object.Changes) object.Changes { return append(ch, ch[0]) },
-	} {
-		runs := searched(t, answer)
-		d, err := Compare(context.Background(), dir, c1, c2)
-		if err != nil || *runs != 1 || !slices.Equal(d.Changes, want) || d.RenamesCut != (answer != nil) {
-			t.Errorf("%s: searched %d times, %+v, renames cut %v, %v; want searched once, %+v, renames cut %v", name, *runs, d.Changes, d.RenamesCut, err, want, answer != nil)
+	// go-git's answer is in its order: a rename where its source sorts.
+	taken := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "there.txt", From: "moved.txt", Status: "R"}, {Path: "other.txt", Status: "A", Added: 3}}
+	plain := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "moved.txt", Status: "D", Removed: 1}, {Path: "other.txt", Status: "A", Added: 3}, {Path: "there.txt", Status: "A", Added: 1}}
+	// changed is ch with a copy of its first entry that matches in place
+	// of it, changed by change; the test fails when none matches.
+	changed := func(t *testing.T, ch object.Changes, match func(*object.Change) bool, change func(*object.Change)) object.Changes {
+		out := slices.Clone(ch)
+		i := slices.IndexFunc(out, match)
+		if i < 0 {
+			t.Fatalf("go-git's answer %v has no entry to change", ch)
 		}
+		c := *out[i]
+		change(&c)
+		out[i] = &c
+		return out
+	}
+	for _, c := range []struct {
+		name   string
+		answer func(t *testing.T, ch object.Changes, err error) (object.Changes, error)
+	}{
+		{"as go-git answers it", nil},
+		{"a path left out", func(_ *testing.T, ch object.Changes, err error) (object.Changes, error) { return ch[:len(ch)-1], err }},
+		{"a path twice", func(_ *testing.T, ch object.Changes, err error) (object.Changes, error) {
+			return append(slices.Clone(ch), ch[0]), err
+		}},
+		{"a path changed in place turned into something else", func(t *testing.T, ch object.Changes, err error) (object.Changes, error) {
+			return changed(t, ch, func(c *object.Change) bool { return c.From.Name == "keep.txt" && c.To.Name == "keep.txt" }, func(c *object.Change) {
+				c.To.TreeEntry.Mode = filemode.Executable
+			}), err
+		}},
+		{"a rename whose source's id was changed", func(t *testing.T, ch object.Changes, err error) (object.Changes, error) {
+			gone := slices.IndexFunc(ch, func(c *object.Change) bool { return c.From.Name == "gone.txt" })
+			if gone < 0 {
+				t.Fatalf("go-git's answer %v has no gone.txt", ch)
+			}
+			return changed(t, ch, func(c *object.Change) bool { return c.From.Name == "moved.txt" && c.To.Name == "there.txt" }, func(c *object.Change) {
+				c.From.TreeEntry.Hash = ch[gone].From.TreeEntry.Hash
+			}), err
+		}},
+		{"go-git's answer with an error", func(_ *testing.T, ch object.Changes, _ error) (object.Changes, error) {
+			return ch, errors.New("the search failed")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var answer func(object.Changes, error) (object.Changes, error)
+			if c.answer != nil {
+				answer = func(ch object.Changes, err error) (object.Changes, error) { return c.answer(t, ch, err) }
+			}
+			runs := searched(t, answer)
+			d, err := Compare(context.Background(), dir, c1, c2)
+			want, cut := taken, c.answer != nil
+			if cut {
+				want = plain
+			}
+			if err != nil || *runs != 1 || !slices.Equal(d.Changes, want) || d.RenamesCut != cut {
+				t.Errorf("searched %d times, %+v, renames cut %v, %v; want searched once, %+v, renames cut %v", *runs, d.Changes, d.RenamesCut, err, want, cut)
+			}
+		})
 	}
 }
 
 // The line diff is go-git's helper that takes a limit
-// (diff.DoWithTimeout), by default: counts hands it each file's time.
+// (diff.DoWithTimeout), by default (defaultDiffLines, read before any
+// test swapped it): counts hands it each file's time.
 func TestTheLineDiffIsGoGitsHelperWithALimit(t *testing.T) {
-	if got, want := reflect.ValueOf(diffLines).Pointer(), reflect.ValueOf(godiff.DoWithTimeout).Pointer(); got != want {
+	if got, want := reflect.ValueOf(defaultDiffLines).Pointer(), reflect.ValueOf(godiff.DoWithTimeout).Pointer(); got != want {
 		t.Errorf("the line diff is %s; want go-git's diff.DoWithTimeout", runtime.FuncForPC(got).Name())
+	}
+}
+
+// The search for renames is go-git's own (object.DetectRenames), by
+// default (defaultDetectRenames, read before any test swapped it).
+func TestTheRenameSearchIsGoGits(t *testing.T) {
+	if got, want := reflect.ValueOf(defaultDetectRenames).Pointer(), reflect.ValueOf(object.DetectRenames).Pointer(); got != want {
+		t.Errorf("the search for renames is %s; want go-git's object.DetectRenames", runtime.FuncForPC(got).Name())
 	}
 }
 
@@ -623,7 +718,7 @@ func TestTheLineDiffIsGoGitsHelperWithALimit(t *testing.T) {
 func fakeClock(t *testing.T, took func(n int) time.Duration, ran func(n int)) *int {
 	t.Helper()
 	calls, now := 0, time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
-	started := 0
+	started, was := 0, clock
 	clock = func() time.Time {
 		n := calls / 2
 		if calls++; calls%2 == 1 {
@@ -636,7 +731,7 @@ func fakeClock(t *testing.T, took func(n int) time.Duration, ran func(n int)) *i
 		}
 		return now
 	}
-	t.Cleanup(func() { clock = time.Now })
+	t.Cleanup(func() { clock = was })
 	return &started
 }
 
@@ -748,9 +843,10 @@ func short(id string) string { return id[:min(len(id), 7)] }
 func stillClock(t *testing.T) {
 	t.Helper()
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	wasClock, wasDiff := clock, diffLines
 	clock = func() time.Time { return now }
 	diffLines = func(a, b string, _ time.Duration) []diffmatchpatch.Diff { return godiff.DoWithTimeout(a, b, time.Hour) }
-	t.Cleanup(func() { clock, diffLines = time.Now, godiff.DoWithTimeout })
+	t.Cleanup(func() { clock, diffLines = wasClock, wasDiff })
 }
 
 // wholeCounts is the lines added and removed between a and b as go-git's
