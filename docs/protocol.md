@@ -4729,8 +4729,9 @@ characters that reorder a line (U+202A to U+202E, U+2066 to U+2069), and
 is cut to its bound; a check's status and conclusion are GitHub's word
 or `other`. Other characters that draw nothing are kept as written. Each
 text of an answer is made storable where the answer becomes the store's
-record, and the reasons a link's checks are incomplete are fitted to the
-store's bound; the fields of a fixed form (ids, addresses, commits,
+record, and a link's checks and the reasons they are incomplete are
+fitted to the store's bounds as the store measures them, after its own
+normalisation of each text; the fields of a fixed form (ids, addresses, commits,
 times) are checked for their form; the store measures what it is handed
 after its own normalisation; a link's read it refuses is recorded as the
 link's failed read (one older than the read kept is refused as stale,
@@ -4760,7 +4761,7 @@ project's tracker URL), none read on another host. Anything else is
 | `POST /api/dispatch/tickets/{key}/external/delete` | `{opId, expectedRev?, byName?}` | `ticket.unlink_external`: each field GitHub owned becomes Dispatch's with its text. `{receipt, ticket}` |
 | `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName?, images?}` | replays under the ticket's lock (a resend of a refresh that changed the ticket, its first send's done or waited for, completes the images that send left pending, with one more read of the item and its downloads made only when an entry is pending and none once the ticket was unlinked or linked since, and answers `{changed: true, receipt, ticket, images}` from its receipt; a refresh that changed nothing keeps no receipt, so its resend is a new read), then reads the item with the validators its last read kept: another item than the one held is `409 moved` naming it; a `304`, or a `200` that changes nothing, is recorded as the ticket's read alone (no change, no receipt); otherwise `ticket.refresh` writes the snapshot and the fields GitHub owns. Then, whatever the read found, unless `images` is false, the manifest's pending entries are completed as an import's resend does, after a `304` from one more read without validators, made only when one is pending. `200 {changed, receipt?, ticket, images}`. The ticket's status never moves |
 | `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev?, byName?, field, owner}` | `field` `title` or `description`, `owner` `dispatch` or `github`: replays (again under the ticket's lock, as a link does), then to GitHub reads the item first and hands the read to `ticket.authority`, which writes the snapshot, the owner and the field from it. `{receipt, ticket}` |
-| `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads the item a live `delivery` or `external` link names, and for a pull request its checks at its head commit (at most 100; a cut list says so, in at most 8 reasons of at most 120 bytes within 1 KiB as kept, the reasons past it dropped from the end and the last kept saying so), and records it as the link's read: `200 {read}`. A failure keeps its words on the link's read |
+| `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads the item a live `delivery` or `external` link names, and for a pull request its checks at its head commit (at most 100 within 32 KiB as the store measures them, after its own normalisation of each text: a set past either is cut from its end, failures first, the cut said as a reason and the checks left out counted; a cut list says so, in at most 8 reasons of at most 120 bytes within 1 KiB as kept, the reasons past it dropped from the end and the last kept saying so), and records it as the link's read: `200 {read}`. A failure keeps its words on the link's read |
 | `GET /api/dispatch/tickets/{key}/links/{id}/read` | none | `{read}`, the link's last read whole, its checks among it, or `null` |
 
 Beside these, a `link.add` whose URL is a GitHub item's, for a host with
@@ -4785,11 +4786,13 @@ answers `503 tracker_busy`, nothing closed. Where the route does not
 read, the store's rule alone decides: the edit is answered from its
 receipt; the ticket was done, deleted or at another revision than the
 one sent when the route looked; the route's own look at the project, the
-receipt or the ticket failed (a request whose client left before the
-route read the project among them; once the server has begun to stop,
-`503 tracker_busy`, nothing closed); or the ticket or its policy
-changed between the route's look and the store's edit. An edit to `done`
-in a project without `merged` goes to the store as any edit does. A
+receipt or the ticket failed (once the server has begun to stop, `503
+tracker_busy`, nothing closed); or the ticket or its policy changed
+between the route's look and the store's edit. The route's look at the
+project keeps the request's values and not its end, within the close's
+time: a request whose client has left is read for as one whose client
+stays. An edit to `done` in a project without `merged` goes to the
+store as any edit does. A
 deleted ticket is asked nothing: a link's read, a refresh, a field given
 back, a link and the close answer its `404 not_found` before any
 request; a read that waited for its link's lock loads the ticket under
@@ -4801,8 +4804,8 @@ webhook; and every read, the background ones and the routes', ends with
 the server: its stop begins first thing in its shutdown, and from then
 no call enters the one function every request to GitHub passes (it
 answers `503 tracker_busy`); a request already inside it is ended by its
-context, which, for a route begun before the stop, ends a moment after
-it, and records nothing. A route whose call to the store the stop ended
+context, which ends with the stop, for a route begun before it as for
+one begun after, and records nothing. A route whose call to the store the stop ended
 answers as the store's failures do. Reads of one ticket's item, and of
 one link's, are made one at a time, under a lock held from the request
 to the commit (an import's first send reads before there is a ticket to
