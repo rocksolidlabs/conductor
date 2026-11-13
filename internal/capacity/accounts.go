@@ -674,6 +674,30 @@ func (s *Store) Reserve(id string) (Account, func(), error) { return s.reserve(i
 // retired account, kept for what is bound to it, is held as well.
 func (s *Store) Hold(id string) (Account, func(), error) { return s.reserve(id, true) }
 
+// HoldOf is Hold for each account pick names in the accounts as they are
+// under the accounts' lock, so no Remove comes between the pick and the
+// reservations; an id the document does not hold is passed over. It
+// answers the ids it holds.
+func (s *Store) HoldOf(pick func(Accounts) []string) ([]string, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.owned {
+		return nil, nil, notOwner()
+	}
+	d, err := s.load()
+	if err != nil {
+		return nil, nil, err
+	}
+	var ids []string
+	for _, id := range pick(d) {
+		if _, err := find(&d, id); err == nil {
+			s.reserved[id]++
+			ids = append(ids, id)
+		}
+	}
+	return ids, s.releaser(ids), nil
+}
+
 func (s *Store) reserve(id string, retired bool) (Account, func(), error) {
 	if id == DefaultID {
 		return Account{}, func() {}, nil
@@ -696,14 +720,21 @@ func (s *Store) reserve(id string, retired bool) (Account, func(), error) {
 		return Account{}, nil, invalid("account", "%s is retired", id)
 	}
 	s.reserved[id]++
+	return a, s.releaser([]string{id}), nil
+}
+
+// releaser lets go, once, of a reservation on each of ids.
+func (s *Store) releaser(ids []string) func() {
 	var once sync.Once
-	return a, func() {
+	return func() {
 		once.Do(func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if s.reserved[id]--; s.reserved[id] <= 0 {
-				delete(s.reserved, id)
+			for _, id := range ids {
+				if s.reserved[id]--; s.reserved[id] <= 0 {
+					delete(s.reserved, id)
+				}
 			}
 		})
-	}, nil
+	}
 }
