@@ -676,16 +676,17 @@ func (s *Store) Hold(id string) (Account, func(), error) { return s.reserve(id, 
 
 // HoldOf is Hold for each account pick names in the accounts as they are
 // under the accounts' lock, so no Remove comes between the pick and the
-// reservations; an id the document does not hold is passed over.
-func (s *Store) HoldOf(pick func(Accounts) []string) (func(), error) {
+// reservations; an id the document does not hold is passed over. It
+// answers the ids it holds.
+func (s *Store) HoldOf(pick func(Accounts) []string) ([]string, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.owned {
-		return nil, notOwner()
+		return nil, nil, notOwner()
 	}
 	d, err := s.load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var ids []string
 	for _, id := range pick(d) {
@@ -694,7 +695,7 @@ func (s *Store) HoldOf(pick func(Accounts) []string) (func(), error) {
 			ids = append(ids, id)
 		}
 	}
-	return s.releaser(ids), nil
+	return ids, s.releaser(ids), nil
 }
 
 func (s *Store) reserve(id string, retired bool) (Account, func(), error) {

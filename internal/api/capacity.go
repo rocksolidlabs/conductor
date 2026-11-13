@@ -260,16 +260,16 @@ func (d *capacityDesk) started(agent, account string) {
 }
 
 // counts is this server's estimate for k: the server sessions running of
-// its agent that hold its account (heldAccount, over doc) and those
-// started in the last 5 hours and 7 days, since this server started.
-func (d *capacityDesk) counts(k capacity.Key, doc capacity.Accounts) capacity.Counts {
+// its agent counted on its account (Launched.Counted) and those started in
+// the last 5 hours and 7 days, since this server started.
+func (d *capacityDesk) counts(k capacity.Key) capacity.Counts {
 	since := d.since
 	c := capacity.Counts{Since: &since}
 	for _, info := range d.s.registry.List() {
 		if info.Kind != session.KindServer || info.AgentID != k.Agent || info.Status.Ended() {
 			continue
 		}
-		if l, ok := d.s.lookupLocal(info.ID); ok && heldAccount(doc, l.Launched().Adapter, l.Launched().Account, l.Launched().LoginFolder) == k.Account {
+		if l, ok := d.s.lookupLocal(info.ID); ok && l.Launched().Counted == k.Account {
 			c.Running++
 		}
 	}
@@ -697,7 +697,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 		}
 	}
 	account.Plan = plan
-	v.Account, v.Model, v.Host, v.Counts = account, model, host, d.counts(k, doc)
+	v.Account, v.Model, v.Host, v.Counts = account, model, host, d.counts(k)
 	return v, nil
 }
 

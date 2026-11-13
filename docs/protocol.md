@@ -6104,42 +6104,55 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
-Whatever a launch of this server runs in a registered account's folder,
-as the launch's own adapter's folder variable or home says where that
-is, holds that account from before its process starts until it has
-ended; its session is counted on one account from its registration. A
-launch runs in an account's folder when it names the account, or the
-folder its process runs in (its adapter's folder variable's as the
-process sees it, else the agent's own under its home; one that is not a
-whole path is read under the folder it starts in both as written and
-cleaned) is the account's, whatever the account's adapter: it holds every
-such account, whether or not its session is registered (its registration
-refused and its stop failed among them). That folder is kept in memory
-beside the binding, never written, compared or answered. Its session is
-counted on the account it names, else its own adapter's account on that
-folder, else its binding's id (`default` for the agent's own login),
-never on another adapter's account; holding and counting are two
-questions, since one folder can be more than one account's. A folder is
-an account's when the file system says it is the same directory, however
-it is written; a folder that does not exist yet is compared by its path,
-cleaned. A usage read is not a launch and holds nothing; an account
-registered on a folder after a launch into it began is held from that
-launch's registration; a folder that a link makes an account's after a
-launch's reservation is held from that launch's registration; where the
-accounts cannot be read, or on a server that does not own them, nothing
-is reserved by folder for a launch (a remove is refused while that
-lasts), and a registered session is held by its folder as soon as the
-accounts can be read; a launch on another Runtime is held and counted as
-one that runs here; a home that an entry or a launch sets moves the
-agent's own folder, and the binding's `source` still says the agent's own
-login; a home set to nothing is read as not set (the server's own home);
-a program whose entry names no adapter, or another adapter's folder
-variable, is not read for a folder: Conductor does not know what such a
-program reads, and it holds nothing by folder.
+A launch of this server holds every registered account whose folder it
+runs in, as the launch's own adapter's folder variable or home says
+where that is: decided when the launch is reserved, before its process
+starts, and kept until the process has ended. Its session is counted on
+one account, decided at its registration. A launch runs in an account's
+folder when it names the account, or the folder its process runs in (its
+adapter's folder variable's as the process sees it, else the agent's own
+under its home; one that is not a whole path is read under the folder it
+starts in both as written and cleaned) is the account's, whatever the
+account's adapter: it holds every such account, whether or not its
+session is registered (its registration refused and its stop failed
+among them). The ids of the accounts it holds, and the one account it is
+counted on, are kept in memory with its session, never written or
+answered; no folder is asked about again after the reservation. Its
+session is counted on the account it names, else its own adapter's
+account on that folder, else its binding's id (`default` for the agent's
+own login), never on another adapter's account; its running count and
+its start counts are on that one account. Holding and counting are two
+questions, since one folder can be more than one account's.
+
+- An account registered on a folder after a launch into it was reserved
+  is not held by that launch, and the launch stays counted where it was
+  counted.
+- Where the accounts cannot be read, or on a server that does not own
+  them, a launch holds nothing by folder (a remove is refused while that
+  lasts).
+- A usage read is not a launch and holds nothing.
+- A launch on another Runtime is held and counted as one that runs here.
+- A home that an entry or a launch sets moves the agent's own folder, and
+  the binding's `source` still says the agent's own login.
+- A program whose entry names no adapter, or another adapter's folder
+  variable, is not read for a folder: Conductor does not know what such a
+  program reads, and it holds nothing by folder.
+- A home set to nothing is read as not set: the tool's own folder is then
+  found as it is for a launch that sets no home.
+- For what a launch holds and where it is counted, a folder is an
+  account's when the file system says it is the same directory at the
+  reservation, however it is written, and a folder that does not exist
+  yet is compared by its path as written, cleaned. The folder Brakeman's
+  turn wants is looked up for its binding as before: the paths the same
+  cleaned, or the same where links lead.
+- A launch whose binding is `unlisted` is counted on `unlisted`, unless
+  the file system says its folder is an account's of the launch's own
+  adapter (another spelling of it), when it is counted on that account.
+
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
 most 10, while a launch holds the account so, a registered server
-session's process that runs in its folder still runs (its stop failed,
-or it was removed from the listing), or an engine run not ended, or a
+session that held it at its launch still has a process running (its stop
+failed, or it was removed from the listing), or an engine run not ended, or a
 ledger run running or interrupted, and continued by no other run, has a
 member whose binding names it or keeps its folder (one whose crew cannot
 be read holds every account); a stopped or finished run is no bar

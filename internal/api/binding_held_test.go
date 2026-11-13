@@ -130,6 +130,30 @@ func TestRemoveAccountInUseByTheLedger(t *testing.T) {
 	}
 }
 
+// A run the ledger keeps, the engine holding none, holds every account its
+// members' bindings keep the folder of: a member bound pinned to a folder
+// that a Claude Code account and a Codex account are both on holds each,
+// the remove of each refused naming the run while it is kept running, and
+// taken once it is stopped.
+func TestALedgerRunPinnedToAFolderHoldsEveryAccountOnIt(t *testing.T) {
+	e := newBindEnv(t, nil)
+	folder := realRoot(t, t.TempDir())
+	ids := []string{e.accountAt(t, "claude", "Claude Code", folder), e.accountAt(t, "codex", "Codex", folder)}
+	pinned, _ := json.Marshal(crew.Crew{ID: "kept", Name: "Kept", Goal: "g", Cwd: e.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "claude-p", Start: crew.Start{When: crew.StartTask},
+			Bound: &session.BoundAccount{ID: capacity.DefaultID, Folder: folder, Source: session.SourcePinned, Login: keptLogin("claude", folder)}}}})
+	row := ledger.RunRow{ID: "kept-0000aaaa", CrewID: "kept", Crew: string(pinned), State: ledger.RunRunning, CreatedAt: time.Now()}
+	if _, err := e.srv.ledger.Transition(t.Context(), row.ID, func(tx *ledger.Tx) error { return tx.CreateRun(row) }); err != nil {
+		t.Fatal(err)
+	}
+	e.inUse(t, "the run kept running", "run kept-0000aaaa", ids...)
+	row.State, row.ClosedAt = ledger.RunStopped, time.Now()
+	if _, err := e.srv.ledger.Transition(t.Context(), row.ID, func(tx *ledger.Tx) error { return tx.PutRun(row) }); err != nil {
+		t.Fatal(err)
+	}
+	e.removed(t, "the run stopped", ids...)
+}
+
 // A registered session whose binding is pinned to a registered account's
 // folder holds that account: an entry that pins the folder, launched
 // naming none, is bound pinned (its source what the environment says), the

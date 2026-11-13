@@ -118,10 +118,12 @@ type Launched struct {
 	Account BoundAccount
 	Model   string
 	Adapter string
-	// LoginFolder is the folder its process runs in as its adapter's
-	// folder ("" for none): what holds an account by its folder, kept in
-	// memory alone, never recorded, compared or answered.
-	LoginFolder string
+	// Holds are the ids of the registered accounts its launch's
+	// reservation took, which it holds until its process has ended, and
+	// Counted the one account it is counted on, decided at its
+	// registration: kept in memory alone, never recorded or answered.
+	Holds   []string
+	Counted string
 }
 
 // Where a bound login comes from (BoundAccount.Source).

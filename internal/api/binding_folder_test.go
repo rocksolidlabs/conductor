@@ -4,22 +4,25 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
-// Whatever a launch of this server runs in a registered account's folder,
-// as the launch's own adapter's folder variable or home says where that
-// is, holds that account from before its process starts until it has
-// ended; its session is counted on one account from its registration
-// (#856). The binding stays what #845 made it; the folder the process runs
-// in is kept beside it, in memory.
+// A launch of this server holds every registered account whose folder it
+// runs in, as the launch's own adapter's folder variable or home says
+// where that is: decided when the launch is reserved, before its process
+// starts, and kept until the process has ended. Its session is counted on
+// one account, decided at its registration (#856). The binding stays what
+// #845 made it; the ids held and the account counted on are kept beside
+// it, in memory, and no folder is asked about again after the reservation.
 
 // addFolderEntries adds stubs of bindAgents' kind to e's catalog (Codex's
 // for an id that starts codex-, else Claude Code's), each with its entry's
@@ -114,6 +117,19 @@ func (e *bindEnv) removed(t *testing.T, when string, ids ...string) {
 	}
 }
 
+// removeAtEnd removes the account id when t ends, failed or not: the
+// remove is asked until nothing holds the account (what t started is
+// stopped by the cleanups registered after this one, which run first), and
+// an account already removed is left so.
+func (e *bindEnv) removeAtEnd(t *testing.T, id string) {
+	t.Cleanup(func() {
+		waitUntil(t, "the remove of "+id+" at the end", func() bool {
+			_, out := e.removeAccount(t, id)
+			return errorCode(out) != "account_in_use"
+		})
+	})
+}
+
 // counted fails unless agent's sessions on account are running running,
 // and started started in each window.
 func (e *bindEnv) counted(t *testing.T, agent, account string, running, started int) {
@@ -168,8 +184,8 @@ func TestABindingIsWhatMainMadeIt(t *testing.T) {
 // that sets the folder variable; and the tool's own folder, an account
 // registered on it, with nothing set. At the launch's seam before its
 // process starts the remove is refused, a launch under way; the session
-// registered, its binding is #845's and the folder it runs in is kept
-// beside it, the reservation is let go and the session holds the account
+// registered, its binding is #845's and the account is among the ids it
+// keeps as held, the reservation is let go and the session holds the account
 // and is counted on it in both windows; its process ended, the starts stay
 // counted and the remove is taken. Where a Codex account was registered on
 // the same folder first, the Claude Code launch is counted on the Claude
@@ -181,20 +197,20 @@ func TestWhatRunsInAnAccountsFolderHoldsIt(t *testing.T) {
 	a := e.accountAt(t, "claude", "Pinned", folderA)
 	k, folderK := e.account(t, "claude", "Pinned beside a key")
 	r, folderR := e.account(t, "claude", "Set by a recipe")
-	o, folderO := e.ownAccount(t, "Own folder")
+	o, _ := e.ownAccount(t, "Own folder")
 	e.addFolderEntries(t, map[string][2]map[string]string{
 		"claude-on-a":   {{"CLAUDE_CONFIG_DIR": folderA}, nil},
 		"claude-on-k":   {{"CLAUDE_CONFIG_DIR": folderK}, {"ANTHROPIC_API_KEY": "made-up-key-856"}},
 		"claude-sets-r": {nil, {"CLAUDE_CONFIG_DIR": folderR}},
 	})
 	for _, tc := range []struct {
-		name, account, folder, kept, agent, source string
-		yolo                                       bool
+		name, account, kept, agent, source string
+		yolo                               bool
 	}{
-		{"an entry that pins the folder", a, folderA, folderA, "claude-on-a", session.SourcePinned, false},
-		{"the entry beside a key its recipe adds", k, folderK, "", "claude-on-k", session.SourceLaunchEnv, true},
-		{"a recipe that sets the folder", r, folderR, "", "claude-sets-r", session.SourceLaunchEnv, true},
-		{"the tool's own folder", o, folderO, "", "claude-p", session.SourceOwn, false},
+		{"an entry that pins the folder", a, folderA, "claude-on-a", session.SourcePinned, false},
+		{"the entry beside a key its recipe adds", k, "", "claude-on-k", session.SourceLaunchEnv, true},
+		{"a recipe that sets the folder", r, "", "claude-sets-r", session.SourceLaunchEnv, true},
+		{"the tool's own folder", o, "", "claude-p", session.SourceOwn, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wait, let := holdAtStart(t)
@@ -213,8 +229,8 @@ func TestWhatRunsInAnAccountsFolderHoldsIt(t *testing.T) {
 			}
 			t.Cleanup(func() { e.stopAndWait(sid) })
 			l := e.local(sid).Launched()
-			if b := l.Account; b.Source != tc.source || b.Folder != tc.kept || l.LoginFolder != tc.folder {
-				t.Fatalf("the binding %+v, the folder it runs in %q", b, l.LoginFolder)
+			if b := l.Account; b.Source != tc.source || b.Folder != tc.kept || !slices.Contains(l.Holds, tc.account) {
+				t.Fatalf("the binding %+v, the accounts held %v", b, l.Holds)
 			}
 			status, out := e.removeAccount(t, tc.account)
 			if names := strings.Join(namesOf(out), "|"); status != http.StatusConflict || !strings.Contains(names, "session "+tc.name) || strings.Contains(names, "launch") {
@@ -364,8 +380,8 @@ func adapterOf(t *testing.T, e *bindEnv, id string) string {
 // HOME to one, where that home's tool folder is a registered account's,
 // holds the account from before its process starts until it has ended;
 // for a crew's member, bound before it has a folder, it is refused as a
-// folder variable that is not whole is, in words that say HOME is not a
-// whole path and name no folder.
+// folder variable that is not whole is, in words that say its home is not
+// a whole path and name no variable and no folder.
 func TestAHomeNotWholeIsReadUnderTheStartFolder(t *testing.T) {
 	e := newBindEnv(t, nil)
 	folder := filepath.Join(realRoot(t, e.root), "h", ".claude")
@@ -407,7 +423,7 @@ func TestAHomeNotWholeIsReadUnderTheStartFolder(t *testing.T) {
 		words[agent], _ = out["error"].(map[string]any)["message"].(string)
 	}
 	tail := ", which would be another login in each of its working folders: set a whole path"
-	if !strings.HasPrefix(words["claude-home"], "member m: HOME is not a whole path: ") || !strings.HasSuffix(words["claude-home"], tail) ||
+	if !strings.HasPrefix(words["claude-home"], "member m: its home is not a whole path: ") || !strings.HasSuffix(words["claude-home"], tail) ||
 		!strings.Contains(words["claude-dir"], "CLAUDE_CONFIG_DIR") || !strings.HasSuffix(words["claude-dir"], tail) {
 		t.Fatalf("the member's refusals: %q and %q", words["claude-home"], words["claude-dir"])
 	}
@@ -415,6 +431,9 @@ func TestAHomeNotWholeIsReadUnderTheStartFolder(t *testing.T) {
 		if strings.Contains(w, "h/") || strings.Contains(w, e.root) {
 			t.Fatalf("a refusal names a folder: %q", w)
 		}
+	}
+	if strings.Contains(words["claude-home"], "HOME") {
+		t.Fatalf("the home's refusal names a variable: %q", words["claude-home"])
 	}
 }
 
@@ -432,6 +451,8 @@ func TestAHomeNotWholeIsReadUnderTheStartFolder(t *testing.T) {
 // account is. A managed run's attempt in a worktree of its own, its retry
 // and a member started later on the tool's own folder are held the same
 // way, each from before its process starts, and counted on the account.
+// A subtest that registers an account removes it when it ends, failed or
+// not, so that a later one does not meet it on the tool's own folder.
 func TestCrewMembersInAnAccountsFolderHoldIt(t *testing.T) {
 	e := newBindEnv(t, nil)
 	e.gitRepo(t)
@@ -471,6 +492,7 @@ func TestCrewMembersInAnAccountsFolderHoldIt(t *testing.T) {
 			account := tc.account
 			if account == "" {
 				account, _ = e.ownAccount(t, "Own folder")
+				e.removeAtEnd(t, account)
 			}
 			id := e.sendCrew("POST", "/api/crews", map[string]any{"name": tc.member, "goal": "ship", "cwd": e.root, "where": "server", "isolation": "none", "yolo": true,
 				"members": []any{member(tc.member, tc.agent, "immediately")}}, http.StatusCreated)["id"].(string)
@@ -507,6 +529,7 @@ func TestCrewMembersInAnAccountsFolderHoldIt(t *testing.T) {
 	}
 	t.Run("a managed attempt and its retry", func(t *testing.T) {
 		o, _ := e.ownAccount(t, "Own folder, managed")
+		e.removeAtEnd(t, o)
 		id := e.managedOf(t, map[string]any{"agentId": "claude-p"})
 		run := held(t, o, func() string {
 			_, out := e.do("POST", "/api/crews/"+id+"/launch", adminToken, nil)
@@ -538,6 +561,7 @@ func TestCrewMembersInAnAccountsFolderHoldIt(t *testing.T) {
 	})
 	t.Run("a member started later", func(t *testing.T) {
 		o, _ := e.ownAccount(t, "Own folder, later")
+		e.removeAtEnd(t, o)
 		run := e.launchCrew(t, "Later", member("lead", "cat", "immediately"), member("later", "claude-p", "manual"))
 		t.Cleanup(func() { e.do("POST", "/api/runs/"+run+"/stop", adminToken, nil) })
 		lead := e.waitRunning(t, run, "lead")
@@ -592,7 +616,7 @@ func caseFolding(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if upper, err := os.Stat(filepath.Join(dir, "ACCT")); err != nil || !os.SameFile(lower, upper) {
-		t.Skip("the test's temporary folder does not fold case: run it with TMPDIR on a file system that does")
+		t.Skip("the test's temporary folder does not fold case: it runs with its temporary folder (both GOTMPDIR and TMPDIR) on a file system that folds case")
 	}
 	return dir
 }
@@ -664,4 +688,114 @@ func TestASessionIsCountedOnItsOwnAdaptersAccount(t *testing.T) {
 	e.stopAndWait(sid)
 	e.counted(t, "claude-on-x", "default", 0, 1)
 	e.removed(t, "its process ended", x)
+}
+
+// What a launch holds is decided at its reservation and kept: an entry
+// whose folder variable is not a whole path, h/.claude, started in a folder
+// where h is a link to the directory a registered account's folder is in,
+// holds the account though the start folder is renamed and another
+// directory put in its place after the reservation (at the seam before its
+// process starts, which runs in the folder opened). The remove is refused
+// there, refused once the session is registered, and taken once its
+// process has ended.
+func TestWhatALaunchHoldsIsKeptFromItsReservation(t *testing.T) {
+	e := newBindEnv(t, nil)
+	logins, start := filepath.Join(realRoot(t, t.TempDir()), "logins"), filepath.Join(e.root, "start")
+	for _, d := range []string{filepath.Join(logins, ".claude"), start} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(logins, filepath.Join(start, "h")); err != nil {
+		t.Fatal(err)
+	}
+	a := e.accountAt(t, "claude", "Through a link", filepath.Join(logins, ".claude"))
+	e.addFolderEntries(t, map[string][2]map[string]string{"claude-rel": {{"CLAUDE_CONFIG_DIR": filepath.Join("h", ".claude")}, nil}})
+	sid := e.launchHeld(t, map[string]any{"agentId": "claude-rel", "name": "moved", "cwd": start}, func() {
+		if err := os.Rename(start, start+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(start, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		e.inUse(t, "its start folder replaced, before its process starts", "launch", a)
+	})
+	e.inUse(t, "its start folder replaced, its session registered", "session moved", a)
+	e.stopAndWait(sid)
+	e.removed(t, "its process ended", a)
+}
+
+// An account registered on a folder after a launch into it was reserved is
+// not held by that launch: an entry pins a folder a Claude Code account is
+// on, and another Claude Code account is registered on the folder, through
+// a link to it, at the seam before its process starts. Its session
+// registered and running, the later account's remove is taken; the first
+// account's is refused naming the session, which is counted on it, and
+// taken once its process has ended.
+func TestAnAccountRegisteredAfterTheReservationIsNotHeld(t *testing.T) {
+	e := newBindEnv(t, nil)
+	folder := realRoot(t, t.TempDir())
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	a := e.accountAt(t, "claude", "First", folder)
+	e.addFolderEntries(t, map[string][2]map[string]string{"claude-on-f": {{"CLAUDE_CONFIG_DIR": folder}, nil}})
+	var late string
+	sid := e.launchHeld(t, map[string]any{"agentId": "claude-on-f", "name": "early"}, func() {
+		late = e.accountAt(t, "claude", "Late", link)
+		e.inUse(t, "before its process starts", "launch", a)
+	})
+	e.removed(t, "its session running", late)
+	e.inUse(t, "its session running", "session early", a)
+	e.counted(t, "claude-on-f", a, 1, 1)
+	e.stopAndWait(sid)
+	e.removed(t, "its process ended", a)
+}
+
+// A session is counted on one account, decided at its registration and
+// kept: a session of the tool's own login is started while no account is
+// on the tool's own folder, then an account is registered on that folder.
+// The running count and both start counts stay together on the default
+// login, and the account counts none, while the session runs and after it
+// has ended.
+func TestASessionStaysCountedWhereItsRegistrationCountedIt(t *testing.T) {
+	e := newBindEnv(t, nil)
+	if err := os.MkdirAll(ownFolder(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sid := e.launch(t, "claude-p", map[string]any{"name": "own"})
+	if b := e.bound(t, sid); b.Source != session.SourceOwn {
+		t.Fatalf("the binding %+v", b)
+	}
+	o := e.accountAt(t, "claude", "Registered later", ownFolder())
+	e.counted(t, "claude-p", capacity.DefaultID, 1, 1)
+	e.counted(t, "claude-p", o, 0, 0)
+	e.stopAndWait(sid)
+	e.counted(t, "claude-p", capacity.DefaultID, 0, 1)
+	e.counted(t, "claude-p", o, 0, 0)
+	e.removed(t, "its process ended", o)
+}
+
+// The lookup that decides a binding compares a folder wanted as main does,
+// clean and through its links, while what a launch holds is the same
+// directory however written: on a file system that folds case, Brakeman's
+// folder wanted in other letters' case than a registered Claude Code
+// account's binds unlisted, the folder as wanted, and the launch holds the
+// account until its process has ended.
+func TestABindingComparesAWantedFolderAsMainDoes(t *testing.T) {
+	dir := caseFolding(t)
+	e := newBindEnv(t, nil)
+	a := e.accountAt(t, "claude", "Lower case", filepath.Join(dir, "acct"))
+	upper := filepath.Join(dir, "ACCT")
+	sid, aerr := e.startAs(t, "claude-p", capacity.DefaultID, loginWant{folder: upper}, nil)
+	if aerr != nil {
+		t.Fatalf("the launch: %d %s %s", aerr.status, aerr.Code, aerr.Message)
+	}
+	if b := e.bound(t, sid); b.Source != session.SourceUnlisted || b.ID != session.SourceUnlisted || b.Folder != upper {
+		t.Fatalf("the binding %+v, want unlisted on %s", b, upper)
+	}
+	e.inUse(t, "its session registered", "session ", a)
+	e.stopAndWait(sid)
+	e.removed(t, "its process ended", a)
 }

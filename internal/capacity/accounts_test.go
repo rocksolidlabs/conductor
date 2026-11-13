@@ -600,7 +600,8 @@ func TestReservationHoldsRemove(t *testing.T) {
 
 // HoldOf holds every account its pick names in the accounts as they are
 // under the accounts' lock, a retired one too, as Hold does, and passes
-// over an id the document does not hold; its release lets go of each.
+// over an id the document does not hold; it answers the ids it holds, and
+// its release lets go of each.
 func TestHoldOfHoldsWhatItsPickNames(t *testing.T) {
 	f := newFacts()
 	s := openAt(t, t.TempDir(), Options{Now: clockAt(t0)})
@@ -608,9 +609,9 @@ func TestHoldOfHoldsWhatItsPickNames(t *testing.T) {
 	b, rev, _ := s.Add(f, "codex", "Work", "/home/u/work", rev)
 	a, rev, _ = s.Retire(a.ID, rev)
 	var seen Accounts
-	release, err := s.HoldOf(func(d Accounts) []string { seen = d; return []string{a.ID, DefaultID, "a-bbbbbbbbbbbb", b.ID} })
-	if err != nil || len(seen.Accounts) != 2 {
-		t.Fatalf("hold: %v, the pick saw %+v", err, seen)
+	ids, release, err := s.HoldOf(func(d Accounts) []string { seen = d; return []string{a.ID, DefaultID, "a-bbbbbbbbbbbb", b.ID} })
+	if err != nil || len(seen.Accounts) != 2 || !slices.Equal(ids, []string{a.ID, b.ID}) {
+		t.Fatalf("hold: %v, the ids %v, the pick saw %+v", err, ids, seen)
 	}
 	for _, id := range []string{a.ID, b.ID} {
 		if _, err := s.Remove(f, id, rev); code(err) != CodeInUse || !strings.Contains(err.Error(), "1 launch") {
