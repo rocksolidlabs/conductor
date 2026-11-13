@@ -661,8 +661,7 @@ func TestSignInActNotKnown(t *testing.T) {
 }
 
 // Who and why are answered without their characters of Unicode's Cf, Zl
-// and Zp and the space around them, every other character as given; the
-// filter of the server's credentials reads them as they are sent.
+// and Zp and trimmed of white space at both ends; the filter of the server's credentials reads them as they are sent.
 func TestSignInShownText(t *testing.T) {
 	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
 	e, _ := signInEnv(t, g)
@@ -696,6 +695,46 @@ func TestSignInShownText(t *testing.T) {
 	if code, body := signInCall(t, e, "GET", adminToken, ""); code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_unavailable" || strings.Contains(body, "test-host") {
 		t.Errorf("a who that holds a host token as it is sent: %d %s, want 503 signin_unavailable", code, body)
 	}
+}
+
+// The provider test kit's sign-in check (exttest.SignIn) and the server
+// agree on a signed-in who: for each text, the kit finds something in a
+// provider signed in as it exactly where the server answers its read 503
+// signin_unavailable, so a provider that passes the kit is answered.
+func TestSignInKitAgrees(t *testing.T) {
+	f := exttest.NewFakeSignIn("cloud")
+	e, _ := signInEnv(t, f)
+	r := func(c rune) string { return string(c) }
+	for _, who := range []string{
+		"ana", " ana ", "ana" + r(0xad), r(0x2028) + "ana", r(0x200b) + "a" + r(0x200b),
+		r(0x200b), "   ", r(0xad), r(0x2028), r(0x2029), r(0xa0), r(0x3000), r(0xfeff),
+		r(0x200e) + " " + r(0x200f), " " + r(0x200b) + " ", r(0xa0) + r(0xad) + r(0x3000), r(0x180e), r(0x85),
+	} {
+		st := ext.SignInStatus{State: ext.SignedIn, Who: who}
+		f.SetStatus(st)
+		f.OnBegin(st)
+		f.OnSignOut(st)
+		kit := &kitT{T: t}
+		exttest.SignIn(kit, exttest.NewNetwork(), f)
+		code, body := signInCall(t, e, "GET", adminToken, "")
+		taken := code == http.StatusOK
+		if !taken && (code != http.StatusServiceUnavailable || signInErrorCode(t, body) != "signin_unavailable") {
+			t.Fatalf("who %q: %d %s, want 200 or 503 signin_unavailable", who, code, body)
+		}
+		if found := len(kit.said) > 0; found == taken {
+			t.Errorf("who %q: the server answered %d %s; the kit said %q", who, code, strings.TrimSpace(body), kit.said)
+		}
+	}
+}
+
+// kitT records what the provider test kit says, failing nothing.
+type kitT struct {
+	*testing.T
+	said []string
+}
+
+func (k *kitT) Errorf(format string, args ...any) {
+	k.said = append(k.said, fmt.Sprintf(format, args...))
 }
 
 // The routes are the admin's: no credential, a host token, a link's

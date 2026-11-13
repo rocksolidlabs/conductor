@@ -2,7 +2,9 @@ package exttest
 
 import (
 	"context"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -113,8 +115,9 @@ func (f *FakeSignIn) act(count *int, next *ext.SignInStatus) error {
 // and SignOut each returning within ext.IdentityWait, the guard's wait,
 // with the network open, from Goroutines goroutines at once, with the
 // network blocked and with the call's context cancelled; every status a
-// valid one (SignInStatus.Valid), whatever the calls before it; and
-// article 8 (Network): nothing dialled or requested under a call's
+// valid one (SignInStatus.Valid), whatever the calls before it, and a
+// signed-in one's who showing something once cleaned as the server cleans
+// it (shownText); and article 8 (Network): nothing dialled or requested under a call's
 // context. An error from BeginSignIn or SignOut is not judged: a sign-in
 // may refuse to begin. What a status holds is never printed, only what
 // is wrong with it.
@@ -144,6 +147,8 @@ func signIn(t T, n *Network, s ext.SignIn, secrets []string) {
 		}
 		if err := st.Valid(); err != nil {
 			c.found("SignInStatus answered a status that is not valid%s: %v", ph.words(), err)
+		} else if st.State == ext.SignedIn && shownText(st.Who) == "" {
+			c.found("SignInStatus answered a signed-in who that shows nothing once cleaned of Unicode's Cf, Zl and Zp and of white space at both ends: the server does not take it")
 		}
 	}
 	all := func(ph phase) {
@@ -159,4 +164,17 @@ func signIn(t T, n *Network, s ext.SignIn, secrets []string) {
 	all(blocked)
 	all(cancelled)
 	c.n.Unblock()
+}
+
+// shownText is a provider's text as the server shows it (internal/api's
+// shownText, the same rule, held to the same answers by its
+// TestSignInKitAgrees): without its characters of Unicode's Cf, Zl and
+// Zp, trimmed of white space at both ends.
+func shownText(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return -1
+		}
+		return r
+	}, s))
 }

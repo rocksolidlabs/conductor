@@ -36,8 +36,7 @@ const (
 // enters there; Who is who the server is signed in as; Why is one line the
 // provider says of the state (a lapse, a refusal), in any state. The
 // server shows Who and Why without their characters of Unicode's Cf, Zl
-// and Zp and the space around them; every other character as given.
-// Their bounds are of the text as the provider gives it, and a signed-in
+// and Zp and trimmed of white space at both ends. Their bounds are of the text as the provider gives it, and a signed-in
 // Who that shows nothing once so cleaned is not taken.
 type SignInStatus struct {
 	State   SignInState `json:"state"`

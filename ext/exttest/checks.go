@@ -1,6 +1,7 @@
 package exttest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,7 +125,7 @@ var urlIn = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>` + "`" + `]+`
 // the one asked about or the provider's own, may ride there; one that does
 // not parse is cut at its first '?' or '#' and loses what comes before
 // an '@'), and each of c's secrets, as it is and query- or path-escaped,
-// stood in for by [token]. A token the provider's words print bare, not in
+// stood in for by [token], the longest form first. A token the provider's words print bare, not in
 // a URL, and not one the check was given, is beyond what it can know.
 func (c *checker) keep(msg string) string {
 	msg = urlIn.ReplaceAllStringFunc(msg, func(raw string) string {
@@ -141,13 +143,17 @@ func (c *checker) keep(msg string) string {
 		}
 		return raw
 	})
+	var forms []string
 	for _, s := range c.secrets {
-		if s == "" {
-			continue
+		if s != "" {
+			forms = append(forms, s, url.QueryEscape(s), url.PathEscape(s))
 		}
-		for _, form := range []string{s, url.QueryEscape(s), url.PathEscape(s)} {
-			msg = strings.ReplaceAll(msg, form, "[token]")
-		}
+	}
+	// Longest first: a secret that begins another is stood in for only
+	// once the longer one has been, so nothing of the longer is printed.
+	slices.SortStableFunc(forms, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
+	for _, form := range forms {
+		msg = strings.ReplaceAll(msg, form, "[token]")
 	}
 	return msg
 }

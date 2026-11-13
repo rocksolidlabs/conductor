@@ -100,10 +100,10 @@ func signInShown(st ext.SignInStatus) ext.SignInStatus {
 type signInOutcome int32
 
 const (
-	signInNotKnown signInOutcome = iota // anything but the two below: the method had not returned when it was read, or did so once its context had ended
+	signInNotKnown signInOutcome = iota // anything but the three below: the method had not returned when its outcome was read (still running, its goroutine ended without returning, a panic), or returned an error once its context had ended
 	signInNotAsked                      // no slot was free: the provider was not called
 	signInRefused                       // the method returned an error while its call's context was live
-	signInTaken                         // the method returned nil
+	signInTaken                         // the method had returned nil when its outcome was read, its context ended or not
 )
 
 // signInAct is BeginSignIn or SignOut through the guard, and its outcome:

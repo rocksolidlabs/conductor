@@ -993,6 +993,63 @@ func TestBreachWordsKeepTokens(t *testing.T) {
 			}
 		}
 	}
+
+	// Two tokens, one the start of the other, the shorter given first: the
+	// longer is stood in for whole, in each of its forms, and nothing of
+	// what follows the shorter in it is printed.
+	const short, long = "tok-pair", "tok-pair+tailpart/="
+	pair := leakySignIn{NewFakeSignIn("leaky"), long}
+	pair.Add(short, ada)
+	pair.Add(long, ada)
+	errs = record(t, func(rt T) {
+		Identity(rt, n, pair, []string{short, long}, []string{UnknownToken})
+	})
+	if !said(errs, `exttest: SignIn "leaky": SignInStatus panicked: refused [token] ([token], [token])`) {
+		t.Errorf("the longer token was not stood in for whole: %q", errs)
+	}
+	for _, e := range errs {
+		for _, kept := range []string{short, long, url.QueryEscape(long), url.PathEscape(long), "tailpart"} {
+			if strings.Contains(e, kept) {
+				t.Errorf("the suite printed %q: %s", kept, e)
+			}
+		}
+	}
+}
+
+// A signed-in who that shows nothing once cleaned as the server cleans it
+// (without Unicode's Cf, Zl and Zp, trimmed of white space at both ends)
+// is one finding of the sign-in's check; one that shows something is none.
+func TestSignInBlankWho(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, who string
+		found     bool
+	}{
+		{"a zero-width space", string(rune(0x200b)), true},
+		{"spaces", "   ", true},
+		{"a soft hyphen", string(rune(0xad)), true},
+		{"a name beside a soft hyphen", "ana" + string(rune(0xad)), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := NewFakeSignIn("blank-signin")
+			st := ext.SignInStatus{State: ext.SignedIn, Who: c.who}
+			f.SetStatus(st)
+			f.OnBegin(st)
+			f.OnSignOut(st)
+			errs := record(t, func(rt T) { SignIn(rt, NewNetwork(), f) })
+			want := 0
+			if c.found {
+				want = 1
+				if !said(errs, `exttest: SignIn "blank-signin": SignInStatus answered a signed-in who that shows nothing once cleaned of Unicode's Cf, Zl and Zp and of white space at both ends: the server does not take it`) {
+					t.Errorf("the blank who was not said: %q", errs)
+				}
+			}
+			if len(errs) != want {
+				t.Errorf("%d findings, want %d: %q", len(errs), want, errs)
+			}
+		})
+	}
 }
 
 // nameLeak is a leakySignIn whose name, once it has authenticated a
