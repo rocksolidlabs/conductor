@@ -6123,8 +6123,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   and the wall clock, and one answer is on its way at a time for the
   page. An answer whose outcome is not known is held and sent again
   unchanged under its own response id, whatever the view's age, until a
-  reply judges it or its own receipt settles it; a `401` ends the page and
-  empties the pass, keeping what was typed; a card no longer open to the
+  reply judges it or its own receipt settles it, and once an answer is
+  taken no new one is sent until a read made after it; a `401` ends the
+  page and the pass it was sent with, keeping what was typed; a card no longer open to the
   person says so and keeps its draft, and of an answer held there, that
   whether it was recorded cannot be learned here. A read that fails before
   it ever succeeded says so where its result would be shown. A
@@ -6142,8 +6143,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   carries the pass or the workbench token, in any spelling: at a load the
   plugin runs before the router, and a fragment that arrives later is
   taken by the plugin's capture listener of `popstate`, ahead of the
-  router's, and the page loaded again at the clean address; a fragment
-  that holds both keys gives neither.
+  router's; a fragment that holds both keys gives neither. A later link
+  is written to the browser's storage for its credential alone, never
+  to what the running page holds and sends, and loads the page again at
+  the clean address only when it changed what that storage held; a
+  load drops what the page held (drafts, an answer whose outcome was
+  not known). Where the browser refuses the tab's storage, a link
+  opened in a tab that already shows the page is not taken: load it in
+  a new tab.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do

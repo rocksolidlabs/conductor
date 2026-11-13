@@ -392,8 +392,10 @@ export const MAX_DECIDE_REFUSAL_WORDS = 200
 
 /**
  * The decide page's own bounds (docs/protocol.md "Decisions"): at most DECIDE_CARDS cards open, each read and the list read one at a
- * time, the next due DECIDE_READ_EVERY ms after the last began while the tab is shown, each aborted at DECIDE_READ_WAIT ms; a card
- * whose last view taken is older than DECIDE_FRESH_FOR ms cannot be answered until a read renews it.
+ * time, the next due DECIDE_READ_EVERY ms after the last began while the tab is shown, each aborted at DECIDE_READ_WAIT ms. A new
+ * answer is sent only on a view whose read began within the last DECIDE_FRESH_FOR ms on both the steady and the wall clock, and after
+ * an answer was taken only on a view read after it; an answer whose outcome is not known is sent again whatever the view's age. The
+ * list opens a card only while its own read is that fresh.
  */
 export const DECIDE_CARDS = 4
 export const DECIDE_READ_EVERY = 10_000

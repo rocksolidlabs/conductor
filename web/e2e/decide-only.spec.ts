@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page, Request, Route } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { addressHeld, fragmentChanged, recorder } from './fragment-helpers'
+import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, setFragment } from './fragment-helpers'
 
 // The decide page and a pass taken from the fragment (docs/plans/decide-grant.md, "web/app", Tests per surface): on the shipped
 // build, which registers no identity provider, so the real server refuses every pass (`401`); the page's own behaviour is proved
@@ -93,13 +93,13 @@ test('a pass in a fragment that arrives after the load, in any spelling: the pag
     await expect(page.getByText('Nothing awaits your answer here.')).toBeVisible()
 
     // A fragment with no key goes to the router: both listeners run, the plugin's (capture) first.
-    const plain = await fragmentChanged(page, rec, 'x=1', false)
+    const plain = await fragmentChanged(page, rec, 'x=1', 'route')
     expect(plain.capture, 'one capture listener of popstate').toHaveLength(1)
     expect(plain.bubble.length, "the router's listener").toBeGreaterThan(0)
     expect(plain.after.filter((l) => l.startsWith('ran ')), 'the order the browser ran them in').toEqual([plain.capture[0]!, ...plain.bubble].map((i) => `ran ${i}`))
 
     // A fragment with the key: the plugin's listener alone, the address rewritten, the page loaded again.
-    const keyed = await fragmentChanged(page, rec, fragment, true)
+    const keyed = await fragmentChanged(page, rec, fragment, 'reload')
     expect(keyed.after.filter((l) => l.startsWith('ran ') || l.startsWith('route ')), fragment).toEqual([`ran ${keyed.capture[0]}`])
     await expect(signedIn(page)).toHaveText('Signed in as Bo')
     expect(await page.evaluate(() => sessionStorage.getItem('conductor.identityPass'))).toBe(OTHER)
@@ -146,7 +146,7 @@ test('a fragment that holds both keys, at a load and later: neither is taken, an
   await stub(page)
   await page.goto(`/decide#pass=${PASS}`)
   await expect(signedIn(page)).toHaveText('Signed in as Ana')
-  await fragmentChanged(page, rec, both, true)
+  await fragmentChanged(page, rec, both, 'kept')
   await expect(signedIn(page)).toHaveText('Signed in as Ana')
   expect(await stores(page)).toEqual([PASS, null])
   const held = await addressHeld(page)
@@ -156,6 +156,124 @@ test('a fragment that holds both keys, at a load and later: neither is taken, an
   }
   expect(new URL(page.url()).hash).toBe('')
   await checkSent(sent)
+  await ctx.close()
+})
+
+/** The pass the tab's storage holds, for the page loaded next. */
+const passStored = (page: Page) => page.evaluate(() => sessionStorage.getItem('conductor.identityPass'))
+/** A decide page signed in as Ana with dr-7 drawn and a draft typed into it; the four routes stubbed. */
+async function signedInWithDraft(page: Page) {
+  const stubbed = await stub(page)
+  stubbed.s.list = { decisions: [{ id: 'dr-7', rev: 1 }] }
+  stubbed.s.views.set('dr-7', { status: 200, body: approval('dr-7', 1, { type: 'clarification', options: [] }) })
+  await page.goto(`/decide#pass=${PASS}`)
+  await expect(signedIn(page)).toHaveText('Signed in as Ana')
+  const text = card(page, 'dr-7').locator('textarea[data-decide-text]')
+  await text.fill('btree, keyed by run')
+  return { ...stubbed, text }
+}
+
+test("a later link with another pass: the address rewritten at once, the page loaded again once, signed in as it; while that load is held, the page drawn sends only the pass it was loaded with", async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  const rec = await recorder(page)
+  const hold = await holdDocuments(page)
+  await signedInWithDraft(page)
+  const send = card(page, 'dr-7').locator('[data-decide-send]')
+  await expect(send).toBeEnabled()
+  const box = (await send.boundingBox())!
+  const clean = new URL('/decide', page.url()).href
+  const loads = rec.loads()
+  const from = sent.length
+  hold.on = true
+  await setFragment(page, `pass=${OTHER}`)
+  // The load has started and is held: the page drawn, loaded with PASS, goes on. It rewrote the address before it asked for the load.
+  expect((await hold.asked).url()).toBe(clean)
+  await expect.poll(() => rec.lines.filter((l) => l.startsWith('reload '))).toEqual([`reload ${clean}`])
+  // Send pressed, and a read falling due on the page's own schedule (10 s after the last began; the wait's bound is twice that).
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+  await expect.poll(async () => (await apiSent(sent, from)).map((r) => r.path), { timeout: 20_000 }).toEqual(expect.arrayContaining(['/api/decisions/dr-7/respond', '/api/me/decisions', '/api/decisions/dr-7']))
+  for (const r of await apiSent(sent, from)) expect(r.auth, r.path).toBe(`Bearer ${PASS}`)
+  hold.on = false
+  hold.release()
+  await expect.poll(rec.loads).toBe(loads + 1)
+  await expect(signedIn(page)).toHaveText('Signed in as Bo')
+  expect(await passStored(page)).toBe(OTHER)
+  for (const p of [PASS, OTHER]) {
+    expect(await addressHeld(page)).not.toContain(p)
+    expect(rec.since()).not.toContain(p)
+  }
+  expect(rec.loads()).toBe(loads + 1)
+  await checkSent(sent, [PASS, OTHER])
+  await ctx.close()
+})
+
+test('a later link with the same pass, a value not shaped as a pass, or both keys: the address rewritten, no load, and the draft typed before still there', async ({ browser, state }) => {
+  for (const fragment of [`pass=${PASS}`, 'pass=not!a*pass', `pass=${OTHER}&token=${state.token}`]) {
+    const { ctx, page, sent } = await tab(browser)
+    const rec = await recorder(page)
+    const { text } = await signedInWithDraft(page)
+    await fragmentChanged(page, rec, fragment, 'kept')
+    await expect(text).toHaveValue('btree, keyed by run')
+    await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    expect(await passStored(page), fragment).toBe(PASS)
+    expect(await addressHeld(page)).not.toContain(OTHER)
+    await checkSent(sent)
+    await ctx.close()
+  }
+})
+
+test("with the tab's storage refusing writes: the pass of the load is held for the page, and a later link rewrites the address and changes nothing else", async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  await page.addInitScript(() => {
+    const set = Storage.prototype.setItem
+    Storage.prototype.setItem = function (this: Storage, k: string, v: string) {
+      if (this === window.sessionStorage) throw new DOMException('refused', 'QuotaExceededError')
+      return set.call(this, k, v)
+    }
+  })
+  const rec = await recorder(page)
+  const { text } = await signedInWithDraft(page)
+  expect(await passStored(page)).toBeNull()
+  await fragmentChanged(page, rec, `pass=${OTHER}`, 'kept')
+  await expect(text).toHaveValue('btree, keyed by run')
+  await expect(signedIn(page)).toHaveText('Signed in as Ana')
+  await focus(page)
+  await expect.poll(async () => (await apiSent(sent, 0)).filter((r) => r.path === '/api/decisions/dr-7').length).toBeGreaterThan(1)
+  expect(await addressHeld(page)).not.toContain(OTHER)
+  await checkSent(sent)
+  await ctx.close()
+})
+
+test("a 401 to a read sent with the pass the page was loaded with, landing after a later link stored another: the next load is signed in as the other", async ({ browser }) => {
+  const { ctx, page, sent } = await tab(browser)
+  const rec = await recorder(page, ['[data-decide-ended]'])
+  const hold = await holdDocuments(page)
+  const { s, reply } = await signedInWithDraft(page)
+  // The next list read, sent with PASS, is held until the spec answers it; the reads after it go to the stub.
+  let answerList: (status: number) => void = () => {}
+  const listHeld = new Promise<void>((held) => {
+    void page.route('**/api/me/decisions', (route) => {
+      if (route.request().headers()['authorization'] !== `Bearer ${PASS}`) return route.fallback()
+      held()
+      answerList = (status) => void reply(route, status, status === 401 ? { error: { code: 'unauthorized', message: 'unauthorized' } } : s.list)
+    })
+  })
+  await focus(page)
+  await listHeld
+  const loads = rec.loads()
+  hold.on = true
+  await setFragment(page, `pass=${OTHER}`)
+  await hold.asked
+  answerList(401)
+  // The page drawn ends at the 401, before the load goes on (the one held is the only one since).
+  await expect.poll(() => rec.lines).toContain('drawn [data-decide-ended]')
+  expect(rec.loads()).toBe(loads)
+  hold.on = false
+  hold.release()
+  await expect.poll(rec.loads).toBe(loads + 1)
+  await expect(signedIn(page)).toHaveText('Signed in as Bo')
+  expect(await passStored(page)).toBe(OTHER)
+  await checkSent(sent, [PASS, OTHER])
   await ctx.close()
 })
 
@@ -181,7 +299,9 @@ test('at 390 wide: a type the protocol does not name and a time that does not pa
   await ctx.close()
 })
 
-test('the pass in the fragment, in any spelling: once the page has drawn, no address, history state or route holds it', async ({ browser }) => {
+// What the page holds is its address, its own history state and entries, and its router's route; the browser's own global history
+// and its first-navigation entry are the browser's.
+test("the pass in the fragment, in any spelling: once the page has drawn, no address, history state or entry of the page's, or route holds it", async ({ browser }) => {
   for (const fragment of [`pass=${PASS}`, `%70ass=${PASS}`, `%70ass=${PASS}&%E0`, `%70ass=${PASS}&%`]) {
     const { ctx, page, sent } = await tab(browser)
     const { s } = await stub(page)

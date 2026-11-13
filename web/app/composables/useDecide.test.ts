@@ -9,11 +9,23 @@ import { MAX_DECIDE_LIST, MAX_DECIDE_LIST_ENTRIES, MAX_DECIDE_REPLY, MAX_DECIDE_
 // one order a card's replies pass; and what the page keeps of an answer.
 
 const PASS = 'pass.of-ana_1'
-type Req = { path: string; method: string; init: RequestInit; headers: Record<string, string>; body?: string; done: boolean; aborted: boolean; reply: (status: number, body?: unknown) => void; fail: () => void }
+type Req = {
+  path: string
+  method: string
+  init: RequestInit
+  headers: Record<string, string>
+  body?: string
+  done: boolean
+  aborted: boolean
+  reply: (status: number, body?: unknown) => void
+  /** Answers with `status` at once and holds the body until the function it returns is called; an abort after it rejects nothing. */
+  hold: (status: number, body: unknown) => () => void
+  fail: () => void
+}
 
 let reqs: Req[]
 let env: DecideEnv & { doc: EventTarget & { visibilityState: string }; win: EventTarget }
-let store: { value: string; ended: boolean }
+let store: { value: string; ended: boolean; refused?: string }
 
 const ROUTES = [/^\/api\/me$/, /^\/api\/me\/decisions$/, /^\/api\/decisions\/dr-\d+$/, /^\/api\/decisions\/dr-\d+\/respond$/]
 
@@ -44,6 +56,20 @@ beforeEach(() => {
           })
           resolve({ status, body: stream, arrayBuffer: async () => bytes.buffer } as unknown as Response)
         },
+        hold(status, body) {
+          r.done = true
+          let release = () => {}
+          const stream = new ReadableStream<Uint8Array>({
+            start(c) {
+              release = () => {
+                c.enqueue(new TextEncoder().encode(JSON.stringify(body)))
+                c.close()
+              }
+            },
+          })
+          resolve({ status, body: stream } as unknown as Response)
+          return () => release()
+        },
         fail() {
           r.done = true
           reject(new TypeError('network'))
@@ -57,7 +83,7 @@ beforeEach(() => {
     })
   env = {
     fetch: fetch as unknown as typeof globalThis.fetch,
-    pass: { get: () => store.value, end: () => Object.assign(store, { value: '', ended: true }) },
+    pass: { get: () => store.value, end: (refused: string) => Object.assign(store, { value: '', ended: true, refused }) },
     base: '',
     doc: Object.assign(new EventTarget(), { visibilityState: 'visible' }),
     win: new EventTarget() as unknown as Window,
@@ -430,6 +456,50 @@ describe('freshness', () => {
     expect(d.answerable(card(d, 'dr-7'))).toBe(true)
     d.stop()
   })
+
+  for (const [what, wall] of [
+    ['on', 3_600_000],
+    ['back', -3_600_000],
+  ] as const) {
+    const five: Array<[string, number]> = [['dr-7', 1], ['dr-8', 1], ['dr-9', 1], ['dr-10', 1], ['dr-11', 1]]
+    it(`opens no card on Open when the list was read before the wall clock was set ${what} an hour and the steady clock moved two seconds`, async () => {
+      const d = await boot(undefined, five)
+      d.close('dr-10')
+      steadySkew = 2_000
+      vi.setSystemTime(Date.now() + wall)
+      d.open('dr-11')
+      expect(card(d, 'dr-11')).toBeUndefined()
+      expect(count('/api/decisions/dr-11')).toBe(0)
+      expect(d.page.list.suspended).toBe(true)
+      d.stop()
+    })
+
+    it(`opens no card from a list reply whose read began before the wall clock was set ${what} an hour and the steady clock moved two seconds`, async () => {
+      const d = await boot(undefined, five)
+      d.close('dr-10')
+      env.win.dispatchEvent(new Event('focus'))
+      steadySkew = 2_000
+      vi.setSystemTime(Date.now() + wall)
+      await answer('/api/me/decisions', 200, list(...five, ['dr-12', 1]))
+      expect(d.page.list.suspended).toBe(true)
+      expect(d.page.cards.map((c) => c.id)).toEqual(['dr-7', 'dr-8', 'dr-9', 'dr-10'])
+      expect(count('/api/decisions/dr-11') + count('/api/decisions/dr-12')).toBe(0)
+      d.stop()
+    })
+  }
+
+  it('opens no card on Open whose card has ended, though the list still holds it', async () => {
+    const d = await boot(undefined, [['dr-7', 1], ['dr-8', 1]])
+    env.win.dispatchEvent(new Event('focus'))
+    await answer('/api/decisions/dr-7', 404, { error: { code: 'not_found', message: 'no such decision' } })
+    await answer('/api/me/decisions', 200, list(['dr-7', 1], ['dr-8', 1]))
+    expect(d.page.list.suspended).toBe(false)
+    const n = count('/api/decisions/dr-7')
+    d.open('dr-7')
+    expect(count('/api/decisions/dr-7')).toBe(n)
+    expect(card(d, 'dr-7')).toMatchObject({ end: 'gone' })
+    d.stop()
+  })
 })
 
 describe('the list and the cards', () => {
@@ -552,15 +622,23 @@ describe('a stopped page and a closed card', () => {
       const held = out('/api/decisions/dr-7/respond')[0]!
       const id = JSON.parse(held.body!).responseId
       env.win.dispatchEvent(new Event('focus'))
-      await answer('/api/decisions/dr-7', 404, { error: { code: 'not_found', message: 'no such decision' } })
+      // The send's reply arrives before the dismissal, its body held: the dismissal's abort rejects nothing, and the reply goes on.
+      const release = held.hold(status, body(id))
+      await flush()
+      await answer('/api/decisions/dr-7', 403, { error: { code: 'switchyard', message: '' } })
+      expect(old.end).toBe('refused')
       d.dismiss('dr-7')
       // The list read the focus started, answered: the same decision, opened again as a new card.
       await answer('/api/me/decisions', 200, list(['dr-7', 2]))
       const c = card(d, 'dr-7')
       expect(c).not.toBe(old)
       await answer('/api/decisions/dr-7', 200, open('dr-7', 2))
-      held.reply(status, body(id))
+      const kept = (x: typeof old) => ({ end: x.end, sent: x.sent, unknown: x.unknown, refused: x.refused, view: x.view })
+      const before = kept(old)
+      release()
       await flush()
+      expect(held.aborted).toBe(true)
+      expect(kept(old)).toEqual(before)
       expect(c).toMatchObject({ end: '', sent: '', unknown: '', refused: '', view: { rev: 2, state: 'open' } })
       const reads = count('/api/decisions/dr-7')
       for (let i = 1; i <= 3; i++) {
@@ -587,7 +665,7 @@ describe('a stopped page and a closed card', () => {
 
 describe('a 401 and a 404', () => {
   for (const at of ['/api/me', '/api/me/decisions', '/api/decisions/dr-7', '/api/decisions/dr-7/respond']) {
-    it(`ends the page at a 401 of ${at}: the pass emptied, every read stopped, every draft kept`, async () => {
+    it(`ends the page at a 401 of ${at}: the pass it was sent with ended, every read stopped, every draft kept`, async () => {
       const d = createDecide(env, 'dr-7')
       d.start()
       if (at !== '/api/me') {
@@ -604,7 +682,7 @@ describe('a 401 and a 404', () => {
       for (const r of reqs.filter((x) => !x.done)) r.reply(200, open('dr-7', 1))
       await d.whenIdle()
       expect(d.page.ended).toBe(true)
-      expect(store).toEqual({ value: '', ended: true })
+      expect(store).toEqual({ value: '', ended: true, refused: PASS })
       if (at !== '/api/me' && at !== '/api/me/decisions') expect(card(d, 'dr-7').draft.choice).toBe(1)
       const n = reqs.length
       await vi.advanceTimersByTimeAsync(60_000)
@@ -613,11 +691,11 @@ describe('a 401 and a 404', () => {
     })
   }
 
-  /** The page ended at a 401, the pass emptied, and no request sent after it. */
+  /** The page ended at a 401, the pass it was sent with ended, and no request sent after it. */
   async function endedForGood(d: ReturnType<typeof createDecide>) {
     await d.whenIdle()
     expect(d.page.ended).toBe(true)
-    expect(store).toEqual({ value: '', ended: true })
+    expect(store).toEqual({ value: '', ended: true, refused: PASS })
     const n = reqs.length
     await vi.advanceTimersByTimeAsync(60_000)
     env.win.dispatchEvent(new Event('focus'))
@@ -719,22 +797,23 @@ describe('the bound of each reply', () => {
 })
 
 describe("a card's one order", () => {
-  it('keeps a card answered when a read begun before the answer returns after it with the open view', async () => {
+  it('keeps a card answered once its answer is taken: the read begun before it aborted, and the open view of the rev before drawing nothing', async () => {
     const d = await boot()
     const c = card(d, 'dr-7')
     c.draft.choice = 0
     env.win.dispatchEvent(new Event('focus'))
-    const fresh = c.freshAt
+    const before = out('/api/decisions/dr-7')[0]!
     await vi.advanceTimersByTimeAsync(1_000)
     void d.send('dr-7')
     const sent = JSON.parse(out('/api/decisions/dr-7/respond')[0]!.body!)
     await answer('/api/decisions/dr-7/respond', 201, { receipt: receipt(sent.responseId), decision: { id: 'dr-7', rev: 2, own: [receipt(sent.responseId)], outcome: 'waiting' } })
     expect(c.view).toMatchObject({ rev: 2, outcome: 'waiting' })
+    expect(before.aborted).toBe(true)
     await answer('/api/decisions/dr-7', 200, open('dr-7', 1))
     expect(c.view?.rev).toBe(2)
     expect(c.view?.state).toBeUndefined()
     expect(d.answerable(c)).toBe(false)
-    expect(c.freshAt).toBe(fresh)
+    expect(c).toMatchObject({ freshAt: 0, suspended: true })
     d.stop()
   })
 
@@ -956,6 +1035,30 @@ describe('what the page keeps of an answer', () => {
     d.stop()
   })
 
+  for (const status of [201, 200]) {
+    it(`sends no new answer after a ${status} with its receipt and no view until a read made after it renews the view, read at once`, async () => {
+      const d = await boot()
+      const c = card(d, 'dr-7')
+      c.draft.choice = 0
+      void d.send('dr-7')
+      const id = JSON.parse(out('/api/decisions/dr-7/respond')[0]!.body!).responseId
+      await answer('/api/decisions/dr-7/respond', status, { receipt: status === 200 ? { ...receipt(id), repeat: true } : receipt(id) })
+      expect(c).toMatchObject({ sent: '', unknown: '', refused: '', suspended: true, view: { rev: 1, state: 'open' } })
+      expect(d.answerable(c)).toBe(false)
+      expect(out('/api/decisions/dr-7')).toHaveLength(1)
+      await d.send('dr-7')
+      // A read that fails keeps it so.
+      await answer('/api/decisions/dr-7', 503, { error: { code: 'ledger_unavailable', message: '' } })
+      expect(d.answerable(c)).toBe(false)
+      await d.send('dr-7')
+      expect(count('/api/decisions/dr-7/respond')).toBe(1)
+      env.win.dispatchEvent(new Event('focus'))
+      await answer('/api/decisions/dr-7', 200, open('dr-7', 2, { own: [receipt(id)] }))
+      expect(d.answerable(c)).toBe(true)
+      d.stop()
+    })
+  }
+
   it('has one answer on its way at a time for the whole page: a second card sends only once the first has an outcome', async () => {
     const d = await boot(undefined, [['dr-8', 1], ['dr-7', 1]])
     card(d, 'dr-7').draft.choice = 0
@@ -987,6 +1090,46 @@ describe('what the page keeps of an answer', () => {
     env.win.dispatchEvent(new Event('focus'))
     await answer('/api/decisions/dr-7', 200, { id: 'dr-7', rev: 2, own: [receipt('other-tab'), receipt(id, { status: 'refused', code: 'decision_answered' })], outcome: 'refused', outcomeCode: 'decision_answered' })
     expect(c).toMatchObject({ sent: '', unknown: '', refused: 'dr-7 was answered before your answer reached it.' })
+    d.stop()
+  })
+})
+
+describe('what a read may bring', () => {
+  for (const [what, bad] of [
+    ['options that are not a list', { options: 'Approve' }],
+    ['an option that is not an object', { options: ['Approve'] }],
+    ['an option without a text label', { options: [{ label: 7 }] }],
+    ['a numeric createdAt', { createdAt: 1_762_905_600_000 }],
+    ['a receipt that is not an object', { own: [null] }],
+  ] as const) {
+    it(`takes no view with ${what}: the card as it was, and a held answer's words still shown`, async () => {
+      const d = await boot()
+      const c = card(d, 'dr-7')
+      c.draft.choice = 0
+      void d.send('dr-7')
+      out('/api/decisions/dr-7/respond')[0]!.fail()
+      await flush()
+      const view = c.view
+      env.win.dispatchEvent(new Event('focus'))
+      await answer('/api/decisions/dr-7', 200, open('dr-7', 2, bad as unknown as Partial<DecideView>))
+      expect(c.view).toBe(view)
+      expect(c).toMatchObject({ unknown: NOT_KNOWN, failed: false, end: '', draft: { choice: 0 } })
+      d.stop()
+    })
+  }
+
+  it('says nothing of a read its card aborted: closed and opened again while its first read is out, no "could not be read"', async () => {
+    const d = createDecide(env)
+    d.start()
+    await answer('/api/me', 200, ME)
+    await answer('/api/me/decisions', 200, list(['dr-7', 1]))
+    const first = out('/api/decisions/dr-7')[0]!
+    d.close('dr-7')
+    d.open('dr-7')
+    await flush()
+    expect(first.aborted).toBe(true)
+    expect(card(d, 'dr-7')).toMatchObject({ open: true, failed: false, view: null })
+    expect(out('/api/decisions/dr-7')).toHaveLength(1)
     d.stop()
   })
 })

@@ -434,11 +434,12 @@ be answered only on a fresh view.** The page marks each read with the
 moment it began and keeps the mark of the last read whose reply the
 card took;
 while that mark is older than `DECIDE_FRESH_FOR` (25 s) the card is
-**suspended**: its choices and its sends disabled, the draft and the
-answer sent kept, and the page says "Checking that dr-7 is still yours
+**suspended**: its choices and a new answer disabled (an answer whose
+outcome is not known is sent again whatever the view's age), the draft
+and the answer sent kept, and the page says "Checking that dr-7 is still yours
 to answer." The next read whose reply it takes makes it answerable
 again; a `404` closes that card (the draft kept, the pass and the other cards
-untouched) and a `401` closes the page (the pass emptied, every draft
+untouched) and a `401` closes the page (the pass it was sent with ended, every draft
 kept). A card's reads go
 one at a time, every `DECIDE_READ_EVERY` (10 s) while shown, each
 aborted at `DECIDE_READ_WAIT` (10 s), so a read that succeeds at its
@@ -736,15 +737,21 @@ pass is held:
   to 256 characters.
 - `composables/useIdentityPass.ts` (new): the pass store,
   `sessionStorage['conductor.identityPass']` (the tab's; in memory when
-  storage is refused): `set` (a new pass replaces the old one), `end()`,
-  which empties the store and marks the tab's state `ended`. It never
-  reads or writes `conductor.workbenchToken`. A pass is held no longer
-  than its tab, and not past the first `401` it meets.
+  storage is refused): `set` (a load's pass replaces the old one);
+  `stored(pass)`, a later link's, which writes the tab's storage alone
+  (what the page holds and sends stays as it is) and answers true only
+  when the storage took a pass that differs from the one it held; and
+  `end(refused)`, the pass a `401` refused, which empties the page's
+  pass when it is that pass, removes the stored one only while the
+  storage still holds that pass, and marks the tab's state `ended`. It
+  never reads or writes `conductor.workbenchToken`. A pass is held no
+  longer than its tab, and not past the first `401` it meets.
 - `plugins/token-fragment.client.ts`: `takeCredentials(location.href)`,
   then `history.replaceState` with the URL it answers, before the app's
-  router reads the address; then the token into the workbench store as
-  today, and the pass into the pass store. A refused value is dropped
-  from the address bar and stored nowhere. A navigation the browser
+  router reads the address; then, at a load, the token into the
+  workbench store as today, and the pass into the pass store (in
+  memory too, where the browser refuses storage). A refused value is
+  dropped from the address bar and stored nowhere. A navigation the browser
   starts (a load, a fragment change, back or forward) never lets the
   app's router read a fragment that carries either key, in any
   spelling: at a load the plugin runs before the router (`order: -25`,
@@ -753,17 +760,25 @@ pass is held:
   before the router exists, takes the event first, rewrites the address
   without the fragment, ends the event there
   (`stopImmediatePropagation`: the router's listener does not run for
-  it), takes what the fragment carried by the same function as a load,
-  and loads the page again at the clean address (`location.reload()`),
-  so nothing drawn for an earlier credential stays. A fragment with no
-  key is left to the router. A fragment that holds either key, its keys
+  it), and writes what the fragment carried to the browser's storage
+  for it alone (`stored`: the tab's for a pass, the workbench's for the
+  token), never to what the running page holds and sends; it loads the
+  page again at the clean address (`location.reload()`) only when that
+  write was taken and changed what the storage held. A fragment that
+  takes nothing, one that carries the credential the storage already
+  holds, and a write the browser refuses leave the page as it is,
+  drafts and an answer held with it; a load drops what the page held
+  (drafts, an answer whose outcome was not known). A fragment with no
+  key, that can be read, is left to the router. A fragment that holds either key, its keys
   read as the browser reads them and again with each layer of escapes
   taken off, or that cannot be read so, is dropped whole, and one that
   holds both keys gives neither; the middleware below applies the same
   rule to every navigation. What is not closed: a navigation the app's
   own code starts with such a fragment is sent on by the guard, and the
   router's record of where it was sent from holds that fragment until
-  the next navigation; no code of the app makes one.
+  the next navigation; no code of the app makes one. Where the browser
+  refuses the tab's storage, a link opened in a tab that already shows
+  the page is not taken: load it in a new tab.
 - `middleware/decide.global.ts` (new), synchronous over the stores, and
   on the first navigation over `to.hash` too (`takeCredentials`), so it
   judges right whether it runs before or after the plugin: a workbench
@@ -781,8 +796,9 @@ pass is held:
   page-owned:
   - `me()`, `list()`, `read(did)`, `respond(did)`, each with
     `Authorization: Bearer <pass>`, each aborted after `DECIDE_READ_WAIT`
-    (10 s); a `401` from any of them empties the pass store (`end()`)
-    and closes the page (`ended`); a `404` of a card closes that card
+    (10 s); a `401` from any of them ends the pass it was sent with
+    (`end(refused)`; `call` keeps the pass it sent) and closes the page
+    (`ended`); a `404` of a card closes that card
     alone (`gone`), the pass and the other cards untouched; any other
     refusal is its code's words.
   - **The list and the cards.** `list()` reads the decide list; the
@@ -804,9 +820,13 @@ pass is held:
     page's (the object in `page.cards`), checked after every await of a
     card's read and of a send beside the page's own; so a dismissed
     card can stop, end or change nothing, also when the same decision
-    was opened again as a new card. A card that ended or was closed is
-    kept until dismissed, at most one per decision the list named (and
-    the address's). A list reply of more than
+    was opened again as a new card. A card that ended is kept until
+    dismissed, and a closed card is kept and cannot be dismissed (Open
+    draws it again), at most one card per decision the list named (and
+    the address's). Open asks, at that moment, the one judgement of the
+    list's freshness on both clocks (below), as the list's own opening
+    of cards does, and opens no decision whose card has ended. A list
+    reply of more than
     `MAX_DECIDE_LIST_ENTRIES` (200) entries is past its bound: a failed
     read, none of it kept. A list read whose `rev`
     for an open card differs from its view's reads that card at once; an
@@ -839,10 +859,17 @@ pass is held:
     would be shown and is tried again: who the pass is ("Your access
     could not be checked. Trying again."), the list (under "Signed in
     as"), and a card's first read ("dr-7 could not be read. Trying
-    again."); the first success clears it. Once the page stops, every
+    again."); the first success clears it. A read whose own signal was
+    aborted (Close, Dismiss, the card's end, the page's stop) says
+    nothing, a failure included. Once the page stops, every
     request on its way is aborted and no reply changes it. A `401` ends
     the page in the one function that sends the pass, before its body is
-    read. A card draws a `type` only when it is one of the three the
+    read. A view is taken only when every field the card draws or a send
+    reads has the type the protocol names (`isView`: its options a list
+    of objects each with a text label, `createdAt` and the other words
+    strings, `recommendation` an integer, `own` a list of receipts each
+    with a text `responseId` and `status`); anything else is a read that
+    failed, and nothing the card shows changes. A card draws a `type` only when it is one of the three the
     protocol names, and its "Asked" line only when `createdAt` parses;
     nothing a reply carries makes a card wider than the page.
   - **One order for a card, whichever reply brings it.** A card keeps
@@ -872,13 +899,21 @@ pass is held:
     send, on a timer armed at each success for the moment its mark turns
     that old, and at once when the tab is shown again. A new answer is
     sent only on a fresh view; an answer whose outcome is not known is
-    sent again whatever the view's age. Suspended, its choices and sends are disabled, `draft`
-    and `sent` kept; a respond's reply the card takes draws its view and
-    moves no mark.
-    The list keeps a `freshAt` of its own under the same rule: while it
-    is stale its rows are drawn as last read, Open disabled, the page
-    saying "Checking which decisions await you here."; it never makes a
-    card answerable or not, which only the card's own mark does.
+    sent again whatever the view's age. Suspended, its choices and a new
+    send are disabled (Send again of an answer held is offered as its row
+    of the table below says), `draft` and `sent` kept; a respond's reply
+    the card takes draws its view and renews no mark. A reply that is
+    `taken` clears the card's marks, so no new answer is sent until a
+    read made after it renews the view: the read on its way, begun
+    before, is aborted, and one starts at once, whether or not the reply
+    carried a view.
+    The list keeps a `freshAt` and a `freshWall` of its own under the
+    same rule, judged by one function at the moment a card is opened
+    from it, by Open and by the list's own opening alike: while it is
+    stale its rows are drawn as last read, Open disabled, no card opened
+    from it, the page saying "Checking which decisions await you
+    here."; it never makes a card answerable or not, which only the
+    card's own mark does.
     Its timers go through `setTimeout`, so
     vitest's fake clock (`vi.useFakeTimers()`, as
     `useDispatchLive.test.ts` drives one) moves them; Playwright drives a
@@ -897,12 +932,12 @@ pass is held:
     |---|---|---|---|---|
     | the person edits | `{choice?, text, rationale}`, as typed | none | the form | `useDecide.test.ts`: the draft kept through a refused read |
     | the person sends | kept | `{responseId, choice?, text?, rationale?, expectedRev}`: a new `responseId` minted for this send, the draft's fields and the `rev` of `view`, frozen as sent | "Sending"; Send disabled | the body sent is `sent`, byte for byte |
-    | `201`, or `200` repeat, whose receipt names `sent.responseId` | kept | cleared | the receipt; then the outcome from the next read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts` |
+    | `201`, or `200` repeat, whose receipt names `sent.responseId` | kept | cleared | the receipt; the card not fresh (its marks cleared, no new answer) until a read made after it, which starts at once, renews the view; then the outcome from that read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts`: a receipt with no view, the read at once, a read that fails keeping it so |
     | a definite refusal (a `4xx` with a code that judges a response, `DECIDE_JUDGING` in `utils/decisions.ts`, the server's own list: `decision_answered`, `decision_closed`, `stale_decision`, `not_approver`, `response_conflict`, `not_held`, `stale_policy`, `invalid`, `decision_limit`) | kept | cleared: its id is done with (a kept refusal is replayed for it, another body refused `response_conflict`) | its code's words; the next Send is a new attempt, with a new `responseId` and the latest `view.rev` | `TestDecideOwnCarriesTheResponseID`: after a kept `stale_decision`, the same id with the new rev `response_conflict`, a new id accepted; `useDecide.test.ts`: a new id after a refusal |
     | no definite answer (anything else: no reply, an abort, a `5xx`, `503 decision_moved`, a `429 rate_limited`, a `4xx` with another code or none, a reply past its bound, a `2xx` whose receipt names another response id or none) | kept | kept as it was | the app's own fixed words, "Not known whether your answer to dr-7 was recorded: send it again."; for `rate_limited`, "The server is working on other requests of yours: send your answer to dr-7 again in a moment."; Send again sends `sent` unchanged, never the draft. One rule (`answerable`) says whether it is offered: the page alive, the card the page's own, nothing of the page being sent, and the decision not answered `404` to this pass; a final outcome a read shows (`applied`, `not_used`) does not withdraw it, and the server's reply judges the send (its own receipt settles it, a judging refusal releases it with its words) | `TestDecideOwnCarriesTheResponseID`: the same body again `200` repeat with the saved receipt; `useDecide.test.ts`: the retry's body equals the first, after each final outcome too |
     | a read whose `own` holds `sent.responseId` | kept | resolved by that receipt (accepted, or the refusal row above) | as that row | `useDecide.test.ts`: a receipt of another `responseId` (another tab of the same subject) resolves nothing |
     | the view not fresh (`suspended`) | kept | kept | "Checking that dr-7 is still yours to answer."; choices and a new send disabled until a read succeeds (Send again of an answer held stays as its row says) | `useDecide.test.ts` |
-    | `401` | kept | kept | "Your access to this server has ended. Open it again from your workspace page."; every send disabled; the pass emptied | `decide-only.spec.ts` |
+    | `401` | kept | kept | "Your access to this server has ended. Open it again from your workspace page."; every send disabled; the pass it was sent with ended | `decide-only.spec.ts` |
     | `404` | kept | kept | "dr-7 is no longer open to you."; that card's sends disabled, and of an answer held, "Whether your answer to dr-7 was recorded cannot be learned here." (the words beside a held answer never ask for what the card does not offer); the pass, the list and the other cards untouched | `useDecide.test.ts` |
 
     A receipt is matched to a send by its `responseId` alone, from the
@@ -932,9 +967,13 @@ pass is held:
     decision's own link opens it.", above the rows.
   - `404` after a view was drawn: "dr-7 is no longer open to you."
   - `suspended`: "Checking that dr-7 is still yours to answer." Choices
-    and sends disabled.
-  - `unknown`: "Not known whether your answer to dr-7 was recorded. Send
-    it again: the same answer is never recorded twice."
+    and a new send disabled; Send again of an answer held stays offered.
+  - `unknown`: the app's own fixed words, "Not known whether your answer
+    to dr-7 was recorded: send it again."; for `rate_limited`, "The
+    server is working on other requests of yours: send your answer to
+    dr-7 again in a moment."; once the card is no longer open to the
+    person or the page has ended, "Whether your answer to dr-7 was
+    recorded cannot be learned here."
   - the outcome's words (The decide view): `waiting`, `applied`,
     `not_used`, and `refused` by its code (`decision_answered`: "dr-7 was
     answered before your answer reached it."; `decision_closed`: "dr-7
@@ -1361,10 +1400,10 @@ Vitest, every file in PR-2 (`npm --prefix web test`, with `npm --prefix web run 
   open) released after its next read fell due, the card answerable on it
   while its mark is fresh, the next read started at once and its `404`
   closing the card; and reads that each time out, the card suspended once
-  the mark is 25 s old (choices and send disabled, the draft kept),
+  the mark is 25 s old (choices and a new send disabled, the draft kept),
   answerable again when a read succeeds, closed by a `404` or a `401`;
   one read that succeeds at its 10 s bound never suspends the card; a
-  `401` from any route empties the pass and closes the page, every draft
+  `401` from any route ends the pass it was sent with and closes the page, every draft
   kept; a card's `404` closes that card alone, its draft kept, the pass,
   the list and the other cards going on; the list: read on its own
   interval, suspended once its mark is 25 s old (rows drawn as last
@@ -1377,10 +1416,10 @@ Vitest, every file in PR-2 (`npm --prefix web test`, with `npm --prefix web run 
   closed by its `404` with its draft kept, or drawn with its own
   answer's outcome; an empty list's words; a `cut` list's words, and
   none without `cut`; the card's one order: an
-  open read held behind the fake fetch's gate, the respond's reply (the
-  answered view at `rev` R + 1) drawn, the read released with the open
-  view at R: the card stays answered, no choice offered, its `freshAt`
-  unmoved; a read's reply of a lower `rev` than shown dropped, one of the
+  open read on its way, the respond's reply (the answered view at `rev`
+  R + 1) drawn, that read aborted and the next one answered with the
+  open view at R: the card stays answered, no choice offered, its marks
+  cleared; a read's reply of a lower `rev` than shown dropped, one of the
   same `rev` taken; a respond's reply of the `rev` shown dropped; a read's
   reply arriving after the card's `404`, and after `applied`, drawing
   nothing; each row of the send table (a new `responseId` per send,

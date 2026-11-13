@@ -48,11 +48,11 @@ describe('the pass store', () => {
     expect(session.getItem('conductor.identityPass')).toBe('p.2')
   })
 
-  it('is empty after end(), and marks the access ended until a new pass', async () => {
+  it('is empty after end() of the pass it holds, and marks the access ended until a new pass', async () => {
     const { useIdentityPass, passHeld } = await load()
     const s = useIdentityPass()
     s.set('p.1')
-    s.end()
+    s.end('p.1')
     expect(s.get()).toBe('')
     expect(passHeld()).toBe(false)
     expect(session.m.size).toBe(0)
@@ -78,8 +78,51 @@ describe('the pass store', () => {
     useIdentityPass().set('p.1')
     expect(useIdentityPass().get()).toBe('p.1')
     expect(passHeld()).toBe(true)
-    useIdentityPass().end()
+    expect(useIdentityPass().stored('p.2')).toBe(false)
+    expect(useIdentityPass().get()).toBe('p.1')
+    useIdentityPass().end('p.1')
     expect(passHeld()).toBe(false)
     expect(local.m.size).toBe(1)
+  })
+
+  it("writes a later pass to the tab's storage alone, and answers true only when the storage took one that differs", async () => {
+    const { useIdentityPass } = await load()
+    const s = useIdentityPass()
+    s.set('p.1')
+    expect(s.stored('p.1')).toBe(false)
+    expect(s.stored('p.2')).toBe(true)
+    expect(s.get()).toBe('p.1')
+    expect(session.getItem('conductor.identityPass')).toBe('p.2')
+    expect(s.stored('p.2')).toBe(false)
+    expect([...local.m]).toEqual([['conductor.workbenchToken', 'workbench-token-0123456789']])
+  })
+
+  it("keeps the pass this page read when a later one is stored before it was ever asked for", async () => {
+    session.setItem('conductor.identityPass', 'p.1')
+    const { useIdentityPass } = await load()
+    expect(useIdentityPass().stored('p.2')).toBe(true)
+    expect(useIdentityPass().get()).toBe('p.1')
+  })
+
+  it('ends the pass a 401 refused and no other: a later pass the storage holds is kept for the next load', async () => {
+    const { useIdentityPass } = await load()
+    const s = useIdentityPass()
+    s.set('p.1')
+    s.stored('p.2')
+    s.end('p.1')
+    expect(s.get()).toBe('')
+    expect(s.ended.value).toBe(true)
+    expect(session.getItem('conductor.identityPass')).toBe('p.2')
+    vi.resetModules()
+    expect((await load()).useIdentityPass().get()).toBe('p.2')
+  })
+
+  it("ends neither the page's pass nor the stored one at a 401 of another pass", async () => {
+    const { useIdentityPass } = await load()
+    const s = useIdentityPass()
+    s.set('p.1')
+    s.end('p.0')
+    expect(s.get()).toBe('p.1')
+    expect(session.getItem('conductor.identityPass')).toBe('p.1')
   })
 })
