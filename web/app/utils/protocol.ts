@@ -285,6 +285,30 @@ export interface DecisionEvent {
 export const MAX_DECISION_EVENT = 256
 
 /**
+ * A comparison's block of a crew (docs/protocol.md, "A comparison's crew"; internal/crew Compare): 1 to 12 criteria, 2 to 4 candidates, each
+ * a work task of the crew named once. The crew routes take and answer it with the rest of the crew; the server holds it to its rules
+ * (`400 invalid_crew` in their words), `selector` refused when set.
+ */
+export interface CrewCompare {
+  criteria: CrewCriterion[]
+  candidates: CrewCandidate[]
+  brakeman?: boolean
+  selector?: string
+}
+
+/** A criterion of a comparison: an `id` as a task's, unique, and a `text` of 1 to 500 characters on one line. */
+export interface CrewCriterion {
+  id: string
+  text: string
+}
+
+/** A candidate of a comparison: its task, and the approach it is to take (at most 2,000 characters). */
+export interface CrewCandidate {
+  task: string
+  approach?: string
+}
+
+/**
  * The decide grant (docs/protocol.md "Decisions", docs/plans/decide-grant.md; internal/proto/decide.go): a principal an identity
  * provider gives `decide` and not `admin` is admitted to `GET /api/me`, `GET /api/me/decisions` and the read and the respond
  * route of a decision given to the grant, and is answered by every other route as without it.

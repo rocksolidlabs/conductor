@@ -428,6 +428,10 @@ type Engine struct {
 	// afterAdd, when set, runs once Launch has kept its run and before any
 	// member's start is reserved: a test stops the run there.
 	afterAdd func(runID string)
+	// compareOpen, when set, lets prepare take a crew with a compare block
+	// (errComparisonLaunch): the tests of a compare run's rules launch one
+	// before the plan's row that opens the launch.
+	compareOpen bool
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
@@ -584,6 +588,11 @@ type run struct {
 	checks    sync.WaitGroup
 	revision  int64
 	crewJSON  string // the crew as launched, for the ledger's run row
+	// compare is the crew's compare block as launched (compare.go), nil
+	// for a run of no comparison, and lanes its tasks' lanes
+	// (compareLanes): set as the run is made and never changed.
+	compare *Compare
+	lanes   map[string]string
 	// rechecks are the attempts Check again recorded whose verification
 	// has not started: the pump starts them once their change is
 	// committed and the prerequisites have passed (startRechecks).
@@ -943,10 +952,15 @@ type prepared struct {
 // the base: base when given (a continuation's own),
 // else HEAD of cwd, read once here; the file form's manifest is read and
 // held to its rules at that commit, so a broken file refuses the launch
-// before a run exists, with the file and the commit named.
+// before a run exists, with the file and the commit named. Every launch
+// and continuation calls it, so it refuses a crew with a compare block for
+// all of them (errComparisonLaunch), before a run exists.
 func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
 		return prepared{}, err
+	}
+	if c.Compare != nil && !e.compareOpen {
+		return prepared{}, errComparisonLaunch
 	}
 	if c.Managed() {
 		if e.ledger == nil {
@@ -1277,6 +1291,10 @@ func (e *Engine) addRun(c Crew, p prepared, label, id string, pkg *runPackage) (
 		r.plan, r.base = slices.Clone(c.Tasks), p.base
 		r.tasks = newTasks(c.Tasks)
 		r.crewJSON = crewAsLaunched(c)
+		if c.Compare != nil {
+			cmp := c.Compare.clone()
+			r.compare, r.lanes = &cmp, compareLanes(&cmp, r.plan)
+		}
 		r.manifest, r.manifestRev, r.baseMan = c.effectiveManifest(), c.ManifestRevision, p.man
 		if r.hasManifest() {
 			r.baseManRow = p.man.row()

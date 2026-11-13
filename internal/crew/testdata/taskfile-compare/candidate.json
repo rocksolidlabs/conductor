@@ -1,0 +1,41 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Compare the cache",
+  "goal": "Make the user list fast.",
+  "task": "approach-b",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "member": "cand-b",
+  "role": "You are candidate B of 3 for this objective. You work alone, from the run's base, in a worktree of your own: another candidate's work is never an input of yours.",
+  "kind": "work",
+  "instructions": "Make GET /v1/users answer from a cache.",
+  "compare": {
+    "candidate": "approach-b",
+    "of": 3,
+    "criteria": [
+      {
+        "id": "no-deps",
+        "text": "No new dependency."
+      },
+      {
+        "id": "p99",
+        "text": "p99 of the cache read under 2 ms in bench_test.go."
+      }
+    ],
+    "approach": "drop the cache and memoise in the handler"
+  },
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/approach-b.1",
+  "branch": "crew/r-0123456789ab/approach-b.1",
+  "start": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startFrom": "the run's base",
+  "checks": [
+    {
+      "id": "ok",
+      "argv": [
+        "true"
+      ]
+    }
+  ],
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

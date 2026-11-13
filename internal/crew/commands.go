@@ -195,7 +195,9 @@ type change func(r *run) (t *task, events []event, err error)
 // own is put back by a mark of what a task command changes (cmdMark),
 // and its receipt settles withdrawn with the commit after: its change is
 // committed by its own transaction, where the credential was asked, or
-// not at all.
+// not at all. On a compare run a command whose intent compareIntents does
+// not list is refused before the first (ErrNotSelected): no row, no
+// receipt.
 func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, intent string, args []string, do change, undo func(r *run)) (Receipt, error) {
 	if !CommandIDPattern.MatchString(cmd.ID) {
 		return Receipt{}, ErrBadCommandID
@@ -206,6 +208,12 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	r, err := e.managedRun(runID)
 	if err != nil {
 		return Receipt{}, err
+	}
+	// A comparison takes the commands listed for it, and refuses any
+	// other before anything is written (r.compare is fixed as the run is
+	// made).
+	if r.compare != nil && !slices.Contains(compareIntents, intent) {
+		return Receipt{}, ErrNotSelected
 	}
 	if e.afterLookup != nil {
 		e.afterLookup(runID)
