@@ -11,7 +11,6 @@ import (
 	"io"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1003,12 +1002,12 @@ func TreeClasses(ctx context.Context, t *Tree, ix *TreeIndex, commit string, pat
 	} {
 		out := &askedList{bytes: size, entries: len(paths)}
 		err := t.git(ctx, ix, c.in, out, c.args...)
-		var exit *exec.ExitError
 		switch {
 		case out.over:
 			return nil, nil, ErrClassesCut
-		case err != nil && !(i == 1 && errors.As(err, &exit) && exit.ExitCode() == 1):
-			// check-ignore exits 1 when no path is ignored.
+		case err != nil && !(i == 1 && gitcli.ExitStatus(err) == 1):
+			// check-ignore exits 1 when no path is ignored, whatever it
+			// warned of on its error stream.
 			return nil, nil, err
 		}
 		lists[i] = map[string]bool{}
