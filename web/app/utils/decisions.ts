@@ -47,12 +47,18 @@ export interface DecisionRequest {
   for?: DecisionFor
 }
 
-/** Whom a decision is for, as its request keeps it (HM1); the operator answers it for that person. */
+/**
+ * Whom a decision is for, as its request keeps it (HM1); the operator answers it for that person. A decision given to the decide grant
+ * is for `{label: "grant:decide"}` and no person: the operator, or anyone holding the grant, answers it.
+ */
 export interface DecisionFor {
   label: string
-  person: string
+  person?: string
   responsibility?: string
 }
+
+/** The route target of a decision given to the decide grant (docs/plans/decide-grant.md). */
+export const GRANT_DECIDE_LABEL = 'grant:decide'
 
 /** A response's receipt, kept with it: accepted (Recorded), or refused with its code and words. */
 export interface ResponseReceipt {
@@ -200,6 +206,7 @@ export function recommended(d: Pick<Decision, 'type' | 'request'>): number {
 export function approverWords(d: Pick<Decision, 'policy'> & { request?: Pick<DecisionRequest, 'for'> }): string {
   const who = d.policy?.approver === 'operator' || !d.policy?.approver ? 'the operator' : d.policy.approver
   const f = d.request?.for
+  if (f?.label === GRANT_DECIDE_LABEL && !f.person) return `${who}, or anyone holding the decide grant`
   if (!f?.person) return who
   const w = respWords(f.responsibility)
   return w ? `${who}, for ${f.person} (${w})` : `${who}, for ${f.person}`
@@ -502,6 +509,50 @@ export function commentDecision(post: (path: string, body: CommentBody) => Promi
 /** Whether s names a decision: `dr-<n>`. */
 export function isDecisionId(s: string | undefined | null): s is string {
   return !!s && /^dr-[1-9][0-9]{0,17}$/.test(s)
+}
+
+/** The decide page's words of a refusal's code (the server's decideWords, internal/api/decide.go), naming the decision and no one. */
+export function decideWords(code: string, did: string): string {
+  const words: Record<string, string> = {
+    decision_answered: `${did} was answered before your answer reached it.`,
+    decision_closed: `${did} was closed before your answer.`,
+    stale_decision: `${did} changed since you read it: read it again and answer.`,
+    not_approver: `${did} is no longer open to you.`,
+    not_found: `${did} is no longer open to you.`,
+    response_conflict: `This send to ${did} differs from the one kept under its response id: read the decision again.`,
+    not_held: `${did} cannot be answered while its run is stopped.`,
+    stale_policy: `${did} was opened under another policy and cannot be answered here.`,
+    invalid: `This answer does not fit ${did}: check the choice and the text.`,
+    decision_limit: `${did} takes no more answers.`,
+    // The page's own words for a reply that does not say whether the answer was recorded.
+    decision_moved: `Not known whether your answer to ${did} was recorded: send it again.`,
+    rate_limited: `The server is working on other requests of yours: send your answer to ${did} again in a moment.`,
+  }
+  return Object.hasOwn(words, code) ? words[code]! : `${did} could not take this answer.`
+}
+
+/** The respond codes that judge an answer (internal/api/decide.go, decideWords and decisionStatus): the answer held is let go. */
+export const DECIDE_JUDGING: readonly string[] = ['decision_answered', 'decision_closed', 'stale_decision', 'not_approver', 'response_conflict', 'not_held', 'stale_policy', 'invalid', 'decision_limit']
+
+/**
+ * What a respond reply says of the answer `responseId` it was sent: taken (a 2xx whose receipt names that response id), refused by the
+ * decision (a 4xx with a code that judges it), gone (404), ended (401), or anything else not known, the answer held and sent again
+ * under the same response id.
+ */
+export function respondOutcome(status: number, body: { receipt?: { responseId?: unknown }; error?: { code?: unknown } } | undefined, responseId: string): 'taken' | 'refused' | 'gone' | 'ended' | 'unknown' {
+  if (status === 401) return 'ended'
+  if (status === 404) return 'gone'
+  if (status >= 200 && status < 300 && body?.receipt?.responseId === responseId) return 'taken'
+  const code = body?.error?.code
+  return status >= 400 && status < 500 && typeof code === 'string' && DECIDE_JUDGING.includes(code) ? 'refused' : 'unknown'
+}
+
+/** The outcome of a decide principal's own answer in words (docs/plans/decide-grant.md, The decide view); '' for none. */
+export function decideOutcomeWords(v: { id: string; outcome?: string; outcomeCode?: string }): string {
+  if (v.outcome === 'applied') return `Your answer to ${v.id} was applied.`
+  if (v.outcome === 'waiting') return `Your answer to ${v.id} was recorded.`
+  if (v.outcome === 'not_used') return `Your answer to ${v.id} was not used.`
+  return v.outcome === 'refused' ? decideWords(v.outcomeCode ?? '', v.id) : ''
 }
 
 /** The decision ids the shown session questions mirror (an attention needing input with `decision`). */
