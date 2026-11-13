@@ -37,6 +37,8 @@ const (
 // provider says of the state (a lapse, a refusal), in any state. The
 // server shows Who and Why without their characters of Unicode's Cf, Zl
 // and Zp and the space around them; every other character as given.
+// Their bounds are of the text as the provider gives it, and a signed-in
+// Who that shows nothing once so cleaned is not taken.
 type SignInStatus struct {
 	State   SignInState `json:"state"`
 	Who     string      `json:"who,omitempty"`    // signed-in: one line of 1 to MaxSignInWho bytes
@@ -112,10 +114,11 @@ func signInCode(c string) bool {
 // signInURL says what is wrong with u as a sign-in's page, "" for
 // nothing, in words that never quote it. The rule: 1 to MaxSignInURL bytes
 // of printable ASCII with no space, quote (" ' `), backslash, angle
-// bracket or '#' (no fragment), and no '%' but before two hex digits; an
-// https URL with no user information whose host is a name (signInHost: an
-// address literal is not one) and whose port, if it has one, is 1 to 65535
-// written without leading zeros and is not 443; and a path, a '/' after
+// bracket or '#' (no fragment), and no '%' but before two hex digits;
+// "https://" in lower case, then no user information, a host that is a
+// name (signInHost: an address literal is not one) and, after a ':', a
+// port of 1 to 65535 written without leading zeros that is not 443 (a ':'
+// with no port is refused); and a path, a '/' after
 // the authority. The page's own check (useSignIn's signInPage) is this
 // rule, and it draws a link only where the browser writes the address as
 // given: an address Valid takes that a browser would still write
@@ -135,12 +138,12 @@ func signInURL(u string) string {
 	switch {
 	case err != nil:
 		return "does not parse"
-	case p.Scheme != "https":
-		return "is not https"
+	case !strings.HasPrefix(u, "https://"):
+		return "is not https:// in lower case"
 	case p.Opaque != "" || !signInHost(p.Hostname()):
 		return "has a host that is not a name"
-	case p.Port() != "" && (!port(p.Port()) || p.Port()[0] == '0' || p.Port() == "443"):
-		return "has a port outside 1 to 65535, written with a leading zero, or 443"
+	case strings.HasSuffix(p.Host, ":") || p.Port() != "" && (!port(p.Port()) || p.Port()[0] == '0' || p.Port() == "443"):
+		return "has a port that is empty, outside 1 to 65535, written with a leading zero, or 443"
 	case p.User != nil:
 		return "carries user information"
 	case p.Path == "":

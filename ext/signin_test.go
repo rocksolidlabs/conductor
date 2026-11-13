@@ -102,8 +102,10 @@ func TestSignInStatusValid(t *testing.T) {
 		{"url with a fragment", code("ABCD", "https://id.example/x#token=abc"), false},
 		{"url with a short fragment", code("ABCD", "https://id.example/x#a"), false},
 		{"url with an empty authority", code("ABCD", "https:///id.example/device"), false},
+		{"url with an empty port", code("ABCD", "https://id.example:/x"), false},
+		{"url with its scheme in capitals", code("ABCD", "HTTPS://id.example/x"), false},
+		{"url with its scheme capitalised", code("ABCD", "Https://id.example/x"), false},
 		// Taken, though a browser writes them otherwise: the page draws no link.
-		{"url with an empty port", code("ABCD", "https://id.example:/x"), true},
 		{"url with dot segments", code("ABCD", "https://id.example/a/../b"), true},
 		{"url with escaped dot segments", code("ABCD", "https://id.example/%2e%2e/b"), true},
 		{"url with a query", code("ABCD", "https://id.example/device?user_code=ABCD-EFGH"), true},

@@ -132,11 +132,10 @@ func signIn(t T, n *Network, s ext.SignIn, secrets []string) {
 		t.Errorf("exttest: SignIn: the value is no ext.Provider: a sign-in is an identity provider's")
 		return
 	}
-	c, ok := begin(t, n, "SignIn", p)
+	c, ok := begin(t, n, "SignIn", p, secrets...)
 	if !ok {
 		return
 	}
-	c.secrets = secrets
 	defer c.done()
 	status := func(ph phase) {
 		st, returned := run(c, "SignInStatus", ext.IdentityWait, ph, func(context.Context) ext.SignInStatus { return s.SignInStatus() })

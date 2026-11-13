@@ -966,6 +966,56 @@ func TestBreachWordsKeepTokens(t *testing.T) {
 			}
 		}
 	}
+
+	// The sign-in's first call, its name, keeps them out too: a provider
+	// whose name, once it has authenticated, panics with the token or is
+	// words that hold it.
+	for _, c := range []struct {
+		panics bool
+		want   string
+	}{
+		{true, `exttest: SignIn "?": Name panicked: refused [token] ([token], [token])`},
+		{false, `exttest: SignIn "refused [token] ([token], [token])": Name "refused [token] ([token], [token])" is not a provider's name`},
+	} {
+		named := nameLeak{leakySignIn{NewFakeSignIn("leaky"), secret}, c.panics, new(atomic.Bool)}
+		named.Add(secret, ada)
+		errs = record(t, func(rt T) {
+			Identity(rt, n, named, []string{secret}, []string{UnknownToken})
+		})
+		if !said(errs, c.want) {
+			t.Errorf("the sign-in's name was not said with its token stood in for (panics %v): %q", c.panics, errs)
+		}
+		for _, e := range errs {
+			for _, kept := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+				if strings.Contains(e, kept) {
+					t.Errorf("the suite printed %q: %s", kept, e)
+				}
+			}
+		}
+	}
+}
+
+// nameLeak is a leakySignIn whose name, once it has authenticated a
+// token, panics with words that hold its token (panics) or is those words.
+type nameLeak struct {
+	leakySignIn
+	panics bool
+	authed *atomic.Bool
+}
+
+func (p nameLeak) Authenticate(ctx context.Context, tok string) (ext.Principal, bool, error) {
+	p.authed.Store(true)
+	return p.FakeSignIn.Authenticate(ctx, tok)
+}
+
+func (p nameLeak) Name() string {
+	switch {
+	case !p.authed.Load():
+		return "leaky"
+	case p.panics:
+		panic(p.words())
+	}
+	return p.words()
 }
 
 // leakySignIn's sign-in fails and panics with words that hold token, in

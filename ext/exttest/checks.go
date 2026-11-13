@@ -74,11 +74,12 @@ type checker struct {
 	errs []string        // what the calls' goroutines found, said by flush
 }
 
-// begin starts check against p: its name valid and asked within StartWait.
-// ok false: there is nothing further to check (the failure said).
-func begin(t T, n *Network, check string, p ext.Provider) (*checker, bool) {
+// begin starts check against p, its secrets in place before p is first
+// called: its name valid and asked within StartWait. ok false: there is
+// nothing further to check (the failure said).
+func begin(t T, n *Network, check string, p ext.Provider, secrets ...string) (*checker, bool) {
 	t.Helper()
-	c := &checker{t: t, n: n, check: check, said: map[string]bool{}}
+	c := &checker{t: t, n: n, check: check, secrets: secrets, said: map[string]bool{}}
 	if p == nil || nilValue(p) {
 		t.Errorf("exttest: %s: a nil provider", check)
 		return c, false
@@ -302,11 +303,10 @@ func (c *checker) phases(call func(ph phase)) {
 // (SignIn), its findings keeping out known and unknown the same way.
 func Identity(t T, n *Network, p ext.IdentityProvider, known, unknown []string) {
 	t.Helper()
-	c, ok := begin(t, n, "Identity", p)
+	c, ok := begin(t, n, "Identity", p, append(append([]string(nil), known...), unknown...)...)
 	if !ok {
 		return
 	}
-	c.secrets = append(append([]string(nil), known...), unknown...)
 	if s, ok := p.(ext.SignIn); ok {
 		defer signIn(t, n, s, c.secrets)
 	}

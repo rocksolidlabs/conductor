@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,41 +191,37 @@ func TestSignInRoutes(t *testing.T) {
 }
 
 // signInGate is a provider whose sign-in calls do what the test says: hold
-// until released (late), panic, or answer an error that quotes a secret.
+// until released (late), panic, end their goroutine, or answer an error
+// that quotes a secret.
 type signInGate struct {
 	*exttest.FakeSignIn
 	mu      sync.Mutex
 	hold    chan struct{} // non-nil: SignInStatus waits for it to close
 	entered chan struct{} // non-nil: SignInStatus sends on it as it is called
 	panics  bool
+	exits   bool // SignInStatus ends its goroutine without returning
 	failure error
 	reads   int // SignInStatus's calls
 
-	actHold   chan struct{} // non-nil: an act, once made, waits for its context to end, then for this to close
-	actPanics bool          // an act, once made, panics
-
-	authHold    chan struct{} // non-nil: Authenticate of heldToken sends on authEntered, then waits for this to close
-	authEntered chan struct{}
+	actHold chan struct{} // non-nil: an act, once made, waits for its context to end, then for this to close
+	actEnd  actEnd        // how an act ends once made (and held)
 }
 
-// heldToken is the token whose Authenticate a signInGate holds.
-const heldToken = "tok-held"
+// actEnd is how a signInGate's act ends once it has made its change.
+type actEnd int
 
-func (g *signInGate) Authenticate(ctx context.Context, tok string) (ext.Principal, bool, error) {
-	g.mu.Lock()
-	hold, entered := g.authHold, g.authEntered
-	g.mu.Unlock()
-	if tok == heldToken && hold != nil {
-		entered <- struct{}{}
-		<-hold
-	}
-	return g.FakeSignIn.Authenticate(ctx, tok)
-}
+const (
+	actReturnsNil actEnd = iota
+	actReturnsCtxErr
+	actPanics
+	actExits // the goroutine ends without the method returning
+)
 
-// setAct has each act, once made, wait on hold (nil: not) or panic.
-func (g *signInGate) setAct(hold chan struct{}, panics bool) {
+// setAct has each act, once made, wait on hold (nil: not), then end as end
+// says.
+func (g *signInGate) setAct(hold chan struct{}, end actEnd) {
 	g.mu.Lock()
-	g.actHold, g.actPanics = hold, panics
+	g.actHold, g.actEnd = hold, end
 	g.mu.Unlock()
 }
 
@@ -237,13 +235,16 @@ func (g *signInGate) statusReads() int {
 func (g *signInGate) SignInStatus() ext.SignInStatus {
 	g.mu.Lock()
 	g.reads++
-	hold, entered, panics := g.hold, g.entered, g.panics
+	hold, entered, panics, exits := g.hold, g.entered, g.panics, g.exits
 	g.mu.Unlock()
 	if entered != nil {
 		entered <- struct{}{}
 	}
 	if panics {
 		panic("the status of " + leakWords)
+	}
+	if exits {
+		runtime.Goexit()
 	}
 	if hold != nil {
 		<-hold
@@ -269,11 +270,11 @@ func (g *signInGate) SignOut(ctx context.Context) error {
 }
 
 // act answers the failure set, or makes the fake's act (do) and then, as
-// the test says, panics or waits for its context to end and then for
-// actHold to close.
+// the test says, waits for its context to end and then for actHold to
+// close, and ends as actEnd says.
 func (g *signInGate) act(ctx context.Context, do func(context.Context) error) error {
 	g.mu.Lock()
-	err, hold, panics := g.failure, g.actHold, g.actPanics
+	err, hold, end := g.failure, g.actHold, g.actEnd
 	g.mu.Unlock()
 	if err != nil {
 		return err
@@ -281,12 +282,18 @@ func (g *signInGate) act(ctx context.Context, do func(context.Context) error) er
 	if err := do(ctx); err != nil {
 		return err
 	}
-	if panics {
-		panic("the act of " + leakWords)
-	}
 	if hold != nil {
 		<-ctx.Done()
 		<-hold
+	}
+	switch end {
+	case actReturnsCtxErr:
+		<-ctx.Done()
+		return ctx.Err()
+	case actPanics:
+		panic("the act of " + leakWords)
+	case actExits:
+		runtime.Goexit()
 	}
 	return nil
 }
@@ -465,6 +472,21 @@ func TestSignInStatusUnknown(t *testing.T) {
 	}
 }
 
+// A status the guard has from a call that ended its goroutine without
+// returning (no state) is answered as unread, never 200: the read's 503
+// signin_unavailable, the act's 503 signin_status_unknown.
+func TestSignInStatusChecked(t *testing.T) {
+	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud"), exits: true}
+	e, _ := signInEnv(t, g)
+	for _, c := range []struct{ method, want string }{
+		{"GET", "signin_unavailable"}, {"POST", "signin_status_unknown"}, {"DELETE", "signin_status_unknown"},
+	} {
+		if code, body := signInCall(t, e, c.method, adminToken, ""); code != http.StatusServiceUnavailable || signInErrorCode(t, body) != c.want {
+			t.Errorf("%s with a status of no state: %d %s, want 503 %s", c.method, code, body, c.want)
+		}
+	}
+}
+
 // The sign-in's calls take slots of their own: with every one of them
 // held in the provider, a provider principal is still authenticated on
 // another route, and the next sign-in call is answered 503 at once,
@@ -517,64 +539,74 @@ func TestSignInOwnSlots(t *testing.T) {
 }
 
 // The sign-in's slots are its own the other way too: with every slot of
-// the provider's authentication held in the provider, the sign-in is still
-// read, begun and ended.
+// any other kind of the provider's calls taken (its authentication's, its
+// rechecks', its renewals', and each kind the registry names), the
+// sign-in is still read, begun and ended.
 func TestSignInSlotsApart(t *testing.T) {
-	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
-	g.Add("tok-admin", cloudAdmin("ana"))
-	e, _ := signInEnv(t, g)
-	hold, entered := make(chan struct{}), make(chan struct{}, 2*extInFlight)
-	g.mu.Lock()
-	g.authHold, g.authEntered = hold, entered
-	g.mu.Unlock()
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer close(hold)
-	whoami := func(tok string) int {
-		req, err := http.NewRequest("GET", e.http.URL+"/api/whoami", nil)
-		if err != nil {
-			t.Error(err)
-			return 0
+	f := exttest.NewFakeSignIn("cloud")
+	e, _ := signInEnv(t, f)
+	for _, kind := range []string{
+		ext.KindIdentity, kindIdentityRecheck, kindIdentityRenew,
+		ext.KindDecisions, ext.KindContext, ext.KindNotifications, ext.KindSync, ext.KindEntitlements, ext.KindMedia, ext.KindRuntime,
+	} {
+		held := make([]extSlot, 0, extInFlight)
+		for range extInFlight {
+			sl, ok := e.srv.extTake(kind, "cloud")
+			if !ok {
+				t.Fatalf("%s: a slot of %d was not free", kind, extInFlight)
+			}
+			held = append(held, sl)
 		}
-		req.Header.Set("Authorization", "Bearer "+tok)
-		resp, err := e.client.Do(req)
-		if err != nil {
-			t.Error(err)
-			return 0
+		if _, ok := e.srv.extTake(kind, "cloud"); ok {
+			t.Fatalf("%s: a slot past its %d", kind, extInFlight)
 		}
-		resp.Body.Close()
-		return resp.StatusCode
-	}
-	for range extInFlight {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			whoami(heldToken) // late: 401
-		}()
-	}
-	for range extInFlight {
-		<-entered
-	}
-	if code := whoami("tok-admin"); code != http.StatusUnauthorized {
-		t.Fatalf("the provider's admin with every authentication slot held: %d, want 401 (the slots are not all held)", code)
-	}
-	for _, m := range []string{"GET", "POST", "DELETE"} {
-		if code, body := signInCall(t, e, m, adminToken, ""); code != http.StatusOK {
-			t.Errorf("%s with every authentication slot held: %d %s, want 200", m, code, body)
+		begins, outs := f.Begins(), f.SignOuts()
+		for _, m := range []string{"GET", "POST", "DELETE"} {
+			if code, body := signInCall(t, e, m, adminToken, ""); code != http.StatusOK {
+				t.Errorf("%s with every %s slot taken: %d %s, want 200", m, kind, code, body)
+			}
 		}
-	}
-	if g.Begins() != 1 || g.SignOuts() != 1 {
-		t.Errorf("with every authentication slot held: %d begins, %d sign-outs, want 1 and 1", g.Begins(), g.SignOuts())
+		if f.Begins() != begins+1 || f.SignOuts() != outs+1 {
+			t.Errorf("with every %s slot taken: %d begins, %d sign-outs, want 1 and 1", kind, f.Begins()-begins, f.SignOuts()-outs)
+		}
+		for _, sl := range held {
+			sl.free()
+		}
 	}
 }
 
 // A begin or a sign-out that went into the provider and made its change,
-// then held past the wait or panicked, may have been taken: 503
-// signin_status_unknown in the act's words, no status read in that
-// request, the act made once, and the next read shows what it made.
+// then held past the wait, returned its context's error (before its
+// outcome was read and after), panicked or ended its goroutine without
+// returning, may have been taken: 503 signin_status_unknown in the act's
+// words, no status read in that request, the act made once, and the next
+// read shows what it made.
 func TestSignInActNotKnown(t *testing.T) {
 	g := &signInGate{FakeSignIn: exttest.NewFakeSignIn("cloud")}
 	e, logs := signInEnv(t, g)
+	// The act's steps: each return is sent on returned; the outcome's read
+	// waits for one first while readAfterReturn is set.
+	returned := make(chan struct{}, 1)
+	var readAfterReturn atomic.Bool
+	seam := func(step string) {
+		switch {
+		case step == "returned":
+			returned <- struct{}{}
+		case step == "read" && readAfterReturn.Load():
+			<-returned
+		}
+	}
+	signInActSeam.Store(&seam)
+	t.Cleanup(func() { signInActSeam.Store(nil) })
+	// held has each act wait for its context to end, then for the case's
+	// end, and end as end says; the case's end waits for it to return.
+	held := func(end actEnd) func() func() {
+		return func() func() {
+			hold := make(chan struct{})
+			g.setAct(hold, end)
+			return func() { close(hold); <-returned; g.setAct(nil, actReturnsNil) }
+		}
+	}
 	for _, act := range []struct {
 		method       string
 		count        func() int
@@ -592,12 +624,15 @@ func TestSignInActNotKnown(t *testing.T) {
 			what string
 			set  func() func() // sets the case up, answers what ends it
 		}{
-			{"held past the wait", func() func() {
-				hold := make(chan struct{})
-				g.setAct(hold, false)
-				return func() { close(hold); g.setAct(nil, false) }
+			{"held past the wait", held(actReturnsNil)},
+			{"returning its context's error after its outcome is read", held(actReturnsCtxErr)},
+			{"returning its context's error before its outcome is read", func() func() {
+				g.setAct(nil, actReturnsCtxErr)
+				readAfterReturn.Store(true)
+				return func() { readAfterReturn.Store(false); g.setAct(nil, actReturnsNil) }
 			}},
-			{"panicking", func() func() { g.setAct(nil, true); return func() { g.setAct(nil, false) } }},
+			{"panicking", func() func() { g.setAct(nil, actPanics); return func() { g.setAct(nil, actReturnsNil) } }},
+			{"ending its goroutine without returning", func() func() { g.setAct(nil, actExits); return func() { g.setAct(nil, actReturnsNil) } }},
 		} {
 			g.SetStatus(act.before)
 			acts, reads := act.count(), g.statusReads()
