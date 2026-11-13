@@ -924,6 +924,15 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 		return ""
 	}
 	folder := folderOf(id)
+	// An account on the tool's own folder in the server's home, which the
+	// stubs run under too: the skill is installed in that home at the first
+	// launch, and no line of the log names the folder (#856).
+	t.Setenv("HOME", e.srv.home)
+	homeFolder := filepath.Join(e.srv.home, ".claude")
+	if err := os.MkdirAll(homeFolder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "claude", "label": label + " home", "folder": homeFolder, "expectedRev": accountsRev(t, e)}, http.StatusCreated, "")
 	// A launch whose entry pins another account's folder, naming none, and
 	// a Brakeman turn on a third's folder beside a key its entry sets: each
 	// bound pinned, each the first launch in its folder, so the skill is
@@ -973,7 +982,7 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	_, blo := e.do("POST", "/api/sessions/"+boundSid+"/links", adminToken, map[string]any{"role": "control"})
 	boundLink, _ := blo["token"].(string)
 	leaked := func(who, path string, data []byte) {
-		for _, s := range []string{label, folder, pinnedFolder, bkFolder, figure, fingerprint} {
+		for _, s := range []string{label, folder, pinnedFolder, bkFolder, homeFolder, figure, fingerprint} {
 			if bytes.Contains(data, []byte(s)) {
 				t.Errorf("%s's %s carries %q", who, path, s)
 			}
@@ -1034,6 +1043,48 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	e.getFile(sid, link, "notes.md", "raw")
 	writeFile(t, accountsFile, before)
 	e.getFile(sid, link, "notes.md", "raw")
+	// The home's skill a file of the user's own, then one that cannot be
+	// read, each at a launch the server installs it again at, and the
+	// integration's install failing on it: no line names a path under the
+	// account's folder.
+	ad, _ := agents.Get("claude")
+	skill := filepath.Join(e.srv.home, filepath.FromSlash(ad.SkillPath))
+	launchAgain := func() {
+		e.srv.skillMu.Lock()
+		delete(e.srv.skillDone, "claude")
+		e.srv.skillMu.Unlock()
+		e.stopAndWait(e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-w"}, http.StatusCreated, "")["id"].(string))
+	}
+	writeFile(t, skill, []byte("a skill of the user's own\n"))
+	launchAgain()
+	if err := os.Remove(skill); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(skill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchAgain()
+	e.expect(t, "POST", "/api/integrations/claude/install", nil, http.StatusInternalServerError, "install_failed")
+	// The same in the configuration folder the pinned entry names, an
+	// account's: a skill of the user's own there, then one that cannot be
+	// written, each at a launch of the entry.
+	_, tail, _ := strings.Cut(ad.SkillPath, "/")
+	pinnedSkill := filepath.Join(pinnedFolder, filepath.FromSlash(tail))
+	pinnedAgain := func() {
+		e.srv.skillMu.Lock()
+		delete(e.srv.skillDone, "claude\x00"+pinnedFolder)
+		e.srv.skillMu.Unlock()
+		e.stopAndWait(e.expect(t, "POST", "/api/sessions", map[string]any{"agentId": "claude-in"}, http.StatusCreated, "")["id"].(string))
+	}
+	writeFile(t, pinnedSkill, []byte("a skill of the user's own\n"))
+	pinnedAgain()
+	if err := os.Remove(pinnedSkill); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(pinnedSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pinnedAgain()
 	logMu.Lock()
 	defer logMu.Unlock()
 	for _, words := range []string{denyAllWords, denyEndWords} {
@@ -1043,6 +1094,14 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 	}
 	if n := bytes.Count(logged.Bytes(), []byte("skill installed in the agent's configuration directory")); n < 2 {
 		t.Errorf("the skill's line was written %d times: not for the pinned launch and the turn", n)
+	}
+	for _, line := range []string{`msg="skill installed" adapter=claude`, `holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's" adapter=claude`,
+		`msg="skill install failed" adapter=claude`, `msg="integration install failed" integration=claude`,
+		`configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's" adapter=claude`,
+		`msg="skill install in the agent's configuration directory failed" adapter=claude`} {
+		if !bytes.Contains(logged.Bytes(), []byte(line)) {
+			t.Errorf("the log lacks %s", line)
+		}
 	}
 	leaked("the log", "", logged.Bytes())
 }
