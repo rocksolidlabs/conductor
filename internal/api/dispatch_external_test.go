@@ -1417,6 +1417,26 @@ func pullEnv(t *testing.T, n int) (*testEnv, *ghItems, string) {
 	return e, g, e.newDispatchTicket(t, "STP", "Stop it", nil)["key"].(string)
 }
 
+// causeOf is a transport to the fake that tells, for a request to path
+// that fails, what ended its context (context.Cause): the stop's cancel,
+// or the adapter's own deadline.
+type causeOf struct {
+	base  http.RoundTripper
+	path  string
+	cause chan<- error
+}
+
+func (c causeOf) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.base.RoundTrip(r)
+	if err != nil && r.URL.Path == c.path {
+		select {
+		case c.cause <- context.Cause(r.Context()):
+		default:
+		}
+	}
+	return resp, err
+}
+
 // addLink adds a delivery link to pull request n of octo/app: its id.
 func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
 	t.Helper()
@@ -1428,7 +1448,9 @@ func (e *testEnv) addPullLink(t *testing.T, key string, n int) string {
 // held at the fake when the server begins to stop, asks nothing more (the
 // pull request's half), records nothing, and the stop does not wait for
 // it; a link added once the stop began asks GitHub nothing; a route's read
-// held the same way ends with the stop, answered as a busy route is. Once
+// held the same way, with the server's caps far above the test's wait,
+// ends with the stop (its request ended by the stop's cancel, not by a
+// deadline), answered as a busy route is. Once
 // the stop has begun, the one door to GitHub asks nothing, and 2,000
 // previews and 500 imports on one processor make no request, each held to
 // its own route's answer once the stop ended it (stopAnswer): a preview
@@ -1481,6 +1503,13 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 	})
 	t.Run("a route's read", func(t *testing.T) {
 		e, g, key := pullEnv(t, 94)
+		// The server's own caps far above the test's wait, and the held
+		// request's end told by its cause (the adapter's own deadline is
+		// below the test's wait): only the stop ends the route here.
+		far := 10 * testWait
+		e.srv.external.caps = &trackerCaps{busy: far, reads: far, images: far, merged: far, write: far}
+		held := make(chan error, 1)
+		e.srv.trackers.gh = e.srv.trackers.adapter(causeOf{g.f.Transport(), itemsRepo + "/issues/94", held})
 		link := e.addPullLink(t, key, 94)
 		if !waitFor(testWait, func() bool { _, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok }) {
 			t.Fatal("the added link was not read")
@@ -1494,11 +1523,22 @@ func TestTrackerReadsEndWithServer(t *testing.T) {
 		<-gate.Reached()
 		stopped := make(chan struct{})
 		go func() { e.srv.WaitBackground(context.Background()); close(stopped) }()
-		out := <-answer
+		var out map[string]any
+		select {
+		case out = <-answer:
+		case <-time.After(testWait):
+			gate.Open()
+			t.Fatal("the held route did not end with the stop")
+		}
 		gate.Open()
 		<-stopped
-		if errorCode(out) != "tracker_busy" || g.count("api.github.com", itemsRepo+"/pulls/94") != 1 {
-			t.Fatalf("the held route: %v, the pull request asked %d times", out, g.count("api.github.com", itemsRepo+"/pulls/94"))
+		var cause error
+		select {
+		case cause = <-held:
+		default:
+		}
+		if cause != context.Canceled || errorCode(out) != "tracker_busy" || g.count("api.github.com", itemsRepo+"/pulls/94") != 1 {
+			t.Fatalf("the held route: %v, its request ended by %v, the pull request asked %d times", out, cause, g.count("api.github.com", itemsRepo+"/pulls/94"))
 		}
 	})
 	t.Run("routes begun once the stop began", func(t *testing.T) {
@@ -1578,6 +1618,51 @@ func TestCloseOnceTheStopBegan(t *testing.T) {
 	tv, _ := e.srv.dispatch.Ticket(t.Context(), key)
 	if status != http.StatusServiceUnavailable || errorCode(out) != "tracker_busy" || tv.Status == dispatch.TicketDone || len(g.f.Requests()) != before {
 		t.Fatalf("an edit to done under merged once the stop began: %d %v, the ticket %s, %d requests", status, out, tv.Status, len(g.f.Requests())-before)
+	}
+}
+
+// The route's look at the project before a close does not depend on the
+// client staying: an edit to done under merged whose request has ended
+// before the handler runs reads the delivery link again, and that read
+// failing refuses the close naming the link, as for a client that stays.
+func TestCloseLookWithoutTheClient(t *testing.T) {
+	e, g, merged := mergedEnv(t, nil)
+	key, link := merged(88)
+	g.edit(88, func(i *ghItem) { i.Fail = http.StatusTooManyRequests })
+	reads := g.count("api.github.com", itemsRepo+"/issues/88")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body := fmt.Sprintf(`{"opId":%q,"set":{"status":"done"}}`, opID())
+	r := httptest.NewRequestWithContext(ctx, "POST", "/api/dispatch/tickets/"+key+"/edit", strings.NewReader(body))
+	r.SetPathValue("key", key)
+	w := httptest.NewRecorder()
+	e.srv.handleDispatchEditTicket(w, r)
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusConflict {
+		t.Fatalf("the close with its client gone: %d %s", w.Code, w.Body.String())
+	}
+	closeRefused(t, e, "the close with its client gone", key, out, "octo/app#88")
+	if rd, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link); err != nil || rd.Error == "" || g.count("api.github.com", itemsRepo+"/issues/88") != reads+1 {
+		t.Fatalf("the close's read: %+v %v, the item asked %d times", rd, err, g.count("api.github.com", itemsRepo+"/issues/88")-reads)
+	}
+}
+
+// A route's context ends with the stop itself, in the stop's own cancel,
+// and keeps the request's values: one made before the stop has ended once
+// the stop has returned, and one made after it has ended already.
+func TestTrackerContextEndsWithTheStop(t *testing.T) {
+	e := newTestEnv(t, nil)
+	type key struct{}
+	r := httptest.NewRequestWithContext(context.WithValue(context.Background(), key{}, "the request's"), "POST", "/", nil)
+	before, cancel := e.srv.trackerContext(r, time.Hour)
+	defer cancel()
+	e.srv.external.end()
+	after, cancelAfter := e.srv.trackerContext(r, time.Hour)
+	defer cancelAfter()
+	for what, ctx := range map[string]context.Context{"made before the stop": before, "made after it": after} {
+		if ctx.Err() != context.Canceled || ctx.Value(key{}) != "the request's" {
+			t.Errorf("a route's context %s, once the stop returned: %v, the request's value %v", what, ctx.Err(), ctx.Value(key{}))
+		}
 	}
 }
 
@@ -2046,5 +2131,88 @@ func TestImportKeepsWhatIsShown(t *testing.T) {
 	linked := entityOf(t, e.importItem(t, "KPS", page, opID(), http.StatusCreated, nil), "ticket")["key"].(string)
 	if pv := entityOf(t, e.expect(t, "POST", "/api/dispatch/external/preview", map[string]any{"url": page}, http.StatusOK, ""), "preview"); pv["linked"] != linked {
 		t.Fatalf("the preview names %v, not %s", pv["linked"], linked)
+	}
+}
+
+// A link's checks are fitted as the store measures them, where the read
+// becomes the store's record. A hundred statuses at a pull request's head
+// whose names each hold eighteen short scheme tokens (each kept as words,
+// so a name is longer kept than read), with a 72-byte page: the adapter
+// cuts them to 32 KiB by its measure, and the store's measure of what it
+// kept is past the bound; the read is recorded, cut again to the store's
+// bound, failures first, both cuts said and every check left out counted.
+// A hundred with plain names fit both measures and are recorded whole. A
+// hundred failures past the bound are recorded as the failures that fit,
+// the cut said and counted.
+func TestLinkChecksFitAsKept(t *testing.T) {
+	scheme := strings.Repeat("x:// ", 18)
+	for _, c := range []struct {
+		what   string
+		name   string
+		failed func(i int) bool
+		whole  bool
+	}{
+		{"names longer as kept", scheme, func(i int) bool { return i%5 == 0 }, false},
+		{"within both measures", "lint ", func(i int) bool { return i%5 == 0 }, true},
+		{"failures alone past the bound", scheme, func(int) bool { return true }, false},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			e, g, key := pullEnv(t, 87)
+			failures := 0
+			var statuses []any
+			for i := range 100 {
+				state := "success"
+				if c.failed(i) {
+					state, failures = "failure", failures+1
+				}
+				statuses = append(statuses, map[string]any{"id": 7000 + i, "context": fmt.Sprintf("%ss%02d", c.name, i), "state": state,
+					"target_url": fmt.Sprintf("https://ci.example.com/octo/app/commit-statuses/%024d", i), "created_at": itemsLayout, "updated_at": "2026-11-01T10:00:00Z"})
+			}
+			g.f.Reply("GET", "api.github.com", itemsRepo+"/commits/"+headSHA+"/status", http.StatusOK, map[string]any{"state": "failure", "total_count": 100, "statuses": statuses})
+			link := e.addPullLink(t, key, 87)
+			if !waitFor(testWait, func() bool { _, ok, _ := e.srv.dispatch.LinkReadOf(t.Context(), link); return ok }) {
+				t.Fatal("the added link was not read")
+			}
+			status, data, out := e.call(t, "POST", "/api/dispatch/tickets/"+key+"/links/"+link+"/read", map[string]any{})
+			if status != http.StatusOK {
+				t.Fatalf("the link's read: %d %s", status, data)
+			}
+			read, _, err := e.srv.dispatch.LinkReadOf(t.Context(), link)
+			if err != nil || read.Error != "" || len(entityOf(t, out, "read")["checks"].([]any)) != len(read.Checks) {
+				t.Fatalf("the read kept: %+v %v", read, err)
+			}
+			if c.whole {
+				if len(read.Checks) != 100 || read.Incomplete != nil {
+					t.Fatalf("within both measures: %d checks kept, incomplete %+v", len(read.Checks), read.Incomplete)
+				}
+				return
+			}
+			if read.Incomplete == nil || read.Incomplete.Omitted != 100-len(read.Checks) {
+				t.Fatalf("cut: %d checks kept, incomplete %+v", len(read.Checks), read.Incomplete)
+			}
+			// The adapter's cut, by its own measure, and the store's after it.
+			adapter, stored := 0, false
+			for _, w := range read.Incomplete.Words {
+				if rest, ok := strings.CutPrefix(w, "the checks' list is past 32 KiB; "); ok {
+					_, _ = fmt.Sscan(rest, &adapter)
+				}
+				stored = stored || strings.HasSuffix(w, " checks left out to keep the list within 100 checks and 32 KiB, failures kept first")
+			}
+			if adapter <= 0 || !stored || len(read.Checks) >= 100-adapter {
+				t.Fatalf("the cuts said: %q, %d kept", read.Incomplete.Words, len(read.Checks))
+			}
+			kept := 0
+			for i, ch := range read.Checks {
+				if ch.Conclusion == "failure" {
+					kept++
+					if kept != i+1 {
+						t.Fatalf("check %d, a failure, after one that is not: %+v", i, read.Checks)
+					}
+				}
+			}
+			if kept != min(failures, len(read.Checks)) {
+				t.Fatalf("%d failures of %d kept in %d checks", kept, failures, len(read.Checks))
+			}
+		})
 	}
 }
