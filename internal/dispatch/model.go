@@ -431,15 +431,17 @@ const (
 	// MaxTicketExternalParts bounds what this version adds to a ticket's
 	// read (the snapshot, the owners, the linked issue's read, closed_on, a
 	// summary per live link, the source, the identity, the page, the
-	// authority and the close policy's merged with its words), measured as
-	// the reply the route returns at its escaped worst less the same read
-	// as main's would hold it, in bytes: the measure, 124,469 bytes (the
-	// snapshot 34,186 of them, fifty summaries most of the rest, the page
-	// 2,065 and the merged words 2,137), rounded up to a KiB
+	// authority and the close policy's merged with its words, and the
+	// newest MaxTicketPublications publications with the count of older
+	// ones that need a person), measured as the reply the route returns at
+	// its escaped worst less the same read as main's would hold it, in
+	// bytes: the measure, 216,023 bytes (the snapshot 34,186 of them, fifty
+	// summaries and ten publications most of the rest, the page 2,065 and
+	// the merged words 2,100), rounded up to a KiB or two
 	// (TestTicketReplyBound finds the parts from TicketView's type and
 	// holds the bound within 4 KiB of the measure). The room the API's
 	// MaxTicketReply keeps for it.
-	MaxTicketExternalParts = 122 << 10
+	MaxTicketExternalParts = 212 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute
@@ -470,9 +472,6 @@ const (
 	MaxHints             = 8
 	MaxHintFile          = 1 << 10
 	MaxHintComponent     = 256
-	// MaxHintLine bounds a hint's and a source's line and column: the
-	// largest integer the bridge's JavaScript holds exactly, its own bound.
-	MaxHintLine = 1<<53 - 1
 	// MaxElementWord bounds the report's short words the plan names no
 	// bound for: a state's words, a style's property, a hint's how, a cut's
 	// step.
@@ -612,8 +611,8 @@ const (
 	RequireVerified   = "verified"
 	// RequireMerged is a live delivery link whose pull request GitHub says
 	// is merged, by a read of the link at most MaxMergedReadAge old
-	// (Program item IN1a, reads.go). The model meets it; a project's
-	// policy refuses it until the API reads a close's links (offered).
+	// (Program item IN1a, reads.go). The API reads a close's delivery
+	// links first when a project's policy names it (dispatch_external.go).
 	RequireMerged = "merged"
 )
 
@@ -621,10 +620,9 @@ const (
 var CloseRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified, RequireMerged}
 
 // offeredRequirements is the requirements a project's policy may name on
-// a local write: merged waits for the close route's reads of GitHub
-// (docs/plans/tracker-linking.md, PR-4), so that no project is set to a
-// requirement nothing yet meets.
-var offeredRequirements = []string{RequireAcceptance, RequireDelivery, RequireVerified}
+// a local write: every one, merged since the close route reads GitHub
+// (docs/plans/tracker-linking.md, PR-4).
+var offeredRequirements = CloseRequirements
 
 // The kinds of a relation: "depends on" is blocks read from the other
 // end.
@@ -1344,7 +1342,7 @@ func checkTracker(tracker, trackerURL string) error {
 }
 
 // closePolicy checks a close policy and gives it in CloseRequirements'
-// order: acceptance, delivery and verified, each at most once.
+// order: acceptance, delivery, verified and merged, each at most once.
 func closePolicy(requires []string) ([]string, error) {
 	out := []string{}
 	for _, want := range CloseRequirements {
@@ -1362,11 +1360,8 @@ func closePolicy(requires []string) ([]string, error) {
 		}
 	}
 	for _, r := range requires {
-		if r == RequireMerged {
-			return nil, refuse(RefusalInvalid, "the close policy's merged needs the close's reads of GitHub, which this server does not make yet")
-		}
 		if !slices.Contains(offeredRequirements, r) {
-			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery and verified", r)
+			return nil, refuse(RefusalInvalid, "the close policy's %q is none of acceptance, delivery, verified and merged", r)
 		}
 	}
 	return out, nil

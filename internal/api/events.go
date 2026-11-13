@@ -245,11 +245,10 @@ func (h *eventHub) run(id string, removed bool) {
 // dispatchEvent is the data of a `dispatch` event: something of Dispatch's
 // changed (dispatch.Change), for a page to read again. seq is the commit's
 // last change in the store's log; entity what changed (project, ticket,
-// comment, label, milestone, view, person, plan, launch, review,
-// finding, capture or capture_send: a ticket's plan revision, launch, a
-// person's review of a candidate or one of its findings, whose marks are
-// the finding's changes, a person's capture of a preview or one of its
-// sends, which name no ticket or project) and id its id, "" for a
+// comment, label, milestone, view, person, plan, launch, review or
+// finding: a ticket's plan revision, launch, a person's review of a
+// candidate or one of its findings, whose marks are the finding's
+// changes) and id its id, "" for a
 // person, whose id is its name: the directory is small and its pickers
 // read it again whole, so the event says only that it changed; ticket the
 // id of the ticket the change belongs to and project its project's key,
@@ -263,10 +262,9 @@ type dispatchEvent struct {
 	Project string `json:"project"`
 }
 
-// maxDispatchEvent bounds a dispatch event's data. The longest is 122
-// bytes: seq at most 19 digits, entity at most 12 (capture_send; a
-// plan's, a launch's, a review's, a finding's and a capture's are
-// shorter), id and ticket 16 hex characters each,
+// maxDispatchEvent bounds a dispatch event's data. The longest is 119
+// bytes: seq at most 19 digits, entity at most 9 (milestone; a plan's,
+// a launch's, a review's and a finding's are shorter), id and ticket 16 hex characters each,
 // project a key of at most 6, and the envelope's 53; every value is
 // digits, a word of the code's, hex or a key, never escaped. A person's
 // name, which could be 60 characters of six encoded bytes each, never
@@ -287,13 +285,11 @@ const maxDispatchEvent = 160
 // changed, each at most maxDispatchEvent bytes of data and 24 of
 // framing: at most 11,776 bytes a kind and project, whatever the
 // commit's size. An operation of the store changes entities of one
-// project at most, beside the people its tickets name and a capture's
-// and a send's, which name none, so thirteen kinds at most (a plan
-// revision's, a launch's, a review's, a finding's, a capture's and a
-// send's among them: a review's submit is the review and its fifty
-// findings, two kinds; a send to a ticket the send, the ticket and its
-// comment, three), and its entry is at most 153,088 bytes; the label
-// deleted on 10,000 tickets is two events.
+// project at most, beside the people its tickets name, so eleven kinds at
+// most (a plan revision's, a launch's, a review's and a finding's among
+// them: a review's submit is the review and its fifty findings, two
+// kinds), and its entry is at most 129,536 bytes; the label deleted on
+// 10,000 tickets is two events.
 const maxDispatchEach = 64
 
 // dispatch announces a commit of Dispatch's store, what it changed
@@ -342,6 +338,25 @@ func (h *eventHub) dispatch(changes []dispatch.Change) {
 	if len(msg) > 0 {
 		h.broadcast(msg)
 	}
+}
+
+// maxDispatchReadEvent bounds a dispatch_read event's data: a ticket's id
+// and a link's (16 hex each), a project's key (at most 6), a time
+// (RFC 3339 with nanoseconds, 30) and the envelope's 50 come to about 120
+// bytes, never escaped.
+const maxDispatchReadEvent = 256
+
+// dispatchRead announces a read of a ticket's linked item or of a link's
+// item (dispatch.Store.OnRead): {ticket, project, link?, readAt}, with no
+// seq, since a read is no change of the log's and has no place in its
+// sequence; a page reads the ticket again on it, apart from the dispatch
+// events' seq. It goes the dispatch event's way: to the clients alone.
+func (h *eventHub) dispatchRead(n dispatch.ReadNotice) {
+	b, err := json.Marshal(n)
+	if err != nil || len(b) > maxDispatchReadEvent {
+		return
+	}
+	h.broadcast([]byte("event: dispatch_read\ndata: " + string(b) + "\n\n"))
 }
 
 // broadcast queues msg, one event or a commit's several, as one entry for

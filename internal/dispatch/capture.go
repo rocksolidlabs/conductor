@@ -550,10 +550,8 @@ func (c *checker) element(label string, e *ElementReport) {
 	for _, a := range e.Attributes {
 		c.must(!secret || !namedAs(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
 	}
-	// A state's words are bound as the bridge bounds them (an element's
-	// name's bound), what a report the bridge cut holds.
 	for _, w := range []string{e.State.AriaDisabled, e.State.AriaExpanded, e.State.PointerEvents} {
-		c.field("element.name", label+"'s state", w)
+		c.field("element.word", label+"'s state", w)
 	}
 	c.must(e.State.Motion >= 0 && e.State.Motion <= MaxRectCoord, RefusalInvalid, "%s's motion is out of range", label)
 	c.field("element.selector", label+"'s hit test's selector", e.Hit.Selector)
@@ -563,7 +561,7 @@ func (c *checker) element(label string, e *ElementReport) {
 	c.count("ancestors", len(e.Ancestors), MaxAncestors)
 	for _, a := range e.Ancestors {
 		c.names(label+"'s ancestor", a.Tag, a.ID, a.Role, "", a.Classes)
-		c.measured(label+"'s ancestor", bridgeAncestorOf(a), MaxAncestor)
+		c.measured(label+"'s ancestor", a, MaxAncestor)
 	}
 	c.count("styles", len(e.Styles), MaxStyles)
 	for _, st := range e.Styles {
@@ -575,99 +573,13 @@ func (c *checker) element(label string, e *ElementReport) {
 		c.field("element.word", label+"'s hint's how", h.How)
 		c.field("element.hint_file", label+"'s hint's file", h.File)
 		c.field("element.hint_component", label+"'s hint's component", h.Component)
-		c.must(h.Line >= 0 && h.Column >= 0 && h.Line <= MaxHintLine && h.Column <= MaxHintLine, RefusalInvalid, "%s's hint's line is out of range", label)
+		c.must(h.Line >= 0 && h.Column >= 0 && h.Line <= MaxFindingLine && h.Column <= MaxFindingLine, RefusalInvalid, "%s's hint's line is out of range", label)
 	}
 	c.count("cut steps", len(e.Cut), 10)
 	for _, w := range e.Cut {
 		c.field("element.word", label+"'s cut", w)
 	}
-	c.measured(label+"'s report", bridgeReportOf(e), MaxElementReport)
-}
-
-// bridgeReport is an element's report in the bridge's own shape
-// (internal/proto's ElementReport, docs/protocol.md "Preview bridge"):
-// every member written, a list empty as [], the classes joined by
-// spaces. A report and its ancestors are measured in it, so the store's
-// bound is the one the bridge cut the report to: one measure on both
-// sides, whatever the store's own shape leaves out or splits.
-type bridgeReport struct {
-	Tag           string           `json:"tag"`
-	ID            string           `json:"id"`
-	Classes       string           `json:"classes"`
-	Role          string           `json:"role"`
-	Name          string           `json:"name"`
-	Text          string           `json:"text"`
-	Selector      string           `json:"selector"`
-	Box           Rect             `json:"box"`
-	Attributes    [][2]string      `json:"attributes"`
-	State         bridgeState      `json:"state"`
-	Hit           bridgeHit        `json:"hit"`
-	HTML          string           `json:"html"`
-	Neighbourhood string           `json:"neighbourhood"`
-	Ancestors     []bridgeAncestor `json:"ancestors"`
-	Styles        [][2]string      `json:"styles"`
-	Hints         []bridgeHint     `json:"hints"`
-	Cut           []string         `json:"cut"`
-}
-
-type bridgeState struct {
-	Disabled      bool   `json:"disabled"`
-	Hidden        bool   `json:"hidden"`
-	AriaDisabled  string `json:"ariaDisabled"`
-	AriaExpanded  string `json:"ariaExpanded"`
-	PointerEvents string `json:"pointerEvents"`
-	Inert         bool   `json:"inert"`
-	Hovered       bool   `json:"hovered"`
-	Motion        int    `json:"motion"`
-}
-
-type bridgeHit struct {
-	Self     bool   `json:"self"`
-	Selector string `json:"selector"`
-	Tag      string `json:"tag"`
-}
-
-type bridgeAncestor struct {
-	Tag     string `json:"tag"`
-	ID      string `json:"id"`
-	Classes string `json:"classes"`
-	Role    string `json:"role"`
-}
-
-type bridgeHint struct {
-	How       string `json:"how"`
-	File      string `json:"file"`
-	Line      int    `json:"line"`
-	Column    int    `json:"column"`
-	Component string `json:"component"`
-}
-
-// bridgeAncestorOf is a in the bridge's shape.
-func bridgeAncestorOf(a Ancestor) bridgeAncestor {
-	return bridgeAncestor{Tag: a.Tag, ID: a.ID, Classes: strings.Join(a.Classes, " "), Role: a.Role}
-}
-
-// bridgeReportOf is e in the bridge's shape.
-func bridgeReportOf(e *ElementReport) bridgeReport {
-	list := func(v [][2]string) [][2]string {
-		if v == nil {
-			return [][2]string{}
-		}
-		return v
-	}
-	b := bridgeReport{Tag: e.Tag, ID: e.ID, Classes: strings.Join(e.Classes, " "), Role: e.Role, Name: e.Name, Text: e.Text, Selector: e.Selector,
-		Box: e.Box, Attributes: list(e.Attributes), State: bridgeState(e.State), Hit: bridgeHit(e.Hit), HTML: e.HTML, Neighbourhood: e.Neighbourhood,
-		Ancestors: []bridgeAncestor{}, Styles: list(e.Styles), Hints: []bridgeHint{}, Cut: e.Cut}
-	if b.Cut == nil {
-		b.Cut = []string{}
-	}
-	for _, a := range e.Ancestors {
-		b.Ancestors = append(b.Ancestors, bridgeAncestorOf(a))
-	}
-	for _, h := range e.Hints {
-		b.Hints = append(b.Hints, bridgeHint(h))
-	}
-	return b
+	c.measured(label+"'s report", e, MaxElementReport)
 }
 
 // sources checks an element's checked sources: within the hints' bounds,
@@ -680,7 +592,7 @@ func (c *checker) sources(label string, ss []Source) {
 		c.field("element.hint_file", label+"'s source's path", s.Path)
 		c.field("element.hint_component", label+"'s source's component", s.Component)
 		c.field("element.word", label+"'s source's how", s.How)
-		c.must(s.Line >= 0 && s.Column >= 0 && s.Line <= MaxHintLine && s.Column <= MaxHintLine, RefusalInvalid, "%s's source's line is out of range", label)
+		c.must(s.Line >= 0 && s.Column >= 0 && s.Line <= MaxFindingLine && s.Column <= MaxFindingLine, RefusalInvalid, "%s's source's line is out of range", label)
 		c.must(!(s.Outside && s.Found), RefusalInvalid, "%s's source outside the tree is not found in it", label)
 		r := slices.Index(SourceClasses, s.Class)
 		c.must(r >= rank, RefusalInvalid, "%s's sources are not tracked, untracked, ignored and vendor in that order, or name another class", label)

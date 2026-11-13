@@ -644,6 +644,42 @@ const (
 	IntentImportImage    = "ticket.import_image"
 )
 
+// Projection is what an import of read keeps (normalSnapshot): the
+// snapshot, its manifest among it, and the ticket's title and
+// description. A preview shows it.
+func Projection(read ExternalRead) (ExternalSnapshot, string, string, error) {
+	return normalSnapshot(read)
+}
+
+// LinkedTicket is the key of the live ticket whose linked issue is the
+// item system, host and nodeID name, looked up as linkedTo refuses a
+// second one; "" for none.
+func (s *Store) LinkedTicket(ctx context.Context, system, host, nodeID string) (key string, err error) {
+	err = s.read(ctx, func(q queryer) error {
+		err := q.QueryRowContext(ctx, "SELECT key FROM tickets WHERE external_id = ? AND deleted_at = '' ORDER BY number LIMIT 1", ExternalIdentity(system, host, nodeID)).Scan(&key)
+		if isNoRows(err) {
+			return nil
+		}
+		return err
+	})
+	return key, err
+}
+
+// LinkedSince reports whether the linked issue of the ticket with the key
+// was set or emptied (a change of its external_id) after op's own last
+// change: the ticket unlinked, or linked to an item, since op, which is
+// an operation as any is (Op.check).
+func (s *Store) LinkedSince(ctx context.Context, op Op, key string) (since bool, err error) {
+	if err := op.check(); err != nil {
+		return false, err
+	}
+	err = s.read(ctx, func(q queryer) error {
+		return q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE t.key = ? AND c.field = 'external_id'
+			AND c.seq > (SELECT COALESCE(MAX(seq), 0) FROM changes WHERE actor = ? AND op_id = ?))`, key, op.Actor, op.ID).Scan(&since)
+	})
+	return since, err
+}
+
 // linkedTo refuses an item another live ticket than except has as its
 // linked issue (external_linked, the receipt's Key naming it).
 func (t *tx) linkedTo(identity, except string) error {
@@ -1279,8 +1315,9 @@ func readWords(s string) string {
 // transaction of its own outside Apply (no changes row, no receipt): r's
 // item update time by its system's clock (zero for a 304, which keeps the
 // time held), who read and the read's validators; the read's time is the
-// store's. The ticket must hold the identity still (a *Refusal invalid
-// otherwise, the read dropped), and a read older by the system's clock
+// store's. The ticket must be live (a *Refusal not_found otherwise) and
+// hold the identity still (a *Refusal invalid otherwise, the read
+// dropped), and a read older by the system's clock
 // than the one kept is a *Refusal stale_read, nothing written. Then
 // OnRead's listeners are told, never OnChange's. ErrNotFound when there is
 // no such ticket.
@@ -1327,6 +1364,8 @@ func (s *Store) recordTicketRead(ctx context.Context, key, identity string, writ
 			return ErrNotFound
 		case err != nil:
 			return err
+		case !tk.DeletedAt.IsZero():
+			return refuse(RefusalNotFound, "%s is deleted: the read is dropped", tk.Key)
 		case tk.ExternalID != identity || identity == "":
 			return refuse(RefusalInvalid, "%s's linked issue is not the item read: the read is dropped", tk.Key)
 		}

@@ -439,6 +439,23 @@ func ConfigDirOf(agentID string, getenv func(string) string) string {
 	return filepath.Clean(dir)
 }
 
+// HomeConfigDir is the configuration directory the agent of adapter
+// agentID reads while its folder variable is unset: its directory under
+// the home its environment names as written (getenv; ~/.claude, ~/.codex).
+// "" for an agent without a folder variable or a skill path, or no home.
+func HomeConfigDir(agentID string, getenv func(string) string) string {
+	a, ok := Get(agentID)
+	if !ok || a.ConfigDirEnv == "" || a.SkillPath == "" {
+		return ""
+	}
+	home := homeOf(getenv)
+	if home == "" {
+		return ""
+	}
+	first, _, _ := strings.Cut(a.SkillPath, "/")
+	return home + string(filepath.Separator) + first
+}
+
 // InstallSkillIn puts the Conductor skill where the agent of adapter agentID
 // reads skills under dir, a configuration directory of its own in place of
 // its directory under home (ConfigDirOf; #291): the skill's path there is its

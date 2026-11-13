@@ -93,6 +93,36 @@
         "signal": { "kind": "bell" }
       },
       {
+        "id": "plain",
+        "name": "Plain (e2e stub)",
+        "description": "The stub under no adapter: an agent whose usage no reader knows, which the capacity panel says it cannot read (capacity.spec.ts).",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "stub", "STUB_REPORT": "plain" },
+        "signal": { "kind": "bell" }
+      },
+      {
+        "id": "own-login",
+        "name": "Own login (e2e stub)",
+        "description": "The Claude Code stub whose entry sets a login variable (a base URL the stub never calls): it launches on that login alone (capacity.spec.ts).",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" }
+      },
+      {
+        "id": "yolo-login",
+        "name": "Yolo login (e2e stub)",
+        "description": "The Claude Code stub whose yolo recipe sets a login variable (a base URL the stub never calls): a yolo launch uses that login (capacity.spec.ts).",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "yolo": { "args": ["--dangerously-skip-permissions"], "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:9" } }
+      },
+      {
         "id": "worker",
         "name": "Worker (e2e stub)",
         "description": "The stub as a worker of a managed run, through the MCP tools: it reads its task, commits stub-<member>.txt (and stub-fixed.txt when asked), submits, and reviews needs_changes once, then approved.",

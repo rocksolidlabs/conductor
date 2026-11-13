@@ -14,12 +14,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
@@ -96,31 +96,57 @@ type Detail struct {
 	Truncated bool
 }
 
-func open(dir string) (*git.Repository, string, error) {
-	r, err := git.PlainOpenWithOptions(dir, &git.PlainOpenOptions{DetectDotGit: true, EnableDotGitCommonDir: true})
+// open is the repository at dir or the nearest folder above it, a crew's
+// linked worktree through its common directory, as go-git's
+// PlainOpenWithOptions finds it with DetectDotGit and
+// EnableDotGitCommonDir (gitDirs, commonDir), every file of it opened
+// through careOS: the one way the package opens a repository. ErrNotRepo
+// when there is none; ErrUnreadable (wrapped) when one of its files was
+// refused, whatever go-git made of the refusal; seen keeps those of the
+// reads that follow.
+func open(dir string) (r *git.Repository, top string, seen *refusal, err error) {
+	seen = &refusal{}
+	r, top, err = openOver(dir, seen)
+	if refused := seen.first(); refused != nil {
+		err = refused
+	} else if errors.Is(err, git.ErrRepositoryNotExists) {
+		err = ErrNotRepo
+	}
 	if err != nil {
-		if errors.Is(err, git.ErrRepositoryNotExists) {
-			return nil, "", ErrNotRepo
+		seen.close()
+		return nil, "", nil, err
+	}
+	return r, top, seen, nil
+}
+
+func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
+	dot, wt, err := gitDirs(dir, seen)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := dot.Stat(""); err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", git.ErrRepositoryNotExists
 		}
 		return nil, "", err
 	}
-	top := dir
-	var wt billy.Filesystem
-	if w, err := r.Worktree(); err == nil {
-		top, wt = w.Filesystem.Root(), w.Filesystem
-	}
-	// The same repository over a storage that reads an object past
-	// largeObject as a stream from its file, a delta applied as it is
-	// read, never whole in memory: go-git's own opening reads every
-	// object whole, however large (a blob of a gigabyte, a gigabyte of
-	// heap, and a delta's base besides).
-	fs, ok := r.Storer.(*filesystem.Storage)
-	if !ok {
-		return nil, "", fmt.Errorf("the repository's storage is a %T, not its files", r.Storer)
-	}
-	st := filesystem.NewStorageWithOptions(fs.Filesystem(), cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
-	if r, err = git.Open(st, wt); err != nil {
+	common, err := commonDir(dot, seen)
+	if err != nil {
 		return nil, "", err
+	}
+	// A storage that reads an object past largeObject as a stream from
+	// its file, a delta applied as it is read, never whole in memory:
+	// go-git's own opening reads every object whole, however large (a
+	// blob of a gigabyte, a gigabyte of heap, and a delta's base besides).
+	files := dotgit.NewRepositoryFilesystem(dot, common)
+	st := filesystem.NewStorageWithOptions(files, cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
+	r, err := git.Open(st, wt)
+	if err != nil {
+		return nil, "", err
+	}
+	top := dir
+	if w, err := r.Worktree(); err == nil {
+		top = w.Filesystem.Root()
 	}
 	return r, top, nil
 }
@@ -133,21 +159,30 @@ func open(dir string) (*git.Repository, string, error) {
 // loose objects and deletes them, and drops packs it merged), so a read
 // begun before the repack looks for an object in a pack it never listed or
 // in a pack since removed. The second opening lists them again. A commit
-// or a file that truly is not there is looked for twice.
+// or a file that truly is not there is looked for twice. A file refused
+// on the way (careOS) is the answer, whatever f made of it.
 func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
-	r, top, err := open(dir)
+	var none T
+	r, top, seen, err := open(dir)
 	if err != nil {
-		var none T
 		return none, err
 	}
 	out, err := f(r, top)
+	seen.close()
+	if refused := seen.first(); refused != nil {
+		return none, refused
+	}
 	if !gone(err) {
 		return out, err
 	}
-	if r, top, err = open(dir); err != nil {
+	if r, top, seen, err = open(dir); err != nil {
 		return out, err
 	}
-	return f(r, top)
+	out, err = f(r, top)
+	if seen.close(); seen.first() != nil {
+		return none, seen.first()
+	}
+	return out, err
 }
 
 // gone reports whether err says an object was not found where go-git
@@ -338,15 +373,19 @@ func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit 
 		return File{}, err
 	}
 	// The size, then the object read once, at most what the reply and
-	// git's binary sniff need of it (blobAt).
+	// git's binary sniff need of it (blobAt), by the git binary, which
+	// opens the repository's files itself: it is ended at its cap,
+	// whatever ctx allows.
+	ctx, cancel := context.WithTimeoutCause(ctx, gitCap, ErrGitCap)
+	defer cancel()
 	size, err := blobSize(ctx, dir, e.Hash)
 	if err != nil {
-		return File{}, err
+		return File{}, atCap(ctx, err)
 	}
 	out := File{Size: size}
 	b, err := blobAt(ctx, dir, e.Hash, min(max(int64(limit)+1, sniffLen), size))
 	if err != nil {
-		return File{}, err
+		return File{}, atCap(ctx, err)
 	}
 	if bytes.IndexByte(b[:min(len(b), sniffLen)], 0) >= 0 {
 		out.Binary = true
@@ -357,6 +396,25 @@ func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit 
 	}
 	out.Content = b
 	return out, nil
+}
+
+// maxGitRead is the cap on FileAt's git binary: half a minute, above the
+// 20 s the session gives one git read (session.GitTimeout), so a caller
+// that bounds its read meets its own bound first.
+const maxGitRead = 30 * time.Second
+
+// gitCap is maxGitRead, shortened by a test.
+var gitCap = maxGitRead
+
+// ErrGitCap says FileAt's git binary was ended at its cap (gitCap).
+var ErrGitCap = errors.New("the git binary reading the file was ended at its cap")
+
+// atCap is err, or ErrGitCap with the cap when the cap ended ctx.
+func atCap(ctx context.Context, err error) error {
+	if errors.Is(context.Cause(ctx), ErrGitCap) {
+		return fmt.Errorf("%w of %v", ErrGitCap, gitCap)
+	}
+	return err
 }
 
 // entryAt is the entry of the file at path in tree, found by reading the

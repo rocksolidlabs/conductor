@@ -1,5 +1,5 @@
 import { itemOf, type InboxItem, type InboxPage, type InboxTrack } from '~/utils/inbox'
-import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, OpenEvent, Role } from '~/utils/protocol'
+import type { ChatMessage, ActivityEntry, AgentBrowser, Attention, AttentionKind, AttentionOption, CrewCompare, OpenEvent, Role } from '~/utils/protocol'
 import type { Receipt } from '~/utils/tasks'
 import type { DecisionSummary, TaskHold } from '~/utils/decisions'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
@@ -52,6 +52,10 @@ export interface SessionLaunch {
   args: string[]
   /** The launch's yolo choice, not whether a recipe was applied. */
   yolo: boolean
+  /** The login it was bound to (docs/protocol.md, Capacity): never its folder. */
+  account?: { id: string; label?: string; source: string }
+  /** The model the launch named; absent for the agent's default. */
+  model?: string
 }
 
 /** POST /api/sessions/{id}/clone: the clone's name, and what it changes of the source's launch. */
@@ -478,6 +482,8 @@ export interface CrewInfo {
   setup?: CrewCheck[]
   /** The crew's project manifest; only with tasks. The whole manifest is at most 64 KiB as JSON. */
   manifest?: CrewManifest
+  /** A comparison's block; only with tasks. The editor has no form for it: a save sends it back as it was read. */
+  compare?: CrewCompare
   /** The server's count of the crew's manifest changes (`crew:<revision>` in a receipt): never sent back. */
   manifestRevision?: number
   createdAt: string
@@ -863,7 +869,7 @@ export function useSessions() {
     /** Starts a new session like a server session (#434): what the body leaves out is the source's launch; the name must be no listed session's. */
     clone: (id: string, body: CloneRequest) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}/clone`, { method: 'POST', body }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
-    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean }) =>
+    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     /** Starts an ended session again: resumed with its agent's recipe when it has had a turn, else relaunched (`notice` says why). */
     resumeSession: (id: string) => request<ResumeResult>(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),

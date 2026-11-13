@@ -98,9 +98,9 @@ const (
 	GrantAdmin Grant = "admin" // what the workbench token may do
 	GrantHost  Grant = "host"  // register a hosted session, as a host token
 	// GrantDecide is to answer a decision routed to the grant, and to read
-	// nothing else (docs/plans/decide-grant.md). Yardmaster's engine admits
-	// it; no route serves it until #847, and a principal holding it alone
-	// is answered as one with no grant.
+	// nothing else (docs/plans/decide-grant.md): a principal holding it
+	// and not GrantAdmin is admitted to four routes alone and answered by
+	// every other as one without it.
 	GrantDecide Grant = "decide"
 )
 

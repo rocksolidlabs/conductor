@@ -88,7 +88,7 @@ func TestAKeyHeldIsTaken(t *testing.T) {
 func TestAProjectsValuesAreChecked(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
-	twice, unknown := []string{RequireDelivery, RequireDelivery}, []string{"merged"}
+	twice, unknown := []string{RequireDelivery, RequireDelivery}, []string{"closed"}
 	for i, c := range []struct {
 		p       NewProject
 		refusal string
@@ -178,7 +178,7 @@ func TestEditAProject(t *testing.T) {
 		{Description: ptr("a\x00b")},
 		{Cwd: ptr(strings.Repeat("c", MaxCwd+1))},
 		{TrackerURL: ptr("https://h/x")},
-		{CloseRequires: &[]string{"merged"}},
+		{CloseRequires: &[]string{"merged", "merged"}},
 	} {
 		rc, err := s.EditProject(ctx, testOp(opID("bad", i)), "CND", e)
 		if err != nil || rc.Status != StatusFailed || (rc.Refusal != RefusalInvalid && rc.Refusal != RefusalBound) {

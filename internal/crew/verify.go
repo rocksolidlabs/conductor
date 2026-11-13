@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -589,19 +590,19 @@ func bounded(paths []string) []string {
 }
 
 // modesKept reports whether the filesystem under dir keeps the executable
-// bit, by setting it on a file made there for the look and removed.
+// bit, by setting it on a file made there for the look, through the file
+// it opened, and removed.
 func modesKept(dir string) bool {
 	f, err := os.CreateTemp(dir, ".conductor-mode-")
 	if err != nil {
 		return false
 	}
-	name := f.Name()
-	f.Close()
-	defer os.Remove(name)
-	if err := os.Chmod(name, 0o755); err != nil {
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(0o755); err != nil {
 		return false
 	}
-	fi, err := os.Lstat(name)
+	fi, err := f.Stat()
 	return err == nil && fi.Mode().Perm()&0o100 != 0
 }
 
@@ -639,12 +640,14 @@ func lastOutput(res proc.Result, n int) []byte {
 
 // WorktreePreview is an attempt's worktree while its preview is offered:
 // the URL as the manifest gave it (naming ${CONDUCTOR_TREE_SECRET}, never
-// its value), the worktree's directory, the tree's secret and where the
+// its value), the run's working directory (Root, which the worktree is
+// under) and the worktree's directory, the tree's secret and where the
 // attempt runs. The secret is given to the server's own label and capture
 // routes alone, which put it in the admin's URL and scrub it from what a
 // capture keeps; nothing else of the engine's gives it.
 type WorktreePreview struct {
 	URL    string
+	Root   string
 	Dir    string
 	Secret string
 	Where  string
@@ -672,11 +675,31 @@ func (e *Engine) WorktreePreview(runID, taskID string, n int) (WorktreePreview, 
 		}
 		for _, tr := range a.trees {
 			if tr.kind == ledger.TreeWorktree && tr.preview == a.preview {
-				return WorktreePreview{URL: a.preview, Dir: tr.dir, Secret: tr.secret, Where: string(a.where)}, true
+				return WorktreePreview{URL: a.preview, Root: r.cwd, Dir: tr.dir, Secret: tr.secret, Where: string(a.where)}, true
 			}
 		}
 	}
 	return WorktreePreview{}, false
+}
+
+// TreeSecrets is the secret of every tree the engine holds one for now,
+// for the server's routes to scrub from what they answer or keep.
+func (e *Engine) TreeSecrets() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, r := range e.runs {
+		for _, t := range r.tasks {
+			for _, a := range t.attempts {
+				for _, tr := range a.trees {
+					if tr.secret != "" {
+						out = append(out, tr.secret)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // TreeRead is a tree's revision as one read found it: HEAD's commit; the
@@ -699,24 +722,123 @@ const (
 	treeReadPathMax   = 64 << 10
 )
 
-// readModes is, per index, whether the filesystem under its tree keeps
-// the executable bit (modesKept), asked once for each index: the look
-// writes a file in the tree, which a read every few seconds should not.
-var readModes sync.Map
+// ErrTreeMoved is a read that refused a tree: it is not reached as the
+// engine made it.
+var ErrTreeMoved = errors.New("the tree is not reached as the engine made it")
 
-// treeEnv is the environment of git in a tree's read: the reader's own
-// index, and the configuration that would let a command in the tree hide
-// a change from it set back (the stat data trusted in full, no sparse
-// checkout, the executable bit kept where the filesystem keeps it), and
-// every pathspec literal.
-func treeEnv(dir, index string) map[string]string {
-	keep, ok := readModes.Load(index)
-	if !ok {
-		keep, _ = readModes.LoadOrStore(index, modesKept(dir))
+// Tree is an attempt's worktree opened for a read (OpenTree): its
+// directory held open; and at, a path that names that open directory
+// (gitcli.OpenedPath: on Linux the open handle, elsewhere its path,
+// compared again after the read by Still), where every git command of the
+// read runs, with the tree's own .git (at/.git) and the work tree (at)
+// named outright (gitcli.RunTree): git looks for no repository.
+type Tree struct {
+	dir   *os.File
+	at    string
+	still func() bool
+}
+
+// beforeTreeOpen, when a test sets it, is called in OpenTree's walk with
+// root before the run's folder is opened, and with each name beneath it
+// after the name was looked at and before it is opened.
+var beforeTreeOpen func(name string)
+
+// OpenTree resolves where a read of the worktree at dir, which the engine
+// made under root (the run's working directory, an absolute path), runs.
+// root is opened as a directory only (root and "/.", as internal/session's
+// openDirOnly does), and from it each name of dir under it is looked at
+// without following it, must be a directory, is opened through the one
+// before it as a directory only (the name and "/.") and must be the
+// directory that was looked at (os.SameFile): anything else is
+// ErrTreeMoved. A name that is no directory at the moment of its open
+// fails at once and the tree is not read: for root the failure is the
+// system's error, for a name beneath it ErrTreeMoved. A link put in place
+// of a name between its look and its open is followed only when it leads
+// to the very directory that was looked at (the comparison after the open
+// holds); any other is refused (ErrTreeMoved). The server opens nothing
+// else in the tree but the one file of its own the look at the executable
+// bit makes and removes (modesKept): git opens every existing file of the
+// tree and of its git directory, the git directory the tree's own .git
+// names, whose configuration applies, as for the engine's comparison of a
+// checkout (checkoutIntact); a tree with no .git at its top is no
+// repository to git (gitcli.ErrNotRepo).
+func OpenTree(root, dir string) (*Tree, error) {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return nil, ErrTreeMoved
 	}
-	env := map[string]string{"GIT_INDEX_FILE": index, "GIT_LITERAL_PATHSPECS": "1"}
-	cfg := [][2]string{{"core.ignoreStat", "false"}, {"core.checkStat", "default"}, {"core.trustctime", "true"}, {"core.sparseCheckout", "false"}}
-	if keep.(bool) {
+	if beforeTreeOpen != nil {
+		beforeTreeOpen(root)
+	}
+	cur, err := os.OpenRoot(root + string(filepath.Separator) + ".")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { cur.Close() }()
+	for _, name := range strings.Split(rel, string(filepath.Separator)) {
+		fi, err := cur.Lstat(name)
+		if err != nil || !fi.IsDir() {
+			return nil, ErrTreeMoved
+		}
+		if beforeTreeOpen != nil {
+			beforeTreeOpen(name)
+		}
+		next, err := cur.OpenRoot(name + string(filepath.Separator) + ".")
+		if err != nil {
+			return nil, ErrTreeMoved
+		}
+		if got, err := next.Stat("."); err != nil || !os.SameFile(fi, got) {
+			next.Close()
+			return nil, ErrTreeMoved
+		}
+		cur.Close()
+		cur = next
+	}
+	f, err := cur.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	t := &Tree{dir: f}
+	t.at, t.still = gitcli.OpenedPath(f, dir)
+	return t, nil
+}
+
+// Close lets the tree's directory go.
+func (t *Tree) Close() { t.dir.Close() }
+
+// Still says the path the tree was opened at names it still: always where
+// git runs in the open directory itself (gitcli.OpenedPath).
+func (t *Tree) Still() bool { return t.still() }
+
+// TreeIndex is a reader's own index of a tree: the file at Path, kept
+// between reads, used by one read at a time. Edited and new files are
+// hashed at every read; a tracked file whose bytes and stat data did not
+// change since the last read is not hashed again, as git status works, so
+// a change of the attributes that say how a file is recorded shows for
+// the files that change after it (checkoutIntact, which decides a
+// candidate, reads with a fresh index). And whether the file system
+// under the tree keeps the executable bit (modesKept), looked at once, at
+// the index's first read, with one new file of the server's own made in
+// the tree and removed.
+type TreeIndex struct {
+	Path          string
+	looked, modes bool
+}
+
+// env is the environment of git in a read of t in ix: the reader's own
+// index, no replacement object, every pathspec literal, and the forced
+// configuration: the stat settings (the stat data trusted in full), the
+// sparse checkout (none), the split index (none: the index is one file)
+// and, where the file system keeps it, the executable bit. Every other
+// setting of the repository's configuration applies.
+func (t *Tree) env(ix *TreeIndex) map[string]string {
+	if !ix.looked {
+		ix.modes, ix.looked = modesKept(t.at), true
+	}
+	env := map[string]string{"GIT_INDEX_FILE": ix.Path, "GIT_LITERAL_PATHSPECS": "1", "GIT_NO_REPLACE_OBJECTS": "1"}
+	cfg := [][2]string{{"core.ignoreStat", "false"}, {"core.checkStat", "default"}, {"core.trustctime", "true"}, {"core.sparseCheckout", "false"},
+		{"core.splitIndex", "false"}}
+	if ix.modes {
 		cfg = append(cfg, [2]string{"core.fileMode", "true"})
 	}
 	env["GIT_CONFIG_COUNT"] = strconv.Itoa(len(cfg))
@@ -726,40 +848,88 @@ func treeEnv(dir, index string) map[string]string {
 	return env
 }
 
-// TreeRevision reads the tree at dir as it is now, through git with argv
-// in the C locale (gitcli), in the index at index, a file of the
-// reader's own kept between reads so that git's stat cache keeps a read
-// near git status's cost: rev-parse HEAD; read-tree --reset HEAD, the
-// one-tree merge of -m that discards what it cannot merge instead of
-// failing (an entry an earlier read staged whose file has changed again),
-// so the index is HEAD's entries again, each keeping its stat data only
-// where the entry is HEAD's, and nothing an earlier read staged survives
-// into this one; add -A, the ignored paths aside;
-// write-tree, the content; and diff --cached --name-only -z HEAD, read as
-// it comes, counted whole and kept to its bounds. Its time is ctx's. A
-// read that cannot name HEAD's commit is an error; one that fails after
-// gives the commit with no content.
-func TreeRevision(ctx context.Context, dir, index string) (TreeRead, error) {
-	head, err := headCommit(ctx, dir)
-	if err != nil {
+// treeGit runs every git command of a tree's read (gitcli.RunTree); a
+// test wraps it.
+var treeGit = gitcli.RunTree
+
+// git runs git with args in t, in the index ix: in on its input (nil for
+// none), its output written to w.
+func (t *Tree) git(ctx context.Context, ix *TreeIndex, in io.Reader, w io.Writer, args ...string) error {
+	env := t.env(ix)
+	if args[0] == "check-ignore" {
+		// check-ignore takes no pathspec magic, the literal one neither:
+		// its paths come on its input, none with a magic prefix
+		// (TreeClasses).
+		delete(env, "GIT_LITERAL_PATHSPECS")
+	}
+	return treeGit(ctx, t.at, env, in, w, args...)
+}
+
+// SetTreeGitForTest makes run the runner of every git command of a
+// tree's read, until the returned function puts the one before back.
+func SetTreeGitForTest(run func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error) (restore func()) {
+	prev := treeGit
+	treeGit = run
+	return func() { treeGit = prev }
+}
+
+// SetTreeOpenForTest makes f the walk's seam (beforeTreeOpen), until the
+// returned function puts the one before back.
+func SetTreeOpenForTest(f func(name string)) (restore func()) {
+	prev := beforeTreeOpen
+	beforeTreeOpen = f
+	return func() { beforeTreeOpen = prev }
+}
+
+// maxTreeID bounds what a read keeps of a command that answers an id.
+const maxTreeID = 1 << 10
+
+// TreeRevision reads the tree t as it is now, in the index ix, through
+// git with argv in the C locale, every command run in the tree's opened
+// directory with the tree's own .git and the work tree named outright
+// (gitcli.RunTree), so that git looks for no repository; each command
+// writes its answer and its error stream within a bound:
+// rev-parse --verify HEAD^{commit}, the commit recorded; read-tree
+// --reset of that commit, the one-tree merge of -m that discards what it
+// cannot merge instead of failing (an entry an earlier read staged whose
+// file has changed again), so the index is the commit's entries again,
+// each keeping its stat data only where the entry is the commit's, and
+// nothing an earlier read staged survives into this one; add -A, the
+// ignored paths aside; write-tree, the content; and diff --cached
+// --name-only -z of the commit. What each writes is bounded by its
+// writer: an id is kept within maxTreeID, add -A's and read-tree's output
+// is dropped, and the diff's is read as it comes, counted whole and kept
+// to its bounds (pathList). Reads of one index run one at a time, so a
+// lock of the index's there as a read starts is one a cut read left: the
+// index and its lock are dropped, and the read starts from none. Its time
+// is ctx's. A read that cannot name HEAD's commit is an error; one that
+// fails after gives the commit with no content.
+func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
+	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
+		_ = os.Remove(ix.Path)
+		if err := os.Remove(ix.Path + ".lock"); err != nil {
+			return TreeRead{}, err
+		}
+	}
+	head := &gitcli.Head{N: maxTreeID}
+	if err := t.git(ctx, ix, nil, head, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 		return TreeRead{}, err
 	}
-	out := TreeRead{Commit: head}
-	env := treeEnv(dir, index)
-	for _, args := range [][]string{{"read-tree", "--reset", "--no-sparse-checkout", head}, {"add", "-A"}} {
-		if _, err := gitcli.RunEnv(ctx, dir, env, args...); err != nil {
+	out := TreeRead{Commit: strings.TrimSpace(head.String())}
+	for _, args := range [][]string{{"read-tree", "--reset", "--no-sparse-checkout", out.Commit}, {"add", "-A"}} {
+		if err := t.git(ctx, ix, nil, io.Discard, args...); err != nil {
 			return out, err
 		}
 	}
-	tree, err := gitcli.RunEnv(ctx, dir, env, "write-tree")
-	if err != nil {
+	tree := &gitcli.Head{N: maxTreeID}
+	if err := t.git(ctx, ix, nil, tree, "write-tree"); err != nil {
 		return out, err
 	}
 	paths := &pathList{}
-	if err := gitcli.RunToEnv(ctx, dir, env, paths, "diff", "--cached", "--name-only", "-z", head); err != nil {
+	if err := t.git(ctx, ix, nil, paths, "diff", "--cached", "--name-only", "-z", out.Commit); err != nil {
 		return out, err
 	}
-	out.Content, out.Changed, out.Paths = strings.TrimSpace(tree), paths.n, paths.kept
+	out.Content, out.Changed, out.Paths = strings.TrimSpace(tree.String()), paths.n, paths.kept
 	return out, nil
 }
 
@@ -795,26 +965,87 @@ func (l *pathList) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TreeClasses classes paths of the tree at dir (relative to its top, as
-// TreeRevision left the index at index): tracked when HEAD's tree has it
-// (ls-tree), ignored when it is a file the tree's ignore rules leave out
-// (ls-files --others --ignored --exclude-standard in that index); the
-// rest are neither. Every path is a literal pathspec.
-func TreeClasses(ctx context.Context, dir, index string, paths []string) (tracked, ignored map[string]bool, err error) {
+// ErrClassesCut is TreeClasses when git answered more than the paths it
+// was asked about: the classes are not known.
+var ErrClassesCut = errors.New("the classes are not known: git answered more than was asked")
+
+// TreeClasses classes paths of the tree t (relative to its top, as
+// TreeRevision left the index ix) at commit, the commit that read
+// recorded, asking about exactly those paths: tracked when commit's tree
+// has the path (ls-tree, the paths after --), ignored when the tree's
+// ignore rules leave it out (check-ignore, the paths on its input, one
+// answer for each, a path that begins with git's magic ":" not given);
+// the rest are neither. Every path ls-tree is given is a literal
+// pathspec. Each command's answer is read within what was asked (an entry
+// and its bytes for each path); past it nothing more is read and the
+// classes are not known (ErrClassesCut).
+func TreeClasses(ctx context.Context, t *Tree, ix *TreeIndex, commit string, paths []string) (tracked, ignored map[string]bool, err error) {
 	if len(paths) == 0 {
 		return map[string]bool{}, map[string]bool{}, nil
 	}
-	env := treeEnv(dir, index)
+	if !fullCommit(commit) {
+		return nil, nil, fmt.Errorf("the classes: %q is not a commit id", commit)
+	}
+	size, input := 0, ""
+	for _, p := range paths {
+		size += len(p) + 1
+		if !strings.HasPrefix(p, ":") {
+			input += p + "\x00"
+		}
+	}
 	lists := [2]map[string]bool{}
-	for i, args := range [][]string{{"ls-tree", "-z", "--name-only", "--full-tree", "HEAD", "--"}, {"ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"}} {
-		out, err := gitcli.RunEnv(ctx, dir, env, append(args, paths...)...)
-		if err != nil {
+	for i, c := range []struct {
+		in   io.Reader
+		args []string
+	}{
+		{nil, append([]string{"ls-tree", "-z", "--name-only", "--full-tree", commit, "--"}, paths...)},
+		{strings.NewReader(input), []string{"check-ignore", "-z", "--stdin"}},
+	} {
+		out := &askedList{bytes: size, entries: len(paths)}
+		err := t.git(ctx, ix, c.in, out, c.args...)
+		var exit *exec.ExitError
+		switch {
+		case out.over:
+			return nil, nil, ErrClassesCut
+		case err != nil && !(i == 1 && errors.As(err, &exit) && exit.ExitCode() == 1):
+			// check-ignore exits 1 when no path is ignored.
 			return nil, nil, err
 		}
 		lists[i] = map[string]bool{}
-		for _, p := range splitNUL(out) {
-			lists[i][p] = true
+		for _, p := range out.paths {
+			if slices.Contains(paths, p) {
+				lists[i][p] = true
+			}
 		}
 	}
 	return lists[0], lists[1], nil
+}
+
+// askedList is a -z answer about the paths asked: at most entries paths
+// and bytes bytes; past either the write fails and over is set.
+type askedList struct {
+	bytes, entries int
+	cur            []byte
+	paths          []string
+	over           bool
+}
+
+func (l *askedList) Write(p []byte) (int, error) {
+	if len(p) > l.bytes {
+		l.over = true
+		return 0, ErrClassesCut
+	}
+	l.bytes -= len(p)
+	for _, c := range p {
+		if c != 0 {
+			l.cur = append(l.cur, c)
+			continue
+		}
+		if len(l.paths) == l.entries {
+			l.over = true
+			return 0, ErrClassesCut
+		}
+		l.paths, l.cur = append(l.paths, string(l.cur)), l.cur[:0]
+	}
+	return len(p), nil
 }

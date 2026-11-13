@@ -456,9 +456,12 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		"ReadOnly": "whether the store takes writes, and the store's own words why",
 	}
 	for _, name := range []string{"Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
-		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "Links", "List", "Marks", "Milestone", "Milestones",
+		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "LinkedTicket", "Links", "List", "Marks", "Milestone", "Milestones",
 		"OpenPlans", "PendingLaunches", "PendingReviews", "People", "Plan", "Plans", "Project", "Projects", "Relations", "Review", "Reviews",
-		"RunTicket", "Ticket", "View", "Views"} {
+		"RunTicket", "Ticket", "View", "Views",
+		// A publication's reads and its server-made operations read a
+		// publication's row and its ticket's alone.
+		"Publication", "Publications", "SendingPublications", "SettlePublication", "BeginClose", "SettleClose"} {
 		notReads[name] = other
 	}
 	for _, name := range storeReads() {

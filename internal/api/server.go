@@ -81,6 +81,11 @@ type Server struct {
 	// watches (lane.go).
 	laneSeam *laneSeams
 	lanes    laneState
+	// decideSeam is nil but in tests; decideLists the decide lists being
+	// read, decideWork the decide requests being worked (decide.go).
+	decideSeam  atomic.Pointer[decideSeams]
+	decideLists decideListing
+	decideWork  decideWorking
 	// decisionItemSeam is nil but in tests: called with a DR1 record's n
 	// as its item is about to be made, after the read of the record and
 	// what it holds (inbox_decisions.go).
@@ -108,8 +113,10 @@ type Server struct {
 	log             *slog.Logger
 	web             http.Handler
 	store           *store.Store
-	// trackers keeps the person's GitHub token (trackers.go).
+	// trackers keeps the person's GitHub token (trackers.go); external the
+	// locks of a ticket's GitHub reads (dispatch_external.go).
 	trackers *trackerKeep
+	external externalState
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
@@ -225,7 +232,7 @@ type Server struct {
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
 	// trees reads the trees of the previews, their indexes kept
-	// (captures.go).
+	// (preview_label.go).
 	trees treeReads
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
@@ -638,7 +645,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// (OnChange hands the hub a commit at a time), and a run link names
 		// a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
-			s.dispatch = openDispatch(st, log)
+			s.dispatch = openDispatch(st, log, s.trackers.gh)
 			if s.dispatch == nil {
 				syncs.unopened("Dispatch")
 			}
@@ -647,6 +654,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			fan.observeDispatch(s.dispatch)
 			s.dispatch.SetRunExists(s.runKnown)
 			s.dispatch.OnChange(s.events.dispatch)
+			s.dispatch.OnRead(s.events.dispatchRead)
 		}
 		if !cfg.Switchyard.Enabled {
 			s.brakeman = s.openBrakemanDesk(st)
@@ -870,6 +878,9 @@ func (s *Server) track(f func()) {
 // viewers of a forgotten run's links being closed. Shutdown does the same
 // at its end; tests call it before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub).
+	s.external.end()
 	s.stopExtensions()
 	s.stopRevokeRetries()
 	s.bgMu.Lock()
@@ -914,9 +925,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reach", s.requireAdmin(s.handleReach))
 	mux.HandleFunc("GET /.well-known/acme-challenge/{token}", s.handleACMEChallenge)
 	mux.HandleFunc("GET /api/whoami", s.requireAdmin(s.handleWhoAmI))
+	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/switchyard/status", s.requireAdmin(s.handleSwitchyardStatus))
 	mux.HandleFunc("GET /api/export", s.requireAdmin(s.handleExport))
 	mux.HandleFunc("GET /api/capabilities", s.requireAdmin(s.handleCapabilities))
+	mux.HandleFunc("GET /api/signin", s.requireAdmin(s.handleSignIn))
+	mux.HandleFunc("POST /api/signin", s.requireAdmin(s.handleSignInBegin))
+	mux.HandleFunc("DELETE /api/signin", s.requireAdmin(s.handleSignOut))
 	mux.HandleFunc("GET /api/history/sessions", s.requireAdmin(s.handleHistorySessions))
 	mux.HandleFunc("GET /api/history/sessions/{id}", s.requireAdmin(s.handleHistorySession))
 	mux.HandleFunc("DELETE /api/history/sessions/{id}", s.requireAdmin(s.handleForgetHistorySession))
@@ -1003,7 +1018,8 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
-	s.routeCaptures(mux)
+	// An attempt's preview label (preview_label.go), the admin's alone.
+	s.routePreviewLabel(mux)
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
@@ -1318,7 +1334,12 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
-	// Brakeman's desk first: it writes no request's state from now on, so
+	// From now on no call enters the one door to GitHub of a ticket's
+	// item (atGitHub), and a tree's read that ends is unread (the reads'
+	// mark; their indexes go below), before any wait.
+	s.external.end()
+	s.trees.mark()
+	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
 	// for, and every act whose operation has begun (no other begins), so

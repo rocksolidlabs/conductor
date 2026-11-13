@@ -430,6 +430,7 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 	f.Repair.FindingsFrom = &FindingsFrom{Review: strings.Repeat("v", 40), Attempt: n, Commit: commit, Summary: "s"}
 	f.Repair.Findings = slices.Repeat([]Finding{{Severity: "nit", Message: "m"}}, maxFindings)
 	f.Owner, f.OwnerFrom, f.People = taskPeople(c, def)
+	f.Compare = compareFor(c.Compare, c.Tasks, def.ID, commit)
 	if pkg != nil {
 		f.Ticket = &TaskTicket{Key: pkg.Ticket.Key, Rev: 1<<63 - 1, Plan: pkg.Plan.ID, PlanN: pkg.Plan.N, Digest: strings.Repeat("0", 64), Files: packageFilePaths(*pkg)}
 		f.ticketTitle = cutTitle(pkg.Ticket.Title)

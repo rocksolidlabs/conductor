@@ -109,6 +109,7 @@ func (s *Server) addDelivery(ctx context.Context, w http.ResponseWriter, ds *dis
 		return
 	}
 	rc, err = ds.AddLink(ctx, op, key, l, v)
+	s.readAddedLink(ds, key, l, rc, err)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 }
 

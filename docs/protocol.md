@@ -2491,8 +2491,14 @@ alike), and the markup and text
 written by the bridge's own writer from the live tree, never a copy and
 never the page's serialiser. A walk's budget is counted in links, a node
 costing it up to three, so a text, a name or a markup may end at its
-walk's budget, before its bound in bytes, with nothing in `cut` saying
-so. What the engine builds in one call before
+walk's budget, before its bound in bytes: the field then ends there,
+with nothing in `cut` saying so. A value that names an element (an id,
+a label's `for`, aria-labelledby's ids) is compared as the page wrote
+it, never made well-formed: one past its bound (of a list, its last
+token) or one that making it well-formed would change names no element,
+and a list of ids is split on HTML's white space alone (tab, line feed,
+form feed, carriage return, space), by the bridge's own loop over the
+bounded slice. What the engine builds in one call before
 the bridge reads any of it is the engine's work, the bridge bounding what
 it reads of it: an attribute's value, the title, the stack under the
 pointer, an element's animations, its computed style, an element's own
@@ -2650,7 +2656,8 @@ moment, never the handshake's: `url` (at most 2,048 bytes), `title` (at
 most 200 characters), `viewport {width, height, dpr, scrollX, scrollY,
 colorScheme (light, dark), userAgent (at most 512 bytes)}`, `epoch` (a
 whole number the bridge bumps, at most once an animation frame, on a
-resize or scroll of the window, a mutation of the document but its own
+resize of the window, a scroll the window hears (its own, and a
+container's in the capture phase), a mutation of the document but its own
 host's, and every animation and transition event: it says only that the
 page moved) and `revision` (the page's `<meta name="conductor-revision"
 content="<commit>[+<content>]">` among the head's children, within 128
@@ -2658,19 +2665,19 @@ links of a walk of the root's and the head's children, lower-case hex of
 4 to 64 digits with one optional `+` part, at most 128 bytes, else ""). A
 `ready`'s hint kinds are read from the elements a walk of the document
 reaches within 2,000 links, React's from the own keys of the first 64
-elements of the document, in document order (at most 64 keys read of
+elements of the body, in document order (at most 64 keys read of
 each). An accepted `hello` changes the
 nonce and the origin even when its `ready` is never sent (a page whose
 properties throw as they are read gets no answer).
 
 **The element report** (`element`): `{tag, id, classes, role, name (the
 accessible name: aria-label, the text of at most 8 of aria-labelledby's
-ids, of the label for its id within 256 links of a walk of its third
-ancestor's subtree or of the label around it, else its own; an id past
-its bound is not looked for as a label's `for`, and an aria-labelledby
-list past its bound drops its last token, so a value past its bound
-names no element), text (of
-what a walk of its subtree reaches within 256 links), selector (built,
+ids, of the label for its id within 1,024 links of a walk of its third
+ancestor's subtree or of the label around it, else its own; an id, a
+`for` and aria-labelledby's ids name only the element the page wrote
+them for, as above), text (of
+what a walk of its subtree reaches within 1,024 links; a name's texts
+are read the same way), selector (built,
 never searched for and never cut: `#` and its id escaped, in a document
 not in quirks mode, when that is within the bound and the document,
 asked that very selector, gives the element; else its path from the
@@ -2741,22 +2748,40 @@ listener the page put on the window in that phase before selection mode
 began is called before the bridge's; a tap's touches and a wheel keep
 their default action). Selection mode picks, and stops what it stops,
 only on events the browser delivered: a pointer move outlines the
-element under it, a click picks the element under its own point, the
-release of Enter picks the outlined element if it is still connected to
-a document, and otherwise does nothing, and the release of Escape leaves. A scroll
-or a resize of the window takes the outline off (every such event the
-window hears, the page's own among them) until the next pointer event or
-arrow key gives one; a scroll inside the page, of a container, does not:
-the outline stays where it was drawn until the next pointer move or
-arrow key. What is aimed at a frame inside the page (`iframe`, `frame`,
-`object`, `embed`) the browser delivers to the frame. A frame's element
-is outlined when the browser delivers the page's window a pointer event
-aimed at it (a mouse pointer entering it), and while it is outlined the
-outline's box, drawn over it, takes the pointer, so a click there picks
-it. Not otherwise: a touch on a frame, a frame inside a component's own
-tree, a frame that a scroll brings under a resting pointer, and a frame
-the pointer already rests in when selection mode begins keep their
-events, and so do keys typed while the focus is inside a frame.
+element under it, a click picks the element under its own point, the release of
+Enter picks the outlined element if the outline still shows it and it is
+still in the page's own tree (connected, and its root node the page's
+document), and otherwise does
+nothing, and the release of Escape leaves. After a resize of the window
+or a scroll the browser delivered (the window's, or a container's, which
+the window hears in its capture phase), and at a release of Enter, the
+bridge looks under the pointer's last point again. The outlined element
+(the choice), an arrow key's choice too, stays while it is still among
+the elements stacked under that point (the bounded stack under the
+pointer that Up and Down step through), and its outline is drawn again
+where it now is. When the topmost element there is another than the one
+the point last gave and the choice is no longer under the point (or
+there is none), the element now on top becomes the choice and is
+outlined; a release of Enter that finds this moves the outline and
+picks nothing, and the release after it picks, unless that changed
+again. Before the pointer has given a point (the arrow keys alone) the
+outline is drawn again over the choice, never taken off, and a scroll
+the page's own script dispatches changes nothing. So a scroll the window
+does not hear, of a container inside a component's own tree, moves the
+outline, when the choice is no longer under the point, at the next
+pointer move, the next scroll the window hears or the next release of
+Enter, which then picks nothing; when the choice is still under the
+point, that release draws its outline again and picks it. What is aimed
+at a frame inside the page (`iframe`, `frame`, `object`, `embed`) the
+browser delivers to the frame. A frame's element is outlined when the
+browser delivers the page's window a pointer event aimed at it (a mouse
+pointer entering it) or when a scroll brings it to the top under the
+pointer's last point and it becomes the choice as above, and while it
+is outlined the outline's box, drawn over it, takes the pointer, so a
+click there picks it. Not otherwise: a touch on a frame, a frame inside
+a component's own tree, and a frame the pointer already rests in when
+selection mode begins keep their events, and so do keys typed while the
+focus is inside a frame.
 Outside selection mode it stops none; a throw while it handles one
 leaves selection mode. It posts only to `window.parent`, addressed to
 that origin, never `*`, and only a message its own parser takes as one to
@@ -2790,7 +2815,19 @@ the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant, an answer
 late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. A provider's principal that holds a long-lived
+the same rate limit. One with the `decide` grant and not the `admin` grant (a
+decide principal, `docs/plans/decide-grant.md`) is admitted to four routes
+alone, `GET /api/me`, `GET /api/me/decisions`, and the read and the respond
+route of a decision given to the decide grant (Decisions, below), and every
+other route answers it exactly as without the grant: a decide-only one as an
+unknown token (`401` wherever a credential is needed, `GET /api/events` and
+the inbox among them), one that also holds `host` as a host token's. The
+grant gives no live connection: its page reads again on an interval.
+`GET /api/me` answers any credential the chain or a provider admits
+(`{subject?, name?, grants}`, at most 1 KiB: the workbench token `admin` and
+`host`, a host token `host`, a share link none, a provider's principal its
+subject, name and the grants it holds here, `admin` with `host`), anything
+else `401`. A provider's principal that holds a long-lived
 connection, a viewer's WebSocket or `GET /api/events`, is asked about again
 every 30 s while it holds it, each ask bounded at 1 s as the first: once
 the provider answers in time that it no longer admits the token (no
@@ -2838,6 +2875,9 @@ its run, and on no other.
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
 | `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile; the identity provider's row adds `detail`, who the server is signed in as ("signed in as Ana · workspace Acme": one line of 1 to 80 characters), when it says one, asked through the guard within 1 s once it has started (a late, failing or out-of-bounds answer leaves it out, as does one that holds, as written, a token of the server's own (the host token, the workbench token or a host token) or a credential the server holds from the provider as the detail is asked for (of its uplink's, the last eight distinct ones; a watched connection's token and pending one): a literal match against that list, and nothing more; never in the guide's rows, below, and reading the guide asks no provider). A plain build answers `{"providers": []}`. No other provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
+| `GET /api/signin` | admin | the identity provider's sign-in, started and ended from Settings (package `ext`, `SignIn`): `{supported: true, state, who?, code?, url?, expires?, why?}`, where `state` is `signed-out`, `starting` (begun, no code yet), `code` (the code to enter on the provider's page: `code` 1 to 16 of `A-Z a-z 0-9 -`; `url` the page: at most 200 bytes of printable ASCII with no space, quote (`"`, `'`, `` ` ``), backslash, angle bracket or `#` (no fragment) and no `%` but before two hex digits; `https://` in lower case, then no user information, a host that is a name (labels of `a-z`, `0-9` and `-`, none empty, so no trailing dot, the last beginning with a letter: an address literal, bracketed or dotted, is not one, nor is a name with an escape in it), after a `:` a port of 1 to 65535 written without leading zeros that is not 443 (a `:` with no port is refused), and a path (a `/` after the authority); `expires` when the provider says, RFC 3339 in UTC, a time with a zone offset of a day or more or outside the years 1 to 9999 in UTC refused) or `signed-in` (`who`, who the server is signed in as: one line of 1 to 80 bytes); `why`, in any state, is one line of at most 120 bytes the provider says of it; `who` and `why` hold no control character (C0, DEL, C1), and are sent without their characters of Unicode's Cf, Zl and Zp and trimmed of white space at both ends; their bounds are of the text as the provider gives it, and a signed-in `who` that shows nothing once so cleaned is not taken; a field another state carries is never set. At most 1 KiB, sent with no HTML escaping. `{"supported": false}` with no identity provider, one that offers no sign-in, or one whose start has not yet succeeded. Asked through the guard within 1 s, in slots of the sign-in's own (16 at once), every status checked before it is sent, and checked again (its rules above) as it is about to be sent: a late, failing, busy or out-of-bounds answer, one with a field that holds a credential the detail's filter lists (`GET /api/capabilities`, above; each field as it is sent, the URL also percent-decoded once), or a reply that does not encode within its bound, is `503 signin_unavailable`, "the identity provider's sign-in is not available now: try again", in the server's words, never the provider's. The status goes to the caller alone: no log line, event or error carries it. The app reads it only when `GET /api/capabilities` has a ready identity provider (Settings, the Sign in card: every 2 s while `starting` or `code`, doubling to 30 s, and every 30 s otherwise, while the page shows and the document is visible; one request at a time, each aborted after 15 s); it checks each status by the same rules and links only to a page that passes them, that the browser writes exactly as it was sent and that is not on the app's own origin: an address the server takes and a browser would still write differently (dot segments) gets no link. It stops showing a code once the browser's clock reaches its `expires`, judged at every reply (a failed read too), when the page is shown again and by a timer, nothing kept from one look to the next; a browser whose clock is behind, or was set back, can show a code past its end, and the provider's page refuses such a code. A code is kept in the page's memory alone, and forgotten with the workbench token |
+| `POST /api/signin` | admin | asks the provider to begin a sign-in, then answers its status as `GET` does; the body is none or `{}` (at most 1 KiB, no member, and `null` is not `{}`: past it `413 bound`, anything else `400 invalid_request`, the provider asked nothing). `404 not_supported` where `GET` answers `{"supported": false}`; the begin and the status after it each asked within 1 s. A begin is what the provider's method itself returned: taken when it returned nil; refused when it returned an error while its call's context was live, which, like a begin the provider was not asked (every slot busy), is `503 signin_unavailable`, as `GET`'s. Anything else may have been taken: `503 signin_status_unknown`, "the sign-in may have begun; its status is not known yet": a begin whose method had not returned when its outcome was read (still running, its goroutine ended without returning, or a panic) or returned an error once its call's context had ended (its status not read in that request), and one taken whose status then could not be answered (as `GET`'s is not). A method that has returned nil when its outcome is read is taken, its context ended or not. The app offers the act again only after `503 signin_unavailable` or a refusal made before the provider is asked (`400`, `401`, `403`, `404`, `429`); after anything else (its own 15 s deadline, a request that failed with no answer, any other `5xx` or status, a reply it cannot read, `503 signin_status_unknown`) it says it is reading the sign-in, with no error, offers no begin or sign-out until a read shows a state, and reads it 2 s later, doubling to 30 s. The provider returns at once and its own goroutines do the work, which the status shows |
+| `DELETE /api/signin` | admin | asks the provider to sign this server out, then answers its status as `POST` does, with the same body, bounds and refusals (`503 signin_status_unknown` in the words "the sign-out may have been done; its status is not known yet"); a sign-out the provider has still to settle shows in the status it answers |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt`, its `promptShape` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt`, `promptShape` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2847,7 +2887,7 @@ its run, and on no other.
 | `GET /api/paths` | admin | `scope` (optional): `roots` (the default, everything below) or `any`, which lists any directory the server's user can stat, a symbolic link to any directory included, the stat still first; `any` only with `paths.browse: any` (the desktop app sets it for its own server, for its settings picker), else `403 browse_off`; another value `400 invalid_request`. `prefix` (≤ 4096 bytes, no NUL; a relative one resolves against the server's own working directory, as a session's `cwd` does) and `limit` (a positive integer, default 50, at most 50: more counts as 50) in the query; reply `{dir, entries, truncated, more?, moreUnknown?}`: `dir` is the longest leading part of `prefix` that is an existing directory under an allowed root (symbolic links resolved, as a session's `cwd` is checked; the server's default working directory for an empty `prefix`), `entries` its child directories whose names start with the path element typed after `dir` (all of them when `prefix` names a directory), in name order, at most `limit` of the first 2000 entries the directory gives, hidden ones only when that element starts with a dot (a lone `.` after the last separator included), a symbolic link only when it leads to a directory under an allowed root, each `{name, path, git: {repo, commits}}` (`repo`: in a git working tree; `commits`: its `HEAD` is a commit; a child with no `.git` of its own carries its parent's marks, a symbolic link its target's; neither without `git` on the server; git is asked at most once per entry, one call at a time), `truncated` when more match than `limit`, when the directory has more than 2000 entries (the rest are not read), when the listing stopped at a symbolic link (the one after 50 that led nowhere usable, or any once the deadline has passed), or when the deadline passed before every entry was marked; `more` how many directories matching the typed element were left out past `limit` (round 14: the pickers say "30 more folders here"), and `moreUnknown` that there may be others besides (more than 2000 entries, or the listing stopped at a link); the 5 s deadline covers the whole request, and when it passes after the directory is found the listing keeps its entries, the git marks not yet asked for left false and `truncated` set, which is not an error; a directory the server cannot read lists nothing (`200`, no entries); the listing and the git check below refuse a chain of symbolic links longer than the kernel follows (about 40), which a launch's own resolution of a `cwd` would still accept; `400 invalid_cwd` when no part of `prefix` is such a directory, its message naming the allowed roots (`no directory in the prefix is under the allowed roots: <root>, <root>`), which the picker shows as it is; `400 invalid_request` for a bad `prefix` or `limit`; `500 list_failed` when the deadline passes before the directory is found (a prefix of very many elements through symbolic links); the path asked about is logged at debug level only |
 | `GET /api/git/check` | admin | `cwd` in the query (≤ 4096 bytes, no NUL; the server's default working directory when empty; resolved as the listing resolves it); reply `{inRepo, toplevel?, hasCommit, message}` by the rules a launch with `isolation: worktree` applies (`git -C <cwd> rev-parse`, under the allowed roots): `inRepo` when `cwd` is in a git working tree, `toplevel` its top, left out when it is not under an allowed root (a root may lie inside a repository, and a repository's `core.worktree` can name any directory), `hasCommit` when `HEAD` is a commit, `message` the words the launch's refusal would use, or that worktrees can be made: that `cwd` is in no repository, or in one with no commit, or that `git` is not installed (then `inRepo:false`), or, for a repository git refuses (owned by another user, unreadable), `git cannot use the working directory's repository:` and git's first line of stderr, which may name a configuration file or a repository path outside the roots; in a repository with a commit, a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, which the launch refuses first, answers `inRepo:true, hasCommit:true` with that refusal in `message`, so `message` is the verdict, not the two booleans; a preview: the launch's own refusal stays the authority (`409 not_a_repo`, or `400 invalid_crew` for the symbolic link); `400 invalid_cwd` as for a session; `500 git_failed` when git does not answer within 5 s (another failure to run it answers `200` with git's message) |
 | `GET /api/crews` | admin | `{crews, total}`: a page of the saved crews' summaries ordered by name (ignoring case), then id, each `{id, name, cwd, where, isolation, members: [{name, agentId, start}], people?: [{name, responsibilities?}], updatedAt}` (`people` the crew's people with their responsibilities, never their notes, absent for a crew without people); `?offset=` from 0 (default 0), `?limit=` 1 to 500 (default 100), `400 invalid_request` otherwise; `total` counts every crew; `{crews: [], total: 0}` without a data directory |
-| `GET /api/crews/{id}` | admin | one crew in full, `{crew, revision}` (`revision` names the copy stored: 64 lower-case hex digits, the SHA-256 of the crew's JSON as the server reads it, computed and never stored, so any change to the crew, its `updatedAt` included, gives another; an update made from this copy sends it back), the crew shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, yolo?, members, people?, createdAt, updatedAt}` (`people` and a task's `owner` as People in a crew below has them, absent for a crew without) (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, account?, model?, start: {when, member?}}` (`account` an account's id or `default`, `model` as a session's, see Capacity; a member sent with `bound` is refused `400 invalid_crew`); `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
+| `GET /api/crews/{id}` | admin | one crew in full, `{crew, revision}` (`revision` names the copy stored: 64 lower-case hex digits, the SHA-256 of the crew's JSON as the server reads it, computed and never stored, so any change to the crew, its `updatedAt` included, gives another; an update made from this copy sends it back), the crew shaped as before: `{id, name, goal, cwd, where, isolation, openAfterLaunch, viewLinkTtlSeconds?, tasks?, setup?, manifest?, manifestRevision?, compare?, yolo?, members, people?, createdAt, updatedAt}` (`compare` a comparison's block, A comparison's crew below; `people` and a task's `owner` as People in a crew below has them, absent for a crew without) (`yolo` absent: the server's default; `true` or `false`: the crew's own choice; `tasks`, `setup` and `manifest` as the crew limits below have them; `manifestRevision` the server's count of the crew's project manifest changes, absent while it is 0), a member being `{name, agentId, prompt, args?, account?, model?, start: {when, member?}}` (`account` an account's id or `default`, `model` as a session's, see Capacity; a member sent with `bound` is refused `400 invalid_crew`); `404` when unknown; `409 crew_unreadable` when its file cannot be used, the message saying why; `503 store_unavailable` |
 | `POST /api/crews` | admin | create a crew: the body is a crew without `id`, `createdAt`, `updatedAt` and `manifestRevision`, which the server sets and rejects like any unknown field (`manifestRevision` 1 for a crew with a project manifest or a `setup`, absent for one without); the `id` comes from the name (lower case, every other run of characters a `-`, at most 40 characters, `crew` when nothing is left), then `-2`, `-3`… when taken; a `revision` is refused as an unknown field; reply `201 {crew, revision}`, `revision` as for `GET`; `400 invalid_crew` carries the validation message, an agent the catalog does not have included; `503 store_unavailable` when there is no data directory |
 | `POST /api/crews/examples` | admin | seed the example crews (`example-todo-app`, `example-todo-app-tasks`, `example-test-fixer`, `example-docs-writer`, `example-dependency-upgrade`), as `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to `1` or `true`) does at startup: each is saved unless an entry named `<id>.json` exists in `crews/`, usable or not (a symbolic link included), which is left alone whatever it holds; reply `200 {added, skipped}`, the ids each way in that order, each a list (`[]` when none); their `cwd` is the server's default working directory, their members use the `claude` and `codex` built-ins (not checked against the catalog: the launch checks), `where` is `server` and `isolation` `worktree`; each member that starts `after` another has a role prompt that begins by merging that member's branch, `crew/$CONDUCTOR_RUN/<member>`; `example-todo-app-tasks` has tasks instead of start rules (every member `start.when` `task`); `503 store_unavailable` without a data directory; `500 store_failed` when the directory cannot be read or a crew cannot be saved (the ones saved before it stay) |
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; the body may also carry `revision`, the one a `GET` (or the reply of a create or an earlier update) answered for the copy the edit was made from: the save is made only while that copy is the one stored, checked and written under one lock, so of two saves made from one copy the second is `409 stale_revision` and nothing is saved (the crew editor sends it, and on that answer keeps the person's edits as typed, says what changed elsewhere and offers two choices behind a confirm: read the crew again, which replaces the edits, or save them anyway with the revision of the copy the server holds now, refused again if the crew changed once more); without `revision` the body replaces whatever is stored; `400 invalid_request` for a `revision` that is not 64 lower-case hex digits; reply `{crew, revision}`, the new copy's; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
@@ -2886,7 +2926,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?, decide?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `decide: true` makes it a decision link (see Decision links: control only, `400 bad_request` with a view role; the link says `decide: true`; `409 switchyard_too_old` where the link would be minted at a switchyard whose `registered` does not say `decisions`, or that keeps no desks; at one that does, minted there over the run's desk: see Decision links, Through a switchyard; `502 rendezvous_unavailable` when the desk cannot be opened); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's; a link minted at a switchyard is revoked there over a member's publication or the run's desk, `502 rendezvous_unavailable` when it is not (a decision link then stays listed with `revokePending: true` and is tried again until the switchyard confirms: Decision links, Through a switchyard); a revoke again of a decision link the switchyard has confirmed revoked answers `204` |
 | `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
-| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery` and `verified` (A delivery's candidate, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
+| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance`, `delivery`, `verified` (A delivery's candidate, below) and `merged` (a live delivery link GitHub says is merged, by a read at most five minutes old: A ticket's GitHub item, below), each at most once, kept in that order (`["acceptance"]` for a native project and `[]` for an external one when absent); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
 | `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
 | `POST /api/dispatch/projects/{key}/edit` | admin | set the fields given of a project (`project.edit`): `{opId, expectedRev?, byName?, name?, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, each held to its create's rule, the key never changing; reply `{receipt, project}`; `409 archived` for an archived project |
 | `POST /api/dispatch/projects/{key}/archive`, `…/unarchive` | admin | archive a project, which refuses every write under it (`409 archived`) until it is unarchived, or unarchive it: `{opId, expectedRev?, byName?}`; reply `{receipt, project}`; `409 invalid` for one archived already, or not archived; a project is never deleted |
@@ -2896,7 +2936,7 @@ its run, and on no other.
 | `POST /api/dispatch/people` | admin | add a name (`person.add`): `{opId, byName?, name}`, 1 to 60 characters with no control character; reply `201 {receipt, person}`; `409 invalid` for a name held already |
 | `GET /api/dispatch/tickets` | admin | a page of a list of tickets, filtered and sorted on the server: `{tickets, next?, total}`, each a summary without its description, acceptance criteria and acceptance (`{id, projectId, number, key, title, status, priority, horizon, owner, assignees, labels, milestoneId, parentId, blocked, createdAt, updatedAt, closedAt?, deletedAt?, rev}`), `total` how many the whole list holds; `project` a project's key (every project's when absent); `status`, `priority` (its number, 0 none to 4 urgent), `label` (an id), `assignee` (`person:<name>` or `agent:<catalog id>`) and `horizon` (`now`, `next`, `later`, or empty for not planned) as often as wanted, a ticket holding any of them; `owner`, `milestone` (an id), `parent` (a ticket's key, its live children whether it is live or not) and `blocked=1` (a live ticket neither done nor cancelled blocks it); `q`, at most 200 characters of words, every one in the ticket's key, title, description or acceptance criteria or in one of its comments, the last a prefix, never search syntax; `sort` (`updated`, the default, `created`, `priority`, `status`, `title`, `key`, `milestone`) and `desc=1`; `deleted=1` for the tombstones beside the live tickets, which a list leaves out otherwise; `limit` 1 to 200 (100 when absent) and `cursor` (a page's opaque `next`, of the same sort); `400 invalid_request` for a bad value or a parameter the route does not take |
 | `POST /api/dispatch/tickets` | admin | make a ticket (`ticket.create`): `{opId, byName?, project, title, description?, acceptance?, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, parent?}`, at most 192 KiB (every field at its bound with each character doubled by escaping): `title` 1 to 200 characters, `description` Markdown of at most 64 KiB and `acceptance` of at most 16 KiB, `status` `backlog` (the default), `ready`, `in_progress`, `in_review`, `done` or `cancelled`, `priority` 0 to 4, `owner` a person's name, at most 8 `assignees` and 20 `labels` (ids), `milestone` an id and `parent` a key of the same project; its key `<project>-<n>` from the project's next number, never reassigned; reply `201 {receipt, ticket}`, the ticket in full; `404 not_found` for a project, parent, label or milestone missing or deleted; `409` for what the store refuses (`archived`, `invalid`, `bound`, `cycle`, `close_policy`) |
-| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); and `launchCount`, how many launches it has; at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
+| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); `launchCount`, how many launches it has; and `publications`, its newest 10 publications to GitHub without their bodies, with `publicationsNeedYou`, how many older ones a person can act on (`[]` and `0` until a route makes one: issue 877); at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/edit` | admin | edit a live ticket (`ticket.edit`), every change one operation: `{opId, expectedRev?, byName?, set?: {title?, description?, acceptance?, status?, priority?, horizon?, owner?, parent?, milestone?}, add?: {assignees?, labels?}, remove?: {assignees?, labels?}}`, at most 192 KiB, `parent` a key and `milestone` an id (`""` for none); reply `{receipt, ticket}`; `409 close_policy` for a move to `done` the project's close policy refuses, the receipt's `missing` naming what is lacking; `409 cycle` for a parent that would make a cycle or a chain of more than 8 |
 | `POST /api/dispatch/tickets/{key}/accept`, `…/unaccept` | admin | record the owner's acceptance of a live ticket (`ticket.accept`: `{opId, expectedRev?, byName?, note?}`, by the display name, for the owner the ticket has now and against its acceptance criteria as they stand, the note at most 1,000 characters), or clear it (`ticket.unaccept`: `{opId, expectedRev?, byName?}`); reply `{receipt, ticket}`; `409 invalid` for a ticket with no owner to accept it, or not accepted; neither touches the status |
 | `POST /api/dispatch/tickets/{key}/delete`, `…/undelete` | admin | delete a live ticket (`ticket.delete`): a tombstone, nothing else written, its children, relations and run links kept, inactive, and back with its undelete (`ticket.undelete`), which removes a run link of its naming a run another live ticket has linked meanwhile; `{opId, expectedRev?, byName?}`; reply `{receipt, ticket}`; a deleted ticket keeps its key, is listed only with `deleted=1`, its read answers, and every other write on it is `404 not_found`; `409 invalid` to undelete a live ticket; `503 ledger_unavailable` for an undelete when a run link's chain cannot be read, and `503 run_changing` (`Retry-After: 1`) while a run of it is being resumed (A ticket's runs below), nothing kept and no receipt, so the same `opId` may be sent again |
@@ -2932,7 +2972,7 @@ its run, and on no other.
 | `GET /api/sessions` | admin | list sessions |
 | `GET /api/touched` | admin | the files every listed session's agent touched (#304), from the index each session keeps (`op: touched` above): `{sessions[{id, name, agentId, kind, status, cwd, touched[{path, op, ops, count, tool?, by?, first, last}], truncated?}], truncated?}`, the sessions in the list's order (the newest first), each session's files the most recently touched first, a server session's deny list applied; a session with nothing touched is left out; a hosted session's index holds the `file` entries its host reported since it connected (the host's own index, which the Files tab reads, begins with the session). `?limit=` is the files per session (default 500, at most 2,000, `400 invalid_request` otherwise), a session cut to it marked `truncated`; the whole reply is held to about 2 MiB of JSON, the session that would pass it cut short and marked, and the reply marked too |
 | `GET /api/inbox?after=<cursor>` | admin | the decision inbox (`docs/plans/decision-inbox.md`, Program item MB0): the open items a person must decide, as summaries, oldest first by `(since, ref)`: `{items[{ref, kind, since, title, brief, question, answerer, routed?, blocks?, actions[label], card?, state?, tracking?, closed?}], next?, total, tracking?, recent?, at}`, at most 150 a page, `next` the cursor after the last when more follow (`?after=` takes it; `400 invalid_request` for any other value, any other parameter, or one given twice, on all three inbox routes), `total` every open item, not the page's. An item is named by Brakeman's ref of what it is about: `question:<session>/<question>` (a listed session's attention `needs_input` with that id, not answered in the terminal; a turn held for the terminal is an item with no answer, and so is a question that mirrors a durable decision, its attention's `decision`: it is answered through `POST /api/decisions/{did}/respond` on the decision's card, its brief and `blocking.words` naming the decision and where, and the session refuses every reply naming it), `task:<run>/<task>` (a managed run's failed task that `crew.TaskCommands` allows a command on; a blocker an attempt reports is its session's question, naming the task and carrying its Cancel), `plan:<KEY-n>/<n>` (a ticket's proposed revision, or, while the ticket is neither done nor cancelled, its approved one whose approval no longer holds, `dispatch.Store.OpenPlans`), `decision:dr-<n>` (a DR1 record, `open`, or `answered` and not yet applied: the latter `tracking: true`, listed and counted in `total` until DR1 gives it a final state, and counted in `tracking`, which the bar's number leaves out, the records' page, their count and `tracking` of one read; its `since` the record's `createdAt`, `ledger.InboxDecisions`). A question that mirrors a DR1 record (its attention's `decision`) is not listed: the record is its item. A decision's summary carries `state`, the record's. The first page carries `recent?`, DR1's records closed (applied, superseded, cancelled or expired) in the last 24 hours, at most 50, the latest first, each a summary with `closed`, for every viewer. A summary is at most 4 KiB, the reply at most 840 KiB; it carries no action's input or scope. Nothing is written: the page acts through each action's own route. On a switchyard `403 switchyard` (decisions are answered where the work runs) |
-| `GET /api/inbox/item?ref=<ref>` | admin | one item whole, at most 96 KiB: `{item: {ref, subject, kind, state?, since, title, brief, briefBy, card?, question, answerer, routedTo?[{kind, name}], routedRule?, revision, now?, blocking{words, refs, more?}, actions[{name, label, input?, text?, choice?, expect, ticketRev?, scope, confirm?, route, track?, attempt?, commit?}], whyHuman?, considered?[{label, tradeoffs}], recommended, uncertainty?, authorizes?, cardRev?, cardNote?, evidence?[{ref, label}], delivery?}}`. A DR1 record's item (`decision:dr-<n>`, `kind` `decision`, `state` the record's) does not carry the record (its read, `GET /api/decisions/{did}`, is up to 1 MiB): its question exactly as the record keeps it (at most 500 characters), its answerer the operator (with whom the record is for when it names a person, in DR1's card's words: "you, the operator, for nate (architecture owner)", the responsibility in HM1's words, a label that named no one the operator alone), its `revision` the record's `rev`, its blocking the tasks the record holds and their dependents, the asking attempt and the run's end, its evidence the run, the asking task, attempt and session, the ticket and the evidence the request cites, and its `delivery` DR1's four states as the record reports them, each its own step: `available` (opened), `recorded` (the accepted response, its receipt `dr-N/<k>`; not applicable for one closed unanswered), `validated` (Yardmaster's application checked the subject, the policy and the asker again; waiting while answered: "Yardmaster applies it next", or, its run not held by the engine, "it waits for its run to be continued"), and `applied` (the application's words, or why not). Its actions, open, by its type, each through DR1's route at the record's `rev` (`expect`): its options by index (`choice`; an approval's first two named `approve` and `reject`, asked first; an assignment's `Done` and `Not done`), a clarification's line (`answer` with `text`), each to `POST /api/decisions/{did}/respond`, then `more_info` (an agent's record, open, while its asking attempt is live, as DR1's `asker.live` says: DR1 refuses it `no_recipient` after) and `comment` (open or answered), each with `text`, to `POST /api/decisions/{did}/comment`; each `scope` says what Yardmaster then does (types the answer into the asking attempt's session, or, that attempt ended, says the task's next attempt reads it in its task file; lets the held tasks start, cancels them) and what the request authorizes. A record and what it holds (its active holds under its current run) are of one read of the ledger, so its blocking and its actions' scopes are of the `rev` they are answered at (a continuation that moves both is seen whole or not at all); a read that fails is no item (`503 unavailable`, and the list's too): what it holds is never guessed. Each action carries the revision its own operation checks (`expect`: the question's id for an `answer`, the run's revision for `retry`, `accept`, `cancel` and `recheck`, the plan revision's `rev` for `approve` and `withdraw`, and `ticketRev`, the ticket's, beside it for `approve`) and its `route` (`/ws/sessions/{id}`'s `answer`, `POST /api/runs/{run}/tasks/{task}/{command}`, `POST /api/dispatch/plans/{id}/{approve,withdraw}`); a failed task offers `recheck`, Check again, beside them when the engine would take it now (`crew.TaskCommands`' `recheck`, by `Engine.Recheck`'s own rule): its `attempt` and `commit` name the standing failed candidate as its own run names it, and its route is that run's recheck route (in a continuation, the continued run's, which the route walks forward from); a run that moved on refuses it `stale_revision`, the page's words then naming the candidate the item read again offers, and a candidate that no longer stands is refused `stale_candidate` in the engine's words; `track`, when set, is the ref its steps are read under (`GET /api/inbox/track`), when not the item's own: a task command a blocker's question carries is tracked as `task:<run>/<task>`. `scope` says exactly what it does, at which revision (an Approve's names the yolo choice read from the revision's body and the approval it supersedes, kept whole within the scope's 1 KiB, the crew's tasks and agents shortened first; a body not read gives no Approve; a Retry's names the commit the engine would start it at). A task's item describes the task as the engine judged its commands, in one read. An exact field (`question`, at most 500 raw bytes; an `input`, at most 48; the refs; `expect`) is never cut; a display field is cut on a rune boundary until its encoded form fits. Brakeman's newest `decision/1` card about the item's `subject` fills the brief, `whyHuman`, `considered`, `recommended` (-1 for none: Conductor recommends nothing), `uncertainty` and `authorizes` (Brakeman's, beside each scope), with `cardNote` when it was read at another revision. `routedTo` is the route a registered decision router gave for that question, kept by question id (the last 256, in memory). A ref of something no longer open answers the item as it is now (no actions, `now` saying why, a question's `delivery`: "not open now" for a question kept to show again, "no longer open" with how it left otherwise), a task of a run the engine let go read from the run's record; `404 not_found` for one that names nothing the server holds; `400 invalid_request` for a ref that does not parse. On a switchyard `403 switchyard` |
+| `GET /api/inbox/item?ref=<ref>` | admin | one item whole, at most 96 KiB: `{item: {ref, subject, kind, state?, since, title, brief, briefBy, card?, question, answerer, routedTo?[{kind, name}], routedRule?, revision, now?, blocking{words, refs, more?}, actions[{name, label, input?, text?, choice?, expect, ticketRev?, scope, confirm?, route, track?, attempt?, commit?}], whyHuman?, considered?[{label, tradeoffs}], recommended, uncertainty?, authorizes?, cardRev?, cardNote?, evidence?[{ref, label}], delivery?}}`. A DR1 record's item (`decision:dr-<n>`, `kind` `decision`, `state` the record's) does not carry the record (its read, `GET /api/decisions/{did}`, is up to 1 MiB): its question exactly as the record keeps it (at most 500 characters), its answerer the operator (with whom the record is for when it names a person, in DR1's card's words: "you, the operator, for nate (architecture owner)", the responsibility in HM1's words, a label that named no one the operator alone, and one given to the decide grant "you, the operator, or anyone holding the decide grant"), its `revision` the record's `rev`, its blocking the tasks the record holds and their dependents, the asking attempt and the run's end, its evidence the run, the asking task, attempt and session, the ticket and the evidence the request cites, and its `delivery` DR1's four states as the record reports them, each its own step: `available` (opened), `recorded` (the accepted response, its receipt `dr-N/<k>`; not applicable for one closed unanswered), `validated` (Yardmaster's application checked the subject, the policy and the asker again; waiting while answered: "Yardmaster applies it next", or, its run not held by the engine, "it waits for its run to be continued"), and `applied` (the application's words, or why not). Its actions, open, by its type, each through DR1's route at the record's `rev` (`expect`): its options by index (`choice`; an approval's first two named `approve` and `reject`, asked first; an assignment's `Done` and `Not done`), a clarification's line (`answer` with `text`), each to `POST /api/decisions/{did}/respond`, then `more_info` (an agent's record, open, while its asking attempt is live, as DR1's `asker.live` says: DR1 refuses it `no_recipient` after) and `comment` (open or answered), each with `text`, to `POST /api/decisions/{did}/comment`; each `scope` says what Yardmaster then does (types the answer into the asking attempt's session, or, that attempt ended, says the task's next attempt reads it in its task file; lets the held tasks start, cancels them) and what the request authorizes. A record and what it holds (its active holds under its current run) are of one read of the ledger, so its blocking and its actions' scopes are of the `rev` they are answered at (a continuation that moves both is seen whole or not at all); a read that fails is no item (`503 unavailable`, and the list's too): what it holds is never guessed. Each action carries the revision its own operation checks (`expect`: the question's id for an `answer`, the run's revision for `retry`, `accept`, `cancel` and `recheck`, the plan revision's `rev` for `approve` and `withdraw`, and `ticketRev`, the ticket's, beside it for `approve`) and its `route` (`/ws/sessions/{id}`'s `answer`, `POST /api/runs/{run}/tasks/{task}/{command}`, `POST /api/dispatch/plans/{id}/{approve,withdraw}`); a failed task offers `recheck`, Check again, beside them when the engine would take it now (`crew.TaskCommands`' `recheck`, by `Engine.Recheck`'s own rule): its `attempt` and `commit` name the standing failed candidate as its own run names it, and its route is that run's recheck route (in a continuation, the continued run's, which the route walks forward from); a run that moved on refuses it `stale_revision`, the page's words then naming the candidate the item read again offers, and a candidate that no longer stands is refused `stale_candidate` in the engine's words; `track`, when set, is the ref its steps are read under (`GET /api/inbox/track`), when not the item's own: a task command a blocker's question carries is tracked as `task:<run>/<task>`. `scope` says exactly what it does, at which revision (an Approve's names the yolo choice read from the revision's body and the approval it supersedes, kept whole within the scope's 1 KiB, the crew's tasks and agents shortened first; a body not read gives no Approve; a Retry's names the commit the engine would start it at). A task's item describes the task as the engine judged its commands, in one read. An exact field (`question`, at most 500 raw bytes; an `input`, at most 48; the refs; `expect`) is never cut; a display field is cut on a rune boundary until its encoded form fits. Brakeman's newest `decision/1` card about the item's `subject` fills the brief, `whyHuman`, `considered`, `recommended` (-1 for none: Conductor recommends nothing), `uncertainty` and `authorizes` (Brakeman's, beside each scope), with `cardNote` when it was read at another revision. `routedTo` is the route a registered decision router gave for that question, kept by question id (the last 256, in memory). A ref of something no longer open answers the item as it is now (no actions, `now` saying why, a question's `delivery`: "not open now" for a question kept to show again, "no longer open" with how it left otherwise), a task of a run the engine let go read from the run's record; `404 not_found` for one that names nothing the server holds; `400 invalid_request` for a ref that does not parse. On a switchyard `403 switchyard` |
 | `GET /api/inbox/track?ref=<ref>&receipt=<id>&attempt=<reqId>` | admin | the four steps of one action, from its durable receipt, at most 8 KiB: `{ref, receipt, steps[{step, state, at?, words, receipt?}]}`, the steps `available`, `recorded`, `validated` and `resumed` (for a DR1 record, `applied`: DR1's fourth state), each `done`, `waiting`, `refused`, `not_applicable` or `unknown`, never merged. For `decision:dr-<n>`, `receipt` is the tracking key, which names what it tracks by its kind and id: `response:<responseId>` for a response, `comment:<opId>` for a comment or a request for more information (DR1 keeps the two ids apart, so one id may name a response and a comment both, and neither is read as the other; a key without its kind, `400 invalid_request`), read under the caller's actor, with no `attempt`: a response accepted reads the record's four states, one refused reads recorded refused with DR1's words and code; a comment or a request for more information reads recorded done at its history row and the rest not applicable (a comment changes nothing; more information keeps the record open); an id the record keeps nothing of under the caller reads recorded `unknown`. `receipt` is a task command's id (the ledger's receipt of the caller's actor: `accepted` is validated waiting, `done` done, `failed` refused with its code, `uncertain` validated unknown and resumed not applicable: a command's change commits with its receipt's settlement, so a receipt left unsettled at a stop made nothing; then the task since: a retry's next attempt, an accept's dependents (the first attempt of any of them that started since, from every attempt each keeps), a Check again's attempt checking its candidate (waiting while the attempt its change recorded waits for its verification, which starts once the run's prerequisites have passed; done at the first receipt of that verification, or at the attempt's end when it decided without one; not applicable when it was closed before), read from the run's record for a run the engine let go and `unknown` for one found nowhere, a cancel's nothing; an id whose receipt is another command's, a run's pause or another task's, is recorded refused, nothing taken for this task, a Check again's task read from the arguments it was taken with whatever its receipt names (one refused before its change, or not settled, names none); a Check again's receipt not in the ref's run is looked for in the runs that continue it, where its route sends it), a plan revision's Dispatch op id (the operation's receipt and its own outcome; resumed does not apply: a launch from the ticket page starts it; an id whose receipt is not an approval or withdrawal of this revision, as far as the store keeps the operation's subject, is recorded refused), or a question's id with `attempt` the request id the answer was sent with. A question reads, by how it left: shown, or kept to show again (the agent's own set aside, the one a held turn holds over), waiting; answered through its claim, the winner's id done, another's refused "another answer first", then its resumption as the session kept it at the first change after the answer, `working` or a next question done, the end not applicable; answered by keys typed in the terminal (a person's Enter at a wait with no words among them), while it still shows and once it left (whatever let it go after, the process's end among them), recorded refused "keys typed in the terminal answered it first"; gone for good without an answer, recorded refused at the time it went, saying how: the session ended, another question shown in its place, or withdrawn by the agent (by what it reported next, or by its id while it was set aside or held over, with nothing else changing); forgotten past the session's 64, or the session no longer listed, `unknown`. A hosted session's question reads recorded and validated `unknown` (the host holds the answer) and resumed from what the server saw as its host synced the attention (what the host said, never a change the server forwarded and the host has not applied), its last 64 questions: a question leaves when the host's session neither shows nor keeps it, and its resumption is the first change from then, waiting until it comes, `unknown` when the server did not see it leave; the server notes it before it publishes the change's `session` event. A question's `receipt` is its own id; a task command carried by its item is tracked under the action's `track`, and its command id under the question's ref is `400 invalid_request`. A step is a historical fact, read the same by every browser; what changed of the subject since is the item's `now`. On a switchyard `403 switchyard` |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?, account?, model?}`, reply `201` with the session `Info`; `account` and `model` bind its login and model (see Capacity: `400 invalid_account`, `409 accounts_not_owner`, `503 capacity_unavailable`, a model `400 invalid_request`); `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`, and for a server session its `launch`, `{agentId, cwd, args, yolo, account: {id, label?, source}, model?}` (its binding without its folder or fingerprint, see Capacity): what it was launched with and what a clone takes by default (`POST /api/sessions/{id}/clone`), its agent, its resolved working directory, the arguments the launch gave, as given, and its yolo choice (not whether a recipe was applied: `Info.yolo` says that); never the launch's environment, and never to a share link's holder; on a switchyard the workbench token's `role` is `""` |
@@ -2943,7 +2983,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included) |
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
 | `GET /api/sessions/{id}/task` | the session's agent token, or admin | the task of an attempt's session in a managed run (#334, row 6): `{task, markdown, page, pages, bytes}`, `task` the attempt's `task.json` and `markdown` a page of its `task.md` (32 KiB a page, `?page=` from 1, page 1 unless asked; `400 invalid_request` past the last); `404 not_an_attempt` for a session that is no attempt; `409 not_running` for an attempt whose worktree is not made yet; never gated by `agents.selfService` |
-| `POST /api/sessions/{id}/messages` | the session's agent token, or admin | send a message from the session's member to another member of its managed run (#334, row 9): body `{to, text}` (one to 4,000 characters); reply `201 {message}`, `{seq, from, to, text, createdAt, deliveredAt?, ackedAt?}`; the message is typed into the recipient's session as one line, `Message from <from> (#<seq>): <text>`, after its task line, once its attempt has one; `404 no_member`; `429 inbox_full` once the recipient has 50 messages not acknowledged; `400 invalid_request` for an empty text, one too long, or a message to oneself; `409 task_state` on a legacy run |
+| `POST /api/sessions/{id}/messages` | the session's agent token, or admin | send a message from the session's member to another member of its managed run (#334, row 9): body `{to, text}` (one to 4,000 characters); reply `201 {message}`, `{seq, from, to, text, createdAt, deliveredAt?, ackedAt?}`; the message is typed into the recipient's session as one line, `Message from <from> (#<seq>): <text>`, after its task line, once its attempt has one; `404 no_member`; `429 inbox_full` once the recipient has 50 messages not acknowledged; `400 invalid_request` for an empty text, one too long, or a message to oneself; `409 task_state` on a legacy run; `409 lane` in a comparison's run (A comparison's crew below) when the recipient is in another lane than the sender, nothing written or delivered |
 | `GET /api/sessions/{id}/inbox` | the session's agent token, or admin | the session's member's messages after `?after=` (a sequence number, 0 unless given), at most 50, in order, delivered or not: `{messages}` |
 | `POST /api/sessions/{id}/inbox/ack` | the session's agent token, or admin | acknowledge the session's member's messages up to a sequence number: body `{upTo}`; reply `{acked}`, how many now; acknowledged messages count no more against the member's inbox |
 | `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
@@ -3075,6 +3115,30 @@ into its record. An older Conductor reads a crew file or a run record with
 one reads it again, writes a managed run's record that lacks them again at
 its start, and gives a launch row an older one wrote from a plan revision
 with people its people again from that revision.
+A comparison's crew (docs/plans/compare-crew.md, CP1): a crew with tasks
+may carry `compare`, `{criteria, candidates, brakeman?, selector?}`, absent
+otherwise, so a crew without it is written as before. `criteria` are 1 to
+12, each `{id, text}`, an `id` as a task's and unique, a `text` of 1 to 500
+characters on one line (no control character, U+2028 or U+2029);
+`candidates` are 2 to 4, each `{task, approach?}`, a work task of the crew
+named once, with no `needs`, and an `approach` of at most 2,000 characters
+with no NUL. Every candidate has the same `instructions` and the same
+`checks` (`id`, `argv` and `timeoutSeconds`, in order), and at least one
+check unless the crew has a project manifest, whose verify steps are then
+what is compared (one in the crew's form needs a `verify` step). Each
+candidate is a lane with the one review task that may need it; every task
+of the crew is a candidate or such a review, and every member does the
+tasks of one lane. `selector` is refused when set. Each rule is refused
+`400 invalid_crew` in its words, and the block counts toward the crew's
+1 MiB. A task's comparison part of its task file (Managed runs) is never
+cut, so its goal, role, instructions, people and comparison together take
+at most 40 KiB as `task.json` keeps them. A crew's create and update take
+`compare` with the rest, so a crew read back saves again; in this build
+every launch and continuation of a crew with one, from the crews page or a
+ticket's plan revision, is
+refused as a crew that breaks a rule ("comparisons arrive with their
+launch statement"; `400 invalid_crew` from the crew launch route) before
+a run exists.
 A crew with tasks may have a project manifest, `manifest`
 (`docs/plans/project-manifests.md`): what makes a fresh tree of the project
 usable (a tree is an attempt's worktree or the checkout of its result), how
@@ -3649,6 +3713,19 @@ the field is absent and the section not written, so the files are what
 they were before; the blocks are never in the ledger. `GET
 /api/sessions/{id}/task` and the `task_context` tool read the files, so
 they serve the blocks as part of the task.
+An attempt of a comparison's run (a crew with `compare`, A comparison's
+crew above) asks no provider: its `task.md` has a "Context" section that
+says "No derived context: a comparison's candidates and reviews read their
+task, the base and their own work", and `task.json` no `context`. Its task
+files carry its own lane's part, never cut: `task.json`'s `compare`,
+`{candidate, of, criteria: [{id, text}], approach?}` (after `people`;
+`candidate` the attempt's own task, or for a review the candidate it
+reviews; `of` how many candidates; at most 8,000 characters of criteria
+and approach), and `task.md`'s "A comparison" after the instructions,
+saying it is one of `of` candidates, each starting at the run's base and
+working alone, that another candidate's branch or worktree is no input of
+its own, its approach and the criteria. Neither names another lane's
+task, member, branch, path or approach.
 The crew's own text is never cut: a crew is refused as it is saved when a
 task's goal, role and instructions take more than 40 KiB as `task.json`
 keeps them, or a task needs the same task twice, so a task file always
@@ -4048,7 +4125,10 @@ nothing changes), then acted on and settled in a second (`done` or
 `uncertain` after the recovery, and read as such. A run keeps 4,096
 commands (`409 too_many_commands`); `GET /api/runs/{run}/commands/{command}`
 reads a receipt without acting; a legacy run takes no command (`409
-task_state`), and a run continued, or being continued, takes none either
+task_state`), a comparison's run takes pause, unpause, cancel, retry and
+accept alone (any other, Check again and Request changes among them, is
+`409 task_state`, "this command is not open to a comparison's candidates
+yet", with no row and no receipt), and a run continued, or being continued, takes none either
 (`409 run_continued`: its continuation owns its tasks, and a change here
 would fork their history). The engine's own `PauseRun`, `CancelTask` and `RetryTask` make
 the same changes without a receipt.
@@ -4543,13 +4623,8 @@ last change in the store's log (local to the database), `entity`
 `project`, `ticket`, `comment`, `label`, `milestone`, `view`,
 `person`, `plan` (a ticket's plan revision), `launch` (a ticket's
 launch), `review` (a person's review of a candidate: its submit and
-each change of its application), `finding` (one of a review's
-findings: made with it, and again for each mark), `capture` (a
-person's capture of a preview: its create, each edit and its delete;
-Previews and captures, below) or `capture_send` (one of a capture's
-sends: made, and each outcome and cancel; a capture and a send name no
-ticket or project, a send to a ticket telling the ticket's own changes
-too), `id` its id (`""` for a person, whose id is its name: the
+each change of its application) or `finding` (one of a review's
+findings: made with it, and again for each mark), `id` its id (`""` for a person, whose id is its name: the
 pickers read the directory again whole), `ticket` the id of the ticket
 it belongs to and `project` its project's key, `""` where there is
 none. A relation counts for both its tickets, and a label's or a
@@ -4558,7 +4633,7 @@ changed more than 64 entities of one kind in one project, the server
 sends one event for them, where the first of them would have been: that
 `entity`, `id` and `ticket` `""`, the project's key and the commit's
 `seq`, so a label deleted on 300 tickets is two events, the label's and
-its tickets'. An event is at most 160 bytes (the longest is 122, a `capture_send`'s: every
+its tickets'. An event is at most 160 bytes (the longest is 119: every
 value is digits, a word, hex or a key, never escaped). A page reads
 again what an event names, or what derives from it; an event with `id`
 and `ticket` `""` (but a person's, whose `id` is always `""`) names no
@@ -4576,89 +4651,109 @@ commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
 
-#### Previews and captures
+#### The preview label
 
-A person's captures of a preview (`docs/plans/browser-evidence.md`) are
-Dispatch's records, kept in its store with their screenshots as content
-files beside the attachments. Every route below is the admin's (a share
-link, a session's token, a host token and a Brakeman turn answer `401`)
-and a switchyard's `403 switchyard`.
+The label of an attempt's preview (`docs/plans/browser-evidence.md`) is
+the admin's (a share link, a session's token, a host token and a
+Brakeman turn answer `401`) and a switchyard's `403 switchyard`.
 
-**The label.** `GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
+`GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
 (no parameter) answers the attempt's worktree preview while it is
 offered: `{url, tree: "worktree", commit, content, changed,
 changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
 unread?}`; `404 no_preview` when it is not open. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
-place its value leaves the server. The revision is read now, through the
-tree's directory opened once, in an index of the server's own for that
-tree (made HEAD's entries again at every read, so a read is the tree at
-that read alone), within 5 s: `commit` HEAD's, `content` the tree id of
-everything the tree holds that git would see (uncommitted edits and new
-files that are not ignored), `changed` every path that differs from HEAD
-counted, `changedPaths` the first of them within 200 and 16 KiB as
-encoded (a path with a control character left out, still counted),
-`changedCut` when some are left out. A read that fails or passes 5 s
-answers `content` `""` and `unread` in words.
+place its value leaves the server: every other field is scrubbed of the
+secret of every tree the engine holds one for (in any case, made
+`${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
+The revision is read now: `commit` HEAD's commit as the read recorded
+it, `content` the tree id of everything the tree holds that git would
+see (uncommitted edits and new files that are not ignored; a file at a
+path longer than the system lets a program name, 4,096 bytes on Linux
+and 1,024 on a Mac, is left out of `changed` and of `content`, as it is
+left out of `git status`), `changed` every path that differs from that
+commit counted, `changedPaths` the
+first of them within 200 and 16 KiB as encoded (a path with a control
+character left out, still counted), `changedCut` when some are left
+out. A read that fails, passes 5 s or ends after the server's stop began
+answers `content` `""`, no changed path and `unread` in words, and the
+server logs it by its kind alone (late, not a repository, refused, git
+failed), never with git's message.
 
-| Route | Body | Answer |
-|---|---|---|
-| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet), `400 invalid` (the page of another origin than the preview's, or a link's page of another origin than the link; a screenshot that is not a whole PNG, a side past 4,096 pixels, or one holding the tree's secret; and every refusal of the store's below), `413 bound`, `503 tree_unread` (HEAD could not be read: save again) |
-| `GET /api/captures` | `?run=&task=&attempt=`, `?ticket=` (the captures a send was sent to), `?after=` (a page's `next`), `?limit=` (1 to 100, 100 when absent) | `{captures, next?}`, newest first, each with its first annotation alone, its note cut to 200 characters |
-| `GET /api/captures/{id}` | none | the capture with its annotations and its sends (their requests aside); a deleted capture is its tombstone `{id, rev, createdAt, deletedAt}` |
-| `GET /api/captures/{id}/image` | none | the PNG: `Content-Type: image/png`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `X-Conductor-SHA256`; `404 not_found` without one |
-| `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`; `409 stale_revision`; `400 invalid` for a new element report |
-| `POST /api/captures/{id}/delete` | `{opId, byName?}` | `200 {receipt}` |
+Where a read runs. A tree's read is git's, run in the tree's directory
+as the server opened it, with the tree's own `.git` and the work tree
+named outright (`-C <opened> --git-dir=<opened>/.git
+--work-tree=<opened>`): on Linux `<opened>` is the open handle,
+elsewhere the tree's path, which is compared again after the read. git
+looks for no repository: a `.git` that is a gitfile (a linked worktree)
+is followed, one that is a directory is opened, and a tree with no
+`.git` at its top is not read (not a repository). The git directory that
+`.git` names is the one git reads, and its configuration applies, as for
+the engine's own comparison of a checkout, save the forced settings: the
+stat settings (the stat data trusted in full), the sparse checkout
+(none), the split index (none) and, where the file system keeps it, the
+executable bit (`core.fileMode` true); every other setting of the
+repository's configuration applies.
 
-**One gate per route.** A body is read whole within its bound (`413
-bound` past it), decoded once with no member it does not take, and
-refused in fixed words, never a parser's (`400 invalid_request`). The
-operation's content is the digest of the request as decoded (its JSON
-re-encoded, the screenshot's SHA-256 after it), taken before anything is
-changed, and every write is answered first by its receipt when its
-`opId` was seen: a create or an edit sent again after its reply was lost
-answers its receipt (`repeat: true`) whatever the tree has become, its
-preview closed and its secret gone among it, and another request under
-the same `opId` is `409 op_conflict`. Only a new operation goes on to the
-preview and the tree. A refusal of the store's is answered with its own
-code and words, `{error, receipt}`: `400 invalid`, `413 bound`, `404
-not_found`, `409` for every other (`stale_revision`, `op_conflict`,
-`expired` among them).
+What the server itself opens: the run's working directory, opened as a
+folder only, and from it the tree reached one name at a time, each looked
+at without following it, a directory, opened through the one before it as
+a folder only and the directory that was looked at. A name that is no
+folder at the moment of its open fails at once and the tree is not read
+(for the run's working directory the system's error, logged as `git
+failed`; for a name beneath it the read is refused). A name that is a
+link, or anything else than a folder, at its look is not read; a link
+put in place of a name between its look and its open is followed only
+when it leads to the very directory that was looked at, and any other is
+refused. For the look at whether the file system keeps the executable
+bit, once per index, it makes one new file of its own in the tree and
+removes it, as the engine's comparison of a checkout does. Every
+existing file of a tree and of its git directory is opened by git.
 
-**What the server fills, never the client.** For an attempt: the
-origin `attempt` with its run, task and number, the tree `worktree`,
-`mutable`, where it ran, and the revision read at the save as the label
-reads it; the run's scope (its crew, the top of its repository, the
-project of the ticket it was launched from); and each element's sources,
-its hints' files made relative to the tree (a file outside it kept as
-reported, `outside`), `found` when the tree's directory holds it (no
-link followed out of it), classed `tracked` (in HEAD's tree), `ignored`
-(left out by the tree's ignore rules), `untracked`, or `vendor` (a path
-with a `node_modules` element), ordered by that class, the innermost
-first within each, so the app's own file comes first. From those facts
-the store keeps the drift (the selection's read when the save's commit
-or content differs, or either was not read), what the page serves
-(`declared`, `stale` or `unconfirmed`), the changed paths' cut and how a
-retake is related (`run`, `ticket` or `repo`). For a link, the origin
-`url` alone. Before anything is checked or kept, every string the
-request carries and every string the server read is scrubbed of the
-tree's secret, in any case, which becomes `${CONDUCTOR_TREE_SECRET}`; an
-edit is scrubbed of its capture's tree's secret while that tree is open.
+The commands, with the recorded commit id where they name one:
+`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`, `add
+-A`, `write-tree` and `diff --cached --name-only -z <commit>`, with
+`GIT_NO_REPLACE_OBJECTS=1` and literal pathspecs. Each of a read's own
+commands writes its answer and its error stream within a bound: an id at
+1 KiB, the diff as it comes within the paths' bounds, git's error stream
+at its first 4 KiB. The filter look-up before a command (which turns the
+repository's filters off) is `main`'s and holds what git answers. A
+source's class, for the captures (a later row), is
+read the same way at the commit the read recorded: `ls-tree` of that
+commit for exactly the paths given, and `check-ignore` with them on its
+input (it takes no literal pathspec, so a path that begins with `:` is
+not given to it), each answer read within an entry and its bytes for
+each path, past which the class is not known.
 
-**The capture document** (`conductor.capture/1`), what a send freezes:
-`{schema, id, rev, url, title, viewport: {mode, width, height, scale,
-dpr, colorScheme, userAgent, scrollX, scrollY}, selectedAt, savedAt,
-origin: {kind, run?, task?, attempt?, tree?, commit?, changed,
-changedPaths, changedCut, content?, mutable, candidate?, where?, drift?,
-serving: {state, page?}}, image: {sha256?, width?, height?, bytes?, how,
-why?, scale?}, annotations: [{k, kind, note, rect, element?, observed?,
-sources?}], retakeOf?, retakeVia?}`, at most 2 MiB as encoded. An
-element is kept in the store's shape, its classes a list, and measured
-as the bridge cut it (every member written, the classes joined): at most
-32 KiB, its state's words at most 1,024 bytes and a hint's line and
-column at most 2^53 - 1, the bridge's own bounds; the store's field
-rules then hold every text (no control character but a newline and a
-tab in the long ones), and a tag and an attribute's name are names.
+The kept indexes. The index is the server's own: one file, in a folder
+under the server's temporary directory, made the recorded commit's
+entries again at every read, so a read is the tree at that read alone.
+Edited and new files are hashed at every read; a tracked file whose
+bytes and stat data did not change since the last read is not hashed
+again, as `git status` works, so a change of the attributes that say how
+a file is recorded shows for the files that change after it. (The
+engine's comparison of a checkout, which decides a candidate, reads with
+a fresh index.) One read of a tree runs at a
+time, so a lock of its index found as a read starts is one a cut read
+left: the index and its lock are dropped and the read starts from none.
+At most eight indexes are kept: an index a read holds or waits for is
+never let go, the least recently read of the others is to make room, and
+with all eight held a read of a ninth tree waits within its 5 s and then
+answers unread. They are not removed when a preview closes. A read's
+commands are ended at 5 s, the wait for a tree's turn counted in them.
+The server's stop is marked as it begins, before any of its waits, and
+removes the folder of indexes. A read that begins once the stop has begun
+makes no folder and no index. A read under way when the stop begins may
+still run its commands and write its own index until the stop removes the
+folder; it asks the mark after its last command, and its label is unread.
+A server ended without its stop leaves the folder to the system's
+cleanup.
+
+Where this differs from the plan: the label is the admin's alone until
+the row of the shared read; the classes are read by two commands over
+the exact paths; the index is made the commit's again with `read-tree
+--reset`; at most eight indexes are kept, the least recently read let
+go, where the plan keeps one for the open preview's life.
 
 #### GitHub tokens
 
@@ -4713,6 +4808,144 @@ switchyard's `403 switchyard`; a body is one JSON object, at most 4 KiB.
 | `POST /api/trackers/github/remove` | `{host}`: a remove names its host (`400 invalid_host` without one, as for `{}`) | drops the host's entry: `200 {removed}`; a call already under way finishes with the token it read, every later one answers `412 no_token`. It stops Conductor's use of the token only: it stays valid on GitHub until revoked there. For the environment's host the file's entry goes too, and the answer adds `inUse: "environment"` and a message: the environment's token is still the one in use and cannot be removed here |
 
 A body that is not one JSON object of exactly the route's members (`null`, a number, a string, a list and no body among them) answers `400 invalid_request` in one fixed sentence, never the decoder's words, and nothing is defaulted from it; a body past 4 KiB answers `413 body_too_large`.
+
+#### A ticket's GitHub item
+
+A ticket may mirror one GitHub issue or pull request, its **linked
+issue** (`docs/plans/tracker-linking.md`): imported as a ticket (GitHub
+owning its title and description) or linked to one (Dispatch owning
+both), read again on demand, with its field owners moved by a person.
+Every request to GitHub is made with the token kept for the item's host
+(GitHub tokens, above): with none, `412 no_token`, nothing read or
+written. The token goes only to that host's API, in `Authorization`, on
+a connection of its own; nothing GitHub answers is logged (a line names
+the route, the item's reference and the status); a refusal is in fixed
+words and names an item only as its reference was accepted. What an
+item gives is content from outside: it goes into Dispatch through the
+store's own operations and bounds (its title cut to 200 characters, its
+description to 64 KiB at a line's end with a last line saying the rest
+is on GitHub, the snapshot at most 40 KiB, at most 20 labels and 20
+assignees shown and never mapped, the labels past 20 left out and
+counted (`labelsTotal`, the named labels GitHub's answer listed), the
+steps to reproduce at most 8 KiB, at most 8 images), and nothing is made
+of it. Every text it gives has its control characters and the Unicode
+tag characters (U+E0000 to U+E007F) dropped (a description's and its
+steps' line breaks and tabs aside), each text of one line (a title, a
+label, a person's name, a milestone, a branch, a check's name) also the
+characters that reorder a line (U+202A to U+202E, U+2066 to U+2069), and
+is cut to its bound; a check's status and conclusion are GitHub's word
+or `other`. Other characters that draw nothing are kept as written. Each
+text of an answer is made storable where the answer becomes the store's
+record, and a link's checks and the reasons they are incomplete are
+fitted to the store's bounds as the store measures them, after its own
+normalisation of each text; the fields of a fixed form (ids, addresses, commits,
+times) are checked for their form; the store measures what it is handed
+after its own normalisation; a link's read it refuses is recorded as the
+link's failed read (one older than the read kept is refused as stale,
+and one of a link removed meanwhile is dropped, each recording nothing),
+and a refresh, link or field given back that it refuses answers its
+refusal and records no read. The routes are the admin's alone and a switchyard's `403 switchyard`; a body
+is at most 64 KiB (`413 bound`), decoded strictly before the path is
+read. A reference is a URL (`https://<host>/<owner>/<repo>/issues/<n>`
+or `…/pull/<n>`, the host github.com or a GitHub Enterprise Server's
+with a saved token), `owner/repo#n` or `#n`. A short form's repository
+is the project's tracker URL and nothing else (the project's folder is
+never read): with none, `#n` is `400 not_a_tracker_url` saying the
+project has no tracker URL and the whole address works, and
+`owner/repo#n` is on github.com; a tracker URL naming a repository on a
+host the server reads (github.com, or a GitHub Enterprise Server's with
+a saved token) is the default for both; a tracker URL set in another
+form, or on another host, refuses every short form (`400
+not_a_tracker_url`, saying to give the whole address or set the
+project's tracker URL), none read on another host. Anything else is
+`400 not_a_tracker_url`, quoting nothing of it.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/dispatch/external/preview` | `{url, project?}` | reads the item and answers `{preview: {ref, url, title, description (its first 2 KiB), descriptionLength, images, repro?, state, stateReason?, labels, assignees, owners, linked?}}`, what an import would make, made by the import's own projection (its images, labels and assignees what the import keeps), `linked` the live ticket that has the item as its linked issue already; writes nothing |
+| `POST /api/dispatch/projects/{key}/import` | `{opId, byName?, url, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, images?}` | replays the operation first, before any request to GitHub. A first send reads the item once and runs `ticket.import` (its snapshot holding the image manifest, at most 8), then, within the images' budget, downloads each image the manifest holds (from GitHub's image hosts alone, at most 16 MiB, its type sniffed from its bytes) and makes it an attachment with its manifest entry in one operation (`ticket.import_image`, a derived op id of the image's id and its bytes' SHA-256), or records its skip (a type other than PNG, JPEG, GIF or WebP, a size past the bound), never fetched again. `201 {receipt, ticket, images: [{id, attachmentId?, skipped?, pending?}]}`, `pending` an image the budget or a failed download left. A first send and a resend alike complete images only while the ticket has not been unlinked or linked since the import (nothing read or attached otherwise). A resend is answered from the replay and from the stored manifest, never from a receipt: only the entries with neither an attachment nor a skip are fetched again, with fresh addresses from one read, matched by id; with GitHub unreachable it answers `200` with them pending. An image whose own operation was refused stays pending for the import's resends; the next refresh completes it. `409 external_linked` (the receipt's `key` naming the ticket that has the item), `409 archived` |
+| `POST /api/dispatch/tickets/{key}/external` | `{opId, expectedRev?, byName?, url}` | replays (again once it holds the ticket's lock: a resend that waited for its first send answers the first's receipt and asks GitHub nothing), then reads the item and runs `ticket.link_external`: every field stays Dispatch's. `{receipt, ticket}`; `409 invalid` for a ticket linked already, `409 external_linked` |
+| `POST /api/dispatch/tickets/{key}/external/delete` | `{opId, expectedRev?, byName?}` | `ticket.unlink_external`: each field GitHub owned becomes Dispatch's with its text. `{receipt, ticket}` |
+| `POST /api/dispatch/tickets/{key}/external/refresh` | `{opId, byName?, images?}` | replays under the ticket's lock (a resend of a refresh that changed the ticket, its first send's done or waited for, completes the images that send left pending, with one more read of the item and its downloads made only when an entry is pending and none once the ticket was unlinked or linked since, and answers `{changed: true, receipt, ticket, images}` from its receipt; a refresh that changed nothing keeps no receipt, so its resend is a new read), then reads the item with the validators its last read kept: another item than the one held is `409 moved` naming it; a `304`, or a `200` that changes nothing, is recorded as the ticket's read alone (no change, no receipt); otherwise `ticket.refresh` writes the snapshot and the fields GitHub owns. Then, whatever the read found, unless `images` is false, the manifest's pending entries are completed as an import's resend does, after a `304` from one more read without validators, made only when one is pending. `200 {changed, receipt?, ticket, images}`. The ticket's status never moves |
+| `POST /api/dispatch/tickets/{key}/external/authority` | `{opId, expectedRev?, byName?, field, owner}` | `field` `title` or `description`, `owner` `dispatch` or `github`: replays (again under the ticket's lock, as a link does), then to GitHub reads the item first and hands the read to `ticket.authority`, which writes the snapshot, the owner and the field from it. `{receipt, ticket}` |
+| `POST /api/dispatch/tickets/{key}/links/{id}/read` | `{}` | reads the item a live `delivery` or `external` link names, and for a pull request its checks at its head commit (at most 100 within 32 KiB as the store measures them, after its own normalisation of each text: a set past either is cut from its end, failures first, the cut said as a reason and the checks left out counted; a cut list says so, in at most 8 reasons of at most 120 bytes within 1 KiB as kept, the reasons past it dropped from the end and the last kept saying so), and records it as the link's read: `200 {read}`. A failure keeps its words on the link's read |
+| `GET /api/dispatch/tickets/{key}/links/{id}/read` | none | `{read}`, the link's last read whole, its checks among it, or `null` |
+
+Beside these, a `link.add` whose URL is a GitHub item's, for a host with
+a token kept, reads it once after the operation commits, in the
+background (one at a time per ticket and per link, within 90 s); and a
+ticket's edit to `done` whose project requires `merged` may first read
+its delivery links again. The store decides every close under `merged`:
+it closes only while a live delivery link's latest read was made within
+five minutes, says merged, and has no failed read recorded after it (a
+merged pull request stays merged). Before an edit that the route sees is
+such a close, the route reads each live delivery link to a GitHub item
+again, at most 4 at once: a read that failed (GitHub's answer, or the
+store's check of what was read, other than a read older than the one
+kept or one of a link removed meanwhile, which record nothing) is
+recorded as failed, one it could not make (no token kept for the link's
+host, the link's read under way past the wait, no slot within the
+close's time, an address no longer read for a link read before, the
+ticket deleted meanwhile) records nothing, and
+either refuses the edit, `409 close_policy` naming the link, nothing
+closed; once the server has begun to stop, a close whose reads it ended
+answers `503 tracker_busy`, nothing closed. Where the route does not
+read, the store's rule alone decides: the edit is answered from its
+receipt; the ticket was done, deleted or at another revision than the
+one sent when the route looked; the route's own look at the project, the
+receipt or the ticket failed (once the server has begun to stop, `503
+tracker_busy`, nothing closed); or the ticket or its policy changed
+between the route's look and the store's edit. The route's look at the
+project keeps the request's values and not its end, within the close's
+time: a request whose client has left is read for as one whose client
+stays. An edit to `done` in a project without `merged` goes to the
+store as any edit does. A
+deleted ticket is asked nothing: a link's read, a refresh, a field given
+back, a link and the close answer its `404 not_found` before any
+request; a read that waited for its link's lock loads the ticket under
+it and asks nothing for one deleted meanwhile (a link's read answers its
+`404 not_found`); a link removed while its read waits is asked once more
+and its read is dropped (`404 not_found`), nothing recorded; and a read
+that answers after the delete is not recorded. Nothing else reads GitHub by itself: no timer, no poller, no
+webhook; and every read, the background ones and the routes', ends with
+the server: its stop begins first thing in its shutdown, and from then
+no call enters the one function every request to GitHub passes (it
+answers `503 tracker_busy`); a request already inside it is ended by its
+context, which ends with the stop, for a route begun before it as for
+one begun after, and records nothing. A route whose call to the store the stop ended
+answers as the store's failures do. Reads of one ticket's item, and of
+one link's, are made one at a time, under a lock held from the request
+to the commit (an import's first send reads before there is a ticket to
+lock): the link, unlink, refresh, field-owner and link-read routes answer
+a wait for one past 15 s with `503 tracker_busy` and `Retry-After`,
+nothing read or written; an import's images that wait past it stay
+pending in its answer, and a close's read that waits past it refuses the
+close (`409 close_policy`). The store keeps the read with the later
+GitHub `updatedAt` (`409 stale_read` for an older one, nothing written).
+
+Each route's deadline is the sum of its steps' caps: 15 s for the lock,
+45 s for its requests to GitHub (each within 15 s, an image within 60 s),
+30 s for each store write, and 60 s for an import's or a refresh's
+images: `TrackerReadTimeout` 90 s (the preview, a link, an unlink, a
+field given back, a link's read), `ImportTimeout` 150 s (an import, a
+refresh) and `MergedCloseTimeout` 105 s (the edit to `done`: the locks
+and the links' reads in one phase, the reads within 30 s; each read's
+record within a write's cap of its own; the edit). A budget that ends keeps what its
+phase has: images not downloaded stay pending, a cut list of checks says
+so. GitHub's failures: `404 external_not_found` (no such item, or the
+token cannot see it), `422 token_refused` (GitHub refuses the token:
+never `401`, which the app reads as its own token refused), `403
+token_permission`, `429 rate_limited` with `Retry-After`, `409 moved`,
+`502 tracker_bound` (an answer past its bound), `502
+tracker_unavailable`; each leaves the store as it was, but its words on
+the ticket's or the link's read.
+
+**The `dispatch_read` event.** A read recorded (a ticket's linked item's
+or a link's) is no logged change, so it is announced by an event of its
+own on `GET /api/events`, never by a `dispatch` event: `{ticket,
+project, link?, readAt}`, at most 256 bytes, with **no `seq`**: a page
+reads the ticket again on it, and its sequence for the log does not
+move.
 
 ### Brakeman
 
@@ -5748,23 +5981,45 @@ response refused after it reached the record). The admin routes take the
 workbench token, or an identity provider's principal with the admin grant;
 a share link's controller, an agent's token and a Brakeman turn's token
 are refused (`401 unauthorized`): the operator is the free build's one
-approver.
-
-The decide grant's wire (`internal/proto/decide.go`, mirrored in
-`web/app/utils/protocol.ts`; `docs/plans/decide-grant.md`): what a principal an
-identity provider gives `decide` and not `admin` is to be answered, once the
-grant's routes are served. `MeReply` `{subject?, name?, grants}`, at most
-1 KiB. `DecideList` `{decisions: [{id, rev}], cut?}`: at most 200 entries,
-at most 16 KiB. `DecideView` `{id, rev, state?, type?, question?, context?,
-options?[{label, tradeoffs?}], recommendation?, uncertainty?, authorizes?,
-createdAt?, own[{k, responseId, status, code?, rev, at, choice?}], outcome?,
-outcomeCode?}`, at most 32 KiB, `own` at most 8 receipts, `outcome` one of
-`applied`, `waiting`, `not_used`, `refused` (with `outcomeCode`).
-`DecideReply` `{receipt, decision?}` and `DecideRefusal` `{error: {code,
-message}, receipt?}`, at most 33 KiB, a refusal's message at most 200
-bytes. Until those routes are served, `POST /api/decisions/{did}/route` with
-`to: {kind: "grant", grant: "decide"}` is `400 invalid`, a destination the
-route does not take.
+approver. A decide principal, which only a build with an identity provider
+registered can present, is admitted by `GET /api/me`, by the list of the open
+decisions it is admitted to and by the read and the response of a decision
+it is admitted to: one the operator gave to the decide grant
+(`docs/plans/decide-grant.md`); every other route answers it as without the
+grant. At most 16 of one subject's requests to these four routes are worked
+at once, whichever of its passes sent them and whatever name each carries: a
+request is counted from the moment the server starts its own work on it (for
+a response: once its body has been read whole; for the list and the read:
+once the route's gate and query check have passed; for `GET /api/me`: once
+its gate has passed) until its reply has been made, before the reply's first
+byte is written; a request that carries a body the route does not read is
+not waited for. One more is `429 rate_limited` ("too many of your requests
+are being worked on: send this one again once one is answered"), the ledger
+not read and nothing written. The admin is not counted. Its pass reaches the
+app in the URL fragment, the key `pass` beside the
+desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
+a navigation the browser starts (a load, a fragment change, back or forward)
+never lets the app's router read a fragment that carries either key, in any
+spelling: the fragment is taken out of the address before the app's router
+reads it, and one that arrives after the load is written to the browser's
+storage for its credential alone and loads the page again at the clean
+address only when it changed what that storage held (in the desktop app the
+workbench token is kept in memory from the app's bridge, not in the
+browser's storage, and a later link's token changes nothing there); a
+fragment that holds both keys gives neither. The pass is kept for the tab
+(`sessionStorage`) until a `401` to a request sent with it, or until a
+later link stores another, and sent only in
+the `Authorization` header of the four routes, never in a URL. The decide
+page (`/decide`, `/decide/<did>`, drawn for a tab that holds a pass and no
+workbench token) reads the list and each open card, at most four cards open,
+each one at a time, the next due 10 s after the last began while the tab is
+shown and at once when it is shown again, each bounded at 10 s; one answer is
+on its way at a time for the whole page, so a tab has at most six requests
+out at once. A new answer is sent only on a view a read renewed in the last
+25 s on both the steady clock and the wall clock, and after an answer was
+taken only on a view read after it; an answer whose outcome is not known is
+sent again whatever the view's age (`DECIDE_*` in
+`web/app/utils/protocol.ts`).
 
 | Route | Who | Body → reply |
 |---|---|---|
@@ -5773,11 +6028,13 @@ route does not take.
 | `GET /api/sessions/{id}/decisions/{did}` | the attempt's own token | `{decision}`: one of its task's whole, in the run that holds the attempt; `404 not_found` for any other id, another task's answered exactly as one that does not exist |
 | `POST /api/sessions/{id}/decisions/{did}/withdraw` | the attempt's own token | `{}` → `{decision}`, cancelled; `404 not_found` for a decision this attempt did not ask (another task's answered exactly as one that does not exist); `409 decision_answered`, `decision_closed`; `409 not_held` once the run is being continued ("dr-N's run was continued: its attempt is no longer the one that asked it. dr-N stays as it is in the run that continues this one, which waits on it; stop here, as this attempt's work is over"): nothing changes, and the continuation moves the decision open with its hold. Taken before the continuation begins (the run running or stopped), the decision is cancelled, and no continuation moves it. The decision is judged by its row in the transaction that cancels it |
 | `GET /api/decisions` | admin | `?state=&run=&ticket=KEY&for=NAME&after=dr-N&limit=` (1 to 100; `for` a person's name, 1 to 60 characters with no control character, matched exactly against the person the request's `for` named when it opened) → `{decisions, next?}`, newest first, each the record without its `history` and its `responses` (its `answer` stays; `GET /api/decisions/{did}` reads one whole), at most 70,004 bytes (the sum of its parts at their encoded worst cases: its request, baseline, policy and application, its `why` and its `answer` of characters that escape to six bytes each, and the rest), so a page is at most 7,001,424 bytes |
-| `GET /api/decisions/{did}` | admin | `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 2 MiB |
-| `POST /api/decisions/{did}/respond` | admin | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more) |
+| `GET /api/me` | any credential | `{subject?, name?, grants}` (`proto.MeReply`, at most 1 KiB): who it is and the grants it holds here (HTTP API, above); also on a switchyard |
+| `GET /api/me/decisions` | a decide principal (the admin `403 not_decide`; a host-only one and no credential `401`) | → `{decisions: [{id, rev}], cut?}` (`proto.DecideList`): the first 200 open decisions whose entries admit the caller, newest first, at most 16 KiB, no other field, count, page or cursor, each row judged by `crew.AdmissionOf`, the read's own judgement, as one bounded read of the ledger hands it (no JSON function in its SQL); `cut` when a 201st admitted one was met or the read reached its own bound first. What remains: the read looks at the server's newest 500 open decisions (fewer when those rows pass 16 MiB), so on a server with more a decide principal's list can miss an older one, and says `cut` (its address still reads it). One list of a subject's is read at a time: another sent while it is is `429 rate_limited`, nothing read; the list it answers, or its `503`, is made while it is read and written after. A read the ledger cannot make (its open decisions' index missing or not the one it expects among them) is `503 ledger_unavailable`, naming no decision. On a switchyard `403 switchyard` to an admitted principal, the `401` of every other as on any server |
+| `GET /api/decisions/{did}` | admin, or a decide principal the decision admits | the admin: `{decision, refs}`: the record whole and its evidence refs' resolutions, at most 2 MiB. A decide principal: the decide view alone (`proto.DecideView`, at most 32 KiB), while the decision is open and given to the decide grant `{id, rev, state, type, question, context?, options[{label, tradeoffs?}], recommendation?, uncertainty?, authorizes?, createdAt, own, outcome?, outcomeCode?}` (the options the engine's, an assignment's `Done` and `Not done` among them), once it is answered or final and holds a response of its own `{id, rev, own, outcome}`; `own` the newest 8 of its own receipts `{k, responseId, status, code?, rev, at, choice?}`, never another's; `outcome` `applied`, `waiting`, `not_used` or `refused` (with `outcomeCode`, the newest one's), never a reason; `404 not_found` (`no such decision`) for one it is not admitted to, as for one that does not exist, one status and one body; a read the ledger cannot make `503 ledger_unavailable`. Admission ends with the answer for a holder with no response of its own, with the take-back for everyone (a route to a person or a role while the decision is open among them), and with the pass for every request the server takes after the provider stops admitting it; a response taken before that which became the decision's answer is judged again when it is recorded (the recheck); one the provider no longer admits is kept and not applied: the decision is superseded, and a new decision that is the operator's alone is opened in its place |
+| `POST /api/decisions/{did}/respond` | admin, or a decide principal the decision admits (`404 not_found` for one it does not, nothing written) | `{responseId, choice?, text?, rationale?, expectedRev, byName?}` (at most 32 KiB: `text` at most 4,096 bytes, `rationale` at most 2 KiB as encoded, `byName` cut to 64 characters, each as encoding/json sends it, escapes and all; `byName` the admin's alone) → `201 {receipt, decision}`, `200` for a repeat; `409 decision_answered` (naming who answered and when to the admin; a decide principal is answered in the fixed words below), `decision_closed`, `stale_decision` (what changed since the rev read), `stale_policy`, `response_conflict`, `not_held`; `403 not_approver`; `503 decision_moved` (ask once more). The response's transaction judges the entries it reads: the operator's, and the decide grant's while the decision is given to it. A decide principal's body is `{responseId, choice?, text?, rationale?, expectedRev}` and nothing else: any other member, in any spelling the decoder takes, is `400 invalid` ("the body is not a response") before the decision is read, whatever the decision. Its answer is shown under the name its sign-in carries, the provider's name for it as `GET /api/me` gives it without its characters of Unicode's Cf, Zl and Zp and the space around it (its actor when nothing is left; every other character is kept as given), in the record, its receipt's words, the line the asking session is given and what a later responder is told. A repeat is the same response id, the same members and the same name as it is shown; the same response id with any of them otherwise is `409 response_conflict` ("This send to dr-N differs from the one kept under its response id: read the decision again."), nothing written. A query is `400 invalid_request` ("this route takes no query"), as on the read and the list. A decide principal's reply is `{receipt, decision?}` (`proto.DecideReply`, at most 33 KiB): its own receipt reduced as `own`'s are and the decide view after the commit; a refusal `{error: {code, message}, receipt?}`, its message the server's fixed words of the code (at most 200 bytes, naming no one) and its own receipt reduced when the refusal was kept. A repeat's receipt is the send's own, its `status` and `rev` as they were then, the view beside it the decision now. Of a decision answered or final whose outcome it reads, only a send of one of its own responses again is taken (answered from its saved receipt); any other is `409 decision_answered` or `decision_closed`, nothing written. Once its body has been read whole the response is counted first (the lead above): one past the sixteen is `429 rate_limited` and the provider is not asked again for it; a response that has a place is asked of the provider again before the decision is read or anything recorded, and unless the provider then names the same subject with the decide grant (it no longer admits the pass, names another subject, names no decide grant, or the ask fails) the response is answered as a pass the provider does not admit, `401 unauthorized` under the same rate limit, the decision not read and nothing recorded. Its answer is applied only once the provider admits its pass again as the same subject with the decide grant |
 | `POST /api/decisions/{did}/cancel` | admin | `{commandId, why, release?, expectedRev}` → `{receipt, decision}`, `200` for a repeat; `409 op_conflict`, `stale_decision` (the operation's `expectedRev`, here and below, is judged in the transaction that applies it, after the look for a repeat of its id) |
 | `POST /api/decisions/{did}/comment` | admin | `{opId, kind: comment\|more_info, text, expectedRev}` (at most 8 KiB) → `{receipt, decision}`; `409 op_conflict`, `stale_decision`, `no_recipient` (a `more_info` without a live asking attempt); `429 decision_limit` |
-| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision; a Brakeman turn's routes, at most 4, apart from them). To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
+| `POST /api/decisions/{did}/route` | admin, or a Brakeman turn granted `route_decision` | `{opId, to: {kind: "operator"} \| {kind: "person", name} \| {kind: "role", name: <responsibility>} \| {kind: "grant", grant: "decide"}, note?, expectedRev}` → `{receipt, decision}` (a turn: `{receipt, error}`); `409 op_conflict`, `stale_decision`; `429 decision_limit` (the operator's operations, comments, requests for more and routes together, at most 32 per decision, the last kept for the take-back while it is given to the grant; a Brakeman turn's routes, at most 4, apart from them). To the grant it gives the decision to the decide grant (the request's `for` becomes `{label: "grant:decide"}`, no person): anyone an identity provider gives the grant answers it beside the operator, as HM1's route to a person is taken (only while open, at the `expectedRev` read, through the held run), the admin's alone, `409 no_identity` with no identity provider registered; a route to the operator of a decision given to the grant takes it back (the `for` dropped, a `routed` row, `rev` + 1), while it is open, held run or the ledger alone, and a route to a person or a role replaces it; a turn's `to: grant` is `400 invalid` and a turn's route of a decision given to the grant `409 stale_target`. To the operator it changes no state. To a person or a responsibility (HM1), resolved in the run's crew as launched (`400 invalid` for one it does not resolve), it changes whom the decision is for: only while it is `open` (`409 decision_answered`, `decision_closed` otherwise, a response's words), at the `expectedRev` read (at least 1), through the run that holds it (`409 not_held` otherwise: continue it, then route); it rewrites the request's `for`, writes the `routed` row with `for` and `forWas`, and bumps `rev`, so a response at the older rev is `stale_decision` naming the new person first. Who answers does not change: the operator |
 | `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 7,001,424 bytes) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
@@ -6006,7 +6263,8 @@ bound `pinned` or `launch_env` as any such launch is, and a folder of a
 retired account is refused `400 invalid_account` (a new launch binds no
 retired account). A folder variable that is not a whole path names the
 folder under the one the process starts in, and that is the folder bound
-and compared; a crew member of such an entry, bound before it has a
+and compared; a crew member of such an entry, or of one whose home is not
+a whole path while the folder variable is unset, bound before it has a
 folder, is refused `400 invalid_account`. A crew member
 names `account` and `model` beside its agent; a launch of the crew (`POST
 /api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
@@ -6032,24 +6290,67 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
+A launch of this server holds every registered account whose folder it
+runs in, as the launch's own adapter's folder variable or home says
+where that is. What it holds, and the one account its session is counted
+on, are decided when the launch is reserved, before its process starts,
+and kept until the process has ended. A launch runs in an account's
+folder when it names the account, or the folder its process runs in (its
+adapter's folder variable's as the process sees it, else the agent's own
+under its home; one that is not a whole path is read under the folder it
+starts in both as written and cleaned) is the account's, whatever the
+account's adapter: it holds every such account, whether or not its
+session is registered (its registration refused and its stop failed
+among them). The ids of the accounts it holds, and the one account it is
+counted on, are kept in memory with its session, never written or
+answered: for a session, no folder is asked about again after the
+reservation (a kept run's member between attempts is judged at the
+remove by its binding, below). Its session is counted on the account the
+launch names, else the first account of its own adapter among those it
+holds, else its binding's own id (`default` for the agent's own login,
+or `unlisted`); its running count and its start counts are on that one
+account. Holding and counting are two questions, since one folder can be
+more than one account's.
+
+- An account registered on a folder after a launch into it was reserved
+  is not held by that launch, and the launch stays counted where it was
+  counted.
+- Where the accounts cannot be read, or on a server that does not own
+  them, a launch holds nothing by folder (a remove is refused while that
+  lasts).
+- A usage read is not a launch and holds nothing.
+- A launch on another Runtime is held and counted as one that runs here.
+- A home that an entry or a launch sets moves the agent's own folder, and
+  the binding's `source` still says the agent's own login.
+- A program whose entry names no adapter, or another adapter's folder
+  variable, is not read for a folder: Conductor does not know what such a
+  program reads, and it holds nothing by folder.
+- A home set to nothing is read as not set: the tool's own folder is then
+  found as it is for a launch that sets no home.
+- For what a launch holds and where it is counted, a folder is an
+  account's when the file system says it is the same directory at the
+  reservation, however it is written, and a folder that does not exist
+  yet is compared by its path as written, cleaned. The folder Brakeman's
+  turn wants is looked up for its binding as before: the paths the same
+  cleaned, or the same where links lead.
+- A launch whose binding is `unlisted` is counted on its own adapter's
+  account when the reservation holds one on that folder, else on
+  `unlisted`.
+
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch that names the account (or takes it as its
-adapter's default) is under way, from its reservation until its process
-has ended, whether or not its session was registered (its registration
-refused and its stop failed among them), a registered server session's
-process bound to it still runs (its stop failed, or it was removed from
-the listing), an engine run not ended, or a ledger run running or
-interrupted, and continued by no other run, is bound to it (one whose
-crew cannot be read holds every account); a stopped or finished run is no
-bar (continuing it is refused `account_gone`), and a kept run that
-another run has continued holds nothing. A registered session, and a
-member of a run not ended (the engine's, or the ledger's as above), whose
-binding is `pinned` (its entry or the server's passthrough sets the login,
-and the launch's own environment sets none of its login variables) to a
-folder that a registered account holds, holds that account, its `source`
-still what the environment says, and such a session is counted on it. For a login that an entry, the
-passthrough or a launch's own environment sets, what is held and counted
-begins at the session's registration and follows what the binding keeps.
+most 10, while a launch holds the account so, a registered server
+session that held it at its launch still has a process running (its stop
+failed, or it was removed from the listing), or an engine run not ended, or a
+ledger run running or interrupted, and continued by no other run, has a
+member whose binding names it or keeps its folder (the same directory, as
+the file system says at the remove, however either is written; one whose
+crew cannot be read holds every account); a stopped or finished run is no bar
+(continuing it is refused `account_gone`), and a kept run that another
+run has continued holds nothing. A run keeps a member on the agent's own
+login as no binding, and one bound `launch_env`, or `pinned` by a key
+alone, with no folder: such a member holds the account of its folder
+through its launches, and nothing between a kept run's attempts, when
+nothing runs in the folder.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -6078,8 +6379,13 @@ its limit with every character escaped as JSON may escape it: an add's at
 
 A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
 words}, account: {id, label, default, retired, plan}, host: {kind, name?,
-words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
-{program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
+words?}, entryLogin?, state, words, windows, credits, limits, counts,
+readAt?, readBy?: {program, version, qualified}, fresh, nextReadAfter?}`.
+`entryLogin`, in the view of every account asked of an agent whose entry
+(or the server's passthrough) sets its adapter's folder variable or one of
+its login variables, is that variable's name (one of a fixed list, at most
+32 bytes; never its value): every launch of the agent uses that login, so
+the launch dialog offers it no account. `state` is one of
 `ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
 `error`, `unsupported` (no reader for the agent), `not_installed` (also
 an entry whose command is a path relative to a working folder: no read,
@@ -6091,8 +6397,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account, and one bound `pinned` to the account's folder
-(Capacity's binding paragraph above). `host.kind` is `native`
+counted on the account, whatever its `source` (Capacity's binding
+paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage

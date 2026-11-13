@@ -8,10 +8,11 @@ test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
 const runs: string[] = []
+const made: string[] = []
 
 test.afterAll(async ({ api }) => {
   for (const id of runs) await api.stopRun(id)
-  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  for (const id of [crewId, ...made]) if (id) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
 
 test('a new crew is drafted at /crews/new, saved from its bar, and listed with its shape', async ({ page }) => {
@@ -132,4 +133,40 @@ test('a run named at launch is called by its name on its page, the home card and
   await expect(page.locator(`[data-running-now] [data-run="${runId}"] [data-run-subtitle]`)).toHaveText('e2e named run')
   await page.goto(`/crews/${crewId}?tab=runs`)
   await expect(page.locator(`[data-crew-runs] [data-run="${runId}"] [data-run-label]`)).toHaveText('e2e named run')
+})
+
+test("a comparison's crew edited and saved in the editor keeps its compare block", async ({ page, api }) => {
+  const worker = (name: string) => ({ name, agentId: 'worker', prompt: '', start: { when: 'task' } })
+  const approach = (id: string, member: string) => ({ id, member, kind: 'work', instructions: 'Make it fast.', checks: [{ id: 'ok', argv: ['true'] }] })
+  const compare = {
+    criteria: [{ id: 'fast', text: 'It is fast.' }],
+    candidates: [{ task: 'approach-a', approach: 'Cache the parse.' }, { task: 'approach-b' }],
+  }
+  const body = {
+    name: `e2e comparison ${Date.now().toString(36)}`,
+    goal: 'compare two ways',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    members: [worker('cand-a'), worker('cand-b')],
+    tasks: [approach('approach-a', 'cand-a'), approach('approach-b', 'cand-b')],
+    compare,
+  }
+  const id = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', body)).crew.id
+  made.push(id)
+  await page.goto(`/crews/${encodeURIComponent(id)}`)
+  // The editor has drawn the crew as read.
+  const goal = page.getByLabel('Goal')
+  await expect(goal).toHaveValue('compare two ways')
+  await goal.fill('compare two ways, edited')
+  const bar = page.locator('[data-unsaved-bar]')
+  await expect(bar.locator('[data-unsaved-words]')).toHaveText('Goal edited.')
+  const saved = page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === `/api/crews/${encodeURIComponent(id)}`)
+  await bar.getByRole('button', { name: 'Save' }).click()
+  expect((await saved).status()).toBe(200)
+  await expect(bar).toHaveCount(0)
+  const { crew: read } = await api.ok<{ crew: { goal: string; compare?: unknown } }>('GET', `/api/crews/${encodeURIComponent(id)}`)
+  expect(read.goal).toBe('compare two ways, edited')
+  expect(read.compare).toEqual(compare)
 })
