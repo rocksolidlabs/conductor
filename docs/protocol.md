@@ -4665,8 +4665,11 @@ secret of every tree the engine holds one for (in any case, made
 `${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
 The revision is read now: `commit` HEAD's commit as the read recorded
 it, `content` the tree id of everything the tree holds that git would
-see (uncommitted edits and new files that are not ignored), `changed`
-every path that differs from that commit counted, `changedPaths` the
+see (uncommitted edits and new files that are not ignored; a file at a
+path longer than the system lets a program name, 4,096 bytes on Linux
+and 1,024 on a Mac, is left out of `changed` and of `content`, as it is
+left out of `git status`), `changed` every path that differs from that
+commit counted, `changedPaths` the
 first of them within 200 and 16 KiB as encoded (a path with a control
 character left out, still counted), `changedCut` when some are left
 out. A read that fails, passes 5 s or ends after the server's stop began

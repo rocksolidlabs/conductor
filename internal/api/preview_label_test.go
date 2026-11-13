@@ -174,8 +174,10 @@ func TestTheLabelGivesTheSecretToTheAdminAlone(t *testing.T) {
 	}
 }
 
-// 200 changed paths of 4,000 bytes: all counted, the list cut within its
-// bytes.
+// 200 changed paths of 700 bytes within the tree: all counted, the list cut
+// within its bytes (16 KiB) before its count. Each path stays far within
+// what the system lets a program name (1,024 bytes on a Mac, 4,096 on
+// Linux): git leaves a file past that bound out of what it counts.
 func TestLongChangedPathsAreCutByBytes(t *testing.T) {
 	p := previewEnv(t, nil)
 	root, err := os.OpenRoot(p.dir)
@@ -183,16 +185,12 @@ func TestLongChangedPathsAreCutByBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	var dir []string
-	for len(strings.Join(dir, "/")) < 3800 {
-		dir = append(dir, strings.Repeat("d", 200))
-	}
-	deep := strings.Join(dir, "/")
+	deep := strings.Join([]string{strings.Repeat("d", 200), strings.Repeat("e", 200), strings.Repeat("g", 200)}, "/")
 	if err := root.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 200 {
-		name := deep + "/" + fmt.Sprintf("%03d", i) + strings.Repeat("f", 4000-len(deep)-4)
+		name := deep + "/" + fmt.Sprintf("%03d", i) + strings.Repeat("f", 700-len(deep)-4)
 		if err := root.WriteFile(name, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
