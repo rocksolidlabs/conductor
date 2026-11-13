@@ -19,27 +19,33 @@ import (
 // repository takes on a loaded machine.
 const hangWait = time.Minute
 
-// within is f's error, f run in a goroutine of its own that is over when
-// within returns (done): a call still running after hangWait fails the
-// test, and is then let go by a writer opening and closing pipe, which
-// ends the read it waits in.
-func within(t *testing.T, pipe string, f func() error) error {
+// within is f's error, f run in a goroutine of its own with a context
+// within cancels: a call still running after hangWait has its context
+// cancelled and its open of pipe let go (a writer opening and closing it
+// ends the open it waits in) for one more hangWait, and fails the test in
+// words that name what was read (what), back by then or not.
+func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) error {
 	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- f() }()
+	go func() { done <- f(ctx) }()
 	select {
 	case err := <-done:
 		return err
 	case <-time.After(hangWait):
 	}
-	t.Errorf("the call had not returned after %v", hangWait)
+	cancel()
+	letGo := time.After(hangWait)
 	for {
 		if fd, err := syscall.Open(pipe, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			syscall.Close(fd)
 		}
 		select {
 		case err := <-done:
-			return err
+			t.Fatalf("%s: not back after %v; back once let go, with %v", what, hangWait, err)
+		case <-letGo:
+			t.Fatalf("%s: not back after %v, nor %v after it was let go", what, hangWait, hangWait)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -168,7 +174,8 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 					if name == "packed-refs" && (rd.name == "Compare" || rd.name == "FileAt") {
 						continue
 					}
-					if err := within(t, path, func() error { return rd.read(ctx, r) }); !errors.Is(err, want) {
+					read := func(ctx context.Context) error { return rd.read(ctx, r) }
+					if err := within(t, path, name+" is "+kind.name+", "+rd.name, read); !errors.Is(err, want) {
 						t.Errorf("%s: %v, want %v", rd.name, err, want)
 					}
 				}
@@ -197,7 +204,7 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 	defer func() { gitCap = maxGitRead }()
 	want := map[string]error{"FileAt": ErrGitCap, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
 	for _, rd := range readers {
-		err := within(t, pipe, func() error { return rd.read(context.Background(), r) })
+		err := within(t, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
 		if !errors.Is(err, want[rd.name]) || (err == nil) != (want[rd.name] == nil) {
 			t.Errorf("%s: %v, want %v", rd.name, err, want[rd.name])
 		}

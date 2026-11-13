@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -151,17 +152,27 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 	}
 }
 
-// One opener: no function of the package opens a repository, or a file,
-// another way than open and careOS (openOver, openRegular).
+// One opener: no function of the package opens a repository, a folder or
+// a file another way than open and careOS. Every name the package uses
+// (a call or a function value), followed to the identifier it starts at
+// (osfs.Default.Open is osfs's), is used only where it is meant to be, or
+// nowhere; and careOS has the methods it defines and no other (none
+// promoted from a type it embeds).
 func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
-	only := map[string]string{
-		"git.Open":                         "openOver",
-		"filesystem.NewStorageWithOptions": "openOver",
-		"dotgit.NewRepositoryFilesystem":   "openOver",
-		"os.OpenRoot":                      "careFS",
-		"chroot.New":                       "billy",
+	only := map[string][]string{
+		"git.Open":                         {"openOver"},
+		"filesystem.NewStorageWithOptions": {"openOver"},
+		"dotgit.NewRepositoryFilesystem":   {"openOver"},
+		"os.OpenRoot":                      {"careFS"},
+		"fs.root.OpenRoot":                 {"under"},
+		"fs.root.OpenFile":                 {"OpenFile", "ReadDir"},
+		"chroot.New":                       {"billy"},
+		"os.Stat":                          {"gitDirs"},
 	}
-	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "filesystem.NewStorage", "osfs.New", "os.Open", "os.OpenFile", "os.ReadFile", "syscall.Open"}
+	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "git.PlainInit", "git.PlainClone", "filesystem.NewStorage",
+		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.Lstat", "os.NewFile",
+		"syscall.Open", "syscall.Openat", "ioutil.", "osfs.", "util."} // ending in '.': anything of that package
+	imports := []string{"github.com/go-git/go-billy/v5/osfs", "github.com/go-git/go-billy/v5/util", "io/ioutil"}
 	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -175,30 +186,55 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
+		for _, imp := range file.Imports {
+			if slices.Contains(imports, strings.Trim(imp.Path.Value, `"`)) {
+				t.Errorf("%s imports %s", name, imp.Path.Value)
 			}
-			ast.Inspect(fn, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
+		}
+		for _, decl := range file.Decls {
+			in := "" // a declaration outside any function
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				in = fn.Name.Name
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				x, ok := sel.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				callee := x.Name + "." + sel.Sel.Name
-				if in, ok := only[callee]; (ok && fn.Name.Name != in) || slices.Contains(never, callee) {
-					t.Errorf("%s: %s calls %s", fset.Position(call.Pos()), fn.Name.Name, callee)
+				used := chain(sel)
+				banned := slices.ContainsFunc(never, func(n string) bool {
+					return used == n || strings.HasSuffix(n, ".") && strings.HasPrefix(used, n)
+				})
+				if where, ok := only[used]; (ok && !slices.Contains(where, in)) || banned {
+					t.Errorf("%s: %q uses %s", fset.Position(sel.Pos()), in, used)
 				}
 				return true
 			})
+		}
+	}
+	want := []string{"Chmod", "Create", "Join", "MkdirAll", "Open", "OpenFile", "ReadDir", "Remove", "RemoveAll", "Rename", "Stat", "Symlink", "TempFile"}
+	var got []string
+	for typ, i := reflect.TypeFor[*careOS](), 0; i < typ.NumMethod(); i++ {
+		got = append(got, typ.Method(i).Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("careOS's methods are %v, want %v", got, want)
+	}
+}
+
+// chain is sel's names joined from the identifier it starts at (os.Open,
+// osfs.Default.Open, fs.root.OpenFile), "" when it starts at no
+// identifier (a call's result).
+func chain(sel *ast.SelectorExpr) string {
+	names := []string{sel.Sel.Name}
+	for x := sel.X; ; {
+		switch v := x.(type) {
+		case *ast.SelectorExpr:
+			names, x = append([]string{v.Sel.Name}, names...), v.X
+		case *ast.Ident:
+			return strings.Join(append([]string{v.Name}, names...), ".")
+		default:
+			return ""
 		}
 	}
 }
