@@ -1,7 +1,7 @@
 import { ELEMENT_BOUNDS, measuredBytes, wellFormed } from '../protocol'
 
 /**
- * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText, every list it walks itself by
+ * How the bridge reads a page (docs/protocol.md, Preview bridge): every string through pageText (or pageIds, to compare), every list it walks itself by
  * index up to its bound, of the engine's lists (the stack under the pointer, an element's own keys) a bounded number, every walk of
  * the tree bounded in the links it follows (walkTree; up, the ancestors and the hints' climbs, each to a fixed number of steps; a
  * selector's path within PATH nodes), and an arrow key's step one element link, which the engine follows; and what it picks an
@@ -17,11 +17,39 @@ export type Doc = Document
  * string costs no more than its bound; a value that does not answer as a string is "".
  */
 export function pageText(v: unknown, most: number, end = false): string {
+  return wellFormed(pageSlice(v, most, end))
+}
+
+/** The slice every read of a page's string starts from: most code units and one more, as the page gave them. */
+function pageSlice(v: unknown, most: number, end = false): string {
   if (typeof v !== 'string' && (typeof v !== 'object' || v === null)) return ''
   const slice = (v as { slice?: unknown }).slice
   if (typeof slice !== 'function') return ''
   const cut: unknown = end ? slice.call(v, -(most + 1)) : slice.call(v, 0, most + 1)
-  return typeof cut === 'string' && cut.length <= most + 1 ? wellFormed(cut) : ''
+  return typeof cut === 'string' && cut.length <= most + 1 ? cut : ''
+}
+
+/**
+ * The one way the bridge reads a page's string to compare it with another, a value that names an element (an id, a label's for,
+ * aria-labelledby's ids): the slice the page gave, never made well-formed, a list (list true) split on HTML's white space alone.
+ * A value past most (of a list, its last, which the slice cut) or one that making well-formed would change is none: a value
+ * names its own element or none. The slice is read by the bridge's own loop, a character at a time, so a token is never longer
+ * than the slice and is judged whole before it is kept.
+ */
+export function pageIds(v: unknown, most: number, list = false): string[] {
+  const s = pageSlice(v, most)
+  const ids: string[] = []
+  let token = ''
+  for (let i = 0; i <= s.length; i++) {
+    const end = i === s.length
+    const c = end ? '' : s[i]!
+    if (!end && !(list && (c === ' ' || c === '\t' || c === '\n' || c === '\f' || c === '\r'))) token += c
+    else {
+      if (token !== '' && !(end && s.length > most) && wellFormed(token) === token) ids.push(token)
+      token = ''
+    }
+  }
+  return ids
 }
 
 /** e's local name, lower case, read to most bytes. */
@@ -159,18 +187,18 @@ export interface EpochPage {
   mine: (n: unknown) => boolean
   observer: (cb: (records: MutationRecord[]) => void) => { observe(target: Node, options: MutationObserverInit): void; disconnect(): void }
   frame: (cb: () => void) => void
-  /** Called on a resize or a scroll of the window, beside the bump. */
-  moved?: () => void
+  /** Called with the event on a resize of the window or a scroll the window hears, beside the bump. */
+  moved?: (e: Event) => void
 }
 
 const MOTION_EVENTS = ['animationstart', 'animationiteration', 'animationend', 'animationcancel', 'transitionrun', 'transitionend', 'transitioncancel']
 
 /**
- * The page epoch: a counter bumped, at most once per animation frame, by a resize or a scroll of the window, a mutation of the
- * document (the bridge's host put on the page or taken off, alone in its record, left out) and every animation and transition
- * event. It says only that the page moved: the records are looked at up to the first of the page's. A resize or a scroll of the
- * window (any the window hears; not a container's, whose scroll does not bubble to it) also calls moved, which selection mode takes
- * its outline off by.
+ * The page epoch: a counter bumped, at most once per animation frame, by a resize of the window, a scroll the window hears (its
+ * own, and a container's in the capture phase, as a container's scroll does not bubble), a mutation of the document (the
+ * bridge's host put on the page or taken off, alone in its record, left out) and every animation and transition event. It says
+ * only that the page moved: the records are looked at up to the first of the page's. A resize and a scroll also call moved, which
+ * selection mode draws its outline again by.
  */
 export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {
   let epoch = 0
@@ -189,16 +217,16 @@ export function pageEpoch(p: EpochPage): { value(): number; stop(): void } {
     for (let i = 0; !bumped && i < records.length; i++) if (!ours(records[i]!)) bump()
   })
   mo.observe(p.doc.documentElement, { subtree: true, childList: true, attributes: true, characterData: true })
-  const moved = () => (bump(), p.moved?.())
+  const moved = (e: Event) => (bump(), p.moved?.(e))
   p.win.addEventListener('resize', moved)
-  p.win.addEventListener('scroll', moved)
+  p.win.addEventListener('scroll', moved, true)
   for (const e of MOTION_EVENTS) p.doc.addEventListener(e, bump, true)
   return {
     value: () => epoch,
     stop() {
       mo.disconnect()
       p.win.removeEventListener('resize', moved)
-      p.win.removeEventListener('scroll', moved)
+      p.win.removeEventListener('scroll', moved, true)
       for (const e of MOTION_EVENTS) p.doc.removeEventListener(e, bump, true)
     },
   }

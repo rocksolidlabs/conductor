@@ -60,4 +60,20 @@ describe('the source hints', () => {
     expect(hintKindsOf(new FakeDoc(root) as unknown as Doc)).toEqual(['attribute', 'vue'])
     expect(hintKindsOf(new FakeDoc(h('html')) as unknown as Doc)).toEqual([])
   })
+
+  it("looks for React's kind on the first 64 elements of the body, whatever the head holds", () => {
+    const reactApp = () => {
+      const app = h('div', { class: 'App' })
+      app['__reactFiber$abc'] = { _debugSource: { fileName: '/src/App.tsx' } }
+      return app
+    }
+    const head = (n: number) => h('head', {}, ...Array.from({ length: n }, () => h('style', { 'data-emotion': 'css' })))
+    // A full head; then the React element as the body's 64th element and as its 65th.
+    const pages = [
+      h('html', {}, head(100), h('body', {}, h('div', { id: 'root' }, reactApp()))),
+      h('html', {}, head(0), h('body', {}, ...Array.from({ length: 63 }, () => h('i')), reactApp())),
+      h('html', {}, head(0), h('body', {}, ...Array.from({ length: 64 }, () => h('i')), reactApp())),
+    ]
+    expect(pages.map((root) => hintKindsOf(new FakeDoc(root) as unknown as Doc))).toEqual([['react'], ['react'], []])
+  })
 })
