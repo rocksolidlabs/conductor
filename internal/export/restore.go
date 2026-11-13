@@ -292,6 +292,10 @@ func Restore(ctx context.Context, r io.ReaderAt, size int64, dir string) (Manife
 var (
 	beforeRenames func()
 	BeforeRename  func(name string)
+	// stagedLook runs on the answer of the look at the staged Dispatch
+	// store before its reissue; what it returns is the look's
+	// (export_test.go).
+	stagedLook func(err error) error
 )
 
 // Install checks the archive r (size bytes) and installs it into the data
@@ -309,9 +313,12 @@ var (
 // everything into <dir>/.restore-<random> through an os.Root (files 0600,
 // directories 0700), syncs it (a file or a directory that does not sync
 // refuses it, nothing renamed), checks that Dispatch's staged database
-// names no attachment the archive lacks, checks the directory is Fresh
-// still and that no top-level name it will rename is there (hooks/ aside,
-// moved into the staging directory first and removed with it), then
+// names no attachment the archive lacks, looks at the staged Dispatch
+// store (none is nothing to do; a look that fails otherwise stops the
+// restore), makes it a new instance (dispatch.Reissue) and syncs its
+// folder, checks the directory is Fresh still and that no top-level name
+// it will rename is there (hooks/ aside, moved into the staging directory
+// first and removed with it), then
 // renames each top-level entry into place with a rename that refuses a
 // name already there (renameNoReplace), so a name another writer made
 // after the check is never renamed over, and syncs the data directory
@@ -367,6 +374,28 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 	}
 	if err := checkAttachments(ctx, root, dir, staging); err != nil {
 		return Manifest{}, err
+	}
+	// The staged Dispatch store is made a new instance (dispatch.Reissue),
+	// so no publication it was exported with is sent from the copy, and its
+	// folder is synced as stage syncs it, before any rename. A staged copy
+	// that holds no Dispatch store has none to reissue; any other answer of
+	// the look stops the restore.
+	_, err = root.Lstat(filepath.FromSlash(staging + "/" + DispatchPath))
+	if stagedLook != nil {
+		err = stagedLook(err)
+	}
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return Manifest{}, fmt.Errorf("export: the restored Dispatch store could not be looked at: %w", err)
+	default:
+		if err := dispatch.Reissue(ctx, filepath.Join(dir, filepath.FromSlash(staging+"/"+DispatchPath))); err != nil {
+			return Manifest{}, fmt.Errorf("export: the restored Dispatch store could not be made a new instance: %w", err)
+		}
+		d := path.Dir(staging + "/" + DispatchPath)
+		if err := syncDirIn(root, d, d); err != nil {
+			return Manifest{}, fmt.Errorf("export: syncing the staged %s: %w", path.Dir(DispatchPath), err)
+		}
 	}
 	// Under the reservation, once more: fresh still, and no name the
 	// renames will take is there.

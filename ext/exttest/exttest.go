@@ -8,6 +8,7 @@
 // FakeIdentity, FakeRouter, FakeContext, FakeSink, FakeContinuity,
 // FakeEntitlements, FakeMedia and FakeRuntime each implement their
 // interface, answer what a test scripts and record what they are asked;
+// FakeSignIn is a FakeIdentity with a scripted sign-in (ext.SignIn);
 // FakeHost is an ext.Host that records every Launch, Submit and Notify. Each
 // is safe for concurrent use, and each that records has Changed, so a test
 // waits on what the fake was given (Await), never on a clock.
@@ -15,7 +16,8 @@
 // # The suite
 //
 // Identity, Router, Context, Sink, Continuity, Entitlements, Media,
-// Runtime and Starter each check one implementation. Each takes a T (the
+// Runtime and Starter each check one implementation, and Identity runs
+// SignIn for a provider that offers a sign-in. Each takes a T (the
 // part of *testing.T it uses, so a test can record what fails) and the
 // *Network the implementation was built with: nil for one that reaches no
 // service, as ext/local's defaults do. Among what they check: a valid

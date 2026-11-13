@@ -35,7 +35,7 @@ var OpIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 // answers 400 invalid_request, as it answers a bad command id.
 var (
 	ErrBadOpID  = errors.New("dispatch: an operation id is 1 to 32 letters, digits, '.', '_', '~' or '-'")
-	ErrBadActor = fmt.Errorf("dispatch: an operation names its actor in at most %d bytes, with no control character", MaxActor)
+	ErrBadActor = fmt.Errorf("dispatch: an operation names its actor in at most %d bytes, with no control character, and never the store's own (%s)", MaxActor, ActorServer)
 	ErrBadBy    = fmt.Errorf("dispatch: an operation's display name is at most %d characters, with no control character", MaxByName)
 )
 
@@ -45,12 +45,18 @@ var (
 // revision it expects (0 for none), and the display name recorded as by
 // on the change rows, which travels in the body as byName does for a
 // broadcast. The actor is at most MaxActor bytes and the display name at
-// most MaxByName characters, neither with a control character.
+// most MaxByName characters, neither with a control character. The actor
+// ActorServer is the store's own: only an operation the store makes for
+// itself carries it, marked store, which no other package can set.
 type Op struct {
 	Actor       string
 	ID          string
 	ExpectedRev int64
 	By          string
+	// store marks an operation the store makes for itself: a launch's or
+	// a review's outcome (outcomeOp) and a publication's server operation
+	// (serverOp), the only ones Op.check lets carry ActorServer.
+	store bool
 }
 
 // ActorAdmin is the operator's actor: the admin's operations are kept
@@ -67,15 +73,16 @@ func (op Op) author() string {
 }
 
 // check is what every operation must be before the store looks at it: an
-// op id of OpIDPattern (ErrBadOpID), an actor within its rule
-// (ErrBadActor), and an author, the display name or else the actor, within
-// the display name's (ErrBadBy), so a row's created_by meets its bound: an
-// actor within MaxActor always does.
+// op id of OpIDPattern (ErrBadOpID), an actor within its rule and not
+// ActorServer unless the store made the operation (ErrBadActor), and an
+// author, the display name or else the actor, within the display name's
+// (ErrBadBy), so a row's created_by meets its bound: an actor within
+// MaxActor always does.
 func (op Op) check() error {
 	switch {
 	case !OpIDPattern.MatchString(op.ID):
 		return ErrBadOpID
-	case checkField("op.actor", "the actor", op.Actor) != nil:
+	case checkField("op.actor", "the actor", op.Actor) != nil, op.Actor == ActorServer && !op.store:
 		return ErrBadActor
 	case checkField("op.by", "by", op.author()) != nil:
 		return ErrBadBy
@@ -284,6 +291,8 @@ var revTables = map[string]struct {
 	EntityLaunch:    {"launches", false},
 	EntityReview:    {"reviews", false},
 	EntityCapture:   {"captures", false},
+	// A publication bumps its own rev, never its ticket's.
+	EntityPublication: {"publications", false},
 }
 
 // tx is one operation's transaction: what a change writes through. It
@@ -786,6 +795,13 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "reviews", entityID
+	case IntentPublicationPrepare:
+		// A prepare's first row is its publication's create, whose row keeps
+		// the operation's fingerprint.
+		if entity != EntityPublication || kind != OpCreate || schemaOf(q) < 4 {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "publications", entityID
 	case IntentTicketImport:
 		// An import's first row is its ticket's create row, which keeps the
 		// import's fingerprint (ticketCreated): the same content is answered
@@ -1069,7 +1085,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend || entity == EntityPublication) {
 		rc.ID = entityID
 	}
 	return rc, true, nil
