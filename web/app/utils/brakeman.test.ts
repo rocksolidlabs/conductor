@@ -104,6 +104,17 @@ describe('a ref, to its route and its label', () => {
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
+  it('takes a capacity: ref only when the server would: the refused shapes are the Go test’s own list', () => {
+    const src = readFileSync(new URL('../../../internal/brakeman/capacity_test.go', import.meta.url), 'utf8')
+    const list = /var refusedCapacityRefs = \[\]string\{([^}]*)\}/.exec(src)?.[1] ?? ''
+    const refused = [...list.matchAll(/"([^"]*)"/g)].map((m) => m[1]!)
+    expect(refused.length).toBeGreaterThanOrEqual(30)
+    for (const ref of refused) expect(parseRef(ref), ref).toBeNull()
+    for (const ref of ['capacity:claude/default@2024-02-29T23:59:59.5Z', 'capacity:codex-2/a-abcdefghijk2@2026-11-11T03:00:00.123456789Z']) {
+      expect(parseRef(ref), ref).not.toBeNull()
+    }
+  })
+
   it("opens a task's page on the Tasks view, as the server's refURL does, whatever view this browser chose last", () => {
     const src = readFileSync(new URL('../../../internal/api/brakeman_refs.go', import.meta.url), 'utf8')
     expect(src).toContain('case brakeman.RefTask, brakeman.RefAttempt, brakeman.RefCandidate:')

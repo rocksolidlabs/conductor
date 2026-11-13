@@ -412,7 +412,18 @@ const REQUEST = /^br-[1-9][0-9]{0,17}$/
 const DECISION = /^dr-[1-9][0-9]{0,17}$/
 const AGENT = /^[a-z0-9-]{1,32}$/
 const ACCOUNT = /^(default|a-[a-z2-7]{12})$/
-const READ_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d*[1-9])?Z$/
+// A reading's time as the server writes it (time.RFC3339Nano in UTC): at most nine fraction digits, none of them trailing zeros.
+const READ_AT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{0,8}[1-9])?Z$/
+
+/** Whether s is a reading's time the server's grammar takes: READ_AT's shape, a real calendar date and a time of day. */
+function readAtOk(s: string): boolean {
+  const m = READ_AT.exec(s)
+  if (!m) return false
+  const [y, mo, d, h, mi, sec] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number]
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1]
+  return days !== undefined && d >= 1 && d <= days && h <= 23 && mi <= 59 && sec <= 59
+}
 const NUMBER = /^(0|[1-9][0-9]{0,17})$/
 
 /** The ref's bound, in bytes (brakeman.MaxRef). */
@@ -494,8 +505,10 @@ export function parseRef(s: string): ParsedRef | null {
       return p.length === 1 && DECISION.test(p[0]!) ? { kind, decision: p[0] } : null
     case 'capacity': {
       // capacity:<agent>/<account>@<readAt>, AC1's reading (docs/plans/capacity.md, PR-6); its chip is PR-7's.
-      const [account, readAt] = (p[1] ?? '').split('@')
-      return p.length === 2 && AGENT.test(p[0]!) && ACCOUNT.test(account!) && READ_AT.test(readAt ?? '') ? { kind, agent: p[0], account, readAt } : null
+      // Exactly one '@', and the time as the server's grammar has it (brakeman.ParseRef).
+      const parts = (p[1] ?? '').split('@')
+      const [account, readAt] = parts
+      return p.length === 2 && parts.length === 2 && AGENT.test(p[0]!) && ACCOUNT.test(account!) && readAtOk(readAt!) ? { kind, agent: p[0], account, readAt } : null
     }
   }
   return null

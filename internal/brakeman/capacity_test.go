@@ -44,13 +44,51 @@ func TestVisibilityCapacityDefaults(t *testing.T) {
 	}
 }
 
+// refusedCapacityRefs are the capacity: refs the server refuses, every one
+// of which the app's parseRef refuses too: web/app/utils/brakeman.test.ts
+// reads this list from this file, so the two hold one list.
+var refusedCapacityRefs = []string{
+	"capacity:claude/default",
+	"capacity:claude/default@",
+	"capacity:claude@2026-11-11T03:00:00Z",
+	"capacity:Claude/default@2026-11-11T03:00:00Z",
+	"capacity:claude/work@2026-11-11T03:00:00Z",
+	"capacity:claude/unlisted@2026-11-11T03:00:00Z",
+	"capacity:claude/default/x@2026-11-11T03:00:00Z",
+	"capacity:claude/default@2026-11-11T03:00:00Z@junk",
+	"capacity:claude/default@@2026-11-11T03:00:00Z",
+	"capacity:claude/default@2026-11-11T03:00:00+01:00",
+	"capacity:claude/default@2026-11-11T03:00:00+00:00",
+	"capacity:claude/default@2026-11-11T03:00:00z",
+	"capacity:claude/default@2026-11-11 03:00:00Z",
+	"capacity:claude/default@2026-11-11T3:00:00Z",
+	"capacity:claude/default@yesterday",
+	"capacity:claude/default@2026-99-99T99:99:99Z",
+	"capacity:claude/default@2026-00-11T03:00:00Z",
+	"capacity:claude/default@2026-13-11T03:00:00Z",
+	"capacity:claude/default@2026-11-00T03:00:00Z",
+	"capacity:claude/default@2026-11-31T03:00:00Z",
+	"capacity:claude/default@2026-02-29T03:00:00Z",
+	"capacity:claude/default@2100-02-29T03:00:00Z",
+	"capacity:claude/default@2026-11-11T24:00:00Z",
+	"capacity:claude/default@2026-11-11T03:60:00Z",
+	"capacity:claude/default@2026-11-11T03:00:60Z",
+	"capacity:claude/default@2026-11-11T03:00:00.100Z",
+	"capacity:claude/default@2026-11-11T03:00:00.0Z",
+	"capacity:claude/default@2026-11-11T03:00:00.Z",
+	"capacity:claude/default@2026-11-11T03:00:00,5Z",
+	"capacity:claude/default@2026-11-11T03:00:00.1234567891Z",
+}
+
 // TestCapacityRefKind: capacity:<agent>/<account>@<readAt> reads back as it
-// was written, its readAt in UTC as time.RFC3339Nano writes it; any other
-// shape is refused; the table names its form.
+// was written, its readAt in UTC as time.RFC3339Nano writes it, a real
+// calendar date and time; any other shape is refused (refusedCapacityRefs);
+// the table names its form.
 func TestCapacityRefKind(t *testing.T) {
 	for _, s := range []string{
 		"capacity:claude/default@2026-11-11T03:00:00Z",
 		"capacity:codex-2/a-abcdefghijk2@2026-11-11T03:00:00.123456789Z",
+		"capacity:claude/default@2024-02-29T23:59:59.5Z",
 	} {
 		r, err := ParseRef(s)
 		if err != nil || r.Kind != RefCapacity || r.String() != s || r.Valid() != nil {
@@ -61,17 +99,7 @@ func TestCapacityRefKind(t *testing.T) {
 	if r.Agent != "claude" || r.Account != "default" || r.ReadAt != "2026-11-11T03:00:00Z" {
 		t.Errorf("the parts: %+v", r)
 	}
-	for _, s := range []string{
-		"capacity:claude/default",
-		"capacity:claude@2026-11-11T03:00:00Z",
-		"capacity:Claude/default@2026-11-11T03:00:00Z",
-		"capacity:claude/work@2026-11-11T03:00:00Z",
-		"capacity:claude/unlisted@2026-11-11T03:00:00Z",
-		"capacity:claude/default@2026-11-11T03:00:00+01:00",
-		"capacity:claude/default@2026-11-11T03:00:00.100Z",
-		"capacity:claude/default@yesterday",
-		"capacity:claude/default/x@2026-11-11T03:00:00Z",
-	} {
+	for _, s := range refusedCapacityRefs {
 		if r, err := ParseRef(s); err == nil {
 			t.Errorf("%s parsed: %+v", s, r)
 		}
