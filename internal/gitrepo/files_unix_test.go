@@ -109,11 +109,12 @@ var readers = []struct {
 }
 
 // Each small file of the repository the opener reads, made in turn a
-// named pipe with no writer, a link to a character device, a directory and
-// a regular file past its bound: each of the package's four reads returns
-// at once with the package's refusal (packed-refs is looked at by the
-// opening even for a read by commit id, which the git binary's part of
-// FileAt would otherwise open).
+// named pipe with no writer, a link out of its folder, a directory and a
+// regular file past its bound: each of the package's four reads that opens
+// it returns at once with the package's refusal. Compare and FileAt read
+// commits by id and open no ref through the package, so packed-refs is
+// Commits' and CommitDetail's here (FileAt's git binary opens it itself:
+// TestFileAtsGitIsEndedAtItsCap).
 func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.T) {
 	limits := map[string]int64{".git": maxSmall, "commondir": maxSmall, "HEAD": maxSmall, "config": maxConfig, "packed-refs": maxPackedRefs}
 	kinds := []struct {
@@ -164,12 +165,59 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 					want = ErrNotRepo
 				}
 				for _, rd := range readers {
+					if name == "packed-refs" && (rd.name == "Compare" || rd.name == "FileAt") {
+						continue
+					}
 					if err := within(t, path, func() error { return rd.read(ctx, r) }); !errors.Is(err, want) {
 						t.Errorf("%s: %v, want %v", rd.name, err, want)
 					}
 				}
 			})
 		}
+	}
+}
+
+// FileAt's git binary opens the repository's files itself and is ended at
+// its cap whatever context FileAt is given: with packed-refs a named pipe
+// with no writer (git opens it to see whether the id is also a ref's
+// name), FileAt returns the cap's error and no git is left holding the
+// pipe; Commits and CommitDetail refuse the pipe at once, and Compare,
+// which opens no ref, reads. A repository as git wrote it is read with
+// the product's cap.
+func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
+	r := linked(t)
+	pipe := r.files["packed-refs"]
+	if err := os.Remove(pipe); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCap = time.Second
+	defer func() { gitCap = maxGitRead }()
+	want := map[string]error{"FileAt": ErrGitCap, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
+	for _, rd := range readers {
+		err := within(t, pipe, func() error { return rd.read(context.Background(), r) })
+		if !errors.Is(err, want[rd.name]) || (err == nil) != (want[rd.name] == nil) {
+			t.Errorf("%s: %v, want %v", rd.name, err, want[rd.name])
+		}
+		if rd.name != "FileAt" {
+			continue
+		}
+		// FileAt returns once gitcli has waited for its git: a process
+		// with the pipe open for reading, or waiting in its open, would
+		// let a writer open it.
+		if fd, err := syscall.Open(pipe, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			syscall.Close(fd)
+			t.Errorf("a process still has packed-refs open for reading after FileAt returned")
+		} else if err != syscall.ENXIO {
+			t.Errorf("open packed-refs for writing: %v, want ENXIO (no reader)", err)
+		}
+	}
+	gitCap = maxGitRead
+	ordinary := linked(t)
+	if err := readers[len(readers)-1].read(context.Background(), ordinary); err != nil {
+		t.Errorf("FileAt with the product's cap: %v", err)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -144,15 +143,6 @@ func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
 	r, err := git.Open(st, wt)
 	if err != nil {
 		return nil, "", err
-	}
-	// The small files go-git's opening has not read (it read HEAD and
-	// config) and a read may, go-git's or the git binary's (FileAt): each
-	// opened once through careOS, which notes one refused. Any other error
-	// is the read's to meet, as before.
-	for _, name := range []string{"packed-refs", "shallow", filepath.Join("objects", "info", "alternates")} {
-		if f, err := files.Open(name); err == nil {
-			f.Close()
-		}
 	}
 	top := dir
 	if w, err := r.Worktree(); err == nil {
@@ -383,15 +373,19 @@ func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit 
 		return File{}, err
 	}
 	// The size, then the object read once, at most what the reply and
-	// git's binary sniff need of it (blobAt).
+	// git's binary sniff need of it (blobAt), by the git binary, which
+	// opens the repository's files itself: it is ended at its cap,
+	// whatever ctx allows.
+	ctx, cancel := context.WithTimeoutCause(ctx, gitCap, ErrGitCap)
+	defer cancel()
 	size, err := blobSize(ctx, dir, e.Hash)
 	if err != nil {
-		return File{}, err
+		return File{}, atCap(ctx, err)
 	}
 	out := File{Size: size}
 	b, err := blobAt(ctx, dir, e.Hash, min(max(int64(limit)+1, sniffLen), size))
 	if err != nil {
-		return File{}, err
+		return File{}, atCap(ctx, err)
 	}
 	if bytes.IndexByte(b[:min(len(b), sniffLen)], 0) >= 0 {
 		out.Binary = true
@@ -402,6 +396,25 @@ func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit 
 	}
 	out.Content = b
 	return out, nil
+}
+
+// maxGitRead is the cap on FileAt's git binary: half a minute, above the
+// 20 s the session gives one git read (session.GitTimeout), so a caller
+// that bounds its read meets its own bound first.
+const maxGitRead = 30 * time.Second
+
+// gitCap is maxGitRead, shortened by a test.
+var gitCap = maxGitRead
+
+// ErrGitCap says FileAt's git binary was ended at its cap (gitCap).
+var ErrGitCap = errors.New("the git binary reading the file was ended at its cap")
+
+// atCap is err, or ErrGitCap with the cap when the cap ended ctx.
+func atCap(ctx context.Context, err error) error {
+	if errors.Is(context.Cause(ctx), ErrGitCap) {
+		return fmt.Errorf("%w of %v", ErrGitCap, gitCap)
+	}
+	return err
 }
 
 // entryAt is the entry of the file at path in tree, found by reading the
