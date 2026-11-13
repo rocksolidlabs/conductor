@@ -323,6 +323,35 @@ export interface MeReply {
 }
 export const MAX_ME_REPLY = 1024
 
+/** Where the identity provider's sign-in stands (docs/protocol.md, `GET /api/signin`; ext.SignInState). */
+export type SignInState = 'signed-out' | 'starting' | 'code' | 'signed-in'
+
+/**
+ * `GET`, `POST` and `DELETE /api/signin` (admin): the identity provider's sign-in, or `{supported: false}` where none is offered; at
+ * most MAX_SIGNIN_REPLY bytes. `who` only in `signed-in`; `code`, `url` (https, by the rule docs/protocol.md states) and `expires`
+ * (RFC 3339, in UTC) only in `code`; `why` in any; `who` and `why` one line with no control character, sent without their
+ * characters of Unicode's Cf, Zl and Zp, and trimmed of white space at both ends. A 503 is SIGNIN_UNAVAILABLE_CODE (the
+ * provider was not asked, refused, or gave a status the server does not take) or SIGNIN_STATUS_UNKNOWN_CODE (a begin or a
+ * sign-out that may have been taken, its status not known yet).
+ */
+export interface SignInReply {
+  supported: boolean
+  state?: SignInState
+  who?: string
+  code?: string
+  url?: string
+  expires?: string
+  why?: string
+}
+export const MAX_SIGNIN_REPLY = 1024
+export const SIGNIN_UNAVAILABLE_CODE = 'signin_unavailable'
+export const SIGNIN_STATUS_UNKNOWN_CODE = 'signin_status_unknown'
+/** The bounds of SignInReply's fields, in bytes (ext.MaxSignInWho and the rest). */
+export const MAX_SIGNIN_WHO = 80
+export const MAX_SIGNIN_CODE = 16
+export const MAX_SIGNIN_URL = 200
+export const MAX_SIGNIN_WHY = 120
+
 /** `GET /api/me/decisions`: the open decisions that admit the caller, newest first; `cut` when more may await it. */
 export interface DecideList {
   decisions: DecideEntry[]
@@ -389,6 +418,18 @@ export interface DecideRefusal {
 }
 export const MAX_DECIDE_REPLY = MAX_DECIDE_VIEW + 1024
 export const MAX_DECIDE_REFUSAL_WORDS = 200
+
+/**
+ * The decide page's own bounds (docs/protocol.md "Decisions"): at most DECIDE_CARDS cards open, each read and the list read one at a
+ * time, the next due DECIDE_READ_EVERY ms after the last began while the tab is shown, each aborted at DECIDE_READ_WAIT ms. A new
+ * answer is sent only on a view whose read began within the last DECIDE_FRESH_FOR ms on both the steady and the wall clock, and after
+ * an answer was taken only on a view read after it; an answer whose outcome is not known is sent again whatever the view's age. The
+ * list opens a card only while its own read is that fresh.
+ */
+export const DECIDE_CARDS = 4
+export const DECIDE_READ_EVERY = 10_000
+export const DECIDE_READ_WAIT = 10_000
+export const DECIDE_FRESH_FOR = 25_000
 
 /** A route's destinations (`POST /api/decisions/{did}/route`): the grant's beside the operator, a person and a responsibility. */
 export type DecisionDestination =

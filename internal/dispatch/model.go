@@ -435,7 +435,7 @@ const (
 	// newest MaxTicketPublications publications with the count of older
 	// ones that need a person), measured as the reply the route returns at
 	// its escaped worst less the same read as main's would hold it, in
-	// bytes: the measure, 216,013 bytes (the snapshot 34,186 of them, fifty
+	// bytes: the measure, 216,023 bytes (the snapshot 34,186 of them, fifty
 	// summaries and ten publications most of the rest, the page 2,065 and
 	// the merged words 2,100), rounded up to a KiB or two
 	// (TestTicketReplyBound finds the parts from TicketView's type and

@@ -9,6 +9,10 @@ import {
   forWords,
   confirmAuthorizes,
   cutNotice,
+  decideOutcomeWords,
+  decideWords,
+  DECIDE_JUDGING,
+  respondOutcome,
   mirroringSessions,
   oneRowPerDecision,
   replaces,
@@ -381,6 +385,35 @@ describe('whom a decision is for', () => {
     const assign = decision({ type: 'assignment', origin: 'plan', request: { question: 'Run the migration on staging', for: { label: 'person:ana', person: 'ana' } } })
     expect(assignmentWords(assign)).toBe('ana is to do this by hand; the operator answers Done or Not done for them')
     expect(assignmentWords(decision({ request: { ...decision().request, for: forNate } }))).toBe('')
+  })
+  it('names the decide grant as who may answer a decision given to it, and draws no "for" (docs/plans/decide-grant.md)', () => {
+    const grant: { label: string; person?: string } = { label: 'grant:decide' }
+    expect(approverWords(decision({ request: { ...decision().request, for: grant } }))).toBe('the operator, or anyone holding the decide grant')
+    expect(forWords(grant)).toBe('')
+    expect(answerAsWords(decision({ request: { ...decision().request, for: grant } }))).toBe('')
+    expect(assignmentWords(decision({ type: 'assignment', origin: 'plan', request: { question: 'Run the migration', for: grant } }))).toBe('')
+  })
+  it("says a decide principal's refusals and outcomes in words of its own, naming the decision and no one", () => {
+    expect(decideWords('decision_answered', 'dr-7')).toBe('dr-7 was answered before your answer reached it.')
+    expect(decideWords('decision_closed', 'dr-7')).toBe('dr-7 was closed before your answer.')
+    expect(decideWords('stale_decision', 'dr-7')).toBe('dr-7 changed since you read it: read it again and answer.')
+    expect(decideWords('__proto__', 'dr-7')).toBe('dr-7 could not take this answer.')
+    expect(decideWords('rate_limited', 'dr-7')).toBe('The server is working on other requests of yours: send your answer to dr-7 again in a moment.')
+    expect(decideWords('decision_moved', 'dr-7')).toBe('Not known whether your answer to dr-7 was recorded: send it again.')
+    expect(decideOutcomeWords({ id: 'dr-7', outcome: 'applied' })).toBe('Your answer to dr-7 was applied.')
+    expect(decideOutcomeWords({ id: 'dr-7', outcome: 'waiting' })).toBe('Your answer to dr-7 was recorded.')
+    expect(decideOutcomeWords({ id: 'dr-7', outcome: 'not_used' })).toBe('Your answer to dr-7 was not used.')
+    expect(decideOutcomeWords({ id: 'dr-7', outcome: 'refused', outcomeCode: 'decision_closed' })).toBe('dr-7 was closed before your answer.')
+    expect(decideOutcomeWords({ id: 'dr-7' })).toBe('')
+  })
+  it('turns a respond reply into one of five outcomes, letting an answer go only at a reply that judges it or names its response id', () => {
+    const err = (code?: string) => ({ error: { code } })
+    expect(respondOutcome(201, { receipt: { responseId: 'r1' } }, 'r1')).toBe('taken')
+    expect(respondOutcome(200, { receipt: { responseId: 'r1' } }, 'r1')).toBe('taken')
+    for (const code of DECIDE_JUDGING) expect(respondOutcome(code === 'not_approver' ? 403 : code === 'decision_limit' ? 429 : code === 'invalid' ? 400 : 409, err(code), 'r1')).toBe('refused')
+    expect(respondOutcome(404, err('not_found'), 'r1')).toBe('gone')
+    expect(respondOutcome(401, err('unauthorized'), 'r1')).toBe('ended')
+    for (const [status, body] of [[429, err('rate_limited')], [503, err('decision_moved')], [500, err('internal')], [400, err('invalid_request')], [409, err()], [403, err('switchyard')], [200, {}], [0, undefined], [201, { receipt: { responseId: 'r2' } }], [200, { receipt: {} }]] as const) expect(respondOutcome(status, body, 'r1')).toBe('unknown')
   })
   it("keeps the receipt's for beside who answered", () => {
     const d = decision({ state: 'answered', request: { ...decision().request, for: forNate }, responses: [{ ...recorded, for: { person: 'nate', responsibility: 'architecture' } }] })

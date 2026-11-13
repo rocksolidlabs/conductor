@@ -390,6 +390,7 @@ usePalette().registerPage(() => {
         <!-- The accounts and Brakeman's configuration are the server's own, changed through its routes: here in a browser too. -->
         <AccountsCard data-settings-section="accounts" />
         <BrakemanSettings ref="brakemanCard" data-settings-section="brakeman" />
+        <SignInCard />
         <AboutCard data-settings-section="app" />
       </div>
       <div v-else ref="layout" class="mx-auto flex w-full max-w-7xl flex-col gap-4 lg:flex-row lg:items-start lg:gap-6" data-desktop-settings>
@@ -526,6 +527,7 @@ usePalette().registerPage(() => {
 
         <BrakemanSettings ref="brakemanCard" :class="sectionClass" data-settings-section="brakeman" />
 
+        <SignInCard :class="sectionClass" />
         <AboutCard :versions="versions" :class="sectionClass" data-settings-section="app">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>

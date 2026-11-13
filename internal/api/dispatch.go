@@ -180,15 +180,6 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/external/authority", s.handleDispatchAuthority},
 		{"POST /api/dispatch/tickets/{key}/links/{id}/read", s.handleDispatchReadLink},
 		{"GET /api/dispatch/tickets/{key}/links/{id}/read", s.handleDispatchLinkRead},
-		// A ticket's publications (dispatch_publish.go).
-		{"GET /api/dispatch/tickets/{key}/publish/offer", s.handlePublishOffer},
-		{"POST /api/dispatch/tickets/{key}/publications", s.handlePublicationPrepare},
-		{"GET /api/dispatch/tickets/{key}/publications", s.handlePublications},
-		{"GET /api/dispatch/publications/{id}", s.handlePublicationRead},
-		{"POST /api/dispatch/publications/{id}/send", s.handlePublicationSend},
-		{"POST /api/dispatch/publications/{id}/check", s.handlePublicationCheck},
-		{"POST /api/dispatch/publications/{id}/close", s.handlePublicationClose},
-		{"POST /api/dispatch/publications/{id}/discard", s.handlePublicationDiscard},
 	}
 }
 

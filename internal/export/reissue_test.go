@@ -1,8 +1,14 @@
 package export_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -59,5 +65,107 @@ func TestRestoreReissues(t *testing.T) {
 	now, err := ds.Instance(context.Background())
 	if err != nil || len(now) != 32 || now == was {
 		t.Fatalf("the restored instance %q, the exported %q: %v", now, was, err)
+	}
+}
+
+// A look at the staged Dispatch store that fails for another reason than
+// its absence stops the restore: nothing is renamed into place, and the
+// data directory is as it was.
+func TestRestoreStopsWhenTheStoreCannotBeLooked(t *testing.T) {
+	f := newFixture(t)
+	f.ticket(t)
+	b, _ := archive(t, f.source())
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := listing(t, dst)
+	export.SetStagedLook(t, func(error) error { return fs.ErrPermission })
+	export.SetBeforeRename(t, func(name string) { t.Errorf("renamed %s", name) })
+	if _, err := restore(b, dst); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("the restore: %v", err)
+	}
+	sameListing(t, dst, before)
+}
+
+// An archive that holds no Dispatch store restores: the look at the staged
+// store answers that it does not exist, nothing is reissued or synced for
+// it, and the restored directory holds none.
+func TestRestoreWithNoDispatchStore(t *testing.T) {
+	b := craft(t, [2]string{"crews/team.json", "{}"})
+	dst := filepath.Join(t.TempDir(), "restored")
+	var look error
+	looked := false
+	export.SetStagedLook(t, func(err error) error {
+		looked, look = true, err
+		return err
+	})
+	export.SetSyncDir(t, func(rel string) error {
+		if path.Base(rel) == "dispatch" {
+			t.Errorf("synced %s", rel)
+		}
+		return nil
+	})
+	if _, err := restore(b, dst); err != nil {
+		t.Fatalf("the restore: %v", err)
+	}
+	if !looked || !errors.Is(look, fs.ErrNotExist) {
+		t.Fatalf("the look: %v %v", looked, look)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "dispatch")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the restored dispatch folder: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "crews", "team.json")); err != nil {
+		t.Fatalf("the restored crew: %v", err)
+	}
+}
+
+// A restore makes its staged Dispatch store a new instance, then syncs the
+// store's folder, before any rename: what the trace records after the look
+// is the folder's sync, the file holding the new instance by then, the
+// renames, and the data directory's sync.
+func TestRestoreSyncsTheNewInstance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("on Windows a folder is not synced: its renames write through")
+	}
+	f := newFixture(t)
+	f.ticket(t)
+	b, _ := archive(t, f.source())
+	dst := filepath.Join(t.TempDir(), "restored")
+	var trace []string
+	var staged []byte
+	looked := false
+	export.SetStagedLook(t, func(err error) error {
+		looked = true
+		return err
+	})
+	export.SetSyncDir(t, func(rel string) error {
+		if !looked {
+			return nil
+		}
+		trace = append(trace, "sync "+path.Base(rel))
+		if path.Base(rel) == "dispatch" {
+			var err error
+			if staged, err = os.ReadFile(filepath.Join(dst, filepath.FromSlash(rel), dispatch.File)); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	})
+	export.SetBeforeRename(t, func(name string) { trace = append(trace, "rename") })
+	if _, err := restore(b, dst); err != nil {
+		t.Fatal(err)
+	}
+	if len(trace) < 3 || trace[0] != "sync dispatch" || trace[1] != "rename" || trace[len(trace)-1] != "sync ." {
+		t.Fatalf("after the look: %v", trace)
+	}
+	ds, err := dispatch.Open(filepath.Join(dst, "dispatch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ds.Close()
+	now, err := ds.Instance(context.Background())
+	if err != nil || !bytes.Contains(staged, []byte(now)) {
+		t.Fatalf("the staged store at its sync does not hold the new instance %q: %v", now, err)
 	}
 }

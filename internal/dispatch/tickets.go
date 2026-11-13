@@ -499,7 +499,12 @@ func (t *tx) ticket(key string, deleted bool) (Ticket, Project, error) {
 // ticket so, then its row, whose revision it expects, then the project
 // (open).
 func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
-	tk, err := ticketByKey(t.ctx, t.tx, key)
+	return liveTicket(t.ctx, t.tx, key, deleted)
+}
+
+// liveTicket is ticketRow through q: a read asks it as the operation will.
+func liveTicket(ctx context.Context, q queryer, key string, deleted bool) (Ticket, error) {
+	tk, err := ticketByKey(ctx, q, key)
 	if isNoRows(err) {
 		return Ticket{}, refuse(RefusalNotFound, "no ticket %s", key)
 	}
@@ -514,8 +519,11 @@ func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
 
 // open reads the ticket's project inside the operation: archived when it
 // is, since an archived project refuses every write under it.
-func (t *tx) open(tk Ticket) (Project, error) {
-	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+func (t *tx) open(tk Ticket) (Project, error) { return openProject(t.ctx, t.tx, tk) }
+
+// openProject is open through q: a read asks it as the operation will.
+func openProject(ctx context.Context, q queryer, tk Ticket) (Project, error) {
+	p, err := projectByID(ctx, q, tk.ProjectID)
 	if err != nil {
 		return Project{}, err
 	}

@@ -378,7 +378,7 @@ var walkWriters = []walkWriter{
 		if refused := refusalOf(t, src, err); refused != "" {
 			return refused
 		}
-		_, _, err = w.s.SettlePublication(ctx, ActorAdmin, p.ID, 1, r.Outcome)
+		_, _, err = w.s.SettlePublication(ctx, p.ID, 1, r.Outcome)
 		return refusalOf(t, Receipt{}, err)
 	}},
 }

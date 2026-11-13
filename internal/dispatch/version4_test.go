@@ -544,15 +544,18 @@ func TestTicketReplyBound(t *testing.T) {
 // is restored and needs a person), the read's newest ten and one older.
 func worstPublications(t *testing.T, s *Store, key, identity string) {
 	t.Helper()
-	node := identity[strings.LastIndexByte(identity, ':')+1:]
-	target := PublicationTarget{NodeID: node, SpaceID: "4000001", Kind: ExternalIssue, URL: "https://github.com/o/r/issues/1", Ref: "o/r#1"}
+	// The target is the linked item as the store holds it (its node, its
+	// host, its kind: the worst snapshot's pull request); the close at its
+	// longest is written with the rest.
+	node, host := identity[strings.LastIndexByte(identity, ':')+1:], identity[strings.IndexByte(identity, ':')+1:strings.LastIndexByte(identity, ':')]
+	target := PublicationTarget{NodeID: node, SpaceID: "4000001", Kind: ExternalChange, URL: "https://" + host + "/o/r/pull/1", Ref: "o/r#1"}
 	page := "https://github.com/o/r/issues/" + strings.Repeat("9", MaxExternalURL-len("https://github.com/o/r/issues/"))
 	for i := 0; i <= MaxTicketPublications; i++ {
 		rc, err := s.PreparePublication(context.Background(), testOp(fmt.Sprint("worst", i)), PublicationArgs{Key: key, Target: TargetLinked, Body: "b",
-			Parts: PublicationParts, CloseIssue: "not_planned"}, target, func(id string) string { return id + strings.Repeat(" ", (MaxPublicationMarker-IDLen)/3) })
+			Parts: PublicationParts}, target, func(id string) string { return id + strings.Repeat(" ", (MaxPublicationMarker-IDLen)/3) })
 		want(t, rc, err, StatusDone, "")
 		at := stamp(day0.Add(time.Duration(i)*time.Second + time.Nanosecond))
-		if _, err := s.db.Exec(`UPDATE publications SET target = ?, target_url = ?, target_ref = ?, target_space_id = ?, instance = 'another', state = ?, tries = ?,
+		if _, err := s.db.Exec(`UPDATE publications SET close_issue = 'not_planned', target = ?, target_url = ?, target_ref = ?, target_space_id = ?, instance = 'another', state = ?, tries = ?,
 			attempt = ?, find_since = ?, sent_as_id = ?, sent_as_login = ?, remote_id = ?, remote_url = ?, close_state = ?, close_tries = ?, close_error = ?, error = ?,
 			sending_at = ?, sent_at = ?, sent_by = ?, created_at = ?, created_by = ?, rev = ? WHERE id = ?`,
 			"link:"+strings.Repeat("f", IDLen), page, worst(MaxPublicationRef), worst(MaxRemoteID), PublicationUnconfirmed, MaxPublicationTries, MaxPublicationTries,

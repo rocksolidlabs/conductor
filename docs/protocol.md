@@ -2875,6 +2875,9 @@ its run, and on no other.
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/export` | admin (a switchyard's too) | the data directory as one zip archive (`docs/plans/ext.md`, C6), streamed as it is made, nothing buffered whole: `200` with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="conductor-export-<UTC time>.zip"` (`20060102T150405Z`). The archive holds `data/` as the data directory holds it (the catalog, the crews, the runs' records, a switchyard's `links/` (hashes, never tokens), `hooks/` and any other file) with the ledger's and Dispatch's databases as snapshots (`VACUUM INTO`, consistent while the server writes), the attachment files the Dispatch snapshot's live rows and launch pins require, and `conductor-export.json` last: `{format: 1, version, createdAt, files: [{path, size, sha256}], left: [{path, why}]}`. Left out, and listed with why: the workbench token and its lock, `restore.lock`, `runs/owner.lock`, `brakeman/owner.lock`, `history/owner.lock`, the databases' `-wal`, `-shm` and `-journal`, `*.tmp`, `.probe-*`, `.restore-*`, `dispatch/attachments/tmp/`, `tls/`, `ext/`, anything not a regular file or a directory, and a name not of `[A-Za-z0-9._-]` elements. The catalog is resolved against the configuration the server runs with, so saved agents' env values, configured ones they inherit among them, are in it in full: the archive is the person's own file. The records are copied before the ledger's snapshot, and none written after their copy is taken, so a record may lag its ledger, never lead it. A failure before the first byte is `500 internal`; one after it cuts the archive short, with no manifest, which no restore takes, and aborts the response (the connection dropped, or the stream reset, never a whole `200`), so the client's transfer fails; `503 no_data_dir` for a server with none |
 | `GET /api/capabilities` | admin | what is registered beside the open-source feature set (`docs/plans/ext.md`, C9): `{providers: [{kind, name, state}]}`, one row per provider in each slot it holds (one value in two slots is two rows under one name), in the registry's order (the kinds `identity`, `decisions`, `context`, `notifications`, `sync`, `entitlements`, `media`, `runtime`, then a list's registration order); `state` is `ready` once the provider's start has succeeded (or it needs none) and `starting` until then, its start tried again and its slot answering the free default meanwhile; the identity provider's row adds `detail`, who the server is signed in as ("signed in as Ana · workspace Acme": one line of 1 to 80 characters), when it says one, asked through the guard within 1 s once it has started (a late, failing or out-of-bounds answer leaves it out, as does one that holds, as written, a token of the server's own (the host token, the workbench token or a host token) or a credential the server holds from the provider as the detail is asked for (of its uplink's, the last eight distinct ones; a watched connection's token and pending one): a literal match against that list, and nothing more; never in the guide's rows, below, and reading the guide asks no provider). A plain build answers `{"providers": []}`. No other provider is asked anything to answer it, and a row says nothing a caller could gate a feature on: the web app shows a capability that is there, never a plan (Settings → The app, its Extensions row, read again while a provider is `starting`, 2 s after the last reply doubling to a minute). At most a few KB (six one-value slots and two lists of at most 16). A kind added later joins as a row of its own, and a field a kind needs is added to the row, left out when empty. The guide's `providers` section (Guide, below) carries the same rows to the admin and to a session's agent, which this route does not answer |
+| `GET /api/signin` | admin | the identity provider's sign-in, started and ended from Settings (package `ext`, `SignIn`): `{supported: true, state, who?, code?, url?, expires?, why?}`, where `state` is `signed-out`, `starting` (begun, no code yet), `code` (the code to enter on the provider's page: `code` 1 to 16 of `A-Z a-z 0-9 -`; `url` the page: at most 200 bytes of printable ASCII with no space, quote (`"`, `'`, `` ` ``), backslash, angle bracket or `#` (no fragment) and no `%` but before two hex digits; `https://` in lower case, then no user information, a host that is a name (labels of `a-z`, `0-9` and `-`, none empty, so no trailing dot, the last beginning with a letter: an address literal, bracketed or dotted, is not one, nor is a name with an escape in it), after a `:` a port of 1 to 65535 written without leading zeros that is not 443 (a `:` with no port is refused), and a path (a `/` after the authority); `expires` when the provider says, RFC 3339 in UTC, a time with a zone offset of a day or more or outside the years 1 to 9999 in UTC refused) or `signed-in` (`who`, who the server is signed in as: one line of 1 to 80 bytes); `why`, in any state, is one line of at most 120 bytes the provider says of it; `who` and `why` hold no control character (C0, DEL, C1), and are sent without their characters of Unicode's Cf, Zl and Zp and trimmed of white space at both ends; their bounds are of the text as the provider gives it, and a signed-in `who` that shows nothing once so cleaned is not taken; a field another state carries is never set. At most 1 KiB, sent with no HTML escaping. `{"supported": false}` with no identity provider, one that offers no sign-in, or one whose start has not yet succeeded. Asked through the guard within 1 s, in slots of the sign-in's own (16 at once), every status checked before it is sent, and checked again (its rules above) as it is about to be sent: a late, failing, busy or out-of-bounds answer, one with a field that holds a credential the detail's filter lists (`GET /api/capabilities`, above; each field as it is sent, the URL also percent-decoded once), or a reply that does not encode within its bound, is `503 signin_unavailable`, "the identity provider's sign-in is not available now: try again", in the server's words, never the provider's. The status goes to the caller alone: no log line, event or error carries it. The app reads it only when `GET /api/capabilities` has a ready identity provider (Settings, the Sign in card: every 2 s while `starting` or `code`, doubling to 30 s, and every 30 s otherwise, while the page shows and the document is visible; one request at a time, each aborted after 15 s); it checks each status by the same rules and links only to a page that passes them, that the browser writes exactly as it was sent and that is not on the app's own origin: an address the server takes and a browser would still write differently (dot segments) gets no link. It stops showing a code once the browser's clock reaches its `expires`, judged at every reply (a failed read too), when the page is shown again and by a timer, nothing kept from one look to the next; a browser whose clock is behind, or was set back, can show a code past its end, and the provider's page refuses such a code. A code is kept in the page's memory alone, and forgotten with the workbench token |
+| `POST /api/signin` | admin | asks the provider to begin a sign-in, then answers its status as `GET` does; the body is none or `{}` (at most 1 KiB, no member, and `null` is not `{}`: past it `413 bound`, anything else `400 invalid_request`, the provider asked nothing). `404 not_supported` where `GET` answers `{"supported": false}`; the begin and the status after it each asked within 1 s. A begin is what the provider's method itself returned: taken when it returned nil; refused when it returned an error while its call's context was live, which, like a begin the provider was not asked (every slot busy), is `503 signin_unavailable`, as `GET`'s. Anything else may have been taken: `503 signin_status_unknown`, "the sign-in may have begun; its status is not known yet": a begin whose method had not returned when its outcome was read (still running, its goroutine ended without returning, or a panic) or returned an error once its call's context had ended (its status not read in that request), and one taken whose status then could not be answered (as `GET`'s is not). A method that has returned nil when its outcome is read is taken, its context ended or not. The app offers the act again only after `503 signin_unavailable` or a refusal made before the provider is asked (`400`, `401`, `403`, `404`, `429`); after anything else (its own 15 s deadline, a request that failed with no answer, any other `5xx` or status, a reply it cannot read, `503 signin_status_unknown`) it says it is reading the sign-in, with no error, offers no begin or sign-out until a read shows a state, and reads it 2 s later, doubling to 30 s. The provider returns at once and its own goroutines do the work, which the status shows |
+| `DELETE /api/signin` | admin | asks the provider to sign this server out, then answers its status as `POST` does, with the same body, bounds and refusals (`503 signin_status_unknown` in the words "the sign-out may have been done; its status is not known yet"); a sign-out the provider has still to settle shows in the status it answers |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt`, its `promptShape` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
 | `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt`, `promptShape` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `browser` (#436), the browser the agent's links open in, is `{name, profile?}`, `name` one of `chrome`, `edge`, `firefox`, `brave` and `safari`, `profile` a Chromium profile directory (`Default`, `Profile 2`) for `chrome`, `edge` and `brave` alone, at most 100 characters with no control character, quote or space at either end; left out it is the replaced agent's, and `"browser": {}` is the computer's default browser over it, as no `browser` is for an agent of its own (a config file's agents take it too, and the catalog shows it unmasked); `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
@@ -2933,7 +2936,7 @@ its run, and on no other.
 | `POST /api/dispatch/people` | admin | add a name (`person.add`): `{opId, byName?, name}`, 1 to 60 characters with no control character; reply `201 {receipt, person}`; `409 invalid` for a name held already |
 | `GET /api/dispatch/tickets` | admin | a page of a list of tickets, filtered and sorted on the server: `{tickets, next?, total}`, each a summary without its description, acceptance criteria and acceptance (`{id, projectId, number, key, title, status, priority, horizon, owner, assignees, labels, milestoneId, parentId, blocked, createdAt, updatedAt, closedAt?, deletedAt?, rev}`), `total` how many the whole list holds; `project` a project's key (every project's when absent); `status`, `priority` (its number, 0 none to 4 urgent), `label` (an id), `assignee` (`person:<name>` or `agent:<catalog id>`) and `horizon` (`now`, `next`, `later`, or empty for not planned) as often as wanted, a ticket holding any of them; `owner`, `milestone` (an id), `parent` (a ticket's key, its live children whether it is live or not) and `blocked=1` (a live ticket neither done nor cancelled blocks it); `q`, at most 200 characters of words, every one in the ticket's key, title, description or acceptance criteria or in one of its comments, the last a prefix, never search syntax; `sort` (`updated`, the default, `created`, `priority`, `status`, `title`, `key`, `milestone`) and `desc=1`; `deleted=1` for the tombstones beside the live tickets, which a list leaves out otherwise; `limit` 1 to 200 (100 when absent) and `cursor` (a page's opaque `next`, of the same sort); `400 invalid_request` for a bad value or a parameter the route does not take |
 | `POST /api/dispatch/tickets` | admin | make a ticket (`ticket.create`): `{opId, byName?, project, title, description?, acceptance?, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, parent?}`, at most 192 KiB (every field at its bound with each character doubled by escaping): `title` 1 to 200 characters, `description` Markdown of at most 64 KiB and `acceptance` of at most 16 KiB, `status` `backlog` (the default), `ready`, `in_progress`, `in_review`, `done` or `cancelled`, `priority` 0 to 4, `owner` a person's name, at most 8 `assignees` and 20 `labels` (ids), `milestone` an id and `parent` a key of the same project; its key `<project>-<n>` from the project's next number, never reassigned; reply `201 {receipt, ticket}`, the ticket in full; `404 not_found` for a project, parent, label or milestone missing or deleted; `409` for what the store refuses (`archived`, `invalid`, `bound`, `cycle`, `close_policy`) |
-| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); and `launchCount`, how many launches it has; at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
+| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); `launchCount`, how many launches it has; and `publications`, its newest 10 publications to GitHub without their bodies, with `publicationsNeedYou`, how many older ones a person can act on (`[]` and `0` until a route makes one: issue 877); at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/edit` | admin | edit a live ticket (`ticket.edit`), every change one operation: `{opId, expectedRev?, byName?, set?: {title?, description?, acceptance?, status?, priority?, horizon?, owner?, parent?, milestone?}, add?: {assignees?, labels?}, remove?: {assignees?, labels?}}`, at most 192 KiB, `parent` a key and `milestone` an id (`""` for none); reply `{receipt, ticket}`; `409 close_policy` for a move to `done` the project's close policy refuses, the receipt's `missing` naming what is lacking; `409 cycle` for a parent that would make a cycle or a chain of more than 8 |
 | `POST /api/dispatch/tickets/{key}/accept`, `…/unaccept` | admin | record the owner's acceptance of a live ticket (`ticket.accept`: `{opId, expectedRev?, byName?, note?}`, by the display name, for the owner the ticket has now and against its acceptance criteria as they stand, the note at most 1,000 characters), or clear it (`ticket.unaccept`: `{opId, expectedRev?, byName?}`); reply `{receipt, ticket}`; `409 invalid` for a ticket with no owner to accept it, or not accepted; neither touches the status |
 | `POST /api/dispatch/tickets/{key}/delete`, `…/undelete` | admin | delete a live ticket (`ticket.delete`): a tombstone, nothing else written, its children, relations and run links kept, inactive, and back with its undelete (`ticket.undelete`), which removes a run link of its naming a run another live ticket has linked meanwhile; `{opId, expectedRev?, byName?}`; reply `{receipt, ticket}`; a deleted ticket keeps its key, is listed only with `deleted=1`, its read answers, and every other write on it is `404 not_found`; `409 invalid` to undelete a live ticket; `503 ledger_unavailable` for an undelete when a run link's chain cannot be read, and `503 run_changing` (`Retry-After: 1`) while a run of it is being resumed (A ticket's runs below), nothing kept and no receipt, so the same `opId` may be sent again |
@@ -4620,9 +4623,8 @@ last change in the store's log (local to the database), `entity`
 `project`, `ticket`, `comment`, `label`, `milestone`, `view`,
 `person`, `plan` (a ticket's plan revision), `launch` (a ticket's
 launch), `review` (a person's review of a candidate: its submit and
-each change of its application), `finding` (one of a review's
-findings: made with it, and again for each mark) or `publication` (a
-ticket's publication: its prepare and each change of its state), `id` its id (`""` for a person, whose id is its name: the
+each change of its application) or `finding` (one of a review's
+findings: made with it, and again for each mark), `id` its id (`""` for a person, whose id is its name: the
 pickers read the directory again whole), `ticket` the id of the ticket
 it belongs to and `project` its project's key, `""` where there is
 none. A relation counts for both its tickets, and a label's or a
@@ -4631,7 +4633,7 @@ changed more than 64 entities of one kind in one project, the server
 sends one event for them, where the first of them would have been: that
 `entity`, `id` and `ticket` `""`, the project's key and the commit's
 `seq`, so a label deleted on 300 tickets is two events, the label's and
-its tickets'. An event is at most 160 bytes (the longest is 121: every
+its tickets'. An event is at most 160 bytes (the longest is 119: every
 value is digits, a word, hex or a key, never escaped). A page reads
 again what an event names, or what derives from it; an event with `id`
 and `ticket` `""` (but a person's, whose `id` is always `""`) names no
@@ -4648,6 +4650,110 @@ place in the server's queue for a client, however many there are, so a
 commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
+
+#### The preview label
+
+The label of an attempt's preview (`docs/plans/browser-evidence.md`) is
+the admin's (a share link, a session's token, a host token and a
+Brakeman turn answer `401`) and a switchyard's `403 switchyard`.
+
+`GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
+(no parameter) answers the attempt's worktree preview while it is
+offered: `{url, tree: "worktree", commit, content, changed,
+changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
+unread?}`; `404 no_preview` when it is not open. `url` is the preview
+with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
+place its value leaves the server: every other field is scrubbed of the
+secret of every tree the engine holds one for (in any case, made
+`${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
+The revision is read now: `commit` HEAD's commit as the read recorded
+it, `content` the tree id of everything the tree holds that git would
+see (uncommitted edits and new files that are not ignored; a file at a
+path longer than the system lets a program name, 4,096 bytes on Linux
+and 1,024 on a Mac, is left out of `changed` and of `content`, as it is
+left out of `git status`), `changed` every path that differs from that
+commit counted, `changedPaths` the
+first of them within 200 and 16 KiB as encoded (a path with a control
+character left out, still counted), `changedCut` when some are left
+out. A read that fails, passes 5 s or ends after the server's stop began
+answers `content` `""`, no changed path and `unread` in words, and the
+server logs it by its kind alone (late, not a repository, refused, git
+failed), never with git's message.
+
+Where a read runs. A tree's read is git's, run in the tree's directory
+as the server opened it, with the tree's own `.git` and the work tree
+named outright (`-C <opened> --git-dir=<opened>/.git
+--work-tree=<opened>`): on Linux `<opened>` is the open handle,
+elsewhere the tree's path, which is compared again after the read. git
+looks for no repository: a `.git` that is a gitfile (a linked worktree)
+is followed, one that is a directory is opened, and a tree with no
+`.git` at its top is not read (not a repository). The git directory that
+`.git` names is the one git reads, and its configuration applies, as for
+the engine's own comparison of a checkout, save the forced settings: the
+stat settings (the stat data trusted in full), the sparse checkout
+(none), the split index (none) and, where the file system keeps it, the
+executable bit (`core.fileMode` true); every other setting of the
+repository's configuration applies.
+
+What the server itself opens: the run's working directory, opened as a
+folder only, and from it the tree reached one name at a time, each looked
+at without following it, a directory, opened through the one before it as
+a folder only and the directory that was looked at. A name that is no
+folder at the moment of its open fails at once and the tree is not read
+(for the run's working directory the system's error, logged as `git
+failed`; for a name beneath it the read is refused). A name that is a
+link, or anything else than a folder, at its look is not read; a link
+put in place of a name between its look and its open is followed only
+when it leads to the very directory that was looked at, and any other is
+refused. For the look at whether the file system keeps the executable
+bit, once per index, it makes one new file of its own in the tree and
+removes it, as the engine's comparison of a checkout does. Every
+existing file of a tree and of its git directory is opened by git.
+
+The commands, with the recorded commit id where they name one:
+`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`, `add
+-A`, `write-tree` and `diff --cached --name-only -z <commit>`, with
+`GIT_NO_REPLACE_OBJECTS=1` and literal pathspecs. Each of a read's own
+commands writes its answer and its error stream within a bound: an id at
+1 KiB, the diff as it comes within the paths' bounds, git's error stream
+at its first 4 KiB. The filter look-up before a command (which turns the
+repository's filters off) is `main`'s and holds what git answers. A
+source's class, for the captures (a later row), is
+read the same way at the commit the read recorded: `ls-tree` of that
+commit for exactly the paths given, and `check-ignore` with them on its
+input (it takes no literal pathspec, so a path that begins with `:` is
+not given to it), each answer read within an entry and its bytes for
+each path, past which the class is not known.
+
+The kept indexes. The index is the server's own: one file, in a folder
+under the server's temporary directory, made the recorded commit's
+entries again at every read, so a read is the tree at that read alone.
+Edited and new files are hashed at every read; a tracked file whose
+bytes and stat data did not change since the last read is not hashed
+again, as `git status` works, so a change of the attributes that say how
+a file is recorded shows for the files that change after it. (The
+engine's comparison of a checkout, which decides a candidate, reads with
+a fresh index.) One read of a tree runs at a
+time, so a lock of its index found as a read starts is one a cut read
+left: the index and its lock are dropped and the read starts from none.
+At most eight indexes are kept: an index a read holds or waits for is
+never let go, the least recently read of the others is to make room, and
+with all eight held a read of a ninth tree waits within its 5 s and then
+answers unread. They are not removed when a preview closes. A read's
+commands are ended at 5 s, the wait for a tree's turn counted in them.
+The server's stop is marked as it begins, before any of its waits, and
+removes the folder of indexes. A read that begins once the stop has begun
+makes no folder and no index. A read under way when the stop begins may
+still run its commands and write its own index until the stop removes the
+folder; it asks the mark after its last command, and its label is unread.
+A server ended without its stop leaves the folder to the system's
+cleanup.
+
+Where this differs from the plan: the label is the admin's alone until
+the row of the shared read; the classes are read by two commands over
+the exact paths; the index is made the commit's again with `read-tree
+--reset`; at most eight indexes are kept, the least recently read let
+go, where the plan keeps one for the open preview's life.
 
 #### GitHub tokens
 
@@ -4840,92 +4946,6 @@ own on `GET /api/events`, never by a `dispatch` event: `{ticket,
 project, link?, readAt}`, at most 256 bytes, with **no `seq`**: a page
 reads the ticket again on it, and its sequence for the log does not
 move.
-
-#### A ticket's publications
-
-A **publication** is one comment Conductor posts to a ticket's GitHub
-item for a person (`docs/plans/tracker-linking.md`, PR-5): composed,
-previewed and sent once, never by anything but the person's Send. Its
-target is the ticket's linked issue (`linked`) or a live `delivery` or
-`external` link to a GitHub item (`link:<id>`), read from GitHub at
-prepare by the item's node id: its kind GitHub's type of the item (an
-`/issues/N` address GitHub answers as a pull request is kind `change`),
-its repository GitHub's id of it. That destination never changes: every
-write for the publication is sent to that node, after GitHub resolves it
-again to the same kind in the same repository (`409 target_changed`
-otherwise, nothing written; a repository renamed keeps its id and
-passes). The posted bytes are the body the person approved (`\r\n` and a
-lone `\r` made `\n`, trailing white space trimmed; 1 byte to 16 KiB of
-UTF-8 with no control character but line breaks and tabs), a blank line
-and GitHub's marker, `<!-- conductor-publication:<id> -->` (at most 128
-bytes, the publication's random id and nothing of the ticket), named by
-their SHA-256, `postSha256`, which Send must name. At most 100
-publications a ticket. The routes are the admin's alone (no Brakeman
-grant or shared read names one, and a session's or a host's token is
-refused) and a switchyard's `403`; a body is at most 64 KiB (`413
-bound`), which holds a 16 KiB body at twice its bytes as JSON with HTML
-escaping off; every request to GitHub is made with the token kept for
-the item's host (`412 no_token` without one) and logged as a line naming
-the route, the item and the status, never a body; GitHub's failures are
-answered as the GitHub item's routes answer them.
-
-A publication's `state` is `draft`, `sending`, `sent`, `failed`,
-`unconfirmed` or `discarded`. Send commits `sending` (one more of at most
-5 `tries`, the try its `attempt`, the account the token belongs to as
-`sentAsId` and `sentAsLogin`) before its one request to post, and posts
-only when that commit was its own: the same `opId` again is answered from
-its receipt and posts nothing. The post's answer settles the try it
-belongs to and no other: the comment, `sent` (`remoteId`, `remoteUrl`);
-an answer that proves nothing was posted (GitHub's `401`, `403` or
-`429`, or a refusal of the mutation with no data), `failed`, which Send
-may post again; anything else (a timeout, a reset, a `5xx`, the server
-stopping) leaves it `sending`, and the comment is looked for by its
-marker and exact bytes, by the account that sent it, from a day before
-its first send: found, `sent`; the whole window listed without it at
-least 30 s after the send began, `unconfirmed`, which nothing ever sends
-again (GitHub may still show it: Check looks again, and a person may
-publish the text as a new publication); a listing not whole keeps its
-words and the state. A server settles the publications it finds
-`sending` after it starts, in the background, one at a time, at most 256
-within 2 minutes, and never posts or closes. A publication restored from
-an export is of another store instance (a restore makes one): it is
-never sent, and Check makes it `sent` only by its comment found, by any
-author, who is recorded as its sender. A close of the issue, asked for
-with `closeIssue` (`completed` or `not_planned`, for an issue alone), is
-made after the comment: `closeState` `pending`, then `closing` (one more
-of at most 5 `closeTries`, committed before the close is sent), then
-`closed` (GitHub's answer, or GitHub showing the issue closed already,
-when nothing is sent) or `refused` (the comment stays); an answer that
-does not say leaves it `closing`, for Close now. Each step the server
-makes for itself is applied only when it changes the row.
-
-| Route | Body | Answer |
-|---|---|---|
-| `GET /api/dispatch/tickets/{key}/publish/offer` | none | `{parts, targets}`: `parts` what the composer may insert, each `{name, markdown}` the exact Markdown, at most 16 KiB (`deliveries`, the live delivery links' URLs and notes; `checks`, the newest delivered candidate's verification receipt, each check's name and passed or failed; `key`, the ticket's key and title), never a comment, a finding, a plan's text, an attachment or a check's output; `targets` `[{target, url}]`, the linked issue and each live delivery or external link to a GitHub item |
-| `POST /api/dispatch/tickets/{key}/publications` | `{opId, byName?, target, body, parts?, closeIssue?}` | replays first; then, under the target's lock, reads the target from GitHub (a link is read again and recorded as its read) and runs `publication.prepare`: `201 {receipt, publication, preview, postSha256}`, `preview` the exact bytes Send posts. `409 invalid` for a target that is not the ticket's linked issue or one of its live delivery or external links, a close of a pull request, a body or a part out of form; `409 bound` |
-| `GET /api/dispatch/tickets/{key}/publications` | query `cursor?` (a publication's id), `needYou?` (`1`) | `{publications, next}`: at most 50, newest first, without their bodies, `needYou=1` those a person can act on (one `sending`, `unconfirmed` or `failed`, a restored draft, or a sent one whose close is `pending`, `closing` or `refused`); `next` the cursor of the next page, `""` at the end |
-| `GET /api/dispatch/publications/{id}` | none | `{publication, preview, postSha256}`, its body among it |
-| `POST /api/dispatch/publications/{id}/send` | `{opId, expectedRev?, byName?, postSha256}` | replays first (a resend posts nothing, settles one `sending` first, and answers its receipt); then, under the publication's lock, resolves the target and reads the token's account, commits `sending` and posts the preview's bytes to the node, settling the answer as above, then the close when asked: `200 {receipt, publication}`. `409 stale_revision` for a digest that is not the preview's or another revision; `409 invalid` for a publication not `draft` or `failed`, or restored; `409 bound` past 5 tries; `409 target_changed` |
-| `POST /api/dispatch/publications/{id}/check` | `{}` | looks for the comment now and settles what it found, for one `sending` or `unconfirmed`, or a restored draft or failed one: `200 {publication}`; `409 invalid` otherwise. Posts nothing |
-| `POST /api/dispatch/publications/{id}/close` | `{opId, expectedRev?, byName?}` | Close now, for a sent one whose asked close is `pending`, `closing` or `refused`: `200 {publication}`, one closed already answered as it stands; `409 target_changed`, `409 bound` past 5 closes |
-| `POST /api/dispatch/publications/{id}/discard` | `{opId, expectedRev?, byName?}` | `publication.discard`, for a `draft`, `failed` or `unconfirmed` one (its comment may still appear on GitHub): `{receipt, publication}` |
-
-A publication is `{id, ticket, target, targetKind, targetUrl, targetRef,
-targetNodeId, targetSpaceId, restored?, marker, postSha256, parts,
-closeIssue?, state, tries, attempt, findSince?, sentAsId?, sentAsLogin?,
-remoteId?, remoteUrl?, closeState?, closeTries, closeError?, error?,
-sendingAt?, sentAt?, sentBy?, createdAt, createdBy, rev}`, and `body`
-in its own read. A ticket's read (`GET /api/dispatch/tickets/{key}`)
-carries its newest 10 publications without their bodies
-(`publications`) and how many older ones a person can act on
-(`publicationsNeedYou`), within `MaxTicketReply`. The deadlines, each
-the sum of its steps' caps: a send 240 s (the lock 15 s; the resolve and
-the account's read 45 s; the send begun 30 s; the post 30 s; its settle
-30 s; then a listing 30 s and its settle 30 s, or the close 30 s and its
-two writes 60 s), a prepare 120 s (the lock, the reads 45 s, two writes),
-a Check 90 s (the lock, the listing within 45 s, one write) and Close now
-105 s (the lock, the close 30 s, two writes). A publication's routes wait
-for its lock at most 15 s (`503 tracker_busy`, nothing read or written).
 
 ### Brakeman
 
@@ -5975,7 +5995,31 @@ its gate has passed) until its reply has been made, before the reply's first
 byte is written; a request that carries a body the route does not read is
 not waited for. One more is `429 rate_limited` ("too many of your requests
 are being worked on: send this one again once one is answered"), the ledger
-not read and nothing written. The admin is not counted.
+not read and nothing written. The admin is not counted. Its pass reaches the
+app in the URL fragment, the key `pass` beside the
+desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
+a navigation the browser starts (a load, a fragment change, back or forward)
+never lets the app's router read a fragment that carries either key, in any
+spelling: the fragment is taken out of the address before the app's router
+reads it, and one that arrives after the load is written to the browser's
+storage for its credential alone and loads the page again at the clean
+address only when it changed what that storage held (in the desktop app the
+workbench token is kept in memory from the app's bridge, not in the
+browser's storage, and a later link's token changes nothing there); a
+fragment that holds both keys gives neither. The pass is kept for the tab
+(`sessionStorage`) until a `401` to a request sent with it, or until a
+later link stores another, and sent only in
+the `Authorization` header of the four routes, never in a URL. The decide
+page (`/decide`, `/decide/<did>`, drawn for a tab that holds a pass and no
+workbench token) reads the list and each open card, at most four cards open,
+each one at a time, the next due 10 s after the last began while the tab is
+shown and at once when it is shown again, each bounded at 10 s; one answer is
+on its way at a time for the whole page, so a tab has at most six requests
+out at once. A new answer is sent only on a view a read renewed in the last
+25 s on both the steady clock and the wall clock, and after an answer was
+taken only on a view read after it; an answer whose outcome is not known is
+sent again whatever the view's age (`DECIDE_*` in
+`web/app/utils/protocol.ts`).
 
 | Route | Who | Body → reply |
 |---|---|---|
@@ -6219,7 +6263,8 @@ bound `pinned` or `launch_env` as any such launch is, and a folder of a
 retired account is refused `400 invalid_account` (a new launch binds no
 retired account). A folder variable that is not a whole path names the
 folder under the one the process starts in, and that is the folder bound
-and compared; a crew member of such an entry, bound before it has a
+and compared; a crew member of such an entry, or of one whose home is not
+a whole path while the folder variable is unset, bound before it has a
 folder, is refused `400 invalid_account`. A crew member
 names `account` and `model` beside its agent; a launch of the crew (`POST
 /api/crews/{id}/launch`, an approved ticket's, an `ext.Host` launch) and an
@@ -6245,24 +6290,67 @@ A managed run any member of which is bound to anything but `own` is
 offered to no Runtime and runs on this server, and a process is started
 on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
+A launch of this server holds every registered account whose folder it
+runs in, as the launch's own adapter's folder variable or home says
+where that is. What it holds, and the one account its session is counted
+on, are decided when the launch is reserved, before its process starts,
+and kept until the process has ended. A launch runs in an account's
+folder when it names the account, or the folder its process runs in (its
+adapter's folder variable's as the process sees it, else the agent's own
+under its home; one that is not a whole path is read under the folder it
+starts in both as written and cleaned) is the account's, whatever the
+account's adapter: it holds every such account, whether or not its
+session is registered (its registration refused and its stop failed
+among them). The ids of the accounts it holds, and the one account it is
+counted on, are kept in memory with its session, never written or
+answered: for a session, no folder is asked about again after the
+reservation (a kept run's member between attempts is judged at the
+remove by its binding, below). Its session is counted on the account the
+launch names, else the first account of its own adapter among those it
+holds, else its binding's own id (`default` for the agent's own login,
+or `unlisted`); its running count and its start counts are on that one
+account. Holding and counting are two questions, since one folder can be
+more than one account's.
+
+- An account registered on a folder after a launch into it was reserved
+  is not held by that launch, and the launch stays counted where it was
+  counted.
+- Where the accounts cannot be read, or on a server that does not own
+  them, a launch holds nothing by folder (a remove is refused while that
+  lasts).
+- A usage read is not a launch and holds nothing.
+- A launch on another Runtime is held and counted as one that runs here.
+- A home that an entry or a launch sets moves the agent's own folder, and
+  the binding's `source` still says the agent's own login.
+- A program whose entry names no adapter, or another adapter's folder
+  variable, is not read for a folder: Conductor does not know what such a
+  program reads, and it holds nothing by folder.
+- A home set to nothing is read as not set: the tool's own folder is then
+  found as it is for a launch that sets no home.
+- For what a launch holds and where it is counted, a folder is an
+  account's when the file system says it is the same directory at the
+  reservation, however it is written, and a folder that does not exist
+  yet is compared by its path as written, cleaned. The folder Brakeman's
+  turn wants is looked up for its binding as before: the paths the same
+  cleaned, or the same where links lead.
+- A launch whose binding is `unlisted` is counted on its own adapter's
+  account when the reservation holds one on that folder, else on
+  `unlisted`.
+
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
-most 10, while a launch that names the account (or takes it as its
-adapter's default) is under way, from its reservation until its process
-has ended, whether or not its session was registered (its registration
-refused and its stop failed among them), a registered server session's
-process bound to it still runs (its stop failed, or it was removed from
-the listing), an engine run not ended, or a ledger run running or
-interrupted, and continued by no other run, is bound to it (one whose
-crew cannot be read holds every account); a stopped or finished run is no
-bar (continuing it is refused `account_gone`), and a kept run that
-another run has continued holds nothing. A registered session, and a
-member of a run not ended (the engine's, or the ledger's as above), whose
-binding is `pinned` (its entry or the server's passthrough sets the login,
-and the launch's own environment sets none of its login variables) to a
-folder that a registered account holds, holds that account, its `source`
-still what the environment says, and such a session is counted on it. For a login that an entry, the
-passthrough or a launch's own environment sets, what is held and counted
-begins at the session's registration and follows what the binding keeps.
+most 10, while a launch holds the account so, a registered server
+session that held it at its launch still has a process running (its stop
+failed, or it was removed from the listing), or an engine run not ended, or a
+ledger run running or interrupted, and continued by no other run, has a
+member whose binding names it or keeps its folder (the same directory, as
+the file system says at the remove, however either is written; one whose
+crew cannot be read holds every account); a stopped or finished run is no bar
+(continuing it is refused `account_gone`), and a kept run that another
+run has continued holds nothing. A run keeps a member on the agent's own
+login as no binding, and one bound `launch_env`, or `pinned` by a key
+alone, with no folder: such a member holds the account of its folder
+through its launches, and nothing between a kept run's attempts, when
+nothing runs in the folder.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
 link's and a Brakeman turn's are refused `401`) and a launch route's (a
@@ -6291,8 +6379,13 @@ its limit with every character escaped as JSON may escape it: an add's at
 
 A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
 words}, account: {id, label, default, retired, plan}, host: {kind, name?,
-words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
-{program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
+words?}, entryLogin?, state, words, windows, credits, limits, counts,
+readAt?, readBy?: {program, version, qualified}, fresh, nextReadAfter?}`.
+`entryLogin`, in the view of every account asked of an agent whose entry
+(or the server's passthrough) sets its adapter's folder variable or one of
+its login variables, is that variable's name (one of a fixed list, at most
+32 bytes; never its value): every launch of the agent uses that login, so
+the launch dialog offers it no account. `state` is one of
 `ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
 `error`, `unsupported` (no reader for the agent), `not_installed` (also
 an entry whose command is a path relative to a working folder: no read,
@@ -6304,8 +6397,8 @@ the provider did not report it (never a zero); the counts (`running`,
 `started5h`, `started7d`, `since`) carry `source: "conductor"` and
 `estimate: true`: the server sessions of the agent on the account this
 server counted since it started, each from its registration: a session
-bound to the account, and one bound `pinned` to the account's folder
-(Capacity's binding paragraph above). `host.kind` is `native`
+counted on the account, whatever its `source` (Capacity's binding
+paragraph above). `host.kind` is `native`
 (with the server's name), `remote`, or, for a managed run of the agent's
 own login when a Runtime other than the native one is registered,
 `undetermined` ("this server's login: if <Runtime> takes the run, its usage
