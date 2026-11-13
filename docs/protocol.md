@@ -6109,9 +6109,9 @@ on a Runtime other than the native one only under the agent's own login
 (`400 invalid_account` otherwise, an attempt failed with those words).
 A launch of this server holds every registered account whose folder it
 runs in, as the launch's own adapter's folder variable or home says
-where that is: decided when the launch is reserved, before its process
-starts, and kept until the process has ended. Its session is counted on
-one account, decided at its registration. A launch runs in an account's
+where that is. What it holds, and the one account its session is counted
+on, are decided when the launch is reserved, before its process starts,
+and kept until the process has ended. A launch runs in an account's
 folder when it names the account, or the folder its process runs in (its
 adapter's folder variable's as the process sees it, else the agent's own
 under its home; one that is not a whole path is read under the folder it
@@ -6120,12 +6120,14 @@ account's adapter: it holds every such account, whether or not its
 session is registered (its registration refused and its stop failed
 among them). The ids of the accounts it holds, and the one account it is
 counted on, are kept in memory with its session, never written or
-answered; no folder is asked about again after the reservation. Its
-session is counted on the account it names, else its own adapter's
-account on that folder, else its binding's id (`default` for the agent's
-own login), never on another adapter's account; its running count and
-its start counts are on that one account. Holding and counting are two
-questions, since one folder can be more than one account's.
+answered: for a session, no folder is asked about again after the
+reservation (a kept run's member between attempts is judged at the
+remove by its binding, below). Its session is counted on the account the
+launch names, else the first account of its own adapter among those it
+holds, else its binding's own id (`default` for the agent's own login,
+or `unlisted`); its running count and its start counts are on that one
+account. Holding and counting are two questions, since one folder can be
+more than one account's.
 
 - An account registered on a folder after a launch into it was reserved
   is not held by that launch, and the launch stays counted where it was
@@ -6148,17 +6150,18 @@ questions, since one folder can be more than one account's.
   yet is compared by its path as written, cleaned. The folder Brakeman's
   turn wants is looked up for its binding as before: the paths the same
   cleaned, or the same where links lead.
-- A launch whose binding is `unlisted` is counted on `unlisted`, unless
-  the file system says its folder is an account's of the launch's own
-  adapter (another spelling of it), when it is counted on that account.
+- A launch whose binding is `unlisted` is counted on its own adapter's
+  account when the reservation holds one on that folder, else on
+  `unlisted`.
 
 `DELETE /api/accounts/{id}` is refused `409 account_in_use`, naming at
 most 10, while a launch holds the account so, a registered server
 session that held it at its launch still has a process running (its stop
 failed, or it was removed from the listing), or an engine run not ended, or a
 ledger run running or interrupted, and continued by no other run, has a
-member whose binding names it or keeps its folder (one whose crew cannot
-be read holds every account); a stopped or finished run is no bar
+member whose binding names it or keeps its folder (the same directory, as
+the file system says at the remove, however either is written; one whose
+crew cannot be read holds every account); a stopped or finished run is no bar
 (continuing it is refused `account_gone`), and a kept run that another
 run has continued holds nothing. A run keeps a member on the agent's own
 login as no binding, and one bound `launch_env`, or `pinned` by a key
