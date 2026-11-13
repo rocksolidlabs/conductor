@@ -561,9 +561,8 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 	})
 }
 
-// SendArgs is publication.send's content: the client's request, which
-// the API replays (Replay) before it asks the tracker anything.
-type SendArgs struct {
+// sendArgs is publication.send's content: the client's request.
+type sendArgs struct {
 	ID         string `json:"id"`
 	PostSha256 string `json:"postSha256"`
 }
@@ -576,7 +575,7 @@ type SendArgs struct {
 // nothing, and its caller posts nothing. An expected revision is the
 // publication's.
 func (s *Store) BeginSend(ctx context.Context, op Op, id, postSha256 string, by Sender) (rc Receipt, owned bool, err error) {
-	rc, err = s.Apply(ctx, op, IntentPublicationSend, SendArgs{id, postSha256}, func(t *tx) error {
+	rc, err = s.Apply(ctx, op, IntentPublicationSend, sendArgs{id, postSha256}, func(t *tx) error {
 		return t.changePublication(id, func(p Publication, instance string) (Publication, error) {
 			return p.beginSend(postSha256, by, instance, t.op.author(), t.now)
 		})

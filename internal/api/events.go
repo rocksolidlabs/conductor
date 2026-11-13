@@ -245,10 +245,10 @@ func (h *eventHub) run(id string, removed bool) {
 // dispatchEvent is the data of a `dispatch` event: something of Dispatch's
 // changed (dispatch.Change), for a page to read again. seq is the commit's
 // last change in the store's log; entity what changed (project, ticket,
-// comment, label, milestone, view, person, plan, launch, review, finding
-// or publication: a ticket's plan revision, launch, a person's review of
-// a candidate or one of its findings, whose marks are the finding's
-// changes, or a ticket's publication) and id its id, "" for a
+// comment, label, milestone, view, person, plan, launch, review or
+// finding: a ticket's plan revision, launch, a person's review of a
+// candidate or one of its findings, whose marks are the finding's
+// changes) and id its id, "" for a
 // person, whose id is its name: the directory is small and its pickers
 // read it again whole, so the event says only that it changed; ticket the
 // id of the ticket the change belongs to and project its project's key,
@@ -262,10 +262,9 @@ type dispatchEvent struct {
 	Project string `json:"project"`
 }
 
-// maxDispatchEvent bounds a dispatch event's data. The longest is 121
-// bytes: seq at most 19 digits, entity at most 11 (publication; a
-// milestone's, a plan's, a launch's, a review's and a finding's are
-// shorter), id and ticket 16 hex characters each,
+// maxDispatchEvent bounds a dispatch event's data. The longest is 119
+// bytes: seq at most 19 digits, entity at most 9 (milestone; a plan's,
+// a launch's, a review's and a finding's are shorter), id and ticket 16 hex characters each,
 // project a key of at most 6, and the envelope's 53; every value is
 // digits, a word of the code's, hex or a key, never escaped. A person's
 // name, which could be 60 characters of six encoded bytes each, never

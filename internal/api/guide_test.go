@@ -831,9 +831,6 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		// A ticket's GitHub item.
 		"ticket_import_preview": externalPreviewBody{}, "ticket_import": externalImportBody{}, "ticket_link_issue": externalLinkBody{},
 		"ticket_unlink_issue": dispatchOp{}, "ticket_refresh": externalRefreshBody{}, "ticket_authority": externalAuthorityBody{}, "link_read": linkReadBody{},
-		// A ticket's publications.
-		"publication_prepare": publicationBody{}, "publication_send": publicationSendBody{}, "publication_check": publicationCheckBody{},
-		"publication_close": dispatchOp{},
 	}
 	seen := 0
 	for _, op := range Operations() {
