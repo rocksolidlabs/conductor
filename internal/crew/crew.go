@@ -197,6 +197,9 @@ type Crew struct {
 	// crew, not inside the optional Manifest, so a save that removes the
 	// manifest keeps it and a number names one manifest of the crew for good.
 	ManifestRevision int64 `json:"manifestRevision,omitempty"`
+	// Compare makes the crew a comparison of candidate tasks (compare.go);
+	// only with Tasks. Absent, the crew is what it was before comparisons.
+	Compare *Compare `json:"compare,omitempty"`
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
@@ -287,7 +290,8 @@ func gitRefuses(name string) bool {
 // saved, not as one saved before is read or a run of it continued (a crew
 // valid when it was saved stays readable and its runs continuable): no
 // task needs another twice, and a task's goal, role and instructions, with
-// who answers for it (taskPeople), take at most maxTaskText as its
+// who answers for it (taskPeople) and its comparison part (compareFor),
+// take at most maxTaskText as its
 // task.json keeps them, the part of a task file never cut (fitTaskFile).
 func (c Crew) ValidateSave() error {
 	if err := c.Validate(); err != nil {
@@ -311,10 +315,18 @@ func (c Crew) ValidateSave() error {
 			}
 		}
 		people := taskPeopleBytes(c, t)
-		if n := taskTextBytes(c.Goal, prompt, t.Instructions) + people; n > maxTaskText {
+		// A comparison's part of the task file (compareFor) is never cut
+		// either: counted with them, its base not being text of the crew's.
+		cmp := compareTextBytes(compareFor(c.Compare, c.Tasks, t.ID, ""))
+		if n := taskTextBytes(c.Goal, prompt, t.Instructions) + people + cmp; n > maxTaskText {
 			what := "goal, role and instructions"
-			if people > 0 {
+			switch {
+			case people > 0 && cmp > 0:
+				what = "goal, role, instructions, people and comparison"
+			case people > 0:
 				what = "goal, role, instructions and people"
+			case cmp > 0:
+				what = "goal, role, instructions and comparison"
 			}
 			return invalidf("task %s: its %s are %d bytes as its task file keeps them, more than %d", quote(t.ID), what, n, maxTaskText)
 		}
@@ -437,6 +449,9 @@ func (c Crew) checkTasks(names []string) error {
 		}
 		if c.hasManifest() {
 			return invalidf("a project manifest is only set with tasks")
+		}
+		if c.Compare != nil {
+			return invalidf("compare: a comparison is only set on a crew with tasks")
 		}
 		return nil
 	}
@@ -566,6 +581,9 @@ func (c Crew) checkTasks(names []string) error {
 		if err := c.Manifest.validate("project manifest", taskChecks(c.Tasks), false); err != nil {
 			return err
 		}
+	}
+	if c.Compare != nil {
+		return c.Compare.validate(c)
 	}
 	return nil
 }
@@ -752,6 +770,10 @@ func (c Crew) clone() Crew {
 	if c.Manifest != nil {
 		rec := c.Manifest.clone()
 		c.Manifest = &rec
+	}
+	if c.Compare != nil {
+		cmp := c.Compare.clone()
+		c.Compare = &cmp
 	}
 	return c
 }
