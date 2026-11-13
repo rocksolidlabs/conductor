@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 )
 
 // Each small file of a repository has the bound of its kind; a file under
@@ -301,14 +303,13 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	}
 }
 
-// A read started in a folder forty levels beneath a repository's top keeps
-// open only the roots it reads through: the discovery closes each folder
-// it finds no .git in before it looks in the one above (drop), so the
-// opening, told each change of its count (rootsOpen), never holds more
-// than two, the working folder's and its git directory's (an ordinary
-// repository has no common directory), and holds none once the read
-// returns.
-func TestTheDiscoveryKeepsOpenOnlyTheRootsItReadsThrough(t *testing.T) {
+// A read started in a folder forty levels beneath a repository's top opens
+// only the roots it reads through: the discovery looks for .git in each
+// folder on the way without opening it, so the opening, told each change
+// of its count (rootsOpen), opens two roots, the working folder's and its
+// git directory's (an ordinary repository has no common directory), and
+// holds none once the read returns.
+func TestTheDiscoveryOpensOnlyTheRootsItReadsThrough(t *testing.T) {
 	dir := scratch(t)
 	write(t, dir, "a.txt", "one\n")
 	commit(t, dir, time.Time{}, "one")
@@ -319,15 +320,63 @@ func TestTheDiscoveryKeepsOpenOnlyTheRootsItReadsThrough(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	most, last, changes := 0, -1, 0
-	rootsOpen = func(n int) { most, last, changes = max(most, n), n, changes+1 }
+	opened, most, last := 0, 0, 0
+	rootsOpen = func(n int) {
+		if n > last {
+			opened += n - last
+		}
+		most, last = max(most, n), n
+	}
 	defer func() { rootsOpen = nil }()
 	log, err := Commits(context.Background(), deep, "", time.Time{})
 	if err != nil || len(log.Commits) != 1 {
 		t.Fatalf("Commits from forty folders down: %+v %v", log, err)
 	}
-	if most != 2 || last != 0 || changes < 40 {
-		t.Errorf("the read held at most %d roots open at once and %d once it returned (%d changes told); want 2, none, and a change for each folder looked in", most, last, changes)
+	if opened != 2 || most != 2 || last != 0 {
+		t.Errorf("the read opened %d roots, held at most %d at once and %d once it returned; want 2, 2 and none", opened, most, last)
+	}
+}
+
+// Once the read's context has ended, every step that reads the repository
+// is refused with the context's error, noted as the opening's answer: an
+// open, a look and a listing by careOS, a Read and a ReadAt of a file it
+// opened before, and the object cache, which finds nothing, so the step
+// that looked reads the object from its file.
+func TestEveryStepAsksWhetherTheContextHasEnded(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "HEAD", "ref: refs/heads/main\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := &refusal{ctx: ctx}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	opened, err := fs.Open("HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	objects := ending{cache.NewObjectLRUDefault(), seen}
+	blob := &plumbing.MemoryObject{}
+	blob.SetType(plumbing.BlobObject)
+	blob.Write([]byte("one\n"))
+	objects.Put(blob)
+	if _, found := objects.Get(blob.Hash()); !found {
+		t.Fatal("the cache does not find the object put in it")
+	}
+	cancel()
+	_, cached := objects.Get(blob.Hash())
+	_, openErr := fs.Open("HEAD")
+	_, statErr := fs.Stat("HEAD")
+	_, listErr := fs.ReadDir(".")
+	_, readErr := opened.Read(make([]byte, 8))
+	_, readAtErr := opened.ReadAt(make([]byte, 8), 0)
+	for step, err := range map[string]error{"Open": openErr, "Stat": statErr, "ReadDir": listErr, "Read": readErr, "ReadAt": readAtErr} {
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("%s once the context has ended: %v, want the context's error", step, err)
+		}
+	}
+	if cached || !errors.Is(seen.first(), context.Canceled) {
+		t.Errorf("the cache found the object once the context had ended (%v), and the opening answers %v; want nothing found and the context's error", cached, seen.first())
 	}
 }
 

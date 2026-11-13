@@ -508,3 +508,44 @@ func TestFileAtIgnoresReplacedBlobs(t *testing.T) {
 // fileAtAllocBound is what one FileAt of a 1 MiB head may allocate: the
 // head and the buffers of the read (about 1.3 MiB measured).
 const fileAtAllocBound = 4 << 20
+
+// A file's patch counts its lines when each side holds at most MaxPatched
+// lines; a file with a line more on a side is listed without its lines, as
+// one past MaxDiffed is, by Compare and by CommitDetail.
+func TestAPatchCountsAtMostMaxPatchedLinesASide(t *testing.T) {
+	dir := scratch(t)
+	ctx := context.Background()
+	lines := func(n int, last string) string {
+		var b strings.Builder
+		for i := range n - 1 {
+			fmt.Fprintf(&b, "line %d\n", i)
+		}
+		return b.String() + last
+	}
+	write(t, dir, "at.txt", lines(MaxPatched, "first\n"))
+	write(t, dir, "past.txt", lines(MaxPatched+1, "first\n"))
+	c1 := commit(t, dir, time.Time{}, "one")
+	write(t, dir, "at.txt", lines(MaxPatched, "second\n"))
+	write(t, dir, "past.txt", lines(MaxPatched+1, "second\n"))
+	c2 := commit(t, dir, time.Time{}, "two")
+	compared, err := Compare(ctx, dir, c1, c2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := CommitDetail(ctx, dir, c2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, d := range map[string]Detail{"Compare": compared, "CommitDetail": detail} {
+		got := map[string]Change{}
+		for _, c := range d.Changes {
+			got[c.Path] = c
+		}
+		if c := got["at.txt"]; c.Status != "M" || c.Added != 1 || c.Removed != 1 || c.Binary {
+			t.Errorf("%s: at.txt, %d lines a side: %+v, want its line added and its line removed", name, MaxPatched, c)
+		}
+		if c := got["past.txt"]; c.Status != "M" || c.Added != 0 || c.Removed != 0 || !c.Binary {
+			t.Errorf("%s: past.txt, %d lines a side: %+v, want it listed without its lines", name, MaxPatched+1, c)
+		}
+	}
+}

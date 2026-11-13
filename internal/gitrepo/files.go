@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -248,6 +249,9 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
 		return nil, &os.PathError{Op: "open", Path: name, Err: errReadOnly}
 	}
+	if err := fs.seen.ended(); err != nil {
+		return nil, err
+	}
 	rel, err := fs.rel(name)
 	if err != nil {
 		return nil, err
@@ -287,6 +291,9 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 var afterLook func(rel string)
 
 func (fs *careOS) Stat(name string) (os.FileInfo, error) {
+	if err := fs.seen.ended(); err != nil {
+		return nil, err
+	}
 	rel, err := fs.rel(name)
 	if err != nil {
 		return nil, err
@@ -368,9 +375,17 @@ func (f *careFile) Truncate(int64) error {
 	return &os.PathError{Op: "truncate", Path: f.name, Err: errReadOnly}
 }
 
-func (f *careFile) Read(p []byte) (int, error) { return f.count(f.file.Read(f.take(p))) }
+func (f *careFile) Read(p []byte) (int, error) {
+	if err := f.seen.ended(); err != nil {
+		return 0, err
+	}
+	return f.count(f.file.Read(f.take(p)))
+}
 
 func (f *careFile) ReadAt(p []byte, off int64) (int, error) {
+	if err := f.seen.ended(); err != nil {
+		return 0, err
+	}
 	return f.count(f.file.ReadAt(f.take(p), off))
 }
 
@@ -398,15 +413,36 @@ func (f *careFile) count(n int, err error) (int, error) {
 func (f *careFile) Lock() error   { return errReadOnly }
 func (f *careFile) Unlock() error { return errReadOnly }
 
-// refusal keeps the first file an opening refused (ErrUnreadable): go-git
-// goes on past some failed opens (a loose ref's, to packed-refs), so open
-// and read answer with the refusal, not with what go-git made of it. It
-// keeps the opening's roots too, closed once the read is over (close); a
-// folder the discovery found no .git in is closed as it moves up (drop).
+// refusal keeps the first file an opening refused (ErrUnreadable), or the
+// end of the read's context a step found (ended): go-git goes on past some
+// failed opens (a loose ref's, to packed-refs), so open and read answer
+// with the refusal, not with what go-git made of it. It keeps the
+// opening's roots too, closed once the read is over (close); a folder
+// whose .git is gone by the root's look is closed as the discovery moves
+// up (drop).
 type refusal struct {
 	mu    sync.Mutex
 	err   error
 	roots []*os.Root
+	ctx   context.Context // the read's; nil for an opening of a test's, which never ends
+}
+
+// ended is the read's context's error once the context has ended, noted as
+// the opening's answer, and nil before. Every step of a read asks it before
+// it reads the repository: careOS's open, look and listing, careFile's Read
+// and ReadAt, and the object cache's look-up (ending). go-git reads each
+// object from that cache or from its file, so the candidates of a
+// revision's name, the commits of a walk and the files of a comparison each
+// ask, and the read ends at its next step whatever go-git makes of the
+// error. What runs between two asks works on what was read, in time that
+// grows with it (an object or a delta's base decoded, a small file within
+// its bound parsed), except one file's patch, whose work grows with the
+// square of its lines: MaxPatched bounds it.
+func (r *refusal) ended() error {
+	if r.ctx == nil || r.ctx.Err() == nil {
+		return nil
+	}
+	return r.note(r.ctx.Err())
 }
 
 func (r *refusal) keep(fs *careOS) *careOS {
@@ -419,8 +455,8 @@ func (r *refusal) keep(fs *careOS) *careOS {
 	return fs
 }
 
-// drop closes and forgets fs's root: a folder the discovery looked for
-// .git in and found none.
+// drop closes and forgets fs's root: a folder whose .git the discovery's
+// look found and the root's look did not (gone between the two).
 func (r *refusal) drop(fs *careOS) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -471,7 +507,10 @@ func (r *refusal) first() error {
 // and dotGitFileToOSFilesystem), over careOS file systems: the folder, or
 // the nearest one above it, with a .git, and the folder a .git file names
 // (a linked worktree's); the root as the git directory, with no working
-// tree, when no folder up to it has a .git.
+// tree, when no folder up to it has a .git. Whether a folder holds a .git
+// is a look (a stat), which needs the folder entered, not listed: a root
+// is opened only for the folder that holds it (and for the root of the
+// file system, when no folder up to it does).
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 	p, err := filepath.Abs(dir)
 	if err != nil {
@@ -481,6 +520,13 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 		folder := p
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			folder = filepath.Dir(p)
+		} else if err != nil && !os.IsNotExist(err) {
+			return nil, nil, err
+		}
+		up := filepath.Dir(p)
+		if _, err := os.Stat(filepath.Join(folder, git.GitDirName)); os.IsNotExist(err) && up != p {
+			p = up
+			continue
 		} else if err != nil && !os.IsNotExist(err) {
 			return nil, nil, err
 		}
@@ -496,7 +542,7 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 		if !os.IsNotExist(err) {
 			return nil, nil, err
 		}
-		if up := filepath.Dir(p); up != p {
+		if up != p {
 			seen.drop(fs)
 			p = up
 			continue

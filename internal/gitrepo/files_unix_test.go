@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -888,8 +889,8 @@ func TestTheOpenerHandedAPathThatIsNotAFolder(t *testing.T) {
 	for _, name := range []string{"pipe", "socket", "file"} {
 		for dir, want := range map[string]error{inside: nil, outside: ErrNotRepo} {
 			path := filepath.Join(dir, name)
-			err := within(t, pipes[dir], "the opener handed "+path, func(context.Context) error {
-				_, _, seen, err := open(path)
+			err := within(t, pipes[dir], "the opener handed "+path, func(ctx context.Context) error {
+				_, _, seen, err := open(ctx, path)
 				if err == nil {
 					seen.close()
 				}
@@ -1008,5 +1009,110 @@ func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 		t.Errorf("a process still has config open for reading after FileAt returned")
 	} else if err != syscall.ENXIO {
 		t.Errorf("open config for writing: %v, want ENXIO (no reader)", err)
+	}
+}
+
+// A read whose context ends between two of its steps returns the context's
+// error, takes no step after it and leaves no goroutine of its own behind.
+// The context is ended at the look at a file (afterLook): in CommitDetail at
+// the first look at packed-refs, as it tries the first of the candidates of
+// a revision's name that names nothing (which go-git goes on trying); in
+// Commits at the second commit of its walk to the merge base with main
+// (which takes no context: it would read the third); in Compare at the
+// second file of the comparison (whose patch, ended, answers go-git's own
+// error, not the context's).
+func TestAReadEndsWithItsContext(t *testing.T) {
+	r := ordinary(t)
+	gitIn(t, r.wt, time.Time{}, "pack-refs", "--all")
+	for i := range 3 {
+		write(t, r.wt, fmt.Sprintf("f%d.txt", i), fmt.Sprintf("file %d\n", i))
+	}
+	c3 := commit(t, r.wt, time.Time{}, "three")
+	write(t, r.wt, "f0.txt", "file 0, again\n")
+	commit(t, r.wt, time.Time{}, "four")
+	object := func(rev string) string {
+		id := gitIn(t, r.wt, time.Time{}, "rev-parse", rev)
+		return filepath.Join("objects", id[:2], id[2:])
+	}
+	for _, c := range []struct {
+		name, at string // at: the file at whose look the context ends
+		read     func(ctx context.Context) error
+	}{
+		{"CommitDetail", "packed-refs", func(ctx context.Context) error {
+			_, err := CommitDetail(ctx, r.wt, "nosuch")
+			return err
+		}},
+		{"Commits", object(c3), func(ctx context.Context) error {
+			_, err := Commits(ctx, r.wt, "main", time.Time{})
+			return err
+		}},
+		{"Compare", object(c3 + ":f1.txt"), func(ctx context.Context) error {
+			_, err := Compare(ctx, r.wt, r.c2, c3)
+			return err
+		}},
+	} {
+		ended := false
+		var after []string
+		err := within(t, "", c.name, func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			afterLook = func(rel string) {
+				if ended {
+					after = append(after, rel)
+				} else if rel == c.at {
+					ended = true
+					cancel()
+				}
+			}
+			defer func() { afterLook = nil }()
+			return c.read(ctx)
+		})
+		if !ended || !errors.Is(err, context.Canceled) || len(after) > 0 {
+			t.Errorf("%s, its context ended at the look at %s (%v): %v, with %v looked at after; want the context's error and nothing after", c.name, c.at, ended, err, after)
+		}
+		if left := leftBehind(); len(left) > 0 {
+			t.Errorf("%s left %d goroutines behind:\n%s", c.name, len(left), strings.Join(left, "\n\n"))
+		}
+	}
+}
+
+// leftBehind is the stacks of the goroutines, the caller's aside, that run
+// go-git's code or wait on a process: what a read started and did not end.
+func leftBehind() []string {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var left []string
+	for _, g := range strings.Split(string(buf), "\n\n")[1:] {
+		if strings.Contains(g, "github.com/go-git/") || strings.Contains(g, "os/exec.") {
+			left = append(left, g)
+		}
+	}
+	return left
+}
+
+// A folder the server's user may enter but not list (mode 0311) between the
+// read's folder and the repository's top is looked through, as the
+// discovery looks for .git with a stat and opens no folder on the way: each
+// of the four reads, started beneath it, answers as it does from the top.
+func TestTheDiscoveryLooksThroughAFolderItMayEnterButNotList(t *testing.T) {
+	r := ordinary(t)
+	shut := filepath.Join(r.wt, "shut")
+	beneath := filepath.Join(shut, "beneath")
+	if err := os.MkdirAll(beneath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shut, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(shut, 0o755) })
+	if _, err := os.ReadDir(shut); err == nil {
+		t.Skip("the test's user lists a folder of mode 0311: modes do not bind it")
+	}
+	r.wt = beneath
+	for _, rd := range readers {
+		err := within(t, "", rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
+		if err != nil {
+			t.Errorf("%s beneath a folder of mode 0311: %v, want it read", rd.name, err)
+		}
 	}
 }

@@ -40,6 +40,13 @@ const (
 	MaxFiles   = 500     // files of one commit
 	MaxBody    = 4096    // bytes of a commit message's body
 	MaxDiffed  = 1 << 20 // a file larger than this is listed without its lines
+	// MaxPatched is the lines of a side a file's patch compares: a file
+	// with more on either side is listed without its lines. The patch is
+	// the one step of a comparison go-git runs without its context
+	// (ended), and its work grows with the square of its lines: 10,000
+	// lines a side, every line changed, took under a second where the
+	// package's tests ran.
+	MaxPatched = 10000
 	shortLen   = 7
 )
 
@@ -102,10 +109,10 @@ type Detail struct {
 // EnableDotGitCommonDir (gitDirs, commonDir), every file of it opened
 // through careOS: the one way the package opens a repository. ErrNotRepo
 // when there is none; ErrUnreadable (wrapped) when one of its files was
-// refused, whatever go-git made of the refusal; seen keeps those of the
-// reads that follow.
-func open(dir string) (r *git.Repository, top string, seen *refusal, err error) {
-	seen = &refusal{}
+// refused, whatever go-git made of the refusal; ctx's error once ctx has
+// ended (ended); seen keeps those of the reads that follow.
+func open(ctx context.Context, dir string) (r *git.Repository, top string, seen *refusal, err error) {
+	seen = &refusal{ctx: ctx}
 	r, top, err = openOver(dir, seen)
 	if refused := seen.first(); refused != nil {
 		err = refused
@@ -139,7 +146,7 @@ func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
 	// go-git's own opening reads every object whole, however large (a
 	// blob of a gigabyte, a gigabyte of heap, and a delta's base besides).
 	files := dotgit.NewRepositoryFilesystem(dot, common)
-	st := filesystem.NewStorageWithOptions(files, cache.NewObjectLRUDefault(), filesystem.Options{LargeObjectThreshold: largeObject})
+	st := filesystem.NewStorageWithOptions(files, ending{cache.NewObjectLRUDefault(), seen}, filesystem.Options{LargeObjectThreshold: largeObject})
 	r, err := git.Open(st, wt)
 	if err != nil {
 		return nil, "", err
@@ -151,6 +158,21 @@ func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
 	return r, top, nil
 }
 
+// ending is an opening's object cache: it finds nothing once the read's
+// context has ended (ended), so the step that looked reads the object from
+// its file, which careOS refuses.
+type ending struct {
+	cache.Object
+	seen *refusal
+}
+
+func (c ending) Get(h plumbing.Hash) (plumbing.EncodedObject, bool) {
+	if c.seen.ended() != nil {
+		return nil, false
+	}
+	return c.Object.Get(h)
+}
+
 // read is f over the repository at dir, opened for it, and f once more
 // over a second opening when the first finds an object, a commit or a file
 // gone: go-git lists a repository's packs once, at its first read from one,
@@ -160,10 +182,11 @@ func openOver(dir string, seen *refusal) (*git.Repository, string, error) {
 // begun before the repack looks for an object in a pack it never listed or
 // in a pack since removed. The second opening lists them again. A commit
 // or a file that truly is not there is looked for twice. A file refused
-// on the way (careOS) is the answer, whatever f made of it.
-func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
+// on the way (careOS) is the answer, whatever f made of it, and so is
+// ctx's error once a step has found ctx ended (ended).
+func read[T any](ctx context.Context, dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
 	var none T
-	r, top, seen, err := open(dir)
+	r, top, seen, err := open(ctx, dir)
 	if err != nil {
 		return none, err
 	}
@@ -175,7 +198,7 @@ func read[T any](dir string, f func(r *git.Repository, top string) (T, error)) (
 	if !gone(err) {
 		return out, err
 	}
-	if r, top, seen, err = open(dir); err != nil {
+	if r, top, seen, err = open(ctx, dir); err != nil {
 		return out, err
 	}
 	out, err = f(r, top)
@@ -201,7 +224,7 @@ const largeObject = 256 << 10
 // base with HEAD when base names a revision, else those committed at or
 // after since. A repository with no commit yet has none.
 func Commits(ctx context.Context, dir, base string, since time.Time) (Log, error) {
-	return read(dir, func(r *git.Repository, top string) (Log, error) { return commits(ctx, r, top, base, since) })
+	return read(ctx, dir, func(r *git.Repository, top string) (Log, error) { return commits(ctx, r, top, base, since) })
 }
 
 func commits(ctx context.Context, r *git.Repository, top, base string, since time.Time) (Log, error) {
@@ -268,7 +291,7 @@ func commits(ctx context.Context, r *git.Repository, top, base string, since tim
 // CommitDetail is the commit rev names and its files against its first
 // parent (every file added, for a root commit), renames found.
 func CommitDetail(ctx context.Context, dir, rev string) (Detail, error) {
-	return read(dir, func(r *git.Repository, top string) (Detail, error) { return commitDetail(ctx, r, top, rev) })
+	return read(ctx, dir, func(r *git.Repository, top string) (Detail, error) { return commitDetail(ctx, r, top, rev) })
 }
 
 func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Detail, error) {
@@ -303,10 +326,11 @@ func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Deta
 // reference names another commit), renames found, each with its added and
 // removed lines, as CommitDetail answers for one commit against its
 // parent; Commit is to's. At most MaxFiles files, Truncated past them; a
-// file past MaxDiffed is listed without its lines. ErrNoCommit (wrapped)
+// file past MaxDiffed, or with more than MaxPatched lines on a side, is
+// listed without its lines. ErrNoCommit (wrapped)
 // for an id the repository has no commit of.
 func Compare(ctx context.Context, dir, from, to string) (Detail, error) {
-	return read(dir, func(r *git.Repository, top string) (Detail, error) { return compare(ctx, r, top, from, to) })
+	return read(ctx, dir, func(r *git.Repository, top string) (Detail, error) { return compare(ctx, r, top, from, to) })
 }
 
 func compare(ctx context.Context, r *git.Repository, top, from, to string) (Detail, error) {
@@ -348,7 +372,7 @@ type File struct {
 // for an id the repository has no commit of, ErrNoFile for a path the
 // commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
-	return read(dir, func(r *git.Repository, _ string) (File, error) { return fileAt(ctx, r, dir, id, path, limit) })
+	return read(ctx, dir, func(r *git.Repository, _ string) (File, error) { return fileAt(ctx, r, dir, id, path, limit) })
 }
 
 func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit int) (File, error) {
@@ -588,7 +612,15 @@ func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, 
 		if err != nil {
 			return out, err
 		}
-		if (from != nil && from.Size > MaxDiffed) || (to != nil && to.Size > MaxDiffed) {
+		fromCounted, err := counted(from)
+		if err != nil {
+			return out, err
+		}
+		toCounted, err := counted(to)
+		if err != nil {
+			return out, err
+		}
+		if !fromCounted || !toCounted {
 			fc.Binary = true // too large to count; shown without its lines
 		} else if p, err := ch.PatchContext(ctx); err == nil {
 			for _, fp := range p.FilePatches() {
@@ -614,6 +646,19 @@ func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, 
 		out.Changes = append(out.Changes, fc)
 	}
 	return out, nil
+}
+
+// counted reports whether the patch counts the lines of f, one side of a
+// file: at most MaxDiffed bytes and MaxPatched lines (nil, no file, is).
+func counted(f *object.File) (bool, error) {
+	if f == nil {
+		return true, nil
+	}
+	if f.Size > MaxDiffed {
+		return false, nil
+	}
+	s, err := f.Contents()
+	return lineCount(s) <= MaxPatched, err
 }
 
 func summary(c *object.Commit, withBody bool) Commit {
