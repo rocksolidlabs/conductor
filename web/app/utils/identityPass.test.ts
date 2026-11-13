@@ -22,9 +22,14 @@ describe('passFromFragment', () => {
 })
 
 describe('takeCredentials', () => {
-  it('takes both keys and drops the whole fragment that carries them', () => {
-    expect(takeCredentials(`http://h.test/decide/dr-7#pass=p.1&x=2&token=${TOKEN}`)).toEqual({ token: TOKEN, pass: 'p.1', href: 'http://h.test/decide/dr-7' })
-    expect(takeCredentials('http://h.test/decide#pass=p.1')).toEqual({ token: '', pass: 'p.1', href: 'http://h.test/decide' })
+  it('takes a key and drops the whole fragment that carries it', () => {
+    expect(takeCredentials('http://h.test/decide/dr-7#pass=p.1&x=2')).toEqual({ token: '', pass: 'p.1', href: 'http://h.test/decide/dr-7' })
+    expect(takeCredentials(`http://h.test/#x=2&token=${TOKEN}`)).toEqual({ token: TOKEN, pass: '', href: 'http://h.test/' })
+  })
+  it('takes neither key of a fragment that holds both, in any spelling, and drops it whole', () => {
+    for (const f of [`pass=p.1&x=2&token=${TOKEN}`, `token=${TOKEN}&%70ass=p.1`, `token=${TOKEN}&%2570ass=p.1`, `%74oken=${TOKEN}&pass=p.1&%E0`, `token=${TOKEN}&pass=not!shaped`]) {
+      expect(takeCredentials(`http://h.test/decide/dr-7#${f}`), f).toEqual({ token: '', pass: '', href: 'http://h.test/decide/dr-7' })
+    }
   })
   it('reads a key percent-escaped as the browser reads it, and drops a fragment it cannot read', () => {
     expect(takeCredentials('http://h.test/decide#%70ass=p.1&%E0')).toEqual({ token: '', pass: 'p.1', href: 'http://h.test/decide' })
@@ -103,8 +108,10 @@ describe('the first address through a real router', () => {
       expect(held).not.toContain(value)
       expect(held).not.toContain(PASS)
       expect(held).not.toContain(TOKEN)
-      if (value === PASS) expect(taken.pass).toBe(PASS)
-      if (value === TOKEN) expect(taken.token).toBe(TOKEN)
+      // A fragment that holds both keys gives neither.
+      const both = !!fragment?.includes(`token=${TOKEN}`) && !!fragment?.includes(PASS)
+      if (value === PASS) expect(taken.pass).toBe(both ? '' : PASS)
+      if (value === TOKEN) expect(taken.token).toBe(both ? '' : TOKEN)
     })
     it(`routes ${path}#${fragment} to an address without it, the middleware alone`, async () => {
       const { held } = await land(`${path}#${fragment}`, false)

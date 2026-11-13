@@ -3,8 +3,8 @@ import { isDecisionId } from './decisions'
 
 // A pass taken from the URL fragment (docs/plans/decide-grant.md, "web/app"; docs/protocol.md, the fragment keys): the credential an
 // identity provider's decide principal is sent to the decide page with, `#pass=…`, beside the workbench token's `#token=…`. Both are
-// taken out of the address before anything else runs; the pass is kept for the tab (useIdentityPass) and sent only in the decide
-// page's Authorization header (useDecide).
+// taken out of the address before the app's router reads it; the pass is kept for the tab (useIdentityPass) and sent only in the
+// decide page's Authorization header (useDecide).
 
 /** The longest pass taken, in characters. */
 export const MAX_PASS = 2048
@@ -16,32 +16,38 @@ export function passFromFragment(hash: string): string {
 }
 
 /**
- * The fragment as it may stay in an address: as it is when it holds neither credential key in any spelling, else none at all. Its
- * keys are read as the browser's own parser reads them (percent-decoded), and again after each layer of escapes is taken off (the
- * router writes `%` as `%25`); a fragment whose escapes cannot be taken off, or that still holds one after four, is not kept.
+ * The credential keys a fragment holds in any spelling, `?` beside them when it cannot be read: its keys are read as the browser's own
+ * parser reads them (percent-decoded), and again after each layer of escapes is taken off (the router writes `%` as `%25`); a fragment
+ * whose escapes cannot be taken off, or that still holds one after four, cannot be read.
  */
-function withoutCredentials(hash: string): string {
+function credentialKeys(hash: string): Set<string> {
+  const keys = new Set<string>()
   let s = hash.replace(/^#/, '')
   for (let i = 0; i < 4; i++) {
-    for (const k of new URLSearchParams(s).keys()) if (k === 'token' || k === 'pass') return ''
-    if (!s.includes('%')) return hash
+    for (const k of new URLSearchParams(s).keys()) if (k === 'token' || k === 'pass') keys.add(k)
+    if (!s.includes('%')) return keys
     try {
       s = decodeURIComponent(s)
     } catch {
-      return ''
+      return keys.add('?')
     }
   }
-  return ''
+  return keys.add('?')
 }
 
+/** The fragment as it may stay in an address: as it is when it holds no credential key and can be read, else none at all. */
+const withoutCredentials = (hash: string) => (credentialKeys(hash).size ? '' : hash)
+
 /**
- * The workbench token and the pass a URL's fragment carries (each '' when absent or refused), and the URL with no fragment when it
- * carries either key in any spelling, whether or not their values were taken.
+ * The workbench token and the pass a URL's fragment carries (each '' when absent or refused, and both '' when it holds both keys), and
+ * the URL with no fragment when it carries either key in any spelling, whether or not their values were taken.
  */
 export function takeCredentials(href: string): { token: string; pass: string; href: string } {
   const u = new URL(href)
   const hash = u.hash
-  if (withoutCredentials(hash) !== hash) u.hash = ''
+  const keys = credentialKeys(hash)
+  if (keys.size) u.hash = ''
+  if (keys.has('token') && keys.has('pass')) return { token: '', pass: '', href: u.toString() }
   return { token: tokenFromFragment(hash), pass: passFromFragment(hash), href: u.toString() }
 }
 
