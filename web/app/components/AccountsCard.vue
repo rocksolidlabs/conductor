@@ -168,7 +168,7 @@ const removing = ref('')
           </UFormField>
         </div>
         <UFormField label="Folder" name="folder" description="The folder that login lives in (the tool's configuration folder). Fixed once added: for another folder, add another account.">
-          <DirInput v-model="add.folder" placeholder="/home/me/.claude-work" picker-title="The folder the login lives in" data-account-add-folder />
+          <DirInput v-model="add.folder" placeholder="/home/me/.claude-work" picker-title="The folder the login lives in" anywhere data-account-add-folder />
         </UFormField>
         <div class="flex justify-end">
           <UButton type="submit" label="Add account" icon="i-lucide-plus" :loading="busy" :disabled="busy || !add.adapter || !add.label.trim() || !add.folder.trim()" data-account-add-submit />

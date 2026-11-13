@@ -1,5 +1,6 @@
 import { randomBytes, randomInt } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test, type Api, type Session } from './fixtures'
 import type { Locator, Page, Response, Route } from '@playwright/test'
@@ -433,19 +434,19 @@ test.describe('the account a launch is sent with', () => {
   })
 })
 
-test("a failed read of the accounts is said in the server's words, with Try again in Settings and one line in the launch dialog", async ({ page }) => {
+test("a read of the accounts the store could not answer (503) is said in the server's words, with Try again in Settings and one line in the launch dialog", async ({ page }) => {
   let fail = true
   await page.route(
     (url) => url.pathname === '/api/accounts',
     (route) =>
       fail && route.request().method() === 'GET'
-        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'bound', message: 'the reply would pass its bound' } }) })
+        ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'capacity_unavailable', message: 'the accounts store is busy just now' } }) })
         : route.continue(),
   )
   await page.goto('/settings')
   const card = page.locator('[data-accounts-card]')
   await expect(card.locator('[data-accounts-problem]')).toContainText('The accounts could not be read')
-  await expect(card.locator('[data-accounts-problem]')).toContainText('the reply would pass its bound')
+  await expect(card.locator('[data-accounts-problem]')).toContainText('the accounts store is busy just now')
   await expect(card).not.toContainText('Reading the accounts')
   fail = false
   await card.locator('[data-accounts-problem]').getByRole('button', { name: 'Try again' }).click()
@@ -455,9 +456,48 @@ test("a failed read of the accounts is said in the server's words, with Try agai
   fail = true
   await page.goto('/')
   const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
-  await expect(dialog.locator('[data-launch-accounts-unread]')).toContainText('the reply would pass its bound')
+  await expect(dialog.locator('[data-launch-accounts-unread]')).toContainText('the accounts store is busy just now')
   await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
   await expect(dialog.locator('[data-launch-model]')).toHaveCount(0)
+})
+
+test("an account's folder outside the allowed roots is picked with the folder field's picker, and the account is added with it", async ({ page, state }) => {
+  // A folder of the test's own beside the e2e server's scratch root, its only allowed root: outside it.
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), 'e2e-account-outside-')))
+  made.folders.push(outside)
+  expect(outside.startsWith(state.root + '/')).toBe(false)
+  writeFileSync(join(outside, 'stub-usage'), 'ok\n')
+  mkdirSync(join(outside, 'inner')) // what the picker lists once it is on the folder
+  const work = label('outside')
+  await page.goto('/settings')
+  const card = page.locator('[data-accounts-card]')
+  await expect(card.locator('[data-accounts-adapter="claude"]')).toBeVisible()
+  const add = card.locator('[data-account-add]')
+  await add.locator('[data-account-add-adapter]').click()
+  await page.getByRole('option', { name: 'Claude Code', exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await add.locator('[data-account-add-label]').fill(work)
+  await expect(add.locator('[data-account-add-label]')).toHaveValue(work)
+  await add.locator('[data-account-add-folder] [data-dir-input-pick]').click()
+  const picker = page.getByRole('dialog', { name: 'The folder the login lives in' })
+  const path = picker.locator('[data-dir-picker-path]')
+  await path.fill(outside)
+  await path.press('Enter') // lists the typed folder at once
+  await expect(picker.locator('[data-dir-picker-entry="inner"]')).toBeVisible({ timeout: 15_000 })
+  await expect(path).toHaveValue(outside)
+  await picker.locator('[data-dir-picker-use]').click()
+  await expect(picker).toHaveCount(0)
+  const folderInput = add.locator('[data-account-add-folder] input[role="combobox"]')
+  await expect(folderInput).toHaveValue(outside)
+  // The pick's listing opens the field's list on the folder's children: closed before the form is sent.
+  await expect(page.getByRole('option', { name: 'inner' })).toBeVisible({ timeout: 15_000 })
+  await folderInput.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await add.locator('[data-account-add-submit]').click()
+  const row = card.locator(`[data-account-label="${work}"]`)
+  await expect(row).toBeVisible()
+  made.accounts.push((await row.getAttribute('data-account-row')) ?? '')
+  await expect(row.locator('[data-account-folder]')).toHaveText(outside)
 })
 
 test.describe('on a phone', () => {

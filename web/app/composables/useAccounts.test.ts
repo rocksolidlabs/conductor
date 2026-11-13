@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './useApi'
-import { ACCOUNTS_DEADLINE_MS, AccountsLive, STALE_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
+import { ACCOUNTS_DEADLINE_MS, AccountsLive, STALE_WORDS, UNANSWERED_WORDS, accountRefusalWords, type AccountsDoc, type AccountsReads } from './useAccounts'
 
 // The accounts store (docs/plans/capacity.md, PR-5): every write names the revision read and is followed by a read of the document;
 // a stale revision reads it again and says so; a refusal is the server's words, with what holds an account; a server that offers
@@ -176,6 +176,68 @@ describe('AccountsLive', () => {
     await loading
     expect(live.problem).toBe(`The server did not answer within ${ACCOUNTS_DEADLINE_MS / 1000} s`)
     expect(signal!.aborted).toBe(true)
+  })
+
+  it('aborts a write the server does not answer by its deadline, says its outcome is not known, and stays busy until the accounts are read again', async () => {
+    const timers: Array<{ ms: number; fn: () => void; live: boolean }> = []
+    const live = new AccountsLive((ms, fn) => {
+      const t = { ms, fn, live: true }
+      timers.push(t)
+      return () => (t.live = false)
+    })
+    const srv = fakeServer(doc(1))
+    let held: { signal: AbortSignal; answer: () => void } | null = null
+    let reread: ((d: AccountsDoc) => void) | null = null
+    let lists = 0
+    live.attach({
+      ...srv.reads,
+      list: (signal) => (++lists === 1 ? srv.reads.list(signal) : new Promise((r) => (reread = r))),
+      setDefault: (_ad, _b, signal) => new Promise((answer) => (held = { signal, answer: () => answer({}) })),
+    })
+    await live.load()
+    let changes = 0
+    live.changed = () => changes++
+    const writing = live.setDefault('claude', 'a-work').catch((e: Error) => e.message)
+    await settle()
+    expect(held!.signal.aborted).toBe(false)
+    // The write's deadline passes: its request is aborted, and the accounts are read again, busy until that read has ended.
+    timers.filter((t) => t.live && t.ms === ACCOUNTS_DEADLINE_MS).forEach((t) => ((t.live = false), t.fn()))
+    await settle()
+    expect(held!.signal.aborted).toBe(true)
+    expect(lists).toBe(2)
+    expect(live.busy).toBe(true)
+    reread!(doc(2, { adapters: [{ adapter: 'claude', name: 'Claude Code', default: 'a-work' }] }))
+    expect(await writing).toBe(UNANSWERED_WORDS)
+    expect(UNANSWERED_WORDS).toContain('did not answer within')
+    expect(UNANSWERED_WORDS).toContain('may still have been made')
+    expect(live.busy).toBe(false)
+    expect(live.doc?.adapters[0]?.default).toBe('a-work')
+    // The aborted request's late answer draws nothing more.
+    const drawn = changes
+    held!.answer()
+    await settle()
+    expect(changes).toBe(drawn)
+    expect(live.doc?.rev).toBe(2)
+  })
+
+  it('says a store that could not be read (503) as a failed read, at the first read and over the document shown, and leaves the section out only when the accounts are not here', async () => {
+    let fail: Error | null = new ApiError(503, 'capacity_unavailable', 'the accounts could not be read')
+    const srv = fakeServer(doc(1))
+    const live = new AccountsLive()
+    live.attach({ ...srv.reads, list: (signal) => (fail ? Promise.reject(fail) : srv.reads.list(signal)) })
+    await live.load()
+    expect(live).toMatchObject({ doc: null, available: null, problem: 'the accounts could not be read' })
+    fail = null
+    await live.load()
+    expect(live).toMatchObject({ available: true, problem: '' })
+    fail = new ApiError(503, 'capacity_unavailable', 'the accounts could not be read')
+    await live.load()
+    expect(live).toMatchObject({ available: true, problem: 'the accounts could not be read' })
+    expect(live.doc?.rev).toBe(1)
+    // Not here (404): the section is left out.
+    fail = new ApiError(404, 'not_found', 'not found')
+    await live.load()
+    expect(live).toMatchObject({ available: false, doc: null, problem: '' })
   })
 })
 

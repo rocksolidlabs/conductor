@@ -35,15 +35,18 @@ export interface AccountsDoc {
   adapters: AccountsAdapter[]
 }
 
-/** What the store asks of the server; each write names the revision it read (`expectedRev`). */
+/** What the store asks of the server; each write names the revision it read (`expectedRev`), and every request is aborted at its deadline. */
 export interface AccountsReads {
   list: (signal: AbortSignal) => Promise<AccountsDoc>
-  add: (body: { adapter: string; label: string; folder: string; expectedRev: number }) => Promise<unknown>
-  rename: (id: string, body: { label: string; expectedRev: number }) => Promise<unknown>
-  retire: (id: string, body: { expectedRev: number }) => Promise<unknown>
-  remove: (id: string, expectedRev: number) => Promise<unknown>
-  setDefault: (adapter: string, body: { account: string; expectedRev: number }) => Promise<unknown>
+  add: (body: { adapter: string; label: string; folder: string; expectedRev: number }, signal: AbortSignal) => Promise<unknown>
+  rename: (id: string, body: { label: string; expectedRev: number }, signal: AbortSignal) => Promise<unknown>
+  retire: (id: string, body: { expectedRev: number }, signal: AbortSignal) => Promise<unknown>
+  remove: (id: string, expectedRev: number, signal: AbortSignal) => Promise<unknown>
+  setDefault: (adapter: string, body: { account: string; expectedRev: number }, signal: AbortSignal) => Promise<unknown>
 }
+
+/** The words of a write the server did not answer within its deadline: it was aborted, and the accounts were read again. */
+export const UNANSWERED_WORDS = `${DEADLINE_WORDS}, so the change may still have been made: the accounts were read again to show what the server holds.`
 
 /** The words of a write refused because the accounts changed since this page read them; the page has read them again. */
 export const STALE_WORDS = 'The accounts changed since this page read them: they are shown again as they are now. Try again if it still applies.'
@@ -61,8 +64,8 @@ export function accountRefusalWords(e: unknown): string {
 /**
  * The accounts document for the app's screens (docs/plans/capacity.md, PR-5), one for the app: read when a page shows it, and again
  * after every write, which names the revision this store read (`expectedRev`); a write refused `stale_rev` reads the document again
- * and says so. One write at a time; a read's answer older than one taken is dropped. A server that offers no accounts (a switchyard,
- * no data directory) is `available: false`, and the pages show nothing of them.
+ * and says so. One write at a time; a read's answer older than one taken is dropped. A server whose accounts are not here (404) or
+ * not the token's (403, a switchyard) is `available: false`, and the pages show nothing of them; any other failed read is said.
  */
 export class AccountsLive {
   doc: AccountsDoc | null = null
@@ -109,7 +112,8 @@ export class AccountsLive {
       this.doc = doc
       this.available = true
       this.problem = ''
-    } else if (error instanceof ApiError && (error.status === 403 || error.status === 503 || error.status === 404)) {
+    } else if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+      // Not here (404) or not yours (403); a 503 is a store that could not be read just then, said as any failed read.
       this.available = false
       this.doc = null
       this.problem = ''
@@ -120,7 +124,7 @@ export class AccountsLive {
   }
 
   /** Runs one write against the revision read, then reads the document again, busy until that read has ended; a refusal is thrown in its words. */
-  private async write(send: (rev: number) => Promise<unknown>): Promise<void> {
+  private async write(send: (rev: number, signal: AbortSignal) => Promise<unknown>): Promise<void> {
     if (!this.reads || !this.doc) throw new Error('The accounts have not been read yet')
     if (this.busy) throw new Error('Another change to the accounts is under way')
     const epoch = this.epoch
@@ -128,8 +132,9 @@ export class AccountsLive {
     this.busy = true
     this.changed()
     let refusal: unknown = null
+    let sent: AbortSignal | null = null
     try {
-      await withDeadline(() => send(rev), ACCOUNTS_DEADLINE_MS, DEADLINE_WORDS, this.after)
+      await withDeadline((signal) => send(rev, (sent = signal)), ACCOUNTS_DEADLINE_MS, DEADLINE_WORDS, this.after)
     } catch (e) {
       refusal = e
     }
@@ -138,27 +143,28 @@ export class AccountsLive {
     if (!this.stands(epoch)) return
     this.busy = false
     this.changed()
-    if (refusal) throw new Error(accountRefusalWords(refusal))
+    // Aborted at its deadline: whether the server took it is not known, and the document just read says what it holds.
+    if (refusal) throw new Error((sent as AbortSignal | null)?.aborted ? UNANSWERED_WORDS : accountRefusalWords(refusal))
   }
 
   add(adapter: string, label: string, folder: string) {
-    return this.write((rev) => this.reads!.add({ adapter, label: label.trim(), folder: folder.trim(), expectedRev: rev }))
+    return this.write((rev, signal) => this.reads!.add({ adapter, label: label.trim(), folder: folder.trim(), expectedRev: rev }, signal))
   }
 
   rename(id: string, label: string) {
-    return this.write((rev) => this.reads!.rename(id, { label: label.trim(), expectedRev: rev }))
+    return this.write((rev, signal) => this.reads!.rename(id, { label: label.trim(), expectedRev: rev }, signal))
   }
 
   retire(id: string) {
-    return this.write((rev) => this.reads!.retire(id, { expectedRev: rev }))
+    return this.write((rev, signal) => this.reads!.retire(id, { expectedRev: rev }, signal))
   }
 
   remove(id: string) {
-    return this.write((rev) => this.reads!.remove(id, rev))
+    return this.write((rev, signal) => this.reads!.remove(id, rev, signal))
   }
 
   setDefault(adapter: string, account: string) {
-    return this.write((rev) => this.reads!.setDefault(adapter, { account, expectedRev: rev }))
+    return this.write((rev, signal) => this.reads!.setDefault(adapter, { account, expectedRev: rev }, signal))
   }
 
   /** Another workbench token: nothing read through the old one stays, and every step on its way for it stands no more. */
@@ -187,11 +193,11 @@ export function useAccounts() {
   const id = (s: string) => encodeURIComponent(s)
   store.attach({
     list: (signal) => request<AccountsDoc>('/api/accounts', { signal }),
-    add: (body) => request('/api/accounts', { method: 'POST', body }),
-    rename: (a, body) => request(`/api/accounts/${id(a)}`, { method: 'PATCH', body }),
-    retire: (a, body) => request(`/api/accounts/${id(a)}/retire`, { method: 'POST', body }),
-    remove: (a, rev) => request(`/api/accounts/${id(a)}`, { method: 'DELETE', query: { expectedRev: String(rev) } }),
-    setDefault: (ad, body) => request(`/api/accounts/defaults/${id(ad)}`, { method: 'PUT', body }),
+    add: (body, signal) => request('/api/accounts', { method: 'POST', body, signal }),
+    rename: (a, body, signal) => request(`/api/accounts/${id(a)}`, { method: 'PATCH', body, signal }),
+    retire: (a, body, signal) => request(`/api/accounts/${id(a)}/retire`, { method: 'POST', body, signal }),
+    remove: (a, rev, signal) => request(`/api/accounts/${id(a)}`, { method: 'DELETE', query: { expectedRev: String(rev) }, signal }),
+    setDefault: (ad, body, signal) => request(`/api/accounts/defaults/${id(ad)}`, { method: 'PUT', body, signal }),
   })
   store.changed = () => version.value++
   // The token is watched while a page shows the accounts: another one empties the store, so nothing read with the old one is shown.

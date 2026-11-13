@@ -31,8 +31,6 @@ interface Slot extends CapacityEntry {
   again: boolean
   /** Why the last read was refused, in the server's words; "" when it was not. */
   readError: string
-  /** The moment of the view's own change (viewTurns) a GET was last asked for. */
-  agedFor: number | null
   /** The GET out and those owed after it, ended. */
   landing: Promise<void>
 }
@@ -84,7 +82,7 @@ export class CapacityLive {
     const key = capacityKey(q)
     let s = this.slots.get(key)
     if (!s) {
-      s = { query: { ...q }, view: null, error: '', reading: false, watchers: 0, fetching: false, again: false, readError: '', agedFor: null, landing: Promise.resolve() }
+      s = { query: { ...q }, view: null, error: '', reading: false, watchers: 0, fetching: false, again: false, readError: '', landing: Promise.resolve() }
       this.slots.set(key, s)
     }
     s.watchers++
@@ -176,13 +174,16 @@ export class CapacityLive {
     for (const s of this.slots.values()) void this.fetch(s)
   }
 
-  /** Every view shown whose words have changed by the clock since it was fetched (stale, a reset passed) is fetched again: a GET, never a read. */
+  /**
+   * Every view shown whose words have changed by the clock since it was fetched (stale, a reset passed) is fetched again: a GET,
+   * never a read, and none while one is out. The boundary is passed only once a GET answers with the changed words: one that failed,
+   * or answered with them unchanged (the server's clock behind), leaves it to the next tick.
+   */
   age() {
     const now = this.now()
     for (const s of this.slots.values()) {
       const at = s.view ? viewTurns(s.view) : null
-      if (at === null || at > now || s.agedFor === at) continue
-      s.agedFor = at
+      if (at === null || at > now || s.fetching) continue
       void this.fetch(s)
     }
   }
@@ -192,7 +193,7 @@ export class CapacityLive {
     this.epoch++
     for (const [key, s] of this.slots) {
       if (s.watchers === 0) this.slots.delete(key)
-      Object.assign(s, { view: null, error: '', readError: '', reading: false, fetching: false, again: false, agedFor: null })
+      Object.assign(s, { view: null, error: '', readError: '', reading: false, fetching: false, again: false })
     }
     this.changed()
   }
