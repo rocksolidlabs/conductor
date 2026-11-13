@@ -391,26 +391,28 @@ test.describe('the account a launch is sent with', () => {
     expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id: 'default', source: 'launch_env' })
   })
 
-  test("an entry that keeps its own login is offered the accounts, and a pick its launch refuses is said in the route's words, still to change", async ({ page, api, state }) => {
+  test('an entry that keeps its own login is offered no account, names none, and its panel names the variable; an ordinary agent is offered its accounts', async ({ page, api, state }) => {
     const work = label('work')
-    const id = await addAccount(api, 'claude', work, folder(state.home, 'ok'))
+    await addAccount(api, 'claude', work, folder(state.home, 'ok'))
     await page.goto('/')
-    const dialog = await launchDialog(page, 'Own login (e2e stub)')
-    // The server's view of this launch with no account named is the default login, as any agent's is.
-    await expect(dialog.locator('[data-account-select]')).toContainText('Default login (default)')
-    await pickAccount(page, dialog, work)
+    // An ordinary agent of Claude Code: the server's view resolves the default login, and the accounts are offered.
+    const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
     const panel = dialog.locator('[data-capacity-panel]')
-    await expect(panel).toHaveAttribute('data-capacity-state', 'env_set')
+    await expect(dialog.locator('[data-account-select]')).toContainText('Default login (default)')
+    await expect(panel.locator('[data-capacity-account]')).toBeVisible()
+    await expect(panel.locator('[data-capacity-entry-login]')).toHaveCount(0)
+    // The entry that sets ANTHROPIC_BASE_URL: once the server's view of it names the variable, no Account choice, and the panel says why.
+    const own = dialog.getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: 'Own login (e2e stub)' })
+    await own.click()
+    await expect(own).toHaveAttribute('aria-checked', 'true')
+    await expect(panel).toHaveAttribute('data-capacity-agent', 'own-login')
+    await expect(panel.locator('[data-capacity-entry-login]')).toHaveText("This agent's entry sets ANTHROPIC_BASE_URL: every launch of it uses that login, not an account chosen here.")
+    await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
     await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
     await expect(panel).not.toContainText(work)
-    const refused = await launch(page, dialog)
-    expect(refused.status).toBe(400)
-    expect(refused.sent).toMatchObject({ account: id })
-    await expect(dialog.locator('[data-launch-error]')).toContainText('its default account only (invalid_account)')
-    await pickAccount(page, dialog, 'Default login (default)')
     const started = await launch(page, dialog)
     expect(started.status, 'the launch made a session').toBe(201)
-    expect(started.sent).toMatchObject({ account: 'default' })
+    expect(started.sent).not.toHaveProperty('account')
     expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id: 'default', source: 'pinned' })
   })
 

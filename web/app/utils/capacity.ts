@@ -79,6 +79,8 @@ export interface CapacityView {
   readBy?: { program: string; version: string; qualified: string }
   fresh: 'fresh' | 'stale' | 'reset_passed' | 'none' | string
   nextReadAfter?: string
+  /** The variable (a name of at most 32 bytes) by which the agent's entry sets its login, for every account asked; absent for none. */
+  entryLogin?: string
 }
 
 /** Where a launch runs, as the view is asked for it. */
@@ -362,11 +364,12 @@ export function accountChoices(doc: AccountsLike | null | undefined, adapter: st
 
 /**
  * The Account choice of a launch on this server, decided by the server's view of the launch with no account named (`unnamed`): it is
- * offered unless that view says the launch has its own login (`env_set`); it shows the person's pick, else the account the view
- * resolved ('' before the view is here); and only a pick is sent, so a launch nobody chose an account for is the route's to resolve.
+ * offered unless that view says the launch has its own login (`env_set`) or the agent's entry sets one (`entryLogin`); it shows the
+ * person's pick, else the account the view resolved ('' before the view is here); and only a pick is sent, so a launch nobody chose
+ * an account for is the route's to resolve.
  */
-export function accountOfLaunch(choices: AccountChoice[], unnamed: Pick<CapacityView, 'state' | 'account'> | null, picked: string): { offered: boolean; shown: string; sent?: string } {
-  const offered = choices.length > 0 && unnamed?.state !== 'env_set'
+export function accountOfLaunch(choices: AccountChoice[], unnamed: Pick<CapacityView, 'state' | 'account' | 'entryLogin'> | null, picked: string): { offered: boolean; shown: string; sent?: string } {
+  const offered = choices.length > 0 && unnamed?.state !== 'env_set' && !unnamed?.entryLogin
   const resolved = unnamed && choices.some((c) => c.value === unnamed.account.id) ? unnamed.account.id : ''
   return { offered, shown: picked || resolved, sent: offered && picked ? picked : undefined }
 }

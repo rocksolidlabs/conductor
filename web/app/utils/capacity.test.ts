@@ -223,12 +223,14 @@ describe('the questions and the account choice', () => {
       // A pick made before the switch moved is not sent either.
       expect(accountOfLaunch(choices, view({ state: 'env_set', account: { id: 'a-work' } }), 'a-work').sent).toBeUndefined()
     })
-    it('offers every account for an entry that keeps its own login while the default is the default login: the view cannot tell it', () => {
-      // GET /api/capacity?agent=…&yolo=false of such an entry: the default login, in the state of its last reading, as any other.
-      const d = accountOfLaunch(choices, view({ state: 'never_read', account: { id: 'default', default: true } }), '')
-      expect(d).toEqual({ offered: true, shown: 'default', sent: undefined })
-      // A pick is sent as picked: the route's refusal is what the dialog then shows.
-      expect(accountOfLaunch(choices, view({ account: { id: 'default', default: true } }), 'a-work')).toEqual({ offered: true, shown: 'a-work', sent: 'a-work' })
+    it('offers no account and sends none for an entry that keeps its own login, which the view names in every state', () => {
+      // GET /api/capacity?agent=… of such an entry: the default login, in the state of its last reading, with the entry's variable.
+      const d = accountOfLaunch(choices, view({ state: 'never_read', account: { id: 'default', default: true }, entryLogin: 'ANTHROPIC_BASE_URL' }), '')
+      expect(d).toEqual({ offered: false, shown: 'default', sent: undefined })
+      // A pick made before the view arrived is not sent.
+      expect(accountOfLaunch(choices, view({ account: { id: 'default', default: true }, entryLogin: 'CLAUDE_CONFIG_DIR' }), 'a-work').sent).toBeUndefined()
+      // The same view without it offers every account and sends a pick as picked.
+      expect(accountOfLaunch(choices, view({ state: 'never_read', account: { id: 'default', default: true } }), 'a-work')).toEqual({ offered: true, shown: 'a-work', sent: 'a-work' })
     })
     it('sends no account for a launch made before the view arrived, and shows none chosen', () => {
       expect(accountOfLaunch(choices, null, '')).toEqual({ offered: true, shown: '', sent: undefined })
