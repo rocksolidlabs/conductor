@@ -1,0 +1,42 @@
+{
+  "run": "r-0123456789ab",
+  "crew": "c-build",
+  "crewName": "Compare the cache",
+  "goal": "Make the user list fast.",
+  "task": "review-b",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "member": "rev-b",
+  "role": "You review candidate B of 3: you judge its result against the objective and the criteria, and change nothing.",
+  "kind": "review",
+  "instructions": "Review this candidate's result at HEAD against the objective and each criterion your task file lists; run what you need to judge it, and change nothing. Approve when it meets the objective and the criteria; otherwise ask for changes, with a finding for each criterion it misses and each problem, naming its file and line.",
+  "compare": {
+    "candidate": "approach-b",
+    "of": 3,
+    "criteria": [
+      {
+        "id": "no-deps",
+        "text": "No new dependency."
+      },
+      {
+        "id": "p99",
+        "text": "p99 of the cache read under 2 ms in bench_test.go."
+      }
+    ],
+    "approach": "drop the cache and memoise in the handler"
+  },
+  "worktree": "/repo/.conductor/worktrees/r-0123456789ab/review-b.1",
+  "branch": "crew/r-0123456789ab/review-b.1",
+  "start": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "startFrom": "task \"approach-b\"'s result",
+  "inputs": [
+    {
+      "task": "approach-b",
+      "attempt": 1,
+      "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "branch": "crew/r-0123456789ab/approach-b.1",
+      "summary": "Memoised in the handler."
+    }
+  ],
+  "writtenAt": "2026-10-31T12:00:00Z"
+}

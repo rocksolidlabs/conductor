@@ -47,6 +47,9 @@ type crewInput struct {
 	Tasks    []crew.Task    `json:"tasks,omitempty"`
 	Setup    []crew.Check   `json:"setup,omitempty"`
 	Manifest *crew.Manifest `json:"manifest,omitempty"`
+	// Compare makes the crew a comparison of candidate tasks, held to its
+	// rules with the rest (crew.Compare), so a crew read back saves again.
+	Compare *crew.Compare `json:"compare,omitempty"`
 	// People are the persons who own the crew's decisions and its tasks'
 	// outcomes (a task's owner is one of them): local labels, never
 	// started.
@@ -81,7 +84,7 @@ func crewReply(c crew.Crew) map[string]any {
 func (in crewInput) crew() crew.Crew {
 	return crew.Crew{Name: strings.TrimSpace(in.Name), Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
 		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
-		Manifest: in.Manifest, People: in.People}
+		Manifest: in.Manifest, Compare: in.Compare, People: in.People}
 }
 
 // handleListCrews lists one page of the saved crews' summaries, ordered by
