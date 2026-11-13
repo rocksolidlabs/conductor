@@ -21,8 +21,8 @@ import (
 // that wraps it says why, with the file's name in its folder: not a
 // regular file, longer than the opener reads of a file of its kind
 // (bound), behind a link the opener does not follow, a .git folder that is
-// a link, a .git that leads to nothing (gitDirs), or a folder the
-// repository names that is not a folder.
+// a link, a .git that leads to nothing that can be read (gitDirs), or a
+// folder the repository names that is not a folder.
 var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
@@ -95,8 +95,9 @@ func bound(rel string) int64 {
 // folder as ".git is a link" (under, which looks at .git without following
 // it), and one that leads out of the working folder or is written as an
 // absolute path as a link that is not followed, by the look that meets it
-// first (gitDirs' look at .git); a .git that leads to nothing in the
-// working folder is refused as ".git leads to nothing" (gitDirs). A linked
+// first (gitDirs' look at .git); a .git whose look by the root fails
+// otherwise (nothing there, a loop of links, a link through a file) is
+// refused as ".git leads to nothing that can be read" (unread). A linked
 // worktree's .git file that is a relative link to a file inside the
 // worktree is read, as go-git reads it.
 // go-billy's chroot over careOS (billy) only joins names: careOS has no
@@ -559,12 +560,13 @@ func (r *refusal) first() error {
 // entered, not listed: a .git that is a link, whatever it leads to, or to
 // nothing, is a .git there, and the root's look that follows judges it.
 // The discovery looks above a folder only when the folder has no .git
-// entry: a .git the root's look finds nothing behind (a link that leads
-// to nothing in its folder) is refused, as a .git the opener cannot read
-// is. A root is opened only for the folder that holds it (and for the root
-// of the file system, when no folder up to it does). The read's context is
-// asked at each folder before its looks (ended), and a look that failed
-// once it had ended answers its error.
+// entry: once it has found one, any failure of the root's look at it (a
+// link that leads to nothing in its folder, to itself, through a file, or
+// an entry gone between the two looks) is refused, as a .git the opener
+// cannot read is (unread). A root is opened only for the folder that holds
+// it (and for the root of the file system, when no folder up to it does).
+// The read's context is asked at each folder before its looks (ended), and
+// a look that failed once it had ended answers its error.
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 	p, err := filepath.Abs(dir)
 	if err != nil {
@@ -600,14 +602,30 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			dot, err := gitFile(p, fs.billy(), seen)
 			return dot, fs.billy(), err
 		}
-		if !os.IsNotExist(err) {
-			return nil, nil, seen.or(err)
+		if look == nil && fs.root != nil {
+			return nil, nil, fs.unread(err)
 		}
-		if look == nil {
-			return nil, nil, fs.refuse("%s leads to nothing in %s", git.GitDirName, fs.what)
+		if look == nil || !os.IsNotExist(err) {
+			return nil, nil, seen.or(err)
 		}
 		return fs.billy(), nil, nil
 	}
+}
+
+// unread is the discovery's answer when the root's look at a .git the
+// look that does not follow a link found failed with err: the read's
+// context's error once the context has ended, a refusal the root's look
+// made (a link out of the folder), and otherwise, whatever the system
+// answered (nothing there, a loop of links, a link through a file), the
+// opener's refusal in fixed words.
+func (fs *careOS) unread(err error) error {
+	if ended := fs.seen.ended(); ended != nil {
+		return ended
+	}
+	if errors.Is(err, ErrUnreadable) {
+		return err
+	}
+	return fs.refuse("%s leads to nothing that can be read in %s", git.GitDirName, fs.what)
 }
 
 // gitFile is the git directory a .git file names (a linked worktree's).

@@ -619,24 +619,26 @@ func TestRenamesAreLookedForOnlyInASmallComparison(t *testing.T) {
 // source's id is not the deleted file's), and an answer that comes with an
 // error, is not taken: the comparison is listed without renames, and the
 // answer says renames were cut. The comparison changes a file in place,
-// moves one unchanged, deletes one and adds an unrelated one; go-git's own
-// answer, taken, lists the move as a rename, and renames are not cut.
+// moves one and changes a line of it, deletes one and adds an unrelated
+// one, so that no content is left both deleted and added and only the
+// answer not taken cuts the renames; go-git's own answer, taken, lists the
+// move as a rename, and renames are not cut.
 func TestASearchsAnswerIsTakenOnlyWhenItHoldsEveryPath(t *testing.T) {
 	dir := scratch(t)
+	moving := numbered(20, "the last line\n")
 	write(t, dir, "gone.txt", "a file that goes\n")
 	write(t, dir, "keep.txt", "kept\n")
-	write(t, dir, "moved.txt", "a file that moves\n")
+	write(t, dir, "moved.txt", moving)
 	c1 := commit(t, dir, time.Time{}, "one")
 	os.Remove(filepath.Join(dir, "gone.txt"))
 	write(t, dir, "keep.txt", "kept, changed\n")
-	if err := os.Rename(filepath.Join(dir, "moved.txt"), filepath.Join(dir, "there.txt")); err != nil {
-		t.Fatal(err)
-	}
+	os.Remove(filepath.Join(dir, "moved.txt"))
+	write(t, dir, "there.txt", strings.Replace(moving, "line 7\n", "line seven\n", 1))
 	write(t, dir, "other.txt", "1\n2\n3\n")
 	c2 := commit(t, dir, time.Time{}, "two")
 	// go-git's answer is in its order: a rename where its source sorts.
-	taken := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "there.txt", From: "moved.txt", Status: "R"}, {Path: "other.txt", Status: "A", Added: 3}}
-	plain := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "moved.txt", Status: "D", Removed: 1}, {Path: "other.txt", Status: "A", Added: 3}, {Path: "there.txt", Status: "A", Added: 1}}
+	taken := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "there.txt", From: "moved.txt", Status: "R", Added: 1, Removed: 1}, {Path: "other.txt", Status: "A", Added: 3}}
+	plain := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "keep.txt", Status: "M", Added: 1, Removed: 1}, {Path: "moved.txt", Status: "D", Removed: 20}, {Path: "other.txt", Status: "A", Added: 3}, {Path: "there.txt", Status: "A", Added: 20}}
 	// changed is ch with a copy of its first entry that matches in place
 	// of it, changed by change; the test fails when none matches.
 	changed := func(t *testing.T, ch object.Changes, match func(*object.Change) bool, change func(*object.Change)) object.Changes {
