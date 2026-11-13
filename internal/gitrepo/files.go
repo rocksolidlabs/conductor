@@ -16,9 +16,11 @@ import (
 	"github.com/go-git/go-git/v5"
 )
 
-// ErrUnreadable says a file of the repository is not a regular file, or
-// is longer than the opener reads of a file of its kind (bound).
-var ErrUnreadable = errors.New("a file of the repository is not a regular file within its bound")
+// ErrUnreadable says a file of the repository was not read; the error
+// that wraps it says why, with the file's name in its folder: not a
+// regular file, longer than the opener reads of a file of its kind
+// (bound), or a link out of its folder.
+var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
 var errReadOnly = errors.New("the repository is opened for reading only")
@@ -33,9 +35,10 @@ const (
 	// path, a line each, and 64 KiB holds sixteen paths of the longest
 	// Linux opens (4,096 bytes).
 	maxSmall = 64 << 10
-	// maxConfig bounds config: git writes a few lines a remote and a
-	// branch, and 4 MiB holds tens of thousands of them.
-	maxConfig = 4 << 20
+	// maxConfig bounds config: a branch's section with its upstream is
+	// about a hundred bytes, so a repository with a hundred thousand
+	// branch sections is well under 16 MiB.
+	maxConfig = 16 << 20
 	// maxShallow bounds shallow: 41 bytes a commit at a shallow clone's
 	// edge, and 4 MiB holds a hundred thousand of them.
 	maxShallow = 4 << 20
@@ -77,22 +80,66 @@ type careOS struct {
 	root *os.Root // nil when the folder did not open: err
 	err  error
 	dir  string
+	what string   // the folder in a refusal's words
 	seen *refusal // the opening's, shared by all its file systems
 }
 
 // careFS is a file system over the folder dir with its links resolved, as
-// osfs.New(dir) is; under is one over its folder name, opened beneath it.
-func careFS(dir string, seen *refusal) *careOS {
+// osfs.New(dir) is; under is one over its folder name (a git directory),
+// opened beneath it.
+func careFS(dir, what string, seen *refusal) *careOS {
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
 	root, err := os.OpenRoot(dir)
-	return seen.keep(&careOS{root: root, err: err, dir: dir, seen: seen})
+	return seen.keep(&careOS{root: root, err: err, dir: dir, what: what, seen: seen})
 }
 
 func (fs *careOS) under(name string) *careOS {
 	root, err := fs.root.OpenRoot(name)
-	return fs.seen.keep(&careOS{root: root, err: fs.judge(name, err), dir: filepath.Join(fs.dir, name), seen: fs.seen})
+	return fs.seen.keep(&careOS{root: root, err: fs.judge(name, err), dir: filepath.Join(fs.dir, name), what: gitDir, seen: fs.seen})
+}
+
+// The folders a refusal names.
+const (
+	gitDir    = "the git directory"
+	itsFolder = "its folder"
+)
+
+// refuse notes the opener's refusal of a file, its cause said after it.
+func (fs *careOS) refuse(format string, args ...any) error {
+	return fs.seen.note(fmt.Errorf("%w: "+format, append([]any{ErrUnreadable}, args...)...))
+}
+
+// kind is a file's kind as a refusal says it.
+func kind(m os.FileMode) string {
+	switch {
+	case m&os.ModeNamedPipe != 0:
+		return "a named pipe"
+	case m.IsDir():
+		return "a directory"
+	case m&os.ModeDevice != 0:
+		return "a device"
+	case m&os.ModeSocket != 0:
+		return "a socket"
+	}
+	return "not a regular file"
+}
+
+// units is n bytes as a person reads them: 5.0 MiB, 64 KiB, 12 bytes.
+func units(n int64) string {
+	for _, u := range []struct {
+		size int64
+		name string
+	}{{1 << 20, "MiB"}, {1 << 10, "KiB"}} {
+		if n >= u.size && n%u.size == 0 {
+			return fmt.Sprintf("%d %s", n/u.size, u.name)
+		}
+		if n >= u.size {
+			return fmt.Sprintf("%.1f %s", float64(n)/float64(u.size), u.name)
+		}
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // billy is fs as go-git takes it, its names joined under dir.
@@ -114,7 +161,7 @@ func (fs *careOS) rel(name string) (string, error) {
 // when name leads out of the folder.
 func (fs *careOS) judge(name string, err error) error {
 	if err != nil && fs.root != nil && escapes(fs.root, err) {
-		return fs.seen.note(fmt.Errorf("%w: %s leads out of %s", ErrUnreadable, name, fs.dir))
+		return fs.refuse("%s leads out of %s", filepath.ToSlash(name), fs.what)
 	}
 	return err
 }
@@ -154,8 +201,9 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 	if err != nil {
 		return nil, fs.judge(rel, err)
 	}
+	said := filepath.ToSlash(rel)
 	if !looked.Mode().IsRegular() {
-		return nil, fs.seen.note(fmt.Errorf("%w: %s is not a regular file", ErrUnreadable, name))
+		return nil, fs.refuse("%s is %s", said, kind(looked.Mode()))
 	}
 	if afterLook != nil {
 		afterLook(rel)
@@ -166,17 +214,17 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 	}
 	open, err := f.Stat()
 	if err == nil && (!open.Mode().IsRegular() || !os.SameFile(looked, open)) {
-		err = fs.seen.note(fmt.Errorf("%w: %s changed as it was opened", ErrUnreadable, name))
+		err = fs.refuse("%s changed as it was opened", said)
 	}
-	limit := bound(filepath.ToSlash(rel))
+	limit := bound(said)
 	if err == nil && limit >= 0 && open.Size() > limit {
-		err = fs.seen.note(fmt.Errorf("%w: %s is longer than %d bytes", ErrUnreadable, name, limit))
+		err = fs.refuse("%s is %s; at most %s of it is read", said, units(open.Size()), units(limit))
 	}
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return &careFile{File: f, left: limit, seen: fs.seen}, nil
+	return &careFile{File: f, name: said, left: limit, seen: fs.seen}, nil
 }
 
 // afterLook, set by a test, runs between OpenFile's look at a file and its
@@ -243,6 +291,7 @@ func (fs *careOS) RemoveAll(name string) error {
 // together, stops at its bound with ErrUnreadable (left, -1 for none).
 type careFile struct {
 	*os.File
+	name string // in its folder, as a refusal says it
 	left int64
 	seen *refusal
 }
@@ -268,7 +317,7 @@ func (f *careFile) count(n int, err error) (int, error) {
 	}
 	if int64(n) > f.left {
 		n, f.left = int(f.left), 0
-		return n, f.seen.note(fmt.Errorf("%w: %s grew past its bound as it was read", ErrUnreadable, f.Name()))
+		return n, f.seen.note(fmt.Errorf("%w: %s grew past its bound as it was read", ErrUnreadable, f.name))
 	}
 	f.left -= int64(n)
 	return n, err
@@ -338,7 +387,7 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 		} else if err != nil && !os.IsNotExist(err) {
 			return nil, nil, err
 		}
-		fs := careFS(folder, seen)
+		fs := careFS(folder, itsFolder, seen)
 		fi, err := fs.Stat(filepath.Join(fs.dir, git.GitDirName))
 		if err == nil {
 			if fi.IsDir() {
@@ -371,9 +420,9 @@ func gitFile(p string, fs billy.Filesystem, seen *refusal) (billy.Filesystem, er
 	}
 	gitdir := strings.TrimSpace(strings.Split(line[len(prefix):], "\n")[0])
 	if filepath.IsAbs(gitdir) {
-		return careFS(gitdir, seen).billy(), nil
+		return careFS(gitdir, gitDir, seen).billy(), nil
 	}
-	return careFS(fs.Join(p, gitdir), seen).billy(), nil
+	return careFS(fs.Join(p, gitdir), gitDir, seen).billy(), nil
 }
 
 // commonDir is the common directory dot's commondir names, nil for none
@@ -390,7 +439,7 @@ func commonDir(dot billy.Filesystem, seen *refusal) (billy.Filesystem, error) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(dot.Root(), p)
 	}
-	common := careFS(p, seen).billy()
+	common := careFS(p, gitDir, seen).billy()
 	if _, err := common.Stat(""); err != nil {
 		if os.IsNotExist(err) {
 			return nil, git.ErrRepositoryIncomplete

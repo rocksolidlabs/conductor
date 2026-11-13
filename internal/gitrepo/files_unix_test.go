@@ -221,6 +221,62 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 	}
 }
 
+// A refusal says its cause in words a person can act on: the file's name
+// in its folder, its kind, its size and its bound in a person's units, or
+// where a link leads.
+func TestARefusalSaysItsCause(t *testing.T) {
+	const prefix = "a file of the repository was not read: "
+	for _, c := range []struct {
+		name, want string
+		change     func(t *testing.T, r linkedRepo)
+	}{
+		{"config", "config is 20 MiB; at most 16 MiB of it is read", func(t *testing.T, r linkedRepo) {
+			if err := os.Truncate(r.files["config"], maxConfig+maxConfig/4); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"packed-refs", "packed-refs is a named pipe", func(t *testing.T, r linkedRepo) {
+			if err := os.Remove(r.files["packed-refs"]); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(r.files["packed-refs"], 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"HEAD", "HEAD leads out of the git directory", func(t *testing.T, r linkedRepo) {
+			copied := filepath.Join(t.TempDir(), "HEAD")
+			padded(t, r.files["HEAD"], copied, "", 0, false)
+			linkTo(t, copied, r.files["HEAD"])
+		}},
+		{".git", ".git leads out of its folder", func(t *testing.T, r linkedRepo) {
+			copied := filepath.Join(t.TempDir(), ".git")
+			padded(t, r.files[".git"], copied, "", 0, false)
+			linkTo(t, copied, r.files[".git"])
+		}},
+		{"commondir", "commondir is a directory", func(t *testing.T, r linkedRepo) {
+			if err := os.Remove(r.files["commondir"]); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(r.files["commondir"], 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := linked(t)
+			c.change(t, r)
+			_, err := Commits(context.Background(), r.wt, "", time.Time{})
+			if !errors.Is(err, ErrUnreadable) || err.Error() != prefix+c.want {
+				t.Errorf("Commits: %v, want %q", err, prefix+c.want)
+			}
+		})
+	}
+	if got := units(5<<20 + 1<<19); got != "5.5 MiB" {
+		t.Errorf("units: %q", got)
+	}
+}
+
 // padded writes to path what was at from, then lines of line's shape (%d
 // a running number) until it is at least size bytes long; cut cuts it to
 // size exactly.
@@ -343,7 +399,7 @@ func TestTheOpenerFollowsALinkWithinItsFolderAndRefusesAPipe(t *testing.T) {
 	}
 	seen := &refusal{}
 	defer seen.close()
-	fs := careFS(dir, seen).billy()
+	fs := careFS(dir, gitDir, seen).billy()
 	f, err := fs.Open("HEAD")
 	if err != nil {
 		t.Fatalf("open HEAD: %v", err)

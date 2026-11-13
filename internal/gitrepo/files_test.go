@@ -60,7 +60,7 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 		write(t, dir, "HEAD", "ref: refs/heads/main\n")
 		seen := &refusal{}
 		defer seen.close()
-		f, err := careFS(dir, seen).billy().Open("HEAD")
+		f, err := careFS(dir, gitDir, seen).billy().Open("HEAD")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,14 +74,14 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 		}
 		seen = &refusal{}
 		defer seen.close()
-		if _, err := careFS(dir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+		if _, err := careFS(dir, gitDir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
 			t.Errorf("open past the bound: %v, want the refusal", err)
 		}
 	}
 	// The package only reads.
 	seen := &refusal{}
 	defer seen.close()
-	if _, err := careFS(dir, seen).billy().OpenFile("HEAD", os.O_RDWR, 0); !errors.Is(err, errReadOnly) {
+	if _, err := careFS(dir, gitDir, seen).billy().OpenFile("HEAD", os.O_RDWR, 0); !errors.Is(err, errReadOnly) {
 		t.Errorf("open for writing: %v", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestTheFileSystemRefusesEveryChange(t *testing.T) {
 	write(t, dir, "HEAD", "ref: refs/heads/main\n")
 	seen := &refusal{}
 	defer seen.close()
-	fs := careFS(dir, seen)
+	fs := careFS(dir, gitDir, seen)
 	at := func(name string) string { return filepath.Join(dir, name) }
 	for op, err := range map[string]error{
 		"Rename":    fs.Rename(at("HEAD"), at("moved")),
@@ -143,7 +143,7 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 	defer func() { afterLook = nil }()
 	seen := &refusal{}
 	defer seen.close()
-	if f, err := careFS(dir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+	if f, err := careFS(dir, gitDir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
 		if err == nil {
 			f.Close()
 		}
