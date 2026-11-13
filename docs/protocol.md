@@ -5092,7 +5092,7 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 |---|---|
 | `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, folders?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals (`capacity` among them: a configuration saved before that class reads it off), all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them, `folders` `{turn, reads}` the folder a turn under the configuration runs in and the folders it reads besides (at most 16, each at most 4096 bytes), as its launch would take them now (absent with no agent set); on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?, folders?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
-| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`, the request keeping `capacity`, the view of its configured agent on the account its configured folder is (none: the agent's own login; a registered account of its adapter that holds the folder; any other `unlisted`, not read) as a turn reads it (What a turn reads), from the readings kept as it is queued, at most 12 KiB (a wake request keeps it too). The view is made before the desk's lock is taken, one at a time, within one wait of 0.5 s that covers every step of it (the accounts read, the folder's match, the agent's program looked up), and nothing of it runs under the lock; `capacity` is absent on a server that keeps no capacity, for an agent not in the catalog, when the accounts or the view cannot be read, past that wait, while another request's view is being made, and when the configuration the view was made for is not the one the request is admitted under (a save between the two); (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`, the request keeping `capacity`, the view of its configured agent on the account its configured folder is (none: the agent's own login; a registered account of its adapter that holds the folder; any other `unlisted`, not read) as a turn reads it (What a turn reads), from the readings kept as it is queued, at most 12 KiB (a wake request keeps it too). The view is made before the desk's lock is taken, nothing of it under the lock, one at a time, apart from the ask: the ask waits for it at most 0.5 s, a wait that covers every step of it (the accounts read, the folder's match, the agent's program looked up), and is answered then without it while its making goes on to its end; it looks the readings up without asking them, as a turn's read does, so queuing a request moves no key's place among the readings; `capacity` is absent on a server that keeps no capacity, for an agent not in the catalog, when the accounts or the view cannot be read, past that wait, while another request's view is still being made (also one whose ask was answered past its wait), and when the configuration the view was made for is not the one the request is admitted under (a save between the two); (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
 | `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now, capacity?}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; a `capacity:` ref's `capacity` the reading as the turn reads it (What a turn reads), at most 12 KiB, made by the server from the readings it keeps as the brief is kept, never from the turn's text; `404 no_brief` before one; at most 4 MiB |
@@ -5172,7 +5172,7 @@ default?, retired?, plan?}, host, state, words, windows, credits, limits,
 counts, countedAt, readAt?, readBy?, fresh}` (a page `{views, next?}`):
 `host` its kind alone (`native`, `undetermined`, `remote`), `words` the
 state's own, never a reader's, `counts` this server's estimate counted at
-`countedAt`; never an account's folder, the server's name or a variable
+`countedAt`, every time in UTC; never an account's folder, the server's name or a variable
 the agent's entry sets its login by; at most 12 KiB a view, the route's
 32 KiB and 128 KiB a page. It is the last reading the server keeps: the
 read starts none (`POST /api/capacity/read` refuses a turn's token `401`),
@@ -5180,9 +5180,9 @@ and it looks the readings up without asking them, so a turn's read, of one
 view or of the listing, moves no key's place among the readings (which
 key the next read drops past the readings' bound); the admin's read asks
 as before. A view that shows a reading carries its ref, `capacity:<agent>/<account>@<readAt>`,
-noted at the reading's own state, the one a brief citing it resolves to:
-`ok`, say, while a new read of its key under way shows the view
-`reading`. A capacity view is no project's, repository's,
+noted at the reading's own state, as the same look that made the view
+answered it, the one a brief citing it resolves to: `ok`, say, while a
+new read of its key under way shows the view `reading`. A capacity view is no project's, repository's,
 crew's, run's or session's: the class alone admits it, and its ref.
 Each answer counts one read against `readsPerTurn`
 (`429 reads_spent` past it) and its items are noted in the turn's read
@@ -5515,16 +5515,23 @@ attempt's state, at the commit it submitted), and DR1's
 `decision:<dr-n>` (a decision record: its state and `rev`, as its run's
 read lists it), and AC1's `capacity:<agent>/<account>@<readAt>` (a
 reading of an agent's usage on an account, `readAt` in UTC as RFC 3339
-with its nanoseconds, as the view gives it: its state; kept with the
-brief as the turn reads it, `capacity` in its resolution; the readings
-are asked first: one they no longer hold is `unavailable` when the turn
-read it, and resolves to nothing otherwise, with nothing else looked up
-for it; for those they hold, the accounts are read once for the brief,
-and each agent's program is looked up at most once, within one wait of
-2 s for the whole brief, from the first such look-up: none is started
-past it, a look-up under way ends with it, and the brief's remaining
-readings are then `unavailable`, as they are when the accounts cannot be
-read), each at most 512 bytes, resolved as the brief is kept
+with its nanoseconds, as the view gives it: the reading's own state;
+the readings the server holds are asked first and at once: one they no
+longer hold is `unavailable` when the turn read it, and resolves to
+nothing otherwise, with nothing else looked up for it; one they hold
+resolves whatever its agent or account is now, and is kept with the
+brief, `capacity` in its resolution, in the shape a turn reads (What a
+turn reads) and made from that reading: its state and that state's
+fixed words, its plan, windows, credits, limits, time, `readBy` and
+version (none when the reading carries none: a reading that is not `ok`
+carries none), the agent's id, name and adapter from its catalog entry,
+the account's id with its label, default and retired marks when the
+accounts list names it (an account removed since, or the list
+unreadable: its id alone), this server's counts as the brief is kept,
+and `host` empty (a reading says nothing of where a launch would run);
+nothing is looked up or read for it, and the accounts
+list is read once for the brief, as every capacity read reads it, with
+no wait of its own; every time in UTC), each at most 512 bytes, resolved as the brief is kept
 against the record it names (a plan revision and a launch admitted by
 their ticket, as a ticket is; a candidate by its run; a decision by the
 run it is on now). A `session:` ref whose session the server no longer
