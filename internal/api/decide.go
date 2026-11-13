@@ -55,11 +55,12 @@ type decideWorking struct {
 
 // decideWorked runs work, a decide principal's request's own work, in one
 // of its subject's maxDecideWorked places (by subject, whatever name the
-// pass carries), or answers 429 when all are taken, nothing read or
-// written. A request is counted from the moment the server starts its own
-// work on it (for a response: once its body has been read whole; for the
-// other three routes: once the route's gate and query check have passed)
-// until its reply has been made, before the reply's first byte is written:
+// pass carries), or answers 429 when all are taken, work not run. A
+// request is counted from the moment the server starts its own work on it
+// (for a response: once its body has been read whole; for the list and the
+// read: once the route's gate and query check have passed; for GET /api/me:
+// once its gate has passed) until its reply has been made, before the
+// reply's first byte is written:
 // the place is let go once work has made its reply, on every way out of
 // it, and the reply is written after. A request that carries a body the
 // route does not read is not waited for.
@@ -366,7 +367,7 @@ func (s *Server) decideRespond(w http.ResponseWriter, r *http.Request, p princip
 // in its subject's place (decideWorked). The pass is asked about first, as
 // the gate asks (authenticate): one the provider no longer admits as the
 // same subject with the decide grant is answered as the gate answers it,
-// nothing read or recorded.
+// the decision not read and nothing recorded.
 func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principal, resp crew.Response) {
 	if again := s.authenticate(r, false); !again.decide || again.subject != p.subject {
 		s.unauthorized(w, r)
