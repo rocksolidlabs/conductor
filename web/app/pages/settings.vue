@@ -388,6 +388,7 @@ usePalette().registerPage(() => {
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
         <!-- Brakeman's configuration is the server's own, saved through its route: here in a browser too. -->
         <BrakemanSettings ref="brakemanCard" data-settings-section="brakeman" />
+        <SignInCard />
         <AboutCard data-settings-section="app" />
       </div>
       <div v-else ref="layout" class="mx-auto flex w-full max-w-7xl flex-col gap-4 lg:flex-row lg:items-start lg:gap-6" data-desktop-settings>
@@ -522,6 +523,7 @@ usePalette().registerPage(() => {
 
         <BrakemanSettings ref="brakemanCard" :class="sectionClass" data-settings-section="brakeman" />
 
+        <SignInCard :class="sectionClass" />
         <AboutCard :versions="versions" :class="sectionClass" data-settings-section="app">
           <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>
