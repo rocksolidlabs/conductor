@@ -6021,7 +6021,31 @@ its gate has passed) until its reply has been made, before the reply's first
 byte is written; a request that carries a body the route does not read is
 not waited for. One more is `429 rate_limited` ("too many of your requests
 are being worked on: send this one again once one is answered"), the ledger
-not read and nothing written. The admin is not counted.
+not read and nothing written. The admin is not counted. Its pass reaches the
+app in the URL fragment, the key `pass` beside the
+desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
+a navigation the browser starts (a load, a fragment change, back or forward)
+never lets the app's router read a fragment that carries either key, in any
+spelling: the fragment is taken out of the address before the app's router
+reads it, and one that arrives after the load is written to the browser's
+storage for its credential alone and loads the page again at the clean
+address only when it changed what that storage held (in the desktop app the
+workbench token is kept in memory from the app's bridge, not in the
+browser's storage, and a later link's token changes nothing there); a
+fragment that holds both keys gives neither. The pass is kept for the tab
+(`sessionStorage`) until a `401` to a request sent with it, or until a
+later link stores another, and sent only in
+the `Authorization` header of the four routes, never in a URL. The decide
+page (`/decide`, `/decide/<did>`, drawn for a tab that holds a pass and no
+workbench token) reads the list and each open card, at most four cards open,
+each one at a time, the next due 10 s after the last began while the tab is
+shown and at once when it is shown again, each bounded at 10 s; one answer is
+on its way at a time for the whole page, so a tab has at most six requests
+out at once. A new answer is sent only on a view a read renewed in the last
+25 s on both the steady clock and the wall clock, and after an answer was
+taken only on a view read after it; an answer whose outcome is not known is
+sent again whatever the view's age (`DECIDE_*` in
+`web/app/utils/protocol.ts`).
 
 | Route | Who | Body → reply |
 |---|---|---|
