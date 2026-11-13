@@ -118,6 +118,12 @@ type Launched struct {
 	Account BoundAccount
 	Model   string
 	Adapter string
+	// Holds are the ids of the registered accounts its launch's
+	// reservation took, which it holds until its process has ended, and
+	// Counted the one account it is counted on, decided with them at the
+	// reservation: kept in memory alone, never recorded or answered.
+	Holds   []string
+	Counted string
 }
 
 // Where a bound login comes from (BoundAccount.Source).

@@ -137,7 +137,8 @@ func (s *Server) handleInstallIntegration(w http.ResponseWriter, r *http.Request
 		}
 		writeInstallError(w, http.StatusBadRequest, e)
 	case err != nil:
-		s.log.Error("integration install failed", "integration", id, "changed", len(changed), "err", err)
+		// The error can name a file under the home: the admin's reply alone.
+		s.log.Error("integration install failed", "integration", id, "changed", len(changed))
 		writeInstallError(w, http.StatusInternalServerError, installError{Code: "install_failed", Message: err.Error(), Changed: changed})
 	default:
 		s.log.Info("integration installed", "integration", id, "changed", len(changed))
