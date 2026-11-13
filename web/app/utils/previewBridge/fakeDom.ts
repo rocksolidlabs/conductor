@@ -189,6 +189,8 @@ export class FakeEl extends FakeNode {
   hovered = false
   running = 0
   shadow: FakeEl | null = null
+  /** Of a shadow root, its host. */
+  _host: FakeEl | null = null
   /** What a person typed: the page's own, which the bridge never reads. */
   value = ''
   /** A template's content (a fragment of its own, not its children). */
@@ -282,10 +284,17 @@ export class FakeEl extends FakeNode {
   cloneNode(_deep: boolean): FakeEl {
     throw new Error('the bridge copied an element in the page’s own document')
   }
+  /** In a document's tree, a shadow root's counted in its host's (DOM 4.4: an element is connected if its shadow-including root is a document). */
   get isConnected(): boolean {
     let e: FakeEl = this
-    while (e._parent) e = e._parent
+    while (e._parent || e._host) e = e._parent ?? e._host!
     return e.tag === 'HTML'
+  }
+  /** The root of its tree: the document a document's tree is of, else the topmost node (a shadow root, a detached element). */
+  getRootNode(): FakeEl | FakeDoc {
+    let e: FakeEl = this
+    while (e._parent) e = e._parent
+    return docs.get(e) ?? e
   }
   /** Editable when it or an ancestor says contenteditable (and not "false"), as the engine's style says. */
   get isContentEditable(): boolean {
@@ -298,6 +307,7 @@ export class FakeEl extends FakeNode {
   attachShadow(_init: { mode: string }) {
     if (this.shadow) throw new Error('NotSupportedError: the element already hosts a shadow root')
     this.shadow = new FakeEl('#shadow-root')
+    this.shadow._host = this
     return this.shadow
   }
   contains(other: FakeEl | null): boolean {
