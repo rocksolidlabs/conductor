@@ -191,7 +191,7 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	driveExternal(t, b.testEnv, newGHItems(f), admin)
 	// A ticket's publications (IN1a PR-5): a prepare, sends, a Check and a
 	// Close now, with the settings token.
-	drivePublications(t, b.testEnv, newGHItems(f), admin)
+	drivePublications(t, b.testEnv, newGHItems(f), "github.com", admin)
 
 	// Bodies that are not the route's: one fixed sentence, whatever the
 	// body holds of a token (a member's name, a control byte, a bad escape,

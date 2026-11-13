@@ -30,25 +30,31 @@ import (
 // past settleQuiet, unconfirmed, which nothing sends again; a listing not
 // whole keeps its words. Nothing else posts or closes on GitHub.
 
-// The bounds of a publication's routes: each deadline the sum of its
-// steps' caps (trackerCaps).
+// The bounds of a publication's routes: each step has its own cap from
+// the moment it starts (trackerCaps: reads for a look at the item, post
+// for a post, a listing or a close, write for a step of the store's), and
+// each deadline is the sum of its steps' caps (trackerCaps.sending and
+// the others below).
 const (
 	// PublishTimeout bounds a send: the lock; the target's resolve and the
-	// account's read; the send begun; the post; its settle; then either a
-	// lost answer's listing and its settle, or the close (its resolve and
-	// the close, the close begun and settled).
-	PublishTimeout = trackerBusyWait + trackerReadsBudget + dispatchWriteTimeout + publishPostBudget + dispatchWriteTimeout + publishPostBudget + 2*dispatchWriteTimeout
+	// account's read; the send begun; a try after an earlier one's look for
+	// that try's comment; the post; its settle; then either a lost answer's
+	// listing and its settle, or the close (closeSteps).
+	PublishTimeout = trackerBusyWait + trackerReadsBudget + dispatchWriteTimeout + 2*publishPostBudget + dispatchWriteTimeout + closeSteps
 	// PrepareTimeout bounds a prepare: the lock; a link's read and the
 	// target's resolve; the link's read recorded; the prepare.
 	PrepareTimeout = trackerBusyWait + trackerReadsBudget + 2*dispatchWriteTimeout
-	// CloseNowTimeout bounds Close now: the lock, the resolve and the
-	// close, the close begun and settled.
-	CloseNowTimeout = trackerBusyWait + publishPostBudget + 2*dispatchWriteTimeout
-	// A Check is TrackerReadTimeout: the lock, the listing (its resolve and
+	// CheckTimeout bounds a Check: the lock, the listing (its resolve and
 	// at most twice ten pages), the settle.
+	CheckTimeout = trackerBusyWait + publishPostBudget + dispatchWriteTimeout
+	// CloseNowTimeout bounds Close now: the lock and closeSteps.
+	CloseNowTimeout = trackerBusyWait + closeSteps
+	// closeSteps is a close's steps: the look at the item, the close begun,
+	// the close, its answer settled.
+	closeSteps = trackerReadsBudget + dispatchWriteTimeout + publishPostBudget + dispatchWriteTimeout
 
-	// publishPostBudget bounds a phase of a send's writes to GitHub: the
-	// post, a listing, or a close with its resolve.
+	// publishPostBudget bounds one write to GitHub (the post, the close) or
+	// one listing of an item's comments.
 	publishPostBudget = 30 * time.Second
 	// settleQuiet is how long after a send began a listing without its
 	// comment makes it unconfirmed.
@@ -58,6 +64,32 @@ const (
 	// dispatch.MaxSendingPublications of them.
 	settleStartTimeout = 2 * time.Minute
 )
+
+// closing, sending, checking and closeNow are the deadlines above of the
+// caps c: the product's are defaultTrackerCaps, a test's scaled down.
+func (c trackerCaps) closing() time.Duration { return c.reads + c.write + c.post + c.write }
+func (c trackerCaps) sending() time.Duration {
+	return c.busy + c.reads + c.write + 2*c.post + c.write + c.closing()
+}
+func (c trackerCaps) checking() time.Duration { return c.busy + c.post + c.write }
+func (c trackerCaps) closeNow() time.Duration { return c.busy + c.closing() }
+
+// step is a step's context: ctx bounded by the step's own cap d from the
+// moment the step starts, read off the publications' clock (publishNow),
+// so no step spends another's time.
+func (s *Server) step(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(ctx, s.publishNow().Add(d))
+}
+
+// publishSeam tells the tests' seam (externalState.publishStep), when set,
+// that a publication's route reached a point (at): "looked" after a close's
+// look at the item, "begun" after its begin was committed, "closing" with
+// the close's own context just before the close is sent.
+func (s *Server) publishSeam(ctx context.Context, at, id string) {
+	if f := s.external.publishStep; f != nil {
+		f(ctx, at, id)
+	}
+}
 
 // The bodies of the publications' writes.
 type (
@@ -83,6 +115,17 @@ type sendArgs struct {
 	PostSha256 string `json:"postSha256"`
 }
 
+// sendable is the send's look before it asks GitHub anything: what the
+// store's begin of a send (dispatch.BeginSend) admits, as the row read
+// shows it: the digest the preview's, a publication of this store's
+// instance, a draft or a failed one below its bound of tries, at the
+// revision expected when one is. TestSendableIsTheStores holds the two to
+// the same answer for every state.
+func sendable(p dispatch.Publication, digest string, expectedRev int64) bool {
+	return digest == p.PostSha256 && !p.Restored && (p.State == dispatch.PublicationDraft || p.State == dispatch.PublicationFailed) &&
+		p.Tries < dispatch.MaxPublicationTries && (expectedRev == 0 || expectedRev == p.Rev)
+}
+
 // pubSaid names a sentence a publication's settle is handed
 // (settleWords).
 type pubSaid int
@@ -95,12 +138,15 @@ const (
 	saidClosedBefore
 	saidCloseRefused
 	saidCommentRefused
+	saidClosedFound
+	saidNotLookedFor
+	saidNotLookedWhole
 	pubSaids // how many there are
 )
 
 // settleWords is the one place the words a publication's settle is handed
 // (SettlePublication's and SettleClose's) are made: one of the route's
-// fixed sentences, three of them with the code of GitHub's answer for err
+// fixed sentences, four of them with the code of GitHub's answer for err
 // (trackerAnswer's, tracker_unavailable for a code out of its form), and
 // nothing GitHub wrote, no address and no item's name. Every sentence is
 // within the store's plain words, which the row keeps whole.
@@ -122,6 +168,12 @@ func settleWords(said pubSaid, err error) string {
 		return "closed on GitHub before Conductor's close"
 	case saidCloseRefused:
 		return "GitHub refused the close (" + code + ")"
+	case saidClosedFound:
+		return "the issue was found closed on GitHub"
+	case saidNotLookedFor:
+		return "an earlier try's comment could not be looked for (" + code + "), so nothing was posted; Send looks again"
+	case saidNotLookedWhole:
+		return "GitHub's comments could not be listed whole, so nothing was posted; Send looks again"
 	}
 	return "GitHub refused the comment (" + code + ")"
 }
@@ -183,7 +235,7 @@ func (s *Server) listing(ctx context.Context, ad tracker.Adapter, c tracker.Cred
 	case err != nil:
 		return dispatch.Outcome{Words: settleWords(saidNotListed, err)}
 	case found == tracker.FoundYes:
-		return dispatch.Outcome{State: dispatch.PublicationSent, Comment: &dispatch.SentComment{ID: string(cm.ID), URL: cm.URL, AuthorID: string(cm.AuthorID), Author: cm.Author}}
+		return sentOutcome(cm)
 	case found == tracker.FoundNo && (p.State != dispatch.PublicationSending || s.publishNow().Sub(p.SendingAt) >= settleQuiet):
 		return dispatch.Outcome{State: dispatch.PublicationUnconfirmed}
 	case found == tracker.FoundNo:
@@ -198,13 +250,44 @@ func (s *Server) listing(ctx context.Context, ad tracker.Adapter, c tracker.Cred
 // comment that was posted is recorded as posted.
 func (s *Server) settleListed(ctx context.Context, ds *dispatch.Store, ad tracker.Adapter, c tracker.Credential, p dispatch.Publication) error {
 	caps := s.trackerCaps()
-	lctx, lcancel := context.WithTimeout(ctx, caps.post)
+	lctx, lcancel := s.step(ctx, caps.post)
 	o := s.listing(lctx, ad, c, p)
 	lcancel()
-	wctx, wcancel := context.WithTimeout(ctx, caps.write)
+	wctx, wcancel := s.step(ctx, caps.write)
 	defer wcancel()
 	_, _, err := ds.SettlePublication(wctx, p.ID, p.Attempt, o)
 	return err
+}
+
+// sentOutcome is a comment GitHub answered or a listing found, as a
+// settle records it.
+func sentOutcome(cm tracker.Comment) dispatch.Outcome {
+	return dispatch.Outcome{State: dispatch.PublicationSent, Comment: &dispatch.SentComment{ID: string(cm.ID), URL: cm.URL, AuthorID: string(cm.AuthorID), Author: cm.Author}}
+}
+
+// lookedBefore is the look a send makes, when the try it owns comes after
+// an earlier one, for that try's comment before it posts: the comment by
+// its marker and exact bytes, by the account of this try, since
+// find_since (the listing a settle makes). Found: the try is recorded sent
+// with that comment and nothing is posted. The whole window listed without
+// it: post (true). Anything else (a listing not whole or failed, the item
+// moved): nothing is posted, and the try is recorded failed with words, so
+// Send looks again.
+func (s *Server) lookedBefore(ctx context.Context, ad tracker.Adapter, c tracker.Credential, p dispatch.Publication) (dispatch.Outcome, bool) {
+	lctx, lcancel := s.step(ctx, s.trackerCaps().post)
+	defer lcancel()
+	cm, found, err := ad.FindComment(lctx, c, publicationTarget(p), p.Since(), tracker.Match{Marker: p.Marker, BodySha256: p.PostSha256, AuthorID: tracker.RemoteID(p.SentAsID)})
+	switch {
+	case errors.Is(err, tracker.ErrTargetChanged):
+		return dispatch.Outcome{State: dispatch.PublicationFailed, Words: settleWords(saidTargetChanged, nil)}, false
+	case err != nil:
+		return dispatch.Outcome{State: dispatch.PublicationFailed, Words: settleWords(saidNotLookedFor, err)}, false
+	case found == tracker.FoundYes:
+		return sentOutcome(cm), false
+	case found == tracker.FoundNo:
+		return dispatch.Outcome{}, true
+	}
+	return dispatch.Outcome{State: dispatch.PublicationFailed, Words: settleWords(saidNotLookedWhole, nil)}, false
 }
 
 // publicationLive is what a person's act on the publication asks of the
@@ -224,33 +307,56 @@ func publicationLive(ctx context.Context, ds *dispatch.Store, p dispatch.Publica
 	return err
 }
 
-// closeIssue closes a sent publication's issue, if GitHub does not show
-// it closed already: the target resolved as the one prepared
-// (errTargetChanged, nothing written), the close begun and committed (the
-// store refuses it for a deleted ticket or an archived project), the
-// close sent with a credential tagged with its try and the comment, and
-// its answer settled. An answer that does not say leaves it closing, for
-// Close now. Its caller asked publicationLive first.
+// closeIssue closes a sent publication's issue (p as its caller read it),
+// each step within its own cap: first the look, the target resolved as the
+// one prepared (errTargetChanged, nothing written). An issue found closed
+// whose close was begun and never answered (closing) is settled closed
+// from where it is, no new begin and no try spent. Otherwise the close is
+// begun at the revision p was read at and committed (the store refuses it
+// for a deleted ticket or an archived project, a restored publication, and
+// past its bound); only the request whose begin changed the row goes on (a
+// begin answered from another's receipt, or refused for a row that moved,
+// asks GitHub nothing more and leaves the publication as it stands). An
+// issue found open is then closed with a credential tagged with the try and
+// the comment, and the answer settled; one found closed is settled closed.
+// An answer that does not say leaves it closing, for Close now. The words
+// of an issue found closed say it was closed before Conductor's close when
+// no close of Conductor's was begun, and that it was found closed
+// otherwise. Its caller asked publicationLive first.
 func (s *Server) closeIssue(ctx context.Context, ds *dispatch.Store, ad tracker.Adapter, c tracker.Credential, p dispatch.Publication) error {
 	caps := s.trackerCaps()
-	pctx, pcancel := context.WithTimeout(ctx, caps.post)
-	defer pcancel()
-	t, err := resolveSame(pctx, ad, c, p)
+	rctx, rcancel := s.step(ctx, caps.reads)
+	t, err := resolveSame(rctx, ad, c, p)
+	rcancel()
 	if err != nil {
 		return err
 	}
-	wctx, wcancel := context.WithTimeout(ctx, caps.write)
-	_, _, err = ds.BeginClose(wctx, p.ID)
-	if err == nil {
-		p, err = ds.Publication(wctx, p.ID)
+	s.publishSeam(ctx, "looked", p.ID)
+	o := dispatch.CloseOutcome{State: dispatch.CloseClosed, Words: settleWords(saidClosedFound, nil)}
+	if p.CloseTries == 0 {
+		o.Words = settleWords(saidClosedBefore, nil)
 	}
-	wcancel()
-	if err != nil {
-		return err
+	if t.State == tracker.StateOpen || p.CloseState != dispatch.CloseClosing {
+		wctx, wcancel := s.step(ctx, caps.write)
+		_, applied, err := ds.BeginClose(wctx, p.ID, p.Rev)
+		if err == nil && applied {
+			p, err = ds.Publication(wctx, p.ID)
+		}
+		wcancel()
+		var refused *dispatch.Refusal
+		switch {
+		case err == nil && !applied, errors.As(err, &refused) && refused.Code == dispatch.RefusalStaleRevision:
+			return nil
+		case err != nil:
+			return err
+		}
+		s.publishSeam(ctx, "begun", p.ID)
 	}
-	o := dispatch.CloseOutcome{State: dispatch.CloseClosed, Words: settleWords(saidClosedBefore, nil)}
 	if t.State == tracker.StateOpen {
-		err := ad.Close(pctx, c.ForWrite(tracker.Write{Kind: tracker.WriteClose, Publication: p.ID, Try: p.CloseTries, Comment: p.RemoteID}), t, p.CloseIssue)
+		cctx, ccancel := s.step(ctx, caps.post)
+		s.publishSeam(cctx, "closing", p.ID)
+		err := ad.Close(cctx, c.ForWrite(tracker.Write{Kind: tracker.WriteClose, Publication: p.ID, Try: p.CloseTries, Comment: p.RemoteID}), t, p.CloseIssue)
+		ccancel()
 		switch {
 		case err == nil:
 			o.Words = ""
@@ -260,16 +366,25 @@ func (s *Server) closeIssue(ctx context.Context, ds *dispatch.Store, ad tracker.
 			return nil
 		}
 	}
-	wctx, wcancel = context.WithTimeout(ctx, caps.write)
+	wctx, wcancel := s.step(ctx, caps.write)
 	defer wcancel()
 	_, _, err = ds.SettleClose(wctx, p.ID, o)
 	return err
 }
 
 // publicationReply answers a publication's operation: rc (when one ran)
-// and the publication whole, its preview and digest beside it.
+// and the publication whole, its preview and digest beside it. When the
+// publication cannot be read because the server is stopping or the
+// route's time ended, the answer is the routes' busy one (503
+// tracker_busy, Retry-After): what was done is kept, and the same
+// operation id sent again answers the publication as it stands.
 func (s *Server) publicationReply(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, id string, status int, rc *dispatch.Receipt) {
 	p, err := ds.Publication(ctx, id)
+	if err != nil && (ctx.Err() != nil || s.external.stopping().Err() != nil) {
+		w.Header().Set("Retry-After", "5")
+		writeAPIError(w, errItemBusy)
+		return
+	}
 	if err != nil {
 		s.dispatchError(w, "publication", err)
 		return
@@ -312,17 +427,19 @@ func (s *Server) publicationAt(w http.ResponseWriter, r *http.Request, v any, op
 // the target resolved as the one prepared and the token's account read,
 // the send begun and committed, and only the call that owns it posts the
 // preview's bytes to the node, with the credential tagged for the
-// comment. The answer settles it: the comment, sent (and the close, when
+// comment; a try after an earlier one looks for that try's comment first
+// (lookedBefore) and posts only when the whole window was listed without
+// it. The answer settles it: the comment, sent (and the close, when
 // asked); a refusal proving nothing was posted, failed; anything else, a
 // listing for the comment. 200 {receipt, publication}. A publication the
-// store would not send (its ticket deleted or its project archived among
-// it) is handed to the store with no account, which keeps its refusal
-// under the operation's id, GitHub not asked.
+// store would not send (sendable: its ticket deleted or its project
+// archived among it) is handed to the store with no account, which keeps
+// its refusal under the operation's id, GitHub not asked. A resend of a
+// send being sent settles it first only while its ticket is live.
 func (s *Server) handlePublicationSend(w http.ResponseWriter, r *http.Request) {
 	var body publicationSendBody
 	caps := s.trackerCaps()
-	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, &body.dispatchOp,
-		caps.busy+caps.reads+caps.write+caps.post+caps.write+caps.post+2*caps.write)
+	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, &body.dispatchOp, caps.sending())
 	if !ok {
 		return
 	}
@@ -341,25 +458,24 @@ func (s *Server) handlePublicationSend(w http.ResponseWriter, r *http.Request) {
 	ref := publicationRef(p)
 	if found {
 		// A resend: nothing is posted; a send under way is settled first,
-		// as far as GitHub answers.
-		if p.State == dispatch.PublicationSending {
+		// as far as GitHub answers, when its ticket is live.
+		if p.State == dispatch.PublicationSending && publicationLive(ctx, ds, p) == nil {
 			_ = s.atGitHub(ctx, ref, func(ad tracker.Adapter, c tracker.Credential) error { return s.settleListed(ctx, ds, ad, c, p) })
 		}
 		s.publicationReply(ctx, w, ds, id, http.StatusOK, &rc)
 		return
 	}
-	sendable := body.PostSha256 == p.PostSha256 && !p.Restored && (p.State == dispatch.PublicationDraft || p.State == dispatch.PublicationFailed) &&
-		p.Tries < dispatch.MaxPublicationTries && (op.ExpectedRev == 0 || op.ExpectedRev == p.Rev)
-	if sendable {
+	ok = sendable(p, body.PostSha256, op.ExpectedRev)
+	if ok {
 		var refused *dispatch.Refusal
 		if err := publicationLive(ctx, ds, p); errors.As(err, &refused) {
-			sendable = false
+			ok = false
 		} else if err != nil {
 			s.publicationFail(w, r, ref, dispatch.Receipt{}, err, ds, ctx, id)
 			return
 		}
 	}
-	if !sendable {
+	if !ok {
 		// The store's refusal, kept under the operation's id; GitHub is not
 		// asked.
 		rc, _, err := ds.BeginSend(ctx, op, id, body.PostSha256, dispatch.Sender{})
@@ -367,7 +483,7 @@ func (s *Server) handlePublicationSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = s.atGitHub(ctx, ref, func(ad tracker.Adapter, c tracker.Credential) error {
-		rctx, rcancel := context.WithTimeout(ctx, caps.reads)
+		rctx, rcancel := s.step(ctx, caps.reads)
 		t, err := resolveSame(rctx, ad, c, p)
 		var who tracker.Account
 		if err == nil {
@@ -377,40 +493,44 @@ func (s *Server) handlePublicationSend(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		wctx, wcancel := context.WithTimeout(ctx, caps.write)
+		wctx, wcancel := s.step(ctx, caps.write)
 		var owned bool
 		rc, owned, err = ds.BeginSend(wctx, op, id, body.PostSha256, dispatch.Sender{ID: string(who.ID), Login: who.Login})
+		if err == nil && owned {
+			p, err = ds.Publication(wctx, id)
+		}
 		wcancel()
 		if err != nil || !owned {
 			// Refused, or another's: this call posts nothing.
 			return err
 		}
-		if p, err = ds.Publication(ctx, id); err != nil {
-			return err
+		o, post := dispatch.Outcome{}, true
+		if p.Attempt > 1 {
+			o, post = s.lookedBefore(ctx, ad, c, p)
 		}
-		pctx, pcancel := context.WithTimeout(ctx, caps.post)
-		cm, err := ad.Comment(pctx, c.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: id, Try: p.Attempt, PostSha256: p.PostSha256}), t, p.Posted())
-		pcancel()
-		var o dispatch.Outcome
-		switch {
-		case err == nil:
-			o = dispatch.Outcome{State: dispatch.PublicationSent, Comment: &dispatch.SentComment{ID: string(cm.ID), URL: cm.URL, AuthorID: string(cm.AuthorID), Author: cm.Author}}
-		case tracker.NothingWritten(err):
-			o = dispatch.Outcome{State: dispatch.PublicationFailed, Words: settleWords(saidCommentRefused, err)}
-		default:
-			s.log.Info("a publication's post had no answer that says whether it was made; its comment is looked for", "publication", id, "try", p.Attempt)
-			return s.settleListed(ctx, ds, ad, c, p)
+		if post {
+			pctx, pcancel := s.step(ctx, caps.post)
+			cm, err := ad.Comment(pctx, c.ForWrite(tracker.Write{Kind: tracker.WriteComment, Publication: id, Try: p.Attempt, PostSha256: p.PostSha256}), t, p.Posted())
+			pcancel()
+			switch {
+			case err == nil:
+				o = sentOutcome(cm)
+			case tracker.NothingWritten(err):
+				o = dispatch.Outcome{State: dispatch.PublicationFailed, Words: settleWords(saidCommentRefused, err)}
+			default:
+				s.log.Info("a publication's post had no answer that says whether it was made; its comment is looked for", "publication", id, "try", p.Attempt)
+				return s.settleListed(ctx, ds, ad, c, p)
+			}
 		}
-		wctx, wcancel = context.WithTimeout(ctx, caps.write)
+		wctx, wcancel = s.step(ctx, caps.write)
 		_, _, err = ds.SettlePublication(wctx, id, p.Attempt, o)
+		if err == nil && o.State == dispatch.PublicationSent && p.CloseIssue != "" {
+			if p, err = ds.Publication(wctx, id); err == nil {
+				err = publicationLive(wctx, ds, p)
+			}
+		}
 		wcancel()
 		if err != nil || o.State != dispatch.PublicationSent || p.CloseIssue == "" {
-			return err
-		}
-		if p, err = ds.Publication(ctx, id); err == nil {
-			err = publicationLive(ctx, ds, p)
-		}
-		if err != nil {
 			return err
 		}
 		return s.closeIssue(ctx, ds, ad, c, p)
@@ -489,7 +609,7 @@ func (s *Server) publicationAfter(ctx context.Context, ds *dispatch.Store, id st
 func (s *Server) handlePublicationCheck(w http.ResponseWriter, r *http.Request) {
 	var body publicationCheckBody
 	caps := s.trackerCaps()
-	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, nil, caps.busy+caps.reads+caps.write)
+	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, nil, caps.checking())
 	if !ok {
 		return
 	}
@@ -518,17 +638,20 @@ func (s *Server) handlePublicationCheck(w http.ResponseWriter, r *http.Request) 
 }
 
 // handlePublicationClose is the person's Close now, for a sent publication
-// whose asked close is pending, closing or refused (closeIssue); one
-// closed already is answered as it stands. expectedRev, when given, is the
-// publication's. 200 {publication}; 409 target_changed, nothing written.
-// A person's act: refused for a deleted ticket or an archived project
-// (publicationLive) before anything is asked of GitHub. The store runs
-// the close as its own operation, so the body's display name is checked
-// here by the rule the store has for an operation's.
+// of this store's instance whose asked close is pending, closing or
+// refused (closeIssue: the look at the item first, whatever the count of
+// tries, then the begin, refused past its bound); one closed already is
+// answered as it stands. expectedRev, when given, is the publication's.
+// 200 {publication}; 409 target_changed, nothing written. A person's act:
+// refused for a deleted ticket or an archived project (publicationLive),
+// and for a restored publication, whose close is the original's, before
+// anything is asked of GitHub. The store runs the close as its own
+// operation, so the body's display name is checked here by the rule the
+// store has for an operation's.
 func (s *Server) handlePublicationClose(w http.ResponseWriter, r *http.Request) {
 	var body dispatchOp
 	caps := s.trackerCaps()
-	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, &body, caps.busy+caps.post+2*caps.write)
+	ds, id, ctx, done, ok := s.publicationAt(w, r, &body, &body, caps.closeNow())
 	if !ok {
 		return
 	}
@@ -551,17 +674,27 @@ func (s *Server) handlePublicationClose(w http.ResponseWriter, r *http.Request) 
 	case body.ExpectedRev != 0 && body.ExpectedRev != p.Rev:
 		writeDispatch(w, http.StatusConflict, map[string]any{"error": apiError{Code: dispatch.RefusalStaleRevision, Message: "the publication changed: read it again"}})
 		return
-	case p.State != dispatch.PublicationSent || p.CloseIssue == "":
+	case p.Restored:
+		writeDispatch(w, http.StatusConflict, map[string]any{"error": apiError{Code: dispatch.RefusalInvalid, Message: "restored from an export: its issue's close is the original's"}})
+		return
+	case p.State != dispatch.PublicationSent || p.CloseIssue == "" ||
+		p.CloseState != dispatch.ClosePending && p.CloseState != dispatch.CloseClosing && p.CloseState != dispatch.CloseRefused:
 		writeDispatch(w, http.StatusConflict, map[string]any{"error": apiError{Code: dispatch.RefusalInvalid, Message: "only a sent publication whose close was asked for is closed"}})
 		return
 	}
 	ref := publicationRef(p)
-	if err := s.atGitHub(ctx, ref, func(ad tracker.Adapter, c tracker.Credential) error { return s.closeIssue(ctx, ds, ad, c, p) }); err != nil {
+	if err := s.closeNow(ctx, ds, p); err != nil {
 		s.publicationFail(w, r, ref, dispatch.Receipt{}, err, ds, ctx, id)
 		return
 	}
 	s.trackerLog(r, ref, http.StatusOK)
 	s.publicationReply(ctx, w, ds, id, http.StatusOK, nil)
+}
+
+// closeNow is Close now's steps under the publication's lock: the
+// credential for the target's host, and closeIssue.
+func (s *Server) closeNow(ctx context.Context, ds *dispatch.Store, p dispatch.Publication) error {
+	return s.atGitHub(ctx, publicationRef(p), func(ad tracker.Adapter, c tracker.Credential) error { return s.closeIssue(ctx, ds, ad, c, p) })
 }
 
 // handlePublicationDiscard discards a draft, a failed or an unconfirmed
@@ -629,11 +762,15 @@ func (s *Server) handlePublications(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePublicationPrepare prepares a publication of a ticket (body
-// publicationBody): replayed first; then, under the target's lock, the
-// target read from GitHub (the linked issue resolved by its node id; a
-// link read again and recorded, then resolved by the node its read found),
-// and publication.prepare run with it and the adapter's marker. 201
-// {receipt, publication, preview, postSha256}.
+// publicationBody): replayed first; then judged by the store for all that
+// needs no target (dispatch.JudgePrepare: the ticket live, its project not
+// archived, the body, the close, the parts, the link the ticket's, the
+// bound), a refusal kept under the operation's id with no credential read
+// and nothing asked of GitHub; then, under the target's lock, the target
+// read from GitHub (the linked issue resolved by its node id; a link read
+// again and recorded, then resolved by the node its read found), and
+// publication.prepare run with it and the adapter's marker. 201 {receipt,
+// publication, preview, postSha256}.
 func (s *Server) handlePublicationPrepare(w http.ResponseWriter, r *http.Request) {
 	var body publicationBody
 	ds, key, ok := s.externalStart(w, r, &body, &body.dispatchOp, ticketKey)
@@ -654,6 +791,18 @@ func (s *Server) handlePublicationPrepare(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_request", "the target is linked or link:<id>")
 		return
 	}
+	if err := ds.JudgePrepare(ctx, args); err != nil {
+		var refused *dispatch.Refusal
+		if !errors.As(err, &refused) {
+			s.dispatchError(w, "publication", err)
+			return
+		}
+		// The store refuses it with the same judgement, kept under the
+		// operation's id; GitHub is not asked.
+		rc, err := ds.PreparePublication(ctx, op, args, dispatch.PublicationTarget{}, s.trackers.gh.Marker)
+		s.prepared(ctx, w, ds, rc, err)
+		return
+	}
 	var ref tracker.Ref
 	var node string
 	lock := "ticket:" + key
@@ -672,7 +821,7 @@ func (s *Server) handlePublicationPrepare(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	rctx, rcancel := context.WithTimeout(ctx, caps.reads)
+	rctx, rcancel := s.step(ctx, caps.reads)
 	defer rcancel()
 	if isLink {
 		if err := s.readLinkIn(rctx, ctx, ds, key, linkID, ref, false); err != nil {
@@ -699,7 +848,7 @@ func (s *Server) handlePublicationPrepare(w http.ResponseWriter, r *http.Request
 		s.publicationFail(w, r, ref, dispatch.Receipt{}, err, ds, ctx, "")
 		return
 	}
-	wctx, wcancel := context.WithTimeout(ctx, caps.write)
+	wctx, wcancel := s.step(ctx, caps.write)
 	defer wcancel()
 	rc, err := ds.PreparePublication(wctx, op, args, dispatch.PublicationTarget{NodeID: t.NodeID, SpaceID: string(t.SpaceID), Kind: t.Kind, URL: t.URL,
 		Ref: t.Ref.String()}, s.trackers.gh.Marker)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,10 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,11 +41,21 @@ type pubAccount struct {
 	login string
 }
 
-// pubNode is an issue or a pull request as the fake's GraphQL answers it.
+// pubNode is an issue or a pull request as the fake's GraphQL answers it,
+// on github.com unless host says otherwise.
 type pubNode struct {
-	typ, name, state string
-	number           int
-	repo             int64
+	typ, name, state, host string
+	number                 int
+	repo                   int64
+}
+
+// page is the node's page on its host.
+func (n *pubNode) page() string {
+	host, seg := cmp.Or(n.host, "github.com"), "issues"
+	if n.typ == "PullRequest" {
+		seg = "pull"
+	}
+	return fmt.Sprintf("https://%s/%s/%s/%d", host, n.name, seg, n.number)
 }
 
 // pubComment is a comment the fake holds.
@@ -60,13 +73,16 @@ type pubComment struct {
 // answers; drop commits nothing and answers 502; lost commits and answers
 // 502; hold commits and holds the answer until released or the client
 // leaves; late commits nothing, answers 502, and commits it when the test
-// says (commitLate).
+// says (commitLate); refused commits nothing and answers 403, which proves
+// nothing was posted; madeRefused commits and answers 403 all the same.
 const (
-	postOK   = "ok"
-	postDrop = "drop"
-	postLost = "lost"
-	postHold = "hold"
-	postLate = "late"
+	postOK          = "ok"
+	postDrop        = "drop"
+	postLost        = "lost"
+	postHold        = "hold"
+	postLate        = "late"
+	postRefused     = "refused"
+	postMadeRefused = "made-refused"
 )
 
 // pubGH is the fake's GitHub for publications on top of ghItems: the
@@ -81,26 +97,54 @@ type pubGH struct {
 	accounts map[string]pubAccount
 	mode     string
 	skew     time.Duration
-	closeTo  int // the close's answer: 0 a close, 403 a refusal
+	closeTo  int  // the close's answer: 0 a close, 403 a refusal, 502 none
+	lostShut bool // with closeTo 502, the close is made all the same
 	held     chan struct{}
 	reached  chan struct{}
 	late     *pubComment
+	// onUser, when set, is called as an account is read (GET /user),
+	// before the answer.
+	onUser func()
+	user   http.HandlerFunc
+	ghe    bool
 }
+
+// gheAPI is the Enterprise Server's API path, before a REST path.
+const gheAPI = "/api/v3"
 
 func newPubGH(t *testing.T, g *ghItems) *pubGH {
 	p := &pubGH{g: g, nodes: map[string]*pubNode{}, nextID: 7000000001, mode: postOK,
 		accounts: map[string]pubAccount{plantedToken: alicePub, plantedToken2: bobPub, plantedEnv: carolPub}}
-	g.f.Handle("POST", "api.github.com", "/graphql", p.graphql)
-	g.f.Handle("GET", "api.github.com", "/user", func(w http.ResponseWriter, r *http.Request) {
+	user := func(w http.ResponseWriter, r *http.Request) {
 		a, ok := p.account(r)
 		if !ok {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		p.mu.Lock()
+		on := p.onUser
+		p.mu.Unlock()
+		if on != nil {
+			on()
+		}
 		fmt.Fprintf(w, `{"login":%q,"id":%d}`, a.login, a.id)
-	})
+	}
+	p.user = user
+	g.f.Handle("POST", "api.github.com", "/graphql", p.graphql)
+	g.f.Handle("GET", "api.github.com", "/user", user)
 	t.Cleanup(p.release)
 	return p
+}
+
+// onGHE serves the publications' side on the Enterprise Server's host as
+// well (its GraphQL, its account and, for each node put after, its
+// comments' listing).
+func (p *pubGH) onGHE() {
+	p.mu.Lock()
+	p.ghe = true
+	p.mu.Unlock()
+	p.g.f.Handle("POST", gheHost, "/api/graphql", p.graphql)
+	p.g.f.Handle("GET", gheHost, gheAPI+"/user", p.user)
 }
 
 func (p *pubGH) account(r *http.Request) (pubAccount, bool) {
@@ -114,10 +158,25 @@ func (p *pubGH) account(r *http.Request) (pubAccount, bool) {
 func (p *pubGH) node(id, typ, name string, number int, repo int64) {
 	p.mu.Lock()
 	p.nodes[id] = &pubNode{typ: typ, name: name, number: number, repo: repo, state: "OPEN"}
+	ghe := p.ghe
 	p.mu.Unlock()
-	p.g.f.Handle("GET", "api.github.com", fmt.Sprintf("/repositories/%d/issues/%d/comments", repo, number), func(w http.ResponseWriter, r *http.Request) {
-		p.list(w, r, repo, number)
-	})
+	path := fmt.Sprintf("/repositories/%d/issues/%d/comments", repo, number)
+	list := func(w http.ResponseWriter, r *http.Request) { p.list(w, r, repo, number) }
+	p.g.f.Handle("GET", "api.github.com", path, list)
+	if ghe {
+		p.g.f.Handle("GET", gheHost, gheAPI+path, list)
+	}
+}
+
+// listings is the fake's listings of comments asked, on any host.
+func (p *pubGH) listings() int {
+	n := 0
+	for _, r := range p.g.f.Requests() {
+		if strings.HasSuffix(r.Path, "/comments") {
+			n++
+		}
+	}
+	return n
 }
 
 // edit changes a node.
@@ -143,7 +202,7 @@ func (p *pubGH) add(node, body string, by pubAccount, created time.Time) *pubCom
 func (p *pubGH) addLocked(node, body string, by pubAccount, created time.Time) *pubComment {
 	n := p.nodes[node]
 	c := &pubComment{id: p.nextID, repo: n.repo, number: n.number, body: body, author: by, created: created.UTC().Truncate(time.Second), subject: node}
-	c.url = fmt.Sprintf("https://github.com/%s/issues/%d#issuecomment-%d", n.name, n.number, c.id)
+	c.url = fmt.Sprintf("https://%s/%s/issues/%d#issuecomment-%d", cmp.Or(n.host, "github.com"), n.name, n.number, c.id)
 	p.nextID++
 	p.comments = append(p.comments, c)
 	return c
@@ -201,12 +260,8 @@ func (p *pubGH) graphql(w http.ResponseWriter, r *http.Request) {
 			answer(map[string]any{"data": map[string]any{"node": nil}})
 			return
 		}
-		seg := "issues"
-		if n.typ == "PullRequest" {
-			seg = "pull"
-		}
 		v := map[string]any{"__typename": n.typ, "id": q.Variables["id"], "number": n.number, "state": n.state,
-			"url": fmt.Sprintf("https://github.com/%s/%s/%d", n.name, seg, n.number), "repository": map[string]any{"fullDatabaseId": strconv.FormatInt(n.repo, 10), "nameWithOwner": n.name}}
+			"url": n.page(), "repository": map[string]any{"fullDatabaseId": strconv.FormatInt(n.repo, 10), "nameWithOwner": n.name}}
 		p.mu.Unlock()
 		answer(map[string]any{"data": map[string]any{"node": v}})
 	case github.AddCommentDocument:
@@ -215,7 +270,7 @@ func (p *pubGH) graphql(w http.ResponseWriter, r *http.Request) {
 		mode := p.mode
 		var held, reached chan struct{}
 		switch mode {
-		case postDrop, postLate:
+		case postDrop, postLate, postRefused:
 			p.comments = p.comments[:len(p.comments)-1]
 			if mode == postLate {
 				p.late = c
@@ -227,6 +282,9 @@ func (p *pubGH) graphql(w http.ResponseWriter, r *http.Request) {
 		switch mode {
 		case postDrop, postLost, postLate:
 			w.WriteHeader(http.StatusBadGateway)
+			return
+		case postRefused, postMadeRefused:
+			w.WriteHeader(http.StatusForbidden)
 			return
 		case postHold:
 			close(reached)
@@ -242,7 +300,7 @@ func (p *pubGH) graphql(w http.ResponseWriter, r *http.Request) {
 	case github.CloseIssueDocument:
 		id := q.Variables["issueId"].(string)
 		n, status := p.nodes[id], p.closeTo
-		if status == 0 {
+		if status == 0 || p.lostShut {
 			n.state = "CLOSED"
 		}
 		p.mu.Unlock()
@@ -296,16 +354,28 @@ const pubNodeID = "I_kwDOitem12"
 // token through do (a fixture: the pattern, the path, the body, the answer
 // it must give): a prepare, a send, a send whose post GitHub dropped and
 // its Check, and a send whose close did not answer and its Close now. The
-// fake's issue is octo/app#160, imported into the project PBW.
-func drivePublications(t *testing.T, e *testEnv, g *ghItems, do func(pattern, path, body string, status int, code string) map[string]any) {
+// fake's issue is octo/app#160 on github.com, imported into the project
+// PBW; on another host (an Enterprise Server's, gheHost), octo/app#170
+// there, imported into PBG, whose token the fake takes is plantedToken2.
+func drivePublications(t *testing.T, e *testEnv, g *ghItems, host string, do func(pattern, path, body string, status int, code string) map[string]any) {
 	t.Helper()
 	p := newPubGH(t, g)
-	g.set(160, ghItem{Node: "I_kwDOitem160", Title: "Walked", Body: "b", Updated: t0, Labels: []string{}})
-	p.node("I_kwDOitem160", "Issue", "octo/app", 160, 4000001)
-	e.newDispatchProject(t, "PBW", nil)
-	e.importItem(t, "PBW", "https://github.com/octo/app/issues/160", opID(), http.StatusCreated, map[string]any{"images": false})
+	n, node, project := 160, "I_kwDOitem160", "PBW"
+	if host == "github.com" {
+		g.set(n, ghItem{Node: node, Title: "Walked", Body: "b", Updated: t0, Labels: []string{}})
+		p.node(node, "Issue", "octo/app", n, 4000001)
+	} else {
+		n, node, project = 170, "I_kwDOghe170", "PBG"
+		p.onGHE()
+		gheIssue(g, host, n, node)
+		p.node(node, "Issue", "octo/app", n, 4000001)
+		p.edit(node, func(x *pubNode) { x.host = host })
+	}
+	e.newDispatchProject(t, project, nil)
+	e.importItem(t, project, fmt.Sprintf("https://%s/octo/app/issues/%d", host, n), opID(), http.StatusCreated, map[string]any{"images": false})
+	key := project + "-1"
 	prepare := func(extra string) (id, digest string) {
-		out := do("POST /api/dispatch/tickets/{key}/publications", "/api/dispatch/tickets/PBW-1/publications",
+		out := do("POST /api/dispatch/tickets/{key}/publications", "/api/dispatch/tickets/"+key+"/publications",
 			`{"opId":"`+opID()+`","target":"linked","body":"Walked."`+extra+`}`, http.StatusCreated, "")
 		return out["publication"].(map[string]any)["id"].(string), out["postSha256"].(string)
 	}
@@ -322,6 +392,24 @@ func drivePublications(t *testing.T, e *testEnv, g *ghItems, do func(pattern, pa
 	send(id, digest)
 	p.set(func(p *pubGH) { p.closeTo = 0 })
 	do("POST /api/dispatch/publications/{id}/close", "/api/dispatch/publications/"+id+"/close", `{"opId":"`+opID()+`"}`, http.StatusOK, "")
+}
+
+// gheIssue serves issue n of octo/app (repository 4000001) on the
+// Enterprise Server's host, its node node, to plantedToken2 alone.
+func gheIssue(g *ghItems, host string, n int, node string) {
+	g.f.Handle("GET", host, gheAPI+"/repos/octo/app", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":4000001,"full_name":"octo/app"}`)
+	})
+	g.f.Handle("GET", host, fmt.Sprintf("%s%s/issues/%d", gheAPI, itemsRepo, n), func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+plantedToken2 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		b, _ := json.Marshal(map[string]any{"id": 5000000 + n, "node_id": node, "number": n, "html_url": fmt.Sprintf("https://%s/octo/app/issues/%d", host, n),
+			"title": "Walked there", "body": "b", "body_html": "", "state": "open", "labels": []any{}, "assignees": []any{},
+			"user": map[string]any{"login": "mona", "id": 9000001}, "created_at": itemsLayout, "updated_at": t0.Format(time.RFC3339)})
+		_, _ = w.Write(b)
+	})
 }
 
 // pubEnv is a server with a ticket (PUB-1) imported from the fake's issue
@@ -448,25 +536,34 @@ func TestPublishOnce(t *testing.T) {
 }
 
 // A post held at GitHub while the server stops: the comment made, its
-// answer never read; the row stays sending. A server started again over
-// the data directory settles it in the background by its marker: sent,
-// one comment, no second post.
+// answer never read; the row stays sending, and the send answers the
+// routes' busy answer. A server started again over the data directory
+// settles it in the background by its marker: sent, one comment, no
+// second post; the same operation id again answers it as it stands.
 func TestPublishAcrossCrash(t *testing.T) {
 	e, p := pubEnv(t)
 	out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
 	id, digest := pubOf(t, out)["id"].(string), out["postSha256"].(string)
 	reached := make(chan struct{})
 	p.set(func(p *pubGH) { p.mode, p.held, p.reached = postHold, make(chan struct{}), reached })
-	answered := make(chan int, 1)
+	type reply struct {
+		status int
+		data   []byte
+		out    map[string]any
+	}
+	answered := make(chan reply, 1)
+	op := opID()
 	go func() {
-		status, _, _ := e.call(t, "POST", "/api/dispatch/publications/"+id+"/send", map[string]any{"opId": opID(), "postSha256": digest})
-		answered <- status
+		status, data, out := e.call(t, "POST", "/api/dispatch/publications/"+id+"/send", map[string]any{"opId": op, "postSha256": digest})
+		answered <- reply{status, data, out}
 	}()
 	<-reached
 	stop, cancel := context.WithTimeout(context.Background(), testWait)
 	defer cancel()
 	e.srv.WaitBackground(stop)
-	<-answered
+	if got := <-answered; got.status != http.StatusServiceUnavailable || errorCode(got.out) != "tracker_busy" {
+		t.Fatalf("the send held across the stop: %d %s", got.status, got.data)
+	}
 	p.set(func(p *pubGH) { p.mode = postOK })
 	e2 := e.restart()
 	useFake(e2.srv, p.g.f)
@@ -480,17 +577,18 @@ func TestPublishAcrossCrash(t *testing.T) {
 	if p.adds() != 1 || len(p.commented(pubNodeID)) != 1 || e2.stored(t, id).RemoteID != strconv.FormatInt(p.commented(pubNodeID)[0].id, 10) {
 		t.Fatalf("%d posts, %d comments", p.adds(), len(p.commented(pubNodeID)))
 	}
+	if got := pubOf(t, e2.sendPub(t, id, op, digest, http.StatusOK, "")); got["state"] != "sent" || p.adds() != 1 {
+		t.Fatalf("the same send again: %v, %d posts", got, p.adds())
+	}
 }
 
 // A post GitHub dropped, its answer not one that proves it: the listing
 // finds nothing, and within settleQuiet the row stays sending with its
-// words; past it (the server's clock seam) Check makes it unconfirmed.
-// Send is refused; Publish as new posts one comment of its own.
+// words; past it (the server's clock seam, moved on from the time the send
+// began as the store holds it) Check makes it unconfirmed. Send is
+// refused; Publish as new posts one comment of its own.
 func TestPublishUnconfirmedNeverResent(t *testing.T) {
 	e, p := pubEnv(t)
-	now := time.Now()
-	clock := func() time.Time { return now }
-	e.srv.external.now = func() time.Time { return clock() }
 	out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
 	id, digest := pubOf(t, out)["id"].(string), out["postSha256"].(string)
 	p.set(func(p *pubGH) { p.mode = postDrop })
@@ -498,8 +596,8 @@ func TestPublishUnconfirmedNeverResent(t *testing.T) {
 	if got["state"] != "sending" || got["error"] == nil {
 		t.Fatalf("a dropped post: %v", got)
 	}
-	clock = func() time.Time { return now.Add(settleQuiet + time.Second) }
-	e.srv.external.now = func() time.Time { return clock() }
+	ahead := time.Until(e.stored(t, id).SendingAt.Add(settleQuiet + time.Second))
+	e.srv.external.now = func() time.Time { return time.Now().Add(ahead) }
 	if got := pubOf(t, e.expect(t, "POST", "/api/dispatch/publications/"+id+"/check", map[string]any{}, http.StatusOK, "")); got["state"] != "unconfirmed" {
 		t.Fatalf("the check: %v", got)
 	}
@@ -631,13 +729,13 @@ func TestPublishCloseRefusedKeepsComment(t *testing.T) {
 // A close cut at each point is finished by Close now and never by the
 // settle at a start: before the close (pending), it closes; after its
 // begin (closing), it begins again and closes; after GitHub closed it, it
-// sends nothing and settles closed.
+// sends nothing and settles closed from where it is, no try spent.
 func TestPublishCloseRecovers(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		at         string
 		sent, want int // closes sent by Close now; close_tries after it
-	}{{"pending", 1, 1}, {"closing", 1, 2}, {"closed on GitHub", 0, 2}} {
+	}{{"pending", 1, 1}, {"closing", 1, 2}, {"closed on GitHub", 0, 1}} {
 		t.Run(c.at, func(t *testing.T) {
 			e, p := pubEnv(t)
 			var id string
@@ -762,22 +860,35 @@ func TestPrepareVerifiesTarget(t *testing.T) {
 }
 
 // Every write goes to the node fixed at prepare: a repository renamed
-// keeps its id, and the comment goes to the node where it is now; an
-// issue transferred to another repository is 409 target_changed, nothing
-// posted or committed.
+// keeps its id, and the comment goes to the node where it is now; a new
+// repository then made with the old name, with an issue of that number,
+// gets no comment and no listing, from a send or from a Check of a post
+// GitHub dropped; an issue transferred to another repository is 409
+// target_changed, nothing posted or committed.
 func TestSendRefusesChangedTarget(t *testing.T) {
 	e, p := pubEnv(t)
 	out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
 	p.edit(pubNodeID, func(n *pubNode) { n.name = "octo/renamed" })
+	const other = "I_kwDOnewrepo12"
+	p.node(other, "Issue", "octo/app", 12, 4000009)
 	e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, "")
 	if c := p.commented(pubNodeID); len(c) != 1 || p.adds() != 1 {
 		t.Fatalf("the renamed repository: %d comments", len(c))
+	}
+	p.set(func(p *pubGH) { p.mode = postDrop })
+	dropped := e.prepare(t, "PUB-1", map[string]any{"body": "Dropped."}, http.StatusCreated, "")
+	did := pubOf(t, dropped)["id"].(string)
+	e.sendPub(t, did, opID(), dropped["postSha256"].(string), http.StatusOK, "")
+	p.set(func(p *pubGH) { p.mode = postOK })
+	e.expect(t, "POST", "/api/dispatch/publications/"+did+"/check", map[string]any{}, http.StatusOK, "")
+	if len(p.commented(other)) != 0 || p.g.count("api.github.com", "/repositories/4000009/") != 0 || p.g.count("api.github.com", "/repositories/4000001/") == 0 {
+		t.Fatalf("the new repository of the old name: %d comments, %d listings", len(p.commented(other)), p.g.count("api.github.com", "/repositories/4000009/"))
 	}
 	moved := e.prepare(t, "PUB-1", map[string]any{"body": "Again."}, http.StatusCreated, "")
 	p.edit(pubNodeID, func(n *pubNode) { n.repo, n.name = 4000002, "other/app" })
 	id := pubOf(t, moved)["id"].(string)
 	e.sendPub(t, id, opID(), moved["postSha256"].(string), http.StatusConflict, "target_changed")
-	if got := e.stored(t, id); got.State != dispatch.PublicationDraft || p.adds() != 1 {
+	if got := e.stored(t, id); got.State != dispatch.PublicationDraft || p.adds() != 2 {
 		t.Fatalf("a transferred issue: %+v, %d posts", got, p.adds())
 	}
 }
@@ -827,28 +938,40 @@ func TestNothingPublishedBySideEffect(t *testing.T) {
 	p.set(func(p *pubGH) { p.closeTo = http.StatusBadGateway })
 	sentWithClose(t, e, p)
 	fid := pubOf(t, failed)["id"].(string)
-	// One being sent, as a crash leaves it, for the start's settle.
-	sending := e.prepare(t, "PUB-1", map[string]any{"body": "s"}, http.StatusCreated, "")
+	// One being sent that asked a close, as a crash after its post leaves
+	// it (its comment on GitHub), for the start's settle.
+	sending := e.prepare(t, "PUB-1", map[string]any{"body": "s", "closeIssue": "completed"}, http.StatusCreated, "")
 	sid := pubOf(t, sending)["id"].(string)
 	if _, owned, err := e.srv.dispatch.BeginSend(t.Context(), adminOp("Alice"), sid, sending["postSha256"].(string), dispatch.Sender{ID: "9000001", Login: "mona-example"}); !owned || err != nil {
 		t.Fatal(err)
 	}
-	writes := p.g.f.AllWrites()
+	p.add(pubNodeID, e.stored(t, sid).Posted(), alicePub, time.Now())
+	writes, closes := p.g.f.AllWrites(), p.closes()
 	tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/PUB-1", nil, http.StatusOK, ""), "ticket")
 	e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/edit", map[string]any{"opId": opID(), "expectedRev": tk["rev"], "set": map[string]any{"priority": 1}}, http.StatusOK, "")
 	e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/comments", map[string]any{"opId": opID(), "body": "private"}, http.StatusCreated, "")
 	e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/external/refresh", map[string]any{"opId": opID()}, http.StatusOK, "")
 	e.expect(t, "POST", "/api/dispatch/publications/"+fid+"/check", map[string]any{}, http.StatusConflict, dispatch.RefusalInvalid)
 	e.expect(t, "GET", "/api/dispatch/tickets/PUB-1/publish/offer", nil, http.StatusOK, "")
-	rev := e.stored(t, sid).Rev
 	e2 := e.restart()
 	useFake(e2.srv, p.g.f)
 	e2.srv.SettlePublications()
-	if !waitFor(testWait, func() bool { return e.stored(t, sid).Rev != rev }) {
-		t.Fatal("the start's settle recorded nothing")
+	// The start's settle finds the comment: sent, its close pending; and
+	// once it lets the publication's lock go (it settles under it), it
+	// has closed nothing.
+	if !waitFor(testWait, func() bool {
+		got := e.stored(t, sid)
+		return got.State == dispatch.PublicationSent && got.CloseState == dispatch.ClosePending
+	}) {
+		t.Fatalf("the start's settle: %+v", e.stored(t, sid))
 	}
-	if n := p.g.f.AllWrites() - writes; n != 0 {
-		t.Fatalf("%d writes to GitHub by a side effect", n)
+	release, ok := e2.srv.external.lock(t.Context(), "publication:"+sid, testWait)
+	if !ok {
+		t.Fatal("the start's settle kept the publication's lock")
+	}
+	release()
+	if n := p.g.f.AllWrites() - writes; n != 0 || p.closes() != closes || e.stored(t, sid).CloseState != dispatch.ClosePending {
+		t.Fatalf("%d writes to GitHub by a side effect, %d closes", n, p.closes()-closes)
 	}
 }
 
@@ -923,9 +1046,13 @@ func TestPublishRefusesBrakemanAndSessions(t *testing.T) {
 func TestPublishDeadlines(t *testing.T) {
 	c := defaultTrackerCaps
 	for _, d := range []struct{ got, want time.Duration }{
-		{PublishTimeout, c.busy + c.reads + c.write + c.post + c.write + c.post + 2*c.write},
-		{PrepareTimeout, c.busy + c.reads + 2*c.write}, {CloseNowTimeout, c.busy + c.post + 2*c.write},
-		{PublishTimeout, 240 * time.Second}, {PrepareTimeout, 120 * time.Second}, {CloseNowTimeout, 105 * time.Second},
+		{PublishTimeout, c.sending()}, {CheckTimeout, c.checking()}, {CloseNowTimeout, c.closeNow()}, {closeSteps, c.closing()},
+		{c.closing(), c.reads + c.write + c.post + c.write},
+		{c.sending(), c.busy + c.reads + c.write + c.post + c.post + c.write + c.closing()},
+		{c.checking(), c.busy + c.post + c.write}, {c.closeNow(), c.busy + c.closing()},
+		{PrepareTimeout, c.busy + c.reads + 2*c.write},
+		{PublishTimeout, 315 * time.Second}, {PrepareTimeout, 120 * time.Second}, {CheckTimeout, 75 * time.Second},
+		{CloseNowTimeout, 150 * time.Second},
 	} {
 		if d.got != d.want {
 			t.Errorf("a deadline of %s, not %s", d.got, d.want)
@@ -987,7 +1114,7 @@ func TestPublicationSettleWordsKept(t *testing.T) {
 			}
 		}
 	}
-	if len(said) < int(pubSaids)+3*12 {
+	if len(said) < int(pubSaids)+4*12 {
 		t.Fatalf("%d sentences: %q", len(said), said)
 	}
 	sending := begun("")
@@ -1008,7 +1135,7 @@ func TestPublicationSettleWordsKept(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, _, err := ds.BeginClose(ctx, closing); err != nil {
+		if _, _, err := ds.BeginClose(ctx, closing, 0); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := ds.SettleClose(ctx, closing, dispatch.CloseOutcome{State: dispatch.CloseRefused, Words: w}); err != nil {
@@ -1180,5 +1307,510 @@ func TestPublicationNotThere(t *testing.T) {
 	e.expect(t, "POST", at+"/discard", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
 	if len(p.g.f.Requests()) != n {
 		t.Fatalf("%d requests to GitHub", len(p.g.f.Requests())-n)
+	}
+}
+
+// What the server can refuse from what it holds is refused before any
+// credential is read, any request is made to GitHub or any link's read is
+// recorded: a prepare of a deleted ticket or in an archived project (for
+// the linked issue and for a link), with a body empty, of spaces, past its
+// bound or with a control character, a close or a part out of form (both
+// targets), of a link of another ticket, past the bound on a ticket's
+// publications; a send, the repeat of a send being sent, a Check, a Close
+// now and a discard on a deleted ticket and in an archived project; a
+// publication not there, sent or discarded; a digest not the preview's;
+// an operation id out of form.
+func TestPublicationRefusedBeforeGitHub(t *testing.T) {
+	e, p := pubEnv(t)
+	ctx := t.Context()
+	// The links are added with no token kept, so none is read on its add.
+	if status, data, _ := e.callAs(t, adminToken, "POST", "/api/trackers/github/remove", map[string]any{"host": "github.com"}); status != http.StatusOK {
+		t.Fatalf("the remove: %d %s", status, data)
+	}
+	link := func(key string) string {
+		return rcOf(e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", map[string]any{"opId": opID(), "kind": "external",
+			"url": "https://github.com/octo/app/issues/13"}, http.StatusCreated, ""))["id"].(string)
+	}
+	own := link("PUB-1")
+	other := link(e.newDispatchTicket(t, "PUB", "Other", nil)["key"].(string))
+	if status, data, _ := e.saveToken(t, "", plantedToken); status != http.StatusOK {
+		t.Fatalf("the token: %d %s", status, data)
+	}
+	draft := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
+	did, digest := pubOf(t, draft)["id"].(string), draft["postSha256"].(string)
+	sent := e.prepare(t, "PUB-1", map[string]any{"body": "Sent."}, http.StatusCreated, "")
+	tid := pubOf(t, sent)["id"].(string)
+	e.sendPub(t, tid, opID(), sent["postSha256"].(string), http.StatusOK, "")
+	gone := e.prepare(t, "PUB-1", map[string]any{"body": "Gone."}, http.StatusCreated, "")
+	xid := pubOf(t, gone)["id"].(string)
+	e.expect(t, "POST", "/api/dispatch/publications/"+xid+"/discard", map[string]any{"opId": opID()}, http.StatusOK, "")
+	p.set(func(p *pubGH) { p.closeTo = http.StatusForbidden })
+	cid := sentWithClose(t, e, p)
+	p.set(func(p *pubGH) { p.mode, p.closeTo = postDrop, 0 })
+	sending := e.prepare(t, "PUB-1", map[string]any{"body": "Sending."}, http.StatusCreated, "")
+	sid, sop := pubOf(t, sending)["id"].(string), opID()
+	e.sendPub(t, sid, sop, sending["postSha256"].(string), http.StatusOK, "")
+	p.set(func(p *pubGH) { p.mode = postOK })
+	if e.stored(t, sid).State != dispatch.PublicationSending || e.stored(t, cid).CloseState != dispatch.CloseRefused {
+		t.Fatal("the publications are not as the test needs them")
+	}
+	type act struct {
+		name, path string
+		body       map[string]any
+		status     int
+		code       string
+	}
+	prep := func(name, target string, extra map[string]any, status int, code string) act {
+		b := map[string]any{"opId": opID(), "target": target, "body": "Fixed in v2."}
+		for k, v := range extra {
+			b[k] = v
+		}
+		return act{"a prepare, " + name, "/api/dispatch/tickets/PUB-1/publications", b, status, code}
+	}
+	at := func(id, verb string) string { return "/api/dispatch/publications/" + id + "/" + verb }
+	run := func(acts ...act) {
+		t.Helper()
+		for _, a := range acts {
+			read, _, _ := e.srv.dispatch.LinkReadOf(ctx, own)
+			n, reached := len(p.g.f.Requests()), e.srv.trackers.reached.Load()
+			status, data, out := e.call(t, "POST", a.path, a.body)
+			if status != a.status || a.code != "" && errorCode(out) != a.code {
+				t.Errorf("%s: %d %s, want %d %s", a.name, status, data, a.status, a.code)
+			}
+			if after, _, _ := e.srv.dispatch.LinkReadOf(ctx, own); len(p.g.f.Requests()) != n || e.srv.trackers.reached.Load() != reached || !reflect.DeepEqual(after, read) {
+				t.Errorf("%s: %d requests to GitHub, %d credentials read, a link's read recorded %v", a.name, len(p.g.f.Requests())-n,
+					e.srv.trackers.reached.Load()-reached, !reflect.DeepEqual(after, read))
+			}
+		}
+	}
+	var acts []act
+	for _, target := range []string{dispatch.TargetLinked, "link:" + own} {
+		acts = append(acts,
+			prep("an empty body, "+target, target, map[string]any{"body": ""}, http.StatusConflict, dispatch.RefusalInvalid),
+			prep("a body of spaces, "+target, target, map[string]any{"body": " \r\n\t "}, http.StatusConflict, dispatch.RefusalInvalid),
+			prep("a body past its bound, "+target, target, map[string]any{"body": strings.Repeat("a", dispatch.MaxPublicationBody+1)}, http.StatusConflict, dispatch.RefusalBound),
+			prep("a control character, "+target, target, map[string]any{"body": "a\x1b[2Jb"}, http.StatusConflict, dispatch.RefusalInvalid),
+			prep("a close out of form, "+target, target, map[string]any{"closeIssue": "bogus"}, http.StatusConflict, dispatch.RefusalInvalid),
+			prep("a part out of form, "+target, target, map[string]any{"parts": []string{"x"}}, http.StatusConflict, dispatch.RefusalInvalid))
+	}
+	acts = append(acts, prep("a link of another ticket", "link:"+other, nil, http.StatusConflict, dispatch.RefusalInvalid),
+		act{"a send, no such publication", at("0123456789abcdef", "send"), map[string]any{"opId": opID(), "postSha256": digest}, http.StatusNotFound, "not_found"},
+		act{"a send, sent", at(tid, "send"), map[string]any{"opId": opID(), "postSha256": sent["postSha256"]}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a send, discarded", at(xid, "send"), map[string]any{"opId": opID(), "postSha256": gone["postSha256"]}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a send, a digest not the preview's", at(did, "send"), map[string]any{"opId": opID(), "postSha256": strings.Repeat("0", 64)}, http.StatusConflict, dispatch.RefusalStaleRevision},
+		act{"a send, an operation id out of form", at(did, "send"), map[string]any{"opId": "not an id", "postSha256": digest}, http.StatusBadRequest, "invalid_request"},
+		act{"a Check, no such publication", at("0123456789abcdef", "check"), map[string]any{}, http.StatusNotFound, "not_found"},
+		act{"a Check, sent", at(tid, "check"), map[string]any{}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a Check, discarded", at(xid, "check"), map[string]any{}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a Close now, no such publication", at("0123456789abcdef", "close"), map[string]any{"opId": opID()}, http.StatusNotFound, "not_found"},
+		act{"a Close now, discarded", at(xid, "close"), map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a Close now, a draft", at(did, "close"), map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalInvalid},
+		act{"a discard, no such publication", at("0123456789abcdef", "discard"), map[string]any{"opId": opID()}, http.StatusNotFound, "not_found"},
+		act{"a discard, sent", at(tid, "discard"), map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalInvalid})
+	run(acts...)
+	gones := func(name string, status int, code string) []act {
+		return []act{
+			prep(name+", linked", dispatch.TargetLinked, nil, status, code),
+			prep(name+", a link", "link:"+own, nil, status, code),
+			{"a send, " + name, at(did, "send"), map[string]any{"opId": opID(), "postSha256": digest}, status, code},
+			{"a send's repeat, " + name, at(sid, "send"), map[string]any{"opId": sop, "postSha256": sending["postSha256"]}, http.StatusOK, ""},
+			{"a Check, " + name, at(sid, "check"), map[string]any{}, status, code},
+			{"a Close now, " + name, at(cid, "close"), map[string]any{"opId": opID()}, status, code},
+			{"a discard, " + name, at(did, "discard"), map[string]any{"opId": opID()}, status, code},
+		}
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	run(gones("a deleted ticket", http.StatusNotFound, dispatch.RefusalNotFound)...)
+	e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/undelete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	e.expect(t, "POST", "/api/dispatch/projects/PUB/archive", map[string]any{"opId": opID()}, http.StatusOK, "")
+	run(gones("an archived project", http.StatusConflict, dispatch.RefusalArchived)...)
+	e.expect(t, "POST", "/api/dispatch/projects/PUB/unarchive", map[string]any{"opId": opID()}, http.StatusOK, "")
+	if got := e.stored(t, sid); got.State != dispatch.PublicationSending {
+		t.Errorf("the publication being sent: %+v", got)
+	}
+	// The bound on a ticket's publications, reached through the store.
+	target := dispatch.PublicationTarget{NodeID: pubNodeID, SpaceID: "4000001", Kind: dispatch.ExternalIssue, URL: "https://github.com/octo/app/issues/12", Ref: "octo/app#12"}
+	page, _, err := e.srv.dispatch.Publications(ctx, "PUB-1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(page); i < dispatch.MaxPublications; i++ {
+		doneOf(t)(e.srv.dispatch.PreparePublication(ctx, adminOp("Alice"), dispatch.PublicationArgs{Key: "PUB-1", Target: dispatch.TargetLinked,
+			Body: fmt.Sprint("n", i)}, target, e.srv.trackers.gh.Marker))
+	}
+	run(prep("past the bound, linked", dispatch.TargetLinked, nil, http.StatusConflict, dispatch.RefusalBound),
+		prep("past the bound, a link", "link:"+own, nil, http.StatusConflict, dispatch.RefusalBound))
+}
+
+// The send's look before it asks GitHub (sendable) gives the store's
+// answer for its begin (BeginSend) for every state a publication can be
+// in, with the preview's digest or another, and no revision expected, the
+// publication's or an older one: a draft, a failed one, one being sent,
+// sent, not confirmed, discarded, failed at its bound of tries, and a
+// restored draft and failed one.
+func TestSendableIsTheStores(t *testing.T) {
+	e, _ := pubEnv(t)
+	ctx := t.Context()
+	n := 0
+	target := dispatch.PublicationTarget{NodeID: pubNodeID, SpaceID: "4000001", Kind: dispatch.ExternalIssue, URL: "https://github.com/octo/app/issues/12", Ref: "octo/app#12"}
+	alice := dispatch.Sender{ID: "9000001", Login: "mona-example"}
+	begin := func(ds *dispatch.Store, id string) {
+		if _, owned, err := ds.BeginSend(ctx, adminOp("Alice"), id, e.stored(t, id).PostSha256, alice); !owned || err != nil {
+			t.Fatalf("begun: %v", err)
+		}
+	}
+	settle := func(ds *dispatch.Store, id string, o dispatch.Outcome) {
+		if _, _, err := ds.SettlePublication(ctx, id, e.stored(t, id).Attempt, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// in makes a new publication in the state.
+	in := func(ds *dispatch.Store, state string) string {
+		n++
+		id := doneOf(t)(ds.PreparePublication(ctx, adminOp("Alice"), dispatch.PublicationArgs{Key: "PUB-1", Target: dispatch.TargetLinked, Body: fmt.Sprint("n", n)},
+			target, e.srv.trackers.gh.Marker)).ID
+		switch state {
+		case "discarded":
+			doneOf(t)(ds.DiscardPublication(ctx, adminOp("Alice"), id))
+		case "failed at its bound":
+			for range dispatch.MaxPublicationTries {
+				begin(ds, id)
+				settle(ds, id, dispatch.Outcome{State: dispatch.PublicationFailed})
+			}
+		case "draft":
+		default:
+			begin(ds, id)
+			switch state {
+			case "failed", "unconfirmed":
+				settle(ds, id, dispatch.Outcome{State: state})
+			case "sent":
+				settle(ds, id, dispatch.Outcome{State: dispatch.PublicationSent, Comment: &dispatch.SentComment{ID: fmt.Sprint(8000000000 + n), AuthorID: "9000001"}})
+			}
+		}
+		return id
+	}
+	type ask struct {
+		name     string
+		digest   func(dispatch.Publication) string
+		expected func(dispatch.Publication) int64
+	}
+	asks := []ask{
+		{"the preview's digest", func(p dispatch.Publication) string { return p.PostSha256 }, func(dispatch.Publication) int64 { return 0 }},
+		{"another digest", func(dispatch.Publication) string { return strings.Repeat("0", 64) }, func(dispatch.Publication) int64 { return 0 }},
+		{"its revision", func(p dispatch.Publication) string { return p.PostSha256 }, func(p dispatch.Publication) int64 { return p.Rev }},
+		{"an older revision", func(p dispatch.Publication) string { return p.PostSha256 }, func(p dispatch.Publication) int64 { return p.Rev - 1 }},
+	}
+	judge := func(e *testEnv, state string, id string, a ask) {
+		t.Helper()
+		p := e.stored(t, id)
+		want := sendable(p, a.digest(p), a.expected(p))
+		op := adminOp("Alice")
+		op.ExpectedRev = a.expected(p)
+		rc, owned, err := e.srv.dispatch.BeginSend(ctx, op, id, a.digest(p), alice)
+		if err != nil || owned != want || owned != (rc.Status == dispatch.StatusDone) {
+			t.Errorf("%s, %s: the look says %v, the store %v (%+v %v)", state, a.name, want, owned, rc, err)
+		}
+	}
+	states := []string{"draft", "failed", "sending", "sent", "unconfirmed", "discarded", "failed at its bound"}
+	restored := map[string][]string{}
+	for _, state := range []string{"draft", "failed"} {
+		for range asks {
+			restored[state] = append(restored[state], in(e.srv.dispatch, state))
+		}
+	}
+	for _, state := range states {
+		for _, a := range asks {
+			judge(e, state, in(e.srv.dispatch, state), a)
+		}
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	e.srv.WaitBackground(wctx)
+	if err := dispatch.Reissue(ctx, filepath.Join(e.srv.store.Dir(), "dispatch", dispatch.File)); err != nil {
+		t.Fatal(err)
+	}
+	e2 := e.restart()
+	for _, state := range []string{"draft", "failed"} {
+		for i, a := range asks {
+			judge(e2, "restored "+state, restored[state][i], a)
+		}
+	}
+}
+
+// The post is made only by the request whose begin of the send the store
+// says it owns: a publication discarded, or its ticket deleted, after the
+// send's look passed and before its begin (while the account is read on
+// GitHub) is refused by the store with its receipt, nothing posted, the
+// row as the store left it.
+func TestSendOwnsItsPost(t *testing.T) {
+	e, p := pubEnv(t)
+	ctx := t.Context()
+	for _, c := range []struct {
+		name   string
+		status int
+		code   string
+		act    func(id string)
+		state  string
+		undo   func()
+	}{
+		{"discarded", http.StatusConflict, dispatch.RefusalInvalid, func(id string) { doneOf(t)(e.srv.dispatch.DiscardPublication(ctx, adminOp("Bob"), id)) },
+			dispatch.PublicationDiscarded, func() {}},
+		{"its ticket deleted", http.StatusNotFound, dispatch.RefusalNotFound, func(string) { doneOf(t)(e.srv.dispatch.DeleteTicket(ctx, adminOp("Bob"), "PUB-1")) },
+			dispatch.PublicationDraft, func() { doneOf(t)(e.srv.dispatch.UndeleteTicket(ctx, adminOp("Bob"), "PUB-1")) }},
+	} {
+		out := e.prepare(t, "PUB-1", map[string]any{"body": c.name}, http.StatusCreated, "")
+		id := pubOf(t, out)["id"].(string)
+		p.set(func(p *pubGH) {
+			p.onUser = func() {
+				p.mu.Lock()
+				p.onUser = nil
+				p.mu.Unlock()
+				c.act(id)
+			}
+		})
+		adds := p.adds()
+		got := e.sendPub(t, id, opID(), out["postSha256"].(string), c.status, c.code)
+		if rcOf(got) == nil || p.adds() != adds || e.stored(t, id).State != c.state || e.stored(t, id).Tries != 0 {
+			t.Errorf("%s: %v, %d posts, %+v", c.name, got, p.adds()-adds, e.stored(t, id))
+		}
+		c.undo()
+	}
+}
+
+// A publication of another instance (a restored copy) is never closed
+// here: Check finds the comment the original sent and records it sent,
+// with no close pending and nothing for a person to act on; Close now is
+// refused before any credential is read or anything is asked of GitHub.
+func TestRestoredPublicationNeverClosed(t *testing.T) {
+	e, p := pubEnv(t)
+	draft := e.prepare(t, "PUB-1", map[string]any{"closeIssue": "completed"}, http.StatusCreated, "")
+	id := pubOf(t, draft)["id"].(string)
+	p.add(pubNodeID, draft["preview"].(string), bobPub, time.Now())
+	wctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	e.srv.WaitBackground(wctx)
+	if err := dispatch.Reissue(t.Context(), filepath.Join(e.srv.store.Dir(), "dispatch", dispatch.File)); err != nil {
+		t.Fatal(err)
+	}
+	e2 := e.restart()
+	useFake(e2.srv, p.g.f)
+	got := pubOf(t, e2.expect(t, "POST", "/api/dispatch/publications/"+id+"/check", map[string]any{}, http.StatusOK, ""))
+	if got["state"] != "sent" || got["closeState"] != nil || got["sentAsId"] != "9000002" || got["restored"] != true {
+		t.Fatalf("the check: %v", got)
+	}
+	if page := e2.expect(t, "GET", "/api/dispatch/tickets/PUB-1/publications?needYou=1", nil, http.StatusOK, ""); len(page["publications"].([]any)) != 0 {
+		t.Errorf("needing a person: %v", page)
+	}
+	n, reached, closes := len(p.g.f.Requests()), e2.srv.trackers.reached.Load(), p.closes()
+	e2.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalInvalid)
+	if len(p.g.f.Requests()) != n || e2.srv.trackers.reached.Load() != reached || p.closes() != closes {
+		t.Fatalf("Close now of a restored publication: %d requests to GitHub, %d credentials read", len(p.g.f.Requests())-n, e2.srv.trackers.reached.Load()-reached)
+	}
+}
+
+// Two Close now requests that both looked at the open issue (the
+// publication's lock held by neither, as two servers over one store would
+// be; the seam holds each after its look until both have looked): the
+// store's begin of the close is one of theirs, and only that one closes:
+// one close on GitHub, one more try.
+func TestCloseNowOnceAtOneRevision(t *testing.T) {
+	e, p := pubEnv(t)
+	p.set(func(p *pubGH) { p.closeTo = http.StatusBadGateway })
+	id := sentWithClose(t, e, p)
+	p.set(func(p *pubGH) { p.closeTo = 0 })
+	pub, closes := e.stored(t, id), p.closes()
+	if pub.CloseState != dispatch.CloseClosing || pub.CloseTries != 1 {
+		t.Fatalf("before: %+v", pub)
+	}
+	looked, both := make(chan struct{}, 2), make(chan struct{})
+	e.srv.external.publishStep = func(_ context.Context, at, _ string) {
+		if at == "looked" {
+			looked <- struct{}{}
+			<-both
+		}
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- e.srv.closeNow(t.Context(), e.srv.dispatch, pub) }()
+	}
+	<-looked
+	<-looked
+	close(both)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Errorf("a Close now: %v", err)
+		}
+	}
+	e.srv.external.publishStep = nil
+	if got := e.stored(t, id); p.closes()-closes != 1 || got.CloseTries != 2 || got.CloseState != dispatch.CloseClosed {
+		t.Fatalf("two Close now at one revision: %d closes, %+v", p.closes()-closes, got)
+	}
+}
+
+// Close now looks at the item first. An issue found closed whose close
+// was begun and never answered is settled closed from where it is, its
+// tries as they were, with the words that it was found closed: after the
+// fifth close (GitHub made it, its answer lost) and after the first. An
+// issue closed on GitHub before any close of Conductor's was begun is
+// closed with the words that say so. An open issue at five tries: the
+// look, then the bound's refusal.
+func TestCloseNowLooksFirst(t *testing.T) {
+	// closing is a sent publication whose close was begun tries times, the
+	// last close made on GitHub with its answer lost when made.
+	closing := func(t *testing.T, tries int, made bool) (*testEnv, *pubGH, string) {
+		e, p := pubEnv(t)
+		p.set(func(p *pubGH) { p.closeTo, p.lostShut = http.StatusBadGateway, made && tries == 1 })
+		id := sentWithClose(t, e, p)
+		for i := 2; i <= tries; i++ {
+			p.set(func(p *pubGH) { p.lostShut = made && i == tries })
+			e.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusOK, "")
+		}
+		p.set(func(p *pubGH) { p.closeTo, p.lostShut = 0, false })
+		if got := e.stored(t, id); got.CloseState != dispatch.CloseClosing || got.CloseTries != tries {
+			t.Fatalf("closing at %d: %+v", tries, got)
+		}
+		return e, p, id
+	}
+	for _, tries := range []int{dispatch.MaxPublicationCloseTries, 1} {
+		t.Run(fmt.Sprint("found closed at ", tries), func(t *testing.T) {
+			e, p, id := closing(t, tries, true)
+			closes := p.closes()
+			got := pubOf(t, e.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusOK, ""))
+			if got["closeState"] != "closed" || got["closeError"] != settleWords(saidClosedFound, nil) || got["closeTries"] != float64(tries) || p.closes() != closes {
+				t.Fatalf("Close now: %v, %d closes sent", got, p.closes()-closes)
+			}
+		})
+	}
+	t.Run("closed before any begin", func(t *testing.T) {
+		e, p := pubEnv(t)
+		out := e.prepare(t, "PUB-1", map[string]any{"closeIssue": "completed"}, http.StatusCreated, "")
+		id := pubOf(t, out)["id"].(string)
+		if _, owned, err := e.srv.dispatch.BeginSend(t.Context(), adminOp("Alice"), id, out["postSha256"].(string), dispatch.Sender{ID: "9000001", Login: "mona-example"}); !owned || err != nil {
+			t.Fatal(err)
+		}
+		cm := p.add(pubNodeID, out["preview"].(string), alicePub, time.Now())
+		if _, _, err := e.srv.dispatch.SettlePublication(t.Context(), id, 1, dispatch.Outcome{State: dispatch.PublicationSent,
+			Comment: &dispatch.SentComment{ID: strconv.FormatInt(cm.id, 10), AuthorID: "9000001", Author: "mona-example"}}); err != nil {
+			t.Fatal(err)
+		}
+		p.edit(pubNodeID, func(n *pubNode) { n.state = "CLOSED" })
+		got := pubOf(t, e.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusOK, ""))
+		if got["closeState"] != "closed" || got["closeError"] != settleWords(saidClosedBefore, nil) || p.closes() != 0 {
+			t.Fatalf("Close now: %v, %d closes sent", got, p.closes())
+		}
+	})
+	t.Run("open at the bound", func(t *testing.T) {
+		e, p, id := closing(t, dispatch.MaxPublicationCloseTries, false)
+		closes, looks := p.closes(), p.g.count("api.github.com", "/graphql")
+		e.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusConflict, dispatch.RefusalBound)
+		if got := e.stored(t, id); p.closes() != closes || p.g.count("api.github.com", "/graphql") != looks+1 || got.CloseTries != dispatch.MaxPublicationCloseTries {
+			t.Fatalf("open at the bound: %d closes, %d requests, %+v", p.closes()-closes, p.g.count("api.github.com", "/graphql")-looks, got)
+		}
+	})
+}
+
+// A send whose try comes after an earlier one looks for that try's comment
+// before it posts: a comment the earlier try made though GitHub refused it
+// is recorded as sent, its id and its address, nothing posted; an earlier
+// try that made nothing: posted once; an item with more comments than the
+// look lists: nothing posted, failed with the words of a listing not
+// whole, to be sent again; a first send lists nothing before its post.
+func TestSendLooksBeforeAgain(t *testing.T) {
+	failedOnce := func(t *testing.T, mode string) (*testEnv, *pubGH, map[string]any) {
+		e, p := pubEnv(t)
+		out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
+		p.set(func(p *pubGH) { p.mode = mode })
+		if got := pubOf(t, e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, "")); got["state"] != "failed" {
+			t.Fatalf("the first try: %v", got)
+		}
+		p.set(func(p *pubGH) { p.mode = postOK })
+		return e, p, out
+	}
+	t.Run("made, though refused", func(t *testing.T) {
+		e, p, out := failedOnce(t, postMadeRefused)
+		first, adds := p.commented(pubNodeID)[0], p.adds()
+		got := pubOf(t, e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, ""))
+		if got["state"] != "sent" || got["remoteId"] != strconv.FormatInt(first.id, 10) || got["remoteUrl"] != first.url || p.adds() != adds || len(p.commented(pubNodeID)) != 1 {
+			t.Fatalf("the second try: %v, %d posts, %d comments", got, p.adds()-adds, len(p.commented(pubNodeID)))
+		}
+	})
+	t.Run("nothing made", func(t *testing.T) {
+		e, p, out := failedOnce(t, postRefused)
+		adds := p.adds()
+		got := pubOf(t, e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, ""))
+		if got["state"] != "sent" || p.adds() != adds+1 || len(p.commented(pubNodeID)) != 1 {
+			t.Fatalf("the second try: %v, %d posts", got, p.adds()-adds)
+		}
+	})
+	t.Run("more comments than the look lists", func(t *testing.T) {
+		e, p, out := failedOnce(t, postRefused)
+		for i := range github.MaxCommentPages*100 + 1 {
+			p.add(pubNodeID, fmt.Sprint("another comment ", i), bobPub, time.Now())
+		}
+		adds, comments := p.adds(), len(p.commented(pubNodeID))
+		got := pubOf(t, e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, ""))
+		if got["state"] != "failed" || got["error"] != settleWords(saidNotLookedWhole, nil) || got["tries"] != float64(2) || p.adds() != adds || len(p.commented(pubNodeID)) != comments {
+			t.Fatalf("the second try: %v, %d posts", got, p.adds()-adds)
+		}
+	})
+	t.Run("a first send", func(t *testing.T) {
+		e, p := pubEnv(t)
+		out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
+		listings := p.listings()
+		if got := pubOf(t, e.sendPub(t, pubOf(t, out)["id"].(string), opID(), out["postSha256"].(string), http.StatusOK, "")); got["state"] != "sent" || p.listings() != listings {
+			t.Fatalf("a first send: %v, %d listings", got, p.listings()-listings)
+		}
+	})
+}
+
+// Each step of a close has its own cap from the moment it starts: a step
+// of the store's that used most of its cap before the close (the
+// publications' clock moved on at the seam after the close's begin)
+// leaves the close its whole cap.
+func TestCloseHasItsOwnCap(t *testing.T) {
+	e, p := pubEnv(t)
+	var ahead, left atomic.Int64
+	e.srv.external.now = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	p.set(func(p *pubGH) { p.closeTo = http.StatusBadGateway })
+	id := sentWithClose(t, e, p)
+	p.set(func(p *pubGH) { p.closeTo = 0 })
+	caps := e.srv.trackerCaps()
+	left.Store(-1)
+	e.srv.external.publishStep = func(ctx context.Context, at, _ string) {
+		switch at {
+		case "begun":
+			ahead.Add(int64(caps.write - time.Millisecond))
+		case "closing":
+			if d, ok := ctx.Deadline(); ok {
+				left.Store(int64(d.Sub(e.srv.publishNow())))
+			}
+		}
+	}
+	got := pubOf(t, e.expect(t, "POST", "/api/dispatch/publications/"+id+"/close", map[string]any{"opId": opID()}, http.StatusOK, ""))
+	e.srv.external.publishStep = nil
+	if l := time.Duration(left.Load()); got["closeState"] != "closed" || l < caps.post-time.Second || l > caps.post {
+		t.Fatalf("the close's time left as it was sent: %s of %s (%v)", l, caps.post, got)
+	}
+}
+
+// A listing past the look's bound (more comments than its pages hold) is
+// one not whole, never one without the comment: past the quiet time a
+// Check leaves the publication being sent, with a listing not whole's
+// words.
+func TestCheckPastTheLooksBound(t *testing.T) {
+	e, p := pubEnv(t)
+	out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
+	id := pubOf(t, out)["id"].(string)
+	p.set(func(p *pubGH) { p.mode = postDrop })
+	e.sendPub(t, id, opID(), out["postSha256"].(string), http.StatusOK, "")
+	p.set(func(p *pubGH) { p.mode = postOK })
+	for i := range github.MaxCommentPages*100 + 1 {
+		p.add(pubNodeID, fmt.Sprint("another comment ", i), bobPub, time.Now())
+	}
+	ahead := time.Until(e.stored(t, id).SendingAt.Add(settleQuiet + time.Second))
+	e.srv.external.now = func() time.Time { return time.Now().Add(ahead) }
+	got := pubOf(t, e.expect(t, "POST", "/api/dispatch/publications/"+id+"/check", map[string]any{}, http.StatusOK, ""))
+	if got["state"] != "sending" || got["error"] != settleWords(saidNotWhole, nil) {
+		t.Fatalf("a Check past the look's bound: %v", got)
 	}
 }

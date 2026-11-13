@@ -96,8 +96,11 @@ type externalState struct {
 	// ended by its context.
 	stop    context.Context
 	stopped context.CancelFunc
-	// now, when set, is the publications' clock (dispatch_publish.go).
-	now func() time.Time
+	// now, when set, is the publications' clock (dispatch_publish.go);
+	// publishStep, when set, is told of a publication route's points
+	// (publishSeam).
+	now         func() time.Time
+	publishStep func(ctx context.Context, at, id string)
 }
 
 // stopping is the context that ends as the server begins to stop.

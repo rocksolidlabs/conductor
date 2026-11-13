@@ -1130,39 +1130,46 @@ func TestTrackerRouteDeadlines(t *testing.T) {
 // credentialFor (the keep's seam counts the token leaving the value that
 // holds it while the route is served), and the fake sees that token on
 // every request to the API host during the route, in Authorization alone,
-// and on no image's fetch.
+// and on no image's fetch; a publication's routes on an Enterprise
+// Server's host send that host's token to its API alone, and github.com's
+// nowhere.
 func TestEveryTrackerRouteUsesCredentialFor(t *testing.T) {
 	e, g := externalEnv(t)
 	served := map[string]bool{}
-	do := func(pattern, path, body string, status int, code string) map[string]any {
-		t.Helper()
-		method, _, _ := strings.Cut(pattern, " ")
-		before, n := e.srv.trackers.reached.Load(), len(g.f.Requests())
-		got, data, out := e.callAs(t, adminToken, method, path, []byte(body))
-		if got != status || code != "" && errorCode(out) != code {
-			t.Fatalf("%s: %d %s", path, got, data)
-		}
-		// A reference out of form is refused before any credential.
-		if status != http.StatusBadRequest && e.srv.trackers.reached.Load() == before {
-			t.Errorf("%s reached no credential", pattern)
-		}
-		for _, r := range g.f.Requests()[n:] {
-			auth := r.Header.Get("Authorization")
-			if r.Host == "api.github.com" && auth != "Bearer "+plantedToken || r.Host != "api.github.com" && auth != "" {
-				t.Errorf("%s: a request to %s%s, Authorization given %v", pattern, r.Host, r.Path, auth != "")
+	doOn := func(api, tok string) func(pattern, path, body string, status int, code string) map[string]any {
+		return func(pattern, path, body string, status int, code string) map[string]any {
+			t.Helper()
+			method, _, _ := strings.Cut(pattern, " ")
+			before, n := e.srv.trackers.reached.Load(), len(g.f.Requests())
+			got, data, out := e.callAs(t, adminToken, method, path, []byte(body))
+			if got != status || code != "" && errorCode(out) != code {
+				t.Fatalf("%s: %d %s", path, got, data)
 			}
+			// A reference out of form is refused before any credential.
+			if status != http.StatusBadRequest && e.srv.trackers.reached.Load() == before {
+				t.Errorf("%s reached no credential", pattern)
+			}
+			for _, r := range g.f.Requests()[n:] {
+				auth := r.Header.Get("Authorization")
+				if r.Host == api && auth != "Bearer "+tok || r.Host != api && auth != "" {
+					t.Errorf("%s: a request to %s%s, Authorization given %v", pattern, r.Host, r.Path, auth != "")
+				}
+			}
+			served[pattern] = true
+			return out
 		}
-		served[pattern] = true
-		return out
 	}
+	do := doOn("api.github.com", plantedToken)
 	driveExternal(t, e, g, do)
 	// A ticket's publications: each route's token is the one kept for the
-	// host the store fixed at prepare (github.com), never another's: one
-	// kept for an Enterprise Server's host as well is sent nowhere.
+	// host the store fixed at prepare, never another's: on github.com, one
+	// kept for an Enterprise Server's host as well is sent nowhere; on that
+	// host, its own alone, github.com's sent nowhere.
 	if status, data, _ := e.saveToken(t, gheHost, plantedToken2); status != http.StatusOK {
 		t.Fatalf("the second host's token: %d %s", status, data)
 	}
-	drivePublications(t, e, g, do)
+	drivePublications(t, e, g, "github.com", do)
+	drivePublications(t, e, g, gheHost, doOn(gheHost, plantedToken2))
 	for _, p := range slices.Concat(externalTouching, publicationTouching) {
 		if !served[p] {
 			t.Errorf("%s was not driven", p)
