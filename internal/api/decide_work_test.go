@@ -85,11 +85,11 @@ func sixteen(did string, rev int) []decideCall {
 	return calls
 }
 
-// workHold holds each request that reaches the seam where its work begins
-// while holding is on: it sends on at and waits for a value of release, or
-// its close.
+// workHold holds the next room requests that reach the seam where their
+// work begins (hold), each sending on at and waiting for a value of
+// release, or its close; every other request goes through.
 type workHold struct {
-	holding  atomic.Bool
+	room     atomic.Int32
 	at       chan struct{}
 	release  chan struct{}
 	stop     sync.Once
@@ -104,9 +104,12 @@ func (f *decideFixture) holdWork(t *testing.T) *workHold {
 	h := &workHold{at: make(chan struct{}, 64), release: make(chan struct{}), answered: make(chan sent, 64)}
 	read := func() { h.reads.Add(1) }
 	f.srv.decideSeam.Store(&decideSeams{afterRead: read, afterList: read, working: func() {
-		if h.holding.Load() {
-			h.at <- struct{}{}
-			<-h.release
+		for n := h.room.Load(); n > 0; n = h.room.Load() {
+			if h.room.CompareAndSwap(n, n-1) {
+				h.at <- struct{}{}
+				<-h.release
+				return
+			}
 		}
 	}})
 	t.Cleanup(func() {
@@ -116,8 +119,14 @@ func (f *decideFixture) holdWork(t *testing.T) *workHold {
 	return h
 }
 
+// hold holds the next n requests that reach the seam.
+func (h *workHold) hold(n int32) { h.room.Store(n) }
+
 // end lets every held request go, and every later one through.
-func (h *workHold) end() { h.stop.Do(func() { close(h.release) }) }
+func (h *workHold) end() {
+	h.room.Store(0)
+	h.stop.Do(func() { close(h.release) })
+}
 
 // start sends each call on a goroutine; its answer goes to answered.
 func (h *workHold) start(f *decideFixture, calls ...decideCall) {
@@ -179,7 +188,7 @@ func TestDecideWorksSixteenOfASubjectAtOnce(t *testing.T) {
 	f.give(t, did)
 	rev := f.rev(t, did)
 	h := f.holdWork(t)
-	h.holding.Store(true)
+	h.hold(16)
 	h.start(f, sixteen(did, rev)...)
 	h.waitHeld(t, 16)
 	seventeenth := []decideCall{meCall(passAna), listCall(passHostAna), readCall(passAna, did), respondCall(passHostAna, did, "over", rev)}
@@ -187,19 +196,18 @@ func TestDecideWorksSixteenOfASubjectAtOnce(t *testing.T) {
 	if n := h.reads.Load(); n != 0 {
 		t.Errorf("the ledger was read %d times for a request past the places", n)
 	}
-	h.holding.Store(false)
 	for _, c := range []decideCall{meCall(passBob), listCall(passBob), readCall(passBob, did), readCall(passAdmin, did), readCall(passAdminDecide, did), readCall(adminToken, did), meCall(passAdmin)} {
 		if s := f.send(c); s.status != http.StatusOK {
 			t.Errorf("%s %s by %.12s while ana's are held: %d %.200s", c.method, c.path, c.pass, s.status, s.data)
 		}
 	}
-	h.holding.Store(true)
 	select {
 	case h.release <- struct{}{}:
 	case <-time.After(testWait):
 		t.Fatal("no held request took its release")
 	}
 	h.collect(t, 1, "the one let go")
+	h.hold(1)
 	h.start(f, readCall(passHostAna, did))
 	h.waitHeld(t, 1)
 	f.over(t, "a 17th once the next is taken", seventeenth...)
@@ -308,7 +316,7 @@ func TestDecideWorkCountsNoTransfer(t *testing.T) {
 	}
 	f.view(t, passAna, did)
 	h := f.holdWork(t)
-	h.holding.Store(true)
+	h.hold(16)
 	for i := range 16 {
 		h.start(f, readCall(passes[i%2], did))
 	}
@@ -362,7 +370,7 @@ func TestDecideWorkEndsOnEveryWayOut(t *testing.T) {
 		}
 	}
 	h := f.holdWork(t)
-	h.holding.Store(true)
+	h.hold(16)
 	for i := range 16 {
 		h.start(f, readCall(passes[i%2], did))
 	}
