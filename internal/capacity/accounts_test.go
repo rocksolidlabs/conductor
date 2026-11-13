@@ -160,7 +160,7 @@ func TestAccountFolderFixed(t *testing.T) {
 	for i := range ty.NumMethod() {
 		names = append(names, ty.Method(i).Name)
 	}
-	want := []string{"Accounts", "Add", "Disown", "Hold", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
+	want := []string{"Accounts", "Add", "Disown", "Hold", "HoldOf", "Own", "Remove", "Rename", "Reserve", "Retire", "SetDefault", "Versions"}
 	if !slices.Equal(names, want) {
 		t.Errorf("Store's methods are %v, want %v", names, want)
 	}
@@ -595,5 +595,34 @@ func TestReservationHoldsRemove(t *testing.T) {
 	// The agent's own login needs no reservation.
 	if d, rel, err := s.Reserve(DefaultID); err != nil || d != (Account{}) || rel == nil {
 		t.Errorf("default: %+v, %v", d, err)
+	}
+}
+
+// HoldOf holds every account its pick names in the accounts as they are
+// under the accounts' lock, a retired one too, as Hold does, and passes
+// over an id the document does not hold; it answers the ids it holds, and
+// its release lets go of each.
+func TestHoldOfHoldsWhatItsPickNames(t *testing.T) {
+	f := newFacts()
+	s := openAt(t, t.TempDir(), Options{Now: clockAt(t0)})
+	a, rev, _ := s.Add(f, "claude", "Work", "/home/u/work", 0)
+	b, rev, _ := s.Add(f, "codex", "Work", "/home/u/work", rev)
+	a, rev, _ = s.Retire(a.ID, rev)
+	var seen Accounts
+	ids, release, err := s.HoldOf(func(d Accounts) []string { seen = d; return []string{a.ID, DefaultID, "a-bbbbbbbbbbbb", b.ID} })
+	if err != nil || len(seen.Accounts) != 2 || !slices.Equal(ids, []string{a.ID, b.ID}) {
+		t.Fatalf("hold: %v, the ids %v, the pick saw %+v", err, ids, seen)
+	}
+	for _, id := range []string{a.ID, b.ID} {
+		if _, err := s.Remove(f, id, rev); code(err) != CodeInUse || !strings.Contains(err.Error(), "1 launch") {
+			t.Fatalf("remove %s while held: %v", id, err)
+		}
+	}
+	release()
+	release()
+	for _, id := range []string{a.ID, b.ID} {
+		if rev, err = s.Remove(f, id, rev); err != nil {
+			t.Fatalf("remove %s once released: %v", id, err)
+		}
 	}
 }

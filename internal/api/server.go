@@ -231,6 +231,9 @@ type Server struct {
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
 	runs *crew.Engine
+	// trees reads the trees of the previews, their indexes kept
+	// (preview_label.go).
+	trees treeReads
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
@@ -1015,6 +1018,8 @@ func (s *Server) Handler() http.Handler {
 	// and links, the saved views, a run's ticket and the receipts
 	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
+	// An attempt's preview label (preview_label.go), the admin's alone.
+	s.routePreviewLabel(mux)
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
@@ -1330,8 +1335,10 @@ const recordsGrace = 5 * time.Second
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
 	// From now on no call enters the one door to GitHub of a ticket's
-	// item (atGitHub), before any wait.
+	// item (atGitHub), and a tree's read that ends is unread (the reads'
+	// mark; their indexes go below), before any wait.
 	s.external.end()
+	s.trees.mark()
 	// Brakeman's desk next: it writes no request's state from now on, so
 	// the turn the stops below end is left running in its records and the
 	// next start finds it interrupted; its launch outstanding is waited
@@ -1368,6 +1375,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The trees still being ended, a run's stopped before the shutdown
 	// among them, end in the ledger they end in.
 	s.runs.Drain(ctx)
+	s.trees.close()
 	if f := gateSeam(&s.launches, &s.launches.afterStops); f != nil {
 		f()
 	}
