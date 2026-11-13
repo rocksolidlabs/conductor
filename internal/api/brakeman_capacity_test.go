@@ -67,14 +67,20 @@ type capTurn struct {
 	account, folder string
 }
 
+// west is a zone that is not UTC, whatever the machine's own: the
+// readings' clock and the desk's since are in it, so a time written in
+// UTC was made so.
+var west = time.FixedZone("west", -6*3600)
+
 func newCapTurn(t *testing.T, extra ...catalog.Agent) *capTurn {
 	t.Helper()
-	ct := &capTurn{claude: newFakeUsage("claude"), codex: newFakeUsage("codex"), clock: &turnClock{now: time.Now()}}
+	ct := &capTurn{claude: newFakeUsage("claude"), codex: newFakeUsage("codex"), clock: &turnClock{now: time.Now().In(west)}}
 	var clock capacity.Clock = ct.clock
 	capacityClock.Store(&clock)
 	t.Cleanup(func() { capacityClock.Store(nil) })
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), append(append(slices.Clone(capAgents), bkAgents()...), extra...), capReaders(ct.claude, ct.codex))
 	capacityClock.Store(nil)
+	e.srv.capacity.since = e.srv.capacity.since.In(west)
 	ct.obsFixture = &obsFixture{bkEnv: bkEnvOf(t, e)}
 	ct.folder = realRoot(t, t.TempDir())
 	out := ct.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "claude", "label": "Work", "folder": ct.folder, "expectedRev": accountsRev(t, e)}, http.StatusCreated, "")
@@ -390,6 +396,7 @@ func TestGuideCapacity(t *testing.T) {
 // as unlisted; never the folder.
 func TestBrakemanRequestShowsItsView(t *testing.T) {
 	ct := newCapTurn(t)
+	ct.viewMade()
 	other, codexFolder := realRoot(t, t.TempDir()), realRoot(t, t.TempDir())
 	codexAcct := ct.expect(t, "POST", "/api/accounts", map[string]any{"adapter": "codex", "label": "Codex work", "folder": codexFolder, "expectedRev": accountsRev(t, ct.testEnv)}, http.StatusCreated, "")["account"].(map[string]any)["id"].(string)
 	timeOf := func(v any) time.Time {
@@ -490,6 +497,7 @@ func toldOnly(t *testing.T, what string, data []byte) {
 // request routes carry the view.
 func TestATurnIsToldItsRequestWithoutItsView(t *testing.T) {
 	ct := newCapTurn(t)
+	ct.viewMade()
 	readNow(t, ct.testEnv, "bk", capacity.DefaultID, false)
 	ct.enable(t, "bk", nil)
 	path := filepath.Join(ct.srv.store.Dir(), brakeman.Dir, brakeman.ConfigFile)
@@ -656,6 +664,11 @@ func (ct *capTurn) waitOver(over func() <-chan struct{}) {
 	}
 	ct.srv.capacity.waitOver.Store(&f)
 }
+
+// viewMade makes a request's wait last until its view is made, however
+// long a loaded machine takes: the test's own context, which only the
+// request's end cancels, in place of the product's half second.
+func (ct *capTurn) viewMade() { ct.waitOver(func() <-chan struct{} { return nil }) }
 
 // heldLookups holds every look-up of program at a gate, counting each
 // program's look-ups: called is told as one reaches the gate.
@@ -1137,6 +1150,7 @@ func TestQueuingARequestMovesNoReading(t *testing.T) {
 		}
 	}
 	ct.enable(t, least.Agent, nil)
+	ct.viewMade()
 	id := ct.briefing(t)
 	if c, _ := ct.request(t, id)["capacity"].(map[string]any); c == nil || !readTime(t, c["readAt"]).Equal(at) {
 		t.Fatalf("the request's view: %v", c)
@@ -1266,5 +1280,224 @@ func TestABriefsReceiptIsTheTurns(t *testing.T) {
 	got, want := names(receipts[j].Fields), names(receiptFields(reflect.TypeFor[turnRequest]()))
 	if !slices.Equal(got, want) || slices.Contains(got, "capacity") {
 		t.Fatalf("brief_submit's receipt %s names %v, want the turn's %v", ops[i].Receipt, got, want)
+	}
+}
+
+// ghostProgram is the program of capAgents' agent that is not installed.
+const ghostProgram = "/nonexistent/claude"
+
+// foundButGhost answers a look-up: every program found at its own path but
+// ghostProgram.
+func foundButGhost(p string) (string, error) {
+	if p == ghostProgram {
+		return "", exec.ErrNotFound
+	}
+	return p, nil
+}
+
+// gatedLookups holds every look-up of a program begun from its making at
+// a gate, counting them, and then answers as foundButGhost; started is
+// told each program as its look-up begins. What the cache holds stays
+// held, and an asker waits for a look-up as long as a hang.
+type gatedLookups struct {
+	n       atomic.Int64
+	gate    chan struct{}
+	started chan string
+	once    sync.Once
+}
+
+func gateLookups(t *testing.T, c *lookupCache) *gatedLookups {
+	t.Helper()
+	g := &gatedLookups{gate: make(chan struct{}), started: make(chan string, 64)}
+	t.Cleanup(g.open)
+	c.stubWait(hangWait)
+	c.mu.Lock()
+	c.look = func(p string) (string, error) {
+		g.n.Add(1)
+		select {
+		case g.started <- p:
+		default:
+		}
+		<-g.gate
+		return foundButGhost(p)
+	}
+	c.mu.Unlock()
+	return g
+}
+
+func (g *gatedLookups) open() { g.once.Do(func() { close(g.gate) }) }
+
+// turnView is a turn's read of path: its status and its reply.
+type turnView struct {
+	path   string
+	status int
+	body   []byte
+}
+
+// readsAnswered reads each of paths as the turn, all at once, and answers
+// their replies once every one has answered, failing t as soon as a look-up
+// of a program begins at g's gate.
+func (ct *capTurn) readsAnswered(t *testing.T, g *gatedLookups, paths ...string) map[string]turnView {
+	t.Helper()
+	answers := make(chan turnView, len(paths))
+	for _, p := range paths {
+		go func() {
+			resp, body := ct.raw(p, ct.tok, map[string]string{brakemanSessionHeader: ct.sid})
+			answers <- turnView{p, resp.StatusCode, body}
+		}()
+	}
+	got := map[string]turnView{}
+	for range paths {
+		select {
+		case p := <-g.started:
+			t.Fatalf("a turn's read of capacity began a look-up of %s", p)
+		case a := <-answers:
+			if a.status != http.StatusOK {
+				t.Fatalf("%s: %d %s", a.path, a.status, a.body)
+			}
+			got[a.path] = a
+		case <-time.After(hangWait):
+			t.Fatal("a turn's read of capacity never answered")
+		}
+	}
+	if n := g.n.Load(); n != 0 {
+		t.Fatalf("a turn's reads of capacity began %d look-ups", n)
+	}
+	return got
+}
+
+// capAgentsPage is the page of the listing past Brakeman's agents: the
+// views of capAgents' agents that are listed.
+const capAgentsPage = "/api/capacity?after=bkupdate/a-zzzzzzzzzzzz"
+
+// viewStateOf is the state of agent's view a turn read, and whether the
+// listing names it.
+func viewStateOf(t *testing.T, views map[string]turnView, agent string) (string, bool) {
+	t.Helper()
+	var one map[string]any
+	var page struct {
+		Views []map[string]any `json:"views"`
+	}
+	if json.Unmarshal(views[viewPath(agent, capacity.DefaultID)].body, &one) != nil || json.Unmarshal(views[capAgentsPage].body, &page) != nil {
+		t.Fatalf("the replies: %v", views)
+	}
+	listed := slices.ContainsFunc(page.Views, func(v map[string]any) bool { return v["agent"].(map[string]any)["id"] == agent })
+	state, _ := one["state"].(string)
+	return state, listed
+}
+
+// TestATurnsCapacityReadLooksNothingUp: a turn's one view and its listing
+// of the whole catalog are made from what the look-ups of programs hold,
+// with every answer held past its age and with none held: no look-up is
+// begun for them and none is waited for, the reads answering beside one
+// another while every look-up would be held at its gate. An agent whose
+// held answer says its program is not installed is not_installed in the
+// view and left out of the listing; with nothing held it counts as
+// installed. The admin's read of that agent begins a look-up, and a turn's
+// read of it answers while that look-up is held.
+func TestATurnsCapacityReadLooksNothingUp(t *testing.T) {
+	ct := newCapTurn(t)
+	ct.turn(t, nil)
+	c := ct.srv.lookups
+	c.stubWait(hangWait)
+	c.stub(foundButGhost)
+	ct.expect(t, "GET", "/api/capacity", nil, http.StatusOK, "")
+	for _, p := range []string{"/bin/cat", "/bin/sh", ghostProgram} {
+		waitKept(t, c, p, hangWait)
+	}
+	if !waitFor(hangWait, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.inflight) == 0
+	}) {
+		t.Fatal("a look-up never ended")
+	}
+	c.mu.Lock()
+	c.now = func() time.Time { return time.Now().Add(time.Hour) }
+	c.mu.Unlock()
+	paths := []string{viewPath("claude-a", capacity.DefaultID), viewPath("ghost", capacity.DefaultID), "/api/capacity", capAgentsPage}
+
+	g := gateLookups(t, c)
+	views := ct.readsAnswered(t, g, paths...)
+	if state, listed := viewStateOf(t, views, "ghost"); state != capacity.StateNotInstalled || listed {
+		t.Fatalf("an agent held not installed: its view %q, listed %v", state, listed)
+	}
+	if state, listed := viewStateOf(t, views, "claude-a"); state == capacity.StateNotInstalled || !listed {
+		t.Fatalf("an agent held installed: its view %q, listed %v", state, listed)
+	}
+	admin := make(chan int, 1)
+	go func() {
+		resp, _ := ct.raw(viewPath("ghost", capacity.DefaultID), adminToken, nil)
+		admin <- resp.StatusCode
+	}()
+	select {
+	case p := <-g.started:
+		if p != ghostProgram {
+			t.Fatalf("the admin's read began a look-up of %s", p)
+		}
+	case <-time.After(hangWait):
+		t.Fatal("the admin's read began no look-up")
+	}
+	held := g.n.Load()
+	g.n.Store(0)
+	views = ct.readsAnswered(t, g, paths...)
+	if state, _ := viewStateOf(t, views, "ghost"); state != capacity.StateNotInstalled || held != 1 {
+		t.Fatalf("beside the admin's held look-up (%d begun): the turn's view %q", held, state)
+	}
+	g.open()
+	select {
+	case status := <-admin:
+		if status != http.StatusOK {
+			t.Fatalf("the admin's read: %d", status)
+		}
+	case <-time.After(hangWait):
+		t.Fatal("the admin's read never answered")
+	}
+	if !waitFor(hangWait, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.inflight) == 0
+	}) {
+		t.Fatal("a look-up never ended")
+	}
+
+	c.mu.Lock()
+	c.entries = map[string]lookupEntry{}
+	c.mu.Unlock()
+	g = gateLookups(t, c)
+	views = ct.readsAnswered(t, g, paths...)
+	for _, agent := range []string{"ghost", "claude-a"} {
+		if state, listed := viewStateOf(t, views, agent); state == capacity.StateNotInstalled || !listed {
+			t.Fatalf("%s with nothing held: its view %q, listed %v", agent, state, listed)
+		}
+	}
+}
+
+// TestASnapshotCarriesNoDefaultMark: with an agent whose entry sets its own
+// login, and its adapter's listed default another account, a brief's
+// snapshot of each account's reading names the account by its id, label
+// and retired mark and carries no default mark.
+func TestASnapshotCarriesNoDefaultMark(t *testing.T) {
+	pinned := catalog.Agent{ID: "claude-pin", Name: "Pinned", Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"CLAUDE_CONFIG_DIR": "/srv/work"}}
+	ct := newCapTurn(t, pinned)
+	ct.expect(t, "PUT", "/api/accounts/defaults/claude", map[string]any{"account": ct.account, "expectedRev": accountsRev(t, ct.testEnv)}, http.StatusOK, "")
+	var refs []string
+	for _, k := range []capacity.Key{{Agent: pinned.ID, Account: capacity.DefaultID}, {Agent: pinned.ID, Account: ct.account}, {Agent: "claude-a", Account: ct.account}, {Agent: "claude-a", Account: capacity.DefaultID}} {
+		v := ct.srv.capacity.cache.Read(t.Context(), k, capacity.ReadOptions{})
+		if v.ReadAt == nil || v.State != capacity.StateOK {
+			t.Fatalf("no reading of %v: %+v", k, v)
+		}
+		refs = append(refs, capRef(k, *v.ReadAt))
+	}
+	ct.turn(t, nil)
+	if status, out := ct.submit(t, ct.sid, ct.tok, "b-default", factBrief(refs...)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	for _, ref := range refs {
+		snap, _ := mustCapacityRef(t, ct, ref)["capacity"].(map[string]any)
+		acct, _ := snap["account"].(map[string]any)
+		if _, marked := acct["default"]; marked || acct["id"] == nil || (acct["id"] == ct.account) != (acct["label"] == "Work") {
+			t.Errorf("%s: the snapshot's account %v", ref, acct)
+		}
 	}
 }

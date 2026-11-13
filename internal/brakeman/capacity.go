@@ -30,7 +30,8 @@ type Capacity struct {
 	Agent   CapacityAgent   `json:"agent"`
 	Account CapacityAccount `json:"account"`
 	// Host is where a launch would run: native, undetermined or remote,
-	// the kind alone.
+	// the kind alone; empty in a brief's snapshot of a reading, which
+	// names no host.
 	Host  string `json:"host"`
 	State string `json:"state"`
 	// Words are the state's own (capacity.StateWords), never a reader's.

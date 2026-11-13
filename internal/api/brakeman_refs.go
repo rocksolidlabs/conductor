@@ -374,8 +374,8 @@ type refFound struct {
 	found, deleted, unavailable bool
 	now                         brakeman.RefState
 	item                        brakeman.ScopeItem
-	// capacity is a capacity: ref's reading as the turn reads it, kept
-	// with the brief (Resolution.Capacity).
+	// capacity is a capacity: ref's snapshot (capacityDesk.snapshot), in
+	// the shape a turn reads, kept with the brief (Resolution.Capacity).
 	capacity *brakeman.Capacity
 }
 
@@ -564,8 +564,8 @@ func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, 
 // server holds, first and at once: not found once it has left them, and
 // nothing else looked up for it. One they hold is found at its own state,
 // its snapshot made from that reading (capacityDesk.snapshot), the
-// accounts list read once for the brief, as the first such ref is
-// resolved.
+// accounts list read once for the resolver (each check of a brief), as
+// the first such ref is resolved.
 func (rr *refResolver) lookupCapacity(ref brakeman.Ref) refFound {
 	d := rr.s.capacity
 	at, err := time.Parse(time.RFC3339Nano, ref.ReadAt)

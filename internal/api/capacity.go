@@ -604,8 +604,15 @@ const relativeWords = "this agent's command is a path relative to the folder a s
 // identity probe does: a program it finds installed, never a command given
 // as a relative path, which is not looked up (relativePath). A view of any
 // other is not_installed, the listing leaves it out, and no read runs it.
-func (s *Server) capacityReadable(ctx context.Context, agent catalog.Agent) bool {
-	return len(agent.Command) > 0 && !relativePath(agent.Command[0]) && s.lookups.installed(ctx, agent.Command[0])
+// held (a turn's read) takes what the look-ups hold (lookupCache.held).
+func (s *Server) capacityReadable(ctx context.Context, agent catalog.Agent, held bool) bool {
+	switch {
+	case len(agent.Command) == 0 || relativePath(agent.Command[0]):
+		return false
+	case held:
+		return s.lookups.held(agent.Command[0]).installed
+	}
+	return s.lookups.installed(ctx, agent.Command[0])
 }
 
 // agentProgram is the name of agent's program for people: its adapter's.
@@ -629,6 +636,9 @@ func notOwnerWords(agent catalog.Agent, why string) string {
 type capacityQuery struct {
 	account, model, launch string
 	yolo                   bool
+	// held is a turn's read: the program's look-ups are asked only what
+	// they hold (lookupCache.held), none started and none waited for.
+	held bool
 }
 
 // The launches a view may name: a session (and a legacy crew's member,
@@ -696,7 +706,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 		state = capacity.StateRemote
 	case rd == nil || rd.Read == nil:
 		state = capacity.StateUnsupported
-	case !d.s.capacityReadable(ctx, agent):
+	case !d.s.capacityReadable(ctx, agent, q.held):
 		state = capacity.StateNotInstalled
 	case setsLogin || (pinned != "" && id != capacity.DefaultID):
 		state = capacity.StateEnvSet
@@ -732,7 +742,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 	plan := v.Account.Plan
 	v.Agent = capacity.ViewAgent{ID: agent.ID, Name: agent.Name, Adapter: agent.Adapter, Version: v.Agent.Version}
 	if v.Agent.Version == "" {
-		if idn, ok := d.s.cachedIdentity(agent); ok && idn.Identified {
+		if idn, ok := d.s.cachedIdentityOf(agent, q.held); ok && idn.Identified {
 			v.Agent.Version = idn.Version
 		}
 	}
@@ -786,7 +796,8 @@ func writeCapacityJSON(w http.ResponseWriter, status int, v any, bound int) {
 // a page of every installed agent's views, one for each of its accounts.
 // Neither reads anything. A Brakeman turn's read (its Capacity class,
 // brakemanReads) is answered each view as brakeman.CapacityOf makes it,
-// and a server with no capacity in fixed words.
+// from what the look-ups of programs hold (capacityQuery.held), and a
+// server with no capacity in fixed words.
 func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	notes := turnNotesOf(r)
 	turn := notes != nil
@@ -801,7 +812,7 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	vq := capacityQuery{account: q.Get("account"), model: q.Get("model"), launch: q.Get("launch"), yolo: q.Get("yolo") == "1" || q.Get("yolo") == "true"}
+	vq := capacityQuery{account: q.Get("account"), model: q.Get("model"), launch: q.Get("launch"), yolo: q.Get("yolo") == "1" || q.Get("yolo") == "true", held: turn}
 	if vq.launch == "" {
 		vq.launch = "session"
 	}
@@ -906,7 +917,7 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 	}
 	var keys []capacity.Key
 	for _, agent := range s.Catalog().List() {
-		if !s.capacityReadable(r.Context(), agent) {
+		if !s.capacityReadable(r.Context(), agent, vq.held) {
 			continue
 		}
 		keys = append(keys, capacity.Key{Agent: agent.ID, Account: capacity.DefaultID})
@@ -957,27 +968,25 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 // snapshot is what a brief's capacity: ref resolves to, as Brakeman reads
 // it (brakeman.CapacityOf), made from kept, the reading the readings hold
 // (Cache.Kept: its state, plan, windows, credits, limits, time, what read
-// it and its version, none when it carries none), with the agent's id,
-// name and adapter from its catalog entry, the account's label, default
-// and retired marks from doc when doc names the account (doc nil: the
-// accounts could not be read), and this server's counts of the key,
-// counted at now. Whatever the agent or the account is now, nothing is
-// read or looked up for it: an agent or account gone since is named by
-// its id alone.
+// it and its version, none when it carries none), with the agent by its
+// catalog entry (id, name, adapter), the account by its id, label and
+// retired mark as doc lists them (doc nil: the accounts could not be
+// read), and this server's counts of the key, counted at now. It names no
+// host and no default mark. Whatever the agent or the account is now,
+// nothing is read or looked up for it: an agent or account gone since is
+// named by its id alone.
 func (d *capacityDesk) snapshot(kept capacity.View, doc *capacity.Accounts, now time.Time) brakeman.Capacity {
 	k := capacity.Key{Agent: kept.Agent.ID, Account: kept.Account.ID}
 	v := kept
-	adapter := ""
 	if agent, ok := d.s.Catalog().Get(k.Agent); ok {
-		v.Agent.Name, v.Agent.Adapter, adapter = agent.Name, agent.Adapter, agent.Adapter
+		v.Agent.Name, v.Agent.Adapter = agent.Name, agent.Adapter
 	}
 	if doc != nil {
 		if i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.ID == k.Account }); i >= 0 {
-			a := doc.Accounts[i]
-			v.Account.Label, v.Account.Retired, adapter = a.Label, a.Retired, a.Adapter
+			v.Account.Label, v.Account.Retired = doc.Accounts[i].Label, doc.Accounts[i].Retired
 		}
-		v.Account.Default = adapter != "" && capacity.DefaultOf(*doc, adapter) == k.Account
 	}
+	v.Account.Default = false
 	v.Counts = d.counts(k)
 	return brakeman.CapacityOf(v, now)
 }

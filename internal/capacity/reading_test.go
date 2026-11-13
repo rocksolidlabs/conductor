@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -126,29 +127,42 @@ func TestCountsApartFromProvider(t *testing.T) {
 	}
 }
 
-// declaredStates is every State constant reading.go declares, read from
-// its source: the states' own list.
-func declaredStates(t *testing.T) []string {
+// declaredStates is every State constant of a string the package declares,
+// in any of its files, read from their source: the name of each by its
+// value.
+func declaredStates(t *testing.T) map[string]string {
 	t.Helper()
-	f, err := parser.ParseFile(token.NewFileSet(), "reading.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var states []string
-	for _, d := range f.Decls {
-		g, ok := d.(*ast.GenDecl)
-		if !ok || g.Tok != token.CONST {
+	states := map[string]string{}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		for _, sp := range g.Specs {
-			vs := sp.(*ast.ValueSpec)
-			for i, name := range vs.Names {
-				if lit, ok := vs.Values[i].(*ast.BasicLit); ok && strings.HasPrefix(name.Name, "State") && lit.Kind == token.STRING {
-					s, err := strconv.Unquote(lit.Value)
-					if err != nil {
-						t.Fatal(err)
+		f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			g, ok := d.(*ast.GenDecl)
+			if !ok || g.Tok != token.CONST {
+				continue
+			}
+			for _, sp := range g.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for i, name := range vs.Names {
+					if i >= len(vs.Values) || !strings.HasPrefix(name.Name, "State") {
+						continue
 					}
-					states = append(states, s)
+					if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						s, err := strconv.Unquote(lit.Value)
+						if err != nil {
+							t.Fatal(err)
+						}
+						states[s] = file + ": " + name.Name
+					}
 				}
 			}
 		}
@@ -156,18 +170,27 @@ func declaredStates(t *testing.T) []string {
 	return states
 }
 
+// TestEveryStateHasWords: the states are their one list, States, each with
+// its words; a State constant the package declares anywhere that is not in
+// the list fails.
 func TestEveryStateHasWords(t *testing.T) {
-	states := declaredStates(t)
+	states := States()
 	if len(states) < 13 {
-		t.Fatalf("reading.go declares %d states: %v", len(states), states)
+		t.Fatalf("States lists %d states: %v", len(states), states)
 	}
 	for _, s := range states {
 		if StateWords(s) == "" {
 			t.Errorf("%s has no words", s)
 		}
 	}
-	if got := States(); !slices.Equal(got, slices.Sorted(slices.Values(states))) {
-		t.Errorf("the states with words are %v, the states declared %v", got, states)
+	declared := declaredStates(t)
+	for s, where := range declared {
+		if !slices.Contains(states, s) {
+			t.Errorf("%s (%s) is not in States: %v", s, where, states)
+		}
+	}
+	if len(declared) != len(states) {
+		t.Errorf("the package declares %d states, States lists %d: %v", len(declared), len(states), states)
 	}
 	// A kept reading of every state but ok says why, in its own words when
 	// it has them and in its state's otherwise.

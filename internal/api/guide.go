@@ -1531,7 +1531,7 @@ var guideCapacity = struct {
 		"windows are the usage limits the provider reported (a five-hour window, a weekly one, one for a model), each with its share used, its reset and the provider's severity; credits and limits are the provider's own figures and refusals.",
 		"counts are this server's own counts of sessions running on the account and started in the last 5 hours and 7 days, since it started: an estimate, never added to a provider's figure.",
 		"readAt and readBy say when the reading was made and by which version of the agent's tool. A view is the last reading the server keeps: reading it starts no read, and the server keeps readings in memory only, so a restart forgets them.",
-		"Each view that shows a reading carries its ref, capacity:<agent>/<account>@<readAt>, which a fact cites: the brief keeps that reading as you read it.",
+		"Each view that shows a reading carries its ref, capacity:<agent>/<account>@<readAt>, which a fact cites: the brief keeps the reading the server holds (its state, plan, windows, credits and limits, its time and what read it), the agent by its catalog entry, the account by its id, label and retired mark as the accounts list has them when the brief is submitted, and the server's counts then; no host and no default mark.",
 	},
 	Unknown: "A window the provider did not report is not in windows and is unknown, never zero. A view's state is one of states, each with its words: any but ok and reading says why the provider's figures are not known.",
 	States:  guideCapStates(),

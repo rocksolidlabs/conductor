@@ -1374,9 +1374,13 @@ type Resolution struct {
 	Ref  Ref      `json:"ref"`
 	Seen RefState `json:"seen"`
 	Now  RefState `json:"now"`
-	// Capacity is a capacity: ref's reading as the request's grant showed
-	// it when the brief was kept, so it stays checkable once the reading
-	// has left the server's memory; at most MaxCapacity bytes.
+	// Capacity is a capacity: ref's reading as the server held it when
+	// the brief was kept (its state, plan, windows, credits and limits,
+	// its time and what read it), the agent by its catalog entry, the
+	// account by its id, label and retired mark as the accounts list had
+	// them then, and the server's counts then; no host and no default
+	// mark. It stays checkable once the reading has left the server's
+	// memory; at most MaxCapacity bytes.
 	Capacity *Capacity `json:"capacity,omitempty"`
 }
 

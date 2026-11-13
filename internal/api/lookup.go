@@ -241,6 +241,24 @@ func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[stri
 	return answers
 }
 
+// held is what the cache holds of program, whatever the answer's age, as
+// warmPaths answers it: it starts no lookup and waits for none. A program
+// it holds nothing of counts as installed, as for a lookup that did not
+// answer in time, with no path.
+func (c *lookupCache) held(program string) lookupAnswer {
+	c.mu.Lock()
+	e, had := c.entries[program]
+	c.mu.Unlock()
+	a := lookupAnswer{installed: !had || e.ok}
+	if had && e.ok {
+		a.path = e.path
+		if c.onWindows(e.path) {
+			a.installed, a.onWindows = false, e.path
+		}
+	}
+	return a
+}
+
 // begin registers a lookup of program as the one under way, which later
 // askers wait for; the caller starts it (run). The caller holds c.mu.
 func (c *lookupCache) begin(program string) *lookupCall {

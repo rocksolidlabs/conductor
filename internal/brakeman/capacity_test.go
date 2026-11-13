@@ -3,6 +3,7 @@ package brakeman
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,16 @@ func TestCapacityOfKeepsItsList(t *testing.T) {
 	if c.Agent.Version == "" || len(c.Windows) != capacity.MaxWindows || len(c.Credits) != capacity.MaxCredits || c.Counts.Running != 1<<20 || !c.CountedAt.Equal(at) {
 		t.Errorf("a field lost: %+v", c)
 	}
+	// Every time it writes is in UTC: its location, not only its instant.
+	times := map[string]time.Time{"countedAt": c.CountedAt, "readAt": *c.ReadAt, "counts.since": *c.Counts.Since}
+	for i, w := range c.Windows {
+		times["windows["+strconv.Itoa(i)+"].resetsAt"] = *w.ResetsAt
+	}
+	for name, tm := range times {
+		if tm.Location() != time.UTC {
+			t.Errorf("%s is in %v, not UTC", name, tm.Location())
+		}
+	}
 	*v.Windows[0].ResetsAt = at.Add(48 * time.Hour)
 	*v.Credits[0].Used = "changed"
 	*v.Counts.Since = at
@@ -204,8 +215,41 @@ func TestCapacityOfKeepsItsList(t *testing.T) {
 	}
 }
 
-// A request and a brief's resolution keep a capacity view of at most
-// MaxCapacity bytes and refuse a larger one, writing nothing.
+// TestABriefKeepsCapacityWithinItsBound: a brief's resolution keeps a
+// capacity view of at most MaxCapacity bytes; a brief whose resolution
+// holds a larger one, though its resolutions fit their own bound, is
+// refused, writing neither the brief nor its resolutions.
+func TestABriefKeepsCapacityWithinItsBound(t *testing.T) {
+	fx := newFixture(t)
+	at := fx.clock.now()
+	c := CapacityOf(largestView(at), at)
+	big := c
+	big.Windows = append(append([]capacity.Window{}, c.Windows...), c.Windows...)
+	if b, _ := json.Marshal(big); len(b) <= MaxCapacity || len(b) > MaxRefsDoc {
+		t.Fatalf("the larger view is %d bytes", len(b))
+	}
+	r := fx.start("op-cap")
+	if _, err := fx.s.KeepBrief(r.ID, Kept{OpID: "b-big", Brief: goodBrief(t), Refs: []Resolution{{Ref: ref(t, c.Ref), Capacity: &big}}}); !errors.Is(err, ErrBound) {
+		t.Fatalf("a resolution past the bound: %v", err)
+	}
+	for _, name := range []string{briefDoc(r.ID), refsDoc(r.ID)} {
+		if exists(t, fx.reqPath(name)) {
+			t.Errorf("%s was written", name)
+		}
+	}
+	if got, _ := fx.s.Get(r.ID); got.HasBrief || got.State != StateStarting {
+		t.Fatalf("the request moved: %+v", got)
+	}
+	if _, err := fx.s.KeepBrief(r.ID, Kept{OpID: "b-cap", Brief: goodBrief(t), Refs: []Resolution{{Ref: ref(t, c.Ref), Capacity: &c}}}); err != nil {
+		t.Fatalf("a resolution with the largest view: %v", err)
+	}
+	if _, res, err := fx.s.Brief(r.ID); err != nil || len(res) != 1 || res[0].Capacity == nil || res[0].Capacity.Ref != c.Ref || len(res[0].Capacity.Windows) != capacity.MaxWindows {
+		t.Fatalf("read back: %+v %v", res, err)
+	}
+}
+
+// A request keeps a capacity view of at most MaxCapacity bytes and refuses
+// a larger one, writing nothing.
 func TestCapacityKeptWithinItsBound(t *testing.T) {
 	fx := newFixture(t)
 	at := fx.clock.now()
