@@ -47,8 +47,9 @@ func (s *Server) providerPrincipal(r *http.Request, tok string) principal {
 
 // grantPrincipal is what pr's grants make it here: ext.GrantAdmin what the
 // workbench token makes a caller (admin, the switchyard's yard on a
-// switchyard, and a host), ext.GrantHost a host token's. pr has passed
-// the guard, so it is valid and holds at least one grant.
+// switchyard, and a host), ext.GrantHost a host token's, ext.GrantDecide
+// a decide principal's (decide.go). pr has passed the guard, so it is
+// valid and holds at least one grant.
 func (s *Server) grantPrincipal(pr ext.Principal) principal {
 	p := principal{subject: pr.Subject, name: pr.Name}
 	for _, g := range pr.Grants {
@@ -57,6 +58,8 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 			p.admin, p.yard, p.host = true, s.cfg.Switchyard.Enabled, true
 		case ext.GrantHost:
 			p.host = true
+		case ext.GrantDecide:
+			p.decide = true
 		}
 	}
 	return p
