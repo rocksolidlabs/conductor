@@ -761,14 +761,28 @@ func (g guardIdentity) detail(ctx context.Context) (string, bool) {
 		if n := utf8.RuneCountInString(v); !utf8.ValidString(v) || n > ext.MaxIdentityDetail || strings.ContainsFunc(v, unicode.IsControl) {
 			return errors.New("detail: not one line of at most 80 characters")
 		}
-		for _, tok := range own {
-			if tok != "" && strings.Contains(v, tok) {
-				return errors.New("detail: it holds a token")
-			}
+		if holdsCredential(own, v) {
+			return errors.New("detail: it holds a token")
 		}
 		return nil
 	}, func(context.Context) (string, error) { return d.Detail(), nil })
 	return v, v != ""
+}
+
+// holdsCredential is the filter of the detail and of the sign-in's status:
+// whether one of vs holds, as written, one of the credentials own lists
+// (providerCredentials). A literal match, and nothing more: a caller
+// passes each form of a value it compares (the sign-in's URL also
+// percent-decoded once).
+func holdsCredential(own []string, vs ...string) bool {
+	for _, tok := range own {
+		for _, v := range vs {
+			if tok != "" && strings.Contains(v, tok) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // reask is recheck's and renew's ask, in kind's slots; busy says it was
