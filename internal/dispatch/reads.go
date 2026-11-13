@@ -302,8 +302,12 @@ func encodeChecks(checks []LinkCheck) (string, error) {
 // MaxLinkChecksJSON is given back as it is; one past either is ordered
 // failures first and cut from its end until it is within both, the cut
 // said as a reason after words and counted in omitted. The reasons are
-// fitted as FitIncomplete fits them; none is nil. A set whose texts the
-// store's check refuses is given back as it is, for RecordRead to refuse.
+// fitted as FitIncomplete fits them; none is nil. The whole set is
+// encoded once before anything is cut: a set with a text the store's
+// check refuses (encodeChecks refuses only texts, never a set's size or
+// count) is given back as it is, whatever its count, its reasons as for a
+// set within both, for RecordRead to refuse. Only a set every text of
+// which the store takes is fitted.
 func FitChecks(checks []LinkCheck, words []string, omitted int) ([]LinkCheck, *ChecksIncomplete) {
 	past := func(l []LinkCheck) bool {
 		enc, err := encodeChecks(l)
@@ -316,7 +320,8 @@ func FitChecks(checks []LinkCheck, words []string, omitted int) ([]LinkCheck, *C
 		return 1
 	}
 	kept := checks
-	if past(kept) {
+	whole, err := encodeChecks(checks)
+	if err == nil && (len(checks) > MaxLinkChecks || len(whole) > MaxLinkChecksJSON) {
 		kept = slices.Clone(checks)
 		slices.SortStableFunc(kept, func(a, b LinkCheck) int { return cmp.Compare(rank(a), rank(b)) })
 		// The longest start of it within both: a longer start is never

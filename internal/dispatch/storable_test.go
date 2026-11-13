@@ -156,6 +156,65 @@ func TestFitChecks(t *testing.T) {
 	}
 }
 
+// FitChecks gives back a set the store's check refuses for a text as it
+// is, whatever its count: 120 checks whose names grow as kept (18 short
+// scheme tokens each), every seventh failed, one of them with a name past
+// MaxCheckName at the start, the middle, the last place within
+// MaxLinkChecks and past it, come back as the same slice with the reasons
+// as they came, and the store's check refuses a read of them; the same
+// 120 checks without the refused name are fitted.
+func TestFitChecksGivesBackARefusedSetWhole(t *testing.T) {
+	read := func(checks []LinkCheck, in *ChecksIncomplete) LinkRead {
+		return LinkRead{System: "github", Host: "github.com", Kind: ExternalChange, NodeID: "PR_fit", State: "open", HeadSha: strings.Repeat("a", 40),
+			UpdatedAt: day0, Checks: checks, Incomplete: in}
+	}
+	set := func() []LinkCheck {
+		var l []LinkCheck
+		for i := range MaxLinkChecks + 20 {
+			c := LinkCheck{ID: fmt.Sprintf("status:%d", 7000+i), Name: strings.Repeat("x:// ", 18) + fmt.Sprintf("s%03d", i), Status: "completed",
+				Conclusion: "success", URL: fmt.Sprintf("https://ci.example.com/octo/app/commit-statuses/%024d", i), App: "status", CompletedAt: day0}
+			if i%7 == 3 {
+				c.Conclusion = "failure"
+			}
+			l = append(l, c)
+		}
+		return l
+	}
+	words := []string{"a reason the read gave"}
+	for _, at := range []int{5, 60, MaxLinkChecks - 1, MaxLinkChecks + 10} {
+		bad := set()
+		bad[at].Name = strings.Repeat("n", MaxCheckName+1)
+		kept, in := FitChecks(bad, words, 2)
+		if len(kept) != len(bad) || &kept[0] != &bad[0] || in == nil || !slices.Equal(in.Words, words) || in.Omitted != 2 {
+			t.Errorf("the refused name at %d: %d of %d kept (the same slice: %v), the reasons %+v", at, len(kept), len(bad), len(kept) > 0 && &kept[0] == &bad[0], in)
+		}
+		if _, _, err := encodeLinkRead(read(kept, in)); !isRefusal(err, RefusalBound) {
+			t.Errorf("the refused name at %d: the store's check of the read gave %v", at, err)
+		}
+		if _, err := encodeChecks(bad); !isRefusal(err, RefusalBound) || !strings.Contains(err.Error(), "a check's name") {
+			t.Errorf("the refused name at %d: the store's check of its checks gave %v", at, err)
+		}
+	}
+	checks := set()
+	kept, in := FitChecks(checks, words, 2)
+	if _, _, err := encodeLinkRead(read(kept, in)); err != nil || len(kept) == 0 || len(kept) > MaxLinkChecks {
+		t.Fatalf("120 checks the store takes: %d kept, the read %v", len(kept), err)
+	}
+	order := slices.Clone(checks)
+	failed := func(c LinkCheck) int {
+		if c.Conclusion == "failure" {
+			return 0
+		}
+		return 1
+	}
+	slices.SortStableFunc(order, func(a, b LinkCheck) int { return failed(a) - failed(b) })
+	left := len(checks) - len(kept)
+	if left <= 0 || !slices.Equal(kept, order[:len(kept)]) || in == nil || in.Omitted != 2+left || in.Words[0] != words[0] ||
+		in.Words[len(in.Words)-1] != fmt.Sprintf("%d checks left out to keep the list within %d checks and %d KiB, failures kept first", left, MaxLinkChecks, MaxLinkChecksJSON>>10) {
+		t.Fatalf("120 checks the store takes: %d kept, not the first failures first, or the cut said %+v", len(kept), in)
+	}
+}
+
 // FitIncomplete gives what the store's own check keeps, whatever the
 // reasons: eight of quotes, backslashes or short scheme:// tokens at their
 // bound, more than eight, none, or all emptied by Storable; a set it cut
