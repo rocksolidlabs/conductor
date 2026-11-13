@@ -71,7 +71,8 @@ type Operation struct {
 	Receipt string `json:"receipt,omitempty"`
 	// Revision names the precondition the route itself enforces: "run"
 	// (a command's expectedRevision, above 0), "ticket" (Dispatch's
-	// expectedRev) or "decision" (a decision's expectedRev); "" for a
+	// expectedRev), "publication" (a publication's expectedRev) or
+	// "decision" (a decision's expectedRev); "" for a
 	// route that decodes no revision (a run's stop and resume), which a
 	// proposal never gets a button for.
 	Revision string `json:"revision,omitempty"`
@@ -533,6 +534,24 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "Read what GitHub says of a ticket's link: open, closed or merged, and a pull request's checks at its head commit.",
 			Input:   bodySchema(linkReadBody{}),
 			Bounds:  map[string]int{"body": maxBody, "checks": dispatch.MaxLinkChecks}},
+		// A ticket's publications (dispatch_publish.go): a person composes,
+		// previews, sends and closes; no MCP tool and no grant posts.
+		{Name: "publication_prepare", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/publications", needs: needLauncher, Receipt: "dispatch",
+			Summary: "Prepare a comment to a ticket's GitHub item: the exact bytes previewed with their digest, nothing sent.",
+			Input:   bodySchema(publicationBody{}),
+			Bounds:  map[string]int{"body": maxBody, "text": dispatch.MaxPublicationBody, "publications": dispatch.MaxPublications}},
+		{Name: "publication_send", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/send", needs: needLauncher, Receipt: "dispatch", Revision: "publication",
+			Summary: "Post a prepared publication once, with the digest of its preview; a resend posts nothing, and one not confirmed is never sent again.",
+			Input:   bodySchema(publicationSendBody{}),
+			Bounds:  map[string]int{"body": maxBody, "tries": dispatch.MaxPublicationTries}},
+		{Name: "publication_check", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/check", needs: needLauncher,
+			Summary: "Look on GitHub for a publication's comment by its marker, and record what was found; posts nothing.",
+			Input:   bodySchema(publicationCheckBody{}),
+			Bounds:  map[string]int{"body": maxBody}},
+		{Name: "publication_close", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/close", needs: needLauncher, Revision: "publication",
+			Summary: "Close the issue a sent publication asked to close, when its close did not finish.",
+			Input:   bodySchema(dispatchOp{}),
+			Bounds:  map[string]int{"body": maxBody, "tries": dispatch.MaxPublicationCloseTries}},
 		// A person's reviews of a ticket's candidates (RV1,
 		// dispatch_reviews.go).
 		{Name: "review_submit", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
