@@ -80,6 +80,42 @@ func TestFakes(t *testing.T) {
 		}
 	})
 
+	t.Run("FakeSignIn", func(t *testing.T) {
+		f := NewFakeSignIn("fake-signin")
+		ctx := context.Background()
+		var _ ext.IdentityProvider = f
+		if _, plain := any(NewFakeIdentity("plain")).(ext.SignIn); plain {
+			t.Fatal("a plain FakeIdentity offers a sign-in")
+		}
+		if s := f.SignInStatus(); s.State != ext.SignedOut || s.Valid() != nil {
+			t.Fatalf("a new fake's status %+v", s)
+		}
+		changed := f.Changed()
+		if err := f.BeginSignIn(ctx); err != nil || f.SignInStatus().State != ext.SignInStarting || f.Begins() != 1 {
+			t.Fatalf("BeginSignIn: %v, %+v, %d", err, f.SignInStatus(), f.Begins())
+		}
+		select {
+		case <-changed:
+		default:
+			t.Error("a BeginSignIn did not tell Changed")
+		}
+		code := ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/device"}
+		f.SetStatus(code)
+		if f.SignInStatus() != code {
+			t.Errorf("SetStatus: %+v", f.SignInStatus())
+		}
+		f.OnBegin(code)
+		f.OnSignOut(ext.SignInStatus{State: ext.SignedOut, Why: "signed out here"})
+		if err := f.SignOut(ctx); err != nil || f.SignInStatus().Why != "signed out here" || f.SignOuts() != 1 {
+			t.Fatalf("SignOut: %v, %+v, %d", err, f.SignInStatus(), f.SignOuts())
+		}
+		boom := errors.New("refused")
+		f.SetSignInErr(boom)
+		if err := f.BeginSignIn(ctx); !errors.Is(err, boom) || f.SignInStatus().State != ext.SignedOut || f.Begins() != 2 {
+			t.Errorf("with an error set: %v, %+v, %d", err, f.SignInStatus(), f.Begins())
+		}
+	})
+
 	t.Run("FakeRouter", func(t *testing.T) {
 		f := NewFakeRouter("fake-router")
 		d := SampleDecision()
