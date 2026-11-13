@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -412,7 +413,8 @@ func TestTheOpenerFollowsALinkWithinItsFolderAndRefusesAPipe(t *testing.T) {
 		t.Fatalf("open HEAD: %v", err)
 	}
 	f.Close()
-	if _, err := fs.Open("pipe"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
+	// Refused by the look (its kind), not by the look at the open file.
+	if _, err := fs.Open("pipe"); !errors.Is(seen.first(), ErrUnreadable) || err == nil || !strings.HasSuffix(err.Error(), ": pipe is a named pipe") {
 		t.Fatalf("open pipe: %v, noted %v", err, seen.first())
 	}
 }
