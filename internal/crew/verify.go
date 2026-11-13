@@ -814,14 +814,19 @@ func (t *Tree) Still() bool { return t.still() }
 // between reads, used by one read at a time. At its first read (or the
 // first after a cut read's index is dropped), and at a read whose lists
 // of paths pass their bound, every tracked file is compared once, its
-// stat data brought up to date. Edited and new files are
-// hashed at every read; a tracked file whose bytes and stat data did not
-// change since the last read is not hashed again, as git status works
-// (git itself hashes a file whose times cannot tell it from the index's:
-// one changed in the same moment as the index was written), so
+// stat data brought up to date; after it the kept index holds the stat
+// data as it is now, and no flag or count of it is carried from one read
+// to the next. Edited and new files are hashed at every read; a tracked
+// file whose bytes and stat data did not change is not hashed, and one
+// whose stat data changed is hashed once, at the next read, as git status
+// works (git itself hashes a file whose times cannot tell it from the
+// index's: one changed in the same moment as the index was written), so
 // a change of the attributes that say how a file is recorded shows for
 // the files that change after it (checkoutIntact, which decides a
-// candidate, reads with a fresh index). And whether the file system
+// candidate, reads with a fresh index). A read that needs the refresh on
+// a very large tree can run out of its time on a busy machine: it answers
+// the commit alone, and cut while the refresh holds the index's lock, the
+// next read starts from a new index. And whether the file system
 // under the tree keeps the executable bit (modesKept), looked at once, at
 // the index's first read, with one new file of the server's own made in
 // the tree and removed.
@@ -922,7 +927,8 @@ const maxTreeID = 1 << 10
 // beside the index within maxStagePaths together (stageList); where the
 // lists pass it at a read that did not make its index anew, one
 // update-index -q --refresh and the two listings again, lists still past
-// it failing the read (never more than one refresh in a read); then
+// it failing the read (never more than one refresh in a read; an
+// attributes file listed gone or of another type fails it at once); then
 // update-index --force-remove with the paths gone or of another type on
 // its input, which removes each from the index without looking it up in
 // the tree, and update-index --add --remove --info-only with the paths
@@ -944,11 +950,20 @@ const maxTreeID = 1 << 10
 //
 // The content is the id of the tree the read stages, every path that
 // differs named by the hash of its content as git converts it: the tree
-// git add -A makes, with two differences. Where add would refuse a file's
-// conversion (a line-ending check, an encoding git cannot read), the read
-// still answers, the file hashed as it is converted without that check;
-// and in a repository set to ignore case, a new path under a folder whose
+// git add -A makes, with these differences. Where add would refuse the
+// tree, the read still answers, with what it staged: a file whose
+// conversion add refuses (a line-ending check, an encoding git cannot
+// read) is hashed as it is converted without that check, and a folder
+// that is a repository with no commit, in place of a tracked file, is left
+// out. In a repository set to ignore case, a new path under a folder whose
 // case differs from the index's is staged under the tree's own spelling.
+// And the read answers the commit alone where it does not label: an
+// attributes file (.gitattributes, in any folder) gone or of another type
+// than the index has, and not committed (errTreeAttributes, before
+// anything is staged and with no refresh for it); a tracked folder
+// replaced by a link the server cannot follow (a link to itself, a loop,
+// a folder it cannot search); lists that pass maxStagePaths after one
+// refresh.
 func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
 	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
 		_ = os.Remove(ix.Path)
@@ -993,7 +1008,7 @@ func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error)
 				return out, err
 			}
 		}
-		if staged.err == nil || refreshed {
+		if staged.err == nil || refreshed || errors.Is(staged.err, errTreeAttributes) {
 			break
 		}
 		// A later read whose lists pass the bound brings the index's stat
@@ -1067,6 +1082,12 @@ func (l *pathList) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// errTreeAttributes is a read of a tree whose attributes file is gone or
+// of another type than the index has, and not committed: the read does
+// not guess which rules git's add would apply to which file, and answers
+// the commit alone.
+var errTreeAttributes = errors.New("the tree's attributes file changed in a way the read does not label")
+
 // maxStagePaths bounds the lists of paths a read stages, in bytes
 // together: the paths that differ from the index and the new ones, each
 // NUL-ended in each list it is in.
@@ -1081,7 +1102,9 @@ const maxStagePaths = 16 << 20
 // with a trailing slash (a repository with a commit inside the tree,
 // which add -A records by its commit) is given without the slash. Past
 // the bound nothing more is written, every later write is taken and
-// dropped (git runs to its end), and err says the lists are past it.
+// dropped (git runs to its end), and err says the lists are past it; so
+// too from an attributes file (.gitattributes, in any folder) listed gone
+// or of another type, and err is errTreeAttributes.
 type stageList struct {
 	f      [2]*os.File
 	status bool
@@ -1107,6 +1130,9 @@ func (l *stageList) Write(p []byte) (int, error) {
 		}
 		gone := len(l.kind) > 0 && (l.kind[0] == 'D' || l.kind[0] == 'T')
 		there := len(l.kind) == 0 || l.kind[0] != 'D'
+		if gone && l.err == nil && (string(path) == ".gitattributes" || bytes.HasSuffix(path, []byte("/.gitattributes"))) {
+			l.err = errTreeAttributes
+		}
 		for i, in := range []bool{gone, there} {
 			if in && len(path) > 0 && l.err == nil {
 				if l.n+len(path)+1 > maxStagePaths {
