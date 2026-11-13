@@ -430,8 +430,9 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 	// Every command has the look-up of the object store (rev-parse) before
 	// it; rev-parse takes no filter look-up, every other command one
 	// after the store's.
-	if want := []string{"rev-parse", "rev-parse", "rev-parse", "config", "read-tree", "rev-parse", "config", "diff-files", "rev-parse", "config", "ls-files",
-		"rev-parse", "config", "update-index", "rev-parse", "config", "write-tree",
+	if want := []string{"rev-parse", "rev-parse", "rev-parse", "config", "read-tree", "rev-parse", "config", "update-index",
+		"rev-parse", "config", "diff-files", "rev-parse", "config", "ls-files",
+		"rev-parse", "config", "update-index", "rev-parse", "config", "update-index", "rev-parse", "config", "write-tree",
 		"rev-parse", "config", "diff", "rev-parse", "config", "ls-tree", "rev-parse", "config", "check-ignore"}; !slices.Equal(gits, want) {
 		t.Errorf("the gits run: %v, want %v", gits, want)
 	}
@@ -454,20 +455,38 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 			t.Errorf("git %v: work tree %s, environment %v", c.args, c.workTree, c.env)
 		}
 	}
-	if want := []string{"rev-parse", "read-tree", "diff-files", "ls-files", "update-index", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
+	if want := []string{"rev-parse", "read-tree", "update-index", "diff-files", "ls-files", "update-index", "update-index", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
 		t.Fatalf("the commands: %v, want %v", subs, want)
 	}
 	if args := (*calls)[0].args; !slices.Equal(args, []string{"rev-parse", "--verify", "--quiet", "HEAD^{commit}"}) {
 		t.Errorf("rev-parse: %v", args)
 	}
-	for _, c := range [][]string{(*calls)[1].args, (*calls)[6].args} {
+	for _, c := range [][]string{(*calls)[1].args, (*calls)[8].args} {
 		if c[len(c)-1] != read.Commit {
 			t.Errorf("git %v does not name the recorded commit %s", c, read.Commit)
 		}
 	}
-	// The paths staged are the ones git listed, on update-index's input.
-	if stage := (*calls)[4]; stage.in != (*calls)[2].out+(*calls)[3].out || stage.in != "README\x00" {
-		t.Errorf("update-index's input %q, listed %q and %q", stage.in, (*calls)[2].out, (*calls)[3].out)
+	// The index is new: its stat data is brought up to date before the
+	// listing, which then holds the changed path alone, with its kind;
+	// nothing is gone, and the changed path is staged.
+	if args := (*calls)[2].args; !slices.Equal(args, []string{"update-index", "-q", "--refresh"}) {
+		t.Errorf("the refresh: %v", args)
+	}
+	if listed := (*calls)[3].out + (*calls)[4].out; listed != "M\x00README\x00" {
+		t.Errorf("listed %q", listed)
+	}
+	for i, want := range []string{"", "README\x00"} {
+		if stage := (*calls)[5+i]; stage.in != want {
+			t.Errorf("update-index %v's input %q, want %q", stage.args, stage.in, want)
+		}
+	}
+	// A later read in the same index brings no stat data up to date.
+	*calls = nil
+	if _, err := TreeRevision(t.Context(), tr, ix); err != nil {
+		t.Fatal(err)
+	}
+	if (*calls)[2].args[0] != "diff-files" {
+		t.Errorf("the later read's commands: %v", *calls)
 	}
 }
 
