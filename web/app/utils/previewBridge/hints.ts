@@ -1,5 +1,5 @@
 import { ELEMENT_BOUNDS, type ElementReport, type PreviewHintKind } from '../protocol'
-import { UP, pageText, walkTree, type Doc, type El } from './select'
+import { UP, nameOf, pageText, walkTree, type Doc, type El } from './select'
 
 /**
  * What a page's dev build says drew an element (docs/protocol.md, Preview bridge): a data-conductor-source attribute
@@ -99,18 +99,20 @@ export const HINT_NODES = 2000
 
 /**
  * The kinds of hint the page gives (a ready's hints), read from the elements the walk reaches within HINT_NODES links; React's
- * from the own keys of the first KEYS of them.
+ * from the own keys of the first KEYS of them in the body (the root's child named body), where React renders.
  */
 export function hintKindsOf(doc: Doc): PreviewHintKind[] {
   const kinds = new Set<PreviewHintKind>()
   let keyed = 0
-  const kind = (e: El) => {
+  let body = false
+  const kind = (e: El, depth: number) => {
+    if (depth === 1) body = nameOf(e, 8) === 'body'
     if (e.hasAttribute('data-conductor-source')) kinds.add('attribute')
     if (prop(prop(prop(e, '__vueParentComponent'), 'type'), '__file')) kinds.add('vue')
     if (prop(prop(e, '__svelte_meta'), 'loc')) kinds.add('svelte')
-    if (keyed++ < KEYS && prop(prop(fiberOf(e), '_debugSource'), 'fileName')) kinds.add('react')
+    if (body && depth > 1 && keyed++ < KEYS && prop(prop(fiberOf(e), '_debugSource'), 'fileName')) kinds.add('react')
     return true
   }
-  if (doc.documentElement) walkTree(doc.documentElement, HINT_NODES, (n) => n.nodeType === 1 && kind(n as El))
+  if (doc.documentElement) walkTree(doc.documentElement, HINT_NODES, (n, depth) => n.nodeType === 1 && kind(n as El, depth))
   return (['attribute', 'vue', 'svelte', 'react'] as const).filter((k) => kinds.has(k))
 }
