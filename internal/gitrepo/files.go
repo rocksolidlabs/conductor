@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +21,8 @@ import (
 // that wraps it says why, with the file's name in its folder: not a
 // regular file, longer than the opener reads of a file of its kind
 // (bound), behind a link the opener does not follow, a .git folder that is
-// a link, or a folder the repository names that is not a folder.
+// a link, a .git that leads to nothing that can be read (gitDirs), or a
+// folder the repository names that is not a folder.
 var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
@@ -47,7 +49,18 @@ const (
 	// bytes a ref (an id, a name, a tag's peeled id), and 256 MiB holds the
 	// millions of refs of the largest repositories hosted today.
 	maxPackedRefs = 256 << 20
+	// maxListed bounds a folder's listing, in entries: git lists its
+	// folders of loose objects (a 256th of them each), of packs and of
+	// refs. This repository's largest is objects, 258; 100,000 holds a
+	// folder of loose objects of 25 million, or 100,000 loose refs.
+	maxListed = 100000
+	// listBatch is the entries a listing reads between two asks of the
+	// read's context (ReadDir).
+	listBatch = 1024
 )
+
+// listBound is maxListed, lowered by a test.
+var listBound = maxListed
 
 // bound is how much the opener reads of the file at rel, its path from the
 // folder of its file system ('/'): -1 for one under objects (a loose
@@ -82,8 +95,11 @@ func bound(rel string) int64 {
 // folder as ".git is a link" (under, which looks at .git without following
 // it), and one that leads out of the working folder or is written as an
 // absolute path as a link that is not followed, by the look that meets it
-// first (gitDirs' look at .git). A linked worktree's .git file that is a
-// relative link to a file inside the worktree is read, as go-git reads it.
+// first (gitDirs' look at .git); a .git whose look by the root fails
+// otherwise (nothing there, a loop of links, a link through a file) is
+// refused as ".git leads to nothing that can be read" (unread). A linked
+// worktree's .git file that is a relative link to a file inside the
+// worktree is read, as go-git reads it.
 // go-billy's chroot over careOS (billy) only joins names: careOS has no
 // Lstat or Readlink, so the chroot resolves no link and hands it each name
 // unresolved.
@@ -248,6 +264,9 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0 {
 		return nil, &os.PathError{Op: "open", Path: name, Err: errReadOnly}
 	}
+	if err := fs.seen.ended(); err != nil {
+		return nil, err
+	}
 	rel, err := fs.rel(name)
 	if err != nil {
 		return nil, err
@@ -287,6 +306,9 @@ func (fs *careOS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 var afterLook func(rel string)
 
 func (fs *careOS) Stat(name string) (os.FileInfo, error) {
+	if err := fs.seen.ended(); err != nil {
+		return nil, err
+	}
 	rel, err := fs.rel(name)
 	if err != nil {
 		return nil, err
@@ -299,7 +321,9 @@ func (fs *careOS) Stat(name string) (os.FileInfo, error) {
 // folder only (dirOnly) once the root's look finds a folder: a name the
 // look finds no folder is answered "not a directory" before any open, and
 // one put in the folder's place after the look fails the open with the
-// system's "not a directory".
+// system's "not a directory". It reads listBatch entries at a time and
+// asks the read's context between two (ended); a folder of more than
+// maxListed entries is refused.
 func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 	fi, err := fs.Stat(name)
 	if err == nil && !fi.IsDir() {
@@ -314,10 +338,31 @@ func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 		return nil, fs.judge(rel, err)
 	}
 	defer f.Close()
-	list, err := f.Readdir(-1)
+	var list []os.FileInfo
+	for {
+		batch, err := f.Readdir(listBatch)
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		if list = append(list, batch...); len(list) > listBound {
+			return nil, fs.refuse("%s holds more than %d entries; at most %d of them are listed", filepath.ToSlash(rel), listBound, listBound)
+		}
+		if betweenBatches != nil {
+			betweenBatches(rel)
+		}
+		if err := fs.seen.ended(); err != nil {
+			return nil, err
+		}
+	}
 	slices.SortFunc(list, func(a, b os.FileInfo) int { return strings.Compare(a.Name(), b.Name()) })
-	return list, err
+	return list, nil
 }
+
+// betweenBatches, set by a test, runs between two batches of a listing
+// (ReadDir).
+var betweenBatches func(rel string)
 
 func (fs *careOS) Join(elem ...string) string { return filepath.Join(elem...) }
 
@@ -368,9 +413,17 @@ func (f *careFile) Truncate(int64) error {
 	return &os.PathError{Op: "truncate", Path: f.name, Err: errReadOnly}
 }
 
-func (f *careFile) Read(p []byte) (int, error) { return f.count(f.file.Read(f.take(p))) }
+func (f *careFile) Read(p []byte) (int, error) {
+	if err := f.seen.ended(); err != nil {
+		return 0, err
+	}
+	return f.count(f.file.Read(f.take(p)))
+}
 
 func (f *careFile) ReadAt(p []byte, off int64) (int, error) {
+	if err := f.seen.ended(); err != nil {
+		return 0, err
+	}
 	return f.count(f.file.ReadAt(f.take(p), off))
 }
 
@@ -398,16 +451,59 @@ func (f *careFile) count(n int, err error) (int, error) {
 func (f *careFile) Lock() error   { return errReadOnly }
 func (f *careFile) Unlock() error { return errReadOnly }
 
-// refusal keeps the first file an opening refused (ErrUnreadable): go-git
-// goes on past some failed opens (a loose ref's, to packed-refs), so open
-// and read answer with the refusal, not with what go-git made of it. It
-// keeps the opening's roots too, closed once the read is over (close); a
-// folder the discovery found no .git in is closed as it moves up (drop).
+// refusal keeps the first file an opening refused (ErrUnreadable), or the
+// end of the read's context a step found (ended): go-git goes on past some
+// failed opens (a loose ref's, to packed-refs), so open and read answer
+// with the refusal, not with what go-git made of it. A read whose context
+// has ended answers the context's error, whichever of the two was kept
+// first (read); one whose context has not answers the first file refused.
+// It keeps the opening's roots too, closed once the read is over
+// (close).
 type refusal struct {
 	mu    sync.Mutex
 	err   error
 	roots []*os.Root
+	ctx   context.Context // the read's; nil for an opening of a test's, which never ends
 }
+
+// ended is the read's context's error once the context has ended, noted as
+// the opening's answer, and nil before. Every step of a read asks it before
+// it reads the repository: the discovery at each folder (gitDirs), careOS's
+// open and look, careFile's Read and ReadAt, and the object cache's look-up
+// (ending). go-git reads each object from that cache or from its file, so
+// the candidates of a revision's name, the commits of a walk and the files
+// of a comparison each ask, and the read ends at its next step whatever
+// go-git makes of the error; the read answers the context's error once
+// the context has ended, whichever step noticed and whatever was kept
+// before (read). What
+// runs between two asks works on what was read, in time that grows with
+// it (an object or a delta's base decoded, a small file within its bound
+// parsed), or is bounded otherwise: a folder's listing asks between two
+// batches and holds at most maxListed entries (ReadDir); renames are
+// looked for only among at most MaxRenamed added and MaxRenamed deleted
+// files of at most MaxRenamedBytes together (withRenames), and a
+// comparison asks between two files, each file's line diff made on at most
+// MaxDiffLines lines a side, once the lines its sides share at their start
+// and their end are set aside, and within its time (diffTrees, lineDiff).
+func (r *refusal) ended() error {
+	if r.ctx == nil || r.ctx.Err() == nil {
+		return nil
+	}
+	return r.note(r.ctx.Err())
+}
+
+// or is the read's context's error once the context has ended (ended),
+// else err: a look that failed as the context ended.
+func (r *refusal) or(err error) error {
+	if ended := r.ended(); ended != nil {
+		return ended
+	}
+	return err
+}
+
+// looking, set by a test, runs as the discovery looks for .git in a folder
+// (gitDirs).
+var looking func(folder string)
 
 func (r *refusal) keep(fs *careOS) *careOS {
 	r.mu.Lock()
@@ -417,18 +513,6 @@ func (r *refusal) keep(fs *careOS) *careOS {
 	}
 	r.told()
 	return fs
-}
-
-// drop closes and forgets fs's root: a folder the discovery looked for
-// .git in and found none.
-func (r *refusal) drop(fs *careOS) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if i := slices.Index(r.roots, fs.root); i >= 0 {
-		r.roots = slices.Delete(r.roots, i, i+1)
-		fs.root.Close()
-	}
-	r.told()
 }
 
 func (r *refusal) close() {
@@ -442,7 +526,7 @@ func (r *refusal) close() {
 }
 
 // rootsOpen, set by a test, is told how many roots an opening holds open
-// each time the number changes (keep, drop, close).
+// each time the number changes (keep, close).
 var rootsOpen func(n int)
 
 func (r *refusal) told() {
@@ -471,18 +555,43 @@ func (r *refusal) first() error {
 // and dotGitFileToOSFilesystem), over careOS file systems: the folder, or
 // the nearest one above it, with a .git, and the folder a .git file names
 // (a linked worktree's); the root as the git directory, with no working
-// tree, when no folder up to it has a .git.
+// tree, when no folder up to it has a .git. Whether a folder holds a .git
+// is a look that does not follow a link (an lstat), which needs the folder
+// entered, not listed: a .git that is a link, whatever it leads to, or to
+// nothing, is a .git there, and the root's look that follows judges it.
+// The discovery looks above a folder only when the folder has no .git
+// entry: once it has found one, any failure of the root's look at it (a
+// link that leads to nothing in its folder, to itself, through a file, or
+// an entry gone between the two looks) is refused, as a .git the opener
+// cannot read is (unread). A root is opened only for the folder that holds
+// it (and for the root of the file system, when no folder up to it does).
+// The read's context is asked at each folder before its looks (ended), and
+// a look that failed once it had ended answers its error.
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 	p, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, err
 	}
 	for {
+		if err := seen.ended(); err != nil {
+			return nil, nil, err
+		}
+		if looking != nil {
+			looking(p)
+		}
 		folder := p
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			folder = filepath.Dir(p)
 		} else if err != nil && !os.IsNotExist(err) {
-			return nil, nil, err
+			return nil, nil, seen.or(err)
+		}
+		up := filepath.Dir(p)
+		_, look := os.Lstat(filepath.Join(folder, git.GitDirName))
+		if os.IsNotExist(look) && up != p {
+			p = up
+			continue
+		} else if look != nil && !os.IsNotExist(look) {
+			return nil, nil, seen.or(look)
 		}
 		fs := careFS(folder, itsFolder, seen)
 		fi, err := fs.Stat(filepath.Join(fs.dir, git.GitDirName))
@@ -493,16 +602,30 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			dot, err := gitFile(p, fs.billy(), seen)
 			return dot, fs.billy(), err
 		}
-		if !os.IsNotExist(err) {
-			return nil, nil, err
+		if look == nil && fs.root != nil {
+			return nil, nil, fs.unread(err)
 		}
-		if up := filepath.Dir(p); up != p {
-			seen.drop(fs)
-			p = up
-			continue
+		if look == nil || !os.IsNotExist(err) {
+			return nil, nil, seen.or(err)
 		}
 		return fs.billy(), nil, nil
 	}
+}
+
+// unread is the discovery's answer when the root's look at a .git the
+// look that does not follow a link found failed with err: the read's
+// context's error once the context has ended, a refusal the root's look
+// made (a link out of the folder), and otherwise, whatever the system
+// answered (nothing there, a loop of links, a link through a file), the
+// opener's refusal in fixed words.
+func (fs *careOS) unread(err error) error {
+	if ended := fs.seen.ended(); ended != nil {
+		return ended
+	}
+	if errors.Is(err, ErrUnreadable) {
+		return err
+	}
+	return fs.refuse("%s leads to nothing that can be read in %s", git.GitDirName, fs.what)
 }
 
 // gitFile is the git directory a .git file names (a linked worktree's).

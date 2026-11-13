@@ -3,6 +3,7 @@ package gitrepo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 )
 
 // Each small file of a repository has the bound of its kind; a file under
@@ -185,8 +188,9 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 //
 //   - each selector chain that starts at an identifier (os.Open,
 //     osfs.Default.Open, fs.root.OpenFile), as written: one in only is
-//     used in the functions it lists alone, and one in never (os.Open,
-//     os.OpenFile, os.ReadFile, os.Lstat, syscall.Open, syscall.Openat,
+//     used in the functions it lists alone (os.Lstat in gitDirs, the
+//     discovery's look for a .git), and one in never (os.Open,
+//     os.OpenFile, os.ReadFile, syscall.Open, syscall.Openat,
 //     unix.Openat, unix.Openat2, git.PlainOpen and the rest; anything of
 //     ioutil, osfs or go-billy's util; any method of os.Root named by its
 //     type) nowhere;
@@ -215,9 +219,10 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		"fs.root.OpenFile":                 {"OpenFile", "ReadDir"},
 		"chroot.New":                       {"billy"},
 		"os.Stat":                          {"gitDirs", "named"},
+		"os.Lstat":                         {"gitDirs"},
 	}
 	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "git.PlainInit", "git.PlainClone", "filesystem.NewStorage",
-		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.Lstat", "os.NewFile",
+		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.NewFile",
 		"syscall.Open", "syscall.Openat", "unix.Openat", "unix.Openat2", "ioutil.", "osfs.", "util.", "os.Root."} // ending in '.': anything of that package or type
 	imports := []string{"github.com/go-git/go-billy/v5/osfs", "github.com/go-git/go-billy/v5/util", "io/ioutil"}
 	opens := []string{"OpenFile", "ReadDir"}
@@ -301,14 +306,13 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	}
 }
 
-// A read started in a folder forty levels beneath a repository's top keeps
-// open only the roots it reads through: the discovery closes each folder
-// it finds no .git in before it looks in the one above (drop), so the
-// opening, told each change of its count (rootsOpen), never holds more
-// than two, the working folder's and its git directory's (an ordinary
-// repository has no common directory), and holds none once the read
-// returns.
-func TestTheDiscoveryKeepsOpenOnlyTheRootsItReadsThrough(t *testing.T) {
+// A read started in a folder forty levels beneath a repository's top opens
+// only the roots it reads through: the discovery looks for .git in each
+// folder on the way without opening it, so the opening, told each change
+// of its count (rootsOpen), opens two roots, the working folder's and its
+// git directory's (an ordinary repository has no common directory), and
+// holds none once the read returns.
+func TestTheDiscoveryOpensOnlyTheRootsItReadsThrough(t *testing.T) {
 	dir := scratch(t)
 	write(t, dir, "a.txt", "one\n")
 	commit(t, dir, time.Time{}, "one")
@@ -319,15 +323,133 @@ func TestTheDiscoveryKeepsOpenOnlyTheRootsItReadsThrough(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	most, last, changes := 0, -1, 0
-	rootsOpen = func(n int) { most, last, changes = max(most, n), n, changes+1 }
+	opened, most, last := 0, 0, 0
+	rootsOpen = func(n int) {
+		if n > last {
+			opened += n - last
+		}
+		most, last = max(most, n), n
+	}
 	defer func() { rootsOpen = nil }()
 	log, err := Commits(context.Background(), deep, "", time.Time{})
 	if err != nil || len(log.Commits) != 1 {
 		t.Fatalf("Commits from forty folders down: %+v %v", log, err)
 	}
-	if most != 2 || last != 0 || changes < 40 {
-		t.Errorf("the read held at most %d roots open at once and %d once it returned (%d changes told); want 2, none, and a change for each folder looked in", most, last, changes)
+	if opened != 2 || most != 2 || last != 0 {
+		t.Errorf("the read opened %d roots, held at most %d at once and %d once it returned; want 2, 2 and none", opened, most, last)
+	}
+}
+
+// Once the read's context has ended, every step that reads the repository
+// is refused with the context's error, noted as the opening's answer: an
+// open, a look and a listing by careOS, a Read and a ReadAt of a file it
+// opened before, and the object cache, which finds nothing, so the step
+// that looked reads the object from its file.
+func TestEveryStepAsksWhetherTheContextHasEnded(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "HEAD", "ref: refs/heads/main\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := &refusal{ctx: ctx}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	opened, err := fs.Open("HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	objects := ending{cache.NewObjectLRUDefault(), seen}
+	blob := &plumbing.MemoryObject{}
+	blob.SetType(plumbing.BlobObject)
+	blob.Write([]byte("one\n"))
+	objects.Put(blob)
+	if _, found := objects.Get(blob.Hash()); !found {
+		t.Fatal("the cache does not find the object put in it")
+	}
+	cancel()
+	_, cached := objects.Get(blob.Hash())
+	_, openErr := fs.Open("HEAD")
+	_, statErr := fs.Stat("HEAD")
+	_, listErr := fs.ReadDir(".")
+	_, readErr := opened.Read(make([]byte, 8))
+	_, readAtErr := opened.ReadAt(make([]byte, 8), 0)
+	for step, err := range map[string]error{"Open": openErr, "Stat": statErr, "ReadDir": listErr, "Read": readErr, "ReadAt": readAtErr} {
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("%s once the context has ended: %v, want the context's error", step, err)
+		}
+	}
+	if cached || !errors.Is(seen.first(), context.Canceled) {
+		t.Errorf("the cache found the object once the context had ended (%v), and the opening answers %v; want nothing found and the context's error", cached, seen.first())
+	}
+}
+
+// A folder's listing reads its entries in batches and asks the read's
+// context between two: a context ended there, with a batch still to read,
+// ends the listing with the context's error.
+func TestAListingEndsWithItsContextBetweenTwoBatches(t *testing.T) {
+	dir := t.TempDir()
+	for i := range listBatch + 1 {
+		write(t, dir, fmt.Sprintf("f%05d", i), "")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := &refusal{ctx: ctx}
+	defer seen.close()
+	held := 0
+	betweenBatches = func(string) { held++; cancel() }
+	defer func() { betweenBatches = nil }()
+	list, err := careFS(dir, gitDir, seen).billy().ReadDir(".")
+	if !errors.Is(err, context.Canceled) || held != 1 || list != nil {
+		t.Errorf("a listing of %d entries, its context ended after the first batch: %d listed, held %d times, %v; want none, once, and the context's error", listBatch+1, len(list), held, err)
+	}
+}
+
+// A folder of as many entries as the listing's bound is listed; one entry
+// more is refused, in the opener's words.
+func TestAFolderPastTheListingsBoundIsRefused(t *testing.T) {
+	listBound = 3
+	defer func() { listBound = maxListed }()
+	dir := t.TempDir()
+	for i := range 3 {
+		write(t, dir, fmt.Sprintf("refs/f%d", i), "")
+	}
+	seen := &refusal{}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	if list, err := fs.ReadDir("refs"); err != nil || len(list) != 3 {
+		t.Fatalf("a folder of 3 entries: %d listed, %v; want 3", len(list), err)
+	}
+	write(t, dir, "refs/f3", "")
+	const words = ": refs holds more than 3 entries; at most 3 of them are listed"
+	if list, err := fs.ReadDir("refs"); !errors.Is(err, ErrUnreadable) || !strings.HasSuffix(err.Error(), words) || list != nil || !errors.Is(seen.first(), ErrUnreadable) {
+		t.Errorf("a folder of 4 entries: %d listed, %v (noted %v); want it refused as %q", len(list), err, seen.first(), words)
+	}
+}
+
+// The discovery asks the read's context at each folder it tries before it
+// looks in it: a context ended as it looks in the second folder of four on
+// the way to the repository's top ends the read there, with the context's
+// error and no look after.
+func TestTheDiscoveryEndsWithItsContextBetweenTwoFolders(t *testing.T) {
+	dir := scratch(t)
+	write(t, dir, "a.txt", "one\n")
+	commit(t, dir, time.Time{}, "one")
+	deep := filepath.Join(dir, "a", "b", "c", "d")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var looked []string
+	looking = func(folder string) {
+		if looked = append(looked, folder); len(looked) == 2 {
+			cancel()
+		}
+	}
+	defer func() { looking = nil }()
+	_, err := Commits(ctx, deep, "", time.Time{})
+	if !errors.Is(err, context.Canceled) || len(looked) != 2 {
+		t.Errorf("a discovery whose context ended in its second folder: %v, looked in %q; want the context's error and two folders", err, looked)
 	}
 }
 
