@@ -304,7 +304,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// The environment and the login (launchEnv: the entry's, the server's
 	// and this launch's part, then the login decided over them).
-	passthrough, env, bound, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
+	passthrough, env, bound, _, holds, counted, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -458,7 +458,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		info.Crew = &ref
 	}
 	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed,
-		Account: bound, Model: req.Model, Adapter: agent.Adapter}
+		Account: bound, Model: req.Model, Adapter: agent.Adapter, Holds: holds, Counted: counted}
 	// Its record exists before the session can keep an entry, and the
 	// session's hooks feed it (recordHooks).
 	var rc *recorder
@@ -520,13 +520,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// Its registration complete, its record reconciled once: an exit
 	// before the registry held it is read now.
 	s.registered(rc)
-	held := bound.ID
-	if bound.Folder != "" {
-		if doc, aerr := s.accountsForLaunch(); aerr == nil {
-			held = heldAccount(doc, bound)
-		}
-	}
-	s.capacity.started(agent.ID, held)
+	s.capacity.started(agent.ID, counted)
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", term.Process().PID, "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
@@ -803,7 +797,8 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 // reads skills, in the server user's home, once per adapter since the
 // server started (agents.installSkill, on by default): a SKILL.md of the
 // user's own is left to them, said once in the log. Nothing here stops the
-// launch.
+// launch. A line names the agent's adapter and what happened, never a path
+// or an error that holds one: the folder may be a registered account's.
 func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	if adapter == "" || s.home == "" || !s.cfg.InstallSkill() {
 		return
@@ -819,11 +814,11 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	switch {
 	case path == "":
 	case errors.Is(err, agents.ErrByHand):
-		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
+		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter)
 	case err != nil:
-		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
+		s.log.Warn("skill install failed", "adapter", adapter)
 	case changed:
-		s.log.Info("skill installed", "adapter", adapter, "path", path)
+		s.log.Info("skill installed", "adapter", adapter)
 	}
 }
 
