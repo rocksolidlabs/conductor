@@ -605,6 +605,102 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 	}
 }
 
+// eachLongFile calls f with the path of every file longTree wrote in dir.
+func eachLongFile(t *testing.T, dir string, f func(p string) error) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "long-*", "*.txt"))
+	if err != nil || len(files) != 70000 {
+		t.Fatalf("the long tree's files: %d %v", len(files), err)
+	}
+	for _, p := range files {
+		mustDo(t, f(p))
+	}
+}
+
+// A read whose lists of paths pass their bound, in an index it did not
+// make anew, brings the index's stat data up to date once (update-index
+// -q --refresh) and lists the tree again; lists still past the bound fail
+// the read with the commit alone; never more than one refresh in a read,
+// and nothing of it is remembered from one read to the next. On the
+// 70,000 files of the table, whose paths together pass the bound (the
+// bound has no seam), each read's commands counted at the runner's seam:
+// the first read (a new index) refreshes once and is labelled; after
+// every file's times are changed, the next read refreshes once, lists
+// twice and names the same content, and the read after it lists nothing
+// and refreshes nothing; the same after every file's group-write bit is
+// changed (the test changes no time); once every file's content changes,
+// each read refreshes once, lists twice and fails with the commit alone,
+// and a read in a new index refreshes once, lists once and fails so too.
+func TestAReadWhoseListsPassTheBoundRefreshesItsIndexOnce(t *testing.T) {
+	root, dir := standaloneTree(t, func(dir string) { longTree(t, dir) })
+	runGit(t, dir, "repack", "-a", "-d", "-q")
+	runGit(t, dir, "prune-packed")
+	settled(t, dir)
+	calls := recordTreeGit(t, nil)
+	tr, err := OpenTree(root, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	kept := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
+	type counted struct {
+		read                TreeRead
+		err                 error
+		refreshes, listings int
+		listed              int
+	}
+	read := func(ix *TreeIndex) counted {
+		t.Helper()
+		*calls = nil
+		var c counted
+		c.read, c.err = TreeRevision(t.Context(), tr, ix)
+		for _, g := range *calls {
+			switch {
+			case slices.Equal(g.args, []string{"update-index", "-q", "--refresh"}):
+				c.refreshes++
+			case g.args[0] == "diff-files":
+				c.listings++
+				c.listed = len(g.out)
+			}
+		}
+		return c
+	}
+	first := read(kept)
+	if first.err != nil || first.read.Content == "" || first.refreshes != 1 || first.listings != 1 {
+		t.Fatalf("the first read: %+v", first)
+	}
+	labelledAgain := func(what string) {
+		t.Helper()
+		if c := read(kept); c.err != nil || c.read.Content != first.read.Content || c.refreshes != 1 || c.listings != 2 || c.listed != 0 {
+			t.Fatalf("the read after %s: %v %s, %d refreshes, %d listings, the last of %d bytes", what, c.err, c.read.Content, c.refreshes, c.listings, c.listed)
+		}
+		if c := read(kept); c.err != nil || c.read.Content != first.read.Content || c.refreshes != 0 || c.listings != 1 || c.listed != 0 {
+			t.Fatalf("the read after that: %v %s, %d refreshes, %d listings, the last of %d bytes", c.err, c.read.Content, c.refreshes, c.listings, c.listed)
+		}
+	}
+	back := time.Now().Add(-2 * time.Hour)
+	eachLongFile(t, dir, func(p string) error { return os.Chtimes(p, back, back) })
+	labelledAgain("every file's times changed")
+	eachLongFile(t, dir, func(p string) error { return os.Chmod(p, 0o664) })
+	labelledAgain("every file's group-write bit changed")
+	eachLongFile(t, dir, func(p string) error {
+		if err := os.WriteFile(p, []byte("changed, and longer\n"), 0o664); err != nil {
+			return err
+		}
+		return os.Chtimes(p, back, back)
+	})
+	for n, ix := range []*TreeIndex{kept, kept, {Path: filepath.Join(t.TempDir(), "index")}} {
+		c := read(ix)
+		listings := 2
+		if n == 2 {
+			listings = 1
+		}
+		if c.err == nil || c.read.Commit != first.read.Commit || c.read.Content != "" || c.refreshes != 1 || c.listings != listings {
+			t.Fatalf("read %d once every file changed: %+v %v, %d refreshes, %d listings", n+1, c.read, c.err, c.refreshes, c.listings)
+		}
+	}
+}
+
 // readTwice reads the tree at dir twice in one new index and gives the
 // content, which must be the same at both reads.
 func readTwice(t *testing.T, root, dir string) string {

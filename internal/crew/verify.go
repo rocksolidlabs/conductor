@@ -812,8 +812,9 @@ func (t *Tree) Still() bool { return t.still() }
 
 // TreeIndex is a reader's own index of a tree: the file at Path, kept
 // between reads, used by one read at a time. At its first read (or the
-// first after a cut read's index is dropped) every tracked file is hashed
-// once, its stat data brought up to date. Edited and new files are
+// first after a cut read's index is dropped), and at a read whose lists
+// of paths pass their bound, every tracked file is compared once, its
+// stat data brought up to date. Edited and new files are
 // hashed at every read; a tracked file whose bytes and stat data did not
 // change since the last read is not hashed again, as git status works
 // (git itself hashes a file whose times cannot tell it from the index's:
@@ -918,7 +919,10 @@ const maxTreeID = 1 << 10
 // --name-status, which compares stat data, hashes a file only where its
 // times cannot tell, and starts no git in a submodule), and the new paths
 // that are not ignored (ls-files -o), sorted into two lists kept in files
-// beside the index within maxStagePaths together (stageList); then
+// beside the index within maxStagePaths together (stageList); where the
+// lists pass it at a read that did not make its index anew, one
+// update-index -q --refresh and the two listings again, lists still past
+// it failing the read (never more than one refresh in a read); then
 // update-index --force-remove with the paths gone or of another type on
 // its input, which removes each from the index without looking it up in
 // the tree, and update-index --add --remove --info-only with the paths
@@ -982,11 +986,31 @@ func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error)
 		defer func() { _, _ = f.Close(), os.Remove(f.Name()) }()
 		staged.f[i] = f
 	}
-	for i, args := range [][]string{{"diff-files", "--name-status", "-z", "--no-renames", "--ignore-submodules=dirty"}, {"ls-files", "-o", "--exclude-standard", "-z"}} {
-		staged.status, staged.kind, staged.cur = i == 0, nil, nil
-		if err := t.git(ctx, ix, nil, staged, args...); err != nil {
+	for refreshed := anew; ; refreshed = true {
+		for i, args := range [][]string{{"diff-files", "--name-status", "-z", "--no-renames", "--ignore-submodules=dirty"}, {"ls-files", "-o", "--exclude-standard", "-z"}} {
+			staged.status, staged.kind, staged.cur = i == 0, nil, nil
+			if err := t.git(ctx, ix, nil, staged, args...); err != nil {
+				return out, err
+			}
+		}
+		if staged.err == nil || refreshed {
+			break
+		}
+		// A later read whose lists pass the bound brings the index's stat
+		// data up to date once, as a new index's read does, and lists the
+		// tree again from empty lists.
+		if err := t.git(ctx, ix, nil, io.Discard, "update-index", "-q", "--refresh"); err != nil {
 			return out, err
 		}
+		for _, f := range staged.f {
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return out, err
+			}
+			if err := f.Truncate(0); err != nil {
+				return out, err
+			}
+		}
+		staged.n, staged.err = 0, nil
 	}
 	if staged.err != nil {
 		return out, staged.err

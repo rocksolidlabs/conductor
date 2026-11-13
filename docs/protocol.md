@@ -4732,9 +4732,10 @@ converts it and writes no object, so the content of no file is written
 anywhere. What a file costs: `diff-files` compares stat data and hashes
 no file, save one whose times cannot tell it from the index's (changed
 in the same moment as the index was written), which git hashes itself;
-a changed or new file is hashed once a read; at a new index every
-tracked file is hashed once, by the refresh, and at a later read a
-tracked file that did not change is not hashed. The content is the id of
+a changed or new file is hashed once a read; at a new index, and at a
+read whose lists pass their bound, every tracked file is compared once,
+by the refresh, and at another read a tracked file that did not change
+is not hashed. The content is the id of
 the tree the read stages, every path that differs named by the hash of
 its content as git converts it: the tree `git add -A` makes, with two
 differences. Where `add` would refuse a file's conversion (a line-ending
@@ -4744,8 +4745,11 @@ is converted without that check; and in a repository set to ignore case
 (`core.ignoreCase`), a new path under a folder whose case differs from
 the index's is staged under the tree's own spelling. The two lists of
 paths are kept in files beside the index for the read alone, within
-16 MiB together: lists that pass it are not staged and the label is
-unread.
+16 MiB together. At a read that did not make its index anew, lists that
+pass it are dropped, the index's stat data is brought up to date once
+(`update-index -q --refresh`) and the tree listed again; lists that
+still pass it are not staged and the label is unread. A read never
+refreshes more than once, and nothing of it is kept for the next read.
 At a new index the lists hold only the paths that differ and the new
 ones. Each of a read's own
 commands writes its answer and its error stream within a bound: an id at
