@@ -6144,13 +6144,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   plugin runs before the router, and a fragment that arrives later is
   taken by the plugin's capture listener of `popstate`, ahead of the
   router's; a fragment that holds both keys gives neither. A later link
-  is written to the browser's storage for its credential alone, never
-  to what the running page holds and sends, and loads the page again at
-  the clean address only when it changed what that storage held; a
-  load drops what the page held (drafts, an answer whose outcome was
-  not known). In the desktop app the workbench token is kept in memory
-  from the app's bridge, not in the browser's storage, and a later
-  link's token changes nothing there. Where the browser refuses the
+  is handed on for its credential alone (a pass to the tab's storage, a
+  workbench token to the tab's next load), never to what the running
+  page holds and sends, and loads the page again at the clean address
+  only when that changes what the next load sends; a load drops what
+  the page held (drafts, an answer whose outcome was not known). A
+  link's workbench token is kept once the server accepts it (#882): a
+  refused one is dropped and the page loads again with the token the
+  browser keeps, a kept token the server refuses is removed, and only a
+  kept token opens the operator's page for a decide address. In the
+  desktop app the workbench token is kept in memory from the app's
+  bridge, not in the browser's storage, and a link's token changes
+  nothing there. Where the browser refuses the
   tab's storage, a link opened in a tab that already shows the page is
   not taken: load it in a new tab.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A

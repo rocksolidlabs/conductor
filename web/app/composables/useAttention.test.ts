@@ -52,6 +52,27 @@ describe('openEvents', () => {
     expect(admin.needsToken.value).toBe(true)
   })
 
+  it("keeps a link's token it carried once a reply accepts it, and drops it, loading the page again, when one refuses it", async () => {
+    const kept = new Map<string, string>()
+    const reload = vi.fn()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) })
+    vi.stubGlobal('location', { reload })
+    admin.fromLink('link-token-0123456789')
+    const refuse = held()
+    const refused = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+    refuse(401)
+    expect(await refused).toBeNull()
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(kept.size).toBe(0)
+    expect(admin.needsToken.value).toBe(false)
+    admin.fromLink('link-token-9876543210')
+    const accept = held()
+    const accepted = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+    accept(200)
+    expect((await accepted)?.status).toBe(200)
+    expect([...kept]).toEqual([['conductor.workbenchToken', 'link-token-9876543210']])
+  })
+
   it('hands back a reply that is no refusal, asking for nothing', async () => {
     const answer = held()
     const out = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)

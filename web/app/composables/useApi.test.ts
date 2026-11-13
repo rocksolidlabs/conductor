@@ -144,6 +144,20 @@ describe('a 401', () => {
     expect(admin.needsToken.value).toBe(true)
   })
 
+  it.each(Object.keys(requests) as Array<keyof typeof requests>)("%s answered with success keeps a link's token it carried, and one of the caller's own keeps nothing", async (kind) => {
+    const kept = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) })
+    admin.fromLink('link-token-0123456789')
+    const ok = () => (kind === 'requestText' ? raw : fetchFn).mockResolvedValueOnce(kind === 'requestText' ? { _data: undefined, headers: new Headers() } : {})
+    ok()
+    await requests[kind]('/api/guide', { token: 'link-token-0123456789' })
+    expect(kept.size).toBe(0)
+    ok()
+    await requests[kind]('/api/guide')
+    expect((kind === 'requestText' ? raw : fetchFn).mock.calls[1]![1].headers).toEqual({ Authorization: 'Bearer link-token-0123456789' })
+    expect([...kept]).toEqual([['conductor.workbenchToken', 'link-token-0123456789']])
+  })
+
   it('of a token of the caller\'s own never asks for the workbench token, even when it is the one held', async () => {
     for (const token of ['a-link-token', 'workbench-token']) {
       fetchFn.mockRejectedValueOnce(unauthorized())

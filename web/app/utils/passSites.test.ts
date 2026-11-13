@@ -35,8 +35,8 @@ describe('the pass store', () => {
     })
     expect(mentions(/\bpassHeld\b/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'middleware/decide.global.ts': 2 })
   })
-  it("is the one new reader of the tab's session storage: the sources that held a key there before it are the only others", () => {
-    expect(mentions(/sessionStorage/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'pages/index.vue': 1 })
+  it("shares the tab's session storage only with the sources that held a key there before it and the workbench token's later link", () => {
+    expect(mentions(/sessionStorage/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'composables/useWorkbenchToken.ts': 3, 'pages/index.vue': 1 })
   })
   it('is asked only whether it holds a pass, by the decide middleware', () => {
     expect(using(/\bpassHeld\b/)).toEqual(['composables/useIdentityPass.ts', 'middleware/decide.global.ts'])

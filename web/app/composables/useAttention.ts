@@ -80,18 +80,18 @@ interface AttentionStore {
 }
 
 /**
- * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). The refusal is that
- * token's, judged by `admin.refused` when it lands, so a reply for a token since replaced does not ask for the token again (#281). A
- * page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for its claim.
+ * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). Its acceptance (a
+ * 2xx) or refusal is that token's, judged by `admin.answered` when it lands, so a reply for a token since replaced does not ask for
+ * the token again (#281). A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
+ * its claim.
  */
-export async function openEvents(url: string, admin: { token: Ref<string>; refused: (sent: string) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {
+export async function openEvents(url: string, admin: { token: Ref<string>; answered: (sent: string, accepted: boolean) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {
   const sent = admin.token.value
   const headers: Record<string, string> = { Authorization: `Bearer ${sent}` }
   if (desktop) headers['X-Conductor-Desktop'] = '1'
   const res = await fetch(url, { headers, signal })
-  if (res.status !== 401) return res
-  admin.refused(sent)
-  return null
+  if (res.ok || res.status === 401) admin.answered(sent, res.ok)
+  return res.status === 401 ? null : res
 }
 
 /** The live session store behind useAttention, for readers that must not start it (useEvents). */

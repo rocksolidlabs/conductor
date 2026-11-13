@@ -5998,11 +5998,16 @@ desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
 a navigation the browser starts (a load, a fragment change, back or forward)
 never lets the app's router read a fragment that carries either key, in any
 spelling: the fragment is taken out of the address before the app's router
-reads it, and one that arrives after the load is written to the browser's
-storage for its credential alone and loads the page again at the clean
-address only when it changed what that storage held (in the desktop app the
-workbench token is kept in memory from the app's bridge, not in the
-browser's storage, and a later link's token changes nothing there); a
+reads it, and one that arrives after the load is handed on for its
+credential alone (a pass to the tab's storage, a workbench token to the
+tab's next load) and loads the page again at the clean address only when
+that changes what the next load sends. A link's workbench token is sent by
+the page loaded with it and kept in the browser's storage once a reply
+accepts it (`2xx`); refused (`401`), it is dropped and the page loads again
+with the token the browser keeps, and a kept token refused is removed while
+the storage still holds it (in the desktop app the workbench token is kept
+in memory from the app's bridge, not in the browser's storage, and a link's
+token changes nothing there); a
 fragment that holds both keys gives neither. The pass is kept for the tab
 (`sessionStorage`) until a `401` to a request sent with it, or until a
 later link stores another, and sent only in

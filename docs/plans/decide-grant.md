@@ -749,7 +749,8 @@ pass is held:
 - `plugins/token-fragment.client.ts`: `takeCredentials(location.href)`,
   then `history.replaceState` with the URL it answers, before the app's
   router reads the address; then, at a load, the token into the
-  workbench store as today, and the pass into the pass store (in
+  workbench store as a link's (kept once the server accepts it, #882),
+  and the pass into the pass store (in
   memory too, where the browser refuses storage). A refused value is
   dropped from the address bar and stored nowhere. A navigation the browser
   starts (a load, a fragment change, back or forward) never lets the
@@ -760,11 +761,11 @@ pass is held:
   before the router exists, takes the event first, rewrites the address
   without the fragment, ends the event there
   (`stopImmediatePropagation`: the router's listener does not run for
-  it), and writes what the fragment carried to the browser's storage
-  for it alone (`stored`: the tab's for a pass, the workbench's for the
+  it), and hands what the fragment carried on for it alone (`stored`,
+  the tab's storage, for a pass; `handOn`, the tab's next load, for the
   token), never to what the running page holds and sends; it loads the
   page again at the clean address (`location.reload()`) only when that
-  write was taken and changed what the storage held. In the desktop
+  was taken and changes what the next load sends. In the desktop
   app, which keeps the workbench token in memory from its bridge and
   not in the browser's storage, a later link's token is written nowhere
   and changes nothing. A fragment that
@@ -788,7 +789,7 @@ pass is held:
   is dropped whole), so it judges right whether it runs before or after
   the plugin; it stores nothing: the plugin, not the guard, takes a
   fragment at a load and at a later link. A workbench
-  token held, `/decide/<did>` goes to the operator's
+  token the browser keeps (#882), `/decide/<did>` goes to the operator's
   `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
   workbench token and a pass held, the operator page's own address of
   one decision, `/decisions?item=decision:<did>`, goes to `/decide/<did>`
