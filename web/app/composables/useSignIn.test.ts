@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { nextTick, ref } from 'vue'
+import { createRenderer, defineComponent, nextTick, ref } from 'vue'
 import {
   asSignIn,
   codeGroups,
+  useSignIn,
   SIGNIN_DEADLINE_MS,
   SIGNIN_EVERY_MS,
   SIGNIN_FIRST_MS,
@@ -49,10 +50,13 @@ function held() {
   return { call, asks, methods: () => asks.map((a) => a.method) }
 }
 
-/** A card's poll: shown, visible, with a token and the identity capability unless told otherwise. */
-function card(call: (m: SignInMethod, s: AbortSignal) => Promise<unknown>, opts: { identity?: boolean; token?: string } = {}) {
+/** A card's poll: shown, visible, with a token and the identity capability unless told otherwise; both clocks the fake Date's unless given. */
+function card(
+  call: (m: SignInMethod, s: AbortSignal) => Promise<unknown>,
+  opts: { identity?: boolean; token?: string; now?: () => number; steady?: () => number } = {},
+) {
   const refs = { view: ref<SignInView | null>(null), error: ref(''), note: ref(''), busy: ref(false) }
-  const poll = new SignInPoll(call, refs)
+  const poll = new SignInPoll(call, refs, undefined, opts.now ?? (() => Date.now()), opts.steady ?? (() => Date.now()))
   poll.token(opts.token ?? 'workbench-token')
   poll.identity(opts.identity ?? true)
   poll.show(true)
@@ -206,6 +210,26 @@ describe('one request on its way, each with an end', () => {
     expect(h.methods()).toEqual(['GET', 'GET'])
   })
 
+  it('a read owed while a request is on its way is dropped if the page is hidden when it settles: shown again, one read, the next on the schedule', async () => {
+    const h = held()
+    const { poll } = card(h.call)
+    poll.visible(false)
+    poll.visible(true)
+    poll.visible(false)
+    h.asks[0]!.answer(signedIn)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.methods()).toEqual(['GET'])
+    poll.visible(true)
+    expect(h.methods()).toEqual(['GET', 'GET'])
+    h.asks[1]!.answer(signedIn)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.methods()).toEqual(['GET', 'GET'])
+    await vi.advanceTimersByTimeAsync(SIGNIN_EVERY_MS - 1)
+    expect(h.methods()).toEqual(['GET', 'GET'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(h.methods()).toEqual(['GET', 'GET', 'GET'])
+  })
+
   it('a read never answered is aborted at its deadline, what is shown kept, and the card still reads afterwards', async () => {
     const h = held()
     const { view } = card(h.call)
@@ -300,6 +324,28 @@ describe('begin and sign out', () => {
     expect(note.value).toBe('')
   })
 
+  it('while an act’s outcome is not known no act is made, a failed read keeping it so, until a read shows a state', async () => {
+    const r = route({ GET: [signedOut, { status: 503 }, starting], POST: [{ status: 503, code: 'signin_status_unknown' }, starting] })
+    const { poll, note } = card(r.call)
+    const acts = () => r.calls.filter((c) => c.method !== 'GET').length
+    await vi.advanceTimersByTimeAsync(0)
+    await poll.act('POST')
+    expect(note.value).toBe(SIGNIN_READING)
+    await poll.act('POST')
+    await poll.act('DELETE')
+    expect(acts()).toBe(1)
+    await vi.advanceTimersByTimeAsync(SIGNIN_FIRST_MS)
+    expect(r.gets()).toHaveLength(2)
+    expect(note.value).toBe(SIGNIN_READING)
+    await poll.act('POST')
+    expect(acts()).toBe(1)
+    await vi.advanceTimersByTimeAsync(2 * SIGNIN_FIRST_MS)
+    expect(r.gets()).toHaveLength(3)
+    expect(note.value).toBe('')
+    await poll.act('POST')
+    expect(acts()).toBe(2)
+  })
+
   it('a read made before a begin never overwrites what the begin answered', async () => {
     const h = held()
     const { poll, view } = card(h.call)
@@ -336,27 +382,141 @@ describe('a code’s end', () => {
     expect(view.value).toMatchObject({ code: '', url: '', ended: true })
   })
 
-  it('a code that arrives ended is not shown', () => {
-    expect(asSignIn(code, Date.parse('2026-11-12T09:15:00Z'))).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+  it('a code that arrives ended is not shown', async () => {
+    vi.setSystemTime(Date.parse('2026-11-12T09:15:00Z'))
+    const r = route({ GET: [code] })
+    const { view } = card(r.call)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+  })
+})
+
+describe('a code’s end, by both clocks', () => {
+  /** The wall clock and the steady clock, each set by the test alone. */
+  function clocks() {
+    const at = { wall: 0, steady: 0 }
+    return { at, now: () => at.wall, steady: () => at.steady }
+  }
+  const sixty = { ...code, expires: new Date(60_000).toISOString() }
+
+  it('a code ending at 60 s has ended once the steady clock passes 60 s, the wall clock standing still', async () => {
+    const k = clocks()
+    const { poll, view } = card(route({ GET: [sixty] }).call, k)
+    await vi.advanceTimersByTimeAsync(0)
+    k.at.steady = 59_999
+    poll.visible(false)
+    poll.visible(true)
+    expect(view.value).toMatchObject({ code: 'WDJB-MJHT', ended: false })
+    k.at.steady = 60_000
+    poll.visible(false)
+    poll.visible(true)
+    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+  })
+
+  it('the wall clock past its end, the steady clock and the timers still: a failed read shows it ended, and it stays ended', async () => {
+    const k = clocks()
+    const r = route({ GET: [sixty, { status: 503 }, sixty, signedIn, sixty, { ...sixty, code: 'ABCD-EFGH' }] })
+    const { poll, view } = card(r.call, k)
+    const readNow = async () => {
+      poll.read()
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(view.value).toMatchObject({ code: 'WDJB-MJHT', ended: false })
+    k.at.wall = 60_000
+    await readNow()
+    expect(r.gets()).toHaveLength(2)
+    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+    // The wall clock set back to 30 s, the same status read again.
+    k.at.wall = 30_000
+    await readNow()
+    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+    // Another state, then the same pair again.
+    await readNow()
+    expect(view.value?.state).toBe('signed-in')
+    await readNow()
+    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+    // A different code is judged afresh.
+    await readNow()
+    expect(r.gets()).toHaveLength(6)
+    expect(view.value).toMatchObject({ state: 'code', code: 'ABCD-EFGH', url: 'https://id.example.com/device', ended: false })
+  })
+})
+
+/** A document whose visibility the test sets, dispatching visibilitychange to the listeners it holds. */
+function page(visibilityState = 'visible') {
+  const listeners = new Set<() => void>()
+  return {
+    visibilityState,
+    listeners,
+    addEventListener: (_: 'visibilitychange', fn: () => void) => listeners.add(fn),
+    removeEventListener: (_: 'visibilitychange', fn: () => void) => listeners.delete(fn),
+    set(v: string) {
+      this.visibilityState = v
+      for (const fn of listeners) fn()
+    },
+  }
+}
+
+describe('the card’s lifetime', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** A component that uses useSignIn, mounted through a renderer of no document, the document and the app's auto-imports stubbed. */
+  function mountCard(visibility: string) {
+    const r = route({ GET: [signedIn] })
+    const doc = page(visibility)
+    vi.stubGlobal('document', doc)
+    vi.stubGlobal('useApi', () => ({ request: (_path: string, o: { method: SignInMethod; signal: AbortSignal }) => r.call(o.method, o.signal) }))
+    vi.stubGlobal('useWorkbenchToken', () => ({ token: ref('workbench-token') }))
+    vi.stubGlobal('useCapabilities', () => ({ has: () => true }))
+    const none = () => null
+    const app = createRenderer<object, object>({
+      patchProp: () => {},
+      insert: () => {},
+      remove: () => {},
+      createElement: () => ({}),
+      createText: () => ({}),
+      createComment: () => ({}),
+      setText: () => {},
+      setElementText: () => {},
+      parentNode: none,
+      nextSibling: none,
+    }).createApp(
+      defineComponent({
+        setup() {
+          useSignIn()
+          return none
+        },
+      }),
+    )
+    app.mount({})
+    return { r, doc, app }
+  }
+
+  it('its unmount takes its listener and its schedule down: no read after it', async () => {
+    const { r, doc, app } = mountCard('visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(r.gets()).toHaveLength(1)
+    app.unmount()
+    doc.set('hidden')
+    doc.set('visible')
+    await vi.advanceTimersByTimeAsync(10 * SIGNIN_EVERY_MS)
+    expect(r.gets()).toHaveLength(1)
+    expect(doc.listeners.size).toBe(0)
+  })
+
+  it('mounted while the page is hidden, it reads nothing until the page is shown', async () => {
+    const { r, doc, app } = mountCard('hidden')
+    await vi.advanceTimersByTimeAsync(10 * SIGNIN_EVERY_MS)
+    expect(r.gets()).toHaveLength(0)
+    doc.set('visible')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(r.gets()).toHaveLength(1)
+    app.unmount()
   })
 })
 
 describe('the wiring', () => {
-  /** A document whose visibility the test sets, dispatching visibilitychange to the listeners it holds. */
-  function page() {
-    const listeners = new Set<() => void>()
-    return {
-      visibilityState: 'visible',
-      listeners,
-      addEventListener: (_: 'visibilitychange', fn: () => void) => listeners.add(fn),
-      removeEventListener: (_: 'visibilitychange', fn: () => void) => listeners.delete(fn),
-      set(v: string) {
-        this.visibilityState = v
-        for (const fn of listeners) fn()
-      },
-    }
-  }
-
   it('follows the document, the token and the capability, and lets go of all three when the card goes', async () => {
     const r = route({ GET: [signedIn] })
     const refs = { view: ref<SignInView | null>(null), error: ref(''), note: ref(''), busy: ref(false) }
@@ -397,20 +557,20 @@ describe('the wiring', () => {
 
 describe('a reply as the card keeps it', () => {
   it('keeps each state with what it carries and nothing else', () => {
-    expect(asSignIn(code, 0)).toEqual({ state: 'code', who: '', code: 'WDJB-MJHT', url: 'https://id.example.com/device', expires: '2026-11-12T09:15:00Z', why: '', ended: false })
+    expect(asSignIn(code)).toEqual({ state: 'code', who: '', code: 'WDJB-MJHT', url: 'https://id.example.com/device', expires: '2026-11-12T09:15:00Z', why: '', ended: false })
     expect(asSignIn({ ...signedIn, code: 'X', url: 'https://e.example' })).toEqual({ state: 'signed-in', who: 'Ana · workspace Acme', code: '', url: '', expires: '', why: '', ended: false })
     expect(asSignIn({ ...signedOut, who: 'Ana' })?.who).toBe('')
   })
 
   it('shows nothing for a reply it cannot trust', () => {
     for (const body of [null, 'x', { supported: false }, { supported: true, state: 'pending' }, { ...code, code: 'AB CD' }, { ...code, code: 'A'.repeat(17) }, { ...code, code: undefined }]) {
-      expect(asSignIn(body, 0)).toBeNull()
+      expect(asSignIn(body)).toBeNull()
     }
     expect(asSignIn({ ...signedIn, who: 'a\nb' })?.who).toBe('')
     expect(asSignIn({ ...signedOut, why: 'é'.repeat(61) })?.why).toBe('')
   })
 
-  it('refuses in who and why what the server refuses: controls, format characters and the line and paragraph separators', () => {
+  it('refuses in who and why controls, and the format characters and separators the server sends them without', () => {
     const c = (n: number) => String.fromCharCode(n)
     for (const who of [`Ana ${c(0x202e)}gnp.exe`, c(0x200b), `Ana${c(0x2028)}Eve`, `Ana${c(0x2029)}Eve`,'a\u0085b', 'a\u001bb', 'a\u007fb']) {
       expect(asSignIn({ ...signedIn, who })?.who, JSON.stringify(who)).toBe('')
@@ -420,17 +580,37 @@ describe('a reply as the card keeps it', () => {
 
   it('draws no link for a page the server’s rule refuses, and keeps the code', () => {
     for (const url of ['http://id.example.com/device', 'javascript:alert(1)', undefined]) {
-      expect(asSignIn({ ...code, url }, 0)).toMatchObject({ code: 'WDJB-MJHT', url: '' })
+      expect(asSignIn({ ...code, url })).toMatchObject({ code: 'WDJB-MJHT', url: '' })
     }
   })
 
-  it('links to the page as the browser parsed it, an https page with a host name by the server’s rule, never the app’s own', () => {
+  it('links to the page by the server’s rule, the href the text that was sent, never the app’s own', () => {
     const app = 'https://conductor.example:8443'
-    expect(signInPage('https://id.example.com/device?x=1', app)).toBe('https://id.example.com/device?x=1')
-    expect(signInPage('https://ID.Example.com', app)).toBe('https://id.example.com/')
-    expect(signInPage('https://id.example.com:443/a%20b', app)).toBe('https://id.example.com/a%20b')
+    for (const u of ['https://id.example.com/device?x=1', 'https://id.example/device?user_code=ABCD-EFGH', 'https://id.example:8443/x', 'https://id.example.com/a%20b']) {
+      expect(signInPage(u, app), u).toBe(u)
+      expect(asSignIn({ ...code, url: u }, app)?.url, u).toBe(u)
+    }
     for (const u of [
-      // Each refused by the server too (ext's signInURL): no `//` authority, no host name, a bad port, user information.
+      // The server refuses each (ext's signInURL): an address literal, capitals, a trailing dot or an escape in the host, no path,
+      // port 443 or one with a leading zero, a fragment.
+      'https://999.1.1.1/device',
+      'https://[fe80::1%25eth0]/device',
+      'https://[::1]/x',
+      'https://a.0x7f/x',
+      'https://ID.example/x',
+      'https://id.example./x',
+      'https://ex%25ample.test/d',
+      'https://id.example',
+      'https://id.example:443/x',
+      'https://id.example:0443/x',
+      'https://id.example/x#token=abc',
+      'https://id.example/x#a',
+      // The server refuses the empty authority; it takes the other three, which a browser writes otherwise.
+      'https:///id.example/device',
+      'https://id.example:/x',
+      'https://id.example/a/../b',
+      'https://id.example/%2e%2e/b',
+      // No `//` authority, no host name, a bad port, user information.
       'https:/id.example.com/x',
       'https:id.example.com',
       'https://:443/x',

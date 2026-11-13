@@ -23,11 +23,11 @@ const expiresAt = computed(() => {
     <div class="flex flex-col gap-3">
       <div v-if="view.state === 'signed-in'" class="flex flex-wrap items-center justify-between gap-3">
         <p class="min-w-0 text-sm break-words text-highlighted" data-signin-who>Signed in as {{ view.who }}</p>
-        <UButton label="Sign out" icon="i-lucide-log-out" color="neutral" variant="outline" :loading="busy" data-signin-out @click="signOut" />
+        <UButton label="Sign out" icon="i-lucide-log-out" color="neutral" variant="outline" :loading="busy" :disabled="!!note" data-signin-out @click="signOut" />
       </div>
       <div v-else-if="view.state === 'code' && view.ended" class="flex flex-wrap items-center justify-between gap-3">
         <p class="text-sm text-muted" data-signin-ended>The code ended.</p>
-        <UButton label="Sign in again" icon="i-lucide-log-in" :loading="busy" data-signin-begin @click="begin" />
+        <UButton label="Sign in again" icon="i-lucide-log-in" :loading="busy" :disabled="!!note" data-signin-begin @click="begin" />
       </div>
       <div v-else-if="view.state === 'code'" class="flex flex-col gap-3">
         <p class="text-sm text-muted">Enter this code on the provider's page to sign this server in.</p>
@@ -48,7 +48,7 @@ const expiresAt = computed(() => {
       </p>
       <div v-else class="flex flex-wrap items-center justify-between gap-3">
         <p class="text-sm text-muted">This server is not signed in.</p>
-        <UButton label="Sign in" icon="i-lucide-log-in" :loading="busy" data-signin-begin @click="begin" />
+        <UButton label="Sign in" icon="i-lucide-log-in" :loading="busy" :disabled="!!note" data-signin-begin @click="begin" />
       </div>
       <p v-if="view.why" class="text-xs break-words text-muted" data-signin-why>{{ view.why }}</p>
       <p v-if="note" class="text-xs text-muted" data-signin-reading>{{ note }}</p>

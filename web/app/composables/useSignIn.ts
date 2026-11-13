@@ -30,7 +30,7 @@ const STATES: readonly SignInState[] = ['signed-out', 'starting', 'code', 'signe
 const bytes = (s: string) => new TextEncoder().encode(s).length
 const appOrigin = () => (typeof location === 'undefined' ? '' : location.origin)
 
-/** What the server refuses in `who` and `why` (ext's signInLine): controls (C0, DEL, C1), format characters, line and paragraph separators; and a lone surrogate. */
+/** What the card refuses in `who` and `why`, which the server sends without format characters and separators: controls (C0, DEL, C1), format characters, line and paragraph separators; and a lone surrogate. */
 const NOT_ONE_LINE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u
 
 /** A one-line text of at most `max` bytes, or ''. */
@@ -39,19 +39,19 @@ function line(v: unknown, max: number): string {
 }
 
 /**
- * The page the card links to, as the browser parsed it (its `href`), or '' for no link. The server's rule for `url` (ext's
- * signInURL, docs/protocol.md): 1 to MAX_SIGNIN_URL bytes of printable ASCII with no space, quote (" ' `), backslash or angle
- * bracket, every '%' before two hex digits, `https://` with a host name that is not dots alone, a port of 1 to 65535 if any and no
- * user information; and never a page of the app's own origin.
+ * The page the card links to, `u` itself, or '' for no link. The server's rule for `url` (ext's signInURL, docs/protocol.md): 1 to
+ * MAX_SIGNIN_URL bytes of printable ASCII with no space, quote (" ' `), backslash, angle bracket or '#', every '%' before two hex
+ * digits; `https://`, a host that is a name (labels of a-z, 0-9 and '-', none empty, the last beginning with a letter), a port of
+ * 1 to 65535 without leading zeros that is not 443 if any, then a path. Beside it, the browser writes the address as given
+ * (`new URL(u).href === u`) and its origin is not the app's own.
  */
 export function signInPage(u: unknown, origin = appOrigin()): string {
-  if (typeof u !== 'string' || bytes(u) > MAX_SIGNIN_URL || !/^https:\/\/[\x21-\x7e]+$/i.test(u) || /["'`\\<>]|%(?![0-9A-Fa-f]{2})/.test(u)) return ''
-  if (u.slice(8).split(/[/?#]/, 1)[0]!.includes('@')) return ''
+  if (typeof u !== 'string' || bytes(u) > MAX_SIGNIN_URL || !/^[\x21-\x7e]+$/.test(u) || /["'`\\<>#]|%(?![0-9A-Fa-f]{2})/.test(u)) return ''
+  const m = /^https:\/\/(?:[a-z0-9-]+\.)*[a-z][a-z0-9-]*(?::([1-9][0-9]{0,4}))?\//.exec(u)
+  if (!m || Number(m[1] ?? 1) > 65535 || m[1] === '443') return ''
   try {
     const p = new URL(u)
-    const port = p.port ? Number(p.port) : 1
-    const ok = p.protocol === 'https:' && !/^\.*$/.test(p.hostname) && port >= 1 && port <= 65535 && !p.username && !p.password
-    return ok && p.origin !== origin ? p.href : ''
+    return p.href === u && p.origin !== origin ? u : ''
   } catch {
     return ''
   }
@@ -59,9 +59,9 @@ export function signInPage(u: unknown, origin = appOrigin()): string {
 
 /**
  * A reply as the card keeps it, checked again here: null for `{supported: false}`, a state the app does not know, or a code without
- * its code. A code's page is linked only as signInPage allows; a code whose `expires` is not after `now` is kept as ended, unshown.
+ * its code. A code's page is linked only as signInPage allows. Whether a code has ended is the poll's to judge (SignInPoll.judge).
  */
-export function asSignIn(body: unknown, now = Date.now(), origin = appOrigin()): SignInView | null {
+export function asSignIn(body: unknown, origin = appOrigin()): SignInView | null {
   const b = body as Record<string, unknown> | null
   if (!b || typeof b !== 'object' || b.supported !== true || !STATES.includes(b.state as SignInState)) return null
   const state = b.state as SignInState
@@ -70,10 +70,8 @@ export function asSignIn(body: unknown, now = Date.now(), origin = appOrigin()):
   if (state === 'code') {
     const code = typeof b.code === 'string' && b.code.length <= MAX_SIGNIN_CODE && /^[A-Za-z0-9-]+$/.test(b.code) ? b.code : ''
     if (!code) return null
-    const ends = typeof b.expires === 'string' ? Date.parse(b.expires) : NaN
-    if (!Number.isNaN(ends)) v.expires = b.expires as string
-    if (ends <= now) v.ended = true
-    else Object.assign(v, { code, url: signInPage(b.url, origin) })
+    if (typeof b.expires === 'string' && !Number.isNaN(Date.parse(b.expires))) v.expires = b.expires
+    Object.assign(v, { code, url: signInPage(b.url, origin) })
   }
   return v
 }
@@ -93,11 +91,11 @@ export type SignInMethod = 'GET' | 'POST' | 'DELETE'
 const statusOf = (e: unknown) => (e as { status?: number } | null)?.status ?? 0
 const codeOf = (e: unknown) => (e as { code?: string } | null)?.code ?? ''
 
-/** What the card says when the provider did not answer a begin or a sign-out. */
+/** What the card says of a begin or a sign-out the provider was not asked or refused (503 signin_unavailable). */
 export const SIGNIN_UNAVAILABLE = 'The identity provider did not answer. Try again in a moment.'
 /** What the card says of a begin or a sign-out the server did not answer within SIGNIN_DEADLINE_MS: it reads the sign-in at once. */
 export const SIGNIN_NOT_KNOWN = 'The server did not answer in time, so whether that was done is not known. Reading the sign-in again.'
-/** What the card says of a begin or a sign-out the provider took whose status could not be read just then (503 signin_status_unknown). */
+/** What the card says of a begin or a sign-out that may have been taken, its status not known yet (503 signin_status_unknown): no act is offered until a read shows a state. */
 export const SIGNIN_READING = 'Reading the sign-in…'
 const DEADLINE = 'signin-deadline'
 /** The longest wait a timer takes (2^31 - 1 ms): a code's end further off is looked at again then. */
@@ -114,7 +112,8 @@ export interface SignInRefs {
 /**
  * The sign-in's requests for one card. `show`, `visible`, `identity` and `token` say what the page knows; the route is read while all
  * hold, and nothing is read or scheduled otherwise. One request is on its way at a time, each aborted at SIGNIN_DEADLINE_MS: a read
- * asked for meanwhile is owed and made once that request settles, and an act aborts a read on its way, so its reply is always its own.
+ * asked for meanwhile is owed and made once that request settles (dropped if the card is not active then), and an act aborts a read
+ * on its way, so its reply is always its own. A code's end is judged by both clocks, `now` (the wall clock) and `steady`.
  */
 export class SignInPoll {
   readonly view: Ref<SignInView | null>
@@ -130,12 +129,19 @@ export class SignInPoll {
   private forToken = ''
   private sent: AbortController | null = null
   private owed = false
+  /** The last reply's view, before its code's end is judged. */
+  private last: SignInView | null = null
+  /** The code and expires last seen: the steady clock and the time left by the wall clock when first seen. */
+  private pair: { key: string; steady: number; left: number } | null = null
+  /** The last pair judged ended: it stays ended. */
+  private endedKey = ''
 
   constructor(
     private readonly call: (method: SignInMethod, signal: AbortSignal) => Promise<unknown>,
     refs: SignInRefs,
     private readonly after: After = realAfter,
     private readonly now: () => number = () => Date.now(),
+    private readonly steady: () => number = () => performance.now(),
   ) {
     this.view = refs.view
     this.error = refs.error
@@ -154,12 +160,14 @@ export class SignInPoll {
     else this.forget()
   }
 
-  /** The document is visible, or hidden (no read until it is visible again, when it reads at once). */
+  /** The document is visible, or hidden (no read until it is visible again, when it judges the code's end and reads at once). */
   visible(on: boolean) {
     if (on === this.seen) return
     this.seen = on
-    if (on) this.read()
-    else this.stop()
+    if (on) {
+      this.judge()
+      this.read()
+    } else this.stop()
   }
 
   /** Whether GET /api/capabilities has a ready identity provider: without one, nothing is read and nothing is shown. */
@@ -178,12 +186,14 @@ export class SignInPoll {
     this.read()
   }
 
-  /** Begins a sign-in (POST) or signs out (DELETE); what the provider answers is shown, its refusal in the card's words. */
+  /**
+   * Begins a sign-in (POST) or signs out (DELETE); what the provider answers is shown, its refusal in the card's words. None is made
+   * while the last act's outcome is not known (`note`), until a read shows a state.
+   */
   async act(method: 'POST' | 'DELETE'): Promise<void> {
-    if (!this.active || this.busy.value) return
+    if (!this.active || this.busy.value || this.note.value) return
     this.busy.value = true
     this.wait = SIGNIN_FIRST_MS
-    this.owed = false
     await this.send(method)
   }
 
@@ -197,6 +207,7 @@ export class SignInPoll {
   private async send(method: SignInMethod) {
     this.stop()
     this.sent?.abort()
+    this.owed = false
     const ctl = new AbortController()
     this.sent = ctl
     let body: unknown
@@ -216,10 +227,10 @@ export class SignInPoll {
     this.sent = null
     if (method !== 'GET') this.busy.value = false
     if (!err) {
-      this.apply(asSignIn(body, this.now()))
+      this.last = asSignIn(body)
       this.error.value = ''
       this.note.value = ''
-    } else if (statusOf(err) === 404) this.apply(null)
+    } else if (statusOf(err) === 404) this.last = null
     else if (method === 'GET' || statusOf(err) === 401) {
       // A read that failed or met its deadline keeps what is shown and follows the schedule.
     } else if ((err as Error | null)?.message === DEADLINE) {
@@ -229,23 +240,44 @@ export class SignInPoll {
       this.note.value = SIGNIN_READING
       this.error.value = ''
     } else this.error.value = SIGNIN_UNAVAILABLE
-    if (this.owed && this.active) {
-      this.owed = false
-      void this.send('GET')
-    } else this.next()
+    this.judge()
+    // The read owed is spent by the one read it starts, or dropped when the card is not active.
+    const owed = this.owed
+    this.owed = false
+    if (owed && this.active) void this.send('GET')
+    else this.next()
   }
 
-  /** Shows v; a code is ended at its `expires`. */
-  private apply(v: SignInView | null) {
+  /**
+   * Shows the last reply, its code judged: the first sight of a (code, expires) pair notes both clocks once, and the code has ended
+   * when the wall clock reaches `expires` or the steady clock has passed the time left at first sight. The last pair ended stays
+   * ended whatever arrives between; only a different pair is judged afresh. Called on every reply, when the page is shown, and by
+   * its own timer, re-armed from what is left.
+   */
+  private judge() {
     this.ending?.()
     this.ending = undefined
-    this.view.value = v
-    if (v?.state !== 'code' || v.ended || !v.expires) return
-    const at = Date.parse(v.expires)
-    this.ending = this.after(Math.min(at - this.now(), MAX_TIMER), () => {
-      this.ending = undefined
-      this.apply(this.now() >= at ? { ...v, code: '', url: '', ended: true } : v)
-    })
+    const v = this.last
+    if (v?.state !== 'code' || !v.expires) {
+      this.view.value = v
+      return
+    }
+    const key = `${v.code} ${v.expires}`
+    const ends = Date.parse(v.expires)
+    if (key !== this.endedKey) {
+      if (this.pair?.key !== key) this.pair = { key, steady: this.steady(), left: ends - this.now() }
+      const left = Math.min(ends - this.now(), this.pair.left - (this.steady() - this.pair.steady))
+      if (left > 0) {
+        this.view.value = v
+        this.ending = this.after(Math.min(left, MAX_TIMER), () => {
+          this.ending = undefined
+          this.judge()
+        })
+        return
+      }
+      this.endedKey = key
+    }
+    this.view.value = { ...v, code: '', url: '', ended: true }
   }
 
   /** After a reply: the next read, sooner while a person waits on the sign-in or its status is being read. */
@@ -274,7 +306,10 @@ export class SignInPoll {
     this.sent = null
     this.owed = false
     this.stop()
-    this.apply(null)
+    this.last = null
+    this.pair = null
+    this.endedKey = ''
+    this.judge()
     this.wait = SIGNIN_FIRST_MS
     this.error.value = ''
     this.note.value = ''
