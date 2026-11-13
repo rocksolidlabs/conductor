@@ -6149,7 +6149,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   page holds and sends, and loads the page again at the clean address
   only when that changes what the next load sends; a load drops what
   the page held (drafts, an answer whose outcome was not known). A
-  link's workbench token is kept once the server accepts it (#882): a
+  link's workbench token is kept once the server accepts it as the
+  workbench's (the events stream answers it, #882): a
   refused one is dropped and the page loads again with the token the
   browser keeps, a kept token the server refuses is removed, and only a
   kept token opens the operator's page for a decide address. In the

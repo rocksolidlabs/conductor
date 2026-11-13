@@ -851,7 +851,6 @@ function useUpload() {
           data = undefined
         }
         if (xhr.status >= 200 && xhr.status < 300) {
-          admin.answered(token, true)
           resolve(data as T)
           return
         }

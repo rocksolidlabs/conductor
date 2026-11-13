@@ -120,8 +120,8 @@ export function useWorkbenchToken() {
   }
 
   /**
-   * An answer to a request sent with `sent`, the token this page held as it sent it: `accepted` (a 2xx) or refused (a 401). An
-   * accepted link's token is kept. A refused link's token is dropped: the page loads again at its address and sends the token the
+   * An answer to a request sent with `sent`, the token this page held as it sent it: `accepted` (a 2xx of the events stream, which
+   * admits the workbench token alone; openEvents) or refused (a 401 of any request). An accepted link's token is kept. A refused link's token is dropped: the page loads again at its address and sends the token the
    * browser keeps. A refused token is kept no longer: removed from the storage while it still holds it, and no longer held for the
    * page alone. The gate asks for the token only while the refused one is still the one held: a reply for a token since replaced asks
    * for nothing (#281). A request no token went with is refused for the one held when none is.

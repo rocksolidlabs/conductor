@@ -69,7 +69,8 @@ export function useApi() {
   /**
    * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 is told to the
    * workbench token's store only when the request carried that token, as `sent` (admin.answered judges it by that token, not by the
-   * one held when the reply lands); a token of the caller's own (`explicitToken`) is told nothing, as its success is not (`accepted`).
+   * one held when the reply lands); a token of the caller's own (`explicitToken`) is told nothing. A success here accepts no token:
+   * routes beside the workbench's admit other credentials too, and the events stream, which admits the workbench token alone, does.
    */
   function normalise(e: unknown, explicitToken: boolean, sent: string): ApiError {
     const fe = e as FetchError<unknown>
@@ -81,24 +82,17 @@ export function useApi() {
     return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
-  /** A reply that succeeded, told to the workbench token's store when the request carried that token. */
-  function accepted<R>(reply: R, explicitToken: boolean, sent: string): R {
-    if (!explicitToken) admin.answered(sent, true)
-    return reply
-  }
-
   /** `signal` aborts the request (a search overtaken by the next key): it then throws as a network error does, which its caller drops. */
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal } = {}): Promise<T> {
     const token = opts.token ?? admin.token.value
     try {
-      const reply = await $fetch<T>((opts.base ?? httpBase.value) + path, {
+      return await $fetch<T>((opts.base ?? httpBase.value) + path, {
         method: (opts.method ?? 'GET') as 'GET',
         body: opts.body as Record<string, unknown> | undefined,
         query: opts.query,
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         ...(opts.signal ? { signal: opts.signal } : {}),
       })
-      return accepted(reply, opts.token !== undefined, token)
     } catch (e) {
       throw normalise(e, opts.token !== undefined, token)
     }
@@ -119,7 +113,7 @@ export function useApi() {
       })
       const data = res._data as ArrayBuffer | undefined
       const bytes = data ? new Uint8Array(data) : new Uint8Array()
-      return accepted({ text: new TextDecoder().decode(bytes), bytes, headers: res.headers }, opts.token !== undefined, token)
+      return { text: new TextDecoder().decode(bytes), bytes, headers: res.headers }
     } catch (e) {
       throw normalise(e, opts.token !== undefined, token)
     }
@@ -132,12 +126,11 @@ export function useApi() {
   async function requestBlob(path: string, opts: { token?: string; base?: string } = {}): Promise<Blob> {
     const token = opts.token ?? admin.token.value
     try {
-      const blob = await $fetch<Blob>((opts.base ?? httpBase.value) + path, {
+      return await $fetch<Blob>((opts.base ?? httpBase.value) + path, {
         method: 'GET',
         responseType: 'blob',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
-      return accepted(blob, opts.token !== undefined, token)
     } catch (e) {
       throw normalise(e, opts.token !== undefined, token)
     }

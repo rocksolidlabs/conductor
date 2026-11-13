@@ -80,9 +80,9 @@ interface AttentionStore {
 }
 
 /**
- * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). Its acceptance (a
- * 2xx) or refusal is that token's, judged by `admin.answered` when it lands, so a reply for a token since replaced does not ask for
- * the token again (#281). A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
+ * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). The stream admits
+ * the workbench token alone, so its acceptance (a 2xx) is the one that keeps a link's token; acceptance and refusal are that token's,
+ * judged by `admin.answered` when they land, so a reply for a token since replaced does not ask for the token again (#281). A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
  * its claim.
  */
 export async function openEvents(url: string, admin: { token: Ref<string>; answered: (sent: string, accepted: boolean) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {

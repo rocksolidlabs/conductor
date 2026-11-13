@@ -6002,8 +6002,9 @@ reads it, and one that arrives after the load is handed on for its
 credential alone (a pass to the tab's storage, a workbench token to the
 tab's next load) and loads the page again at the clean address only when
 that changes what the next load sends. A link's workbench token is sent by
-the page loaded with it and kept in the browser's storage once a reply
-accepts it (`2xx`); refused (`401`), it is dropped and the page loads again
+the page loaded with it and kept in the browser's storage once the events
+stream, which admits the workbench token alone, accepts it (`2xx`); refused
+(`401`, by any route), it is dropped and the page loads again
 with the token the browser keeps, and a kept token refused is removed while
 the storage still holds it (in the desktop app the workbench token is kept
 in memory from the app's bridge, not in the browser's storage, and a link's

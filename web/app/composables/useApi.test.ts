@@ -144,18 +144,26 @@ describe('a 401', () => {
     expect(admin.needsToken.value).toBe(true)
   })
 
-  it.each(Object.keys(requests) as Array<keyof typeof requests>)("%s answered with success keeps a link's token it carried, and one of the caller's own keeps nothing", async (kind) => {
+  // Routes beside the workbench's admit other credentials too (a session's own token reads its session): the events stream, which
+  // admits the workbench token alone, is what keeps a link's token (useAttention.test.ts).
+  it.each(Object.keys(requests) as Array<keyof typeof requests>)("%s answered with success keeps no link's token; a 401 drops it", async (kind) => {
     const kept = new Map<string, string>()
+    const reload = vi.fn()
     vi.stubGlobal('localStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) })
+    vi.stubGlobal('location', { reload })
     admin.fromLink('link-token-0123456789')
-    const ok = () => (kind === 'requestText' ? raw : fetchFn).mockResolvedValueOnce(kind === 'requestText' ? { _data: undefined, headers: new Headers() } : {})
-    ok()
-    await requests[kind]('/api/guide', { token: 'link-token-0123456789' })
-    expect(kept.size).toBe(0)
-    ok()
+    ;(kind === 'requestText' ? raw : fetchFn).mockResolvedValueOnce(kind === 'requestText' ? { _data: undefined, headers: new Headers() } : {})
     await requests[kind]('/api/guide')
-    expect((kind === 'requestText' ? raw : fetchFn).mock.calls[1]![1].headers).toEqual({ Authorization: 'Bearer link-token-0123456789' })
-    expect([...kept]).toEqual([['conductor.workbenchToken', 'link-token-0123456789']])
+    expect((kind === 'requestText' ? raw : fetchFn).mock.calls[0]![1].headers).toEqual({ Authorization: 'Bearer link-token-0123456789' })
+    expect(kept.size).toBe(0)
+    const { reply, refuse } = held()
+    send(kind, reply)
+    const out = requests[kind]('/api/guide').catch((e: unknown) => e)
+    refuse()
+    expect(await out).toMatchObject({ status: 401 })
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(kept.size).toBe(0)
+    expect(admin.needsToken.value).toBe(false)
   })
 
   it('of a token of the caller\'s own never asks for the workbench token, even when it is the one held', async () => {
