@@ -44,6 +44,22 @@ func TestRulesClassesVersionFour(t *testing.T) {
 	if c := Class("link_read", "checks"); c != ClassDerived {
 		t.Errorf("Class(link_read, checks) = %q", c)
 	}
+	// A publication's (PR-5): what was prepared immutable, its send's
+	// record scalar, every column classed but its rev.
+	immutable := []string{"id", "ticket_id", "target", "target_kind", "target_url", "target_ref", "target_node_id", "target_space_id", "instance", "marker",
+		"body", "post_sha256", "parts", "close_issue", "created_at", "created_by", "fingerprint"}
+	for _, col := range columnsOf(t, s.db, "publications") {
+		want := ClassScalar
+		switch {
+		case col == "rev":
+			continue
+		case slices.Contains(immutable, col):
+			want = ClassImmutable
+		}
+		if c := Class(EntityPublication, col); c != want {
+			t.Errorf("Class(publication, %s) = %q, want %q", col, c, want)
+		}
+	}
 	// Every column of tickets is classed, closed_on among them.
 	for _, col := range columnsOf(t, s.db, "tickets") {
 		if col == "rev" || col == "updated_at" {
@@ -217,6 +233,9 @@ var mainReplyPaths = []string{
 var rowReplyParts = []string{
 	"owners", "externalRead", "linkReads", "closedOn", "close.mergedWhy", "close.met.merged",
 	"source", "externalId", "externalUrl", "externalSnapshot", "authority", "close.requires[]", "close.missing[]",
+	// PR-5: the newest publications and the count of older ones that need
+	// a person.
+	"publications", "publicationsNeedYou",
 }
 
 // replyPaths is every JSON key path of the type as encoding/json writes
@@ -277,7 +296,8 @@ func replyPaths(t reflect.Type) []string {
 // native, and merged out of the policy's requirements.
 func mainOf(v map[string]any) map[string]any {
 	out := maps.Clone(v)
-	for _, k := range []string{"owners", "externalRead", "linkReads", "closedOn", "externalId", "externalUrl", "externalSnapshot", "authority"} {
+	for _, k := range []string{"owners", "externalRead", "linkReads", "closedOn", "externalId", "externalUrl", "externalSnapshot", "authority", "publications",
+		"publicationsNeedYou"} {
 		delete(out, k)
 	}
 	out["source"] = TrackerNative
@@ -414,6 +434,7 @@ func TestTicketReplyBound(t *testing.T) {
 	if _, err := s.db.Exec("UPDATE link_reads SET read_at = ?", stamp(time.Date(1700, 1, 1, 0, 0, 0, 1, time.UTC))); err != nil {
 		t.Fatal(err)
 	}
+	worstPublications(t, s, key, identity)
 	v, err := s.Ticket(ctx, key)
 	if err != nil {
 		t.Fatal(err)
@@ -446,14 +467,14 @@ func TestTicketReplyBound(t *testing.T) {
 			continue
 		}
 		if !slices.ContainsFunc(rowReplyParts, func(part string) bool {
-			return p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}")
+			return p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}") || strings.HasPrefix(p, part+"[]")
 		}) {
 			t.Errorf("%s is a part of the ticket's read that neither main's measure nor this row's holds", p)
 		}
 	}
 	for _, part := range rowReplyParts {
 		for _, p := range replyPaths(reflect.TypeFor[TicketView]()) {
-			if (p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}")) && !filled(tree, splitPath(p)) {
+			if (p == part || strings.HasPrefix(p, part+".") || strings.HasPrefix(p, part+"{}") || strings.HasPrefix(p, part+"[]")) && !filled(tree, splitPath(p)) {
 				t.Errorf("the read measured leaves %s empty", p)
 			}
 		}
@@ -513,6 +534,34 @@ func TestTicketReplyBound(t *testing.T) {
 		}
 		if err := s.RecordRead(ctx, rc.ID, prRead("PR_1", 9, "merged")); err != nil {
 			t.Errorf("%s: the read it changes is refused: %v", c.name, err)
+		}
+	}
+}
+
+// worstPublications gives the ticket with the key (linked to identity)
+// MaxTicketPublications+1 publications, each with every field at its
+// bound and every text at its escaped worst (another instance's, so each
+// is restored and needs a person), the read's newest ten and one older.
+func worstPublications(t *testing.T, s *Store, key, identity string) {
+	t.Helper()
+	// The target is the linked item as the store holds it (its node, its
+	// host, its kind: the worst snapshot's pull request); the close at its
+	// longest is written with the rest.
+	node, host := identity[strings.LastIndexByte(identity, ':')+1:], identity[strings.IndexByte(identity, ':')+1:strings.LastIndexByte(identity, ':')]
+	target := PublicationTarget{NodeID: node, SpaceID: "4000001", Kind: ExternalChange, URL: "https://" + host + "/o/r/pull/1", Ref: "o/r#1"}
+	page := "https://github.com/o/r/issues/" + strings.Repeat("9", MaxExternalURL-len("https://github.com/o/r/issues/"))
+	for i := 0; i <= MaxTicketPublications; i++ {
+		rc, err := s.PreparePublication(context.Background(), testOp(fmt.Sprint("worst", i)), PublicationArgs{Key: key, Target: TargetLinked, Body: "b",
+			Parts: PublicationParts}, target, func(id string) string { return id + strings.Repeat(" ", (MaxPublicationMarker-IDLen)/3) })
+		want(t, rc, err, StatusDone, "")
+		at := stamp(day0.Add(time.Duration(i)*time.Second + time.Nanosecond))
+		if _, err := s.db.Exec(`UPDATE publications SET close_issue = 'not_planned', target = ?, target_url = ?, target_ref = ?, target_space_id = ?, instance = 'another', state = ?, tries = ?,
+			attempt = ?, find_since = ?, sent_as_id = ?, sent_as_login = ?, remote_id = ?, remote_url = ?, close_state = ?, close_tries = ?, close_error = ?, error = ?,
+			sending_at = ?, sent_at = ?, sent_by = ?, created_at = ?, created_by = ?, rev = ? WHERE id = ?`,
+			"link:"+strings.Repeat("f", IDLen), page, worst(MaxPublicationRef), worst(MaxRemoteID), PublicationUnconfirmed, MaxPublicationTries, MaxPublicationTries,
+			at, worst(MaxRemoteID), worst(MaxSnapshotLogin), worst(MaxRemoteID), page, CloseClosing, MaxPublicationCloseTries, worstWords(MaxReadError),
+			worstWords(MaxReadError), at, at, worstWords(MaxByName), at, worstWords(MaxByName), int64(1)<<62, rc.ID); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
