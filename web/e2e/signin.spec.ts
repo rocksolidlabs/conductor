@@ -88,6 +88,25 @@ test('sign in, the code, signed in and sign out, through a provider’s replies'
   await page.unroute('**/api/capabilities')
 })
 
+test('a code’s page is linked, its href the text sent, only where the browser writes the address as given', async ({ page }) => {
+  await withIdentity(page)
+  for (const c of [
+    { url: 'https://id.example.com/device?x=1', linked: true },
+    // A dot segment, which the browser would write without.
+    { url: 'https://id.example.com/a/../device', linked: false },
+  ]) {
+    await page.route('**/api/signin', (route) => route.fulfill({ json: { supported: true, state: 'code', code: 'WDJB-MJHT', url: c.url } }))
+    await page.goto('/settings')
+    const card = page.locator('[data-signin-card]')
+    // The code and its link are drawn together: once the code shows, the link's absence is judged.
+    await expect(card.locator('[data-signin-group]')).toHaveText(['WDJB', 'MJHT'])
+    if (c.linked) await expect(card.locator('[data-signin-open]')).toHaveAttribute('href', c.url)
+    else await expect(card.locator('[data-signin-open]')).toHaveCount(0)
+    await page.unroute('**/api/signin')
+  }
+  await page.unroute('**/api/capabilities')
+})
+
 for (const size of [
   { width: 390, height: 844 },
   { width: 1440, height: 900 },

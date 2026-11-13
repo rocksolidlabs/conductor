@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createRenderer, defineComponent, nextTick, ref } from 'vue'
+import { createRenderer, defineComponent, nextTick, ref, watch } from 'vue'
 import {
+  actNotTaken,
   asSignIn,
   codeGroups,
   useSignIn,
   SIGNIN_DEADLINE_MS,
   SIGNIN_EVERY_MS,
   SIGNIN_FIRST_MS,
-  SIGNIN_NOT_KNOWN,
   SIGNIN_READING,
   SIGNIN_UNAVAILABLE,
   SignInPoll,
@@ -50,13 +50,10 @@ function held() {
   return { call, asks, methods: () => asks.map((a) => a.method) }
 }
 
-/** A card's poll: shown, visible, with a token and the identity capability unless told otherwise; both clocks the fake Date's unless given. */
-function card(
-  call: (m: SignInMethod, s: AbortSignal) => Promise<unknown>,
-  opts: { identity?: boolean; token?: string; now?: () => number; steady?: () => number } = {},
-) {
+/** A card's poll: shown, visible, with a token and the identity capability unless told otherwise; its clock the fake Date's unless given. */
+function card(call: (m: SignInMethod, s: AbortSignal) => Promise<unknown>, opts: { identity?: boolean; token?: string; now?: () => number } = {}) {
   const refs = { view: ref<SignInView | null>(null), error: ref(''), note: ref(''), busy: ref(false) }
-  const poll = new SignInPoll(call, refs, undefined, opts.now ?? (() => Date.now()), opts.steady ?? (() => Date.now()))
+  const poll = new SignInPoll(call, refs, undefined, opts.now ?? (() => Date.now()))
   poll.token(opts.token ?? 'workbench-token')
   poll.identity(opts.identity ?? true)
   poll.show(true)
@@ -245,9 +242,9 @@ describe('one request on its way, each with an end', () => {
     expect(h.methods()).toEqual(['GET', 'GET', 'GET'])
   })
 
-  it('an act never answered is said as not known, busy cleared, and the card reads at once', async () => {
+  it('an act held past its deadline is not known: no act before the read that follows, while it is on its way or after it fails; one POST in all', async () => {
     const h = held()
-    const { poll, error, busy } = card(h.call)
+    const { poll, error, note, busy } = card(h.call)
     h.asks[0]!.answer(signedOut)
     await vi.advanceTimersByTimeAsync(0)
     const begun = poll.act('POST')
@@ -255,8 +252,20 @@ describe('one request on its way, each with an end', () => {
     await begun
     expect(h.asks[1]!.signal.aborted).toBe(true)
     expect(busy.value).toBe(false)
-    expect(error.value).toBe(SIGNIN_NOT_KNOWN)
+    expect(note.value).toBe(SIGNIN_READING)
+    expect(error.value).toBe('')
+    await poll.act('POST')
+    expect(h.methods()).toEqual(['GET', 'POST'])
+    // The read that follows, at the short wait: an act while it is on its way neither aborts it nor is made.
+    await vi.advanceTimersByTimeAsync(SIGNIN_FIRST_MS)
     expect(h.methods()).toEqual(['GET', 'POST', 'GET'])
+    await poll.act('POST')
+    expect(h.asks[2]!.signal.aborted).toBe(false)
+    h.asks[2]!.refuse({ status: 0, code: 'network' })
+    await vi.advanceTimersByTimeAsync(0)
+    await poll.act('POST')
+    expect(h.methods()).toEqual(['GET', 'POST', 'GET'])
+    expect(note.value).toBe(SIGNIN_READING)
   })
 
   it('a token change during an act aborts its request, and nothing of its reply is shown', async () => {
@@ -281,7 +290,7 @@ describe('one request on its way, each with an end', () => {
   })
 
   it('an act’s error is gone with the next reply that shows a state', async () => {
-    const r = route({ GET: [signedIn], DELETE: [{ status: 503 }] })
+    const r = route({ GET: [signedIn], DELETE: [{ status: 503, code: 'signin_unavailable' }] })
     const { poll, view, error } = card(r.call)
     await vi.advanceTimersByTimeAsync(0)
     await poll.act('DELETE')
@@ -293,8 +302,8 @@ describe('one request on its way, each with an end', () => {
 })
 
 describe('begin and sign out', () => {
-  it('show what the provider answers; one it did not answer is said in the card, what was shown kept', async () => {
-    const r = route({ GET: [signedIn], DELETE: [{ status: 503 }, signedOut] })
+  it('show what the provider answers; one not taken is said in the card, what was shown kept', async () => {
+    const r = route({ GET: [signedIn], DELETE: [{ status: 503, code: 'signin_unavailable' }, signedOut] })
     const { poll, view, error, busy } = card(r.call)
     await vi.advanceTimersByTimeAsync(0)
     const out = poll.act('DELETE')
@@ -346,6 +355,70 @@ describe('begin and sign out', () => {
     expect(acts()).toBe(2)
   })
 
+  it('an act that fails with no answer, a 5xx other than signin_unavailable, any other code or a reply the card cannot read is not known: no act until a read shows a state', async () => {
+    for (const failure of [
+      { status: 0, code: 'network' },
+      { status: 502 },
+      { status: 504 },
+      { status: 500, code: 'internal' },
+      { status: 503 },
+      { status: 503, code: 'signin_status_unknown' },
+      { status: 413, code: 'bound' },
+      { supported: true, state: 'pending' },
+    ]) {
+      const r = route({ GET: [signedOut], POST: [failure, starting] })
+      const { poll, note, error } = card(r.call)
+      const posts = () => r.calls.filter((c) => c.method === 'POST').length
+      await vi.advanceTimersByTimeAsync(0)
+      await poll.act('POST')
+      expect(note.value, JSON.stringify(failure)).toBe(SIGNIN_READING)
+      expect(error.value, JSON.stringify(failure)).toBe('')
+      await poll.act('POST')
+      expect(posts(), JSON.stringify(failure)).toBe(1)
+      await vi.advanceTimersByTimeAsync(SIGNIN_FIRST_MS)
+      expect(note.value, JSON.stringify(failure)).toBe('')
+      await poll.act('POST')
+      expect(posts(), JSON.stringify(failure)).toBe(2)
+      poll.show(false)
+    }
+  })
+
+  it('an act the server says was not taken leaves it offered: 503 signin_unavailable, and the refusals made before the provider is asked', async () => {
+    for (const failure of [{ status: 503, code: 'signin_unavailable' }, { status: 400 }, { status: 401 }, { status: 403 }, { status: 429 }]) {
+      const r = route({ GET: [signedOut], POST: [failure, starting] })
+      const { poll, note } = card(r.call)
+      await vi.advanceTimersByTimeAsync(0)
+      await poll.act('POST')
+      expect(note.value, JSON.stringify(failure)).toBe('')
+      await poll.act('POST')
+      expect(r.calls.filter((c) => c.method === 'POST'), JSON.stringify(failure)).toHaveLength(2)
+      poll.show(false)
+    }
+    for (const status of [400, 401, 403, 404, 429]) expect(actNotTaken({ status }), String(status)).toBe(true)
+    for (const e of [{ status: 503 }, { status: 503, code: 'signin_status_unknown' }, { status: 0 }, new Error('signin-deadline'), null]) {
+      expect(actNotTaken(e), JSON.stringify(e)).toBe(false)
+    }
+  })
+
+  it('the reads after a not-known act failing three times: still no act, still the short wait', async () => {
+    const r = route({ GET: [signedOut, { status: 503 }, { status: 0, code: 'network' }, { status: 502 }, signedOut], POST: [{ status: 0, code: 'network' }, starting] })
+    const { poll, note } = card(r.call)
+    const posts = () => r.calls.filter((c) => c.method === 'POST').length
+    await vi.advanceTimersByTimeAsync(0)
+    await poll.act('POST')
+    await vi.advanceTimersByTimeAsync(SIGNIN_FIRST_MS + 4000 + 8000)
+    expect(r.gets()).toEqual([0, SIGNIN_FIRST_MS, SIGNIN_FIRST_MS + 4000, SIGNIN_FIRST_MS + 4000 + 8000])
+    expect(note.value).toBe(SIGNIN_READING)
+    await poll.act('POST')
+    expect(posts()).toBe(1)
+    // The next read sooner than the schedule's 30 s; it shows a state, and the act is offered again.
+    await vi.advanceTimersByTimeAsync(16_000)
+    expect(r.gets()).toHaveLength(5)
+    expect(note.value).toBe('')
+    await poll.act('POST')
+    expect(posts()).toBe(2)
+  })
+
   it('a read made before a begin never overwrites what the begin answered', async () => {
     const h = held()
     const { poll, view } = card(h.call)
@@ -382,64 +455,53 @@ describe('a code’s end', () => {
     expect(view.value).toMatchObject({ code: '', url: '', ended: true })
   })
 
-  it('a code that arrives ended is not shown', async () => {
+  it('a code whose expires is past at first sight is never shown', async () => {
     vi.setSystemTime(Date.parse('2026-11-12T09:15:00Z'))
     const r = route({ GET: [code] })
     const { view } = card(r.call)
+    const codes: string[] = []
+    watch(view, (v) => codes.push(v?.code ?? ''), { flush: 'sync' })
     await vi.advanceTimersByTimeAsync(0)
     expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
+    expect(codes).not.toContain('WDJB-MJHT')
+  })
+
+  it('a code with no expires is shown, however late', async () => {
+    vi.setSystemTime(Date.parse('2030-01-01T00:00:00Z'))
+    const { view } = card(route({ GET: [{ ...code, expires: undefined }] }).call)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(view.value).toMatchObject({ state: 'code', code: 'WDJB-MJHT', url: 'https://id.example.com/device', ended: false })
   })
 })
 
-describe('a code’s end, by both clocks', () => {
-  /** The wall clock and the steady clock, each set by the test alone. */
-  function clocks() {
-    const at = { wall: 0, steady: 0 }
-    return { at, now: () => at.wall, steady: () => at.steady }
-  }
+describe('a code’s end, by the wall clock at every look', () => {
   const sixty = { ...code, expires: new Date(60_000).toISOString() }
 
-  it('a code ending at 60 s has ended once the steady clock passes 60 s, the wall clock standing still', async () => {
-    const k = clocks()
-    const { poll, view } = card(route({ GET: [sixty] }).call, k)
+  it('the wall clock past its expires, the timers standing still: the next read failing shows it ended', async () => {
+    const at = { wall: 0 }
+    const r = route({ GET: [sixty, { status: 503 }] })
+    const { poll, view } = card(r.call, { now: () => at.wall })
     await vi.advanceTimersByTimeAsync(0)
-    k.at.steady = 59_999
-    poll.visible(false)
-    poll.visible(true)
     expect(view.value).toMatchObject({ code: 'WDJB-MJHT', ended: false })
-    k.at.steady = 60_000
-    poll.visible(false)
-    poll.visible(true)
+    at.wall = 60_000
+    poll.read()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(r.gets()).toHaveLength(2)
     expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
   })
 
-  it('the wall clock past its end, the steady clock and the timers still: a failed read shows it ended, and it stays ended', async () => {
-    const k = clocks()
-    const r = route({ GET: [sixty, { status: 503 }, sixty, signedIn, sixty, { ...sixty, code: 'ABCD-EFGH' }] })
-    const { poll, view } = card(r.call, k)
-    const readNow = async () => {
-      poll.read()
-      await vi.advanceTimersByTimeAsync(0)
-    }
+  it('the wall clock past its expires while the page was hidden: shown again, it has ended before any read answers', async () => {
+    const at = { wall: 0 }
+    const h = held()
+    const { poll, view } = card(h.call, { now: () => at.wall })
+    h.asks[0]!.answer(sixty)
     await vi.advanceTimersByTimeAsync(0)
     expect(view.value).toMatchObject({ code: 'WDJB-MJHT', ended: false })
-    k.at.wall = 60_000
-    await readNow()
-    expect(r.gets()).toHaveLength(2)
+    poll.visible(false)
+    at.wall = 60_000
+    poll.visible(true)
     expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
-    // The wall clock set back to 30 s, the same status read again.
-    k.at.wall = 30_000
-    await readNow()
-    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
-    // Another state, then the same pair again.
-    await readNow()
-    expect(view.value?.state).toBe('signed-in')
-    await readNow()
-    expect(view.value).toMatchObject({ state: 'code', code: '', url: '', ended: true })
-    // A different code is judged afresh.
-    await readNow()
-    expect(r.gets()).toHaveLength(6)
-    expect(view.value).toMatchObject({ state: 'code', code: 'ABCD-EFGH', url: 'https://id.example.com/device', ended: false })
+    expect(h.asks).toHaveLength(2)
   })
 })
 
@@ -523,7 +585,8 @@ describe('the wiring', () => {
     const doc = page()
     const token = ref('workbench-token')
     const identity = ref(true)
-    const unwire = wireSignIn(new SignInPoll(r.call, refs), doc, token, identity)
+    const poll = new SignInPoll(r.call, refs)
+    const unwire = wireSignIn(poll, doc, token, identity)
     await vi.advanceTimersByTimeAsync(0)
     expect(r.gets()).toEqual([0])
     doc.set('hidden')
@@ -545,9 +608,12 @@ describe('the wiring', () => {
     unwire()
     expect(doc.listeners.size).toBe(0)
     expect(refs.view.value).toBeNull()
+    // Its watchers are stopped: the poll is told of no change after it.
+    const told = [vi.spyOn(poll, 'token'), vi.spyOn(poll, 'identity')]
     token.value = 'a-third-token'
     identity.value = false
     await nextTick()
+    for (const spy of told) expect(spy).not.toHaveBeenCalled()
     doc.set('hidden')
     doc.set('visible')
     await vi.advanceTimersByTimeAsync(10 * SIGNIN_EVERY_MS)
@@ -605,9 +671,12 @@ describe('a reply as the card keeps it', () => {
       'https://id.example:0443/x',
       'https://id.example/x#token=abc',
       'https://id.example/x#a',
-      // The server refuses the empty authority; it takes the other three, which a browser writes otherwise.
+      // The server refuses these too: an empty authority, an empty port, a scheme not in lower case.
       'https:///id.example/device',
       'https://id.example:/x',
+      'HTTPS://id.example/x',
+      'Https://id.example/x',
+      // The server takes these two, which a browser writes otherwise.
       'https://id.example/a/../b',
       'https://id.example/%2e%2e/b',
       // No `//` authority, no host name, a bad port, user information.

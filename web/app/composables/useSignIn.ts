@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref, type WatchSource } from 'vue'
 import { realAfter, withDeadline, type After } from '../utils/capacity'
-import { MAX_SIGNIN_CODE, MAX_SIGNIN_URL, MAX_SIGNIN_WHO, MAX_SIGNIN_WHY, SIGNIN_STATUS_UNKNOWN_CODE, type SignInState } from '../utils/protocol'
+import { MAX_SIGNIN_CODE, MAX_SIGNIN_URL, MAX_SIGNIN_WHO, MAX_SIGNIN_WHY, SIGNIN_UNAVAILABLE_CODE, type SignInState } from '../utils/protocol'
 
 /**
  * The identity provider's sign-in, read, begun and ended from Settings (GET, POST and DELETE /api/signin, docs/protocol.md). The
@@ -41,8 +41,9 @@ function line(v: unknown, max: number): string {
 /**
  * The page the card links to, `u` itself, or '' for no link. The server's rule for `url` (ext's signInURL, docs/protocol.md): 1 to
  * MAX_SIGNIN_URL bytes of printable ASCII with no space, quote (" ' `), backslash, angle bracket or '#', every '%' before two hex
- * digits; `https://`, a host that is a name (labels of a-z, 0-9 and '-', none empty, the last beginning with a letter), a port of
- * 1 to 65535 without leading zeros that is not 443 if any, then a path. Beside it, the browser writes the address as given
+ * digits; `https://` in lower case, a host that is a name (labels of a-z, 0-9 and '-', none empty, the last beginning with a letter),
+ * after a ':' a port of 1 to 65535 without leading zeros that is not 443 (a ':' with no port is refused), then a path. Beside it, the
+ * browser writes the address as given
  * (`new URL(u).href === u`) and its origin is not the app's own.
  */
 export function signInPage(u: unknown, origin = appOrigin()): string {
@@ -91,12 +92,20 @@ export type SignInMethod = 'GET' | 'POST' | 'DELETE'
 const statusOf = (e: unknown) => (e as { status?: number } | null)?.status ?? 0
 const codeOf = (e: unknown) => (e as { code?: string } | null)?.code ?? ''
 
-/** What the card says of a begin or a sign-out the provider was not asked or refused (503 signin_unavailable). */
-export const SIGNIN_UNAVAILABLE = 'The identity provider did not answer. Try again in a moment.'
-/** What the card says of a begin or a sign-out the server did not answer within SIGNIN_DEADLINE_MS: it reads the sign-in at once. */
-export const SIGNIN_NOT_KNOWN = 'The server did not answer in time, so whether that was done is not known. Reading the sign-in again.'
-/** What the card says of a begin or a sign-out that may have been taken, its status not known yet (503 signin_status_unknown): no act is offered until a read shows a state. */
+/** What the card says of a begin or a sign-out that was not taken (actNotTaken), 401 and 404 aside. */
+export const SIGNIN_UNAVAILABLE = 'That was not done. Try again in a moment.'
+/** What the card says of a begin or a sign-out whose outcome is not known (anything actNotTaken does not take): no act is offered until a read shows a state. */
 export const SIGNIN_READING = 'Reading the sign-in…'
+
+/**
+ * Whether a failed begin or sign-out says it was not taken: the server's 503 signin_unavailable, or a refusal made before the
+ * provider is asked (400, 401, 403, 404, 429). The one place an act's failure is sorted: anything else (the card's deadline, a
+ * request that failed with no answer, another 5xx, a reply the card cannot read, 503 signin_status_unknown) leaves it not known.
+ */
+export function actNotTaken(e: unknown): boolean {
+  const s = statusOf(e)
+  return [400, 401, 403, 404, 429].includes(s) || (s === 503 && codeOf(e) === SIGNIN_UNAVAILABLE_CODE)
+}
 const DEADLINE = 'signin-deadline'
 /** The longest wait a timer takes (2^31 - 1 ms): a code's end further off is looked at again then. */
 const MAX_TIMER = 2 ** 31 - 1
@@ -113,7 +122,8 @@ export interface SignInRefs {
  * The sign-in's requests for one card. `show`, `visible`, `identity` and `token` say what the page knows; the route is read while all
  * hold, and nothing is read or scheduled otherwise. One request is on its way at a time, each aborted at SIGNIN_DEADLINE_MS: a read
  * asked for meanwhile is owed and made once that request settles (dropped if the card is not active then), and an act aborts a read
- * on its way, so its reply is always its own. A code's end is judged by both clocks, `now` (the wall clock) and `steady`.
+ * on its way, so its reply is always its own. No act is made while an act's outcome is not known, so a read on its way to settle one
+ * is never aborted by an act. A code's end is judged by the wall clock, `now`.
  */
 export class SignInPoll {
   readonly view: Ref<SignInView | null>
@@ -131,17 +141,12 @@ export class SignInPoll {
   private owed = false
   /** The last reply's view, before its code's end is judged. */
   private last: SignInView | null = null
-  /** The code and expires last seen: the steady clock and the time left by the wall clock when first seen. */
-  private pair: { key: string; steady: number; left: number } | null = null
-  /** The last pair judged ended: it stays ended. */
-  private endedKey = ''
 
   constructor(
     private readonly call: (method: SignInMethod, signal: AbortSignal) => Promise<unknown>,
     refs: SignInRefs,
     private readonly after: After = realAfter,
     private readonly now: () => number = () => Date.now(),
-    private readonly steady: () => number = () => performance.now(),
   ) {
     this.view = refs.view
     this.error = refs.error
@@ -226,20 +231,19 @@ export class SignInPoll {
     if (this.sent !== ctl) return
     this.sent = null
     if (method !== 'GET') this.busy.value = false
-    if (!err) {
-      this.last = asSignIn(body)
+    const v = err ? null : asSignIn(body)
+    if (!err && (v || method === 'GET')) {
+      this.last = v
       this.error.value = ''
       this.note.value = ''
     } else if (statusOf(err) === 404) this.last = null
-    else if (method === 'GET' || statusOf(err) === 401) {
+    else if (method === 'GET') {
       // A read that failed or met its deadline keeps what is shown and follows the schedule.
-    } else if ((err as Error | null)?.message === DEADLINE) {
-      this.error.value = SIGNIN_NOT_KNOWN
-      this.owed = true
-    } else if (codeOf(err) === SIGNIN_STATUS_UNKNOWN_CODE) {
+    } else if (!actNotTaken(err)) {
+      // An act's reply the card cannot read is not known too.
       this.note.value = SIGNIN_READING
       this.error.value = ''
-    } else this.error.value = SIGNIN_UNAVAILABLE
+    } else if (statusOf(err) !== 401) this.error.value = SIGNIN_UNAVAILABLE
     this.judge()
     // The read owed is spent by the one read it starts, or dropped when the card is not active.
     const owed = this.owed
@@ -249,35 +253,25 @@ export class SignInPoll {
   }
 
   /**
-   * Shows the last reply, its code judged: the first sight of a (code, expires) pair notes both clocks once, and the code has ended
-   * when the wall clock reaches `expires` or the steady clock has passed the time left at first sight. The last pair ended stays
-   * ended whatever arrives between; only a different pair is judged afresh. Called on every reply, when the page is shown, and by
-   * its own timer, re-armed from what is left.
+   * Shows the last reply, its code judged: it has ended once the wall clock reaches its `expires`. Called on every reply outcome,
+   * when the page is shown, and by its own timer, armed from what is left; nothing is kept from one look to the next.
    */
   private judge() {
     this.ending?.()
     this.ending = undefined
     const v = this.last
-    if (v?.state !== 'code' || !v.expires) {
-      this.view.value = v
+    const left = v?.state === 'code' && v.expires ? Date.parse(v.expires) - this.now() : Infinity
+    if (left <= 0) {
+      this.view.value = { ...v!, code: '', url: '', ended: true }
       return
     }
-    const key = `${v.code} ${v.expires}`
-    const ends = Date.parse(v.expires)
-    if (key !== this.endedKey) {
-      if (this.pair?.key !== key) this.pair = { key, steady: this.steady(), left: ends - this.now() }
-      const left = Math.min(ends - this.now(), this.pair.left - (this.steady() - this.pair.steady))
-      if (left > 0) {
-        this.view.value = v
-        this.ending = this.after(Math.min(left, MAX_TIMER), () => {
-          this.ending = undefined
-          this.judge()
-        })
-        return
-      }
-      this.endedKey = key
+    this.view.value = v
+    if (left !== Infinity) {
+      this.ending = this.after(Math.min(left, MAX_TIMER), () => {
+        this.ending = undefined
+        this.judge()
+      })
     }
-    this.view.value = { ...v, code: '', url: '', ended: true }
   }
 
   /** After a reply: the next read, sooner while a person waits on the sign-in or its status is being read. */
@@ -307,8 +301,6 @@ export class SignInPoll {
     this.owed = false
     this.stop()
     this.last = null
-    this.pair = null
-    this.endedKey = ''
     this.judge()
     this.wait = SIGNIN_FIRST_MS
     this.error.value = ''
@@ -339,8 +331,8 @@ export function wireSignIn(poll: SignInPoll, doc: SignInDocument, token: WatchSo
 }
 
 /**
- * The Settings card's sign-in: `view` (null while there is none to show), `error` (the card's words for a begin or a sign-out the
- * provider did not answer), `note` (its status being read), `busy`, `begin` and `signOut`, tied to the card's lifetime (wireSignIn).
+ * The Settings card's sign-in: `view` (null while there is none to show), `error` (the card's words for a begin or a sign-out that
+ * was not taken), `note` (its status being read), `busy`, `begin` and `signOut`, tied to the card's lifetime (wireSignIn).
  */
 export function useSignIn() {
   const refs: SignInRefs = { view: ref<SignInView | null>(null), error: ref(''), note: ref(''), busy: ref(false) }
