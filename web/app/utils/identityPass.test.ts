@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { MAX_PASS, decideRedirect, passFromFragment, shownName, takeCredentials } from './identityPass'
 
 // The pass in the fragment (docs/plans/decide-grant.md, "web/app"): what is taken, what is left in the address, and where the
@@ -21,9 +22,16 @@ describe('passFromFragment', () => {
 })
 
 describe('takeCredentials', () => {
-  it('takes both keys out of the fragment and keeps the rest', () => {
-    expect(takeCredentials(`http://h.test/decide/dr-7#pass=p.1&x=2&token=${TOKEN}`)).toEqual({ token: TOKEN, pass: 'p.1', href: 'http://h.test/decide/dr-7#x=2' })
+  it('takes both keys and drops the whole fragment that carries them', () => {
+    expect(takeCredentials(`http://h.test/decide/dr-7#pass=p.1&x=2&token=${TOKEN}`)).toEqual({ token: TOKEN, pass: 'p.1', href: 'http://h.test/decide/dr-7' })
     expect(takeCredentials('http://h.test/decide#pass=p.1')).toEqual({ token: '', pass: 'p.1', href: 'http://h.test/decide' })
+  })
+  it('reads a key percent-escaped as the browser reads it, and drops a fragment it cannot read', () => {
+    expect(takeCredentials('http://h.test/decide#%70ass=p.1&%E0')).toEqual({ token: '', pass: 'p.1', href: 'http://h.test/decide' })
+    expect(takeCredentials(`http://h.test/#%74oken=${TOKEN}&%`)).toEqual({ token: TOKEN, pass: '', href: 'http://h.test/' })
+    expect(takeCredentials('http://h.test/decide#x%3D1%26%2570ass=p.1').href).toBe('http://h.test/decide')
+    expect(takeCredentials('http://h.test/decide#x=%E0').href).toBe('http://h.test/decide')
+    expect(takeCredentials('http://h.test/files#x=a%20b').href).toBe('http://h.test/files#x=a%20b')
   })
   it('drops a refused value from the address too', () => {
     expect(takeCredentials('http://h.test/decide#pass=a%2Fb&token=short')).toEqual({ token: '', pass: '', href: 'http://h.test/decide' })
@@ -55,14 +63,54 @@ describe('decideRedirect', () => {
   it('sends nowhere with neither', () => {
     for (const p of ['/', '/decide', '/decide/dr-7', '/decisions?item=decision:dr-7']) expect(decideRedirect(p, false, false)).toBeNull()
   })
-  it("judges the first navigation's fragment as held, and takes the keys off the address", () => {
+  it("judges the first navigation's fragment as held, and takes the whole fragment off the address", () => {
     expect(decideRedirect('/decide/dr-7#pass=p.1', false, false)).toBe('/decide/dr-7')
-    expect(decideRedirect('/decisions?item=decision:dr-7#pass=p.1&x=1', false, false)).toBe('/decide/dr-7#x=1')
+    expect(decideRedirect('/decisions?item=decision:dr-7#pass=p.1&x=1', false, false)).toBe('/decide/dr-7')
     expect(decideRedirect(`/decide/dr-7#pass=p.1&token=${TOKEN}`, false, false)).toBe('/decisions?item=decision:dr-7')
     expect(decideRedirect(`/wall#token=${TOKEN}`, false, false)).toBe('/wall')
-    expect(decideRedirect('/wall#token=short&x=1', false, false)).toBe('/wall#x=1')
+    expect(decideRedirect('/wall#token=short&x=1', false, false)).toBe('/wall')
+    expect(decideRedirect('/wall?q=1#%2570ass=p.1&%25E0', false, false)).toBe('/wall?q=1')
     expect(decideRedirect('/files#section', false, false)).toBeNull()
   })
+})
+
+// The first address replayed as the app's router replays it: the fragment plugin first (it runs before Nuxt's router), then a real
+// router's first navigation from the address it left, through the decide middleware's rule, as `createWebHistory` reads it
+// (path, query and the fragment as the browser holds them).
+describe('the first address through a real router', () => {
+  const PASS = 'secret-pass.7'
+  const SPELLINGS = (key: string, value: string) => [`${key}=${value}`, `%${key.charCodeAt(0).toString(16)}${key.slice(1)}=${value}`, `%${key.charCodeAt(0).toString(16)}${key.slice(1)}=${value}&%E0`, `%${key.charCodeAt(0).toString(16)}${key.slice(1)}=${value}&%`]
+  async function land(address: string, plugin: boolean) {
+    const taken = plugin ? takeCredentials('http://app.test' + address) : { token: '', pass: '', href: 'http://app.test' + address }
+    const u = new URL(taken.href)
+    const history = createMemoryHistory()
+    const router = createRouter({ history, routes: [{ path: '/:any(.*)*', component: { render: () => null } }] })
+    router.beforeEach((to) => decideRedirect(to.fullPath, !!taken.token, !!taken.pass) ?? true)
+    await router.push(u.pathname + u.search + u.hash)
+    const r = router.currentRoute.value
+    return { taken, held: [taken.href, r.fullPath, r.redirectedFrom?.fullPath ?? '', JSON.stringify(history.state), history.location].join(' ') }
+  }
+  const cases = [
+    ...SPELLINGS('pass', PASS).map((f) => ['/decide/dr-7', f, PASS]),
+    ...SPELLINGS('token', TOKEN).flatMap((f) => [['/', f, TOKEN], ['/wall', f, TOKEN]]),
+    ['/decide', 'pass=zz!not-shaped', 'zz!not-shaped'],
+    ['/decide', `pass=${PASS}&token=${TOKEN}`, PASS],
+    ['/decide', `token=${TOKEN}&%70ass=${PASS}&%E0`, TOKEN],
+  ]
+  for (const [path, fragment, value] of cases) {
+    it(`leaves no route, redirect or history state holding the credential of ${path}#${fragment}`, async () => {
+      const { taken, held } = await land(`${path}#${fragment}`, true)
+      expect(held).not.toContain(value)
+      expect(held).not.toContain(PASS)
+      expect(held).not.toContain(TOKEN)
+      if (value === PASS) expect(taken.pass).toBe(PASS)
+      if (value === TOKEN) expect(taken.token).toBe(TOKEN)
+    })
+    it(`routes ${path}#${fragment} to an address without it, the middleware alone`, async () => {
+      const { held } = await land(`${path}#${fragment}`, false)
+      expect(held.split(' ')[1]).not.toContain(value)
+    })
+  }
 })
 
 describe('shownName', () => {

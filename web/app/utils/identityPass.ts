@@ -15,24 +15,33 @@ export function passFromFragment(hash: string): string {
   return /^[A-Za-z0-9._-]{1,2048}$/.test(p) ? p : ''
 }
 
-/** The fragment with both credential keys taken out, the rest kept: '' or `#…`; one with neither key as it is. */
+/**
+ * The fragment as it may stay in an address: as it is when it holds neither credential key in any spelling, else none at all. Its
+ * keys are read as the browser's own parser reads them (percent-decoded), and again after each layer of escapes is taken off (the
+ * router writes `%` as `%25`); a fragment whose escapes cannot be taken off, or that still holds one after four, is not kept.
+ */
 function withoutCredentials(hash: string): string {
-  const params = new URLSearchParams(hash.replace(/^#/, ''))
-  if (!params.has('token') && !params.has('pass')) return hash
-  params.delete('token')
-  params.delete('pass')
-  const rest = params.toString()
-  return rest ? '#' + rest : ''
+  let s = hash.replace(/^#/, '')
+  for (let i = 0; i < 4; i++) {
+    for (const k of new URLSearchParams(s).keys()) if (k === 'token' || k === 'pass') return ''
+    if (!s.includes('%')) return hash
+    try {
+      s = decodeURIComponent(s)
+    } catch {
+      return ''
+    }
+  }
+  return ''
 }
 
 /**
- * The workbench token and the pass a URL's fragment carries (each '' when absent or refused), and the URL with both keys taken out of
- * its fragment whether or not their values were taken (the rest of the fragment kept).
+ * The workbench token and the pass a URL's fragment carries (each '' when absent or refused), and the URL with no fragment when it
+ * carries either key in any spelling, whether or not their values were taken.
  */
 export function takeCredentials(href: string): { token: string; pass: string; href: string } {
   const u = new URL(href)
   const hash = u.hash
-  u.hash = withoutCredentials(hash)
+  if (withoutCredentials(hash) !== hash) u.hash = ''
   return { token: tokenFromFragment(hash), pass: passFromFragment(hash), href: u.toString() }
 }
 
@@ -40,7 +49,7 @@ export function takeCredentials(href: string): { token: string; pass: string; hr
  * Where a navigation to `fullPath` goes, the decide middleware's rule (null: where it was going). A workbench token held (or in the
  * fragment) wins: `/decide/<did>` opens the operator's page of that decision, `/decide` the operator's decision page. A pass alone:
  * the operator's address of one decision opens it on the decide page, and every other path but the decide page's goes to `/decide`.
- * A fragment that carries either key is always taken off the address.
+ * A fragment that carries either key in any spelling, or that cannot be read, is always taken off the address whole.
  */
 export function decideRedirect(fullPath: string, hasToken: boolean, hasPass: boolean): string | null {
   const u = new URL(fullPath, 'http://app.invalid')
