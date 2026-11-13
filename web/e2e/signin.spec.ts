@@ -5,9 +5,7 @@ import type { Page } from '@playwright/test'
 // identity provider and is asked nothing; with the replies of a provider that offers a sign-in (page.route), sign in, the code,
 // signed in and sign out, the card beside the others and over none of them.
 
-/** The page's own schedule of reads while a sign-in starts or shows a code: the first 2 s after a reply (useSignIn, SIGNIN_FIRST_MS). */
-const FIRST_READ_MS = 2000
-/** Its read in every other state: every 30 s (SIGNIN_EVERY_MS). */
+/** The page's longest wait between its reads: every 30 s (useSignIn, SIGNIN_EVERY_MS); while a sign-in starts or shows a code, 2 s doubling to it. */
 const EVERY_MS = 30_000
 
 /** Answers GET /api/capabilities with a ready identity provider, as a build with one registered would. */
@@ -35,20 +33,23 @@ test('the card is absent on the plain e2e server, and nothing asks for the sign-
 })
 
 test('sign in, the code, signed in and sign out, through a provider’s replies', async ({ page }, testInfo) => {
-  // Two of the page's own reads at most are waited for (the code after starting, signed in after the code): each bounded by the
-  // longest wait of its schedule, with the steps' own bounds above them.
-  testInfo.setTimeout(testInfo.timeout + 2 * EVERY_MS)
+  // Two of the page's own reads are waited for (the code after starting, signed in after the code): each bounded by the longest
+  // wait of its schedule, with the steps' own bounds above them.
+  testInfo.setTimeout(testInfo.timeout + 2 * (EVERY_MS + 15_000))
   await withIdentity(page)
   const page1 = 'https://id.example.com/device'
   let status: Record<string, unknown> = { supported: true, state: 'signed-out' }
+  // The fake's gate: it stays starting until the spec has seen that state and lets it go on.
+  let started = false
   const calls: string[] = []
   await page.route('**/api/signin', async (route) => {
     const method = route.request().method()
     calls.push(method)
     if (method === 'POST') status = { supported: true, state: 'starting' }
-    // The provider's own goroutines give it a code once it has started: the page's next read shows it.
-    else if (method === 'GET' && status.state === 'starting') status = { supported: true, state: 'code', code: 'WDJB-MJHT', url: page1, expires: '2026-11-12T09:15:00Z' }
-    else if (method === 'DELETE') status = { supported: true, state: 'signed-out', why: 'Signed out from Settings.' }
+    // The provider's own goroutines give it a code once it has started: the page's next read shows it. The code ends in an hour.
+    else if (method === 'GET' && status.state === 'starting' && started) {
+      status = { supported: true, state: 'code', code: 'WDJB-MJHT', url: page1, expires: new Date(Date.now() + 3_600_000).toISOString() }
+    } else if (method === 'DELETE') status = { supported: true, state: 'signed-out', why: 'Signed out from Settings.' }
     await route.fulfill({ json: status })
   })
   await page.goto('/settings')
@@ -60,8 +61,9 @@ test('sign in, the code, signed in and sign out, through a provider’s replies'
   // The begin's own reply.
   await expect(card).toHaveAttribute('data-signin-state', 'starting')
   await expect(card.locator('[data-signin-starting]')).toBeVisible()
-  // The read the page makes on its own, FIRST_READ_MS after it.
-  await expect(card).toHaveAttribute('data-signin-state', 'code', { timeout: FIRST_READ_MS + 15_000 })
+  started = true
+  // One of the reads the page makes on its own: at most EVERY_MS after the last.
+  await expect(card).toHaveAttribute('data-signin-state', 'code', { timeout: EVERY_MS + 15_000 })
   await expect(card.locator('[data-signin-group]')).toHaveText(['WDJB', 'MJHT'])
   const open = card.locator('[data-signin-open]')
   await expect(open).toHaveAttribute('href', page1)
