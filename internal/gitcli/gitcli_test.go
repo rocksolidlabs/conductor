@@ -684,6 +684,27 @@ func TestRunTreeWritesIntoItsOwnFolderAndReadsTheStore(t *testing.T) {
 	}
 }
 
+// RunTree refuses a folder of objects that is not a folder as it starts
+// (one not there, a file, a link to a folder) with its own error, and
+// starts no git: with no git on the path the refusal is the same.
+func TestRunTreeRefusesAFolderOfObjectsThatIsNotThere(t *testing.T) {
+	dir, folder := t.TempDir(), t.TempDir()
+	file, link := filepath.Join(dir, "file"), filepath.Join(dir, "link")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{"not there": filepath.Join(dir, "gone"), "a file": file}
+	if err := os.Symlink(folder, link); err == nil {
+		cases["a link to a folder"] = link
+	}
+	t.Setenv("PATH", t.TempDir())
+	for name, objects := range cases {
+		if err := RunTree(context.Background(), dir, objects, nil, nil, io.Discard, "status"); !errors.Is(err, ErrNoObjects) {
+			t.Errorf("%s: %v, want ErrNoObjects", name, err)
+		}
+	}
+}
+
 // ChangedSince lists what HEAD's commits since a base changed: committed
 // and only committed, against the merge base, with a nested path relative
 // to the top; a base that moved on adds nothing of its own.

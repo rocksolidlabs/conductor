@@ -826,13 +826,15 @@ type TreeIndex struct {
 }
 
 // Objects is the folder beside the index where git writes every object
-// of a read in it (gitcli.RunTree): TreeRevision empties it as a read
-// starts, so it holds at most one read's objects, and Remove removes it.
+// of a read in it (gitcli.RunTree), its trees alone: TreeRevision empties
+// it as a read starts, so it holds at most one read's trees, and Remove
+// removes it.
 func (ix *TreeIndex) Objects() string { return ix.Path + ".objects" }
 
-// Remove removes the index, its lock and its folder of objects.
+// Remove removes the index, its lock, its list of paths and its folder of
+// objects.
 func (ix *TreeIndex) Remove() {
-	_, _, _ = os.Remove(ix.Path), os.Remove(ix.Path+".lock"), os.RemoveAll(ix.Objects())
+	_, _, _, _ = os.Remove(ix.Path), os.Remove(ix.Path+".lock"), os.Remove(ix.Path+".paths"), os.RemoveAll(ix.Objects())
 }
 
 // env is the environment of git in a read of t in ix: the reader's own
@@ -904,20 +906,26 @@ const maxTreeID = 1 << 10
 // cannot merge instead of failing (an entry an earlier read staged whose
 // file has changed again), so the index is the commit's entries again,
 // each keeping its stat data only where the entry is the commit's, and
-// nothing an earlier read staged survives into this one; add -A, the
-// ignored paths aside; write-tree, the content; and diff --cached
-// --name-only -z of the commit. What each writes is bounded by its
-// writer: an id is kept within maxTreeID, add -A's and read-tree's output
-// is dropped, and the diff's is read as it comes, counted whole and kept
-// to its bounds (pathList). Reads of one index run one at a time, so a
-// lock of the index's there as a read starts is one a cut read left: the
-// index and its lock are dropped, and the read starts from none. The
-// read's objects go to the index's folder (ix.Objects), emptied as the
-// read starts: read-tree --reset makes every entry the commit's again,
-// whose objects the repository holds, and add -A hashes again every file
-// whose entry it changed, so nothing a read needs was left there by
-// another. Its time is ctx's. A read that cannot name HEAD's commit is an
-// error; one that fails after gives the commit with no content.
+// nothing an earlier read staged survives into this one; the paths that
+// differ from the index by their stat data (diff-files, which hashes no
+// file and starts no git in a submodule) and the new paths that are not
+// ignored (ls-files -o), kept in a file beside the index within
+// maxStagePaths (stageList), on update-index --add --remove --info-only's
+// input, which records each by the hash of its content and writes no
+// object: the index git add -A would make, each changed file hashed once;
+// write-tree --missing-ok, the content; and diff --cached --name-only -z
+// --no-renames of the commit, which reads trees alone (a moved file is two
+// paths). What each writes is bounded by its writer: an id is kept within
+// maxTreeID, read-tree's and update-index's output is dropped, and the
+// diff's is read as it comes, counted whole and kept to its bounds
+// (pathList). Reads of one index run one at a time, so a lock of the
+// index's there as a read starts is one a cut read left: the index and its
+// lock are dropped, and the read starts from none. The only objects a read
+// writes are write-tree's trees, into the index's folder (ix.Objects),
+// emptied as the read starts: read-tree --reset makes every entry the
+// commit's again, so nothing a read needs was left there by another. Its
+// time is ctx's. A read that cannot name HEAD's commit is an error; one
+// that fails after gives the commit with no content.
 func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
 	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
 		_ = os.Remove(ix.Path)
@@ -936,17 +944,35 @@ func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error)
 		return TreeRead{}, err
 	}
 	out := TreeRead{Commit: strings.TrimSpace(head.String())}
-	for _, args := range [][]string{{"read-tree", "--reset", "--no-sparse-checkout", out.Commit}, {"add", "-A"}} {
-		if err := t.git(ctx, ix, nil, io.Discard, args...); err != nil {
+	if err := t.git(ctx, ix, nil, io.Discard, "read-tree", "--reset", "--no-sparse-checkout", out.Commit); err != nil {
+		return out, err
+	}
+	list, err := os.OpenFile(ix.Path+".paths", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _, _ = list.Close(), os.Remove(list.Name()) }()
+	staged := &stageList{f: list}
+	for _, args := range [][]string{{"diff-files", "--name-only", "-z", "--ignore-submodules=dirty"}, {"ls-files", "-o", "--exclude-standard", "-z"}} {
+		if err := t.git(ctx, ix, nil, staged, args...); err != nil {
 			return out, err
 		}
 	}
+	if staged.err != nil {
+		return out, staged.err
+	}
+	if _, err := list.Seek(0, io.SeekStart); err != nil {
+		return out, err
+	}
+	if err := t.git(ctx, ix, list, io.Discard, "update-index", "--add", "--remove", "--info-only", "-z", "--stdin"); err != nil {
+		return out, err
+	}
 	tree := &gitcli.Head{N: maxTreeID}
-	if err := t.git(ctx, ix, nil, tree, "write-tree"); err != nil {
+	if err := t.git(ctx, ix, nil, tree, "write-tree", "--missing-ok"); err != nil {
 		return out, err
 	}
 	paths := &pathList{}
-	if err := t.git(ctx, ix, nil, paths, "diff", "--cached", "--name-only", "-z", out.Commit); err != nil {
+	if err := t.git(ctx, ix, nil, paths, "diff", "--cached", "--name-only", "-z", "--no-renames", out.Commit); err != nil {
 		return out, err
 	}
 	out.Content, out.Changed, out.Paths = strings.TrimSpace(tree.String()), paths.n, paths.kept
@@ -981,6 +1007,45 @@ func (l *pathList) Write(p []byte) (int, error) {
 			}
 		}
 		l.cur, l.long = l.cur[:0], false
+	}
+	return len(p), nil
+}
+
+// maxStagePaths bounds the list of paths a read stages, in bytes: what
+// git lists of the tree's changed, deleted and new paths, each NUL-ended.
+const maxStagePaths = 16 << 20
+
+// stageList writes git's -z listing of the paths to stage into f within
+// maxStagePaths, each path as update-index takes it: a folder listed with
+// a trailing slash (a repository with a commit inside the tree, which
+// add -A records by its commit) is given without the slash. Past the
+// bound nothing more is written, every later write is taken and dropped
+// (git runs to its end), and err says the list is past it.
+type stageList struct {
+	f     *os.File
+	n     int
+	slash bool
+	err   error
+}
+
+func (l *stageList) Write(p []byte) (int, error) {
+	out := make([]byte, 0, len(p)+1)
+	for _, c := range p {
+		if l.slash && c != 0 {
+			out = append(out, '/')
+		}
+		if l.slash = c == '/'; !l.slash {
+			out = append(out, c)
+		}
+	}
+	if l.err == nil && l.n+len(out) > maxStagePaths {
+		l.err = fmt.Errorf("the paths to stage pass %d bytes", maxStagePaths)
+	}
+	if l.err == nil {
+		if _, err := l.f.Write(out); err != nil {
+			l.err = err
+		}
+		l.n += len(out)
 	}
 	return len(p), nil
 }

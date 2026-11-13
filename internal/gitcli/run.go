@@ -197,16 +197,24 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 // git (crew.TreeRevision).
 //
 // objects is a folder of the caller's own, an absolute path, which must
-// exist: git writes every object of the command there
+// be a folder as git starts (looked at without following it; anything
+// else is refused, ErrNoObjects, and no git runs): git writes every
+// object of the command there
 // (GIT_OBJECT_DIRECTORY) and finds the repository's objects through the
 // repository's own store, named as an alternate it only reads
 // (GIT_ALTERNATE_OBJECT_DIRECTORIES), so nothing the command writes goes
 // into the repository. The store is the one git names for the tree, asked
 // first at the same location (rev-parse --git-path objects, which runs no
-// filter and reads no file of the work tree), within maxStorePath.
+// filter and reads no file of the work tree), within maxStorePath. A
+// tree's read names each changed file by its hash (update-index
+// --info-only) and writes trees alone, so its folder, one of the server's
+// own in its temporary directory, holds no file's content.
 func RunTree(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 	if !filepath.IsAbs(objects) {
 		return fmt.Errorf("git: the folder of a tree's objects %q is not an absolute path", objects)
+	}
+	if fi, err := os.Lstat(objects); err != nil || !fi.IsDir() {
+		return ErrNoObjects
 	}
 	loc := []string{"-C", workTree, "--git-dir=" + filepath.Join(workTree, ".git"), "--work-tree=" + workTree}
 	store, stderr := &Head{N: maxStorePath + 1}, &Head{N: maxStderr}
@@ -236,6 +244,10 @@ func RunTree(ctx context.Context, workTree, objects string, env map[string]strin
 	}
 	return nil
 }
+
+// ErrNoObjects is RunTree refusing a run whose folder of objects is not a
+// folder: no git is started.
+var ErrNoObjects = errors.New("git: refused: the folder of a tree's objects is not there")
 
 // maxStderr bounds what RunTree keeps of git's error stream.
 const maxStderr = 4 << 10

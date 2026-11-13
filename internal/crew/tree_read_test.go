@@ -430,7 +430,8 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 	// Every command has the look-up of the object store (rev-parse) before
 	// it; rev-parse takes no filter look-up, every other command one
 	// after the store's.
-	if want := []string{"rev-parse", "rev-parse", "rev-parse", "config", "read-tree", "rev-parse", "config", "add", "rev-parse", "config", "write-tree",
+	if want := []string{"rev-parse", "rev-parse", "rev-parse", "config", "read-tree", "rev-parse", "config", "diff-files", "rev-parse", "config", "ls-files",
+		"rev-parse", "config", "update-index", "rev-parse", "config", "write-tree",
 		"rev-parse", "config", "diff", "rev-parse", "config", "ls-tree", "rev-parse", "config", "check-ignore"}; !slices.Equal(gits, want) {
 		t.Errorf("the gits run: %v, want %v", gits, want)
 	}
@@ -453,16 +454,20 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 			t.Errorf("git %v: work tree %s, environment %v", c.args, c.workTree, c.env)
 		}
 	}
-	if want := []string{"rev-parse", "read-tree", "add", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
+	if want := []string{"rev-parse", "read-tree", "diff-files", "ls-files", "update-index", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
 		t.Fatalf("the commands: %v, want %v", subs, want)
 	}
 	if args := (*calls)[0].args; !slices.Equal(args, []string{"rev-parse", "--verify", "--quiet", "HEAD^{commit}"}) {
 		t.Errorf("rev-parse: %v", args)
 	}
-	for _, c := range (*calls)[1:5] {
-		if c.args[0] != "add" && c.args[0] != "write-tree" && c.args[len(c.args)-1] != read.Commit {
-			t.Errorf("git %v does not name the recorded commit %s", c.args, read.Commit)
+	for _, c := range [][]string{(*calls)[1].args, (*calls)[6].args} {
+		if c[len(c)-1] != read.Commit {
+			t.Errorf("git %v does not name the recorded commit %s", c, read.Commit)
 		}
+	}
+	// The paths staged are the ones git listed, on update-index's input.
+	if stage := (*calls)[4]; stage.in != (*calls)[2].out+(*calls)[3].out || stage.in != "README\x00" {
+		t.Errorf("update-index's input %q, listed %q and %q", stage.in, (*calls)[2].out, (*calls)[3].out)
 	}
 }
 
@@ -631,11 +636,11 @@ func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
 	}
 	defer tr.Close()
 	ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
-	// The runner stands in for add -A: it takes the index's lock, as git
-	// does, and the read is cut there.
+	// The runner stands in for update-index: it takes the index's lock, as
+	// git does, and the read is cut there.
 	ctx, cancel := context.WithCancel(t.Context())
 	recordTreeGit(t, func(c gitCall) (bool, error) {
-		if c.args[0] != "add" || ctx.Err() != nil {
+		if c.args[0] != "update-index" || ctx.Err() != nil {
 			return false, nil
 		}
 		writeFile(t, ix.Path+".lock", "")
@@ -655,8 +660,8 @@ func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
 	}
 }
 
-// A read cut while a real git holds the index's lock: at the read's add
-// -A the runner runs git update-index --index-info in the read's index,
+// A read cut while a real git holds the index's lock: at the read's
+// update-index the runner runs git update-index --index-info in the read's index,
 // which takes the lock and then waits on its input; once the lock file
 // is there the read's context ends, git is killed and its lock stays.
 // The next read of that index names the content, as a read in a new
@@ -690,7 +695,7 @@ func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 		looking.Wait()
 	})
 	recordTreeGit(t, func(c gitCall) (bool, error) {
-		if c.args[0] != "add" || ctx.Err() != nil {
+		if c.args[0] != "update-index" || ctx.Err() != nil {
 			return false, nil
 		}
 		looking.Go(func() {
@@ -748,12 +753,39 @@ func storeFiles(t *testing.T, repo string) int {
 	return n
 }
 
+// folderObjects is the type of every object in the folder of objects,
+// git asked for each with the folder as its only store; the folder holds
+// one file for each, and nothing else.
+func folderObjects(t *testing.T, dir, folder string) []string {
+	t.Helper()
+	files := 0
+	if err := filepath.WalkDir(folder, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files++
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", dir, "cat-file", "--batch-all-objects", "--batch-check=%(objecttype)")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_OBJECT_DIRECTORY="+folder)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := strings.Fields(string(out))
+	if len(types) != files {
+		t.Fatalf("the folder of objects holds %d files, %d objects", files, len(types))
+	}
+	return types
+}
+
 // A tree's read writes nothing into the repository's object store: read
 // in one kept index as the tree is clean, then with a changed file, a new
 // file, a deleted file and an ignored file, each read leaves the store
 // with as many files as before it and answers what plain git makes of the
-// tree; the object of the file a read is the first to hash is in the
-// index's own folder.
+// tree; the index's own folder holds trees alone, the object of the file
+// a read is the first to hash among none of them.
 func TestATreesReadWritesNothingIntoTheRepositorysStore(t *testing.T) {
 	repo := newRepo(t)
 	writeFile(t, filepath.Join(repo, ".gitignore"), "*.log\n")
@@ -788,8 +820,13 @@ func TestATreesReadWritesNothingIntoTheRepositorysStore(t *testing.T) {
 		}
 		if c.made != "" {
 			id := runGit(t, wt, "hash-object", c.made)
-			if _, err := os.Stat(filepath.Join(ix.Objects(), id[:2], id[2:])); err != nil {
+			if _, err := os.Stat(filepath.Join(ix.Objects(), id[:2], id[2:])); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("%s: %s's object in the index's folder: %v", c.name, c.made, err)
+			}
+		}
+		for _, kind := range folderObjects(t, wt, ix.Objects()) {
+			if kind != "tree" {
+				t.Errorf("%s: a %s in the index's folder", c.name, kind)
 			}
 		}
 		if read.Commit != runGit(t, wt, "rev-parse", "HEAD") || read.Content != plainContent(t, wt) || read.Changed != len(c.paths) || !slices.Equal(read.Paths, c.paths) {
@@ -798,7 +835,7 @@ func TestATreesReadWritesNothingIntoTheRepositorysStore(t *testing.T) {
 	}
 }
 
-// A read cut while git writes its objects: at the read's add -A the
+// A read cut while git writes its objects: at the read's update-index the
 // runner runs git index-pack --stdin in the read's index and folder, which
 // makes its temporary pack there and then waits on its input, a pack's
 // header with nothing of its one object; once that file is there the
@@ -842,7 +879,7 @@ func TestAReadCutWhileGitWritesLeavesNothingInTheStore(t *testing.T) {
 		if ctx.Err() != nil && c.args[0] == "rev-parse" && atStart == nil {
 			atStart = append([]string{}, gitDirNames(t, c.objects)...)
 		}
-		if c.args[0] != "add" || ctx.Err() != nil {
+		if c.args[0] != "update-index" || ctx.Err() != nil {
 			return false, nil
 		}
 		looking.Go(func() {
