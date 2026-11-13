@@ -193,7 +193,8 @@ func fillCaptures(t *testing.T, e *testEnv, id string) {
 }
 
 // The server's stop while a capture's tree is read, the read held at the
-// runner's seam inside the capture's own step (the classes' ls-tree): the
+// runner's seam inside the capture's own step (the classes' ls-tree), its
+// time limit the test's (treeReads.limit: none of its own): the
 // stop cancels the read and waits for it (the bound's timer never fires),
 // the folder of indexes is removed only once the read has returned (at the
 // removal's seam no read is registered and the held git has returned), the
@@ -205,6 +206,8 @@ func TestTheStopEndsACapturesReadBeforeItRemovesTheIndexes(t *testing.T) {
 	held, ended, goOn := make(chan struct{}), make(chan error, 1), make(chan struct{})
 	var returned atomic.Bool
 	holding := false
+	// The read's time limit is the test's (none): only the stop ends it.
+	p.e.srv.trees.limit = context.WithCancel
 	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 		// A read's commands run one after another: holding needs no lock.
 		if args[0] != "ls-tree" || holding {
