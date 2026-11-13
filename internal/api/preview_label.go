@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,7 +21,6 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
-	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // The label of an attempt's preview over HTTP (Program item PV1,
@@ -66,13 +66,11 @@ func storedPaths(paths []string) []string {
 // that begins once it has begun makes no folder and no index; a read under
 // way when it begins may still run its commands and write its own index
 // until the stop ends it (close: its git ends with its context), and its
-// label is unread. The folder holds a lock file the server holds while it
-// lives (labelsLock), and a server making its folder removes every other
-// one whose lock no server holds (sweepLabels).
+// label is unread. A server that does not stop leaves its folder in the
+// temporary folder.
 type treeReads struct {
 	mu      sync.Mutex
 	dir     string
-	lock    *store.OwnerLock
 	stopped bool
 	order   []string
 	entries map[string]*treeEntry
@@ -84,69 +82,18 @@ type treeReads struct {
 	running sync.WaitGroup
 	// seam, when set (by a test), is called at "handed" (a read has its
 	// entry and has not yet taken its gate), at "waiting" (a read waits
-	// for room) and at "closing" (the stop has cancelled the reads and
-	// waits for them).
+	// for room), at "closing" (the stop has cancelled the reads and
+	// waits for them) and at "removing" (every read has returned and the
+	// folder is about to go, under the reads' lock).
 	seam func(at, dir string)
+	// after, when set (by a test), stands in for time.After in the stop's
+	// wait for the reads (labelStopWait).
+	after func(time.Duration) <-chan time.Time
 }
 
-// labelsPrefix names a server's folder of indexes in the system's
-// temporary folder; labelsLock is the lock file inside it.
-const (
-	labelsPrefix = "conductor-labels-"
-	labelsLock   = "owner.lock"
-)
-
-// makeLabels makes the server's folder of indexes: made under another
-// name, its lock taken (store.TakeOwnerLock, held until the stop), and
-// only then given its name, so that a folder under that name has its lock
-// file and was held from the start. Where the lock is taken, every other
-// folder of that name whose lock no server holds is removed first.
-func makeLabels() (string, *store.OwnerLock, error) {
-	stage, err := os.MkdirTemp("", "conductor-new-labels-")
-	if err != nil {
-		return "", nil, err
-	}
-	lock, _, _, err := store.TakeOwnerLock(filepath.Join(stage, labelsLock))
-	dir := filepath.Join(filepath.Dir(stage), labelsPrefix+strings.TrimPrefix(filepath.Base(stage), "conductor-new-labels-"))
-	if err == nil {
-		err = os.Rename(stage, dir)
-	}
-	if err != nil {
-		if lock != nil {
-			lock.Release()
-		}
-		_ = os.RemoveAll(stage)
-		return "", nil, err
-	}
-	if lock != nil {
-		sweepLabels(dir)
-	}
-	return dir, lock, nil
-}
-
-// sweepLabels removes every folder of indexes beside own, a real folder
-// with its lock file, whose lock no server holds (store.LockHeld): its
-// server ended without its stop. A folder whose lock is held, or with no
-// lock file, is left.
-func sweepLabels(own string) {
-	entries, err := os.ReadDir(filepath.Dir(own))
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		dir := filepath.Join(filepath.Dir(own), e.Name())
-		if !strings.HasPrefix(e.Name(), labelsPrefix) || !e.IsDir() || dir == own {
-			continue
-		}
-		lock := filepath.Join(dir, labelsLock)
-		if fi, err := os.Lstat(lock); err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		if held, err := store.LockHeld(lock); err == nil && !held {
-			_ = os.RemoveAll(dir)
-		}
-	}
-}
+// labelStopWait bounds the stop's wait for the reads it cancelled. Each
+// read's git ends with its context, so the bound only bounds a hang.
+const labelStopWait = time.Minute
 
 // treeEntry is a tree's kept index, its gate (held by sending to it) and
 // how many reads hold or wait for it.
@@ -171,12 +118,12 @@ func (tr *treeReads) take(ctx context.Context, dir string) (*treeEntry, error) {
 			return nil, errReadsStopped
 		}
 		if tr.dir == "" {
-			d, lock, err := makeLabels()
+			d, err := os.MkdirTemp("", "conductor-labels-")
 			if err != nil {
 				tr.mu.Unlock()
 				return nil, err
 			}
-			tr.dir, tr.lock, tr.entries, tr.freed = d, lock, map[string]*treeEntry{}, make(chan struct{})
+			tr.dir, tr.entries, tr.freed = d, map[string]*treeEntry{}, make(chan struct{})
 		}
 		e = tr.entries[dir]
 		// Past the bound, the least recently read entry no read holds or
@@ -250,9 +197,11 @@ func (tr *treeReads) mark() {
 
 // close ends the reads at the stop: the stop is marked (if it is not
 // already) and every read under way is cancelled, its git ending with its
-// context; once each of them has returned, the folder of indexes is
-// removed and its lock let go.
-func (tr *treeReads) close() {
+// context, and waited for within labelStopWait. Once each of them has
+// returned, the folder of indexes is removed. When one has not, the stop
+// returns without removing it (left as a server that does not stop leaves
+// it), and log says so.
+func (tr *treeReads) close(log *slog.Logger) {
 	tr.mu.Lock()
 	tr.stopped = true
 	for cancel := range tr.reads {
@@ -262,16 +211,30 @@ func (tr *treeReads) close() {
 	if tr.seam != nil {
 		tr.seam("closing", "")
 	}
-	tr.running.Wait()
+	returned := make(chan struct{})
+	go func() {
+		tr.running.Wait()
+		close(returned)
+	}()
+	after := time.After
+	if tr.after != nil {
+		after = tr.after
+	}
+	select {
+	case <-returned:
+	case <-after(labelStopWait):
+		log.Warn("the preview labels' folder was left at the stop: a read had not returned", "why", "late")
+		return
+	}
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	if tr.dir != "" {
-		_ = os.RemoveAll(tr.dir)
-		if tr.lock != nil {
-			tr.lock.Release()
+		if tr.seam != nil {
+			tr.seam("removing", tr.dir)
 		}
+		_ = os.RemoveAll(tr.dir)
 		close(tr.freed)
-		tr.dir, tr.lock, tr.order, tr.entries, tr.freed = "", nil, nil, nil, nil
+		tr.dir, tr.order, tr.entries, tr.freed = "", nil, nil, nil
 	}
 }
 

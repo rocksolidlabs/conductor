@@ -4710,20 +4710,41 @@ removes it, as the engine's comparison of a checkout does. Every
 existing file of a tree and of its git directory is opened by git.
 
 The commands, with the recorded commit id where they name one:
-`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`, the
-paths that differ from the index's entries (`diff-files --name-only -z
---ignore-submodules=dirty`, which compares each file's stat data and
-hashes none) and the new paths that are not ignored (`ls-files -o
---exclude-standard -z`), `update-index --add --remove --info-only -z
---stdin` with those paths on its input, `write-tree --missing-ok` and
-`diff --cached --name-only -z --no-renames <commit>`, with
+`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`; where
+the read made its index anew (there was none, or it dropped one a cut
+read left), `update-index -q --refresh`, which brings the entries' stat
+data up to date and writes no object; the paths that differ from the
+index's entries, each with its kind (`diff-files --name-status -z
+--no-renames --ignore-submodules=dirty`: gone, changed or of another
+type), and the new paths that are not ignored (`ls-files -o
+--exclude-standard -z`); `update-index --force-remove -z --stdin` with
+the paths gone or of another type on its input, which removes each from
+the index without looking it up in the tree; `update-index --add
+--remove --info-only -z --stdin` with the paths there (changed, of
+another type, new) on its input; `write-tree --missing-ok` and `diff
+--cached --name-only -z --no-renames <commit>`, with
 `GIT_NO_REPLACE_OBJECTS=1` and literal pathspecs. `update-index
---info-only` records each changed file by the hash of its content and
-writes no object, so each changed file is hashed once a read and the
-content of no file is written anywhere; the content is the tree git
-add -A would make of the tree. The list of paths is kept in a file
-beside the index for the read alone, within 16 MiB: a list past it is
-not staged and the label is unread. Each of a read's own
+--info-only` records each file by the hash of its content as git
+converts it and writes no object, so the content of no file is written
+anywhere. What a file costs: `diff-files` compares stat data and hashes
+no file, save one whose times cannot tell it from the index's (changed
+in the same moment as the index was written), which git hashes itself;
+a changed or new file is hashed once a read; at a new index every
+tracked file is hashed once, by the refresh, and at a later read a
+tracked file that did not change is not hashed. The content is the id of
+the tree the read stages, every path that differs named by the hash of
+its content as git converts it: the tree `git add -A` makes, with two
+differences. Where `add` would refuse a file's conversion (a line-ending
+check, `core.safecrlf`, or an encoding git cannot read,
+`working-tree-encoding`), the read still answers, the file hashed as it
+is converted without that check; and in a repository set to ignore case
+(`core.ignoreCase`), a new path under a folder whose case differs from
+the index's is staged under the tree's own spelling. The two lists of
+paths are kept in files beside the index for the read alone, within
+16 MiB together: lists that pass it are not staged and the label is
+unread.
+At a new index the lists hold only the paths that differ and the new
+ones. Each of a read's own
 commands writes its answer and its error stream within a bound: an id at
 1 KiB, the diff as it comes within the paths' bounds, git's error stream
 at its first 4 KiB. The filter look-up before a command (which turns the
@@ -4757,7 +4778,7 @@ left: the index and its lock are dropped and the read starts from none.
 Beside each index is its folder of objects, emptied as each read of it
 starts, so it holds at most one read's trees; the index's entries are
 the commit's again at every read, so an emptied folder holds nothing the
-next read needs. An index let go goes with its lock, its list of paths
+next read needs. An index let go goes with its lock, its lists of paths
 and its folder of objects.
 At most eight indexes are kept: an index a read holds or waits for is
 never let go, the least recently read of the others is to make room, and
@@ -4769,17 +4790,13 @@ read that begins once the stop has begun makes no folder and no index. A
 read under way when the stop begins may still run its commands and write
 its own index; it asks the mark after its last command, and its label is
 unread. Later in the stop, every read under way is cancelled (its git
-ends with it) and waited for, and only once each has returned is the
-folder of indexes removed. The folder (`conductor-labels-<random>` in
-the server's temporary directory) holds a lock file, `owner.lock`, the
-same file lock the ledger's owner lock is, which the server holds while
-it lives; it is made under another name and given its own once the lock
-is held. A server making its folder first removes every other such
-folder whose lock no server holds: one whose server ended without its
-stop. A folder whose lock is held is another server's and is left, as is
-one with no lock file. Where the system has no such lock (Windows), or
-the temporary directory's file system takes none, no folder is removed
-but the server's own at its stop.
+ends with it) and waited for, at most a minute (a bound on a hang: each
+read's git ends with its context), and only once each has returned is
+the folder of indexes (`conductor-labels-<random>` in the server's
+temporary directory) removed. When one has not returned within that
+minute, the stop goes on without removing the folder and the server
+logs it (`late`). A server that does not stop leaves its folder in the
+temporary directory, to the system's cleanup.
 
 Where this differs from the plan: the label is the admin's alone until
 the row of the shared read; the classes are read by two commands over
