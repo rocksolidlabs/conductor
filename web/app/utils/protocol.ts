@@ -304,7 +304,10 @@ export type SignInState = 'signed-out' | 'starting' | 'code' | 'signed-in'
 
 /**
  * `GET`, `POST` and `DELETE /api/signin` (admin): the identity provider's sign-in, or `{supported: false}` where none is offered; at
- * most MAX_SIGNIN_REPLY bytes. `who` only in `signed-in`; `code`, `url` (https) and `expires` (RFC 3339) only in `code`; `why` in any.
+ * most MAX_SIGNIN_REPLY bytes. `who` only in `signed-in`; `code`, `url` (https, by the rule docs/protocol.md states) and `expires`
+ * (RFC 3339, in UTC) only in `code`; `why` in any; `who` and `why` one line with no control or format character and no line or
+ * paragraph separator. A 503 is SIGNIN_UNAVAILABLE_CODE (the provider did not answer the call: a begin or a sign-out not taken) or,
+ * after a begin or a sign-out the provider took, SIGNIN_STATUS_UNKNOWN_CODE (its status could not be read just then).
  */
 export interface SignInReply {
   supported: boolean
@@ -316,6 +319,8 @@ export interface SignInReply {
   why?: string
 }
 export const MAX_SIGNIN_REPLY = 1024
+export const SIGNIN_UNAVAILABLE_CODE = 'signin_unavailable'
+export const SIGNIN_STATUS_UNKNOWN_CODE = 'signin_status_unknown'
 /** The bounds of SignInReply's fields, in bytes (ext.MaxSignInWho and the rest). */
 export const MAX_SIGNIN_WHO = 80
 export const MAX_SIGNIN_CODE = 16

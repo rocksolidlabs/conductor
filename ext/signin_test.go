@@ -16,6 +16,9 @@ func TestSignInStatusValid(t *testing.T) {
 	long := func(n int) string { return strings.Repeat("a", n) }
 	page := "https://id.example.com/device"
 	code := func(c, u string) ext.SignInStatus { return ext.SignInStatus{State: ext.SignInCode, Code: c, URL: u} }
+	ends := func(z *time.Location) ext.SignInStatus {
+		return ext.SignInStatus{State: ext.SignInCode, Code: "ABCD", URL: page, Expires: time.Date(2026, 11, 12, 9, 0, 0, 0, z)}
+	}
 	cases := []struct {
 		name string
 		s    ext.SignInStatus
@@ -60,6 +63,26 @@ func TestSignInStatusValid(t *testing.T) {
 		{"url with a bracket", code("ABCD", "https://id.example.com/<x>"), false},
 		{"url relative", code("ABCD", "/device"), false},
 		{"an end past the year 9999", ext.SignInStatus{State: ext.SignInCode, Code: "ABCD", URL: page, Expires: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}, false},
+		{"an end in a zone of +14 h", ends(time.FixedZone("", 14*3600)), true},
+		{"an end in a zone of +24 h", ends(time.FixedZone("", 24*3600)), false},
+		{"an end in a zone of -24 h", ends(time.FixedZone("", -24*3600)), false},
+		{"an end in 9999 that is 10000 in UTC", ext.SignInStatus{State: ext.SignInCode, Code: "ABCD", URL: page, Expires: time.Date(9999, 12, 31, 23, 0, 0, 0, time.FixedZone("", -2*3600))}, false},
+		{"url with a port", code("ABCD", "https://id.example.com:8443/device"), true},
+		{"url with a percent-escape", code("ABCD", "https://id.example.com/a%2Fb?c=%20"), true},
+		{"url with a port alone", code("ABCD", "https://:443/x"), false},
+		{"url with a bare dot", code("ABCD", "https://./"), false},
+		{"url with dots alone", code("ABCD", "https://../"), false},
+		{"url with a port past 65535", code("ABCD", "https://id.example.com:99999/d"), false},
+		{"url with port 0", code("ABCD", "https://id.example.com:0/d"), false},
+		{"url with a malformed escape", code("ABCD", "https://id.example.com/d?x=%zz"), false},
+		{"url with a cut escape", code("ABCD", "https://id.example.com/d%2"), false},
+		{"url with an apostrophe", code("ABCD", "https://id.example.com/a'b"), false},
+		{"url with a backtick", code("ABCD", "https://id.example.com/a`b"), false},
+		{"who with a right-to-left override", ext.SignInStatus{State: ext.SignedIn, Who: "Ana " + string(rune(0x202e)) + "gnp.exe"}, false},
+		{"who with a zero-width space", ext.SignInStatus{State: ext.SignedIn, Who: string(rune(0x200b))}, false},
+		{"who with a line separator", ext.SignInStatus{State: ext.SignedIn, Who: "Ana" + string(rune(0x2028)) + "Eve"}, false},
+		{"why with a paragraph separator", ext.SignInStatus{State: ext.SignedOut, Why: "a" + string(rune(0x2029)) + "b"}, false},
+		{"why with a C1 control", ext.SignInStatus{State: ext.SignedOut, Why: "a\u0085b"}, false},
 	}
 	for _, c := range cases {
 		err := c.s.Valid()

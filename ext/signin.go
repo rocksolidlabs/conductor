@@ -3,8 +3,10 @@ package ext
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // SignIn is what an identity provider implements when a person can sign
@@ -38,7 +40,7 @@ type SignInStatus struct {
 	State   SignInState `json:"state"`
 	Who     string      `json:"who,omitempty"`    // signed-in: one line of 1 to MaxSignInWho bytes
 	Code    string      `json:"code,omitempty"`   // code: 1 to MaxSignInCode of A-Z a-z 0-9 '-'
-	URL     string      `json:"url,omitempty"`    // code: an https URL with a host, at most MaxSignInURL bytes
+	URL     string      `json:"url,omitempty"`    // code: an https URL with a host name, at most MaxSignInURL bytes (signInURL)
 	Expires time.Time   `json:"expires,omitzero"` // code: when the code ends, if the provider says
 	Why     string      `json:"why,omitempty"`    // any state: one line of at most MaxSignInWhy bytes
 }
@@ -61,10 +63,10 @@ func (s SignInStatus) Valid() error {
 	default:
 		return invalid(r, "state is not signed-out, starting, code or signed-in")
 	}
-	if err := line(r, "who", s.Who, MaxSignInWho, s.State == SignedIn); err != nil {
+	if err := signInLine(r, "who", s.Who, MaxSignInWho, s.State == SignedIn); err != nil {
 		return err
 	}
-	if err := line(r, "why", s.Why, MaxSignInWhy, false); err != nil {
+	if err := signInLine(r, "why", s.Why, MaxSignInWhy, false); err != nil {
 		return err
 	}
 	if s.State != SignedIn && s.Who != "" {
@@ -82,8 +84,25 @@ func (s SignInStatus) Valid() error {
 	if wrong := signInURL(s.URL); wrong != "" {
 		return invalid(r, "url %s", wrong)
 	}
-	if y := s.Expires.Year(); !s.Expires.IsZero() && (y < 1 || y > 9999) {
-		return invalid(r, "expires is outside the years 1 to 9999")
+	if _, off := s.Expires.Zone(); off <= -24*3600 || off >= 24*3600 {
+		return invalid(r, "expires has a zone offset of a day or more")
+	}
+	if y := s.Expires.UTC().Year(); !s.Expires.IsZero() && (y < 1 || y > 9999) {
+		return invalid(r, "expires is outside the years 1 to 9999 in UTC")
+	}
+	return nil
+}
+
+// signInLine is line, refusing too the format characters and the line and
+// paragraph separators (Unicode's Cf, Zl and Zp), which would let one line
+// draw as another or as two. The sign-in's own: ext's line serves other
+// records unchanged.
+func signInLine(record, field, s string, max int, required bool) error {
+	if err := line(record, field, s, max, required); err != nil {
+		return err
+	}
+	if strings.ContainsFunc(s, func(c rune) bool { return unicode.In(c, unicode.Cf, unicode.Zl, unicode.Zp) }) {
+		return invalid(record, "%s holds a format character or a line or paragraph separator", field)
 	}
 	return nil
 }
@@ -105,16 +124,20 @@ func signInCode(c string) bool {
 
 // signInURL says what is wrong with u as a sign-in's page, "" for
 // nothing, in words that never quote it: it is 1 to MaxSignInURL bytes of
-// printable ASCII with no space, quote, backslash or angle bracket, an
-// https URL with a host and no user information.
+// printable ASCII with no space, quote (" ' `), backslash or angle bracket
+// and no '%' but before two hex digits, an https URL with a host name (not
+// dots alone), a port of 1 to 65535 if it has one, and no user
+// information. The page's own check (useSignIn's signInPage) is this rule.
 func signInURL(u string) string {
 	switch {
 	case u == "":
 		return "is empty"
 	case len(u) > MaxSignInURL:
 		return "is past its bound"
-	case !printableASCII(u) || strings.ContainsAny(u, `"\<>`):
+	case !printableASCII(u) || strings.ContainsAny(u, "\"'`\\<>"):
 		return "is not printable ASCII without spaces, quotes or brackets"
+	case !percentEscapes(u):
+		return "has a malformed percent-escape"
 	}
 	p, err := url.Parse(u)
 	switch {
@@ -122,10 +145,29 @@ func signInURL(u string) string {
 		return "does not parse"
 	case p.Scheme != "https":
 		return "is not https"
-	case p.Host == "" || p.Opaque != "":
-		return "has no host"
+	case strings.Trim(p.Hostname(), ".") == "" || p.Opaque != "":
+		return "has no host name"
+	case p.Port() != "" && !port(p.Port()):
+		return "has a port outside 1 to 65535"
 	case p.User != nil:
 		return "carries user information"
 	}
 	return ""
+}
+
+// percentEscapes reports whether every '%' in u begins two hex digits.
+func percentEscapes(u string) bool {
+	hex := func(c byte) bool { return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' }
+	for i := 0; i < len(u); i++ {
+		if u[i] == '%' && (i+2 >= len(u) || !hex(u[i+1]) || !hex(u[i+2])) {
+			return false
+		}
+	}
+	return true
+}
+
+// port reports whether p is a TCP port of 1 to 65535.
+func port(p string) bool {
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535
 }

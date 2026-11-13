@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"strings"
+	"net/url"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -57,21 +60,19 @@ func (s *Server) signIn() (guardIdentity, ext.SignIn, bool) {
 }
 
 // signInStatus is si's status through the guard, and whether it answered
-// in time with one Valid takes and that holds, as written, none of the
-// credentials providerCredentials lists as it is asked (the detail's
-// filter, guardIdentity.detail).
+// in time with one Valid takes and that holds none of the credentials
+// providerCredentials lists as it is asked (the detail's filter,
+// holdsCredential): each field as written, the URL also percent-decoded
+// once.
 func (g guardIdentity) signInStatus(ctx context.Context, si ext.SignIn) (ext.SignInStatus, bool) {
 	own := g.s.providerCredentials()
 	st, _, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, ext.SignInStatus{}, func(st ext.SignInStatus) error {
 		if err := st.Valid(); err != nil {
 			return err
 		}
-		for _, tok := range own {
-			for _, v := range []string{st.Who, st.Code, st.URL, st.Why} {
-				if tok != "" && strings.Contains(v, tok) {
-					return errors.New("sign-in status: it holds a token")
-				}
-			}
+		decoded, err := url.PathUnescape(st.URL)
+		if err != nil || holdsCredential(own, st.Who, st.Code, st.URL, decoded, st.Why) {
+			return errors.New("sign-in status: it holds a token")
 		}
 		return nil
 	}, func(context.Context) (ext.SignInStatus, error) { return si.SignInStatus(), nil })
@@ -96,27 +97,35 @@ func (s *Server) handleSignIn(w http.ResponseWriter, r *http.Request) {
 		}{}, maxSignInReply)
 		return
 	}
-	s.writeSignInStatus(w, r, g, si)
+	s.writeSignInStatus(w, r, g, si, signInUnavailable)
 }
 
 // handleSignInBegin answers POST /api/signin: the provider asked to begin,
 // then its status.
 func (s *Server) handleSignInBegin(w http.ResponseWriter, r *http.Request) {
-	s.signInAct(w, r, ext.SignIn.BeginSignIn)
+	s.signInAct(w, r, ext.SignIn.BeginSignIn, "the sign-in was begun; its status could not be read just then")
 }
 
 // handleSignOut answers DELETE /api/signin: the provider asked to sign
 // out, then its status.
 func (s *Server) handleSignOut(w http.ResponseWriter, r *http.Request) {
-	s.signInAct(w, r, ext.SignIn.SignOut)
+	s.signInAct(w, r, ext.SignIn.SignOut, "the sign-out was asked; its status could not be read just then")
 }
 
 // signInAct is POST's and DELETE's: a body of none or {} (at most
-// maxSignInBody, no member), a provider that offers a sign-in, act
-// through the guard, and the status after it.
-func (s *Server) signInAct(w http.ResponseWriter, r *http.Request, act func(ext.SignIn, context.Context) error) {
-	var body struct{}
-	if err := decodeOptionalJSON(w, r, &body, maxSignInBody); err != nil {
+// maxSignInBody, no member; null is not {}), a provider that offers a
+// sign-in, act through the guard, and the status after it; a status not
+// read after an act the provider took is 503 signin_status_unknown in
+// unknown, the act's own words.
+func (s *Server) signInAct(w http.ResponseWriter, r *http.Request, act func(ext.SignIn, context.Context) error, unknown string) {
+	var body *struct{} // nil after null, a member after {}
+	err := decodeJSONLimit(w, r, &body, maxSignInBody)
+	if errors.Is(err, io.EOF) {
+		err = nil // no body
+	} else if err == nil && body == nil {
+		err = errors.New("null")
+	}
+	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			writeError(w, http.StatusRequestEntityTooLarge, "bound", "the body is more than 1 KiB")
 			return
@@ -133,17 +142,33 @@ func (s *Server) signInAct(w http.ResponseWriter, r *http.Request, act func(ext.
 		signInUnavailable(w)
 		return
 	}
-	s.writeSignInStatus(w, r, g, si)
+	s.writeSignInStatus(w, r, g, si, func(w http.ResponseWriter) {
+		writeError(w, http.StatusServiceUnavailable, "signin_status_unknown", unknown)
+	})
 }
 
-// writeSignInStatus answers si's status, or 503 when the guard has none.
-func (s *Server) writeSignInStatus(w http.ResponseWriter, r *http.Request, g guardIdentity, si ext.SignIn) {
+// writeSignInStatus is the one place a sign-in's status is answered: its
+// expiry in UTC, the reply within maxSignInReply; a status the guard has
+// none of, or a reply that does not encode within its bound, is answered
+// by unread.
+func (s *Server) writeSignInStatus(w http.ResponseWriter, r *http.Request, g guardIdentity, si ext.SignIn, unread func(http.ResponseWriter)) {
 	st, ok := g.signInStatus(r.Context(), si)
 	if !ok {
-		signInUnavailable(w)
+		unread(w)
 		return
 	}
-	writeCapacityJSON(w, http.StatusOK, signInReply{Supported: true, SignInStatus: st}, maxSignInReply)
+	if !st.Expires.IsZero() {
+		st.Expires = st.Expires.UTC()
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(signInReply{Supported: true, SignInStatus: st}); err != nil || buf.Len() > maxSignInReply {
+		unread(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
 }
 
 // signInUnavailable answers a call the provider did not answer in time
