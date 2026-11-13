@@ -6,7 +6,7 @@ const desktop: SettingsShown = { desktop: true, platform: 'linux', ice: false, a
 
 describe('shownSections', () => {
   it('shows every section of the desktop app on Windows with an ICE status, in page order', () => {
-    expect(ids({ ...desktop, platform: 'win32', ice: true })).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'brakeman', 'app'])
+    expect(ids({ ...desktop, platform: 'win32', ice: true })).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'accounts', 'brakeman', 'app'])
   })
 
   it('shows WebRTC from WSL only on Windows, and only once the bridge said what it forwards', () => {
@@ -17,21 +17,27 @@ describe('shownSections', () => {
   })
 
   it('shows the agents only for a catalog that lists some', () => {
-    expect(ids({ ...desktop, agents: 0 })).toEqual(['switchyard', 'folders', 'running', 'brakeman', 'app'])
+    expect(ids({ ...desktop, agents: 0 })).toEqual(['switchyard', 'folders', 'running', 'accounts', 'brakeman', 'app'])
     expect(ids({ ...desktop, agents: 1 })).toContain('agents')
   })
 
   it('shows Brakeman only where the server offers it', () => {
-    expect(ids({ ...desktop, brakeman: false })).toEqual(['switchyard', 'folders', 'running', 'agents', 'app'])
+    expect(ids({ ...desktop, brakeman: false })).toEqual(['switchyard', 'folders', 'running', 'agents', 'accounts', 'app'])
   })
 
-  it("shows only Brakeman and The app on the browser's page, whatever else is known", () => {
-    expect(ids({ desktop: false, platform: 'win32', ice: true, agents: 13, brakeman: true })).toEqual(['brakeman', 'app'])
-    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false })).toEqual(['app'])
+  it('shows the accounts unless the server offers none (a switchyard, no data directory), in the browser too', () => {
+    expect(ids({ ...desktop, accounts: false })).toEqual(['switchyard', 'folders', 'running', 'agents', 'brakeman', 'app'])
+    expect(ids({ ...desktop, accounts: true })).toContain('accounts')
+    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false, accounts: true })).toEqual(['accounts', 'app'])
+  })
+
+  it("shows only Accounts, Brakeman and The app on the browser's page, whatever else is known", () => {
+    expect(ids({ desktop: false, platform: 'win32', ice: true, agents: 13, brakeman: true })).toEqual(['accounts', 'brakeman', 'app'])
+    expect(ids({ desktop: false, ice: false, agents: 0, brakeman: false, accounts: false })).toEqual(['app'])
   })
 
   it('keeps the ids and titles the address and the docs name', () => {
-    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'brakeman', 'app'])
+    expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual(['webrtc', 'switchyard', 'folders', 'running', 'agents', 'accounts', 'brakeman', 'app'])
     // "Settings → Switchyard" and "Settings → The app" are written in the README, the switchyard's pages and the notice.
     expect(SETTINGS_SECTIONS.find((s) => s.id === 'switchyard')!.title).toBe('Switchyard')
     expect(SETTINGS_SECTIONS.find((s) => s.id === 'app')!.title).toBe('The app')

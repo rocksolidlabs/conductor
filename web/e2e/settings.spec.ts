@@ -935,7 +935,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
 
 /** The sections this machine shows, in page order: what the navigation must list. */
 function expectedSections(platform: Platform) {
-  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'brakeman', 'app']
+  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'accounts', 'brakeman', 'app']
 }
 
 const body = (page: Page) => page.locator('[data-slot="body"]:has([data-settings-sections])')
