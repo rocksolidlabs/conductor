@@ -1071,6 +1071,11 @@ type TicketView struct {
 	Owners       *Owners                    `json:"owners,omitempty"`
 	ExternalRead *TicketRead                `json:"externalRead,omitempty"`
 	LinkReads    map[string]LinkReadSummary `json:"linkReads"`
+	// Publications is the ticket's newest MaxTicketPublications
+	// publications without their bodies, and PublicationsNeedYou how many
+	// older ones a person can act on (Publications pages them).
+	Publications        []PublicationSummary `json:"publications"`
+	PublicationsNeedYou int                  `json:"publicationsNeedYou"`
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -1158,6 +1163,9 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 		v.LinkReads = map[string]LinkReadSummary{}
 		for id, r := range reads {
 			v.LinkReads[id] = r.summary()
+		}
+		if v.Publications, v.PublicationsNeedYou, err = ticketPublications(ctx, q, tk.ID); err != nil {
+			return err
 		}
 		if schemaOf(q) < 2 {
 			// A version 1 database, read as it was found: no launches.

@@ -368,6 +368,13 @@ func Install(ctx context.Context, res *Reservation, r io.ReaderAt, size int64) (
 	if err := checkAttachments(ctx, root, dir, staging); err != nil {
 		return Manifest{}, err
 	}
+	// The staged Dispatch store is made a new instance (dispatch.Reissue),
+	// so no publication it was exported with is sent from the copy.
+	if _, err := root.Lstat(filepath.FromSlash(staging + "/" + DispatchPath)); err == nil {
+		if err := dispatch.Reissue(ctx, filepath.Join(dir, filepath.FromSlash(staging+"/"+DispatchPath))); err != nil {
+			return Manifest{}, fmt.Errorf("export: the restored Dispatch store could not be made a new instance: %w", err)
+		}
+	}
 	// Under the reservation, once more: fresh still, and no name the
 	// renames will take is there.
 	if err := checkTarget(dir); err != nil {

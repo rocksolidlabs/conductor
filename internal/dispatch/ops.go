@@ -284,6 +284,8 @@ var revTables = map[string]struct {
 	EntityLaunch:    {"launches", false},
 	EntityReview:    {"reviews", false},
 	EntityCapture:   {"captures", false},
+	// A publication bumps its own rev, never its ticket's.
+	EntityPublication: {"publications", false},
 }
 
 // tx is one operation's transaction: what a change writes through. It
@@ -786,6 +788,13 @@ func prunedAnswer(ctx context.Context, q queryer, op Op, intent, fp string) (rc 
 			return conflictReceipt(op, intent, wordsOpConflict), true, nil
 		}
 		table, id = "reviews", entityID
+	case IntentPublicationPrepare:
+		// A prepare's first row is its publication's create, whose row keeps
+		// the operation's fingerprint.
+		if entity != EntityPublication || kind != OpCreate || schemaOf(q) < 4 {
+			return conflictReceipt(op, intent, wordsOpConflict), true, nil
+		}
+		table, id = "publications", entityID
 	case IntentTicketImport:
 		// An import's first row is its ticket's create row, which keeps the
 		// import's fingerprint (ticketCreated): the same content is answered
@@ -1069,7 +1078,7 @@ func (s *Store) Committed(ctx context.Context, actor, id string) (rc Receipt, fo
 		return Receipt{}, false, err
 	}
 	rc = Receipt{OpID: id, Status: StatusDone, Repeat: true}
-	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend) {
+	if kind == OpCreate && (entity == EntityPlan || entity == EntityLaunch || entity == EntityReview || entity == EntityCapture || entity == EntityCaptureSend || entity == EntityPublication) {
 		rc.ID = entityID
 	}
 	return rc, true, nil

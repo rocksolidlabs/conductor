@@ -53,8 +53,6 @@ const (
 	// owner, assignees, labels, milestone): kept as written, as a ticket's
 	// description keeps a link a person pasted.
 	keptContent = "content"
-	// keptNone: no operation of this row writes it (publications: PR-5).
-	keptNone = "none"
 )
 
 // columnKept is the decision of every text column version 4 adds or gives
@@ -74,15 +72,17 @@ var columnKept = map[string]string{
 	"tickets.source":    keptOpaque, "tickets.external_id": keptOpaque, "tickets.external_url": keptAddress,
 	// The snapshot: the item's words, its addresses, its ids.
 	"tickets.external_snapshot": keptContent, "tickets.authority": keptClosed, "tickets.closed_on": keptDerived,
-	// The publications: PR-5's operations write them and decide each.
-	"publications.id": keptNone, "publications.ticket_id": keptNone, "publications.target": keptNone, "publications.target_kind": keptNone,
-	"publications.target_url": keptNone, "publications.target_ref": keptNone, "publications.target_node_id": keptNone,
-	"publications.target_space_id": keptNone, "publications.instance": keptNone, "publications.marker": keptNone, "publications.body": keptNone,
-	"publications.post_sha256": keptNone, "publications.parts": keptNone, "publications.close_issue": keptNone, "publications.state": keptNone,
-	"publications.find_since": keptNone, "publications.sent_as_id": keptNone, "publications.sent_as_login": keptNone,
-	"publications.remote_id": keptNone, "publications.remote_url": keptNone, "publications.close_state": keptNone, "publications.close_error": keptNone,
-	"publications.error": keptNone, "publications.sending_at": keptNone, "publications.sent_at": keptNone, "publications.sent_by": keptNone,
-	"publications.created_at": keptNone, "publications.created_by": keptNone, "publications.fingerprint": keptNone,
+	// The publications (PR-5): the body is the person's own text; the
+	// marker the adapter's, which the walk's mark gives.
+	"publications.id": keptDerived, "publications.ticket_id": keptDerived, "publications.target": keptOpaque, "publications.target_kind": keptClosed,
+	"publications.target_url": keptAddress, "publications.target_ref": keptOpaque, "publications.target_node_id": keptOpaque,
+	"publications.target_space_id": keptOpaque, "publications.instance": keptDerived, "publications.marker": keptDerived,
+	"publications.body": keptContent, "publications.post_sha256": keptDerived, "publications.parts": keptClosed, "publications.close_issue": keptClosed,
+	"publications.state": keptClosed, "publications.find_since": keptDerived, "publications.sent_as_id": keptOpaque,
+	"publications.sent_as_login": keptWords, "publications.remote_id": keptOpaque, "publications.remote_url": keptAddress,
+	"publications.close_state": keptClosed, "publications.close_error": keptWords, "publications.error": keptWords,
+	"publications.sending_at": keptDerived, "publications.sent_at": keptDerived, "publications.sent_by": keptWords,
+	"publications.created_at": keptDerived, "publications.created_by": keptWords, "publications.fingerprint": keptDerived,
 }
 
 // fieldKept is the decision of every string field of the records the new
@@ -109,6 +109,11 @@ var fieldKept = map[string]string{
 	"LinkRead.IssueETag": keptOpaque, "LinkRead.PullETag": keptOpaque, "LinkRead.Error": keptDerived,
 	"TicketRead.ExternalID": keptDerived, "TicketRead.ReadBy": keptWords, "TicketRead.IssueETag": keptOpaque, "TicketRead.PullETag": keptOpaque,
 	"TicketRead.Error": keptDerived, "Identity": keptOpaque, "Words": keptWords,
+	// A publication's prepare and its settle (PR-5).
+	"Prepare.Key": keptOpaque, "Prepare.Target": keptOpaque, "Prepare.Body": keptContent, "Prepare.Parts[]": keptClosed, "Prepare.CloseIssue": keptClosed,
+	"Target.NodeID": keptOpaque, "Target.SpaceID": keptOpaque, "Target.Kind": keptClosed, "Target.URL": keptAddress, "Target.Ref": keptOpaque,
+	"Sender.ID": keptOpaque, "Sender.Login": keptWords, "Outcome.State": keptClosed, "Outcome.Comment.ID": keptOpaque,
+	"Outcome.Comment.URL": keptAddress, "Outcome.Comment.AuthorID": keptOpaque, "Outcome.Comment.Author": keptWords, "Outcome.Words": keptWords,
 }
 
 // stringPaths is every string field of the type, each as the names that
@@ -330,6 +335,51 @@ var walkWriters = []walkWriter{
 			Words    string
 		})
 		return refusalOf(t, Receipt{}, w.s.RecordTicketReadError(context.Background(), w.key, r.Identity, r.Words))
+	}},
+	{"a publication's prepare", func() any {
+		return &struct {
+			Prepare PublicationArgs
+			Target  PublicationTarget
+		}{PublicationArgs{Body: "Fixed.", Parts: []string{"key"}}, PublicationTarget{NodeID: "PR_9", SpaceID: "4000001", Kind: ExternalChange,
+			URL: "https://github.com/rocksolidlabs/conductor/pull/9", Ref: "rocksolidlabs/conductor#9"}}
+	}, func(t *testing.T, w walkStore, record any) string {
+		r := record.(*struct {
+			Prepare PublicationArgs
+			Target  PublicationTarget
+		})
+		if r.Prepare.Key == "" {
+			r.Prepare.Key, r.Prepare.Target = w.native, "link:"+w.link
+		}
+		rc, err := w.s.PreparePublication(context.Background(), testOp("walk"), r.Prepare, r.Target, markOf)
+		return refusalOf(t, rc, err)
+	}},
+	{"a publication's send and settle", func() any {
+		return &struct {
+			Sender  Sender
+			Outcome Outcome
+		}{Sender{ID: "101", Login: "alice"}, Outcome{State: PublicationSent, Words: "found", Comment: &SentComment{ID: "2153", AuthorID: "101", Author: "alice",
+			URL: "https://github.com/rocksolidlabs/conductor/pull/9#issuecomment-2153"}}}
+	}, func(t *testing.T, w walkStore, record any) string {
+		r := record.(*struct {
+			Sender  Sender
+			Outcome Outcome
+		})
+		ctx := context.Background()
+		rc, err := w.s.PreparePublication(ctx, testOp("walk-p"), PublicationArgs{Key: w.native, Target: "link:" + w.link, Body: "b"},
+			PublicationTarget{NodeID: "PR_9", SpaceID: "4000001", Kind: ExternalChange, URL: "https://github.com/rocksolidlabs/conductor/pull/9", Ref: "rocksolidlabs/conductor#9"}, markOf)
+		if refused := refusalOf(t, rc, err); refused != "" {
+			t.Fatal(refused)
+		}
+		p, err := w.s.Publication(ctx, rc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src, _, err := w.s.BeginSend(ctx, testOp("walk-s"), p.ID, p.PostSha256, r.Sender)
+		if refused := refusalOf(t, src, err); refused != "" {
+			return refused
+		}
+		_, _, err = w.s.SettlePublication(ctx, ActorAdmin, p.ID, 1, r.Outcome)
+		return refusalOf(t, Receipt{}, err)
 	}},
 }
 
@@ -580,8 +630,8 @@ func TestEveryVersionFiveTextHasADecision(t *testing.T) {
 // the tickets' and the link's reads, an export), and no refusal's words
 // hold one, but where its decision is the item's own words, which are kept
 // as written (keptContent: the walk asks nothing of them). Every field has
-// a decision; publications stays empty (no operation of this row writes
-// it).
+// a decision; publications stays empty but for a publication's own
+// writers.
 func TestNoTextKeepsAnAddressesQuery(t *testing.T) {
 	for _, wr := range walkWriters {
 		// The record as made is a good one: the operation does it.
@@ -610,7 +660,7 @@ func TestNoTextKeepsAnAddressesQuery(t *testing.T) {
 							t.Errorf("%q is held by %v (refused: %q)", secret, held, refused)
 						}
 					}
-					if n := countOf(t, w.s, "SELECT COUNT(*) FROM publications"); n != 0 {
+					if n := countOf(t, w.s, "SELECT COUNT(*) FROM publications"); n != 0 && !strings.HasPrefix(wr.name, "a publication's") {
 						t.Errorf("%d publications written", n)
 					}
 				})
