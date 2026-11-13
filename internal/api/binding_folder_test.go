@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -567,18 +569,113 @@ func heldAt(t *testing.T, start func() string, before func(), end func(string)) 
 
 // launchHeld launches what body asks, holds it at the seam before its
 // process starts while before runs, and answers its session's id; the
-// session's stop-and-wait is registered before before runs.
+// session's stop-and-wait is registered before before runs. A launch that
+// starts no session fails the test with the server's answer.
 func (e *bindEnv) launchHeld(t *testing.T, body map[string]any, before func()) string {
 	t.Helper()
-	sid := heldAt(t, func() string {
-		_, out := e.do("POST", "/api/sessions", adminToken, body)
-		id, _ := out["id"].(string)
-		return id
-	}, before, e.stopAndWait)
+	sid, status, out := e.launchHeldAnswer(t, body, before)
 	if sid == "" {
-		t.Fatal("the launch did not start")
+		t.Fatalf("the launch did not start: %d %v", status, out)
 	}
 	return sid
+}
+
+// launchHeldAnswer is launchHeld's launch: its session's id ("" for none)
+// and the server's answer, its status and body.
+func (e *bindEnv) launchHeldAnswer(t *testing.T, body map[string]any, before func()) (string, int, map[string]any) {
+	t.Helper()
+	var status int
+	var out map[string]any
+	sid := heldAt(t, func() string {
+		resp, o := e.do("POST", "/api/sessions", adminToken, body)
+		status, out = resp.StatusCode, o
+		id, _ := o["id"].(string)
+		return id
+	}, before, e.stopAndWait)
+	return sid, status, out
+}
+
+// startsByHandle says whether a launch's process starts in the folder the
+// launch opened by its open handle, as pty's startDir decides it: on Linux,
+// through /proc/self/fd, where that names the open directory. Elsewhere
+// (and on Linux without /proc) it starts by the folder's path, checked to
+// name the folder opened still, and a launch whose path names another
+// directory by then is refused before its process starts.
+func startsByHandle(t *testing.T) bool {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	d, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	want, err := d.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat("/proc/self/fd/" + strconv.Itoa(int(d.Fd())))
+	return err == nil && os.SameFile(fi, want)
+}
+
+// launchInReplacedStart is the launch of the tests whose start folder is
+// replaced after the reservation: an entry, claude-rel, whose folder
+// variable is h/.claude, not a whole path, launched in a folder start where
+// h is a link to the directory a registered Claude Code account's folder is
+// in (its id a). At the seam before its process starts, start is renamed
+// and another directory put in its place, a's remove is refused (a launch
+// under way), and replaced runs with start's path: the ids of the accounts
+// it registers. Where a launch's process starts by its folder's open handle
+// (startsByHandle), the launch goes on in the folder it opened: its
+// session's id. Elsewhere it is refused before its process starts, 502
+// start_failed, and this asserts that no session was registered, that every
+// count of claude-rel on a and on replaced's accounts is zero, and that
+// their removes are taken at once (the reservation was let go): "".
+func (e *bindEnv) launchInReplacedStart(t *testing.T, replaced func(start string) []string) (string, string) {
+	t.Helper()
+	logins, start := filepath.Join(realRoot(t, t.TempDir()), "logins"), filepath.Join(e.root, "start")
+	for _, d := range []string{filepath.Join(logins, ".claude"), start} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(logins, filepath.Join(start, "h")); err != nil {
+		t.Fatal(err)
+	}
+	a := e.accountAt(t, "claude", "Through a link", filepath.Join(logins, ".claude"))
+	e.addFolderEntries(t, map[string][2]map[string]string{"claude-rel": {{"CLAUDE_CONFIG_DIR": filepath.Join("h", ".claude")}, nil}})
+	var others []string
+	sid, status, out := e.launchHeldAnswer(t, map[string]any{"agentId": "claude-rel", "name": "moved", "cwd": start}, func() {
+		if err := os.Rename(start, start+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(start, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		e.inUse(t, "its start folder replaced, before its process starts", "launch", a)
+		others = replaced(start)
+	})
+	if startsByHandle(t) {
+		if sid == "" {
+			t.Fatalf("the launch did not start: %d %v", status, out)
+		}
+		return sid, a
+	}
+	if sid != "" || status != http.StatusBadGateway || errorCode(out) != "start_failed" {
+		t.Fatalf("the launch, its start folder replaced, where a process starts by its folder's path: %d %v, want 502 start_failed", status, out)
+	}
+	for _, info := range e.srv.registry.List() {
+		if info.Name == "moved" {
+			t.Fatalf("a session was registered: %+v", info)
+		}
+	}
+	ids := append([]string{a}, others...)
+	for _, id := range ids {
+		e.counted(t, "claude-rel", id, 0, 0)
+	}
+	e.removed(t, "its launch refused", ids...)
+	return "", a
 }
 
 // caseFolding is a folder of the test's own on a file system that folds
@@ -675,33 +772,20 @@ func TestASessionIsCountedOnItsOwnAdaptersAccount(t *testing.T) {
 // What a launch holds is decided at its reservation and kept: an entry
 // whose folder variable is not a whole path, h/.claude, started in a folder
 // where h is a link to the directory a registered account's folder is in,
-// holds the account though the start folder is renamed and another
-// directory put in its place after the reservation (at the seam before its
-// process starts, which runs in the folder opened). The remove is refused
-// there, refused once the session is registered, and taken once its
-// process has ended.
+// its start folder renamed and another directory put in its place at the
+// seam before its process starts (launchInReplacedStart). The remove is
+// refused there. On Linux, where the process starts in the folder the
+// launch opened, by its handle, the launch goes on: the remove is refused
+// once the session is registered, and taken once its process has ended.
+// Elsewhere, where the process starts by the folder's path, the launch is
+// refused 502 start_failed, no session is registered, nothing is counted
+// and the remove is taken at once.
 func TestWhatALaunchHoldsIsKeptFromItsReservation(t *testing.T) {
 	e := newBindEnv(t, nil)
-	logins, start := filepath.Join(realRoot(t, t.TempDir()), "logins"), filepath.Join(e.root, "start")
-	for _, d := range []string{filepath.Join(logins, ".claude"), start} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
+	sid, a := e.launchInReplacedStart(t, func(string) []string { return nil })
+	if sid == "" {
+		return
 	}
-	if err := os.Symlink(logins, filepath.Join(start, "h")); err != nil {
-		t.Fatal(err)
-	}
-	a := e.accountAt(t, "claude", "Through a link", filepath.Join(logins, ".claude"))
-	e.addFolderEntries(t, map[string][2]map[string]string{"claude-rel": {{"CLAUDE_CONFIG_DIR": filepath.Join("h", ".claude")}, nil}})
-	sid := e.launchHeld(t, map[string]any{"agentId": "claude-rel", "name": "moved", "cwd": start}, func() {
-		if err := os.Rename(start, start+".old"); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(start, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		e.inUse(t, "its start folder replaced, before its process starts", "launch", a)
-	})
 	e.inUse(t, "its start folder replaced, its session registered", "session moved", a)
 	e.stopAndWait(sid)
 	e.removed(t, "its process ended", a)
@@ -740,33 +824,27 @@ func TestAnAccountRegisteredAfterTheReservationIsNotHeld(t *testing.T) {
 // TestWhatALaunchHoldsIsKeptFromItsReservation, its start folder renamed
 // and another put in its place at the seam before its process starts, and
 // a second Claude Code account registered there on the folder h/.claude
-// now leads to. Its session is counted on the account it holds, running
-// and in both start counts, while it runs and after it has ended; the
-// second account counts none.
+// now leads to (launchInReplacedStart). On Linux, where the process starts
+// in the folder the launch opened, by its handle, the session is counted
+// on the account it holds, running and in both start counts, while it runs
+// and after it has ended, and the second account counts none. Elsewhere,
+// where the process starts by the folder's path, the launch is refused 502
+// start_failed, no session is registered, neither account counts anything
+// and the remove of each is taken at once.
 func TestWhereALaunchIsCountedIsKeptFromItsReservation(t *testing.T) {
 	e := newBindEnv(t, nil)
-	logins, start := filepath.Join(realRoot(t, t.TempDir()), "logins"), filepath.Join(e.root, "start")
-	for _, d := range []string{filepath.Join(logins, ".claude"), start} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Symlink(logins, filepath.Join(start, "h")); err != nil {
-		t.Fatal(err)
-	}
-	a := e.accountAt(t, "claude", "Through a link", filepath.Join(logins, ".claude"))
-	e.addFolderEntries(t, map[string][2]map[string]string{"claude-rel": {{"CLAUDE_CONFIG_DIR": filepath.Join("h", ".claude")}, nil}})
 	var b string
-	sid := e.launchHeld(t, map[string]any{"agentId": "claude-rel", "name": "moved", "cwd": start}, func() {
-		if err := os.Rename(start, start+".old"); err != nil {
-			t.Fatal(err)
-		}
+	sid, a := e.launchInReplacedStart(t, func(start string) []string {
 		now := filepath.Join(start, "h", ".claude")
 		if err := os.MkdirAll(now, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		b = e.accountAt(t, "claude", "Where the name leads now", now)
+		return []string{b}
 	})
+	if sid == "" {
+		return
+	}
 	e.inUse(t, "its start folder replaced, its session registered", "session moved", a)
 	e.counted(t, "claude-rel", a, 1, 1)
 	e.counted(t, "claude-rel", b, 0, 0)
