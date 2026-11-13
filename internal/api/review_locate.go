@@ -187,25 +187,41 @@ func (l *locator) fileAt(ctx context.Context, repo, commit, path string) (gitrep
 
 var errTooManyFiles = errors.New("too many files")
 
+// The locator's words for a file whose move is not known (renamedTo).
+const (
+	whyFilesCut   = "whether it moved is not known: more files changed than one comparison lists"
+	whyRenamesCut = "whether it moved is not known: renames were not looked for or not told apart here"
+)
+
 // renamedTo is path's new path between the commits from and to, as
-// Compare finds renames: "" when it was not renamed, and whether Compare
-// listed every file (a rename past its bound is not found).
-func (l *locator) renamedTo(ctx context.Context, repo, from, to, path string) (string, bool, error) {
+// Compare finds renames ("" when it was not renamed), and, when it was not
+// found renamed, why whether it moved is not known: "" when Compare listed
+// every file and its renames were not cut; whyFilesCut when the comparison
+// was cut at its file bound (gitrepo.Detail.Truncated: the file may be
+// past the files listed); otherwise whyRenamesCut when its renames were cut
+// (gitrepo.Detail.RenamesCut: not looked for, or not told apart).
+func (l *locator) renamedTo(ctx context.Context, repo, from, to, path string) (string, string, error) {
 	k := [3]string{repo, from, to}
 	d, ok := l.diffs[k]
 	if !ok {
 		var err error
 		if d, err = gitrepo.Compare(ctx, repo, from, to); err != nil {
-			return "", false, err
+			return "", "", err
 		}
 		l.diffs[k] = d
 	}
 	for _, c := range d.Changes {
 		if c.Status == "R" && c.From == path {
-			return c.Path, true, nil
+			return c.Path, "", nil
 		}
 	}
-	return "", !d.Truncated, nil
+	switch {
+	case d.Truncated:
+		return "", whyFilesCut, nil
+	case d.RenamesCut:
+		return "", whyRenamesCut, nil
+	}
+	return "", "", nil
 }
 
 // unknownOf is the unknown state of a read that failed, in words.
@@ -245,12 +261,12 @@ func (l *locator) locate(ctx context.Context, f dispatch.Finding, c dispatch.Can
 	file, err := l.fileAt(ctx, repo, c.Commit, path)
 	renamed := ""
 	if errors.Is(err, gitrepo.ErrNoFile) {
-		to, whole, rerr := l.renamedTo(ctx, repo, f.AnchorCommit, c.Commit, path)
+		to, why, rerr := l.renamedTo(ctx, repo, f.AnchorCommit, c.Commit, path)
 		switch {
 		case rerr != nil:
 			return unknownOf(rerr)
-		case to == "" && !whole:
-			return &locatedState{State: locatedUnknown, Why: "more files changed than a rename is looked for in"}
+		case to == "" && why != "":
+			return &locatedState{State: locatedUnknown, Why: why}
 		case to == "":
 			return &locatedState{State: locatedFileGone}
 		case len(to) > dispatch.MaxFindingPath:
