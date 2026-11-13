@@ -1015,8 +1015,13 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	}
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
 		// A comparison's lane reads the ticket its run was launched from
-		// (laneTicket), linked or not.
-		if _, found, err := linkedTicket(ctx, s.dispatch, run); err == nil && found || c.lane == inLane && s.runPackage(run) != nil {
+		// (laneTicket), and no other: a link is not asked about.
+		listed := c.lane == inLane && s.runPackage(run) != nil
+		if c.lane == noLane {
+			_, found, err := linkedTicket(ctx, s.dispatch, run)
+			listed = err == nil && found
+		}
+		if listed {
 			c.Kinds = append(c.Kinds, "ticket_member")
 			c.Scopes = append(c.Scopes, "ticket")
 		}
@@ -1427,7 +1432,8 @@ var overviewLimitNames = []struct {
 
 // limitRoutes is the route each of the overview's limits of an agent's
 // scopes bounds: the overview names one to a caller only when the guide
-// names its route to it (laneGuided).
+// names its route to it (laneGuided), and to a comparison's lane only a
+// limit named here.
 var limitRoutes = map[string]string{
 	"report_message": "POST /api/sessions/{id}/attention",
 	"self_crews":     "POST /api/sessions/{id}/crew",
@@ -1443,12 +1449,14 @@ var limitRoutes = map[string]string{
 // scopes' entries of the limits section whose route the guide names to c,
 // a Brakeman turn's reads and minutes from the snapshot its turn began
 // under, its acts a request with the act scope, and a JSON body's bound
-// for everyone.
+// for every caller but a comparison's lane, which is named only the
+// limits of the routes it is served.
 func overviewLimits(c guideCaller) []string {
 	all := guideLimits()
 	var out, seen []string
 	add := func(name string) {
-		if route, ok := limitRoutes[name]; slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) {
+		route, ok := limitRoutes[name]
+		if slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) || !ok && c.lane != noLane {
 			return
 		}
 		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {
@@ -1514,8 +1522,8 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 			if op.guideInput != nil {
 				op.Input = op.guideInput
 			}
-			if c.lane != noLane && op.Name == "ticket_read" {
-				op.Summary = laneTicketReadWords
+			if words, ok := laneSummaries[op.Name]; ok && c.lane != noLane {
+				op.Summary = words
 			}
 			reached = append(reached, op)
 		}

@@ -1085,7 +1085,8 @@ func readSessionTicket(ctx context.Context, c *crewClient) (json.RawMessage, ses
 }
 
 // sessionTicketText is the session's ticket as writeTicket prints it,
-// after what its launch says (launchText) for a run launched from it.
+// after what its launch says (launchText) for a run launched from it. A
+// comparison's lane reads its ticket without a status (writeTicket).
 func sessionTicketText(st sessionTicket) string {
 	var milestones []dispatch.Milestone
 	if st.Milestone != nil {
@@ -1093,7 +1094,7 @@ func sessionTicketText(st sessionTicket) string {
 	}
 	var b strings.Builder
 	if st.Launch != nil {
-		b.WriteString(launchText(st.Ticket.Key, *st.Launch) + "\n\n")
+		b.WriteString(launchText(st.Ticket.Key, *st.Launch, st.Ticket.Status == "") + "\n\n")
 	}
 	writeTicket(&b, st.Ticket, namesOf(st.Labels, milestones))
 	return b.String()

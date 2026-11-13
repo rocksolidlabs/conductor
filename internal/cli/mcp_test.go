@@ -294,6 +294,38 @@ func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
 	}
 }
 
+// A comparison's lane reads its ticket as the server answers a lane, with
+// no status and no comment numbers: ticket_read and conductor task ticket
+// tell it to say what matters with task_blocked or in its result's
+// summary, and name no ticket_comment.
+func TestALanesTicketReadSaysTaskBlockedOrTheSummary(t *testing.T) {
+	clearConductorEnv(t)
+	reply := `{"ticket":{"id":"t1","key":"CND-1","number":1,"title":"Fast lookup","description":"Make the lookup fast.","acceptance":"It is fast.",` +
+		`"links":[],"attachments":[],"comments":[{"id":"c1","author":"admin","by":"Nate","body":"Use the index.","createdAt":"2026-11-12T00:00:00Z"}]},` +
+		`"launch":{"id":"l1","rev":3,"plan":{"id":"p1","n":1},"digest":"d"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions/s1/ticket" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, reply)
+	}))
+	t.Cleanup(srv.Close)
+	want := "As launched: CND-1 at revision 3, plan revision 1, in .conductor/ticket.md (the package: .conductor/package.json, the attachments in .conductor/attachments/)." +
+		" Whether it changed since cannot be read here. Your run follows the ticket as launched: a change that matters to your work is a person's to decide," +
+		" so say so (task_blocked with why, or your result's summary), never act on it alone.\n\n# CND-1: Fast lookup\n"
+	s := &mcpServer{out: io.Discard, getenv: sessionEnv(srv.URL, "s1", "agent-tok")}
+	text, err := s.call(t.Context(), "ticket_read", nil)
+	if err != nil || !strings.HasPrefix(text, want) || strings.Contains(text, "ticket_comment") || strings.Contains(text, "- status:") || !strings.Contains(text, "Use the index.") {
+		t.Fatalf("a lane's ticket_read: %v\n%s\nwant the start\n%s", err, text, want)
+	}
+	inSessionOf(t, srv.URL, "s1", "agent-tok")
+	if code, out, err := task(t, "", "ticket"); code != 0 || err != nil || out != text {
+		t.Fatalf("a lane's task ticket: %d %v\n%s\nwant ticket_read's\n%s", code, err, out, text)
+	}
+}
+
 // ticket_read takes the largest reply the session's read can make through
 // the session client's limit, and gives the agent the ticket whole: the
 // tool's text, as tools/call puts it in its reply (the round trip of

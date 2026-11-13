@@ -163,7 +163,15 @@ func laneGuided(st laneFact, pattern string) bool {
 
 // laneTicketReadWords is what the guide says ticket_read gives a session
 // of a comparison's lane (laneTicket).
-const laneTicketReadWords = "The Dispatch ticket your run was launched from: its title, description and acceptance criteria as launched; the links, attachments and comments it had then that have not changed since; and people's comments as they are now. Nothing else of the ticket, and no read of a linked item."
+const laneTicketReadWords = "The ticket your run was launched from: its title, description and acceptance as launched; its links and attachments from before the launch, each as added; comments from before the launch that nothing changed since; people's comments (the admin's, a user's) as they are now. Nothing else."
+
+// laneSummaries is what the guide says of an operation to a session of a
+// comparison's lane, where the route serves a lane its lane alone.
+var laneSummaries = map[string]string{
+	"ticket_read":  laneTicketReadWords,
+	"run_status":   "This session's run as its lane: its lane's members and tasks, with their states.",
+	"message_send": "Send a member of your lane a message, typed into its session once its attempt has its task.",
+}
 
 // laneClosedWords is the one sentence every route closed to a
 // comparison's lane answers its session with (409 lane).

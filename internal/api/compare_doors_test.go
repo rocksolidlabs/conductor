@@ -98,15 +98,7 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	title := tk["title"].(string)
 	delete(tk, "title")
 	e.newDispatchTicket(t, "CND", title, tk)
-	c, err := crew.CompareTemplate(crew.CompareSpec{Name: "Compare", Cwd: repo, Goal: "Make the lookup fast.", Instructions: "Make it fast.",
-		Criteria:   []crew.Criterion{{ID: "fast", Text: "The lookup is fast."}},
-		Checks:     []crew.Check{{ID: "ok", Argv: []string{"true"}}},
-		Candidates: []crew.CandidateSpec{{AgentID: "ready-cat", Approach: "Cache every answer."}, {AgentID: "ready-cat", Approach: "Index the table."}},
-		Reviews:    true, ReviewAgent: "ready-cat"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved, err := e.srv.crews.Create(c)
+	saved, err := e.srv.crews.Create(compareCrewIn(t, repo))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +131,21 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 		ce.member, ce.plainTok = ce.session(t, ce.plain, "build")
 	}
 	return ce
+}
+
+// compareCrewIn is the env's comparison in repo: two candidates,
+// approach-a and approach-b, each reviewed.
+func compareCrewIn(t *testing.T, repo string) crew.Crew {
+	t.Helper()
+	c, err := crew.CompareTemplate(crew.CompareSpec{Name: "Compare", Cwd: repo, Goal: "Make the lookup fast.", Instructions: "Make it fast.",
+		Criteria:   []crew.Criterion{{ID: "fast", Text: "The lookup is fast."}},
+		Checks:     []crew.Check{{ID: "ok", Argv: []string{"true"}}},
+		Candidates: []crew.CandidateSpec{{AgentID: "ready-cat", Approach: "Cache every answer."}, {AgentID: "ready-cat", Approach: "Index the table."}},
+		Reviews:    true, ReviewAgent: "ready-cat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 // session is the task's first attempt's session once it runs, and its
