@@ -195,13 +195,21 @@ func TestSuitePassesEveryFake(t *testing.T) {
 			{Kind: ext.KindEntitlements, Name: "fake-plans", Value: plans},
 		},
 	}
+	// A provider that offers a sign-in, its BeginSignIn moving it to a code.
+	signIn := NewFakeSignIn("fake-signin")
+	signIn.Add("tok-admin", ada)
+	signIn.OnBegin(ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "https://id.example.com/device"})
 	errs := record(t, func(t T) {
 		Starter(t, n, keyed())
 		RunAll(t, n, p, Started(), WithRuntimeCase(rc))
 		Identity(t, n, id, []string{"tok-admin"}, []string{UnknownToken})
+		Identity(t, n, signIn, []string{"tok-admin"}, []string{UnknownToken})
 	})
 	for _, e := range errs {
 		t.Error(e)
+	}
+	if signIn.Begins() == 0 || signIn.SignOuts() == 0 {
+		t.Errorf("Identity did not check the sign-in: %d begins, %d sign-outs", signIn.Begins(), signIn.SignOuts())
 	}
 	// The suite reached each of them.
 	if len(router.Decisions()) == 0 || len(router.Resolutions()) == 0 || len(cx.Queries()) == 0 || len(cx.Touches()) == 0 ||
@@ -265,6 +273,22 @@ func (p quitterIdentity) Authenticate(ctx context.Context, tok string) (ext.Prin
 	}
 	conn.Close()
 	return ada, tok == "tok-q", nil
+}
+
+// dialSignIn begins its sign-in by dialling its service under the call's
+// context.
+type dialSignIn struct {
+	*FakeSignIn
+	n    *Network
+	addr string
+}
+
+func (p dialSignIn) BeginSignIn(ctx context.Context) error {
+	conn, err := p.n.DialContext(ctx, "tcp", p.addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 // emptyIdentity admits every token, the empty one too.
@@ -513,6 +537,14 @@ func TestSuiteCatchesABreach(t *testing.T) {
 		{"a wait on the network under a context of its own", func(t T, n *Network) {
 			Identity(t, n, waitIdentity{&http.Client{Transport: n.Transport()}, srv.URL}, nil, nil)
 		}, []string{`exttest: Identity "waiter": Authenticate did not return within 1s with the network blocked`, "article 8"}},
+		{"a sign-in that dials under the call's context", func(t T, n *Network) {
+			Identity(t, n, dialSignIn{NewFakeSignIn("dial-signin"), n, srv.Listener.Addr().String()}, nil, nil)
+		}, []string{`exttest: SignIn "dial-signin": BeginSignIn dialled tcp`, "under its call's context", "article 8"}},
+		{"a sign-in's page over http", func(t T, n *Network) {
+			f := NewFakeSignIn("http-signin")
+			f.OnBegin(ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "http://id.example.com/device"})
+			Identity(t, n, f, nil, nil)
+		}, []string{`exttest: SignIn "http-signin": SignInStatus answered a status that is not valid`, "url is not https"}},
 		{"ok for the empty token", func(t T, n *Network) {
 			Identity(t, n, emptyIdentity{}, nil, nil)
 		}, []string{`exttest: Identity "lenient": Authenticate said ok for the empty token: nothing is recognised for an empty token`}},
@@ -914,7 +946,151 @@ func TestBreachWordsKeepTokens(t *testing.T) {
 			t.Errorf("the Network recorded %q, with its query or user information", d.URL)
 		}
 	}
+
+	// The sign-in's findings keep out the same tokens: its methods fail and
+	// panic with words that hold one.
+	leaky := leakySignIn{NewFakeSignIn("leaky"), secret}
+	leaky.Add(secret, ada)
+	errs = record(t, func(rt T) {
+		Identity(rt, n, leaky, []string{secret}, []string{UnknownToken})
+	})
+	for _, m := range []string{"SignInStatus", "BeginSignIn"} {
+		if !said(errs, `exttest: SignIn "leaky": `+m+` panicked: refused [token] ([token], [token])`) {
+			t.Errorf("%s's panic was not said with its token stood in for: %q", m, errs)
+		}
+	}
+	for _, e := range errs {
+		for _, kept := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+			if strings.Contains(e, kept) {
+				t.Errorf("the suite printed %q: %s", kept, e)
+			}
+		}
+	}
+
+	// The sign-in's first call, its name, keeps them out too: a provider
+	// whose name, once it has authenticated, panics with the token or is
+	// words that hold it.
+	for _, c := range []struct {
+		panics bool
+		want   string
+	}{
+		{true, `exttest: SignIn "?": Name panicked: refused [token] ([token], [token])`},
+		{false, `exttest: SignIn "refused [token] ([token], [token])": Name "refused [token] ([token], [token])" is not a provider's name`},
+	} {
+		named := nameLeak{leakySignIn{NewFakeSignIn("leaky"), secret}, c.panics, new(atomic.Bool)}
+		named.Add(secret, ada)
+		errs = record(t, func(rt T) {
+			Identity(rt, n, named, []string{secret}, []string{UnknownToken})
+		})
+		if !said(errs, c.want) {
+			t.Errorf("the sign-in's name was not said with its token stood in for (panics %v): %q", c.panics, errs)
+		}
+		for _, e := range errs {
+			for _, kept := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+				if strings.Contains(e, kept) {
+					t.Errorf("the suite printed %q: %s", kept, e)
+				}
+			}
+		}
+	}
+
+	// Two tokens, one the start of the other, the shorter given first: the
+	// longer is stood in for whole, in each of its forms, and nothing of
+	// what follows the shorter in it is printed.
+	const short, long = "tok-pair", "tok-pair+tailpart/="
+	pair := leakySignIn{NewFakeSignIn("leaky"), long}
+	pair.Add(short, ada)
+	pair.Add(long, ada)
+	errs = record(t, func(rt T) {
+		Identity(rt, n, pair, []string{short, long}, []string{UnknownToken})
+	})
+	if !said(errs, `exttest: SignIn "leaky": SignInStatus panicked: refused [token] ([token], [token])`) {
+		t.Errorf("the longer token was not stood in for whole: %q", errs)
+	}
+	for _, e := range errs {
+		for _, kept := range []string{short, long, url.QueryEscape(long), url.PathEscape(long), "tailpart"} {
+			if strings.Contains(e, kept) {
+				t.Errorf("the suite printed %q: %s", kept, e)
+			}
+		}
+	}
 }
+
+// A signed-in who that shows nothing once cleaned as the server cleans it
+// (without Unicode's Cf, Zl and Zp, trimmed of white space at both ends)
+// is one finding of the sign-in's check; one that shows something is none.
+func TestSignInBlankWho(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, who string
+		found     bool
+	}{
+		{"a zero-width space", string(rune(0x200b)), true},
+		{"spaces", "   ", true},
+		{"a soft hyphen", string(rune(0xad)), true},
+		{"a name beside a soft hyphen", "ana" + string(rune(0xad)), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			f := NewFakeSignIn("blank-signin")
+			st := ext.SignInStatus{State: ext.SignedIn, Who: c.who}
+			f.SetStatus(st)
+			f.OnBegin(st)
+			f.OnSignOut(st)
+			errs := record(t, func(rt T) { SignIn(rt, NewNetwork(), f) })
+			want := 0
+			if c.found {
+				want = 1
+				if !said(errs, `exttest: SignIn "blank-signin": SignInStatus answered a signed-in who that shows nothing once cleaned of Unicode's Cf, Zl and Zp and of white space at both ends: the server does not take it`) {
+					t.Errorf("the blank who was not said: %q", errs)
+				}
+			}
+			if len(errs) != want {
+				t.Errorf("%d findings, want %d: %q", len(errs), want, errs)
+			}
+		})
+	}
+}
+
+// nameLeak is a leakySignIn whose name, once it has authenticated a
+// token, panics with words that hold its token (panics) or is those words.
+type nameLeak struct {
+	leakySignIn
+	panics bool
+	authed *atomic.Bool
+}
+
+func (p nameLeak) Authenticate(ctx context.Context, tok string) (ext.Principal, bool, error) {
+	p.authed.Store(true)
+	return p.FakeSignIn.Authenticate(ctx, tok)
+}
+
+func (p nameLeak) Name() string {
+	switch {
+	case !p.authed.Load():
+		return "leaky"
+	case p.panics:
+		panic(p.words())
+	}
+	return p.words()
+}
+
+// leakySignIn's sign-in fails and panics with words that hold token, in
+// each of its forms.
+type leakySignIn struct {
+	*FakeSignIn
+	token string
+}
+
+func (p leakySignIn) words() string {
+	return fmt.Sprintf("refused %s (%s, %s)", p.token, url.QueryEscape(p.token), url.PathEscape(p.token))
+}
+
+func (p leakySignIn) SignInStatus() ext.SignInStatus { panic(p.words()) }
+func (p leakySignIn) BeginSignIn(context.Context) error {
+	panic(p.words())
+}
+func (p leakySignIn) SignOut(context.Context) error { return errors.New(p.words()) }
 
 // refusedStarter's Start begins a goroutine whose Launch its host holds,
 // and returns once the host holds it; the goroutine hands back what the
