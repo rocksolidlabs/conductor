@@ -6000,9 +6000,12 @@ never lets the app's router read a fragment that carries either key, in any
 spelling: the fragment is taken out of the address before the app's router
 reads it, and one that arrives after the load is written to the browser's
 storage for its credential alone and loads the page again at the clean
-address only when it changed what that storage held; a fragment that holds
-both keys gives neither. The pass is kept for the tab (`sessionStorage`)
-until a `401` to a request sent with it, and sent only in
+address only when it changed what that storage held (in the desktop app the
+workbench token is kept in memory from the app's bridge, not in the
+browser's storage, and a later link's token changes nothing there); a
+fragment that holds both keys gives neither. The pass is kept for the tab
+(`sessionStorage`) until a `401` to a request sent with it, or until a
+later link stores another, and sent only in
 the `Authorization` header of the four routes, never in a URL. The decide
 page (`/decide`, `/decide/<did>`, drawn for a tab that holds a pass and no
 workbench token) reads the list and each open card, at most four cards open,

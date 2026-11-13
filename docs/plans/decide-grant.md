@@ -764,7 +764,10 @@ pass is held:
   for it alone (`stored`: the tab's for a pass, the workbench's for the
   token), never to what the running page holds and sends; it loads the
   page again at the clean address (`location.reload()`) only when that
-  write was taken and changed what the storage held. A fragment that
+  write was taken and changed what the storage held. In the desktop
+  app, which keeps the workbench token in memory from its bridge and
+  not in the browser's storage, a later link's token is written nowhere
+  and changes nothing. A fragment that
   takes nothing, one that carries the credential the storage already
   holds, and a write the browser refuses leave the page as it is,
   drafts and an answer held with it; a load drops what the page held
@@ -779,9 +782,12 @@ pass is held:
   the next navigation; no code of the app makes one. Where the browser
   refuses the tab's storage, a link opened in a tab that already shows
   the page is not taken: load it in a new tab.
-- `middleware/decide.global.ts` (new), synchronous over the stores, and
-  on the first navigation over `to.hash` too (`takeCredentials`), so it
-  judges right whether it runs before or after the plugin: a workbench
+- `middleware/decide.global.ts` (new), synchronous over the stores and
+  over each navigation's own fragment (`decideRedirect`: a key the
+  fragment carries counts as held, and a fragment that carries a key
+  is dropped whole), so it judges right whether it runs before or after
+  the plugin; it stores nothing: the plugin, not the guard, takes a
+  fragment at a load and at a later link. A workbench
   token held, `/decide/<did>` goes to the operator's
   `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
   workbench token and a pass held, the operator page's own address of
@@ -810,7 +816,8 @@ pass is held:
     your answer.") with Open, disabled while four are open ("Four are
     open: close one to open another."). A card offers Close only while
     it holds no draft and no answer whose outcome is not yet known, so
-    no draft is ever put out of sight; a closed card's state is kept, so
+    no draft is ever put out of sight except by Dismiss of a card that
+    ended; a closed card's state is kept, so
     Open again draws it as it was and reads it at once. A card closed by
     a refusal (`gone`) or at a final outcome reads no more and is not
     counted among the four; Dismiss drops it and everything the page
@@ -869,7 +876,9 @@ pass is held:
     of objects each with a text label, `createdAt` and the other words
     strings, `recommendation` an integer, `own` a list of receipts each
     with a text `responseId` and `status`); anything else is a read that
-    failed, and nothing the card shows changes. A card draws a `type` only when it is one of the three the
+    failed, and nothing the card shows changes. Who the pass is is taken
+    the same way (`isMe`: `name` and `subject` each a text or absent,
+    `grants` a list of texts); anything else is a read that failed. A card draws a `type` only when it is one of the three the
     protocol names, and its "Asked" line only when `createdAt` parses;
     nothing a reply carries makes a card wider than the page.
   - **One order for a card, whichever reply brings it.** A card keeps
@@ -905,8 +914,11 @@ pass is held:
     the card takes draws its view and renews no mark. A reply that is
     `taken` clears the card's marks, so no new answer is sent until a
     read made after it renews the view: the read on its way, begun
-    before, is aborted, and one starts at once, whether or not the reply
-    carried a view.
+    before, is aborted, and, while the decision is not at an end, one
+    starts at once while the page is shown (hidden, it is due until the
+    page is shown), whether or not the reply carried a view. A read
+    whose view carries the held answer's receipt counts as a view read
+    after the answer: it settles the answer and renews the marks.
     The list keeps a `freshAt` and a `freshWall` of its own under the
     same rule, judged by one function at the moment a card is opened
     from it, by Open and by the list's own opening alike: while it is
@@ -932,7 +944,7 @@ pass is held:
     |---|---|---|---|---|
     | the person edits | `{choice?, text, rationale}`, as typed | none | the form | `useDecide.test.ts`: the draft kept through a refused read |
     | the person sends | kept | `{responseId, choice?, text?, rationale?, expectedRev}`: a new `responseId` minted for this send, the draft's fields and the `rev` of `view`, frozen as sent | "Sending"; Send disabled | the body sent is `sent`, byte for byte |
-    | `201`, or `200` repeat, whose receipt names `sent.responseId` | kept | cleared | the receipt; the card not fresh (its marks cleared, no new answer) until a read made after it, which starts at once, renews the view; then the outcome from that read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts`: a receipt with no view, the read at once, a read that fails keeping it so |
+    | `201`, or `200` repeat, whose receipt names `sent.responseId` | kept | cleared | the receipt; the card not fresh (its marks cleared, no new answer) until a read made after it renews the view, a read that starts at once while the page is shown and the decision is not at an end; then the outcome from that read | `TestDecideOwnCarriesTheResponseID` (Go); `useDecide.test.ts`: a receipt with no view, the read at once, a read that fails keeping it so |
     | a definite refusal (a `4xx` with a code that judges a response, `DECIDE_JUDGING` in `utils/decisions.ts`, the server's own list: `decision_answered`, `decision_closed`, `stale_decision`, `not_approver`, `response_conflict`, `not_held`, `stale_policy`, `invalid`, `decision_limit`) | kept | cleared: its id is done with (a kept refusal is replayed for it, another body refused `response_conflict`) | its code's words; the next Send is a new attempt, with a new `responseId` and the latest `view.rev` | `TestDecideOwnCarriesTheResponseID`: after a kept `stale_decision`, the same id with the new rev `response_conflict`, a new id accepted; `useDecide.test.ts`: a new id after a refusal |
     | no definite answer (anything else: no reply, an abort, a `5xx`, `503 decision_moved`, a `429 rate_limited`, a `4xx` with another code or none, a reply past its bound, a `2xx` whose receipt names another response id or none) | kept | kept as it was | the app's own fixed words, "Not known whether your answer to dr-7 was recorded: send it again."; for `rate_limited`, "The server is working on other requests of yours: send your answer to dr-7 again in a moment."; Send again sends `sent` unchanged, never the draft. One rule (`answerable`) says whether it is offered: the page alive, the card the page's own, nothing of the page being sent, and the decision not answered `404` to this pass; a final outcome a read shows (`applied`, `not_used`) does not withdraw it, and the server's reply judges the send (its own receipt settles it, a judging refusal releases it with its words) | `TestDecideOwnCarriesTheResponseID`: the same body again `200` repeat with the saved receipt; `useDecide.test.ts`: the retry's body equals the first, after each final outcome too |
     | a read whose `own` holds `sent.responseId` | kept | resolved by that receipt (accepted, or the refusal row above) | as that row | `useDecide.test.ts`: a receipt of another `responseId` (another tab of the same subject) resolves nothing |
@@ -1042,10 +1054,11 @@ and `decideAdmission`; the `ext` row names three grants.
 ## Events, orderings and invariants
 
 **The pass.** The plugin reads the fragment, replaces the address bar's
-URL with both keys taken out, and only then stores what it took; no
-request is made before it runs (it is a client plugin, ahead of the first
-page's setup), and the middleware judges from the fragment itself if it
-runs first. The pass leaves the browser only in an `Authorization` header
+URL with the whole fragment dropped when it carries either key, and only
+then stores what it took; a fragment that carries both keys gives
+neither. No request is made before it runs (it is a client plugin, ahead
+of the first page's setup), and the middleware judges from the fragment
+itself if it runs first. The pass leaves the browser only in an `Authorization` header
 `useDecide` sets; the server reads no pass from a query (every decide
 route calls `presentedToken(r, false)`). A stored workbench
 token is never written by this path, and while one is stored the pass is
@@ -1379,16 +1392,22 @@ The issue's three stream tests, as reads (PR-1), so nothing of them is dropped
 Vitest, every file in PR-2 (`npm --prefix web test`, with `npm --prefix web run typecheck`):
 
 - `utils/identityPass.test.ts`: a 2,048-character pass with dots taken,
-  2,049 refused, a character outside the set refused; both keys dropped
-  from the fragment, the rest kept, a refused value dropped too;
+  2,049 refused, a character outside the set refused; a fragment that
+  carries a key dropped whole, in any spelling, and one that carries
+  both keys giving neither; a refused value dropped too; a fragment
+  with neither key left as it is;
   `decideRedirect`'s rules (a workbench token held, a pass held, both,
   neither; the first navigation's fragment; with a pass alone,
   `/decisions?item=decision:<did>` to `/decide/<did>` and an `item` that
   is not a decision's to `/decide`).
 - `composables/useIdentityPass.test.ts`: the pass in `sessionStorage`,
   never `localStorage`; a stored workbench token never replaced; a new
-  pass replaces the old; after `end()` the store is empty; storage
-  refused, in memory.
+  pass replaces the old; `end(refused)` ends the pass it was sent with,
+  the page's when it is that pass and the stored one only while the
+  storage still holds that pass, a later pass stored kept for the next
+  load and neither ended at a refusal of another pass; `stored` writes
+  the tab's storage alone and answers true only when it took a pass that
+  differs; storage refused, in memory.
 - `composables/useDecide.test.ts` (a fake fetch whose replies the test
   releases, `vi.useFakeTimers()`, `whenIdle()`): every request to one of
   the four routes, the pass in its header and in no URL; a read due

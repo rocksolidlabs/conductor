@@ -34,7 +34,7 @@ test("the workbench token in the fragment, in any spelling: signed in, and no ad
   }
 })
 
-test('the workbench token in a fragment that arrives after the load, in any spelling: the page loads again signed in, and nothing of it holds the token', async ({ browser, state }) => {
+test("the workbench token in a fragment that arrives after the load, in any spelling: the page loads again signed in, and the address, the history state, the entries and the router's route hold none of it", async ({ browser, state }) => {
   const token = state.token
   for (const fragment of [`token=${token}`, `%74oken=${token}`, `%74oken=${token}&%E0`]) {
     const ctx = await browser.newContext()

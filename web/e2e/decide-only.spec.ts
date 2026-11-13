@@ -83,7 +83,7 @@ const focus = (page: Page) => page.evaluate(() => window.dispatchEvent(new Event
 
 const signedIn = (page: Page) => page.locator('[data-decide-signed-in]')
 
-test('a pass in a fragment that arrives after the load, in any spelling: the page loads again signed in with it, and nothing of the page holds it', async ({ browser }) => {
+test("a pass in a fragment that arrives after the load, in any spelling: the page loads again signed in with it, and the address, the history state, the entries and the router's route hold neither pass", async ({ browser }) => {
   for (const fragment of [`pass=${OTHER}`, `%70ass=${OTHER}`, `%70ass=${OTHER}&%E0`]) {
     const { ctx, page, sent } = await tab(browser)
     const rec = await recorder(page)
@@ -207,12 +207,18 @@ test("a later link with another pass: the address rewritten at once, the page lo
   await ctx.close()
 })
 
-test('a later link with the same pass, a value not shaped as a pass, or both keys: the address rewritten, no load, and the draft typed before still there', async ({ browser, state }) => {
+test('a later link with the same pass, a value not shaped as a pass, or both keys: the address rewritten, no load, the draft typed before still there, and an answer whose outcome was not known still held', async ({ browser, state }) => {
   for (const fragment of [`pass=${PASS}`, 'pass=not!a*pass', `pass=${OTHER}&token=${state.token}`]) {
     const { ctx, page, sent } = await tab(browser)
     const rec = await recorder(page)
     const { text } = await signedInWithDraft(page)
+    // The draft sent, its respond aborted by the stub: the answer is held, its outcome not known, with Send again.
+    const c = card(page, 'dr-7')
+    await c.locator('[data-decide-send]').click()
+    await expect(c.locator('[data-decide-unknown]')).toContainText('Not known whether your answer to dr-7 was recorded')
     await fragmentChanged(page, rec, fragment, 'kept')
+    await expect(c.locator('[data-decide-unknown]'), fragment).toContainText('Not known whether your answer to dr-7 was recorded')
+    await expect(c.getByRole('button', { name: 'Send again' }), fragment).toBeEnabled()
     await expect(text).toHaveValue('btree, keyed by run')
     await expect(signedIn(page)).toHaveText('Signed in as Ana')
     expect(await passStored(page), fragment).toBe(PASS)

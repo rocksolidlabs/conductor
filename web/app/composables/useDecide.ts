@@ -145,6 +145,8 @@ const isView = (v: unknown, id: string): v is DecideView =>
   (v.options === undefined || (Array.isArray(v.options) && v.options.every((o) => isObject(o) && typeof o.label === 'string' && isText(o.tradeoffs)))) &&
   Array.isArray(v.own) &&
   v.own.every((r) => isObject(r) && typeof r.responseId === 'string' && typeof r.status === 'string' && isText(r.code))
+/** Who the pass is, as the page draws it: `name` and `subject` each a text or absent, `grants` a list of texts. */
+const isMe = (v: unknown): v is MeReply => isObject(v) && isText(v.name) && isText(v.subject) && Array.isArray(v.grants) && v.grants.every((g) => typeof g === 'string')
 /** A read's definite refusal: a 403 with a code (a server that serves no decisions to this pass). */
 const refusal = (r: Reply) => r.status === 403 && typeof r.body?.error?.code === 'string'
 
@@ -317,8 +319,8 @@ export function createDecide(env: DecideEnv, did?: string) {
     if (!page.me) {
       const r = await call('GET', '/api/me', MAX_ME_REPLY, undefined, signal)
       if (signal.aborted || !alive()) return
-      if (r.status !== 200 || !Array.isArray(r.body?.grants)) return listFailed(r, 'meFailed')
-      page.me = r.body as MeReply
+      if (r.status !== 200 || !isMe(r.body)) return listFailed(r, 'meFailed')
+      page.me = r.body
       page.meFailed = false
       if (!page.me.grants.includes(GRANT_DECIDE) || page.me.grants.includes('admin')) {
         page.notForIt = true

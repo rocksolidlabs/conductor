@@ -310,6 +310,21 @@ describe('the reads', () => {
     d.stop()
   })
 
+  for (const [what, name] of [['a number', 7], ['a list', ['Ana']], ['an object', { first: 'Ana' }]] as const) {
+    it(`takes no reply of who the pass is whose name is ${what}: nothing changes, the read failed, and it is tried again`, async () => {
+      const d = createDecide(env, 'dr-7')
+      d.start()
+      await answer('/api/me', 200, { ...ME, name })
+      expect(d.page).toMatchObject({ me: null, meFailed: true, notForIt: false, ended: false, list: { loaded: false, failed: false, refused: false } })
+      expect(d.page.cards).toHaveLength(0)
+      expect(reqs.map((r) => r.path)).toEqual(['/api/me'])
+      await vi.advanceTimersByTimeAsync(10_000)
+      await answer('/api/me', 200, ME)
+      expect(d.page).toMatchObject({ me: ME, meFailed: false })
+      d.stop()
+    })
+  }
+
   it('reads no more after a 403 with a code to /api/me, and says the refusal', async () => {
     const d = createDecide(env, 'dr-7')
     d.start()

@@ -10,7 +10,9 @@ import { takeCredentials } from '~/utils/identityPass'
  * token goes into the workbench token store and the pass into the tab's pass store. A fragment that arrives after the load is written
  * to the browser's storage for its credential alone, never to what the running page holds and sends, and the page is loaded again only
  * when that write was taken and changed what the storage held; a load drops what the page held (drafts, an answer whose outcome was not
- * known). A refused value is stored nowhere. A fragment with no key, that can be read, is left to the router.
+ * known). In the desktop app the workbench token is kept in memory from the app's bridge, not in the browser's storage: a later link's
+ * token is written nowhere there and changes nothing. A refused value is stored nowhere. A fragment with no key, that can be read, is
+ * left to the router.
  */
 export default defineNuxtPlugin({
   name: 'conductor:fragment-credentials',

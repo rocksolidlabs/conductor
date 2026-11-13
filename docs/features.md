@@ -6148,9 +6148,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   to what the running page holds and sends, and loads the page again at
   the clean address only when it changed what that storage held; a
   load drops what the page held (drafts, an answer whose outcome was
-  not known). Where the browser refuses the tab's storage, a link
-  opened in a tab that already shows the page is not taken: load it in
-  a new tab.
+  not known). In the desktop app the workbench token is kept in memory
+  from the app's bridge, not in the browser's storage, and a later
+  link's token changes nothing there. Where the browser refuses the
+  tab's storage, a link opened in a tab that already shows the page is
+  not taken: load it in a new tab.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do
