@@ -1,0 +1,30 @@
+{
+  "id": "example-test-fixer",
+  "name": "Example: test fixer",
+  "goal": "Make this repository's test suite pass without weakening a test",
+  "cwd": "/srv/work",
+  "where": "server",
+  "isolation": "worktree",
+  "openAfterLaunch": true,
+  "members": [
+    {
+      "name": "triage",
+      "agentId": "claude",
+      "prompt": "Run this repository's test suite for this goal: $GOAL. Write TRIAGE.md at the top of the repository: every failing test, its cause as far as you can tell, grouped by the production file to change. Commit it on your branch and report done. Fix nothing yourself.",
+      "start": {
+        "when": "immediately"
+      }
+    },
+    {
+      "name": "fixer",
+      "agentId": "codex",
+      "prompt": "Start by merging the triage branch, which holds TRIAGE.md: git merge --no-edit crew/$CONDUCTOR_RUN/triage (your run is in $CONDUCTOR_RUN). Then fix the failures TRIAGE.md lists, for this goal: $GOAL. Change production code before tests; never delete, skip or loosen a test. Commit once per group in TRIAGE.md and report done when the whole suite passes.",
+      "start": {
+        "when": "after",
+        "member": "triage"
+      }
+    }
+  ],
+  "createdAt": "2026-11-01T09:00:00Z",
+  "updatedAt": "2026-11-01T09:00:00Z"
+}

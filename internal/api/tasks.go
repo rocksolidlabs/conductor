@@ -181,6 +181,8 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "too_many_commands", err.Error())
 	case errors.Is(err, crew.ErrInboxFull):
 		writeError(w, http.StatusTooManyRequests, "inbox_full", err.Error())
+	case errors.Is(err, crew.ErrLane):
+		writeError(w, http.StatusConflict, "lane", err.Error())
 	case errors.Is(err, crew.ErrBadMessage), errors.Is(err, crew.ErrBadBlocker), errors.Is(err, crew.ErrBadCheckpoint), errors.Is(err, crew.ErrReviewNoCheck):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, crew.ErrMemberNotFound):
@@ -363,7 +365,8 @@ func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request) {
 // handleSessionMessages sends a message from the session's member: body
 // {to, text}; 201 {message}; 404 no_member; 429 inbox_full once the
 // recipient has 50 not acknowledged; 400 for an empty text or one over
-// 4,000 characters.
+// 4,000 characters; 409 lane, nothing written, for a member in another
+// lane of a comparison.
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
 	if !ok {

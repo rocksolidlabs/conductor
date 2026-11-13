@@ -1,0 +1,30 @@
+{
+  "id": "example-dependency-upgrade",
+  "name": "Example: dependency upgrade",
+  "goal": "Upgrade this repository's direct dependencies to their latest compatible versions, one at a time, with the test suite passing after each",
+  "cwd": "/srv/work",
+  "where": "server",
+  "isolation": "worktree",
+  "openAfterLaunch": true,
+  "members": [
+    {
+      "name": "scout",
+      "agentId": "codex",
+      "prompt": "Survey this repository's direct dependencies for this goal: $GOAL. Write UPGRADES.md at the top of the repository: each dependency with its current and latest versions, the ones furthest behind first, and a note on any whose release notes announce a breaking change. Commit it on your branch and report done. Upgrade nothing yourself.",
+      "start": {
+        "when": "immediately"
+      }
+    },
+    {
+      "name": "upgrader",
+      "agentId": "claude",
+      "prompt": "Start by merging the scout's branch, which holds UPGRADES.md: git merge --no-edit crew/$CONDUCTOR_RUN/scout (your run is in $CONDUCTOR_RUN). Then upgrade the dependencies UPGRADES.md lists, for this goal: $GOAL, one dependency per commit, running the test suite after each and fixing what the upgrade breaks. Skip, and note in UPGRADES.md, any that cannot be made to pass. Report done with the list of what moved.",
+      "start": {
+        "when": "after",
+        "member": "scout"
+      }
+    }
+  ],
+  "createdAt": "2026-11-01T09:00:00Z",
+  "updatedAt": "2026-11-01T09:00:00Z"
+}
