@@ -71,9 +71,10 @@ const (
 
 // trackerCaps is the caps of a route's steps; the product's are
 // defaultTrackerCaps, a test's scaled down through externalState.caps.
-type trackerCaps struct{ busy, reads, images, merged, write time.Duration }
+type trackerCaps struct{ busy, reads, images, merged, write, post time.Duration }
 
-var defaultTrackerCaps = trackerCaps{busy: trackerBusyWait, reads: trackerReadsBudget, images: trackerImagesBudget, merged: mergedReadsBudget, write: dispatchWriteTimeout}
+var defaultTrackerCaps = trackerCaps{busy: trackerBusyWait, reads: trackerReadsBudget, images: trackerImagesBudget, merged: mergedReadsBudget, write: dispatchWriteTimeout,
+	post: publishPostBudget}
 
 // externalState is the server's part of this file: the locks of a
 // ticket's and a link's reads, held from the request to GitHub to the
@@ -95,6 +96,8 @@ type externalState struct {
 	// ended by its context.
 	stop    context.Context
 	stopped context.CancelFunc
+	// now, when set, is the publications' clock (dispatch_publish.go).
+	now func() time.Time
 }
 
 // stopping is the context that ends as the server begins to stop.

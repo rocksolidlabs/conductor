@@ -274,6 +274,15 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/external/authority": {"/api/dispatch/tickets/CND-1/external/authority", map[string]any{"opId": "e5", "field": "title", "owner": "dispatch"}},
 	"POST /api/dispatch/tickets/{key}/links/{id}/read":    {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", map[string]any{}},
 	"GET /api/dispatch/tickets/{key}/links/{id}/read":     {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", nil},
+	// A ticket's publications (dispatch_publish.go).
+	"GET /api/dispatch/tickets/{key}/publish/offer": {"/api/dispatch/tickets/CND-1/publish/offer", nil},
+	"POST /api/dispatch/tickets/{key}/publications": {"/api/dispatch/tickets/CND-1/publications", map[string]any{"opId": "f1", "target": "linked", "body": "x"}},
+	"GET /api/dispatch/tickets/{key}/publications":  {"/api/dispatch/tickets/CND-1/publications", nil},
+	"GET /api/dispatch/publications/{id}":           {"/api/dispatch/publications/0123456789abcdef", nil},
+	"POST /api/dispatch/publications/{id}/send":     {"/api/dispatch/publications/0123456789abcdef/send", map[string]any{"opId": "f2", "postSha256": "0"}},
+	"POST /api/dispatch/publications/{id}/check":    {"/api/dispatch/publications/0123456789abcdef/check", map[string]any{}},
+	"POST /api/dispatch/publications/{id}/close":    {"/api/dispatch/publications/0123456789abcdef/close", map[string]any{"opId": "f3"}},
+	"POST /api/dispatch/publications/{id}/discard":  {"/api/dispatch/publications/0123456789abcdef/discard", map[string]any{"opId": "f4"}},
 }
 
 // eachDispatchRoute calls f with every Dispatch route the server has, by
@@ -1640,7 +1649,8 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	refusal := strings.TrimPrefix(dispatch.ErrBadBy.Error(), "dispatch: ")
 	// A read of GitHub's that runs no operation takes no opId: a body at
 	// its bound is read whole and refused for its first member.
-	noOp := map[string]bool{"POST /api/dispatch/external/preview": true, "POST /api/dispatch/tickets/{key}/links/{id}/read": true}
+	noOp := map[string]bool{"POST /api/dispatch/external/preview": true, "POST /api/dispatch/tickets/{key}/links/{id}/read": true,
+		"POST /api/dispatch/publications/{id}/check": true}
 	// shapes are the bodies of n bytes that are not JSON, with their
 	// Content-Type: the upload's, its display name one character past its
 	// bound and its file the rest.
@@ -1692,7 +1702,7 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 			}
 		}
 	}
-	if writes != 43 {
+	if writes != 48 {
 		t.Fatalf("%d writes", writes)
 	}
 }

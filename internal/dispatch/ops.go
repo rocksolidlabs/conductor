@@ -83,6 +83,10 @@ func (op Op) check() error {
 	return nil
 }
 
+// Check is check, for a caller that takes an operation's fields before
+// the store runs it.
+func (op Op) Check() error { return op.check() }
+
 // The statuses of a receipt.
 const (
 	StatusDone   = "done"
