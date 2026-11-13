@@ -14,12 +14,12 @@ import {
   figureWords,
   freshnessWords,
   inWords,
+  launchLogin,
   limitsWords,
   modelProblem,
   modelWords,
   offersCheck,
   offersRead,
-  ownLogin,
   planWords,
   readAgoWords,
   readWait,
@@ -243,9 +243,19 @@ describe('the questions and the account choice', () => {
   })
 
   it('names no account for a launch with its own login', () => {
-    expect(ownLogin(view({ host: { kind: 'remote' }, state: 'remote' }))).toBe(true)
-    expect(ownLogin(view({ state: 'env_set' }))).toBe(true)
-    expect(ownLogin(view())).toBe(false)
+    expect(launchLogin(view({ host: { kind: 'remote' }, state: 'remote' }))).toEqual({ kind: 'own' })
+    expect(launchLogin(view({ state: 'env_set' }))).toEqual({ kind: 'own' })
+    expect(launchLogin(view())).toEqual({ kind: 'account' })
+  })
+
+  it("names the entry's login for a launch on this server, and nothing of it for a launch on this computer", () => {
+    // GET /api/capacity?agent=… of an entry that sets its login: the view carries the entry's variable wherever the launch runs.
+    expect(launchLogin(view({ entryLogin: 'ANTHROPIC_BASE_URL' }))).toEqual({ kind: 'entry', variable: 'ANTHROPIC_BASE_URL' })
+    expect(launchLogin(view({ state: 'never_read', entryLogin: 'CLAUDE_CONFIG_DIR' }))).toEqual({ kind: 'entry', variable: 'CLAUDE_CONFIG_DIR' })
+    // On this computer the other computer's login is used: its own login, and the entry's variable is not named.
+    expect(launchLogin(view({ host: { kind: 'remote' }, state: 'remote', entryLogin: 'ANTHROPIC_BASE_URL' }))).toEqual({ kind: 'own' })
+    // An account asked of it on this server is env_set: its own login, as the state's words say.
+    expect(launchLogin(view({ state: 'env_set', entryLogin: 'ANTHROPIC_BASE_URL' }))).toEqual({ kind: 'own' })
   })
 
   it("says when a view's words change by the clock: fifteen minutes after its read, or a window's reset, whichever is first", () => {

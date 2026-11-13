@@ -391,10 +391,11 @@ test.describe('the account a launch is sent with', () => {
     expect((await boundOf(api, started.session!.id)).account).toMatchObject({ id: 'default', source: 'launch_env' })
   })
 
-  test('an entry that keeps its own login is offered no account, names none, and its panel names the variable; an ordinary agent is offered its accounts', async ({ page, api, state }) => {
+  test('an entry that keeps its own login is offered no account, names none, and its panel names the variable on this server but not on this computer; an ordinary agent is offered its accounts', async ({ page, api, state }) => {
     const work = label('work')
     await addAccount(api, 'claude', work, folder(state.home, 'ok'))
-    await page.goto('/')
+    // Opened at a name seen from another machine, so the dialog asks where the agent runs.
+    await page.goto(`http://conductor.test:${state.port}/`)
     // An ordinary agent of Claude Code: the server's view resolves the default login, and the accounts are offered.
     const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
     const panel = dialog.locator('[data-capacity-panel]')
@@ -406,10 +407,23 @@ test.describe('the account a launch is sent with', () => {
     await own.click()
     await expect(own).toHaveAttribute('aria-checked', 'true')
     await expect(panel).toHaveAttribute('data-capacity-agent', 'own-login')
-    await expect(panel.locator('[data-capacity-entry-login]')).toHaveText("This agent's entry sets ANTHROPIC_BASE_URL: every launch of it uses that login, not an account chosen here.")
+    const entryLine = "This agent's entry sets ANTHROPIC_BASE_URL: every launch of it uses that login, not an account chosen here."
+    await expect(panel.locator('[data-capacity-entry-login]')).toHaveText(entryLine)
     await expect(dialog.locator('[data-launch-account]')).toHaveCount(0)
     await expect(panel.locator('[data-capacity-account]')).toHaveCount(0)
     await expect(panel).not.toContainText(work)
+    // On this computer the command runs with the login there: once the server's view of that launch is shown, the panel says so and
+    // names nothing of the entry's.
+    await dialog.getByRole('button', { name: 'On this computer' }).click()
+    await expect(panel).toHaveAttribute('data-capacity-state', 'remote')
+    await expect(panel).toHaveAttribute('data-capacity-agent', 'own-login')
+    await expect(panel.locator('[data-capacity-host]')).toHaveText('On this computer: your own login there, usage unknown here')
+    await expect(panel.locator('[data-capacity-entry-login]')).toHaveCount(0)
+    await expect(panel).not.toContainText('ANTHROPIC_BASE_URL')
+    // Back on this server, the line is drawn again and the launch starts on the entry's login.
+    await dialog.getByRole('button', { name: 'On this server' }).click()
+    await expect(panel).not.toHaveAttribute('data-capacity-state', 'remote')
+    await expect(panel.locator('[data-capacity-entry-login]')).toHaveText(entryLine)
     const started = await launch(page, dialog)
     expect(started.status, 'the launch made a session').toBe(201)
     expect(started.sent).not.toHaveProperty('account')
