@@ -815,8 +815,7 @@ func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 // not exist, written as an absolute path or as a relative path out of the
 // folder, holds a .git to the discovery, which looks without following a
 // link: each of the four reads, started in that folder, is refused as the
-// opener refuses such a link, never answered with the history of the
-// repository above.
+// opener refuses such a link.
 func TestADotGitLinkToNothingBeneathARepositoryIsRefused(t *testing.T) {
 	const want = "a file of the repository was not read: .git is behind a link that is not followed: it leads out of its folder or is written as an absolute path"
 	for _, c := range []struct {
