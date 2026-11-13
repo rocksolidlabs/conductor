@@ -454,6 +454,42 @@ func TestCapacityHostByLaunch(t *testing.T) {
 	}
 }
 
+// The view of an agent whose entry sets its login names the variable, with
+// its default asked, named or not, and with a registered account asked, in
+// the page of views too; an agent whose entry sets none has no entryLogin.
+func TestCapacityViewSaysTheEntrysLogin(t *testing.T) {
+	own := catalog.Agent{ID: "claude-own", Name: "Own", Adapter: "claude", Command: []string{"/bin/cat"}, Env: map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}
+	e := capEnv(t, nil, nil, newFakeUsage("claude"), newFakeUsage("codex"), []catalog.Agent{own})
+	id := addAccount(t, e, "claude", "Work")
+	for _, c := range []struct{ query, want string }{
+		{"agent=claude-own", "ANTHROPIC_BASE_URL"}, {"agent=claude-own&account=default", "ANTHROPIC_BASE_URL"},
+		{"agent=claude-own&account=" + id, "ANTHROPIC_BASE_URL"}, {"agent=claude-a", ""}, {"agent=claude-a&account=" + id, ""},
+	} {
+		v := viewOfKey(t, e, c.query)
+		if got, has := v["entryLogin"]; (c.want == "" && has) || (c.want != "" && got != c.want) {
+			t.Errorf("%s: entryLogin %v", c.query, got)
+		}
+	}
+	seen := map[string]any{}
+	for _, raw := range viewOfKey(t, e, "limit=16")["views"].([]any) {
+		v := raw.(map[string]any)
+		seen[v["agent"].(map[string]any)["id"].(string)+"/"+v["account"].(map[string]any)["id"].(string)] = v["entryLogin"]
+	}
+	if seen["claude-own/default"] != "ANTHROPIC_BASE_URL" || seen["claude-a/default"] != nil || seen["claude-a/"+id] != nil {
+		t.Fatalf("the page's views: %v", seen)
+	}
+	// The name is one of a fixed list, each within the 32 bytes
+	// docs/protocol.md gives it.
+	name := regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,31}$`)
+	for _, ad := range agents.All() {
+		for _, k := range append([]string{ad.ConfigDirEnv}, authEnv[ad.ID]...) {
+			if k != "" && !name.MatchString(k) {
+				t.Errorf("%s: %q is not a name of at most 32 bytes", ad.ID, k)
+			}
+		}
+	}
+}
+
 // A read runs with the environment a session of the agent gets: a
 // server whose passthrough names CLAUDE_CONFIG_DIR and https_proxy hands
 // both to the reader as to the session, so the default account reads the
