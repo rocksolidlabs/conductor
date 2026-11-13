@@ -149,7 +149,7 @@ type Detail struct {
 // EnableDotGitCommonDir (gitDirs, commonDir), every file of it opened
 // through careOS: the one way the package opens a repository. The
 // discovery looks above a folder only when the folder has no .git entry;
-// a .git that leads to nothing is refused. ErrNotRepo
+// a .git that leads to nothing that can be read is refused. ErrNotRepo
 // when there is none; ErrUnreadable (wrapped) when one of its files was
 // refused, whatever go-git made of the refusal; ctx's error once ctx has
 // ended (ended); seen keeps those of the reads that follow.
