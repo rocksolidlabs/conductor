@@ -974,8 +974,9 @@ func (d *capacityDesk) keptCapacity(ctx context.Context, f viewFacts, agent cata
 }
 
 // capacityLooks are one brief's look-ups for its capacity: refs: the
-// accounts, read once, and each agent's program, looked up once, all
-// within briefCapacityWait from the first.
+// accounts, read once, and each agent's program, looked up once; none
+// started past briefCapacityWait from the first, and one under way ends
+// with it.
 type capacityLooks struct {
 	ctx      context.Context
 	cancel   context.CancelFunc

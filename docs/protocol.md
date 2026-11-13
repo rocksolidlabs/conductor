@@ -5516,10 +5516,12 @@ with its nanoseconds, as the view gives it: its state; kept with the
 brief as the turn reads it, `capacity` in its resolution; the readings
 are asked first: one they no longer hold is `unavailable` when the turn
 read it, and resolves to nothing otherwise, with nothing else looked up
-for it; for those they hold, the accounts are read and each agent's
-program looked up at most once for the brief, within one wait of 2 s for
-the whole brief, past which, or when they cannot be read, the brief's
-remaining readings are `unavailable`), each at most 512 bytes, resolved as the brief is kept
+for it; for those they hold, the accounts are read once for the brief,
+and each agent's program is looked up at most once, within one wait of
+2 s for the whole brief, from the first such look-up: none is started
+past it, a look-up under way ends with it, and the brief's remaining
+readings are then `unavailable`, as they are when the accounts cannot be
+read), each at most 512 bytes, resolved as the brief is kept
 against the record it names (a plan revision and a launch admitted by
 their ticket, as a ticket is; a candidate by its run; a decision by the
 run it is on now). A `session:` ref whose session the server no longer
