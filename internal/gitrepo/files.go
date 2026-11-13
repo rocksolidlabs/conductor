@@ -19,8 +19,8 @@ import (
 // ErrUnreadable says a file of the repository was not read; the error
 // that wraps it says why, with the file's name in its folder: not a
 // regular file, longer than the opener reads of a file of its kind
-// (bound), behind a link the opener does not follow, a .git that is a
-// link, or a folder the repository names that is not a folder.
+// (bound), behind a link the opener does not follow, a .git folder that is
+// a link, or a folder the repository names that is not a folder.
 var ErrUnreadable = errors.New("a file of the repository was not read")
 
 // errReadOnly answers an open for writing: the package only reads.
@@ -77,10 +77,16 @@ func bound(rel string) int64 {
 // and a link written as an absolute path at any component of the name, a
 // folder's as well as a file's, wherever it leads, which careOS notes as
 // the opener's refusal (go-git reads past some failed opens: a loose
-// ref's, to packed-refs). A .git that is a link is refused wherever it
-// leads (under). go-billy's chroot over it (billy) only joins names: careOS
-// has no Lstat or Readlink, so the chroot resolves no link and hands it
-// each name unresolved.
+// ref's, to packed-refs). A .git folder that is a link is refused wherever
+// it leads: a relative one that leads to a folder inside the working
+// folder as ".git is a link" (under, which looks at .git without following
+// it), and one that leads out of the working folder or is written as an
+// absolute path as a link that is not followed, by the look that meets it
+// first (gitDirs' look at .git). A linked worktree's .git file that is a
+// relative link to a file inside the worktree is read, as go-git reads it.
+// go-billy's chroot over careOS (billy) only joins names: careOS has no
+// Lstat or Readlink, so the chroot resolves no link and hands it each name
+// unresolved.
 type careOS struct {
 	root *os.Root // nil when the folder did not open: err
 	err  error
@@ -110,8 +116,10 @@ func (fs *careOS) under(name string) *careOS {
 	if looked, look := fs.root.Stat(name); err != nil && look == nil && !looked.IsDir() {
 		err = fs.refuse("%s is %s", name, kind(looked.Mode()))
 	}
-	// A .git that is a link, looked at without following it, is refused
-	// wherever it leads.
+	// A .git that is a link, looked at without following it, is refused:
+	// one the root followed here leads to a folder inside the working
+	// folder (a link out of it, or written as an absolute path, was refused
+	// by gitDirs' look at .git before).
 	if at, look := fs.root.Lstat(name); err == nil && look == nil && at.Mode()&os.ModeSymlink != 0 {
 		root.Close()
 		root, err = nil, fs.refuse("%s is a link", name)
@@ -288,7 +296,10 @@ func (fs *careOS) Stat(name string) (os.FileInfo, error) {
 }
 
 // ReadDir lists the folder name, opened as a file is (openFlags) and as a
-// folder only (dirOnly) once the root's look finds a folder.
+// folder only (dirOnly) once the root's look finds a folder: a name the
+// look finds no folder is answered "not a directory" before any open, and
+// one put in the folder's place after the look fails the open with the
+// system's "not a directory".
 func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 	fi, err := fs.Stat(name)
 	if err == nil && !fi.IsDir() {

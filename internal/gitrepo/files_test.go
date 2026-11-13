@@ -201,9 +201,10 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 //     promoted from a type either embeds), listed by reflection.
 //
 // It cannot see, from the syntax alone: a root's OpenFile or OpenRoot
-// called through a receiver not named fs (c.root.OpenFile), a root passed
-// as an argument or copied into another value (a composite literal, a
-// slice's element), a function's result, or an interface.
+// called through a receiver not named fs (c.root.OpenFile) or through the
+// field in parentheses ((fs.root).OpenFile), a root passed as an argument
+// or copied into another value (a composite literal, a slice's element),
+// its address taken (&fs.root), a function's result, or an interface.
 func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	only := map[string][]string{
 		"git.Open":                         {"openOver"},

@@ -247,7 +247,8 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 // A refusal says its cause in words a person can act on: the file's name
 // in its folder, its kind, its size and its bound in a person's units, or
 // the link it is behind. A link written as an absolute path is refused
-// wherever it leads, inside the git directory too.
+// wherever it leads, inside the git directory too, a folder's on the way
+// (refs, read through for the branch's loose ref) as well as a file's.
 func TestARefusalSaysItsCause(t *testing.T) {
 	const prefix = "a file of the repository was not read: "
 	const notFollowed = " is behind a link that is not followed: it leads out of the git directory or is written as an absolute path"
@@ -256,6 +257,16 @@ func TestARefusalSaysItsCause(t *testing.T) {
 	inside := func(t *testing.T, path string) {
 		padded(t, path, path+"-data", "", 0, false)
 		linkTo(t, path+"-data", path)
+	}
+	// folderInside moves the folder at path beside it, in the same git
+	// directory, and puts an absolute link to it in its place.
+	folderInside := func(t *testing.T, path string) {
+		if err := os.Rename(path, path+"-data"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path+"-data", path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, c := range []struct {
 		name, want string
@@ -274,6 +285,9 @@ func TestARefusalSaysItsCause(t *testing.T) {
 		{"config an absolute link inside the git directory", "config" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["config"]) }},
 		{"HEAD an absolute link inside the git directory", "HEAD" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["HEAD"]) }},
 		{"packed-refs an absolute link inside the git directory", "packed-refs" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["packed-refs"]) }},
+		{"refs an absolute link to a folder inside the git directory", "refs/heads/crew/core" + notFollowed, func(t *testing.T, r linkedRepo) {
+			folderInside(t, filepath.Join(filepath.Dir(r.files["config"]), "refs"))
+		}},
 		{"packed-refs", "packed-refs is a named pipe", func(t *testing.T, r linkedRepo) {
 			if err := os.Remove(r.files["packed-refs"]); err != nil {
 				t.Fatal(err)
@@ -725,21 +739,56 @@ func socket(t *testing.T, path string) {
 	}
 }
 
-// An ordinary repository whose .git is a link is refused by each of the
-// four reads, wherever the link leads. A relative link to a folder inside
-// the working folder is followed by the folder's root to a folder, and
-// under refuses it, looked at without following it: ".git is a link". A
-// link to a git directory elsewhere, written as an absolute path, is
-// refused by the root's look at .git before under, in that look's words.
-// Each repository is read before its .git is made a link.
+// An ordinary repository whose .git is a link to its git directory is
+// refused by each of the four reads, wherever the link leads, in one of
+// two sentences. A relative link that leads to a folder inside the working
+// folder, directly or through a second relative link, is followed by the
+// folder's root to a folder, and under refuses it, looked at without
+// following it: ".git is a link". A relative link that leads out of the
+// working folder, and a link written as an absolute path, to a folder
+// inside the working folder or to one elsewhere, are refused by the root's
+// look at .git before under, in that look's words: ".git is behind a link
+// that is not followed". Each repository is read before its .git is made a
+// link.
 func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 	const prefix = "a file of the repository was not read: "
+	const isALink = ".git is a link"
+	const notFollowed = ".git is behind a link that is not followed: it leads out of its folder or is written as an absolute path"
 	for _, c := range []struct {
 		name, want string
-		elsewhere  bool
+		// link moves the git directory of the working folder wt and is
+		// what .git's link is written as, the links on the way made.
+		link func(t *testing.T, wt string) string
 	}{
-		{"a relative link to a folder inside the working folder", ".git is a link", false},
-		{"a link to a git directory elsewhere", ".git is behind a link that is not followed: it leads out of its folder or is written as an absolute path", true},
+		{"a relative link to a folder inside the working folder", isALink, func(t *testing.T, wt string) string {
+			moveTo(t, wt, filepath.Join(wt, "git-data"))
+			return "git-data"
+		}},
+		{"a chain of two relative links to a folder inside the working folder", isALink, func(t *testing.T, wt string) string {
+			moveTo(t, wt, filepath.Join(wt, "git-data"))
+			if err := os.Symlink("git-data", filepath.Join(wt, "git-link")); err != nil {
+				t.Fatal(err)
+			}
+			return "git-link"
+		}},
+		{"an absolute link to a folder inside the working folder", notFollowed, func(t *testing.T, wt string) string {
+			moveTo(t, wt, filepath.Join(wt, "git-data"))
+			return filepath.Join(wt, "git-data")
+		}},
+		{"a relative link out of the working folder", notFollowed, func(t *testing.T, wt string) string {
+			elsewhere := filepath.Join(t.TempDir(), "git")
+			moveTo(t, wt, elsewhere)
+			rel, err := filepath.Rel(wt, elsewhere)
+			if err != nil || !strings.HasPrefix(rel, "..") {
+				t.Fatalf("the link from %s to %s is %q (%v), want a relative path out of the working folder", wt, elsewhere, rel, err)
+			}
+			return rel
+		}},
+		{"an absolute link to a git directory elsewhere", notFollowed, func(t *testing.T, wt string) string {
+			elsewhere := filepath.Join(t.TempDir(), "git")
+			moveTo(t, wt, elsewhere)
+			return elsewhere
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -749,15 +798,7 @@ func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 					t.Fatalf("%s before the change: %v", rd.name, err)
 				}
 			}
-			target, moved := "git-data", filepath.Join(r.wt, "git-data")
-			if c.elsewhere {
-				target = filepath.Join(t.TempDir(), "git")
-				moved = target
-			}
-			if err := os.Rename(filepath.Join(r.wt, ".git"), moved); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(target, filepath.Join(r.wt, ".git")); err != nil {
+			if err := os.Symlink(c.link(t, r.wt), filepath.Join(r.wt, ".git")); err != nil {
 				t.Fatal(err)
 			}
 			for _, rd := range readers {
@@ -769,9 +810,42 @@ func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 	}
 }
 
-// ReadDir opens the folder it lists as a folder only: a name that is a
-// named pipe or a regular file is refused at once ("not a directory"), and
-// a folder is listed as before, sorted by name.
+// moveTo moves the git directory of the working folder wt (its .git) to
+// path.
+func moveTo(t *testing.T, wt, path string) {
+	t.Helper()
+	if err := os.Rename(filepath.Join(wt, ".git"), path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A linked worktree whose .git file is a relative link to a regular file
+// inside the worktree is read by each of the four reads, as before the
+// opener: the root follows the link, and the file it leads to names the
+// worktree's git directory.
+func TestALinkedWorktreesDotGitFileThatIsARelativeLinkInsideIsRead(t *testing.T) {
+	r := linked(t)
+	if err := os.Rename(r.files[".git"], filepath.Join(r.wt, "git-file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("git-file", r.files[".git"]); err != nil {
+		t.Fatal(err)
+	}
+	for _, rd := range readers {
+		if err := rd.read(context.Background(), r); err != nil {
+			t.Errorf("%s: %v, want it read", rd.name, err)
+		}
+	}
+}
+
+// ReadDir lists a folder only: a name its look finds a named pipe or a
+// regular file is refused at once by that look ("not a directory"), before
+// any open, and a folder is listed as before, sorted by name. The listing
+// then opens its folder as a folder (dirOnly); no test guards that open's
+// "/." itself: nothing lets a test put another thing in the folder's place
+// between the look and the open, and the look already refuses what is not
+// a folder. In that moment the open answers the system's "not a
+// directory".
 func TestReadDirListsAFolderOnly(t *testing.T) {
 	dir := t.TempDir()
 	pipe := fifo(t, filepath.Join(dir, "pipe"))
@@ -800,19 +874,21 @@ func TestReadDirListsAFolderOnly(t *testing.T) {
 // regular file) looks for the repository from the folder that holds it, as
 // go-git does, and opens nothing at the path: inside a repository's
 // working folder it opens the repository, and in a folder of the test's
-// own outside any repository it answers ErrNotRepo, at once.
+// own outside any repository it answers ErrNotRepo, at once. The helper
+// that waits is handed the pipe of the folder the call is made in, the one
+// that call could wait on.
 func TestTheOpenerHandedAPathThatIsNotAFolder(t *testing.T) {
 	inside, outside := linked(t).wt, t.TempDir()
-	pipe := fifo(t, filepath.Join(inside, "pipe"))
-	fifo(t, filepath.Join(outside, "pipe"))
+	pipes := map[string]string{}
 	for _, dir := range []string{inside, outside} {
+		pipes[dir] = fifo(t, filepath.Join(dir, "pipe"))
 		socket(t, filepath.Join(dir, "socket"))
 		write(t, dir, "file", "a regular file\n")
 	}
 	for _, name := range []string{"pipe", "socket", "file"} {
 		for dir, want := range map[string]error{inside: nil, outside: ErrNotRepo} {
 			path := filepath.Join(dir, name)
-			err := within(t, pipe, "the opener handed "+path, func(context.Context) error {
+			err := within(t, pipes[dir], "the opener handed "+path, func(context.Context) error {
 				_, _, seen, err := open(path)
 				if err == nil {
 					seen.close()
@@ -855,6 +931,12 @@ func writeEnd(ctx context.Context, path string, made <-chan struct{}) int {
 // cap's, after one opening, and no process has the pipe open once it has
 // returned. The cap is far above the test's waits, so only the caller's
 // context ends git.
+//
+// The test ends what it starts on every path. The write end it holds keeps
+// git in its read of config; when the call is not back within the helper's
+// wait, the helper's context ends and the write end is closed, so git reads
+// the end of the pipe and the helper's let-go finds the call back. The test
+// waits for the call before it puts the package's variables back.
 func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 	r := linked(t)
 	config := r.files["config"]
@@ -876,27 +958,47 @@ func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 			})
 		}
 	}
-	defer func() { afterLook = nil }()
 	gitCap = 10 * hangWait
-	defer func() { gitCap = maxGitRead }()
-	held := -1
-	err := within(t, config, "config a named pipe git has open, FileAt", func(ctx context.Context) error {
-		ctx, cancel := context.WithCancel(ctx)
+	back := make(chan struct{})
+	defer func() {
+		select {
+		case <-back:
+		case <-time.After(hangWait):
+			t.Errorf("FileAt is still not back %v after the helper let it go; the package's variables are left as the call reads them", hangWait)
+			return
+		}
+		afterLook = nil
+		gitCap = maxGitRead
+	}()
+	held := false
+	err := within(t, config, "config a named pipe git has open, FileAt", func(helper context.Context) error {
+		defer close(back)
+		ctx, cancel := context.WithCancel(helper)
 		defer cancel()
-		polled := make(chan int, 1)
+		returned := make(chan struct{})
+		polled := make(chan bool, 1)
 		go func() {
-			polled <- writeEnd(ctx, config, made)
+			fd := writeEnd(ctx, config, made)
+			if fd < 0 {
+				polled <- false
+				return
+			}
 			cancel()
+			select {
+			case <-returned:
+			case <-helper.Done():
+			}
+			syscall.Close(fd)
+			polled <- true
 		}()
 		_, err := FileAt(ctx, r.wt, r.c2, "a.txt", 100)
+		close(returned)
 		cancel()
 		held = <-polled
 		return err
 	})
-	if held < 0 {
+	if !held {
 		t.Errorf("no process opened config for reading before FileAt returned")
-	} else {
-		syscall.Close(held)
 	}
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap) || openings != 1 {
 		t.Errorf("FileAt: %v after %d openings, want the caller's own error (%v) after one", err, openings, context.Canceled)
