@@ -2491,8 +2491,14 @@ alike), and the markup and text
 written by the bridge's own writer from the live tree, never a copy and
 never the page's serialiser. A walk's budget is counted in links, a node
 costing it up to three, so a text, a name or a markup may end at its
-walk's budget, before its bound in bytes, with nothing in `cut` saying
-so. What the engine builds in one call before
+walk's budget, before its bound in bytes: the field then ends there,
+with nothing in `cut` saying so. A value that names an element (an id,
+a label's `for`, aria-labelledby's ids) is compared as the page wrote
+it, never made well-formed: one past its bound (of a list, its last
+token) or one that making it well-formed would change names no element,
+and a list of ids is split on HTML's white space alone (tab, line feed,
+form feed, carriage return, space), by the bridge's own loop over the
+bounded slice. What the engine builds in one call before
 the bridge reads any of it is the engine's work, the bridge bounding what
 it reads of it: an attribute's value, the title, the stack under the
 pointer, an element's animations, its computed style, an element's own
@@ -2650,7 +2656,8 @@ moment, never the handshake's: `url` (at most 2,048 bytes), `title` (at
 most 200 characters), `viewport {width, height, dpr, scrollX, scrollY,
 colorScheme (light, dark), userAgent (at most 512 bytes)}`, `epoch` (a
 whole number the bridge bumps, at most once an animation frame, on a
-resize or scroll of the window, a mutation of the document but its own
+resize of the window, a scroll the window hears (its own, and a
+container's in the capture phase), a mutation of the document but its own
 host's, and every animation and transition event: it says only that the
 page moved) and `revision` (the page's `<meta name="conductor-revision"
 content="<commit>[+<content>]">` among the head's children, within 128
@@ -2658,19 +2665,19 @@ links of a walk of the root's and the head's children, lower-case hex of
 4 to 64 digits with one optional `+` part, at most 128 bytes, else ""). A
 `ready`'s hint kinds are read from the elements a walk of the document
 reaches within 2,000 links, React's from the own keys of the first 64
-elements of the document, in document order (at most 64 keys read of
+elements of the body, in document order (at most 64 keys read of
 each). An accepted `hello` changes the
 nonce and the origin even when its `ready` is never sent (a page whose
 properties throw as they are read gets no answer).
 
 **The element report** (`element`): `{tag, id, classes, role, name (the
 accessible name: aria-label, the text of at most 8 of aria-labelledby's
-ids, of the label for its id within 256 links of a walk of its third
-ancestor's subtree or of the label around it, else its own; an id past
-its bound is not looked for as a label's `for`, and an aria-labelledby
-list past its bound drops its last token, so a value past its bound
-names no element), text (of
-what a walk of its subtree reaches within 256 links), selector (built,
+ids, of the label for its id within 1,024 links of a walk of its third
+ancestor's subtree or of the label around it, else its own; an id, a
+`for` and aria-labelledby's ids name only the element the page wrote
+them for, as above), text (of
+what a walk of its subtree reaches within 1,024 links; a name's texts
+are read the same way), selector (built,
 never searched for and never cut: `#` and its id escaped, in a document
 not in quirks mode, when that is within the bound and the document,
 asked that very selector, gives the element; else its path from the
@@ -2741,22 +2748,40 @@ listener the page put on the window in that phase before selection mode
 began is called before the bridge's; a tap's touches and a wheel keep
 their default action). Selection mode picks, and stops what it stops,
 only on events the browser delivered: a pointer move outlines the
-element under it, a click picks the element under its own point, the
-release of Enter picks the outlined element if it is still connected to
-a document, and otherwise does nothing, and the release of Escape leaves. A scroll
-or a resize of the window takes the outline off (every such event the
-window hears, the page's own among them) until the next pointer event or
-arrow key gives one; a scroll inside the page, of a container, does not:
-the outline stays where it was drawn until the next pointer move or
-arrow key. What is aimed at a frame inside the page (`iframe`, `frame`,
-`object`, `embed`) the browser delivers to the frame. A frame's element
-is outlined when the browser delivers the page's window a pointer event
-aimed at it (a mouse pointer entering it), and while it is outlined the
-outline's box, drawn over it, takes the pointer, so a click there picks
-it. Not otherwise: a touch on a frame, a frame inside a component's own
-tree, a frame that a scroll brings under a resting pointer, and a frame
-the pointer already rests in when selection mode begins keep their
-events, and so do keys typed while the focus is inside a frame.
+element under it, a click picks the element under its own point, the release of
+Enter picks the outlined element if the outline still shows it and it is
+still in the page's own tree (connected, and its root node the page's
+document), and otherwise does
+nothing, and the release of Escape leaves. After a resize of the window
+or a scroll the browser delivered (the window's, or a container's, which
+the window hears in its capture phase), and at a release of Enter, the
+bridge looks under the pointer's last point again. The outlined element
+(the choice), an arrow key's choice too, stays while it is still among
+the elements stacked under that point (the bounded stack under the
+pointer that Up and Down step through), and its outline is drawn again
+where it now is. When the topmost element there is another than the one
+the point last gave and the choice is no longer under the point (or
+there is none), the element now on top becomes the choice and is
+outlined; a release of Enter that finds this moves the outline and
+picks nothing, and the release after it picks, unless that changed
+again. Before the pointer has given a point (the arrow keys alone) the
+outline is drawn again over the choice, never taken off, and a scroll
+the page's own script dispatches changes nothing. So a scroll the window
+does not hear, of a container inside a component's own tree, moves the
+outline, when the choice is no longer under the point, at the next
+pointer move, the next scroll the window hears or the next release of
+Enter, which then picks nothing; when the choice is still under the
+point, that release draws its outline again and picks it. What is aimed
+at a frame inside the page (`iframe`, `frame`, `object`, `embed`) the
+browser delivers to the frame. A frame's element is outlined when the
+browser delivers the page's window a pointer event aimed at it (a mouse
+pointer entering it) or when a scroll brings it to the top under the
+pointer's last point and it becomes the choice as above, and while it
+is outlined the outline's box, drawn over it, takes the pointer, so a
+click there picks it. Not otherwise: a touch on a frame, a frame inside
+a component's own tree, and a frame the pointer already rests in when
+selection mode begins keep their events, and so do keys typed while the
+focus is inside a frame.
 Outside selection mode it stops none; a throw while it handles one
 leaves selection mode. It posts only to `window.parent`, addressed to
 that origin, never `*`, and only a message its own parser takes as one to
