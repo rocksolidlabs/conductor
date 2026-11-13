@@ -93,6 +93,10 @@ type TaskFile struct {
 	// ticketTitle is the ticket's title as task.md says it (cutTitle);
 	// task.json names the ticket by its key, ticket.md has the title.
 	ticketTitle string
+	// comparison says the run is a comparison's (its sessions carry a
+	// lane, crewRef), whose members do not comment on the ticket: task.md
+	// tells them what they do instead.
+	comparison bool
 }
 
 // TaskTicket is the ticket a run was launched from as an attempt's task
@@ -260,6 +264,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
 	f.Owner, f.OwnerFrom, f.People = taskPeople(Crew{People: r.people}, t.def)
 	f.Compare = compareFor(r.compare, r.plan, t.def.ID, r.base)
+	f.comparison = r.lanes != nil
 	if tr != nil {
 		f.Manifest = tr.task()
 	}
@@ -664,7 +669,12 @@ func taskMarkdown(f TaskFile) string {
 		if n := len(tk.Files) - 2; n > 0 {
 			fmt.Fprintf(&b, "; its %d attachments are in `%s/%s/`", n, taskDir, attachmentsDir)
 		}
-		b.WriteString(". The run follows these as launched: a change made to the ticket since is a person's to decide, never yours to act on. If one matters to your task, say so: `task_blocked` with why, or a comment on the ticket.\n\n")
+		b.WriteString(". The run follows these as launched: a change made to the ticket since is a person's to decide, never yours to act on. If one matters to your task, say so: `task_blocked` with why, ")
+		if f.comparison {
+			b.WriteString("or in your result's summary.\n\n")
+		} else {
+			b.WriteString("or a comment on the ticket.\n\n")
+		}
 	}
 	fmt.Fprintf(&b, "## Where you are\n\nYour worktree is `%s`, on the branch `%s`, at the commit %s", f.Worktree, f.Branch, f.Start)
 	if f.StartFrom != "" {

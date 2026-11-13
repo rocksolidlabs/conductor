@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -39,15 +42,23 @@ import (
 // when the test ends, before its folders go.
 type compareEnv struct {
 	*testEnv
-	run, plain, launch   string
-	a, b, member         string
-	aTok, bTok, plainTok string
+	run, plain, launch, plan string
+	a, b, member             string
+	aTok, bTok, plainTok     string
 }
 
 // compareOpts shapes a compareEnv.
 type compareOpts struct {
 	// identity is the server's identity provider; none for nil.
 	identity ext.IdentityProvider
+	// ticket is CND-1's title, description and acceptance criteria, when
+	// not the env's own.
+	ticket map[string]any
+	// noDesk opens the server without Brakeman's desk: a file stands
+	// where its records' directory would be.
+	noDesk bool
+	// unlinked leaves the ordinary run unlinked from CND-1.
+	unlinked bool
 	// beforeLaunch writes on CND-1 before the comparison is launched.
 	beforeLaunch func(ce *compareEnv)
 	// launched is set as the launcher's seam (launchGate.launched) before
@@ -62,15 +73,31 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	if o.identity != nil {
 		opts = append(opts, withIdentity(o.identity))
 	}
-	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = filepath.Join(t.TempDir(), "data") }, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	data := filepath.Join(t.TempDir(), "data")
+	if o.noDesk {
+		if err := os.MkdirAll(data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(data, brakeman.Dir), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newTestEnvAgents(t, func(c *config.Config) { c.DataDir = data }, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		[]catalog.Agent{readyCat}, opts...)
+	if o.noDesk != (e.srv.brakeman == nil) {
+		t.Fatalf("Brakeman's desk: %v, want none %v", e.srv.brakeman != nil, o.noDesk)
+	}
 	// Every refusal is the token's: the per-client limiter would answer
 	// some with 429.
 	e.srv.limiter = newRateLimiter(1e6, 1e6)
 	repo := filepath.Join(e.root, "repo")
 	planRepo(t, repo)
 	e.newDispatchProject(t, "CND", map[string]any{"cwd": repo})
-	e.newDispatchTicket(t, "CND", "Fast lookup", map[string]any{"description": "Make the lookup fast.", "acceptance": "It is fast."})
+	tk := map[string]any{"title": "Fast lookup", "description": "Make the lookup fast.", "acceptance": "It is fast."}
+	maps.Copy(tk, o.ticket)
+	title := tk["title"].(string)
+	delete(tk, "title")
+	e.newDispatchTicket(t, "CND", title, tk)
 	c, err := crew.CompareTemplate(crew.CompareSpec{Name: "Compare", Cwd: repo, Goal: "Make the lookup fast.", Instructions: "Make it fast.",
 		Criteria:   []crew.Criterion{{ID: "fast", Text: "The lookup is fast."}},
 		Checks:     []crew.Check{{ID: "ok", Argv: []string{"true"}}},
@@ -85,7 +112,7 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	}
 	plan := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/plans", map[string]any{"opId": opID(), "crew": saved.ID}, http.StatusCreated, ""), "plan")["id"].(string)
 	e.expect(t, "POST", "/api/dispatch/plans/"+plan+"/approve", map[string]any{"opId": opID(), "byName": "Nate", "note": "Go."}, http.StatusOK, "")
-	ce := &compareEnv{testEnv: e}
+	ce := &compareEnv{testEnv: e, plan: plan}
 	srv := e.srv
 	t.Cleanup(func() { stopEveryRun(srv) })
 	if o.beforeLaunch != nil {
@@ -103,7 +130,9 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 		t.Fatal(err)
 	}
 	ce.plain = plain.ID
-	e.expect(t, "POST", "/api/dispatch/tickets/CND-1/links", map[string]any{"opId": opID(), "kind": "run", "ref": ce.plain}, http.StatusCreated, "")
+	if !o.unlinked {
+		e.expect(t, "POST", "/api/dispatch/tickets/CND-1/links", map[string]any{"opId": opID(), "kind": "run", "ref": ce.plain}, http.StatusCreated, "")
+	}
 	if o.launched == nil {
 		ce.a, ce.aTok = ce.session(t, ce.run, "approach-a")
 		ce.b, ce.bTok = ce.session(t, ce.run, "approach-b")
@@ -224,12 +253,45 @@ func (ce *compareEnv) addLink(t *testing.T, fields map[string]any, node string) 
 	return id
 }
 
-// addComment comments on CND-1 straight in the store, as the actor.
-func (ce *compareEnv) addComment(t *testing.T, actor, body string) {
+// addComment comments on CND-1 straight in the store, as the actor, and
+// returns the comment's id.
+func (ce *compareEnv) addComment(t *testing.T, actor, body string) string {
 	t.Helper()
-	if _, err := ce.srv.dispatch.AddComment(context.Background(), dispatch.Op{Actor: actor, ID: opID()}, "CND-1", body); err != nil {
-		t.Fatal(err)
+	rc, err := ce.srv.dispatch.AddComment(context.Background(), dispatch.Op{Actor: actor, ID: opID()}, "CND-1", body)
+	if err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("a comment: %+v %v", rc, err)
 	}
+	return rc.ID
+}
+
+// editComment edits CND-1's comment straight in the store, as the actor.
+func (ce *compareEnv) editComment(t *testing.T, actor, id, body string) {
+	t.Helper()
+	if rc, err := ce.srv.dispatch.EditComment(context.Background(), dispatch.Op{Actor: actor, ID: opID()}, "CND-1", id, body); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("an edit: %+v %v", rc, err)
+	}
+}
+
+// attach adds an attachment of the name to CND-1 straight in the store
+// and returns its id.
+func (ce *compareEnv) attach(t *testing.T, name string) string {
+	t.Helper()
+	rc, a, err := ce.srv.dispatch.AddAttachment(context.Background(), adminOp("Nate"), "CND-1", name, "text/plain", strings.NewReader(name))
+	if err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("an attachment: %+v %v", rc, err)
+	}
+	return a.ID
+}
+
+// laneTicketOf is the session's ticket read with the token: its status,
+// its raw reply and the reply.
+func (ce *compareEnv) laneTicketOf(t *testing.T, tok, sid string) ([]byte, map[string]any) {
+	t.Helper()
+	status, raw, out := ce.callAs(t, tok, "GET", "/api/sessions/"+sid+"/ticket", nil)
+	if status != http.StatusOK || out["ticket"] == nil {
+		t.Fatalf("%s's ticket: %d %.300s", sid, status, raw)
+	}
+	return raw, out
 }
 
 // objectKeys is the keys of a JSON object, sorted.
@@ -238,87 +300,145 @@ func objectKeys(v any) []string {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// A lane reads its ticket as it stood at its run's launch, and people's
-// comments since: before the launch, a person's comment, an earlier run's
-// agent's comment under a name a member of this run has, and a link with
-// its read; since, a person's comment. Nothing added since but that
-// comment (an agent's comment, delivery links of another lane's branch,
-// as written, percent-escaped and a pull request naming no branch, with
-// its read, an attachment) and nothing worked out over the ticket now (its
-// close state, which names those deliveries, its status, revision and
-// counts) is in the reply, whichever token asks, and the reply holds no
-// field outside its whitelist. An ordinary run's member reads the ticket
-// as the admin's ticket read gives it.
+// laneTicketFields is every field a lane's ticket read may hold, by its
+// path in the reply ("[]" for an element of a list).
+var laneTicketFields = []string{
+	"launch", "launch.id", "launch.rev", "launch.plan", "launch.plan.id", "launch.plan.n", "launch.digest",
+	"ticket", "ticket.id", "ticket.key", "ticket.number", "ticket.title", "ticket.description", "ticket.acceptance",
+	"ticket.links", "ticket.links[]", "ticket.links[].id", "ticket.links[].kind", "ticket.links[].ref", "ticket.links[].url", "ticket.links[].note",
+	"ticket.links[].createdAt", "ticket.links[].createdBy",
+	"ticket.attachments", "ticket.attachments[]", "ticket.attachments[].id", "ticket.attachments[].ticketId", "ticket.attachments[].name",
+	"ticket.attachments[].size", "ticket.attachments[].sha256", "ticket.attachments[].contentType", "ticket.attachments[].createdAt",
+	"ticket.attachments[].createdBy",
+	"ticket.comments", "ticket.comments[]", "ticket.comments[].id", "ticket.comments[].author", "ticket.comments[].by", "ticket.comments[].body",
+	"ticket.comments[].createdAt", "ticket.comments[].editedAt",
+}
+
+// jsonPaths is the path of every value in v, a decoded JSON value, under
+// the prefix.
+func jsonPaths(v any, prefix string, out map[string]bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			p := k
+			if prefix != "" {
+				p = prefix + "." + k
+			}
+			out[p] = true
+			jsonPaths(e, p, out)
+		}
+	case []any:
+		for _, e := range x {
+			out[prefix+"[]"] = true
+			jsonPaths(e, prefix+"[]", out)
+		}
+	}
+}
+
+// outsideWhitelist is every path of the reply that is not one of
+// laneTicketFields.
+func outsideWhitelist(out map[string]any) []string {
+	paths := map[string]bool{}
+	jsonPaths(out, "", paths)
+	var bad []string
+	for p := range paths {
+		if !slices.Contains(laneTicketFields, p) {
+			bad = append(bad, p)
+		}
+	}
+	slices.Sort(bad)
+	return bad
+}
+
+// A lane reads its ticket for its run's launch: the statement as launched;
+// what was there before the launch and has not changed since; people's
+// comments as they are now; nothing else. Before the launch: a person's
+// comment the person edits since, an earlier run's agent's comment under
+// a name a member of this run has, an agent's comment an agent edits
+// since, a delivery whose read is refreshed since and that is given a
+// candidate and its verification since, an attachment kept and one
+// deleted since. Since: the ticket's title edited, sixty agents' comments,
+// three people's comments, delivery links of another lane's branch (as
+// written, percent-escaped, and a pull request naming no branch, with its
+// read) and an attachment. The reply, whichever token asks, holds the
+// statement as launched, the unchanged earlier things, the people's
+// comments (the edited one as it is now), no read of a link, nothing
+// worked out over the ticket now (its close state, which names those
+// deliveries, its status, revision and counts), and no field outside its
+// whitelist; none of the sixty pushes anything out. An ordinary run's
+// member reads the ticket as the admin's ticket read gives it.
 func TestTicketReadHidesOtherLanes(t *testing.T) {
-	var before string
+	var before, earlier, edited, keptFile, gone string
 	ce := newCompareEnv(t, compareOpts{beforeLaunch: func(ce *compareEnv) {
-		ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, before"}, http.StatusCreated, "")
-		ce.addComment(t, "agent:cand-a", "an earlier run's")
+		ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, as written"}, http.StatusCreated, "")
+		earlier = ce.addComment(t, "agent:cand-a", "an earlier run's")
+		edited = ce.addComment(t, "agent:cand-a", "an agent's, as written")
 		before = ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/7"}, "PR_7")
+		keptFile = ce.attach(t, "kept.txt")
+		gone = ce.attach(t, "before.txt")
 	}})
-	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, since"}, http.StatusCreated, "")
-	ce.addComment(t, "agent:lead", "an agent's, since")
+	ce.editComment(t, "agent:cand-a", edited, "an agent's, edited since")
+	if rc, err := ce.srv.dispatch.RemoveAttachment(context.Background(), adminOp("Nate"), "CND-1", gone); err != nil || rc.Status != dispatch.StatusDone {
+		t.Fatalf("remove: %+v %v", rc, err)
+	}
+	person := entityOf(t, ce.expect(t, "GET", "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket")["comments"].([]any)[0].(map[string]any)["id"].(string)
+	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments/"+person+"/edit", map[string]any{"opId": opID(), "body": "a person's, edited since"}, http.StatusOK, "")
+	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"title": "A title since"}}, http.StatusOK, "")
+	if err := ce.srv.dispatch.RecordRead(context.Background(), before, dispatch.LinkRead{System: "github", Host: "github.com", Kind: dispatch.ExternalChange, NodeID: "PR_7",
+		State: "merged", Merged: true, HeadSha: strings.Repeat("d", 40), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	// A candidate and its verification on the delivery's row, as a merge
+	// could set them after its add.
+	db := openRaw(t, filepath.Join(ce.srv.dispatch.Dir(), dispatch.File))
+	if _, err := db.Exec("UPDATE links SET candidate = ?, verified = ? WHERE id = ?", ce.run+"/approach-a/1", `{"run":"`+ce.run+`"}`, before); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 60 {
+		ce.addComment(t, []string{"agent:lead", "agent:cand-a", "agent:cand-b"}[i%3], fmt.Sprintf("an agent's, since %d", i))
+	}
+	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, since 0"}, http.StatusCreated, "")
+	ce.addComment(t, ext.SubjectActor+"alice", "a person's, since 1")
+	ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": opID(), "body": "a person's, since 2"}, http.StatusCreated, "")
 	branch := "crew/" + ce.run + "/approach-a.1"
 	escaped := strings.ReplaceAll(branch, "/", "%2F")
 	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/compare/main..." + branch}, "")
 	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/tree/" + escaped}, "")
 	ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/12"}, "PR_12")
-	if _, _, err := ce.srv.dispatch.AddAttachment(context.Background(), adminOp("Nate"), "CND-1", "notes.txt", "text/plain", strings.NewReader("since")); err != nil {
-		t.Fatal(err)
-	}
+	ce.attach(t, "notes.txt")
 	// The admin's read of the ticket now: its close state names the
-	// deliveries added since.
+	// candidate the delivery was given since.
 	whole := entityOf(t, ce.expect(t, "GET", "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket")
-	if why, _ := json.Marshal(whole["close"]); !strings.Contains(string(why), "example.test") {
-		t.Fatalf("the ticket's close state names no delivery: %s", why)
+	if why, _ := json.Marshal(whole["close"]); !strings.Contains(string(why), "approach-a") {
+		t.Fatalf("the ticket's close state names no candidate: %s", why)
 	}
 
 	for _, tok := range []string{ce.bTok, adminToken} {
-		_, raw, out := ce.callAs(t, tok, "GET", "/api/sessions/"+ce.b+"/ticket", nil)
-		tk, _ := out["ticket"].(map[string]any)
-		if tk == nil {
-			t.Fatalf("approach-b's read: %s", raw)
+		raw, out := ce.laneTicketOf(t, tok, ce.b)
+		if bad := outsideWhitelist(out); len(bad) != 0 {
+			t.Fatalf("the reply holds %v: %s", bad, raw)
 		}
-		if keys := objectKeys(out); !slices.Equal(keys, []string{"launch", "ticket"}) {
-			t.Fatalf("the reply has %v", keys)
-		}
-		if keys := objectKeys(out["launch"]); !slices.Equal(keys, []string{"digest", "id", "plan", "rev"}) || out["launch"].(map[string]any)["id"] != ce.launch {
-			t.Fatalf("the launch: %v", out["launch"])
-		}
-		if keys := objectKeys(tk); !slices.Equal(keys, []string{"acceptance", "attachments", "comments", "description", "id", "key", "linkReads", "links", "number", "title"}) {
-			t.Fatalf("the ticket has %v", keys)
+		tk := out["ticket"].(map[string]any)
+		if keys := objectKeys(out); !slices.Equal(keys, []string{"launch", "ticket"}) || out["launch"].(map[string]any)["id"] != ce.launch {
+			t.Fatalf("the reply: %s", raw)
 		}
 		if tk["key"] != "CND-1" || tk["title"] != "Fast lookup" || tk["description"] != "Make the lookup fast." || tk["acceptance"] != "It is fast." {
 			t.Fatalf("the ticket's statement: %s", raw)
 		}
-		if got := fieldsOf(tk["comments"], "body"); !slices.Equal(got, []string{"a person's, before", "an earlier run's", "a person's, since"}) {
-			t.Fatalf("the comments: %v", got)
+		if got := fieldsOf(tk["comments"], "body"); !slices.Equal(got, []string{"a person's, edited since", "an earlier run's", "a person's, since 0", "a person's, since 1", "a person's, since 2"}) {
+			t.Fatalf("the comments: %q", got)
 		}
-		for _, c := range tk["comments"].([]any) {
-			for _, k := range objectKeys(c) {
-				if !slices.Contains([]string{"author", "body", "by", "createdAt", "editedAt", "id"}, k) {
-					t.Fatalf("a comment's %s: %v", k, c)
-				}
-			}
+		if got := fieldsOf(tk["comments"], "id"); got[0] != person || got[1] != earlier {
+			t.Fatalf("the comments' ids: %v", got)
 		}
-		if got := fieldsOf(tk["links"], "id"); !slices.Equal(got, []string{before}) || len(tk["attachments"].([]any)) != 0 {
-			t.Fatalf("the links %v, the attachments %v", got, tk["attachments"])
+		if got := fieldsOf(tk["links"], "id"); !slices.Equal(got, []string{before}) || tk["links"].([]any)[0].(map[string]any)["url"] != "https://example.test/pull/7" {
+			t.Fatalf("the links: %s", raw)
 		}
-		for _, k := range objectKeys(tk["links"].([]any)[0]) {
-			if !slices.Contains([]string{"candidate", "createdAt", "createdBy", "deletedAt", "id", "kind", "note", "ref", "url", "verified"}, k) {
-				t.Fatalf("a link's %s: %v", k, tk["links"])
-			}
+		if got := fieldsOf(tk["attachments"], "id"); !slices.Equal(got, []string{keptFile}) {
+			t.Fatalf("the attachments: %s", raw)
 		}
-		reads, _ := tk["linkReads"].(map[string]any)
-		if objectKeys(reads)[0] != before || len(reads) != 1 || reads[before].(map[string]any)["state"] != "open" {
-			t.Fatalf("the links' reads: %v", reads)
-		}
-		for _, k := range objectKeys(reads[before]) {
-			if !slices.Contains([]string{"checks", "error", "headSha", "merged", "mergeSha", "mergedAt", "readAt", "state", "updatedAt"}, k) {
-				t.Fatalf("a read's %s: %v", k, reads)
-			}
-		}
-		for _, other := range []string{"approach-a", branch, escaped, "example.test/compare", "example.test/tree", "example.test/pull/12", "notes.txt", "an agent's, since"} {
+		for _, other := range []string{"approach-a", branch, escaped, "example.test/compare", "example.test/tree", "example.test/pull/12", "notes.txt", "before.txt",
+			"an agent's", "as written", "A title since", "PR_7", "merged", "headSha", "candidate", "verified", "linkReads"} {
 			if strings.Contains(string(raw), other) {
 				t.Fatalf("the lane's ticket names %q: %s", other, raw)
 			}
@@ -330,6 +450,80 @@ func TestTicketReadHidesOtherLanes(t *testing.T) {
 	want, _ := json.Marshal(whole)
 	if string(got) != string(want) || !strings.Contains(string(raw), branch) {
 		t.Fatalf("an ordinary run's member's read:\n%s\nthe admin's:\n%s", got, want)
+	}
+}
+
+// Two launches of one ticket each read the ticket by their own mark: a
+// comment, links and an attachment made between the launches are in
+// the second comparison's lane's read and not in the first's.
+func TestEachLaunchsLaneReadsByItsOwnLaunch(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	ce.addComment(t, "agent:lead", "between the launches")
+	between := ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/8"}, "")
+	ce.attach(t, "between.txt")
+	launch := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": ce.plan}, http.StatusCreated, ""), "launch")
+	second := launch["runId"].(string)
+	sid, tok := ce.session(t, second, "approach-b")
+	_, first := ce.laneTicketOf(t, ce.bTok, ce.b)
+	_, next := ce.laneTicketOf(t, tok, sid)
+	if tk := first["ticket"].(map[string]any); len(tk["comments"].([]any)) != 0 || len(tk["links"].([]any)) != 0 || len(tk["attachments"].([]any)) != 0 ||
+		first["launch"].(map[string]any)["id"] != ce.launch {
+		t.Fatalf("the first launch's lane: %v", first)
+	}
+	tk := next["ticket"].(map[string]any)
+	// The ordinary run's link, made once the first comparison launched, is
+	// the second's too.
+	if !slices.Equal(fieldsOf(tk["comments"], "body"), []string{"between the launches"}) || !slices.Equal(fieldsOf(tk["links"], "ref"), []string{ce.plain, "https://example.test/pull/8"}) ||
+		fieldsOf(tk["links"], "id")[1] != between ||
+		!slices.Equal(fieldsOf(tk["attachments"], "name"), []string{"between.txt"}) || next["launch"].(map[string]any)["id"] != launch["id"] {
+		t.Fatalf("the second launch's lane: %v", next)
+	}
+}
+
+// A ticket with as many comments, links and attachments as the store
+// admits, each text at its escaped worst, before the launch: the lane's
+// read holds the newest fifty comments, every link and every attachment,
+// under its stated bound (MaxTicketReply).
+func TestALanesTicketReadIsUnderItsBound(t *testing.T) {
+	f := worstFiller
+	ctx := context.Background()
+	var comments []string
+	ce := newCompareEnv(t, compareOpts{unlinked: true,
+		ticket: map[string]any{"title": f.runes(dispatch.MaxTicketTitle, 0), "description": f.text(dispatch.MaxTicketDescription, 0), "acceptance": f.text(dispatch.MaxAcceptance, 1)},
+		beforeLaunch: func(ce *compareEnv) {
+			ds := ce.srv.dispatch
+			by := f.runes(dispatch.MaxByName, 0)
+			for i := range dispatch.MaxLinks {
+				l := dispatch.NewLink{Kind: dispatch.LinkDelivery, Ref: f.text(dispatch.MaxLinkRef, i), URL: f.url(dispatch.MaxLinkURL, i), Note: f.runes(dispatch.MaxLinkNote, i)}
+				if rc, err := ds.AddLink(ctx, adminOp(by), "CND-1", l, nil); err != nil || rc.Status != dispatch.StatusDone {
+					t.Fatalf("link %d: %+v %v", i, rc, err)
+				}
+			}
+			for i := range dispatch.MaxAttachments {
+				if rc, _, err := ds.AddAttachment(ctx, adminOp(by), "CND-1", f.file(i), f.text(dispatch.MaxContentType, i), strings.NewReader("x")); err != nil || rc.Status != dispatch.StatusDone {
+					t.Fatalf("attachment %d: %+v %v", i, rc, err)
+				}
+			}
+			actor := "agent:" + strings.Repeat("a", dispatch.MaxActor-len("agent:"))
+			for i := range dispatch.MaxComments {
+				body := f.text(dispatch.MaxCommentBody, i)
+				if rc, err := ds.AddComment(ctx, dispatch.Op{Actor: actor, ID: opID(), By: by}, "CND-1", body); err != nil || rc.Status != dispatch.StatusDone {
+					t.Fatalf("comment %d: %+v %v", i, rc, err)
+				}
+				comments = append(comments, body)
+			}
+		}})
+	raw, out := ce.laneTicketOf(t, ce.bTok, ce.b)
+	t.Logf("the largest lane's ticket read: %d bytes of %d", len(raw), MaxTicketReply)
+	if len(raw) >= MaxTicketReply {
+		t.Fatalf("the lane's ticket read is %d bytes, not under %d", len(raw), MaxTicketReply)
+	}
+	tk := out["ticket"].(map[string]any)
+	if got := fieldsOf(tk["comments"], "body"); !slices.Equal(got, comments[len(comments)-dispatch.MaxTicketComments:]) {
+		t.Fatalf("%d comments, not the newest %d", len(got), dispatch.MaxTicketComments)
+	}
+	if len(tk["links"].([]any)) != dispatch.MaxLinks || len(tk["attachments"].([]any)) != dispatch.MaxAttachments {
+		t.Fatalf("%d links, %d attachments", len(tk["links"].([]any)), len(tk["attachments"].([]any)))
 	}
 }
 

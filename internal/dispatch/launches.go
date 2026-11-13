@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/ext"
 )
 
 // A ticket's launches (Program item DS2, docs/plans/dispatch-evidence.md,
@@ -711,22 +713,73 @@ func (s *Store) PendingLaunches(ctx context.Context) ([]LaunchSummary, error) {
 	return answer(out, err)
 }
 
-// AtLaunch is what the ticket of a launch held as the launch was made
-// (Store.AtLaunch): its statement as the launch's package carries it, and
-// the ids of its comments, links and attachments made before the launch.
-type AtLaunch struct {
-	Ticket PackageTicket
-	Before map[string]bool
+// LaunchLimits bounds what AtLaunch answers: at most Comments comments,
+// Links links and Attachments attachments, each at least 1, the newest of
+// those its rule chooses.
+type LaunchLimits struct {
+	Comments, Links, Attachments int
 }
 
-// AtLaunch reads what the ticket of the launch with the id held as the
-// launch was made: the package's ticket, and the comments, links and
-// attachments whose create or add row comes before the launch's create
-// row by the local seq, the mark ChangedSince counts from; one made on
-// another replica and merged here after the launch comes after it.
-// ErrNotFound when there is no such launch.
-func (s *Store) AtLaunch(ctx context.Context, id string) (AtLaunch, error) {
-	out := AtLaunch{Before: map[string]bool{}}
+// AtLaunch is a ticket as a run launched from it reads it (Store.AtLaunch):
+// its identity, its statement as the launch's package holds it, the links
+// and attachments it had at the launch that it still has, by what their
+// adds recorded, and its comments that were there at the launch and have
+// not changed since, with every person's comment as it is now.
+type AtLaunch struct {
+	ID          string          `json:"id"`
+	Key         string          `json:"key"`
+	Number      int64           `json:"number"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Acceptance  string          `json:"acceptance"`
+	Links       []LaunchLink    `json:"links"`
+	Attachments []Attachment    `json:"attachments"`
+	Comments    []LaunchComment `json:"comments"`
+}
+
+// LaunchLink is a link as its add recorded it, and no field set on it
+// since: its id, kind, reference, address and note, and when and by whom
+// it was made.
+type LaunchLink struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Ref       string    `json:"ref"`
+	URL       string    `json:"url"`
+	Note      string    `json:"note"`
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy"`
+}
+
+// LaunchComment is a comment as AtLaunch answers it: who wrote it, what
+// and when.
+type LaunchComment struct {
+	ID        string    `json:"id"`
+	Author    string    `json:"author"`
+	By        string    `json:"by"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+	EditedAt  time.Time `json:"editedAt,omitzero"`
+}
+
+// AtLaunch reads the ticket of the launch with the id as a run launched
+// from it reads it, in one read transaction, by the launch's mark (the
+// seq of its create row, the mark ChangedSince counts from): its title,
+// description and acceptance criteria from the launch's package; each
+// link and attachment whose add row is below the mark and that is not
+// removed now, by the fields its add row records; each comment that is
+// not deleted, whose create row is below the mark and no other row of
+// which (an edit, a delete) is at or above it; and each comment of a
+// person (the admin's, or an identity's subject's), as it is now. Nothing
+// else of the ticket, and no read of a linked item. Each list is chosen
+// by that rule first and cut to its limit after, the newest kept, and
+// answered oldest first. A row merged here from another replica after the
+// launch is above the mark. ErrNotFound when there is no such launch;
+// ErrLaunchTicketGone when its ticket is deleted.
+func (s *Store) AtLaunch(ctx context.Context, id string, lim LaunchLimits) (AtLaunch, error) {
+	if lim.Comments < 1 || lim.Links < 1 || lim.Attachments < 1 {
+		return AtLaunch{}, fmt.Errorf("dispatch: a ticket at its launch is read with limits of at least 1, not %+v", lim)
+	}
+	var out AtLaunch
 	err := s.read(ctx, func(q queryer) error {
 		if schemaOf(q) < 2 {
 			return ErrNotFound
@@ -744,17 +797,85 @@ func (s *Store) AtLaunch(ctx context.Context, id string) (AtLaunch, error) {
 		if err := json.Unmarshal([]byte(pkg), &launched); err != nil {
 			return fmt.Errorf("dispatch: the package of launch %s: %w", id, err)
 		}
-		out.Ticket = launched.Ticket
-		ids, err := readTexts(ctx, q, `SELECT CASE WHEN entity = ? THEN entity_id ELSE COALESCE(json_extract(value, '$.id'), '') END FROM changes
-			WHERE ticket_id = ? AND seq < (SELECT COALESCE(MIN(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND op = ?)
-			AND ((entity = ? AND op = ?) OR (entity = ? AND entity_id = ? AND op = ? AND field IN ('links', 'attachments')))`,
-			EntityComment, ticketID, EntityLaunch, id, OpCreate, EntityComment, OpCreate, EntityTicket, ticketID, OpAdd)
-		for _, v := range ids {
-			out.Before[v] = v != ""
+		tk, err := ticketByID(ctx, q, ticketID)
+		if err != nil {
+			return err
 		}
+		if !tk.DeletedAt.IsZero() {
+			return ErrLaunchTicketGone
+		}
+		out = AtLaunch{ID: tk.ID, Key: tk.Key, Number: tk.Number, Title: launched.Ticket.Title, Description: launched.Ticket.Description,
+			Acceptance: launched.Ticket.Acceptance}
+		var mark int64
+		if err := q.QueryRowContext(ctx, "SELECT COALESCE(MIN(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND op = ?",
+			EntityLaunch, id, OpCreate).Scan(&mark); err != nil {
+			return err
+		}
+		if out.Links, err = addedAtLaunch[LaunchLink](ctx, q, ticketID, "links", mark, lim.Links); err != nil {
+			return err
+		}
+		if out.Attachments, err = addedAtLaunch[Attachment](ctx, q, ticketID, "attachments", mark, lim.Attachments); err != nil {
+			return err
+		}
+		out.Comments, err = commentsAtLaunch(ctx, q, ticketID, mark, lim.Comments)
 		return err
 	})
 	return answer(out, err)
+}
+
+// addedAtLaunch is the members of the ticket's set field (links or
+// attachments, whose table has the field's name) whose add row is below
+// the mark and that are not removed now, each as its add row's value
+// decodes into T, at most limit, the newest kept, oldest first.
+func addedAtLaunch[T any](ctx context.Context, q queryer, ticketID, field string, mark int64, limit int) ([]T, error) {
+	// The value is read as JSON only on an add row of the field: every
+	// such row's value is its member's JSON, which another row's need
+	// not be.
+	values, err := readTexts(ctx, q, `SELECT h.value FROM changes h WHERE h.entity = ? AND h.entity_id = ? AND h.field = ? AND h.op = ? AND h.seq < ?
+		AND EXISTS (SELECT 1 FROM `+field+` m WHERE m.id = CASE WHEN h.field = ? AND h.op = ? THEN json_extract(h.value, '$.id') END
+			AND m.ticket_id = ? AND m.deleted_at = '')
+		ORDER BY h.seq DESC LIMIT ?`,
+		EntityTicket, ticketID, field, OpAdd, mark, field, OpAdd, ticketID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, len(values))
+	for i, v := range values {
+		if err := json.Unmarshal([]byte(v), &out[len(values)-1-i]); err != nil {
+			return nil, fmt.Errorf("dispatch: an add row of the ticket %s's %s: %w", ticketID, field, err)
+		}
+	}
+	return out, nil
+}
+
+// commentsAtLaunch is the ticket's comments AtLaunch answers, at most
+// limit, the newest kept, in their order.
+func commentsAtLaunch(ctx context.Context, q queryer, ticketID string, mark int64, limit int) ([]LaunchComment, error) {
+	rows, err := q.QueryContext(ctx, `SELECT c.id, c.author, c.by, c.body, c.created_at, c.edited_at FROM comments c
+		WHERE c.ticket_id = ? AND c.deleted_at = '' AND (c.author = ? OR substr(c.author, 1, ?) = ?
+			OR (EXISTS (SELECT 1 FROM changes h WHERE h.entity = ? AND h.entity_id = c.id AND h.op = ? AND h.seq < ?)
+				AND NOT EXISTS (SELECT 1 FROM changes h WHERE h.entity = ? AND h.entity_id = c.id AND h.seq >= ?)))
+		ORDER BY c.created_at DESC, c.author DESC, c.id DESC LIMIT ?`,
+		ticketID, ActorAdmin, len(ext.SubjectActor), ext.SubjectActor, EntityComment, OpCreate, mark, EntityComment, mark, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LaunchComment{}
+	for rows.Next() {
+		var c LaunchComment
+		var created, edited string
+		if err := rows.Scan(&c.ID, &c.Author, &c.By, &c.Body, &created, &edited); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, c.EditedAt = unstamp(created), unstamp(edited)
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Reverse(out)
+	return out, nil
 }
 
 // ChangedSince reads what changed of the ticket of the launch with the id

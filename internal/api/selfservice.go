@@ -109,10 +109,16 @@ func (s *Server) selfSession(w http.ResponseWriter, r *http.Request) (*session.L
 // handleSelfCrew forms a crew around the calling session and launches it:
 // the crew is saved under the session's working directory and yolo choice,
 // the member named self is the session itself, the others start as at
-// launch. 201 {run, crew, member, url}.
+// launch. 201 {run, crew, member, url}. A session of a comparison's run
+// (its own crew reference carries a lane) is answered 409 lane, whichever
+// token asks, before anything is read or made.
 func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 	local, ok := s.selfSession(w, r)
 	if !ok || brakemanCannot(w, local) {
+		return
+	}
+	if ref := local.Info().Crew; ref != nil && ref.Lane != nil {
+		writeLaneClosed(w)
 		return
 	}
 	if s.crews == nil {
@@ -228,7 +234,11 @@ func (s *Server) handleSelfCrew(w http.ResponseWriter, r *http.Request) {
 		s.runError(w, "self crew", saved.ID, err)
 		return
 	}
-	local.SetCrew(session.CrewRef{RunID: run.ID, CrewID: saved.ID, Member: self})
+	if !local.SetCrew(session.CrewRef{RunID: run.ID, CrewID: saved.ID, Member: self}) {
+		// Only a launch gives a session a lane, and it gave this one none
+		// (above): the reference is the session's own from its launch.
+		s.log.Error("a crew formed around a session that keeps its launch's crew reference", "crew", saved.ID, "run", run.ID, "session", info.ID)
+	}
 	url := s.publicBase(r) + "/runs/" + run.ID
 	s.log.Info("crew formed by its own member", "crew", saved.ID, "run", run.ID, "session", info.ID, "member", self)
 	local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "formed crew " + saved.Name + ": " + itoa(len(c.Members)) + " members, as " + self})

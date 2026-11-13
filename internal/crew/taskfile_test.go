@@ -94,6 +94,16 @@ func TestTaskFileNamesTheTicket(t *testing.T) {
 		t.Fatalf("task.json:\n%s", js)
 	}
 
+	// A comparison's member, which comments on no ticket, is told what it
+	// does instead; nothing else of its ticket's section differs.
+	cmp := small
+	cmp.comparison = true
+	md, _, _, err = fitTaskFile(cmp)
+	wantCmp := strings.Replace(want, "`task_blocked` with why, or a comment on the ticket.", "`task_blocked` with why, or in your result's summary.", 1)
+	if err != nil || wantCmp == want || !strings.Contains(string(md), wantCmp) || strings.Contains(strings.ToLower(string(md)), "comment") {
+		t.Fatalf("a comparison's task.md: %v\n%s", err, md)
+	}
+
 	// A task file of a run no ticket launched has neither.
 	small.Ticket = nil
 	md, js, _, err = fitTaskFile(small)

@@ -584,7 +584,6 @@ func inboxText(out map[string]any) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// membersText lists a run's members as printMembers does, as text.
 // runHead is a session's run by its id and, when the reply gives one, its
 // state: a comparison's lane is told its own tasks' states alone.
 func runHead(run map[string]any) string {
@@ -594,6 +593,7 @@ func runHead(run map[string]any) string {
 	return fmt.Sprintf("run %v", run["id"])
 }
 
+// membersText lists a run's members as printMembers does, as text.
 func membersText(run map[string]any) string {
 	var b strings.Builder
 	printMembers(&b, run)

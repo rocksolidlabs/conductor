@@ -1014,7 +1014,9 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		return c
 	}
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
-		if _, found, err := linkedTicket(ctx, s.dispatch, run); err == nil && found {
+		// A comparison's lane reads the ticket its run was launched from
+		// (laneTicket), linked or not.
+		if _, found, err := linkedTicket(ctx, s.dispatch, run); err == nil && found || c.lane == inLane && s.runPackage(run) != nil {
 			c.Kinds = append(c.Kinds, "ticket_member")
 			c.Scopes = append(c.Scopes, "ticket")
 		}
@@ -1057,7 +1059,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) || !laneServes(c.lane, op.Method+" "+op.Path) {
+	if !s.reaches(c, op) || !laneGuided(c.lane, op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {
@@ -1423,15 +1425,30 @@ var overviewLimitNames = []struct {
 	{"observe", []string{"brief", "brief_items", "brief_refs", "brief_summary"}},
 }
 
+// limitRoutes is the route each of the overview's limits of an agent's
+// scopes bounds: the overview names one to a caller only when the guide
+// names its route to it (laneGuided).
+var limitRoutes = map[string]string{
+	"report_message": "POST /api/sessions/{id}/attention",
+	"self_crews":     "POST /api/sessions/{id}/crew",
+	"self_links":     "POST /api/sessions/{id}/links/agent",
+	"message":        "POST /api/sessions/{id}/messages",
+	"inbox":          "GET /api/sessions/{id}/inbox",
+	"result_summary": "POST /api/sessions/{id}/task/result",
+	"result_issues":  "POST /api/sessions/{id}/task/result",
+	"comment":        laneCommentPattern,
+}
+
 // overviewLimits is the headline bounds that bind c, in words: its
-// scopes' entries of the limits section, a Brakeman turn's reads and
-// minutes from the snapshot its turn began under, its acts a request
-// with the act scope, and a JSON body's bound for everyone.
+// scopes' entries of the limits section whose route the guide names to c,
+// a Brakeman turn's reads and minutes from the snapshot its turn began
+// under, its acts a request with the act scope, and a JSON body's bound
+// for everyone.
 func overviewLimits(c guideCaller) []string {
 	all := guideLimits()
 	var out, seen []string
 	add := func(name string) {
-		if slices.Contains(seen, name) {
+		if route, ok := limitRoutes[name]; slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) {
 			return
 		}
 		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {
@@ -1496,6 +1513,9 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 			op.Description = ""
 			if op.guideInput != nil {
 				op.Input = op.guideInput
+			}
+			if c.lane != noLane && op.Name == "ticket_read" {
+				op.Summary = laneTicketReadWords
 			}
 			reached = append(reached, op)
 		}

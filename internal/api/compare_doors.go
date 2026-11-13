@@ -3,10 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
-	"strings"
-	"time"
 
-	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -151,6 +148,23 @@ func laneServes(st laneFact, pattern string) bool {
 	return false
 }
 
+// laneCommentPattern is the ticket's comment route, which every session
+// of a comparison's lane is answered 409 lane by in its own words
+// (laneComment).
+const laneCommentPattern = "POST /api/sessions/{id}/ticket/comments"
+
+// laneGuided reports whether the guide names the route with the pattern,
+// an operation or a limit of it, to a session that is st: a route that
+// serves it (laneServes) and, for a lane, not the ticket's comment, which
+// answers it 409 lane.
+func laneGuided(st laneFact, pattern string) bool {
+	return laneServes(st, pattern) && (st == noLane || pattern != laneCommentPattern)
+}
+
+// laneTicketReadWords is what the guide says ticket_read gives a session
+// of a comparison's lane (laneTicket).
+const laneTicketReadWords = "The Dispatch ticket your run was launched from: its title, description and acceptance criteria as launched; the links, attachments and comments it had then that have not changed since; and people's comments as they are now. Nothing else of the ticket, and no read of a linked item."
+
 // laneClosedWords is the one sentence every route closed to a
 // comparison's lane answers its session with (409 lane).
 const laneClosedWords = "a member of a comparison does not use this"
@@ -196,13 +210,17 @@ func laneRun(run crew.Run, l crew.Lane) laneRunView {
 }
 
 // laneTicketReply is what ticket_read answers a session of a comparison's
-// lane: the ticket as it stood at its run's launch, with people's
-// comments since (laneTicketView), and the launch without what changed
-// since.
+// lane: its ticket as the store reads it for its run's launch
+// (dispatch.AtLaunch), and the launch without what changed since.
 type laneTicketReply struct {
-	Ticket laneTicketView `json:"ticket"`
-	Launch laneLaunch     `json:"launch"`
+	Ticket dispatch.AtLaunch `json:"ticket"`
+	Launch laneLaunch        `json:"launch"`
 }
+
+// laneTicketLimits are the limits a lane's ticket is read with: as many
+// comments as the ticket's own read gives, and as many links and
+// attachments as a ticket holds.
+var laneTicketLimits = dispatch.LaunchLimits{Comments: dispatch.MaxTicketComments, Links: dispatch.MaxLinks, Attachments: dispatch.MaxAttachments}
 
 // laneLaunch is the launch a lane's run was made from: its id, the
 // ticket's revision then, the plan revision and the package's digest.
@@ -213,59 +231,22 @@ type laneLaunch struct {
 	Digest string            `json:"digest"`
 }
 
-// laneTicketView is the ticket a lane reads: its identity (id, key,
-// number) and the person's brief as the launch's package carries it
-// (title, description, acceptance); the links with their reads and the
-// attachments it had before the launch; the comments it had before the
-// launch, and a person's since (the workbench's, or an identity
-// provider's subject). Nothing else: no comment, link, read or attachment
-// added since but a person's comment, no status, close state or count of
-// what changed, no revision or time of the ticket's last change.
-type laneTicketView struct {
-	ID          string                              `json:"id"`
-	Key         string                              `json:"key"`
-	Number      int64                               `json:"number"`
-	Title       string                              `json:"title"`
-	Description string                              `json:"description"`
-	Acceptance  string                              `json:"acceptance"`
-	Links       []dispatch.Link                     `json:"links"`
-	LinkReads   map[string]dispatch.LinkReadSummary `json:"linkReads"`
-	Attachments []dispatch.Attachment               `json:"attachments"`
-	Comments    []laneTicketComment                 `json:"comments"`
-}
-
-// laneTicketComment is a comment as a lane reads it: who wrote it, what
-// and when; no number or revision.
-type laneTicketComment struct {
-	ID        string    `json:"id"`
-	Author    string    `json:"author"`
-	By        string    `json:"by"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"createdAt"`
-	EditedAt  time.Time `json:"editedAt,omitzero"`
-}
-
 // laneTicket answers ticket_read for a session of the lane l
-// (laneTicketReply), from the store's ticket and what it held at the
-// run's launch (dispatch.AtLaunch); 409 lane when that cannot be told: a
-// run no ticket launched, or a launch the store does not hold.
+// (laneTicketReply): what the store reads of the ticket for its run's
+// launch, as it reads it; 404 no_ticket when the ticket is deleted, as for
+// any run's session; 409 lane when it cannot be told: a run no ticket
+// launched, or a launch the store does not hold.
 func (s *Server) laneTicket(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, l crew.Lane) {
 	rt := s.runPackage(l.Run)
 	if rt == nil {
 		writeLaneClosed(w)
 		return
 	}
-	ctx := r.Context()
-	v, found, err := packageTicket(ctx, ds, rt)
-	if err == nil && !found {
+	at, err := ds.AtLaunch(r.Context(), rt.Launch, laneTicketLimits)
+	switch {
+	case errors.Is(err, dispatch.ErrLaunchTicketGone):
 		launchTicketGone(w, l.Run, rt.Key)
 		return
-	}
-	var at dispatch.AtLaunch
-	if err == nil {
-		at, err = ds.AtLaunch(ctx, rt.Launch)
-	}
-	switch {
 	case errors.Is(err, dispatch.ErrNotFound):
 		writeLaneClosed(w)
 		return
@@ -273,28 +254,7 @@ func (s *Server) laneTicket(w http.ResponseWriter, r *http.Request, ds *dispatch
 		s.dispatchError(w, "ticket", err)
 		return
 	}
-	out := laneTicketView{ID: v.ID, Key: v.Key, Number: v.Number, Title: at.Ticket.Title, Description: at.Ticket.Description, Acceptance: at.Ticket.Acceptance,
-		Links: []dispatch.Link{}, LinkReads: map[string]dispatch.LinkReadSummary{}, Attachments: []dispatch.Attachment{}, Comments: []laneTicketComment{}}
-	for _, k := range v.Links {
-		if at.Before[k.ID] && k.DeletedAt.IsZero() {
-			out.Links = append(out.Links, k)
-			if rd, ok := v.LinkReads[k.ID]; ok {
-				out.LinkReads[k.ID] = rd
-			}
-		}
-	}
-	for _, a := range v.Attachments {
-		if at.Before[a.ID] && a.DeletedAt.IsZero() {
-			out.Attachments = append(out.Attachments, a)
-		}
-	}
-	for _, c := range v.Comments {
-		person := c.Author == adminActor || strings.HasPrefix(c.Author, ext.SubjectActor)
-		if c.DeletedAt.IsZero() && (at.Before[c.ID] || person) {
-			out.Comments = append(out.Comments, laneTicketComment{ID: c.ID, Author: c.Author, By: c.By, Body: c.Body, CreatedAt: c.CreatedAt, EditedAt: c.EditedAt})
-		}
-	}
-	writeDispatch(w, http.StatusOK, laneTicketReply{Ticket: out, Launch: laneLaunch{ID: rt.Launch, Rev: rt.Rev, Plan: sessionLaunchPlan{ID: rt.Plan, N: rt.PlanN}, Digest: rt.Digest}})
+	writeDispatch(w, http.StatusOK, laneTicketReply{Ticket: at, Launch: laneLaunch{ID: rt.Launch, Rev: rt.Rev, Plan: sessionLaunchPlan{ID: rt.Plan, N: rt.PlanN}, Digest: rt.Digest}})
 }
 
 // laneComment answers 409 lane for a session of a comparison's lane, whose
