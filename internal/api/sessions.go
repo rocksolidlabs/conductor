@@ -304,7 +304,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	// The environment and the login (launchEnv: the entry's, the server's
 	// and this launch's part, then the login decided over them).
-	passthrough, env, bound, in, holds, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
+	passthrough, env, bound, _, holds, counted, releaseAccount, aerr := s.launchEnv(agent, adapterEnv, applied, req.Env, req.allow, req.Account, cwd, req.login)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -456,13 +456,6 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if crewRef != nil {
 		ref := *crewRef
 		info.Crew = &ref
-	}
-	// The one account it is counted on, decided as it is registered, kept.
-	counted := bound.ID
-	if in != "" {
-		if doc, aerr := s.accountsForLaunch(); aerr == nil {
-			counted = heldAccount(doc, agent.Adapter, bound, in)
-		}
 	}
 	launched := session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo, Renamed: req.renamed,
 		Account: bound, Model: req.Model, Adapter: agent.Adapter, Holds: holds, Counted: counted}
