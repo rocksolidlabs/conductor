@@ -673,3 +673,143 @@ func TestTheChangedPathsHandedAreTheEventsWhateverTheirBytes(t *testing.T) {
 		}
 	})
 }
+
+// I3, door 2: an attempt's task file names its own lane alone. The goldens
+// under testdata/taskfile-compare hold a candidate's and a review's files
+// (`-update-taskfile-goldens` rewrites them with the others); the engine's
+// task files of a run of three candidates, each with its review, name no
+// other lane's task, member, branch, path or approach.
+func TestATaskFileNamesNoOtherLane(t *testing.T) {
+	c := compareCrew(t, "/repo", 3, true)
+	base := strings.Repeat("a", 40)
+	golden := func(task string, kind string) TaskFile {
+		f := goldenTaskFiles()["work"]
+		f.Inputs, f.Previous, f.Prefix = nil, nil, ""
+		f.Task, f.Kind, f.Attempt, f.CrewName = task, kind, 1, c.Name
+		f.Start, f.StartFrom = base, "the run's base"
+		f.Goal, f.Instructions, f.Checks = c.Goal, taskByID(&c, task).Instructions, taskByID(&c, task).Checks
+		f.Member = taskByID(&c, task).Member
+		f.Role = c.member(f.Member).Prompt
+		f.Worktree, f.Branch = "/repo/.conductor/worktrees/r-0123456789ab/"+task+".1", "crew/r-0123456789ab/"+task+".1"
+		f.Compare = compareFor(c.Compare, c.Tasks, task, base)
+		return f
+	}
+	candidate := golden("approach-b", TaskWork)
+	review := golden("review-b", TaskReview)
+	review.Start, review.StartFrom = strings.Repeat("b", 40), "task \"approach-b\"'s result"
+	review.Inputs = []TaskInput{{Task: "approach-b", Attempt: 1, Commit: strings.Repeat("b", 40), Branch: "crew/r-0123456789ab/approach-b.1", Summary: "Memoised in the handler."}}
+	dir := filepath.Join("testdata", "taskfile-compare")
+	for name, f := range map[string]TaskFile{"candidate": candidate, "review": review} {
+		md, js, more, err := fitTaskFile(f)
+		if err != nil || more != nil {
+			t.Fatalf("%s: more %v, %v", name, more != nil, err)
+		}
+		got := map[string][]byte{name + ".md": md, name + ".json": js}
+		for file, b := range got {
+			if *updateTaskFileGoldens {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, file), b, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			want, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(b, want) {
+				t.Errorf("%s differs from its golden:\n got: %s\nwant: %s", file, b, want)
+			}
+		}
+		noOtherLane(t, name, "approach-b", string(md)+string(js), c)
+	}
+
+	// The engine's: every candidate's and, once its candidate has a result,
+	// a review's.
+	repo := newRepo(t)
+	e, _, _ := compareEngine(t)
+	run := launchManaged(t, e, compareCrew(t, repo, 3, true))
+	defer stopRun(t, e, run.ID)
+	var a TaskState
+	for _, cd := range c.Compare.Candidates {
+		ts := waitAttempt(t, e, run.ID, cd.Task, ledger.AttemptRunning)
+		md, f := taskFileOf(t, ts)
+		js, err := os.ReadFile(filepath.Join(ts.Attempt.Worktree, taskDir, "task.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Compare == nil || f.Compare.Candidate != cd.Task || f.Compare.Of != 3 || f.Compare.Approach != cd.Approach || len(f.Compare.Criteria) != 2 {
+			t.Fatalf("%s's comparison part: %+v", cd.Task, f.Compare)
+		}
+		if !strings.Contains(md, "You are "+cd.Task+", one of 3 candidates for this objective") {
+			t.Fatalf("%s's task.md:\n%s", cd.Task, md)
+		}
+		noOtherLane(t, cd.Task, cd.Task, md+string(js), c)
+		if cd.Task == "approach-a" {
+			a = ts
+		}
+	}
+	commitResult(t, e, a, "cache.txt", "by locale\n", "keyed by locale")
+	rv := waitAttempt(t, e, run.ID, "review-a", ledger.AttemptRunning)
+	md, f := taskFileOf(t, rv)
+	js, err := os.ReadFile(filepath.Join(rv.Attempt.Worktree, taskDir, "task.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Compare == nil || f.Compare.Candidate != "approach-a" || !strings.Contains(md, "You review approach-a, one of 3 candidates") {
+		t.Fatalf("review-a's task file: %+v\n%s", f.Compare, md)
+	}
+	noOtherLane(t, "review-a", "approach-a", md+string(js), c)
+}
+
+// noOtherLane fails when text, the task files of an attempt in lane, names
+// any other lane's task, member, branch or approach.
+func noOtherLane(t *testing.T, what, lane, text string, c Crew) {
+	t.Helper()
+	lanes := compareLanes(c.Compare, c.Tasks)
+	for _, tk := range c.Tasks {
+		if lanes[tk.ID] == lane {
+			continue
+		}
+		for _, name := range []string{tk.ID, tk.Member, "/" + tk.ID + "."} {
+			if strings.Contains(text, name) {
+				t.Errorf("%s names %q of another lane", what, name)
+			}
+		}
+	}
+	for _, cd := range c.Compare.Candidates {
+		if cd.Task != lane && cd.Approach != "" && strings.Contains(text, cd.Approach) {
+			t.Errorf("%s names %s's approach", what, cd.Task)
+		}
+	}
+}
+
+// The comparison part is never cut: a task file past maxTaskFile cuts its
+// other parts into task-more.json and keeps the comparison whole.
+func TestTheComparisonPartIsNeverCut(t *testing.T) {
+	f := goldenTaskFiles()["cut"]
+	cmp := &Compare{Criteria: criteriaOf(maxCompareCriteria, strings.Repeat("\U0001D11E", maxCriterionText)),
+		Candidates: []Candidate{{Task: "build", Approach: strings.Repeat("é", maxApproach)}, {Task: "other"}}}
+	f.Compare = compareFor(cmp, []Task{{ID: "build", Kind: TaskWork}, {ID: "other", Kind: TaskWork}}, "build", strings.Repeat("a", 40))
+	md, js, more, err := fitTaskFile(f)
+	if err != nil || more == nil || len(md) > maxTaskFile || len(js) > maxTaskFile {
+		t.Fatalf("md %d, js %d, more %v, %v", len(md), len(js), more != nil, err)
+	}
+	var kept TaskFile
+	if err := json.Unmarshal(js, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.Cut) == 0 || kept.Compare == nil || !reflect.DeepEqual(kept.Compare.Criteria, cmp.Criteria) || kept.Compare.Approach != cmp.Candidates[0].Approach || kept.Compare.Of != 2 {
+		t.Fatalf("cut %v; the comparison kept: %+v", kept.Cut, kept.Compare != nil)
+	}
+	for _, cr := range cmp.Criteria {
+		if !strings.Contains(string(md), "- "+cr.ID+": "+cr.Text+"\n") {
+			t.Fatalf("task.md lacks criterion %s", cr.ID)
+		}
+	}
+	if !strings.Contains(string(md), "Your approach: "+cmp.Candidates[0].Approach+"\n") || strings.Contains(string(more), `"compare"`) {
+		t.Fatal("the approach is not whole in task.md, or task-more.json holds the comparison")
+	}
+}

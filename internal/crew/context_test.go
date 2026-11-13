@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/ext"
@@ -215,4 +217,43 @@ func TestEngineAsksContextOutsideTheLock(t *testing.T) {
 	}
 	l.mu.Unlock()
 	stopRun(t, e, run.ID)
+}
+
+// I3, door 4: an attempt of a comparison asks no context provider, and its
+// task file says it has no derived context; an attempt of an ordinary run
+// beside it asks, and keeps the provider's blocks.
+func TestAComparisonTakesNoDerivedContext(t *testing.T) {
+	e, _, _ := compareEngine(t)
+	var mu sync.Mutex
+	var asked []string // the runs whose attempts the provider was asked for
+	blocks := []TaskContext{{Source: "graph", Title: "Callers of Users", Ref: "users.go", Body: "Users is called from main.go."}}
+	e.SetContext(func(ctx context.Context, q ext.ContextQuery) []TaskContext {
+		mu.Lock()
+		asked = append(asked, q.Run)
+		mu.Unlock()
+		return blocks
+	})
+	cmp := launchManaged(t, e, compareCrew(t, newRepo(t), 2, false))
+	defer stopRun(t, e, cmp.ID)
+	plainCrew := repoCrew(newRepo(t), work("build", "lead"))
+	plainCrew.ID = "plain"
+	plain := launchManaged(t, e, plainCrew)
+	defer stopRun(t, e, plain.ID)
+
+	// Each attempt's task files are written after its ask, if any.
+	for _, task := range []string{"approach-a", "approach-b"} {
+		md, f := taskFileOf(t, waitAttempt(t, e, cmp.ID, task, ledger.AttemptRunning))
+		if f.Context != nil || !strings.Contains(md, noDerivedContext) || strings.Contains(md, "Callers of Users") {
+			t.Fatalf("%s's task file: %+v\n%s", task, f.Context, md)
+		}
+	}
+	md, f := taskFileOf(t, waitAttempt(t, e, plain.ID, "build", ledger.AttemptRunning))
+	if !reflect.DeepEqual(f.Context, blocks) || strings.Contains(md, "No derived context") || f.Compare != nil {
+		t.Fatalf("the ordinary run's task file: %+v\n%s", f.Context, md)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(asked, []string{plain.ID}) {
+		t.Fatalf("the provider was asked for %v, the ordinary run being %s", asked, plain.ID)
+	}
 }

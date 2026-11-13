@@ -8,7 +8,8 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
  * they are. The project manifest goes when it holds something, the legacy setup only while the crew still has one, and the people only
- * when there are some, so a crew without people is the body it was before them.
+ * when there are some, so a crew without people is the body it was before them. A comparison's block goes back as it was read (the editor
+ * has no form for it), so a save keeps it; a crew without one sends none.
  */
 export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; manifest?: DraftManifest }): CrewInput {
   const out: CrewInput = {
@@ -29,6 +30,7 @@ export function toCrewInput(c: Omit<CrewInput, 'tasks' | 'manifest'> & { tasks?:
     const manifest = toCrewManifest(c.manifest)
     if (!manifestEmpty(manifest)) out.manifest = manifest
   }
+  if (c.compare) out.compare = c.compare
   return out
 }
 

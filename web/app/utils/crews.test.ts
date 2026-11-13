@@ -3,7 +3,7 @@ import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStar
 import type { FeedEntry } from './events'
 import { argsFrom, changedBetween, refusedAsStale, revisionToSave, elsewhereWords, broadcastByName, broadcastSelection, broadcastSummary, checkProblems, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, keepParked, liftSetup, manifestIds, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestMarks, manifestProblems, runCounts, secondsText, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, typedSeconds, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS, ownerOf, ownerWords, ownersFollowPeople, peopleProblems, peopleRowProblems, responsibilityWords, taskPeopleBytes, ownerChoices, OWNER_GONE, OWNER_NONE } from './crews'
 import type { ManifestList, ManifestShape, TaskShape } from './crews'
-import { startSentence, startWords } from './crewWords'
+import { changedFields, startSentence, startWords } from './crewWords'
 
 const lead: CrewMember = { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'immediately' } }
 const tests: CrewMember = { name: 'tests', agentId: 'shell', prompt: '', start: { when: 'after', member: 'lead' } }
@@ -53,6 +53,40 @@ describe('toCrewInput', () => {
     expect(wire(toCrewInput({ ...info, members: [edited] })).members).toEqual([
       { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'manual' } },
     ])
+  })
+})
+
+describe("a comparison's crew in the editor", () => {
+  const check = { id: 'unit', argv: ['go', 'test', './...'] }
+  const comparison: CrewInfo = {
+    ...info,
+    members: [
+      { name: 'a', agentId: 'claude', prompt: '', start: { when: 'task' } },
+      { name: 'b', agentId: 'codex', prompt: '', start: { when: 'task' } },
+    ],
+    tasks: [
+      { id: 'try-a', member: 'a', kind: 'work', instructions: 'Make it fast.', checks: [check] },
+      { id: 'try-b', member: 'b', kind: 'work', instructions: 'Make it fast.', checks: [check] },
+    ],
+    compare: {
+      criteria: [{ id: 'speed', text: 'The benchmark runs faster' }],
+      candidates: [{ task: 'try-a', approach: 'Cache the parse.' }, { task: 'try-b' }],
+    },
+  }
+
+  it('saves the compare block as it was read, and a crew without one with no compare member', () => {
+    expect(wire(toCrewInput(comparison)).compare).toEqual(wire(comparison.compare))
+    const d = toDraft(comparison)
+    expect(wire(toCrewInput({ ...d, goal: 'a new goal' })).compare).toEqual(wire(comparison.compare))
+    const { compare: _compare, ...plain } = comparison
+    expect('compare' in toCrewInput(plain)).toBe(false)
+    expect(wire(toCrewInput(toDraft(plain)))).not.toHaveProperty('compare')
+  })
+
+  it('names the comparison in what changed when only it differs', () => {
+    const other = { ...comparison, compare: { ...comparison.compare!, criteria: [{ id: 'speed', text: 'The benchmark runs twice as fast' }] } }
+    expect(changedFields(other, comparison)).toEqual(['Comparison'])
+    expect(crewKey(other)).not.toBe(crewKey(comparison))
   })
 })
 
