@@ -35,6 +35,14 @@ func SetBeforeRename(t testing.TB, f func(name string)) {
 	t.Cleanup(func() { BeforeRename = old })
 }
 
+// SetStagedLook runs f on the answer of an install's look at its staged
+// Dispatch store, before the store's reissue: what f returns is the look's.
+func SetStagedLook(t testing.TB, f func(err error) error) {
+	old := stagedLook
+	stagedLook = f
+	t.Cleanup(func() { stagedLook = old })
+}
+
 // SetSyncDir runs f before each sync of a directory an install makes, with
 // the directory's slash path in the data directory ("." for the data
 // directory, .restore-<random>/... for a staged one): an error f returns is
