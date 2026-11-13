@@ -289,6 +289,38 @@ func (p *pubGH) closes() int { return p.g.f.Writes("graphql CloseIssue") }
 
 const pubNodeID = "I_kwDOitem12"
 
+// drivePublications drives every publication route that reaches the
+// token through do (a fixture: the pattern, the path, the body, the answer
+// it must give): a prepare, a send, a send whose post GitHub dropped and
+// its Check, and a send whose close did not answer and its Close now. The
+// fake's issue is octo/app#160, imported into the project PBW.
+func drivePublications(t *testing.T, e *testEnv, g *ghItems, do func(pattern, path, body string, status int, code string) map[string]any) {
+	t.Helper()
+	p := newPubGH(t, g)
+	g.set(160, ghItem{Node: "I_kwDOitem160", Title: "Walked", Body: "b", Updated: t0, Labels: []string{}})
+	p.node("I_kwDOitem160", "Issue", "octo/app", 160, 4000001)
+	e.newDispatchProject(t, "PBW", nil)
+	e.importItem(t, "PBW", "https://github.com/octo/app/issues/160", opID(), http.StatusCreated, map[string]any{"images": false})
+	prepare := func(extra string) (id, digest string) {
+		out := do("POST /api/dispatch/tickets/{key}/publications", "/api/dispatch/tickets/PBW-1/publications",
+			`{"opId":"`+opID()+`","target":"linked","body":"Walked."`+extra+`}`, http.StatusCreated, "")
+		return out["publication"].(map[string]any)["id"].(string), out["postSha256"].(string)
+	}
+	send := func(id, digest string) {
+		do("POST /api/dispatch/publications/{id}/send", "/api/dispatch/publications/"+id+"/send", `{"opId":"`+opID()+`","postSha256":"`+digest+`"}`, http.StatusOK, "")
+	}
+	send(prepare(""))
+	p.set(func(p *pubGH) { p.mode = postDrop })
+	id, digest := prepare("")
+	send(id, digest)
+	p.set(func(p *pubGH) { p.mode, p.closeTo = postOK, http.StatusBadGateway })
+	do("POST /api/dispatch/publications/{id}/check", "/api/dispatch/publications/"+id+"/check", `{}`, http.StatusOK, "")
+	id, digest = prepare(`,"closeIssue":"completed"`)
+	send(id, digest)
+	p.set(func(p *pubGH) { p.closeTo = 0 })
+	do("POST /api/dispatch/publications/{id}/close", "/api/dispatch/publications/"+id+"/close", `{"opId":"`+opID()+`"}`, http.StatusOK, "")
+}
+
 // pubEnv is a server with a ticket (PUB-1) imported from the fake's issue
 // octo/app#12, the token planted for github.com (Alice's), and the fake's
 // publications side.

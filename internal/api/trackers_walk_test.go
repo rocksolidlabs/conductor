@@ -189,6 +189,9 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	// 304, each failure of GitHub's (its refusals echo the token they were
 	// sent) and a request its client cancels, all with the settings token.
 	driveExternal(t, b.testEnv, newGHItems(f), admin)
+	// A ticket's publications (IN1a PR-5): a prepare, sends, a Check and a
+	// Close now, with the settings token.
+	drivePublications(t, b.testEnv, newGHItems(f), admin)
 
 	// Bodies that are not the route's: one fixed sentence, whatever the
 	// body holds of a token (a member's name, a control byte, a bad escape,
