@@ -6277,8 +6277,10 @@ session is registered (its registration refused and its stop failed
 among them). The ids of the accounts it holds, and the one account it is
 counted on, are kept in memory with its session, never written or
 answered: for a session, no folder is asked about again after the
-reservation (a kept run's member between attempts is judged at the
-remove by its binding, below). Its session is counted on the account the
+reservation (a run is judged at the remove by its members' bindings,
+below: every run an engine holds that has not ended, and every run the
+ledger keeps as running or interrupted, also while an attempt's session
+runs). Its session is counted on the account the
 launch names, else the first account of its own adapter among those it
 holds, else its binding's own id (`default` for the agent's own login,
 or `unlisted`); its running count and its start counts are on that one
