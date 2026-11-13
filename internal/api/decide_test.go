@@ -53,10 +53,11 @@ const (
 	passUnknown     = "pass.unknown-88ab"
 )
 
-// gatedIdentity is a FakeIdentity whose recheck of a token, the second ask
-// about it since recheckAs (a response's authentication being the first),
-// can answer another principal (then) and wait at a gate (hold) first,
-// telling reached as it starts to wait.
+// gatedIdentity is a FakeIdentity whose recheck of a token, the third ask
+// about it since recheckAs (a response's authentication and its judgement
+// once its body is read being the first two), can answer another principal
+// (then) and wait at a gate (hold) first, telling reached as it starts to
+// wait.
 type gatedIdentity struct {
 	*exttest.FakeIdentity
 
@@ -72,7 +73,7 @@ func (g *gatedIdentity) Authenticate(ctx context.Context, tok string) (ext.Princ
 	g.asked[tok]++
 	n, then, hold := g.asked[tok], g.then[tok], g.hold[tok]
 	g.mu.Unlock()
-	if n != 2 {
+	if n != 3 {
 		return g.FakeIdentity.Authenticate(ctx, tok)
 	}
 	if hold != nil {
