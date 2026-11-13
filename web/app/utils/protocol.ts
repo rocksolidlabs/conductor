@@ -366,6 +366,16 @@ export interface DecideRefusal {
 export const MAX_DECIDE_REPLY = MAX_DECIDE_VIEW + 1024
 export const MAX_DECIDE_REFUSAL_WORDS = 200
 
+/**
+ * The decide page's own bounds (docs/protocol.md "Decisions"): at most DECIDE_CARDS cards open, each read and the list read one at a
+ * time, the next due DECIDE_READ_EVERY ms after the last began while the tab is shown, each aborted at DECIDE_READ_WAIT ms; a card
+ * whose last view taken is older than DECIDE_FRESH_FOR ms cannot be answered until a read renews it.
+ */
+export const DECIDE_CARDS = 4
+export const DECIDE_READ_EVERY = 10_000
+export const DECIDE_READ_WAIT = 10_000
+export const DECIDE_FRESH_FOR = 25_000
+
 /** A route's destinations (`POST /api/decisions/{did}/route`): the grant's beside the operator, a person and a responsibility. */
 export type DecisionDestination =
   | { kind: 'operator' }

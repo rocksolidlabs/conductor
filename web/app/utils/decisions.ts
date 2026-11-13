@@ -47,12 +47,18 @@ export interface DecisionRequest {
   for?: DecisionFor
 }
 
-/** Whom a decision is for, as its request keeps it (HM1); the operator answers it for that person. */
+/**
+ * Whom a decision is for, as its request keeps it (HM1); the operator answers it for that person. A decision given to the decide grant
+ * is for `{label: "grant:decide"}` and no person: the operator, or anyone holding the grant, answers it.
+ */
 export interface DecisionFor {
   label: string
-  person: string
+  person?: string
   responsibility?: string
 }
+
+/** The route target of a decision given to the decide grant (docs/plans/decide-grant.md). */
+export const GRANT_DECIDE_LABEL = 'grant:decide'
 
 /** A response's receipt, kept with it: accepted (Recorded), or refused with its code and words. */
 export interface ResponseReceipt {
@@ -200,6 +206,7 @@ export function recommended(d: Pick<Decision, 'type' | 'request'>): number {
 export function approverWords(d: Pick<Decision, 'policy'> & { request?: Pick<DecisionRequest, 'for'> }): string {
   const who = d.policy?.approver === 'operator' || !d.policy?.approver ? 'the operator' : d.policy.approver
   const f = d.request?.for
+  if (f?.label === GRANT_DECIDE_LABEL && !f.person) return `${who}, or anyone holding the decide grant`
   if (!f?.person) return who
   const w = respWords(f.responsibility)
   return w ? `${who}, for ${f.person} (${w})` : `${who}, for ${f.person}`
@@ -502,6 +509,31 @@ export function commentDecision(post: (path: string, body: CommentBody) => Promi
 /** Whether s names a decision: `dr-<n>`. */
 export function isDecisionId(s: string | undefined | null): s is string {
   return !!s && /^dr-[1-9][0-9]{0,17}$/.test(s)
+}
+
+/** The decide page's words of a refusal's code (the server's decideWords, internal/api/decide.go), naming the decision and no one. */
+export function decideWords(code: string, did: string): string {
+  const words: Record<string, string> = {
+    decision_answered: `${did} was answered before your answer reached it.`,
+    decision_closed: `${did} was closed before your answer.`,
+    stale_decision: `${did} changed since you read it: read it again and answer.`,
+    not_approver: `${did} is no longer open to you.`,
+    not_found: `${did} is no longer open to you.`,
+    response_conflict: `This send to ${did} differs from the one kept under its response id: read the decision again.`,
+    not_held: `${did} cannot be answered while its run is stopped.`,
+    stale_policy: `${did} was opened under another policy and cannot be answered here.`,
+    invalid: `This answer does not fit ${did}: check the choice and the text.`,
+    decision_limit: `${did} takes no more answers.`,
+  }
+  return Object.hasOwn(words, code) ? words[code]! : `${did} could not take this answer.`
+}
+
+/** The outcome of a decide principal's own answer in words (docs/plans/decide-grant.md, The decide view); '' for none. */
+export function decideOutcomeWords(v: { id: string; outcome?: string; outcomeCode?: string }): string {
+  if (v.outcome === 'applied') return `Your answer to ${v.id} was applied.`
+  if (v.outcome === 'waiting') return `Your answer to ${v.id} was recorded.`
+  if (v.outcome === 'not_used') return `Your answer to ${v.id} was not used.`
+  return v.outcome === 'refused' ? decideWords(v.outcomeCode ?? '', v.id) : ''
 }
 
 /** The decision ids the shown session questions mirror (an attention needing input with `decision`). */
