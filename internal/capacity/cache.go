@@ -335,6 +335,23 @@ func (c *Cache) View(k Key) View {
 	return c.viewLocked(k, c.clock.Now())
 }
 
+// Kept answers the View of k's kept reading made at at, and whether one
+// is kept: what a reading cited by its time showed (a brief's capacity:
+// ref, docs/plans/capacity.md, PR-6). It reads nothing and moves no key's
+// place; a read under way does not change the reading's own state.
+func (c *Cache) Kept(k Key, at time.Time) (View, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e := c.keys[k]; e != nil {
+		for _, r := range e.readings {
+			if r.ReadAt.Equal(at) {
+				return r.view(c.clock.Now()), true
+			}
+		}
+	}
+	return View{}, false
+}
+
 func (c *Cache) viewLocked(k Key, now time.Time) View {
 	var v View
 	if e := c.keys[k]; e != nil {

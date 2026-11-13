@@ -17,10 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/pty"
@@ -35,7 +37,9 @@ import (
 // (a switchyard answers 403 switchyard). What an account's view holds is
 // the admin's alone: no reply but these routes', no event but capacity's
 // and no log line carries an account's label, folder or figures, and a
-// reader's words are Conductor's own (internal/agents).
+// reader's words are Conductor's own (internal/agents). A Brakeman turn
+// reads GET /api/capacity under its Capacity class (PR-6), each view as
+// brakeman.CapacityOf makes it: labels and figures, never a folder.
 
 // The routes' bounds, and the owner lock's wait.
 const (
@@ -61,6 +65,9 @@ const (
 var (
 	capacityLockWait = 10 * time.Second
 	capacityLockTick = 250 * time.Millisecond
+	// capacityClock, when a test sets it, is the readings' clock of a
+	// server opened after (capacity.CacheOptions.Clock).
+	capacityClock atomic.Pointer[capacity.Clock]
 )
 
 // ownerOnlyReaders are the adapters whose reads are admitted from the
@@ -130,7 +137,11 @@ func (s *Server) openCapacity(st *store.Store) *capacityDesk {
 			d.runDir = run.Dir()
 		}
 	}
-	d.cache = capacity.NewCache(capacity.CacheOptions{Read: d.read, OnRead: d.onRead})
+	var clock capacity.Clock
+	if c := capacityClock.Load(); c != nil {
+		clock = *c
+	}
+	d.cache = capacity.NewCache(capacity.CacheOptions{Clock: clock, Read: d.read, OnRead: d.onRead})
 	path := filepath.Join(st.Dir(), capacity.Dir, "owner.lock")
 	lock, why, held, err := store.TakeOwnerLock(path)
 	switch {
@@ -744,8 +755,15 @@ func writeCapacityJSON(w http.ResponseWriter, status int, v any, bound int) {
 
 // handleCapacity answers GET /api/capacity: with agent, one view; without,
 // a page of every installed agent's views, one for each of its accounts.
-// Neither reads anything.
+// Neither reads anything. A Brakeman turn's read (its Capacity class,
+// brakemanReads) is answered each view as brakeman.CapacityOf makes it,
+// and a server with no capacity in fixed words.
 func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
+	turn := turnReading(r)
+	if turn && (s.capacity == nil || s.capacity.st == nil) {
+		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "this server keeps no capacity it can read")
+		return
+	}
 	if !s.capacityAvailable(w) {
 		return
 	}
@@ -771,7 +789,7 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 			refuse(w, aerr.status, aerr.Code, aerr.Message)
 			return
 		}
-		writeCapacityJSON(w, http.StatusOK, v, maxCapacityView)
+		writeCapacityJSON(w, http.StatusOK, capacityReply(turn, v), maxCapacityView)
 		return
 	}
 	limit := maxCapacityLimit
@@ -792,7 +810,16 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusBadRequest, "invalid_request", "after is the next a page gave: an agent's id, /, an account's")
 		return
 	}
-	s.capacityPage(w, r, vq, after, limit)
+	s.capacityPage(w, r, vq, after, limit, turn)
+}
+
+// capacityReply is v as the caller reads it: a Brakeman turn (turn) as
+// brakeman.CapacityOf makes it, its counts counted now; the admin whole.
+func capacityReply(turn bool, v capacity.View) any {
+	if turn {
+		return brakeman.CapacityOf(v, time.Now())
+	}
+	return v
 }
 
 // capacityQueryOf is r's query as the repository's bounded parser reads it
@@ -825,8 +852,8 @@ func (s *Server) capacityAgent(w http.ResponseWriter, id string) (catalog.Agent,
 // agent (by id) for each of its accounts (by id) after the key after
 // names ("agent/account"), until limit or until the next would pass
 // maxCapacityPage, but at least one; next names the last key given when
-// more follow.
-func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacityQuery, after string, limit int) {
+// more follow. Each view is as capacityReply gives it to the caller.
+func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacityQuery, after string, limit int, turn bool) {
 	doc, err := s.capacity.st.Accounts()
 	if err != nil {
 		refuse(w, http.StatusServiceUnavailable, "capacity_unavailable", "the accounts could not be read")
@@ -868,7 +895,7 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 		if aerr != nil {
 			continue
 		}
-		b, err := json.Marshal(v)
+		b, err := json.Marshal(capacityReply(turn, v))
 		if err != nil || len(b) > maxCapacityView {
 			continue
 		}
@@ -880,6 +907,70 @@ func (s *Server) capacityPage(w http.ResponseWriter, r *http.Request, vq capacit
 		page.Views = append(page.Views, b)
 	}
 	writeCapacityJSON(w, http.StatusOK, page, maxCapacityPage)
+}
+
+// keptCapacity is what a brief's capacity: ref resolves to: the reading of
+// agent on account made at at, while the readings keep it, as the view
+// shows it and as Brakeman reads it (brakeman.CapacityOf), its counts
+// counted at now. It reads nothing. ok is false for a reading no longer
+// kept (or never made), an agent or account not there now, a view no read
+// gives, and a server that keeps no capacity.
+func (s *Server) keptCapacity(ctx context.Context, agentID, account string, at, now time.Time) (brakeman.Capacity, bool) {
+	d := s.capacity
+	agent, ok := s.Catalog().Get(agentID)
+	if d == nil || d.st == nil || !ok {
+		return brakeman.Capacity{}, false
+	}
+	found := false
+	v, aerr := d.viewOf(ctx, agent, capacityQuery{account: account, launch: "session"}, func(k capacity.Key) capacity.View {
+		kept, ok := d.cache.Kept(k, at)
+		found = ok
+		return kept
+	})
+	if aerr != nil || !found {
+		return brakeman.Capacity{}, false
+	}
+	return brakeman.CapacityOf(v, now), true
+}
+
+// queuedCapacity is the view a request queued under cfg keeps, as Brakeman
+// reads it: of the configured agent on the account its configured folder
+// is (none: the agent's own login; else the adapter's registered account
+// that holds the folder, looked up as the turn's binding looks it up,
+// boundFolder; else a folder not in Accounts, unlisted, never read), from
+// the readings kept, reading nothing; nil on a server that keeps no
+// capacity, for an agent not in the catalog, or while the accounts or the
+// view cannot be read.
+func (s *Server) queuedCapacity(cfg brakeman.Config) *brakeman.Capacity {
+	d := s.capacity
+	agent, ok := s.Catalog().Get(cfg.AgentID)
+	if d == nil || d.st == nil || !ok {
+		return nil
+	}
+	account := capacity.DefaultID
+	if cfg.Account != "" {
+		doc, err := d.st.Accounts()
+		if err != nil {
+			return nil
+		}
+		account = session.SourceUnlisted
+		if i := slices.IndexFunc(doc.Accounts, func(a capacity.Account) bool { return a.Adapter == agent.Adapter && boundFolder(a, cfg.Account) }); i >= 0 {
+			account = doc.Accounts[i].ID
+		}
+	}
+	v := capacity.View{Agent: capacity.ViewAgent{ID: agent.ID, Name: agent.Name, Adapter: agent.Adapter}, Account: capacity.ViewAccount{ID: account},
+		Host: capacity.ViewHost{Kind: capacity.HostNative}, State: capacity.StateUnlisted, Fresh: capacity.FreshNone,
+		Counts: d.counts(capacity.Key{Agent: agent.ID, Account: account})}
+	if account != session.SourceUnlisted {
+		ctx, cancel := context.WithTimeout(context.Background(), guideLookupWait)
+		defer cancel()
+		var aerr *apiError
+		if v, aerr = d.viewOf(ctx, agent, capacityQuery{account: account, launch: "session"}, nil); aerr != nil {
+			return nil
+		}
+	}
+	c := brakeman.CapacityOf(v, time.Now())
+	return &c
 }
 
 // capacityReadBody is POST /api/capacity/read's body.
@@ -937,6 +1028,7 @@ func (s *Server) routeCapacity(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/retire", s.launching(s.handleRetireAccount))
 	mux.HandleFunc("DELETE /api/accounts/{id}", s.launching(s.handleRemoveAccount))
 	mux.HandleFunc("PUT /api/accounts/defaults/{adapter}", s.launching(s.handleAccountDefault))
-	mux.HandleFunc("GET /api/capacity", s.launching(s.handleCapacity))
+	// The admin's, and a Brakeman turn's under its Capacity class.
+	mux.HandleFunc("GET /api/capacity", s.readable("GET /api/capacity", s.launchingAny(s.handleCapacity)))
 	mux.HandleFunc("POST /api/capacity/read", s.launching(s.handleCapacityRead))
 }

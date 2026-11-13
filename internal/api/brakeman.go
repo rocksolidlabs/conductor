@@ -2199,6 +2199,8 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "brakeman_off", "Brakeman is off: turn it on in Settings")
 		return
 	}
+	// The request keeps its agent's capacity view as it is queued.
+	in.Capacity = s.queuedCapacity(cfg)
 	// The queue's bound and the day's budget are held under the desk's
 	// mutex with the creation, so two requests at once never pass them.
 	d.mu.Lock()

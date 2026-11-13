@@ -3257,7 +3257,7 @@ section's own name; encoded with HTML escaping off and measured so: the
 overview at most 4 KiB, `operations` at most 128 KiB (it lists every
 operation of the table, and the admin's rows filled the 64 KiB it had
 until RV1's review operations), each other section at most 64 KiB, the
-seven at most 256 KiB, which a test holds with every entry at its largest
+eight at most 256 KiB, which a test holds with every entry at its largest
 (a past bound is `500 guide_bound`, never a cut reply). The two guide
 operations' `bounds` name all three: `overview`, `section` and
 `operations`. The sections:
@@ -3338,7 +3338,9 @@ operations' `bounds` name all three: `overview`, `section` and
 - `host`: `{os, arch, switchyard, managedCrews, selfService, ledger:
   {state, why?}, dispatch: {state, why?}, checksMaxConcurrent,
   extensions, sessions?, agents: [{id, name, adapter?, installed,
-  version?}], moreAgents?}`; `extensions` the kinds of provider
+  version?, usage, qualified?}], moreAgents?}`; `usage` `reads` for an
+  agent whose usage Conductor reads, else `unknown`, `qualified` the
+  version of its tool the reader was checked on; `extensions` the kinds of provider
   `GET /api/capabilities` names, each once in its order (`[]` for a plain
   build), for every caller;
   `state` is `owned` (the ledger) or `open` (Dispatch), `read_only` or
@@ -3373,6 +3375,14 @@ operations' `bounds` name all three: `overview`, `section` and
   crew's `crew` as `crew_create`'s input. A test holds every field of
   the table, at its bounds and one past them, to what the brief's check
   takes.
+- `capacity`: `{holds, unknown, proposals}`, the same for every caller,
+  in words: what an agent's capacity view holds (What a turn reads,
+  Brakeman), that a window the provider did not report is unknown, never
+  zero, and what Brakeman may propose from it (waiting for a named reset,
+  holding or pausing named work, fewer members at once, another model on
+  the same account or another agent already configured for the work;
+  never another account of the same provider because one is near its
+  limit; a proposal launches, reserves and binds nothing).
 
 ### Crew runs
 
@@ -5072,12 +5082,12 @@ cancel is recorded as the request's `strayRun` and stopped at once.
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, folders?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals, all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them, `folders` `{turn, reads}` the folder a turn under the configuration runs in and the folders it reads besides (at most 16, each at most 4096 bytes), as its launch would take them now (absent with no agent set); on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
+| `GET /api/brakeman` | `{config, current, queue, turnsToday, minutesToday, role?, warnings?, folders?, readOnly?, why?, stuck?}`: the configuration (the defaults, written on the first read: off, no agent, the server's default folder, every visibility but terminals (`capacity` among them: a configuration saved before that class reads it off), all of scope, observe, draft and propose, 15 minutes and 300 reads a turn, 40 turns and 240 minutes a day, mode `invoked` with a window of 120 s, a cooldown of 30 minutes, a question threshold of 15 minutes and no briefing time; a configuration written before the background role reads back with those wake fields and minutes), the request holding the slot or `null`, the queued requests oldest first, the turns and the minutes charged to today, `role` the background role as `GET /api/brakeman/role` answers it without its log and notes, `warnings` as the configuration's save answers them, `folders` `{turn, reads}` the folder a turn under the configuration runs in and the folders it reads besides (at most 16, each at most 4096 bytes), as its launch would take them now (absent with no agent set); on a server that does not own the records (`readOnly`), `current` and `queue` are read from the records: the owner's request starting or running, and those queued |
 | `PUT /api/brakeman/config` | `{rev, config}` → `{config, warnings?, folders?}`, its `rev` bumped and `updatedAt` stamped; `config.permissions.act` the operations granted, from the closed list (What a turn may do); `warnings` the words Settings shows beside the agent chosen, for an agent whose read-only mode does not hold (Codex 0.163.0's leaves the person's own MCP servers and exec-policy allow rules: Codex is taken, with that limit said); `409 stale_revision` for a `rev` not the stored one; `400 invalid_config` with `field` and the words (an agent without an MCP registration or a read-only mode); `503 shutting_down` once the server is shutting down (nothing saved, nothing cancelled); at most 64 KiB |
-| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}` (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
+| `POST /api/brakeman/requests` | `{opId, kind, subjects?, note?, since?, by?}` → `201 {request}`, the request keeping `capacity`, the view of its configured agent on the account its configured folder is (none: the agent's own login; a registered account of its adapter that holds the folder; any other `unlisted`, not read) as a turn reads it (What a turn reads), from the readings kept as it is queued, at most 12 KiB; absent on a server that keeps no capacity (a wake request keeps it too); (a kind of `wake`, or an `opId` beginning `wake-`, is refused `400 invalid_request`: they are the background role's own); `200` for the same `opId` and content, `409 op_conflict` for other content, whatever stands since; `409 brakeman_off`; `503 brakeman_stuck`; `429 queue_full` (8 waiting); `429 budget_spent` (the turns charged today and those queued reach `turnsPerDay`); `400 invalid_request` with `field` for a bad kind, subject or note |
 | `GET /api/brakeman/requests?after=&limit=` | `{requests, next}`, newest first, at most 100 a page; `next` the id to ask after, `""` for none |
 | `GET /api/brakeman/requests/{id}` | `{request, brief}`, `brief` `null` until one is kept; at most 512 KiB |
-| `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; `404 no_brief` before one; at most 4 MiB |
+| `GET /api/brakeman/requests/{id}/refs` | `{refs: [{ref, seen, now, capacity?}]}`, each `{url?, state?, rev?, sha256?, at?}`: what the turn read of each ref of the brief (`state` `unobserved` for one it never read) and what it was as the brief was kept; a `capacity:` ref's `capacity` the reading as the turn reads it (What a turn reads), at most 12 KiB, made by the server from the readings it keeps as the brief is kept, never from the turn's text; `404 no_brief` before one; at most 4 MiB |
 | `POST /api/brakeman/requests/{id}/cancel` | `{opId}` → `{request}`; a closed request answers as it stands |
 | `POST /api/brakeman/requests/{id}/items/{i}/make` | `{opId, by?, edit?}` → `201 {request, made, ticket?: {key, url}, receipt?, crew?: {id, url}, plan?}`: a `draft_ticket/1` made a ticket through Dispatch's own create under the actor `admin` with `by` as the display name (its `blocks` become `blocks` relations once both ends are tickets, whichever is made first), a `draft_crew/1` a saved crew (never launched) carrying `origin: "brakeman:<request>/<item>/<op>"`, a `draft_plan/1` a proposed plan revision of its ticket through Dispatch's own propose route (`POST /api/dispatch/tickets/{key}/plans`, its replay, the crew, git and the store's checks) under the actor `admin` with `by` as the display name, `plan` the revision as the ticket's revisions list it and `made` carrying its `key` and `plan` (the revision's id): a revision proposed waits for the operator's approval (`POST /api/dispatch/plans/{id}/approve`, the operator's alone), never approved by the make, and its `basedOn` (a `plan:` ref of the same ticket) and `comments` (`comment:` refs of the same ticket) are sent by their ids, another ticket's `400 invalid_draft`; a refusal of the propose route (no such crew, one without tasks, a base that names no commit) settles the make refused; `edit` the draft as the person changed it, in the draft's own shape, else the draft as written. Its op id is derived (`bk` + 30 hex digits of a SHA-256 of the request, the item and the `opId`), so the backend answers a repeat once. The same `opId` again answers what it made (`200`), as it was made, whatever changed since (a crew's agent gone from the catalog), and asked while that make is still under way waits for it and answers its outcome, never running the backend beside it; an
 outcome's words are cut to the room its other fields leave in the entry's
@@ -5116,9 +5126,10 @@ existing reads, each answered by its own handler: `GET /api/runs`, `GET
 route `…/steps/{id}/{k}/log` with its `X-Conductor-Log-SHA256` (`logs`),
 `GET /api/dispatch/projects`, `…/tickets`, `…/tickets/{key}`,
 `…/history` and `…/comments` (`dispatch`), `GET /api/sessions`
-(`sessions`) and `GET /api/touched` (`touched`), and DS2's records:
+(`sessions`) and `GET /api/touched` (`touched`), DS2's records:
 `GET /api/dispatch/tickets/{key}/plans` (`dispatch`) and `GET
-/api/runs/{run}/candidates` (`runs`). The principal's answer
+/api/runs/{run}/candidates` (`runs`), and AC1's `GET /api/capacity`
+(`capacity`, `observe_capacity`). The principal's answer
 is the route's own, filtered by the turn's grant (the scope and
 visibility it began under, intersected with the configuration now), each
 item carrying `ref`, the ref a brief cites it by; a class not visible is
@@ -5147,7 +5158,20 @@ each candidate's `candidate:` ref (noted `standing` while it is its
 task's result, `withdrawn` once taken back, else its attempt's state, at
 the commit it submitted, a review's the commit it reviewed) and each
 receipt's `check:` ref, noted at its state, the commit and its log's
-SHA-256. Each answer counts one read against `readsPerTurn`
+SHA-256. The capacity view, for a turn, is its own shape, each view
+`{ref?, agent: {id, name?, adapter?, version?}, account: {id, label?,
+default?, retired?, plan?}, host, state, words, windows, credits, limits,
+counts, countedAt, readAt?, readBy?, fresh}` (a page `{views, next?}`):
+`host` its kind alone (`native`, `undetermined`, `remote`), `words` the
+state's own, never a reader's, `counts` this server's estimate counted at
+`countedAt`; never an account's folder, the server's name or a variable
+the agent's entry sets its login by; at most 12 KiB a view, the route's
+32 KiB and 128 KiB a page. It is the last reading the server keeps: the
+read starts none (`POST /api/capacity/read` refuses a turn's token `401`).
+A view that shows a reading carries its ref, `capacity:<agent>/<account>@<readAt>`,
+noted at its state. A capacity view is no project's, repository's,
+crew's, run's or session's: the class alone admits it, and its ref.
+Each answer counts one read against `readsPerTurn`
 (`429 reads_spent` past it) and its items are noted in the turn's read
 log (at most 5,000 entries and 2 MiB, the oldest dropped first). Every
 route keeps its own bound, and a turn's answer is at most 4 MiB as
@@ -5476,7 +5500,12 @@ revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
 attempt's state, at the commit it submitted), and DR1's
 `decision:<dr-n>` (a decision record: its state and `rev`, as its run's
-read lists it), each at most 512 bytes, resolved as the brief is kept
+read lists it), and AC1's `capacity:<agent>/<account>@<readAt>` (a
+reading of an agent's usage on an account, `readAt` in UTC as RFC 3339
+with its nanoseconds, as the view gives it: its state; kept with the
+brief as the turn reads it, `capacity` in its resolution; one the
+server's readings no longer hold is `unavailable` when the turn read it,
+and resolves to nothing otherwise), each at most 512 bytes, resolved as the brief is kept
 against the record it names (a plan revision and a launch admitted by
 their ticket, as a ticket is; a candidate by its run; a decision by the
 run it is on now). A `session:` ref whose session the server no longer
@@ -6328,7 +6357,9 @@ through its launches, and nothing between a kept run's attempts, when
 nothing runs in the folder.
 
 **The routes**, each the workbench token's alone (a session's, a host's, a
-link's and a Brakeman turn's are refused `401`) and a launch route's (a
+link's and a Brakeman turn's are refused `401`, but a turn's `GET
+/api/capacity` under its Capacity class, in Brakeman's own shape: Brakeman,
+What a turn reads) and a launch route's (a
 switchyard answers `403 switchyard`); a server with no data directory
 answers `503 capacity_unavailable`. A value outside its form (an agent's
 id, an account's, an adapter's name, `after`) is refused `400` in the

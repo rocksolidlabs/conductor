@@ -760,6 +760,7 @@ func (rr roleRecords) make(in brakeman.Request) (string, error) {
 	if !cfg.Background() {
 		return "", &crew.RoleRefused{Why: "Brakeman is off, or not in the background", Reason: crew.ReasonOff}
 	}
+	in.Capacity = d.s.queuedCapacity(cfg)
 	now := d.now()
 	d.mu.Lock()
 	defer d.mu.Unlock()

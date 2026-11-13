@@ -2584,6 +2584,33 @@ var brakemanReads = []sharedRead{
 	{"GET /api/runs/{run}/candidates", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCandidates}, 0},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
+	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers
+	// a turn each view as brakeman.CapacityOf makes it (capacityReply).
+	{"GET /api/capacity", readSpec{class: brakeman.ClassCapacity, filter: filterCapacity}, maxCapacityPage},
+}
+
+// filterCapacity notes a turn's read of the capacity view: each view that
+// shows a reading, by its ref, at its state. The answer is the turn's own
+// already (capacityReply) and passes as it is.
+func filterCapacity(_ *http.Request, o *observer, body []byte) ([]byte, error) {
+	var got struct {
+		Views *[]brakeman.Capacity `json:"views"`
+		Ref   string               `json:"ref"`
+		State string               `json:"state"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		return nil, fmt.Errorf("the capacity view: %w", err)
+	}
+	views := []brakeman.Capacity{{Ref: got.Ref, State: got.State}}
+	if got.Views != nil {
+		views = *got.Views
+	}
+	for _, v := range views {
+		if v.Ref != "" {
+			o.noteRef(v.Ref, brakeman.ClassCapacity, v.State, "")
+		}
+	}
+	return body, nil
 }
 
 // sharedReadReply is the bound the shared read of pattern keeps of its

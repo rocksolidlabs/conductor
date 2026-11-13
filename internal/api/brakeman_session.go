@@ -113,7 +113,7 @@ type turnRequest struct {
 // bothVisible is the visibility two configurations allow together.
 func bothVisible(a, b brakeman.Visibility) brakeman.Visibility {
 	return brakeman.Visibility{Runs: a.Runs && b.Runs, Logs: a.Logs && b.Logs, Dispatch: a.Dispatch && b.Dispatch,
-		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals}
+		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals, Capacity: a.Capacity && b.Capacity}
 }
 
 // bothPermit is the permissions two configurations allow together: the

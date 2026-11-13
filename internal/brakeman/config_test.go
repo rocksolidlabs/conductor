@@ -275,7 +275,7 @@ func TestTheDefaultsAreOffAndTerminalsHidden(t *testing.T) {
 	}
 	want := Config{
 		Cwd:         "/srv/work",
-		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true},
+		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true, Capacity: true},
 		Permissions: Permissions{Observe: true, Draft: true, Propose: true},
 		Wake:        Wake{Mode: WakeInvoked, WindowSeconds: 120, CooldownMinutes: 30, QuestionMinutes: 15},
 		Budget:      Budget{TurnMinutes: 15, ReadsPerTurn: 300, TurnsPerDay: 40, MinutesPerDay: 240},

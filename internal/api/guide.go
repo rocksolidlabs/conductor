@@ -138,7 +138,7 @@ const (
 )
 
 // The guide's sections, in the overview's order, beside the overview.
-var guideSections = []string{"operations", "limits", "host", "receipts", "providers", "briefs"}
+var guideSections = []string{"operations", "limits", "host", "receipts", "providers", "briefs", "capacity"}
 
 // guideReport is the overview's sentence ahead of what the caller may
 // call and its limits, for every caller: a real Codex told only to call
@@ -363,8 +363,8 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// dispatcher of its own. A turn's session token names its session
 		// in X-Conductor-Session on each.
 		{Name: "observe", MCP: "observe", Scope: "observe", Method: http.MethodGet, Path: "/api/brakeman/changes", needs: needLauncher,
-			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history.",
-			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, projects, tickets, ticket, history, comments, plans, sessions, touched) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
+			Summary:     "Read what you may see as a Brakeman turn: what changed, a status, runs, tasks, receipts, logs, candidates, tickets, plan revisions, sessions, files, overlaps, earlier briefs, the history, capacity.",
+			Description: "When this session is a Brakeman turn: read one thing Conductor holds, within your scope and visibility, each answer counted against your reads. what names it (changes, status, screen, overlaps, briefs, search, runs, run, task, steps, log, command, messages, candidates, projects, tickets, ticket, history, comments, plans, sessions, touched, capacity) and query its parameters (run, task, n, id, k, command, key, session, since, cursor, limit, lines, q, after, before, agent, account, launch). Every item carries the ref a brief cites it by; each answer keeps its observe_<what> entry's bound.",
 			CLI:         []string{"conductor", "brakeman", "observe", "WHAT", "--KEY", "VALUE"},
 			Input: obj(map[string]any{
 				"what":  map[string]any{"type": "string", "enum": observeWhats, "description": "what to read: the guide's observe_<what> operation names its route"},
@@ -393,6 +393,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		observeOp("plans", "/api/dispatch/tickets/{key}/plans", "A ticket's plan revisions, newest first, each with its ref, state and rev; the approved one (approved) and whether its approval still holds (holds); the launches made from them, each with its ref. A deleted ticket's are read deleted (deleted: true), its approval holding false."),
 		observeOp("sessions", "/api/sessions", "The sessions in your scope: names, states, questions."),
 		observeOp("touched", "/api/touched", "The files the sessions in your scope touched.", "limit"),
+		observeOp("capacity", "/api/capacity", "An agent's capacity on an account (account: its default when absent; launch: session, legacy, managed or remote), or without agent a page of every installed agent's (after, limit at most 16): the last reading the server keeps, never a new one, each with its ref (the guide's capacity section).", "agent", "account", "launch", "after", "limit"),
 		// What a Brakeman turn may do once the person grants it
 		// (brakeman_act.go, PR-12): the act tool sends each operation to
 		// its own route, by the entries below (one per operation this
@@ -421,7 +422,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// The guide itself.
 		{Name: "guide", MCP: "guide", Scope: "session", Method: http.MethodGet, Path: sessions + "/guide",
 			Summary:     "This guide, from the running server: the overview without a section, else the section named.",
-			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, or briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example).",
+			Description: "What this Conductor server lets you do here, from the server itself: without a section, an overview (the server's version, who you are, the operations you may call and the limits that bind you, the sections and their sizes); with one, that section: operations (what you may call, with its tool, command, route and input), limits, host, receipts, providers, briefs (a Brakeman brief's shape: its item kinds, their fields and bounds, the ref forms, an example), or capacity (what an agent's capacity view holds, and what Brakeman may propose from it).",
 			CLI:         []string{"conductor", "guide", "--section", "SECTION"},
 			Input:       obj(map[string]any{"section": map[string]any{"type": "string", "enum": guideSections, "description": "the section to read; the overview when not given"}}),
 			Bounds:      map[string]int{"overview": maxGuideOverview, "section": maxGuideSection, "operations": maxGuideOperations}},
@@ -714,7 +715,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 
 // observeWhats is what the observe tool reads, each an observe_<what>
 // operation of the table.
-var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "search", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched"}
+var observeWhats = []string{"changes", "status", "screen", "overlaps", "briefs", "search", "runs", "run", "task", "steps", "log", "command", "messages", "candidates", "projects", "tickets", "ticket", "history", "comments", "plans", "sessions", "touched", "capacity"}
 
 // observeOp is one read of a Brakeman turn's: observe_<what>, its route,
 // its query's parameters by name and its path's, and its answer's bound:
@@ -1235,6 +1236,11 @@ type guideAgent struct {
 	Installed bool   `json:"installed"`
 	// Version is what its probe found, when the server knows it already.
 	Version string `json:"version,omitempty"`
+	// Usage says whether Conductor reads the agent's usage (reads) or knows
+	// no way to (unknown), and Qualified the version of its tool the reader
+	// was checked on (docs/plans/capacity.md, PR-6).
+	Usage     string `json:"usage"`
+	Qualified string `json:"qualified,omitempty"`
 }
 
 // guideHost is the host section.
@@ -1321,7 +1327,10 @@ func (s *Server) guideHostSection(ctx context.Context, c guideCaller, caps capab
 	defer cancel()
 	answers := s.lookups.warmPaths(lctx, programs)
 	for _, a := range list {
-		g := guideAgent{ID: a.ID, Name: a.Name, Adapter: a.Adapter}
+		g := guideAgent{ID: a.ID, Name: a.Name, Adapter: a.Adapter, Usage: "unknown"}
+		if rd := s.usageReader(a.Adapter); rd != nil && rd.Read != nil {
+			g.Usage, g.Qualified = "reads", rd.Qualified
+		}
 		if len(a.Command) > 0 {
 			ans := answers[a.Command[0]]
 			g.Installed = ans.installed
@@ -1499,7 +1508,32 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 		"receipts":   guideReceipts(),
 		"providers":  guideProvidersOf(caps),
 		"briefs":     guideBriefsSection(),
+		"capacity":   guideCapacity,
 	}
+}
+
+// guideCapacity is the capacity section (docs/plans/capacity.md, PR-6):
+// what an agent's capacity view holds, that a window not reported is
+// unknown, and what Brakeman may propose from it (the plan's Owner
+// decisions, 11). The same for every caller.
+var guideCapacity = struct {
+	Holds     []string `json:"holds"`
+	Unknown   string   `json:"unknown"`
+	Proposals []string `json:"proposals"`
+}{
+	Holds: []string{
+		"A view is one agent on one account: the agent and its version, the account's id and label (its default, or retired), where a launch would run (native, undetermined or remote), the plan the agent's own tool reported, its state with that state's words, and how fresh it is.",
+		"windows are the usage limits the provider reported (a five-hour window, a weekly one, one for a model), each with its share used, its reset and the provider's severity; credits and limits are the provider's own figures and refusals.",
+		"counts are this server's own counts of sessions running on the account and started in the last 5 hours and 7 days, since it started: an estimate, never added to a provider's figure.",
+		"readAt and readBy say when the reading was made and by which version of the agent's tool. A view is the last reading the server keeps: reading it starts no read, and the server keeps readings in memory only, so a restart forgets them.",
+		"Each view that shows a reading carries its ref, capacity:<agent>/<account>@<readAt>, which a fact cites: the brief keeps that reading as you read it.",
+	},
+	Unknown: "A window the provider did not report is not in windows and is unknown, never zero; a state other than ok (never_read, unsupported, signed_out, key_paid, unqualified, remote, env_set, unlisted, not_owner, error) says why nothing is known.",
+	Proposals: []string{
+		"You may propose waiting for a named reset, holding or pausing named runs or launches, fewer members at once, or a permitted alternative: another model on the same account, or another agent the crew or the person already configured for the work.",
+		"Never propose another account of the same provider because this one is near its limit: capacity informs a person's planning, it moves no work.",
+		"A proposal launches, reserves and binds nothing: a person acts on it through the operation's own route.",
+	},
 }
 
 // guideBriefs is the briefs section: a Brakeman brief's shape in words
