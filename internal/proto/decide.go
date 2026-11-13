@@ -3,11 +3,11 @@ package proto
 import "time"
 
 // The decide grant's wire (docs/protocol.md, Decisions;
-// docs/plans/decide-grant.md): the replies of the four routes that will
-// admit a principal holding the decide grant and not the admin grant (GET
+// docs/plans/decide-grant.md): the replies of the four routes a principal
+// holding the decide grant and not the admin grant is admitted to (GET
 // /api/me, GET /api/me/decisions, and the read and the respond route of a
-// decision it is admitted to; #847), each one of these types and nothing
-// else of a decision. No route serves them yet.
+// decision it is admitted to; internal/api, decide.go), each one of these
+// types and nothing else of a decision.
 
 // The decide grant's bounds, in bytes but where said.
 const (
