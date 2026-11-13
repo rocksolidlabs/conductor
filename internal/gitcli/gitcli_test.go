@@ -475,13 +475,14 @@ func TestRunTreeRunsWhereItIsToldWhateverCoreWorktreeSays(t *testing.T) {
 		}
 	}
 	var top, id, others bytes.Buffer
-	if err := RunTree(ctx, wt, map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}, nil, &top, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(top.String()) != wt {
+	objects := t.TempDir()
+	if err := RunTree(ctx, wt, objects, map[string]string{"GIT_NO_REPLACE_OBJECTS": "1"}, nil, &top, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(top.String()) != wt {
 		t.Fatalf("the top: %q %v", top.String(), err)
 	}
-	if err := RunTree(ctx, wt, nil, nil, &others, "ls-files", "--others", "--exclude-standard", "-z"); err != nil || others.String() != "mine.txt\x00" {
+	if err := RunTree(ctx, wt, objects, nil, nil, &others, "ls-files", "--others", "--exclude-standard", "-z"); err != nil || others.String() != "mine.txt\x00" {
 		t.Fatalf("the new files: %q %v", others.String(), err)
 	}
-	if err := RunTree(ctx, wt, nil, strings.NewReader("one\n"), &id, "hash-object", "--stdin"); err != nil || strings.TrimSpace(id.String()) != "5626abf0f72e58d7a153368ba57db4c673c0e171" {
+	if err := RunTree(ctx, wt, objects, nil, strings.NewReader("one\n"), &id, "hash-object", "--stdin"); err != nil || strings.TrimSpace(id.String()) != "5626abf0f72e58d7a153368ba57db4c673c0e171" {
 		t.Fatalf("the input's id: %q %v", id.String(), err)
 	}
 	if out, err := Run(ctx, wt, "rev-parse", "--show-toplevel"); err != nil || strings.TrimSpace(out) != r.Dir {
@@ -509,7 +510,7 @@ func TestRunTreeKeepsTheFirstOfGitsErrorStream(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o644) })
 	env := map[string]string{"GIT_INDEX_FILE": filepath.Join(t.TempDir(), "index")}
-	err := RunTree(ctx, r.Dir, env, nil, io.Discard, "add", "-A")
+	err := RunTree(ctx, r.Dir, t.TempDir(), env, nil, io.Discard, "add", "-A")
 	if err == nil || len(err.Error()) > maxStderr {
 		t.Fatalf("the failed add: %d bytes of error, %v", len(fmt.Sprint(err)), err != nil)
 	}
@@ -567,6 +568,119 @@ func TestFilterNames(t *testing.T) {
 	gitclitest.Git(t, r.Dir, "config", "filter.a=b.clean", "x")
 	if _, err := Run(context.Background(), r.Dir, "status", "--porcelain"); err == nil || !strings.Contains(err.Error(), "cannot be turned off") {
 		t.Fatalf("a filter named with =: %v", err)
+	}
+}
+
+// The look-up of the filters is read within maxFilterAnswer: an answer of
+// exactly that many bytes gives its names, and one byte more is refused
+// whole, by the look-up and by RunTree, which then runs no command.
+func TestTheFilterLookUpIsReadWithinItsBound(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	gitclitest.Git(t, dir, "init", "-q")
+	// The system's configuration (a CI runner's names Git LFS's filter)
+	// is in the answer too: its bytes are counted first.
+	loc := []string{"-C", dir}
+	base, _, _ := execGit(context.Background(), "", append(append(baseArgs(), loc...), "config", "-z", "--name-only", "--get-regexp", filterKeys), nil)
+	cfg := filepath.Join(dir, ".git", "filters")
+	gitclitest.Git(t, dir, "config", "include.path", "filters")
+	// Each filter adds its key and a NUL: "filter.<name>.clean\x00".
+	var sizes []int
+	for rest := maxFilterAnswer - len(base); rest > 0; {
+		n := min(rest, 1000)
+		if rest < 2000 {
+			n = rest
+		}
+		sizes, rest = append(sizes, n), rest-n
+	}
+	write := func(extra int) string {
+		var b strings.Builder
+		var name string
+		for i, n := range sizes {
+			name = fmt.Sprintf("f%03d", i) + strings.Repeat("x", n-len("filter..clean\x00")-4)
+			if i == len(sizes)-1 {
+				name += strings.Repeat("x", extra)
+			}
+			fmt.Fprintf(&b, "[filter %q]\n\tclean = c\n", name)
+		}
+		if err := os.WriteFile(cfg, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+	last := write(0)
+	if names, err := filterNames(context.Background(), "", loc); err != nil || !slices.Contains(names, last) {
+		t.Fatalf("an answer of %d bytes: %d names, %v", maxFilterAnswer, len(names), err)
+	}
+	write(1)
+	if names, err := filterNames(context.Background(), "", loc); err == nil || names != nil {
+		t.Fatalf("an answer of %d bytes: %d names, %v", maxFilterAnswer+1, len(names), err)
+	}
+	if err := RunTree(context.Background(), dir, t.TempDir(), nil, nil, io.Discard, "status"); err == nil || !strings.Contains(err.Error(), "filter keys") {
+		t.Fatalf("RunTree past the bound: %v", err)
+	}
+}
+
+// RunTree writes what git writes into the folder it is given and reads
+// the repository's own store as an alternate, its path holding the
+// separators of git's list of alternates and characters git quotes: a new
+// object is in the folder alone, the commit is read, and a folder that is
+// not an absolute path is refused.
+func TestRunTreeWritesIntoItsOwnFolderAndReadsTheStore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("HOME", t.TempDir())
+	// Windows takes no ":", '"' or tab in a name, and its list separator is
+	// ";".
+	name := "a:b;c\"d\\e\tf"
+	if runtime.GOOS == "windows" {
+		name = "a;c"
+	}
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitclitest.Git(t, dir, "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitclitest.Git(t, dir, "add", "-A")
+	gitclitest.Git(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+	store, objects, ctx := filepath.Join(dir, ".git", "objects"), t.TempDir(), context.Background()
+	stored := func() []string {
+		t.Helper()
+		var files []string
+		if err := filepath.WalkDir(store, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				files = append(files, p)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	before := stored()
+	var id, kind bytes.Buffer
+	if err := RunTree(ctx, dir, objects, nil, strings.NewReader("new\n"), &id, "hash-object", "-w", "--stdin"); err != nil {
+		t.Fatal(err)
+	}
+	oid := strings.TrimSpace(id.String())
+	if _, err := os.Stat(filepath.Join(objects, oid[:2], oid[2:])); err != nil {
+		t.Fatalf("the new object in the folder: %v", err)
+	}
+	if after := stored(); !slices.Equal(after, before) {
+		t.Fatalf("the store: %v, before %v", after, before)
+	}
+	if err := RunTree(ctx, dir, objects, nil, nil, &kind, "cat-file", "-t", "HEAD"); err != nil || strings.TrimSpace(kind.String()) != "commit" {
+		t.Fatalf("HEAD read through the alternate: %q %v", kind.String(), err)
+	}
+	if err := RunTree(ctx, dir, "objects", nil, nil, io.Discard, "status"); err == nil {
+		t.Fatal("a folder that is not an absolute path was taken")
 	}
 }
 

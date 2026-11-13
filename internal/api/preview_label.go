@@ -113,10 +113,11 @@ func (tr *treeReads) take(ctx context.Context, dir string) (*treeEntry, error) {
 		}
 		e = tr.entries[dir]
 		// Past the bound, the least recently read entry no read holds or
-		// waits for goes, its index and the index's lock with it.
+		// waits for goes, its index, the index's lock and its objects
+		// with it.
 		for i := 0; e == nil && i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
 			if old := tr.entries[tr.order[i]]; old.reserved == 0 {
-				_, _ = os.Remove(old.ix.Path), os.Remove(old.ix.Path+".lock")
+				old.ix.Remove()
 				delete(tr.entries, tr.order[i])
 				tr.order = slices.Delete(tr.order, i, i+1)
 			} else {

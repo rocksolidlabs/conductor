@@ -4714,7 +4714,13 @@ The commands, with the recorded commit id where they name one:
 commands writes its answer and its error stream within a bound: an id at
 1 KiB, the diff as it comes within the paths' bounds, git's error stream
 at its first 4 KiB. The filter look-up before a command (which turns the
-repository's filters off) is `main`'s and holds what git answers. A
+repository's filters off) reads git's answer within 64 KiB: past it the
+command is not run and the label is unread. Every object a command
+writes goes to the index's own folder of objects (below), and git reads
+the repository's objects through its store, named as an alternate that
+git only reads; the store is the one git names for the tree, asked before
+each command (`rev-parse --git-path objects`, which runs no filter), its
+path within 4 KiB. Nothing a read writes goes into the repository. A
 source's class, for the captures (a later row), is
 read the same way at the commit the read recorded: `ls-tree` of that
 commit for exactly the paths given, and `check-ignore` with them on its
@@ -4733,6 +4739,11 @@ engine's comparison of a checkout, which decides a candidate, reads with
 a fresh index.) One read of a tree runs at a
 time, so a lock of its index found as a read starts is one a cut read
 left: the index and its lock are dropped and the read starts from none.
+Beside each index is its folder of objects, emptied as each read of it
+starts, so it holds at most one read's objects (a cut read's temporary
+file among them); the index's entries are the commit's again at every
+read, so an emptied folder holds nothing the next read needs. An index
+let go goes with its lock and its folder of objects.
 At most eight indexes are kept: an index a read holds or waits for is
 never let go, the least recently read of the others is to make room, and
 with all eight held a read of a ninth tree waits within its 5 s and then

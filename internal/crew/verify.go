@@ -825,6 +825,16 @@ type TreeIndex struct {
 	looked, modes bool
 }
 
+// Objects is the folder beside the index where git writes every object
+// of a read in it (gitcli.RunTree): TreeRevision empties it as a read
+// starts, so it holds at most one read's objects, and Remove removes it.
+func (ix *TreeIndex) Objects() string { return ix.Path + ".objects" }
+
+// Remove removes the index, its lock and its folder of objects.
+func (ix *TreeIndex) Remove() {
+	_, _, _ = os.Remove(ix.Path), os.Remove(ix.Path+".lock"), os.RemoveAll(ix.Objects())
+}
+
 // env is the environment of git in a read of t in ix: the reader's own
 // index, no replacement object, every pathspec literal, and the forced
 // configuration: the stat settings (the stat data trusted in full), the
@@ -862,12 +872,12 @@ func (t *Tree) git(ctx context.Context, ix *TreeIndex, in io.Reader, w io.Writer
 		// (TreeClasses).
 		delete(env, "GIT_LITERAL_PATHSPECS")
 	}
-	return treeGit(ctx, t.at, env, in, w, args...)
+	return treeGit(ctx, t.at, ix.Objects(), env, in, w, args...)
 }
 
 // SetTreeGitForTest makes run the runner of every git command of a
 // tree's read, until the returned function puts the one before back.
-func SetTreeGitForTest(run func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error) (restore func()) {
+func SetTreeGitForTest(run func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error) (restore func()) {
 	prev := treeGit
 	treeGit = run
 	return func() { treeGit = prev }
@@ -901,15 +911,25 @@ const maxTreeID = 1 << 10
 // is dropped, and the diff's is read as it comes, counted whole and kept
 // to its bounds (pathList). Reads of one index run one at a time, so a
 // lock of the index's there as a read starts is one a cut read left: the
-// index and its lock are dropped, and the read starts from none. Its time
-// is ctx's. A read that cannot name HEAD's commit is an error; one that
-// fails after gives the commit with no content.
+// index and its lock are dropped, and the read starts from none. The
+// read's objects go to the index's folder (ix.Objects), emptied as the
+// read starts: read-tree --reset makes every entry the commit's again,
+// whose objects the repository holds, and add -A hashes again every file
+// whose entry it changed, so nothing a read needs was left there by
+// another. Its time is ctx's. A read that cannot name HEAD's commit is an
+// error; one that fails after gives the commit with no content.
 func TreeRevision(ctx context.Context, t *Tree, ix *TreeIndex) (TreeRead, error) {
 	if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
 		_ = os.Remove(ix.Path)
 		if err := os.Remove(ix.Path + ".lock"); err != nil {
 			return TreeRead{}, err
 		}
+	}
+	if err := os.RemoveAll(ix.Objects()); err != nil {
+		return TreeRead{}, err
+	}
+	if err := os.Mkdir(ix.Objects(), 0o700); err != nil {
+		return TreeRead{}, err
 	}
 	head := &gitcli.Head{N: maxTreeID}
 	if err := t.git(ctx, ix, nil, head, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {

@@ -289,8 +289,8 @@ func (p *previewed) labelAsync() <-chan labelAnswer {
 func holdAfter(t *testing.T, sub string) (at, release chan struct{}) {
 	at, release = make(chan struct{}), make(chan struct{})
 	held := false
-	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
-		err := gitcli.RunTree(ctx, workTree, env, in, w, args...)
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		err := gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
 		if args[0] == sub && !held {
 			held = true
 			close(at)
@@ -588,6 +588,48 @@ func TestAReadAfterTheStopMakesNothing(t *testing.T) {
 		if _, err := tr.take(t.Context(), name); !errors.Is(err, errReadsStopped) || tr.dir != "" || tr.entries != nil {
 			t.Fatalf("a read of %s after the stop: %v, folder %q", name, err, tr.dir)
 		}
+	}
+}
+
+// Letting an entry go removes its index, the index's lock and its folder
+// of objects with what a cut read left in it; the stop removes the
+// folder of objects of every entry kept.
+func TestLettingAnEntryGoAndTheStopRemoveItsObjects(t *testing.T) {
+	tr := &treeReads{}
+	t.Cleanup(tr.close)
+	read := func(name string) *crew.TreeIndex {
+		t.Helper()
+		e, err := tr.take(t.Context(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tr.give(e, true)
+		for _, p := range []string{e.ix.Path, e.ix.Path + ".lock", filepath.Join(e.ix.Objects(), "pack", "tmp_pack_1")} {
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e.ix
+	}
+	first := read("tree-0")
+	var last *crew.TreeIndex
+	for i := 1; i <= maxTreeIndexes; i++ {
+		last = read(fmt.Sprintf("tree-%d", i))
+	}
+	for _, p := range []string{first.Path, first.Path + ".lock", first.Objects()} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s after its entry was let go: %v", p, err)
+		}
+	}
+	if _, err := os.Lstat(last.Objects()); err != nil {
+		t.Fatalf("a kept entry's objects: %v", err)
+	}
+	tr.close()
+	if _, err := os.Lstat(last.Objects()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a kept entry's objects after the stop: %v", err)
 	}
 }
 
