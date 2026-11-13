@@ -226,6 +226,44 @@ func TestAReportTextIsMadeStorable(t *testing.T) {
 	}
 }
 
+// The look before a tree is read (CheckCaptureCreate) and the create's
+// transaction judge the capture retaken by one rule (captureRoom): a
+// retake of no capture, of a deleted one and of a link's by an attempt's
+// is refused by the look with the words the create refuses it with, and
+// its receipt kept; a create the look lets in writes nothing.
+func TestTheLookBeforeTheTreeIsTheCreatesRule(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	n, f := testCapture(false)
+	link, _ := testCapture(false)
+	link.Label, link.Annotations = TreeRead{}, nil
+	linked := mustCreate(t, s, "linked", link, CaptureFacts{Origin: OriginURL}, nil)
+	gone := mustCreate(t, s, "gone", n, f, nil)
+	if rc, err := s.DeleteCapture(ctx, testOp("gone-del"), gone); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the delete: %+v %v", rc, err)
+	}
+	for i, retake := range []string{"0123456789abcdef", gone, linked} {
+		r := n
+		r.RetakeOf = retake
+		looked, refused, err := s.CheckCaptureCreate(ctx, testOp(fmt.Sprintf("look-%d", i)), strings.Repeat("a", 64), r, nil, false)
+		made, cerr := s.CreateCapture(ctx, testOp(fmt.Sprintf("make-%d", i)), strings.Repeat("b", 64), r, f, nil)
+		if err != nil || cerr != nil || !refused || looked.Status != StatusFailed || made.Status != StatusFailed || looked.Error != made.Error {
+			t.Errorf("retake %d: the look %+v %v %v, the create %+v %v", i, looked, refused, err, made, cerr)
+		}
+		again, found, err := s.Replay(ctx, testOp(fmt.Sprintf("look-%d", i)), IntentCaptureCreate, captureArgs{Received: strings.Repeat("a", 64)})
+		if err != nil || !found || again.Error != looked.Error {
+			t.Errorf("retake %d: the look's receipt: %+v %v %v", i, again, found, err)
+		}
+	}
+	before := count(t, s, "SELECT COUNT(*) FROM ops")
+	if rc, refused, err := s.CheckCaptureCreate(ctx, testOp("look-ok"), strings.Repeat("c", 64), n, nil, false); err != nil || refused || rc.Status != "" {
+		t.Fatalf("a create the look lets in: %+v %v %v", rc, refused, err)
+	}
+	if after := count(t, s, "SELECT COUNT(*) FROM ops"); after != before {
+		t.Fatalf("the look wrote %d rows", after-before)
+	}
+}
+
 // The pure checks are the store's own: what CheckNewCapture refuses,
 // checkCapture refuses with the same words whatever the facts, and an
 // edit CheckCaptureEdit refuses is refused by EditCapture with its words.
@@ -233,7 +271,7 @@ func TestThePureChecksAreTheStores(t *testing.T) {
 	n, f := testCapture(false)
 	element(&n).Measured = MaxElementReport + 1
 	moment(&n)
-	pure := CheckNewCapture(n, false)
+	pure := CheckNewCapture(n, nil)
 	_, _, withFacts := checkCapture(n, f, false)
 	_, _, noFacts := checkCapture(n, CaptureFacts{}, false)
 	if pure == nil || withFacts == nil || noFacts == nil || pure.Error() != withFacts.Error() || pure.Error() != noFacts.Error() {

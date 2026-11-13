@@ -68,11 +68,16 @@ const (
 )
 
 // ViewportModes is a viewport's device modes; SourceClasses a source's
-// classes in the order a capture's sources take (the app's own first).
+// classes in the order a capture's sources take (the app's own first),
+// SourceUnknown last: a source whose class git was not asked or did not
+// answer.
 var (
 	ViewportModes = []string{"fit", "desktop", "tablet", "phone"}
-	SourceClasses = []string{"tracked", "untracked", "ignored", "vendor"}
+	SourceClasses = []string{"tracked", "untracked", "ignored", "vendor", SourceUnknown}
 )
+
+// SourceUnknown is the class of a source the server could not class.
+const SourceUnknown = "unknown"
 
 // ErrBadReceived is a capture operation whose request digest is no
 // SHA-256 (RequestDigest): answered as a bad op id is, nothing written.
@@ -472,7 +477,7 @@ func (c *checker) rect(label string, r Rect) {
 }
 
 func (c *checker) viewport(label string, v Viewport) {
-	c.must(slices.Contains(ViewportModes, v.Mode), RefusalInvalid, "%s's mode %q is none of %s", label, v.Mode, strings.Join(ViewportModes, ", "))
+	c.must(slices.Contains(ViewportModes, v.Mode), RefusalInvalid, "%s's mode is none of %s", label, strings.Join(ViewportModes, ", "))
 	c.must(v.Width >= 0 && v.Height >= 0 && v.Width <= MaxRectCoord && v.Height <= MaxRectCoord, RefusalInvalid, "%s's size is out of range", label)
 	c.within(label+"'s scroll", MaxScroll, v.ScrollX, v.ScrollY)
 	c.must(v.Scale > 0 && v.Scale <= 64 && v.DPR > 0 && v.DPR <= 64, RefusalInvalid, "%s's scale and pixel ratio are not above 0 and at most 64", label)
@@ -481,7 +486,7 @@ func (c *checker) viewport(label string, v Viewport) {
 }
 
 func (c *checker) hexID(label, s string, required bool) {
-	c.must((s == "" && !required) || objectIDPattern.MatchString(s), RefusalInvalid, "%s %q is not a full object id", label, s)
+	c.must((s == "" && !required) || objectIDPattern.MatchString(s), RefusalInvalid, "%s is not a full object id", label)
 }
 
 // classes checks an element's or an ancestor's classes, joined by spaces.
@@ -721,7 +726,7 @@ func (c *checker) sources(label string, ss []Source) {
 		c.must(s.Line >= 0 && s.Column >= 0 && s.Line <= MaxHintLine && s.Column <= MaxHintLine, RefusalInvalid, "%s's source's line is out of range", label)
 		c.must(!(s.Outside && s.Found), RefusalInvalid, "%s's source outside the tree is not found in it", label)
 		r := slices.Index(SourceClasses, s.Class)
-		c.must(r >= rank, RefusalInvalid, "%s's sources are not tracked, untracked, ignored and vendor in that order, or name another class", label)
+		c.must(r >= rank, RefusalInvalid, "%s's sources are not tracked, untracked, ignored, vendor and unknown in that order, or name another class", label)
 		rank = max(rank, r)
 	}
 }
@@ -751,16 +756,20 @@ func pageOrigin(s string) string {
 }
 
 // CheckNewCapture checks a create's client words as they are handed in,
-// with or without a screenshot (image), by every rule of the store's that
-// needs nothing else: every text's bound and form, every count, each
-// element's report (its measure as the bridge cut it among it), each
-// annotation's kind and the one moment they were all selected at. It is
-// pure (no tree, no transaction, no other effect): the API calls it before
-// it reads anything for the capture, and CreateCapture calls it first, so
-// a request it refuses is refused by the store with its receipt.
-func CheckNewCapture(n NewCapture, image bool) error {
+// with a screenshot (image, its size as its header gives it, or none yet)
+// or without one (nil), by every rule of the store's that needs nothing
+// else: every text's bound and form, every count, each element's report
+// (its measure as the bridge cut it among it), each annotation's kind, the
+// one moment they were all selected at, and each region within the
+// screenshot when its size is given (inImage). It is pure (no tree, no
+// transaction, no other effect): the store's look before a tree is read
+// (CheckCaptureCreate) and CreateCapture each call it first, so a request
+// it refuses is refused by the store with its receipt. A refusal names the
+// member and what it may be, never what the request carried.
+func CheckNewCapture(n NewCapture, img *CaptureImage) error {
 	c := &checker{}
-	c.must(n.Via == CaptureViaWeb || n.Via == CaptureViaDesktop, RefusalInvalid, "via %q is neither web nor desktop", n.Via)
+	image := img != nil
+	c.must(n.Via == CaptureViaWeb || n.Via == CaptureViaDesktop, RefusalInvalid, "via is neither web nor desktop")
 	c.field("capture.url", "the page's URL", n.URL)
 	c.field("capture.title", "the page's title", n.Title)
 	c.viewport("the viewport", n.Viewport)
@@ -777,7 +786,7 @@ func CheckNewCapture(n NewCapture, image bool) error {
 	// How the screenshot was taken is the client's word: none exactly when
 	// there is none, the desktop's only from the desktop client.
 	c.must((!image && n.ImageHow == ImageNone) || (image && (n.ImageHow == ImageTab || (n.ImageHow == ImageDesktop && n.Via == CaptureViaDesktop))),
-		RefusalInvalid, "how the screenshot was taken, %q, is not none without one, or tab or (from the desktop client) desktop with one", n.ImageHow)
+		RefusalInvalid, "how the screenshot was taken is not none without one, or tab or (from the desktop client) desktop with one")
 	c.must(n.Label.Changed >= 0 && n.Label.Changed <= MaxChangedCount, RefusalInvalid, "the selection's read counts changed paths not from 0 to %d", MaxChangedCount)
 	// Every time is one the store writes and reads back, and the
 	// selection's read was made before the capture is.
@@ -811,8 +820,11 @@ func CheckNewCapture(n NewCapture, image bool) error {
 		case AnnotationRegion:
 			c.must(a.Element == nil && a.Observed == nil, RefusalInvalid, "%s is a region with an element's report", label)
 			c.must(image, RefusalInvalid, "%s is a region, drawn on a screenshot, and this capture has none", label)
+			if c.err == nil && image && img.Width > 0 {
+				c.err = inImage(label, a.Rect, *img)
+			}
 		default:
-			c.must(false, RefusalInvalid, "%s's kind %q is neither element nor region", label, a.Kind)
+			c.must(false, RefusalInvalid, "%s's kind is neither element nor region", label)
 		}
 	}
 	return c.err
@@ -828,8 +840,8 @@ func CheckCaptureEdit(edits []AnnotationEdit) error {
 	for i, e := range edits {
 		label := fmt.Sprintf("annotation %d", i+1)
 		c.must(e.Element == nil, RefusalInvalid, "%s brings a new element: a new element is a new capture: Capture again", label)
-		c.must(e.Kind == AnnotationElement || e.Kind == AnnotationRegion, RefusalInvalid, "%s's kind %q is neither element nor region", label, e.Kind)
-		c.must(e.K >= 0, RefusalInvalid, "%s names annotation %d, which is not one of the capture's", label, e.K)
+		c.must(e.Kind == AnnotationElement || e.Kind == AnnotationRegion, RefusalInvalid, "%s's kind is neither element nor region", label)
+		c.must(e.K >= 0, RefusalInvalid, "%s names an annotation that is not one of the capture's", label)
 		c.field("annotation.note", label+"'s note", e.Note)
 		if e.Kind == AnnotationRegion {
 			c.rect(label+"'s rectangle", e.Rect)
@@ -844,7 +856,11 @@ func CheckCaptureEdit(edits []AnnotationEdit) error {
 // retake's relation the operation's to fill) with its annotations in their
 // order.
 func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotation, error) {
-	if err := CheckNewCapture(n, image); err != nil {
+	var img *CaptureImage
+	if image {
+		img = &CaptureImage{}
+	}
+	if err := CheckNewCapture(n, img); err != nil {
 		return Capture{}, nil, err
 	}
 	c := &checker{}
@@ -981,7 +997,7 @@ func pngSize(path string) (int, int, error) {
 		return 0, 0, refuse(RefusalInvalid, "the screenshot is not a PNG")
 	}
 	if cfg.Width < 1 || cfg.Height < 1 || cfg.Width > MaxCaptureImageSide || cfg.Height > MaxCaptureImageSide {
-		return 0, 0, refuse(RefusalBound, "the screenshot is %d by %d pixels; a side is at most %d", cfg.Width, cfg.Height, MaxCaptureImageSide)
+		return 0, 0, refuse(RefusalBound, "the screenshot has a side past %d pixels", MaxCaptureImageSide)
 	}
 	return cfg.Width, cfg.Height, nil
 }
