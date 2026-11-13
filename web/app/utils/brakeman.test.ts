@@ -88,6 +88,8 @@ describe('a ref, to its route and its label', () => {
     [`candidate:${RUN}/build/2`, `/runs/${RUN}?view=tasks&task=build`, 'candidate build, attempt 2'],
     // DR1's record: served by its API route, opened in its card, no page of its own.
     ['decision:dr-7', null, 'decision dr-7'],
+    // AC1's reading: kept with the brief, no page of its own.
+    ['capacity:claude/a-abcdefghijk2@2026-11-11T03:00:00.5Z', null, 'capacity of claude on a-abcdefghijk2'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -98,7 +100,7 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(19)
+    expect(kinds.length).toBe(20)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 

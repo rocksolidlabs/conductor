@@ -397,6 +397,9 @@ export interface ParsedRef {
   item?: number
   launch?: string
   decision?: string
+  agent?: string
+  account?: string
+  readAt?: string
 }
 
 const RUN = /^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{8}$/
@@ -407,6 +410,9 @@ const TICKET = /^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$/
 const COMMIT = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const REQUEST = /^br-[1-9][0-9]{0,17}$/
 const DECISION = /^dr-[1-9][0-9]{0,17}$/
+const AGENT = /^[a-z0-9-]{1,32}$/
+const ACCOUNT = /^(default|a-[a-z2-7]{12})$/
+const READ_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d*[1-9])?Z$/
 const NUMBER = /^(0|[1-9][0-9]{0,17})$/
 
 /** The ref's bound, in bytes (brakeman.MaxRef). */
@@ -486,6 +492,11 @@ export function parseRef(s: string): ParsedRef | null {
     case 'decision':
       // decision:<dr-n>, DR1's record, as its run's read lists it.
       return p.length === 1 && DECISION.test(p[0]!) ? { kind, decision: p[0] } : null
+    case 'capacity': {
+      // capacity:<agent>/<account>@<readAt>, AC1's reading (docs/plans/capacity.md, PR-6); its chip is PR-7's.
+      const [account, readAt] = (p[1] ?? '').split('@')
+      return p.length === 2 && AGENT.test(p[0]!) && ACCOUNT.test(account!) && READ_AT.test(readAt ?? '') ? { kind, agent: p[0], account, readAt } : null
+    }
   }
   return null
 }
@@ -623,6 +634,8 @@ export function refLabel(ref: string, names: { session?: (id: string) => string 
       return `candidate ${r.task}, attempt ${r.n}`
     case 'decision':
       return `decision ${r.decision}`
+    case 'capacity':
+      return `capacity of ${r.agent} on ${r.account}`
   }
   return ref
 }
