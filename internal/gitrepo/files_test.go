@@ -70,8 +70,9 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 		}
 		n, err := read.read(f)
 		f.Close()
-		if n != maxSmall || !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
-			t.Errorf("%s: %d bytes, %v (noted %v); want %d bytes and the refusal", read.name, n, err, seen.first(), maxSmall)
+		const grew = "a file of the repository was not read: HEAD grew past its bound as it was read"
+		if n != maxSmall || !errors.Is(err, ErrUnreadable) || err.Error() != grew || !errors.Is(seen.first(), ErrUnreadable) {
+			t.Errorf("%s: %d bytes, %v (noted %v); want %d bytes and %q", read.name, n, err, seen.first(), maxSmall, grew)
 		}
 		seen = &refusal{}
 		defer seen.close()
@@ -88,8 +89,9 @@ func TestAReadStopsAtTheFilesBound(t *testing.T) {
 }
 
 // The file system the package hands go-git only reads: every way to change
-// a folder refuses, by the type itself and through the chroot over it, and
-// the folder is as it was.
+// a folder refuses, by the type itself and through the chroot over it, a
+// file it opened refuses Write and Truncate, and the folder and the file
+// are as they were.
 func TestTheFileSystemRefusesEveryChange(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "HEAD", "ref: refs/heads/main\n")
@@ -97,6 +99,24 @@ func TestTheFileSystemRefusesEveryChange(t *testing.T) {
 	defer seen.close()
 	fs := careFS(dir, gitDir, seen)
 	at := func(name string) string { return filepath.Join(dir, name) }
+	opened, err := fs.OpenFile(filepath.Join(fs.dir, "HEAD"), os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	through, err := fs.billy().Open("HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer through.Close()
+	for _, f := range []billy.File{opened, through} {
+		if _, err := f.Write([]byte("ref: refs/heads/other\n")); !errors.Is(err, errReadOnly) {
+			t.Errorf("Write: %v, want the read-only refusal", err)
+		}
+		if err := f.Truncate(0); !errors.Is(err, errReadOnly) {
+			t.Errorf("Truncate: %v, want the read-only refusal", err)
+		}
+	}
 	for op, err := range map[string]error{
 		"Rename":    fs.Rename(at("HEAD"), at("moved")),
 		"Remove":    fs.Remove(at("HEAD")),
@@ -128,6 +148,9 @@ func TestTheFileSystemRefusesEveryChange(t *testing.T) {
 	if fi, err := os.Stat(at("HEAD")); err != nil || fi.Mode().Perm() != 0o644 {
 		t.Errorf("HEAD: %v %v, want it as written", fi, err)
 	}
+	if b, err := os.ReadFile(at("HEAD")); err != nil || string(b) != "ref: refs/heads/main\n" {
+		t.Errorf("HEAD holds %q (%v), want it as written", b, err)
+	}
 }
 
 // The file opened is the file the root looked at: one put in its place
@@ -144,20 +167,38 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 	defer func() { afterLook = nil }()
 	seen := &refusal{}
 	defer seen.close()
-	if f, err := careFS(dir, gitDir, seen).billy().Open("HEAD"); !errors.Is(err, ErrUnreadable) || !errors.Is(seen.first(), ErrUnreadable) {
-		if err == nil {
-			f.Close()
-		}
-		t.Errorf("open: %v (noted %v), want the refusal", err, seen.first())
+	f, err := careFS(dir, gitDir, seen).billy().Open("HEAD")
+	if err == nil {
+		f.Close()
+	}
+	if !errors.Is(err, ErrUnreadable) || !strings.HasSuffix(err.Error(), ": HEAD changed as it was opened") || !errors.Is(seen.first(), ErrUnreadable) {
+		t.Errorf("open: %v (noted %v), want HEAD refused as changed as it was opened", err, seen.first())
 	}
 }
 
 // One opener: no function of the package opens a repository, a folder or
-// a file another way than open and careOS. Every name the package uses
-// (a call or a function value), followed to the identifier it starts at
-// (osfs.Default.Open is osfs's), is used only where it is meant to be, or
-// nowhere; and careOS has the methods it defines and no other (none
-// promoted from a type it embeds).
+// a file another way than open and careOS. The test reads the package's
+// source files (its tests aside) as text, parsed with go/parser and no
+// types, and checks:
+//
+//   - each name the package uses (a call or a function value), followed to
+//     the identifier it starts at (osfs.Default.Open is osfs's): one in
+//     only is used in the functions it lists alone, and one in never
+//     (os.Open, os.OpenFile, os.ReadFile, os.Lstat, git.PlainOpen and the
+//     rest; anything of ioutil, osfs or go-billy's util; any method of
+//     os.Root named by its type) nowhere;
+//   - no import of go-billy's osfs or util, or of io/ioutil;
+//   - outside OpenFile and ReadDir, the two functions that open a file, no
+//     call of a method named Open, ReadFile or FS that only does not list:
+//     the syntax does not tell a value (a root under another name) from a
+//     package, so a package's is refused too;
+//   - no method expression on os.Root ((*os.Root).OpenFile) and no
+//     variable assigned the field root (r := fs.root), anywhere;
+//   - careOS and careFile have the methods they define and no other (none
+//     promoted from a type either embeds), listed by reflection.
+//
+// A root reached another way (a slice's element, a function's result, an
+// interface) needs types to be seen, and is not checked.
 func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 	only := map[string][]string{
 		"git.Open":                         {"openOver"},
@@ -167,12 +208,14 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		"fs.root.OpenRoot":                 {"under"},
 		"fs.root.OpenFile":                 {"OpenFile", "ReadDir"},
 		"chroot.New":                       {"billy"},
-		"os.Stat":                          {"gitDirs"},
+		"os.Stat":                          {"gitDirs", "named"},
 	}
 	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "git.PlainInit", "git.PlainClone", "filesystem.NewStorage",
 		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.Lstat", "os.NewFile",
-		"syscall.Open", "syscall.Openat", "ioutil.", "osfs.", "util."} // ending in '.': anything of that package
+		"syscall.Open", "syscall.Openat", "ioutil.", "osfs.", "util.", "os.Root."} // ending in '.': anything of that package or type
 	imports := []string{"github.com/go-git/go-billy/v5/osfs", "github.com/go-git/go-billy/v5/util", "io/ioutil"}
+	opens := []string{"OpenFile", "ReadDir"}
+	byPath := []string{"Open", "ReadFile", "FS"}
 	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -196,29 +239,59 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 			if fn, ok := decl.(*ast.FuncDecl); ok {
 				in = fn.Name.Name
 			}
-			ast.Inspect(decl, func(n ast.Node) bool {
-				sel, ok := n.(*ast.SelectorExpr)
-				if !ok {
-					return true
+			fromRoot := func(values []ast.Expr) {
+				for _, v := range values {
+					if sel, ok := v.(*ast.SelectorExpr); ok && sel.Sel.Name == "root" {
+						t.Errorf("%s: %q assigns %s to a variable", fset.Position(v.Pos()), in, chain(sel))
+					}
 				}
-				used := chain(sel)
-				banned := slices.ContainsFunc(never, func(n string) bool {
-					return used == n || strings.HasSuffix(n, ".") && strings.HasPrefix(used, n)
-				})
-				if where, ok := only[used]; (ok && !slices.Contains(where, in)) || banned {
-					t.Errorf("%s: %q uses %s", fset.Position(sel.Pos()), in, used)
+			}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.AssignStmt:
+					fromRoot(n.Rhs)
+				case *ast.ValueSpec:
+					fromRoot(n.Values)
+				case *ast.CallExpr:
+					if sel, ok := n.Fun.(*ast.SelectorExpr); ok && slices.Contains(byPath, sel.Sel.Name) && !slices.Contains(opens, in) {
+						if _, listed := only[chain(sel)]; !listed {
+							t.Errorf("%s: %q calls %s", fset.Position(n.Pos()), in, sel.Sel.Name)
+						}
+					}
+				case *ast.SelectorExpr:
+					used := chain(n)
+					banned := slices.ContainsFunc(never, func(n string) bool {
+						return used == n || strings.HasSuffix(n, ".") && strings.HasPrefix(used, n)
+					})
+					if where, ok := only[used]; (ok && !slices.Contains(where, in)) || banned {
+						t.Errorf("%s: %q uses %s", fset.Position(n.Pos()), in, used)
+					}
+					x := n.X
+					for p, ok := x.(*ast.ParenExpr); ok; p, ok = x.(*ast.ParenExpr) {
+						x = p.X
+					}
+					if star, ok := x.(*ast.StarExpr); ok {
+						x = star.X
+					}
+					if typ, ok := x.(*ast.SelectorExpr); ok && chain(typ) == "os.Root" {
+						t.Errorf("%s: %q uses os.Root's method %s", fset.Position(n.Pos()), in, n.Sel.Name)
+					}
 				}
 				return true
 			})
 		}
 	}
-	want := []string{"Chmod", "Create", "Join", "MkdirAll", "Open", "OpenFile", "ReadDir", "Remove", "RemoveAll", "Rename", "Stat", "Symlink", "TempFile"}
-	var got []string
-	for typ, i := reflect.TypeFor[*careOS](), 0; i < typ.NumMethod(); i++ {
-		got = append(got, typ.Method(i).Name)
-	}
-	if !slices.Equal(got, want) {
-		t.Errorf("careOS's methods are %v, want %v", got, want)
+	for typ, want := range map[reflect.Type][]string{
+		reflect.TypeFor[*careOS]():   {"Chmod", "Create", "Join", "MkdirAll", "Open", "OpenFile", "ReadDir", "Remove", "RemoveAll", "Rename", "Stat", "Symlink", "TempFile"},
+		reflect.TypeFor[*careFile](): {"Close", "Lock", "Name", "Read", "ReadAt", "Seek", "Truncate", "Unlock", "Write"},
+	} {
+		var got []string
+		for i := 0; i < typ.NumMethod(); i++ {
+			got = append(got, typ.Method(i).Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%v's methods are %v, want %v", typ, got, want)
+		}
 	}
 }
 

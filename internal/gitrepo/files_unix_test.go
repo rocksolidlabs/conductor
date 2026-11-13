@@ -231,9 +231,17 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 
 // A refusal says its cause in words a person can act on: the file's name
 // in its folder, its kind, its size and its bound in a person's units, or
-// where a link leads.
+// the link it is behind. A link written as an absolute path is refused
+// wherever it leads, inside the git directory too.
 func TestARefusalSaysItsCause(t *testing.T) {
 	const prefix = "a file of the repository was not read: "
+	const notFollowed = " is behind a link that is not followed: it leads out of the git directory or is written as an absolute path"
+	// inside makes the file at path an absolute link to a copy of it beside
+	// it, in the same git directory.
+	inside := func(t *testing.T, path string) {
+		padded(t, path, path+"-data", "", 0, false)
+		linkTo(t, path+"-data", path)
+	}
 	for _, c := range []struct {
 		name, want string
 		change     func(t *testing.T, r linkedRepo)
@@ -243,6 +251,14 @@ func TestARefusalSaysItsCause(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"config one byte past its bound", "config is just over 16 MiB; at most 16 MiB of it is read", func(t *testing.T, r linkedRepo) {
+			if err := os.Truncate(r.files["config"], maxConfig+1); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"config an absolute link inside the git directory", "config" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["config"]) }},
+		{"HEAD an absolute link inside the git directory", "HEAD" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["HEAD"]) }},
+		{"packed-refs an absolute link inside the git directory", "packed-refs" + notFollowed, func(t *testing.T, r linkedRepo) { inside(t, r.files["packed-refs"]) }},
 		{"packed-refs", "packed-refs is a named pipe", func(t *testing.T, r linkedRepo) {
 			if err := os.Remove(r.files["packed-refs"]); err != nil {
 				t.Fatal(err)
@@ -251,12 +267,12 @@ func TestARefusalSaysItsCause(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"HEAD", "HEAD leads out of the git directory", func(t *testing.T, r linkedRepo) {
+		{"HEAD", "HEAD" + notFollowed, func(t *testing.T, r linkedRepo) {
 			copied := filepath.Join(t.TempDir(), "HEAD")
 			padded(t, r.files["HEAD"], copied, "", 0, false)
 			linkTo(t, copied, r.files["HEAD"])
 		}},
-		{".git", ".git leads out of its folder", func(t *testing.T, r linkedRepo) {
+		{".git", ".git is behind a link that is not followed: it leads out of its folder or is written as an absolute path", func(t *testing.T, r linkedRepo) {
 			copied := filepath.Join(t.TempDir(), ".git")
 			padded(t, r.files[".git"], copied, "", 0, false)
 			linkTo(t, copied, r.files[".git"])
@@ -280,8 +296,196 @@ func TestARefusalSaysItsCause(t *testing.T) {
 			}
 		})
 	}
-	if got := units(5<<20 + 1<<19); got != "5.5 MiB" {
-		t.Errorf("units: %q", got)
+	for n, want := range map[int64]string{5<<20 + 1<<19: "5.5 MiB", maxConfig + 1: "just over 16 MiB", maxSmall + 1: "just over 64 KiB", 1<<20 - 1: "1023.9 KiB", 12: "12 bytes"} {
+		if got := units(n); got != want {
+			t.Errorf("units(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// fifo makes a named pipe at path, under the test's own folder, and is
+// path.
+func fifo(t *testing.T, path string) string {
+	t.Helper()
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Each folder the package opens beneath a name of the repository is opened
+// as a folder only: a linked worktree's git directory (its .git file names
+// it), the common directory (commondir names it, by an absolute or a
+// relative path, in a linked worktree or an ordinary repository) and .git
+// beneath its folder. A named pipe there, or .git made one between the
+// look at it and its open (afterLook), is refused at once by each of the
+// four reads, in words that say what it is.
+func TestAFolderTheRepositoryNamesIsOpenedAsAFolder(t *testing.T) {
+	const prefix = "a file of the repository was not read: "
+	for _, c := range []struct {
+		name, want string
+		seam       bool
+		change     func(t *testing.T, r *linkedRepo) (pipe string, before func())
+	}{
+		{name: "a linked worktree's .git file names a named pipe", want: "the git directory .git names is a named pipe",
+			change: func(t *testing.T, r *linkedRepo) (string, func()) {
+				pipe := fifo(t, filepath.Join(t.TempDir(), "git"))
+				write(t, r.wt, ".git", "gitdir: "+pipe+"\n")
+				return pipe, nil
+			}},
+		{name: "commondir names a named pipe by an absolute path", want: "the git directory commondir names is a named pipe",
+			change: func(t *testing.T, r *linkedRepo) (string, func()) {
+				pipe := fifo(t, filepath.Join(t.TempDir(), "common"))
+				write(t, filepath.Dir(r.files["commondir"]), "commondir", pipe+"\n")
+				return pipe, nil
+			}},
+		{name: "commondir names a named pipe by a relative path", want: "the git directory commondir names is a named pipe",
+			change: func(t *testing.T, r *linkedRepo) (string, func()) {
+				pipe := fifo(t, filepath.Join(filepath.Dir(r.files["commondir"]), "common"))
+				write(t, filepath.Dir(r.files["commondir"]), "commondir", "common\n")
+				return pipe, nil
+			}},
+		{name: "an ordinary repository's commondir names a named pipe beside it", want: "the git directory commondir names is a named pipe",
+			change: func(t *testing.T, r *linkedRepo) (string, func()) {
+				dot := filepath.Dir(r.files["config"])
+				r.wt = filepath.Dir(dot)
+				pipe := fifo(t, filepath.Join(dot, "common"))
+				write(t, dot, "commondir", "common\n")
+				return pipe, nil
+			}},
+		{name: ".git made a named pipe between the look and the open", want: ".git is a named pipe", seam: true,
+			change: func(t *testing.T, r *linkedRepo) (string, func()) {
+				dot := filepath.Dir(r.files["config"])
+				r.wt = filepath.Dir(dot)
+				aside := dot + "-aside"
+				afterLook = func(rel string) {
+					if rel != ".git" {
+						return
+					}
+					if err := os.Rename(dot, aside); err != nil {
+						t.Error(err)
+					} else if err := syscall.Mkfifo(dot, 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				t.Cleanup(func() { afterLook = nil })
+				// Each read meets .git a folder at the look.
+				return dot, func() {
+					if _, err := os.Stat(aside); err != nil {
+						return
+					}
+					if err := os.Remove(dot); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Rename(aside, dot); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !c.seam {
+				t.Parallel()
+			}
+			r := linked(t)
+			pipe, before := c.change(t, &r)
+			for _, rd := range readers {
+				if before != nil {
+					before()
+				}
+				err := within(t, pipe, c.name+", "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
+				if !errors.Is(err, ErrUnreadable) || err.Error() != prefix+c.want {
+					t.Errorf("%s: %v, want %q", rd.name, err, prefix+c.want)
+				}
+			}
+		})
+	}
+}
+
+// A named pipe put in place of a file between the root's look at it and
+// its open (afterLook) is opened without blocking and refused at once as a
+// file that changed as it was opened.
+func TestAPipePutInPlaceOfAFileAsItIsOpenedIsRefusedAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "HEAD", "ref: refs/heads/main\n")
+	head := filepath.Join(dir, "HEAD")
+	afterLook = func(string) {
+		if err := os.Remove(head); err != nil {
+			t.Error(err)
+		} else if err := syscall.Mkfifo(head, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { afterLook = nil }()
+	seen := &refusal{}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	err := within(t, head, "HEAD made a named pipe as it is opened", func(context.Context) error {
+		f, err := fs.Open("HEAD")
+		if err == nil {
+			f.Close()
+		}
+		return err
+	})
+	if !errors.Is(err, ErrUnreadable) || !strings.HasSuffix(err.Error(), ": HEAD changed as it was opened") {
+		t.Errorf("open: %v, want HEAD refused as changed as it was opened", err)
+	}
+}
+
+// FileAt with config made a named pipe once the repository is open (at the
+// first look at an object, afterLook; the opening reads config before
+// that, go-git's reads of the commit after it): its git binary, which opens config
+// itself, is ended at the cap, shortened here, and FileAt returns the
+// cap's error after one opening. With the cap as the product has it and
+// the caller's context ended at the same point, FileAt returns the
+// caller's own error, never the cap's, after one opening too.
+func TestFileAtAnswersItsCapOrTheCallersOwnError(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		cap    time.Duration
+		cancel bool
+		want   error
+	}{
+		{"the cap ends the git binary", time.Second, false, ErrGitCap},
+		{"the caller's context ends first", maxGitRead, true, context.Canceled},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := linked(t)
+			config := r.files["config"]
+			openings, made := 0, false
+			var cancel context.CancelFunc
+			afterLook = func(rel string) {
+				switch {
+				case rel == "commondir":
+					openings++
+				case strings.HasPrefix(rel, "objects/") && !made:
+					made = true
+					if err := os.Remove(config); err != nil {
+						t.Error(err)
+					} else if err := syscall.Mkfifo(config, 0o600); err != nil {
+						t.Error(err)
+					}
+					if c.cancel {
+						cancel()
+					}
+				}
+			}
+			defer func() { afterLook = nil }()
+			gitCap = c.cap
+			defer func() { gitCap = maxGitRead }()
+			err := within(t, config, "config made a named pipe once open, FileAt", func(ctx context.Context) error {
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				_, err := FileAt(ctx, r.wt, r.c2, "a.txt", 100)
+				return err
+			})
+			if c.want == ErrGitCap && err != nil && err.Error() != "the git binary reading the file was ended at its cap of 1s" {
+				t.Errorf("FileAt: %q, want the cap's words with the shortened cap", err)
+			}
+			if !errors.Is(err, c.want) || (c.want != ErrGitCap && errors.Is(err, ErrGitCap)) || !made || openings != 1 {
+				t.Errorf("FileAt: %v after %d openings (config made a pipe: %v), want %v after one", err, openings, made, c.want)
+			}
+		})
 	}
 }
 
@@ -316,12 +520,27 @@ func linkTo(t *testing.T, target, path string) {
 	}
 }
 
-// A link inside the git directory is followed, and what is read of it is
-// bounded by the name asked for, never by the name it leads to: config, a
-// link to a file under objects one byte past config's bound, is refused;
+// A link inside the git directory, written as a relative path, is
+// followed, and what is read of it is bounded by the name asked for, never
+// by the name it leads to: config, a link to a file under objects one byte
+// past config's bound, is refused; HEAD, a link to a file named
+// packed-refs beside it of a mebibyte, is refused with HEAD's bound;
 // packed-refs, a link to a file of another name of a mebibyte (past the
 // bound of a file of no named kind), is read.
 func TestALinkIsReadWithTheBoundOfTheNameAskedFor(t *testing.T) {
+	t.Run("HEAD to a larger file of another name", func(t *testing.T) {
+		t.Parallel()
+		r := linked(t)
+		head := r.files["HEAD"]
+		padded(t, head, filepath.Join(filepath.Dir(head), "packed-refs"), "# %08d\n", 1<<20, true)
+		linkTo(t, "packed-refs", head)
+		const want = "a file of the repository was not read: HEAD is 1 MiB; at most 64 KiB of it is read"
+		for _, rd := range readers {
+			if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) || err.Error() != want {
+				t.Errorf("%s: %v, want %q", rd.name, err, want)
+			}
+		}
+	})
 	t.Run("config to a file under objects past config's bound", func(t *testing.T) {
 		t.Parallel()
 		r := linked(t)
@@ -348,28 +567,64 @@ func TestALinkIsReadWithTheBoundOfTheNameAskedFor(t *testing.T) {
 	})
 }
 
+// moveOut moves the folder at path to a folder of the test's own outside
+// the repository and puts a link to it in its place.
+func moveOut(t *testing.T, path string) {
+	elsewhere := filepath.Join(t.TempDir(), filepath.Base(path))
+	if err := os.CopyFS(elsewhere, os.DirFS(path)); err != nil {
+		t.Error(err)
+	} else if err := os.RemoveAll(path); err != nil {
+		t.Error(err)
+	} else if err := os.Symlink(elsewhere, path); err != nil {
+		t.Error(err)
+	}
+}
+
 // A folder on the way to the repository's files that is a link out of the
-// git directory (objects, to a copy of it elsewhere), and a .git that is a
-// link to a git directory elsewhere, are refused by each read.
+// git directory (objects, refs, refs/heads, each to a copy of it
+// elsewhere), and a .git that is a link to a git directory elsewhere, are
+// refused by each read that opens a file beneath it: Compare and FileAt
+// read commits by id and open no ref through the package. objects made a
+// link out between the root's look at a file beneath it and the open
+// (afterLook) is refused by the open.
 func TestALinkOutOfTheGitDirectoryIsRefused(t *testing.T) {
-	t.Run("objects", func(t *testing.T) {
-		t.Parallel()
+	for _, folder := range []string{"objects", "refs", "refs/heads"} {
+		t.Run(folder, func(t *testing.T) {
+			t.Parallel()
+			r := linked(t)
+			moveOut(t, filepath.Join(filepath.Dir(r.files["config"]), folder))
+			for _, rd := range readers {
+				err := rd.read(context.Background(), r)
+				if folder != "objects" && (rd.name == "Compare" || rd.name == "FileAt") {
+					if err != nil {
+						t.Errorf("%s: %v, want it read", rd.name, err)
+					}
+				} else if !errors.Is(err, ErrUnreadable) {
+					t.Errorf("%s: %v, want the refusal", rd.name, err)
+				}
+			}
+		})
+	}
+	t.Run("objects made a link out between the look and the open", func(t *testing.T) {
 		r := linked(t)
 		objects := filepath.Join(filepath.Dir(r.files["config"]), "objects")
-		elsewhere := filepath.Join(t.TempDir(), "objects")
-		if err := os.CopyFS(elsewhere, os.DirFS(objects)); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.RemoveAll(objects); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(elsewhere, objects); err != nil {
-			t.Fatal(err)
-		}
-		for _, rd := range readers {
-			if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) {
-				t.Errorf("%s: %v, want the refusal", rd.name, err)
+		var first string
+		afterLook = func(rel string) {
+			if first == "" && strings.HasPrefix(rel, "objects/") {
+				first = rel
+				moveOut(t, objects)
 			}
+		}
+		defer func() { afterLook = nil }()
+		want := " is behind a link that is not followed: it leads out of the git directory or is written as an absolute path"
+		for i, rd := range readers {
+			err := rd.read(context.Background(), r)
+			if !errors.Is(err, ErrUnreadable) || (i == 0 && !strings.HasSuffix(err.Error(), ": "+first+want)) {
+				t.Errorf("%s: %v, want the refusal (%q%s first)", rd.name, err, first, want)
+			}
+		}
+		if first == "" {
+			t.Error("no file beneath objects was looked at")
 		}
 	})
 	t.Run(".git", func(t *testing.T) {
