@@ -9,6 +9,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'folders', title: 'Where agents work', icon: 'i-lucide-folder-tree' },
   { id: 'running', title: 'How agents run', icon: 'i-lucide-square-terminal' },
   { id: 'agents', title: 'Agents on this machine', icon: 'i-lucide-bot' },
+  { id: 'accounts', title: 'Accounts', icon: 'i-lucide-key-round' },
   { id: 'brakeman', title: 'Brakeman', icon: 'i-lucide-notebook-pen' },
   { id: 'app', title: 'The app', icon: 'i-lucide-info' },
 ] as const
@@ -25,7 +26,7 @@ export type SettingsSectionId = SettingsSection['id']
 
 /** What decides the sections shown: the desktop app's page or the browser's, and what the bridge, the catalog and Brakeman said. */
 export interface SettingsShown {
-  /** The desktop app's page; false for a browser's, which shows Brakeman and The app alone. */
+  /** The desktop app's page; false for a browser's, which shows Accounts, Brakeman and The app alone. */
   desktop: boolean
   /** The bridge's platform ('win32' on Windows). */
   platform?: string
@@ -35,6 +36,8 @@ export interface SettingsShown {
   agents: number
   /** Whether the server offers Brakeman (useBrakeman's available is not false). */
   brakeman: boolean
+  /** Whether the server offers accounts (useAccounts' available is not false); absent counts as offered. */
+  accounts?: boolean
 }
 
 /** The sections shown, in page order. */
@@ -45,6 +48,7 @@ export function shownSections(s: SettingsShown): SettingsSection[] {
     folders: s.desktop,
     running: s.desktop,
     agents: s.desktop && s.agents > 0,
+    accounts: s.accounts !== false,
     brakeman: s.brakeman,
     app: true,
   }

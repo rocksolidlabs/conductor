@@ -10,6 +10,7 @@ import { RunStore } from '~/utils/runs'
 import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, dispatchLive } from './useDispatchLive'
 import { asBrakemanEvent, brakemanLive } from './useBrakeman'
+import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
 
@@ -322,6 +323,7 @@ export function useAttention() {
         runs.readAll().catch(() => {})
         dispatchLive().snapshot()
         brakemanLive().snapshot()
+        capacityLive().snapshot()
         void inboxLive().snapshot()
       } else if (event === 'session') {
         upsert(payload as SessionInfo)
@@ -344,6 +346,9 @@ export function useAttention() {
         const e = asBrakemanEvent(payload)
         if (e) brakemanLive().event(e)
         void inboxLive().event()
+      } else if (event === 'capacity') {
+        // A reading of an agent's usage was kept: the capacity views shown of its key read again (useCapacity). Nothing else moves.
+        capacityLive().event(payload)
       } else if (event === 'activity') {
         const { sessionId, ...entry } = payload as SessionActivity
         offerFormedCrew(sessionId, entry)
