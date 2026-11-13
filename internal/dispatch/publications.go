@@ -66,6 +66,8 @@ const (
 	// carries; MaxPublicationPage a page of them.
 	MaxTicketPublications = 10
 	MaxPublicationPage    = 50
+	// MaxSendingPublications bounds SendingPublications' list.
+	MaxSendingPublications = 256
 	// MaxPublicationMarker bounds the adapter's marker, in bytes.
 	MaxPublicationMarker = 128
 	// MaxPublicationRef bounds a target's owner/name#n, in bytes.
@@ -259,8 +261,12 @@ func instanceOf(ctx context.Context, q queryer) (string, error) {
 }
 
 // publicationOf reads the publication with the id through q; a *Refusal
-// not_found when there is none.
+// not_found when there is none, as in a database before version 4, which
+// has no publications.
 func publicationOf(ctx context.Context, q queryer, id string) (Publication, error) {
+	if schemaOf(q) < 4 {
+		return Publication{}, refuse(RefusalNotFound, "no publication %s", id)
+	}
 	instance, err := instanceOf(ctx, q)
 	if err != nil {
 		return Publication{}, err
@@ -313,12 +319,22 @@ func commentPage(s string) string {
 	return a.kept
 }
 
-// pubWords is a publication's words as its row keeps them (readWords).
+// pubWords is an outcome's words as a publication's row keeps them (its
+// error, its close_error): trimmed, kept when they are at most
+// MaxReadError characters and every one is plain (plainWord); otherwise,
+// and for none, the row keeps the store's own words (otherwise). Nothing
+// is cut or replaced inside the words.
 func pubWords(s, otherwise string) string {
-	if s = readWords(s); s == "" {
-		s = otherwise
+	if s = strings.TrimSpace(s); s == "" || len(s) > MaxReadError || strings.IndexFunc(s, func(r rune) bool { return !plainWord(r) }) >= 0 {
+		return otherwise
 	}
 	return s
+}
+
+// plainWord reports a character an outcome's kept words may hold: an ASCII
+// letter or digit, a space, or one of ' , ; : . _ - ( ).
+func plainWord(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ',;:._-()", r)
 }
 
 // beginSend is the decision of a send (publication.send): the row made
@@ -547,15 +563,21 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 		case args.CloseIssue != "" && args.CloseIssue != "completed" && args.CloseIssue != "not_planned":
 			return refuse(RefusalInvalid, "a close is completed or not_planned")
 		case target.Kind != ExternalIssue && target.Kind != ExternalChange, !nodeIDPattern.MatchString(target.NodeID):
-			return refuse(RefusalInvalid, "the target is an issue or a pull request by its node id")
+			return refuse(RefusalInvalid, "a target of %s is an issue or a pull request by its node id", tk.Key)
 		case target.SpaceID == "" || checkRemoteID("the target's repository", target.SpaceID) != nil:
-			return refuse(RefusalInvalid, "the target names its repository's id")
+			return refuse(RefusalInvalid, "a target of %s names its repository's id", tk.Key)
 		case target.Ref == "" || len(target.Ref) > MaxPublicationRef || holdsAddress(target.Ref) || strings.ContainsFunc(target.Ref, func(r rune) bool { return r <= ' ' || r > '~' }):
-			return refuse(RefusalInvalid, "the target's place is owner/name#n")
+			return refuse(RefusalInvalid, "a target of %s is placed as owner/name#n", tk.Key)
 		}
+		// A refusal of the target names the ticket's key and nothing the
+		// caller sent: not the page's host, user or query.
 		page, err := itemPage(target.URL)
 		if err != nil {
-			return err
+			code := RefusalInvalid
+			if ref := (*Refusal)(nil); errors.As(err, &ref) {
+				code = ref.Code
+			}
+			return refuse(code, "a target of %s is its item's https page, at most %d bytes, with no query, fragment or user", tk.Key, MaxExternalURL)
 		}
 		parts := []string{}
 		for _, part := range args.Parts {
@@ -567,8 +589,8 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 		// The target is the item the store holds: the ticket's linked issue
 		// (its identity's node and host, its snapshot's kind), or a live
 		// delivery or external link of it (the node and the kind its last
-		// read found, its address's host). Only an issue, by the store's
-		// kind, is closed.
+		// read found, and the host of both its address and that read). Only
+		// an issue, by the store's kind, is closed.
 		var node, host, kind string
 		if args.Target == TargetLinked {
 			if i, j := strings.IndexByte(tk.ExternalID, ':'), strings.LastIndexByte(tk.ExternalID, ':'); i < j {
@@ -577,13 +599,13 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 			sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
 			kind = sn.Kind
 		} else if linkID, ok := strings.CutPrefix(args.Target, "link:"); ok {
-			var addr string
-			err := t.tx.QueryRowContext(t.ctx, `SELECT l.url, r.node_id, r.kind FROM links l JOIN link_reads r ON r.link_id = l.id
-				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &node, &kind)
+			var addr, readHost string
+			err := t.tx.QueryRowContext(t.ctx, `SELECT l.url, r.node_id, r.kind, r.host FROM links l JOIN link_reads r ON r.link_id = l.id
+				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &node, &kind, &readHost)
 			if err != nil && !isNoRows(err) {
 				return err
 			}
-			if a, err := admitAddress("the link", addr); err == nil {
+			if a, err := admitAddress("the link", addr); err == nil && a.host == readHost {
 				host = a.host
 			}
 		}
@@ -664,8 +686,9 @@ func (s *Store) DiscardPublication(ctx context.Context, op Op, id string) (Recei
 
 // serverOp is an operation the server makes for itself on the publication
 // with the id (a settle, a close begun, a close's answer), under
-// ActorServer, an actor no client's operation is ever given, so no
-// operation a client sends holds its receipt's key: decide is read against
+// ActorServer, marked as the store's own (Op.store): Op.check refuses that
+// actor on any other operation, so no operation a caller hands the store
+// holds its receipt's key. decide is read against
 // the row first (admitted too when a person started the change: person),
 // and an outcome that changes nothing is not applied at all (applied
 // false: no operation, no receipt, no refusal kept), nor is one decide
@@ -706,7 +729,7 @@ func (s *Store) serverOp(ctx context.Context, id, phase, intent string, person b
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	op := Op{Actor: ActorServer, ID: DerivedOpID(id, phase, strconv.FormatInt(p.Rev, 10), digest), ExpectedRev: p.Rev}
+	op := Op{Actor: ActorServer, ID: DerivedOpID(id, phase, strconv.FormatInt(p.Rev, 10), digest), ExpectedRev: p.Rev, store: true}
 	rc, err = s.Apply(ctx, op, intent, input, func(t *tx) error {
 		err := t.changePublication(id, person, func(p Publication, instance string) (Publication, error) { return decide(p, instance, t.now) })
 		if ref := (*Refusal)(nil); errors.As(err, &ref) {
@@ -850,14 +873,18 @@ func ticketPublications(ctx context.Context, q queryer, ticketID string) ([]Publ
 }
 
 // SendingPublications lists the ids of at most n publications being sent,
-// the oldest send first: what a server settles after it starts.
+// and never more than MaxSendingPublications, the oldest send first: what
+// a server settles after it starts. None for n under 1.
 func (s *Store) SendingPublications(ctx context.Context, n int) ([]string, error) {
 	var ids []string
+	if n < 1 {
+		return ids, nil
+	}
 	err := s.read(ctx, func(q queryer) error {
 		if schemaOf(q) < 4 {
 			return nil
 		}
-		rows, err := q.QueryContext(ctx, "SELECT id FROM publications WHERE state = ? ORDER BY sending_at, id LIMIT ?", PublicationSending, n)
+		rows, err := q.QueryContext(ctx, "SELECT id FROM publications WHERE state = ? ORDER BY sending_at, id LIMIT ?", PublicationSending, min(n, MaxSendingPublications))
 		if err != nil {
 			return err
 		}

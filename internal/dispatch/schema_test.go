@@ -335,7 +335,9 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 // read-only, is read as it was found: a ticket with its links (their
 // candidate, receipt and fingerprint empty), no approved revision and no
 // launch; the links' own read; a ticket's revisions none and a revision's
-// read not_found; a pruned link add's resend too old to compare, and a
+// read not_found; a publication's read and the server's operations on one
+// not_found, none being sent and a ticket's none; a pruned link add's
+// resend too old to compare, and a
 // new operation not found. Nothing reads what version 2 adds, which the
 // file has not, and the file stays version 1. The migration fails two
 // ways: a writer holding the database past the busy timeout, and a file
@@ -414,6 +416,31 @@ func TestAVersionOneDatabaseItCannotMigrateIsRead(t *testing.T) {
 			}
 			if _, err := s.Plan(ctx, "0123456789abcdef"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("a revision's read: %v", err)
+			}
+			// A version 1 database has no publications: a publication's read
+			// and the server's operations on one find none, and none is
+			// being sent.
+			if _, err := s.Publication(ctx, "0123456789abcdef"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("a publication's read: %v", err)
+			}
+			for name, call := range map[string]func() (Receipt, bool, error){
+				"a settle": func() (Receipt, bool, error) {
+					return s.SettlePublication(ctx, "0123456789abcdef", 1, Outcome{Words: "listed"})
+				},
+				"a close begun": func() (Receipt, bool, error) { return s.BeginClose(ctx, "0123456789abcdef") },
+				"a close's answer": func() (Receipt, bool, error) {
+					return s.SettleClose(ctx, "0123456789abcdef", CloseOutcome{State: CloseClosed})
+				},
+			} {
+				if _, applied, err := call(); applied || !isRefusal(err, RefusalNotFound) {
+					t.Fatalf("%s: %v %v", name, applied, err)
+				}
+			}
+			if ids, err := s.SendingPublications(ctx, 10); err != nil || len(ids) != 0 {
+				t.Fatalf("the publications being sent: %v %v", ids, err)
+			}
+			if page, _, err := s.Publications(ctx, key, "", false); err != nil || len(page) != 0 {
+				t.Fatalf("the ticket's publications: %v %v", page, err)
 			}
 			rc, found := replayed(t, s, testOp("l1"), IntentLinkAdd, LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: url}})
 			if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsTooOld {

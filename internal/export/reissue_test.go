@@ -88,6 +88,38 @@ func TestRestoreStopsWhenTheStoreCannotBeLooked(t *testing.T) {
 	sameListing(t, dst, before)
 }
 
+// An archive that holds no Dispatch store restores: the look at the staged
+// store answers that it does not exist, nothing is reissued or synced for
+// it, and the restored directory holds none.
+func TestRestoreWithNoDispatchStore(t *testing.T) {
+	b := craft(t, [2]string{"crews/team.json", "{}"})
+	dst := filepath.Join(t.TempDir(), "restored")
+	var look error
+	looked := false
+	export.SetStagedLook(t, func(err error) error {
+		looked, look = true, err
+		return err
+	})
+	export.SetSyncDir(t, func(rel string) error {
+		if path.Base(rel) == "dispatch" {
+			t.Errorf("synced %s", rel)
+		}
+		return nil
+	})
+	if _, err := restore(b, dst); err != nil {
+		t.Fatalf("the restore: %v", err)
+	}
+	if !looked || !errors.Is(look, fs.ErrNotExist) {
+		t.Fatalf("the look: %v %v", looked, look)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "dispatch")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the restored dispatch folder: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "crews", "team.json")); err != nil {
+		t.Fatalf("the restored crew: %v", err)
+	}
+}
+
 // A restore makes its staged Dispatch store a new instance, then syncs the
 // store's folder, before any rename: what the trace records after the look
 // is the folder's sync, the file holding the new instance by then, the

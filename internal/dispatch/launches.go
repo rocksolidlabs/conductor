@@ -48,8 +48,9 @@ const (
 // records it (the launch route, or the reconcile at start), with the op
 // id <launch>.started or <launch>.failed: the first commit stands, and the
 // other is answered by its receipt; and a publication's settles and closes
-// (serverOp), with a derived id. No client's operation is given it: the
-// API's actors are admin, user:<subject>, agent:<member> and brakeman.
+// (serverOp), with a derived id. It is the store's alone: only an
+// operation the store makes for itself carries it (Op.store), and Op.check
+// refuses it on any other.
 const ActorServer = "server"
 
 // LaunchArgs is ticket.launch's content, its fingerprint: the ticket's
@@ -448,9 +449,11 @@ func (s *Store) StartedLaunch(ctx context.Context, op Op, id string, agents []La
 // outcomeOp is the operation of a launch's outcome under the op id: the
 // actor server's, with op's display name and nothing else of it, so no
 // record can bring a refusal (a revision expected) its op id would keep
-// for every later record.
+// for every later record. It is the store's own (store), unless the
+// caller's op names ActorServer itself, which Op.check then refuses as it
+// refuses that actor on every operation a caller hands the store.
 func outcomeOp(op Op, id string) Op {
-	return Op{Actor: ActorServer, ID: id, By: op.By}
+	return Op{Actor: ActorServer, ID: id, By: op.By, store: op.Actor != ActorServer}
 }
 
 // unkeptRefusal is a refusal a launch's outcome gives that no receipt may

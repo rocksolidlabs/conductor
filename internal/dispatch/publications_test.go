@@ -3,8 +3,12 @@ package dispatch
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -842,17 +846,19 @@ func TestPublicationNeedsALiveTicket(t *testing.T) {
 				rc, err = f.s.ArchiveProject(ctx, testOp("gone"), "CND")
 			}
 			want(t, rc, err, StatusDone, "")
-			if rc, owned, err := f.s.BeginSend(ctx, testOp("s1"), draft.ID, draft.PostSha256, alice); err != nil || owned || rc.Refusal != gone {
-				t.Errorf("a send's begin: %v %+v %v", owned, rc, err)
+			comment, err := f.s.AddComment(ctx, testOp("c1"), f.key, "a comment")
+			if err != nil || comment.Refusal != gone || comment.Error == "" {
+				t.Fatalf("a comment: %+v %v", comment, err)
 			}
-			if rc, err := f.s.DiscardPublication(ctx, testOp("x1"), draft.ID); err != nil || rc.Refusal != gone {
-				t.Errorf("a discard: %+v %v", rc, err)
+			if rc, owned, err := f.s.BeginSend(ctx, testOp("s1"), draft.ID, draft.PostSha256, alice); err != nil || owned || rc.Refusal != gone || rc.Error != comment.Error {
+				t.Errorf("a send's begin: %v %+v %v, a comment's %q", owned, rc, err, comment.Error)
 			}
-			if _, applied, err := f.beginClose(sent.ID); applied || !isRefusal(err, gone) {
-				t.Errorf("a close's begin: %v %v", applied, err)
+			if rc, err := f.s.DiscardPublication(ctx, testOp("x1"), draft.ID); err != nil || rc.Refusal != gone || rc.Error != comment.Error {
+				t.Errorf("a discard: %+v %v, a comment's %q", rc, err, comment.Error)
 			}
-			if rc, err := f.s.AddComment(ctx, testOp("c1"), f.key, "a comment"); err != nil || rc.Refusal != gone {
-				t.Errorf("a comment: %+v %v", rc, err)
+			var ref *Refusal
+			if _, applied, err := f.beginClose(sent.ID); applied || !isRefusal(err, gone) || !errors.As(err, &ref) || words(ref.Words) != comment.Error {
+				t.Errorf("a close's begin: %v %v, a comment's %q", applied, err, comment.Error)
 			}
 			for _, p := range []Publication{draft, sent} {
 				if q := f.pub(t, p.ID); q.Rev != p.Rev || q.State != p.State || q.CloseState != p.CloseState {
@@ -905,12 +911,204 @@ func TestPrepareTargetIsTheStores(t *testing.T) {
 	}
 }
 
+// A link's target is on the host of both the link's address and the
+// store's last read of it: with a read kept under another host than the
+// address's, a target on either host is refused. A refusal of a target
+// names the ticket's key and nothing the caller sent of it: not the page's
+// user, query or host.
+func TestPrepareTargetHostIsTheReadsToo(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	_, elsewhere := newTicket(t, f.s, "CND", "Read elsewhere")
+	rc, err := addLink(f.s, "d2", elsewhere, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/10"})
+	want(t, rc, err, StatusDone, "")
+	link := rc.ID
+	read := prRead("PR_10", 1, "open")
+	read.Host = "ghe.example.com"
+	if err := f.s.RecordRead(ctx, link, read); err != nil {
+		t.Fatal(err)
+	}
+	onAddress := PublicationTarget{NodeID: "PR_10", SpaceID: "4000001", Kind: ExternalChange, URL: "https://github.com/rocksolidlabs/conductor/pull/10", Ref: "rocksolidlabs/conductor#10"}
+	onRead := onAddress
+	onRead.URL = "https://ghe.example.com/rocksolidlabs/conductor/pull/10"
+	for i, target := range []PublicationTarget{onAddress, onRead} {
+		rc, err := f.s.PreparePublication(ctx, testOp(fmt.Sprint("h", i)), PublicationArgs{Key: elsewhere, Target: "link:" + link, Body: "b"}, target, markOf)
+		if err != nil || rc.Status != StatusFailed || rc.Refusal != RefusalInvalid || !strings.Contains(rc.Error, elsewhere) {
+			t.Errorf("a target on %s: %+v %v", target.URL, rc, err)
+		}
+	}
+	for i, page := range []string{
+		"https://bob:hunter2@github.com/rocksolidlabs/conductor/pull/9",
+		"https://github.com/rocksolidlabs/conductor/pull/9?token=SECRET",
+		"https://github.com/rocksolidlabs/conductor/pull/9#SECRET",
+		"https://ghe.example.com/rocksolidlabs/conductor/pull/9",
+		"http://x.example.com/rocksolidlabs/conductor/pull/9",
+		"https://github.com/rocksolidlabs/conductor/pull/9/" + strings.Repeat("s", MaxExternalURL),
+		"https://github.com/rocksolidlabs/conductor/pull/9\x00SECRET",
+	} {
+		target := changeTarget
+		target.URL = page
+		rc, err := f.s.PreparePublication(ctx, testOp(fmt.Sprint("u", i)), PublicationArgs{Key: f.native, Target: "link:" + f.link, Body: "b"}, target, markOf)
+		if err != nil || rc.Status != StatusFailed || !strings.Contains(rc.Error, f.native) {
+			t.Errorf("a target at %q: %+v %v", page, rc, err)
+		}
+		for _, sent := range []string{"bob", "hunter2", "token", "SECRET", "github.com", "ghe.", "x.example", "sss"} {
+			if strings.Contains(rc.Error, sent) {
+				t.Errorf("a target at %q: the refusal %q names %q", page, rc.Error, sent)
+			}
+		}
+	}
+}
+
+// The list of the publications being sent has the store's bound: none for
+// n under 1, at most n, and never more than MaxSendingPublications.
+func TestSendingPublicationsBound(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	for i := range 3 {
+		f.send(t, fmt.Sprint("s", i), f.prepared(t, fmt.Sprint("p", i), ""))
+	}
+	for _, c := range []struct{ n, want int }{{-1, 0}, {0, 0}, {1, 1}, {2, 2}, {1000, 3}} {
+		if ids, err := f.s.SendingPublications(ctx, c.n); err != nil || len(ids) != c.want {
+			t.Errorf("SendingPublications(%d): %v %v, want %d", c.n, ids, err, c.want)
+		}
+	}
+}
+
+// The store's actor is the store's alone: every exported method of the
+// store that takes an operation, handed one under ActorServer, answers the
+// actor's refusal (ErrBadActor) and writes nothing. ImportImage looks at
+// its image's shape first (uploaded, or skipped for its type or its size),
+// so it is handed a skipped one.
+func TestTheServerActorIsTheStores(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	p := f.prepared(t, "p1", "")
+	changes, ops := countOf(t, f.s, "SELECT COUNT(*) FROM changes"), countOf(t, f.s, "SELECT COUNT(*) FROM ops")
+	opType, ctxType := reflect.TypeFor[Op](), reflect.TypeFor[context.Context]()
+	given := map[reflect.Type]reflect.Value{reflect.TypeFor[ImageUpload](): reflect.ValueOf(ImageUpload{Skipped: SkippedType})}
+	// filled is a value of the type with every string an id (the
+	// publication's) and every int 1, so an argument's shape is not what
+	// a method refuses first.
+	var filled func(reflect.Type) reflect.Value
+	filled = func(typ reflect.Type) reflect.Value {
+		if v, ok := given[typ]; ok {
+			return v
+		}
+		v := reflect.New(typ).Elem()
+		switch typ.Kind() {
+		case reflect.String:
+			v.SetString(p.ID)
+		case reflect.Int, reflect.Int64:
+			v.SetInt(1)
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				if typ.Field(i).IsExported() {
+					v.Field(i).Set(filled(typ.Field(i).Type))
+				}
+			}
+		}
+		return v
+	}
+	n := 0
+	st := reflect.TypeFor[*Store]()
+	for i := range st.NumMethod() {
+		m := st.Method(i)
+		var ins []reflect.Type
+		for j := 1; j < m.Type.NumIn(); j++ {
+			ins = append(ins, m.Type.In(j))
+		}
+		if !slices.Contains(ins, opType) {
+			continue
+		}
+		n++
+		args := []reflect.Value{reflect.ValueOf(f.s)}
+		for _, in := range ins {
+			switch {
+			case in == opType:
+				args = append(args, reflect.ValueOf(Op{Actor: ActorServer, ID: fmt.Sprint("walk", i), By: "Tester"}))
+			case in == ctxType:
+				args = append(args, reflect.ValueOf(ctx))
+			default:
+				args = append(args, filled(in))
+			}
+		}
+		var out []reflect.Value
+		if m.Type.IsVariadic() {
+			out = m.Func.CallSlice(args)
+		} else {
+			out = m.Func.Call(args)
+		}
+		err, _ := out[len(out)-1].Interface().(error)
+		if !errors.Is(err, ErrBadActor) {
+			t.Errorf("%s under the store's actor: %v", m.Name, err)
+		}
+	}
+	if t.Logf("%d methods take an operation", n); n < 60 {
+		t.Errorf("%d methods take an operation", n)
+	}
+	if c, o := countOf(t, f.s, "SELECT COUNT(*) FROM changes"), countOf(t, f.s, "SELECT COUNT(*) FROM ops"); c != changes || o != ops {
+		t.Errorf("%d changes and %d receipts, %d and %d before", c, o, changes, ops)
+	}
+}
+
+// A store opened read-only makes no server operation: a settle, a close
+// begun and a close's answer each answer the read-only refusal as an
+// error, never applied, and the rows are as they were.
+func TestServerOpsOnAReadOnlyStore(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	sending := f.prepared(t, "p1", "")
+	f.send(t, "s1", sending)
+	pending, closing := f.sentWithClose(t, "p2"), f.sentWithClose(t, "p3")
+	if _, applied, err := f.beginClose(closing.ID); !applied || err != nil {
+		t.Fatalf("a close begun: %v %v", applied, err)
+	}
+	sending, closing = f.pub(t, sending.ID), f.pub(t, closing.ID)
+	if _, err := f.s.db.Exec("UPDATE schema_version SET version = ?", Version+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ro, err := OpenOptions(f.dir, Options{Systems: []string{"github"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ro.Close() })
+	if readOnly, why := ro.ReadOnly(); !readOnly {
+		t.Fatalf("not read-only: %s", why)
+	}
+	for _, c := range []struct {
+		name string
+		call func() (Receipt, bool, error)
+	}{
+		{"a settle", func() (Receipt, bool, error) {
+			return ro.SettlePublication(ctx, sending.ID, sending.Attempt, found("7", "101"))
+		}},
+		{"a close begun", func() (Receipt, bool, error) { return ro.BeginClose(ctx, pending.ID) }},
+		{"a close's answer", func() (Receipt, bool, error) {
+			return ro.SettleClose(ctx, closing.ID, CloseOutcome{State: CloseClosed})
+		}},
+	} {
+		if _, applied, err := c.call(); applied || !isRefusal(err, RefusalReadOnly) {
+			t.Errorf("%s: %v %v", c.name, applied, err)
+		}
+	}
+	for _, p := range []Publication{sending, pending, closing} {
+		if q, err := ro.Publication(ctx, p.ID); err != nil || q.Rev != p.Rev || q.State != p.State || q.CloseState != p.CloseState {
+			t.Errorf("the row moved: %+v %v", q, err)
+		}
+	}
+}
+
 // A server's operation tells one caller it made the change, under an actor
 // of the store's own: two close begins that read one revision (held where
 // Apply takes the lock) are one operation, one of them told applied,
-// close_tries 1, its history the server's; an operation a client sent
-// under the admin's actor with a close's derived id leaves the close to
-// begin; a server's operation the store refuses returns the refusal.
+// close_tries 1, its history the server's; an operation a caller hands the
+// store with a close's derived id is refused under the store's actor, and
+// done under the admin's, and either way the close begins; a server's
+// operation the store refuses returns the refusal.
 func TestServerOpAppliedOnce(t *testing.T) {
 	f := newPubFixture(t)
 	ctx := context.Background()
@@ -926,21 +1124,27 @@ func TestServerOpAppliedOnce(t *testing.T) {
 	if actors := texts(t, f.s, "SELECT DISTINCT actor FROM changes WHERE entity = ? AND op_id LIKE '~%'", EntityPublication); !slices.Equal(actors, []string{ActorServer}) {
 		t.Errorf("the server's operations are kept under %v", actors)
 	}
-	q := f.sentWithClose(t, "p2")
-	digest, err := fingerprint(IntentPublicationClose, struct {
-		ID    string `json:"id"`
-		Begin bool   `json:"begin"`
-	}{q.ID, true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rc, err := f.s.AddComment(ctx, Op{Actor: ActorAdmin, ID: DerivedOpID(q.ID, "close", strconv.FormatInt(q.Rev, 10), digest), By: "Tester"}, f.key, "a comment")
-	want(t, rc, err, StatusDone, "")
-	if _, applied, err := f.beginClose(q.ID); !applied || err != nil {
-		t.Errorf("a close begun after a client's operation of its id: %v %v", applied, err)
-	}
-	if q = f.pub(t, q.ID); q.CloseState != CloseClosing || q.CloseTries != 1 {
-		t.Errorf("the close: %+v", q)
+	for _, actor := range []string{ActorServer, ActorAdmin} {
+		q := f.sentWithClose(t, "p2"+actor)
+		digest, err := fingerprint(IntentPublicationClose, struct {
+			ID    string `json:"id"`
+			Begin bool   `json:"begin"`
+		}{q.ID, true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc, err := f.s.AddComment(ctx, Op{Actor: actor, ID: DerivedOpID(q.ID, "close", strconv.FormatInt(q.Rev, 10), digest), By: "Tester"}, f.key, "a comment")
+		if actor == ActorServer && !errors.Is(err, ErrBadActor) {
+			t.Errorf("a caller's operation under the store's actor: %+v %v", rc, err)
+		} else if actor == ActorAdmin {
+			want(t, rc, err, StatusDone, "")
+		}
+		if _, applied, err := f.beginClose(q.ID); !applied || err != nil {
+			t.Errorf("a close begun after a caller's operation of its id under %s: %v %v", actor, applied, err)
+		}
+		if q = f.pub(t, q.ID); q.CloseState != CloseClosing || q.CloseTries != 1 {
+			t.Errorf("the close: %+v", q)
+		}
 	}
 	// The ticket deleted between the begin's read and its transaction.
 	r := f.sentWithClose(t, "p3")
@@ -958,7 +1162,7 @@ func TestServerOpAppliedOnce(t *testing.T) {
 	}
 	// The refusal is kept by no receipt: the ticket back, the same begin at
 	// the same revision is decided anew.
-	rc, err = f.s.UndeleteTicket(ctx, testOp("back"), f.key)
+	rc, err := f.s.UndeleteTicket(ctx, testOp("back"), f.key)
 	want(t, rc, err, StatusDone, "")
 	if _, applied, err := f.beginClose(r.ID); !applied || err != nil || failedReceipts(t, f.s, IntentPublicationClose) != 0 {
 		t.Errorf("the begin, the ticket back: %v %v", applied, err)
@@ -992,43 +1196,23 @@ func TestSettleNeedsTheSender(t *testing.T) {
 }
 
 // A login is letters, digits and hyphens, at most 39 bytes: anything else
-// is kept as none, sent_as_id naming the account, and the send goes on. An
-// address written as user:password@host or as host?query, in an outcome's
-// words or in a login, keeps neither its user nor its query: not in the
-// row, not in a change row, not in the feed of changes, not in a receipt.
-func TestPublicationWordsKeepNoAddress(t *testing.T) {
-	const userAt, hostQuery = "bob:hunter2@x.example.com", "x.example.com?token=SECRET"
-	for in, out := range map[string]string{userAt: "x.example.com", hostQuery: "x.example.com", "see " + userAt + "/p?q=SECRET.": "see x.example.com/p",
-		"(" + hostQuery + ")": "(x.example.com", "node@18 is done?": "node@18 is done?"} {
-		if got := addressFree(in); got != out {
-			t.Errorf("addressFree(%q) = %q, want %q", in, got, out)
-		}
-	}
+// is kept as none, sent_as_id naming the account, and the send goes on;
+// what was not kept is in no row, change row, receipt or feed of changes.
+func TestPublicationKeepsALoginOrNone(t *testing.T) {
 	f := newPubFixture(t)
 	ctx := context.Background()
-	for i, login := range []string{userAt, hostQuery, "dependabot[bot]", strings.Repeat("a", MaxSnapshotLogin+1), "alice-2"} {
+	for i, login := range []string{"bob:hunter2@x.example.com", "x.example.com?token=SECRET", "dependabot[bot]", strings.Repeat("a", MaxSnapshotLogin+1), "alice-2"} {
 		p := f.prepared(t, fmt.Sprint("p", i), "")
 		rc, owned, err := f.s.BeginSend(ctx, testOp(fmt.Sprint("s", i)), p.ID, p.PostSha256, Sender{ID: "101", Login: login})
 		if err != nil || !owned {
 			t.Fatalf("a send as %q: %+v %v", login, rc, err)
 		}
-		p = f.pub(t, p.ID)
 		kept := ""
 		if login == "alice-2" {
 			kept = login
 		}
-		if p.SentAsLogin != kept || p.SentAsID != "101" {
+		if p = f.pub(t, p.ID); p.SentAsLogin != kept || p.SentAsID != "101" {
 			t.Errorf("the login %q kept as %q", login, p.SentAsLogin)
-		}
-		o := Outcome{State: PublicationFailed, Words: "GitHub said " + userAt + " and " + hostQuery}
-		if i%2 == 1 {
-			o = Outcome{State: PublicationUnconfirmed, Words: hostQuery + " " + userAt}
-		}
-		if _, _, err := f.settle(p, o); err != nil {
-			t.Fatal(err)
-		}
-		if p = f.pub(t, p.ID); strings.Contains(p.Error, "@") || strings.Contains(p.Error, "?") || !strings.Contains(p.Error, "x.example.com") {
-			t.Errorf("the words kept: %q", p.Error)
 		}
 	}
 	feed, err := f.s.ChangesAfter(ctx, 0, MaxFeedPage)
@@ -1036,12 +1220,184 @@ func TestPublicationWordsKeepNoAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := encodeValue(feed)
-	for _, secret := range []string{"hunter2", "SECRET"} {
-		if n := countOf(t, f.s, "SELECT COUNT(*) FROM publications WHERE error LIKE ? OR sent_as_login LIKE ?", "%"+secret+"%", "%"+secret+"%") +
+	for _, secret := range []string{"hunter2", "SECRET", "dependabot", strings.Repeat("a", MaxSnapshotLogin+1)} {
+		if n := countOf(t, f.s, "SELECT COUNT(*) FROM publications WHERE sent_as_login LIKE ?", "%"+secret+"%") +
 			countOf(t, f.s, "SELECT COUNT(*) FROM changes WHERE value LIKE ? OR prior LIKE ?", "%"+secret+"%", "%"+secret+"%") +
 			countOf(t, f.s, "SELECT COUNT(*) FROM ops WHERE receipt LIKE ?", "%"+secret+"%"); n != 0 || strings.Contains(encoded, secret) {
 			t.Errorf("%q is kept: %d rows", secret, n)
 		}
+	}
+}
+
+// routeCodes is every code the routes' sentences may carry: what
+// trackerAnswer and the credential's lookup answer (internal/api).
+var routeCodes = []string{"rate_limited", "moved", "external_not_found", "token_refused", "token_permission", "tracker_bound", "tracker_unavailable",
+	"no_token", "invalid_host", "not_a_tracker_url", "credentials_unusable", "target_changed", "tracker_busy"}
+
+// routeWords is every sentence the publication routes hand a settle as an
+// outcome's words (issue 877's internal/api/dispatch_publish.go), with
+// each code, and the store's own.
+func routeWords() []string {
+	out := []string{
+		"the item is no longer in the repository it was prepared for, or no longer of its kind: prepare it again",
+		"GitHub has not shown the comment yet; Check looks again",
+		"GitHub's comments could not be listed whole; Check looks again",
+		"closed on GitHub before Conductor's close",
+		"GitHub refused the comment",
+		"GitHub has not shown this comment; it may still appear",
+	}
+	for _, code := range routeCodes {
+		out = append(out, "GitHub's comments could not be listed: "+code+"; Check looks again", "GitHub refused the close: "+code, "GitHub refused the comment: "+code)
+	}
+	return out
+}
+
+// addressWordsTable is words that hold an address, in every spelling: a
+// scheme, none, two slashes, a user and a password, a query after a host
+// and after a path, a fragment, an IPv6 host, a host of one label, a
+// zero-width character (zeroWidth), a line break inside, an escaped query.
+var addressWordsTable = []string{
+	"GitHub said https://bob:hunter2@x.example.com/p?q=SECRET#frag",
+	"GitHub said x.example.com/p?q=SECRET",
+	"GitHub said //bob:hunter2@x.example.com/p?q=SECRET",
+	"bob:hunter2@x.example.com",
+	"see x.example.com?token=SECRET",
+	"(x.example.com?token=SECRET)",
+	"x.example.com#SECRET",
+	"http://[2001:db8::1]/p?q=SECRET",
+	"[::1]:8080/p?q=SECRET",
+	"intranet?q=SECRET",
+	"localhost:8080/p?q=SECRET",
+	"x.example" + zeroWidth + ".com?q=SECRET",
+	"x.example.com" + zeroWidth,
+	"GitHub said x.example.com\n?q=SECRET",
+	"GitHub said\nbob:hunter2@x.example.com",
+	"x.example.com%3Fq%3DSECRET",
+	"mailto:bob@x.example.com",
+	"ssh://git@x.example.com:22/o/r.git",
+}
+
+// zeroWidth is a zero-width space.
+var zeroWidth = string(rune(0x200B))
+
+// generatedWords is n texts from a fixed seed, of plain characters and
+// others an address is spelled with, from empty to past MaxReadError.
+func generatedWords(n int) []string {
+	r := rand.New(rand.NewPCG(769, 2))
+	alphabet := append([]rune("abcXYZ019 ',;:._-()/?#@&=%[]~!\"<>\t\n\r"), 0x200B, 0xE9, 0x2028, '+', '*')
+	out := make([]string, n)
+	for i := range out {
+		rs := make([]rune, r.IntN(MaxReadError+12))
+		for j := range rs {
+			if r.IntN(4) == 0 {
+				rs[j] = alphabet[r.IntN(len(alphabet))]
+			} else {
+				rs[j] = alphabet[r.IntN(18)]
+			}
+		}
+		out[i] = string(rs)
+	}
+	return out
+}
+
+// plainOnly reports whether every character of s is one an outcome's kept
+// words may hold.
+func plainOnly(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ',;:._-()", r))
+	}) < 0
+}
+
+// An outcome's words are kept whole when they are plain, at most
+// MaxReadError characters of letters, digits, spaces and ' , ; : . _ - ( ),
+// and otherwise not at all: the store's own words for that outcome take
+// their place. Every sentence the routes hand a settle is kept whole;
+// words holding an address in any spelling, and a few hundred texts from
+// a fixed seed, are kept unchanged or not at all, never a third thing;
+// and through SettlePublication and SettleClose the rows and the change
+// rows of error and close_error hold no other character.
+func TestPublicationWordsArePlain(t *testing.T) {
+	const own = "the store's own words"
+	for _, w := range routeWords() {
+		if got := pubWords(w, own); got != w {
+			t.Errorf("a route's words %q kept as %q", w, got)
+		}
+	}
+	for _, w := range addressWordsTable {
+		if got := pubWords(w, own); got != own {
+			t.Errorf("%q kept as %q", w, got)
+		}
+	}
+	generated := generatedWords(400)
+	kept := 0
+	for _, w := range generated {
+		got, trimmed := pubWords(w, own), strings.TrimSpace(w)
+		switch {
+		case got != trimmed && got != own:
+			t.Errorf("%q kept as %q", w, got)
+		case trimmed != "" && len(trimmed) <= MaxReadError && plainOnly(trimmed) && got != trimmed:
+			t.Errorf("plain words %q not kept", w)
+		case got == trimmed && trimmed != own:
+			kept++
+		}
+	}
+	if kept == 0 || kept == len(generated) {
+		t.Errorf("%d of %d generated texts kept: the seed tries one side alone", kept, len(generated))
+	}
+	f := newPubFixture(t)
+	words := slices.Concat(routeWords(), addressWordsTable, generated)
+	// Words alone on a send, as a listing's, then each failed and
+	// unconfirmed in its turn.
+	p := f.prepared(t, "p1", "")
+	f.send(t, "s1", p)
+	for _, w := range words {
+		if _, _, err := f.settle(f.pub(t, p.ID), Outcome{Words: w}); err != nil {
+			t.Fatalf("%q: %v", w, err)
+		}
+	}
+	for i, w := range addressWordsTable {
+		q := f.prepared(t, fmt.Sprint("q", i), "")
+		f.send(t, fmt.Sprint("qs", i), q)
+		o := Outcome{State: PublicationFailed, Words: w}
+		if i%2 == 1 {
+			o.State = PublicationUnconfirmed
+		}
+		if _, applied, err := f.settle(f.pub(t, q.ID), o); !applied || err != nil {
+			t.Fatalf("%q: %v %v", w, applied, err)
+		}
+	}
+	// A close's answers, each refused but the last of a publication's tries.
+	closes := slices.Concat(addressWordsTable, generated[:20], routeWords()[:5])
+	for i := 0; i < len(closes); i += MaxPublicationCloseTries {
+		c := f.sentWithClose(t, fmt.Sprint("c", i))
+		for j := i; j < min(i+MaxPublicationCloseTries, len(closes)); j++ {
+			if _, applied, err := f.beginClose(c.ID); !applied || err != nil {
+				t.Fatalf("a close begun: %v %v", applied, err)
+			}
+			if _, applied, err := f.settleClose(c.ID, CloseOutcome{State: CloseRefused, Words: closes[j]}); !applied || err != nil {
+				t.Fatalf("%q: %v %v", closes[j], applied, err)
+			}
+		}
+	}
+	held := texts(t, f.s, "SELECT error FROM publications UNION ALL SELECT close_error FROM publications")
+	for _, v := range texts(t, f.s, "SELECT value FROM changes WHERE entity = ? AND field IN ('error', 'close_error') UNION ALL "+
+		"SELECT prior FROM changes WHERE entity = ? AND field IN ('error', 'close_error')", EntityPublication, EntityPublication) {
+		var s string
+		if err := json.Unmarshal([]byte(v), &s); err != nil {
+			s = v
+		}
+		held = append(held, s)
+	}
+	if len(held) < len(routeWords()) {
+		t.Fatalf("%d words held", len(held))
+	}
+	for _, s := range held {
+		if !plainOnly(s) || len(s) > MaxReadError {
+			t.Errorf("%q is held", s)
+		}
+	}
+	if n := countOf(t, f.s, "SELECT COUNT(*) FROM changes WHERE entity = ? AND field = 'error' AND value LIKE '%could not be listed: tracker_bound%'", EntityPublication); n != 1 {
+		t.Errorf("a route's words in %d change rows", n)
 	}
 }
 

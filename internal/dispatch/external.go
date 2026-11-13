@@ -667,8 +667,12 @@ func (s *Store) LinkedTicket(ctx context.Context, system, host, nodeID string) (
 
 // LinkedSince reports whether the linked issue of the ticket with the key
 // was set or emptied (a change of its external_id) after op's own last
-// change: the ticket unlinked, or linked to an item, since op.
+// change: the ticket unlinked, or linked to an item, since op, which is
+// an operation as any is (Op.check).
 func (s *Store) LinkedSince(ctx context.Context, op Op, key string) (since bool, err error) {
+	if err := op.check(); err != nil {
+		return false, err
+	}
 	err = s.read(ctx, func(q queryer) error {
 		return q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE t.key = ? AND c.field = 'external_id'
 			AND c.seq > (SELECT COALESCE(MAX(seq), 0) FROM changes WHERE actor = ? AND op_id = ?))`, key, op.Actor, op.ID).Scan(&since)
@@ -1261,59 +1265,30 @@ var (
 	// named): from the '?' after a path to a space. A '#' after a path is
 	// left, since "owner/repo#612" names an item.
 	wordsPathQuery = regexp.MustCompile(`(/[^\s?]*)\?\S*`)
-	// wordsUserAt is what stands before an '@' in an address written with
-	// no scheme (user:password@host): from a word's start to its last '@'
-	// before a host. wordsHostQuery is a query after a host with no path
-	// (host?query): from the '?' to a space.
-	wordsUserAt    = regexp.MustCompile(`(^|\s)[^\s/]+@(` + wordsHost + `)`)
-	wordsHostQuery = regexp.MustCompile(`(^|[\s(<\["'])(` + wordsHost + `)\?\S+`)
 )
-
-// wordsHost is a host in words: localhost, or a DNS name with a dot in it,
-// with a port or not.
-const wordsHost = `(?:localhost|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(?::[0-9]{1,5})?`
 
 // addressFree is the one door free text about a tracker passes into the
 // store (Program item IN1a, review round 2 of #780): a read's failure, a
 // reason its checks are incomplete, a check's name and its app's, a
 // reader's name, and a refusal's words, every receipt's among them
-// (refuse, words). It cuts four spellings: an address with a scheme
-// becomes what the store keeps of it (addressWords: its scheme, host and
-// path; "an address" for one it does not admit); in an address written
-// with no scheme, what stands before an '@' ahead of a host is left out
-// (user:password@host becomes host); a query after a host with no path is
-// left out (host?query becomes host); and a query after a path is left
-// out (/path?query becomes /path). So no such text keeps an address's
-// query, fragment or user, which a signed URL's credential and a person's
-// password ride in. A host is localhost or a name with a dot, so
-// "node@18" and "done?" are left as written. A text the store holds as
+// (refuse, words). Each address in the text is what the store keeps of an
+// address (addressWords: its scheme, host and path; "an address" for one
+// it does not admit) and each path's query is left out, so no such text
+// keeps an address's query, fragment or user, which a signed URL's
+// credential and a person's password ride in. A text the store holds as
 // opaque (an id, a validator, a check's state, an item's place) is
 // refused instead where this would change it (holdsAddress); the item's
 // own words (its title, body, steps, labels, logins, milestone and
 // branch) are the person's, kept as the tracker has them, as a ticket's
 // description keeps a person's link.
 func addressFree(s string) string {
-	s = wordsHostQuery.ReplaceAllString(wordsUserAt.ReplaceAllString(addressesKept(s), "${1}${2}"), "${1}${2}")
-	return wordsPathQuery.ReplaceAllString(s, "$1")
-}
-
-// schemedAddressFree is addressFree's first and last spellings alone: an
-// address with a scheme made what the store keeps of it, a query after a
-// path left out, and the rest as written (a capture's values in its
-// ticket's text, sends.go, which are the person's evidence).
-func schemedAddressFree(s string) string {
-	return wordsPathQuery.ReplaceAllString(addressesKept(s), "$1")
-}
-
-// addressesKept is the text with each address with a scheme made what the
-// store keeps of it (addressWords), "an address" for one it does not admit.
-func addressesKept(s string) string {
-	return wordsAddress.ReplaceAllStringFunc(s, func(a string) string {
+	s = wordsAddress.ReplaceAllStringFunc(s, func(a string) string {
 		if kept, ok := addressWords(a); ok {
 			return kept
 		}
 		return "an address"
 	})
+	return wordsPathQuery.ReplaceAllString(s, "$1")
 }
 
 // holdsAddress reports whether the text holds what addressFree changes:

@@ -313,9 +313,12 @@ var (
 // everything into <dir>/.restore-<random> through an os.Root (files 0600,
 // directories 0700), syncs it (a file or a directory that does not sync
 // refuses it, nothing renamed), checks that Dispatch's staged database
-// names no attachment the archive lacks, checks the directory is Fresh
-// still and that no top-level name it will rename is there (hooks/ aside,
-// moved into the staging directory first and removed with it), then
+// names no attachment the archive lacks, looks at the staged Dispatch
+// store (none is nothing to do; a look that fails otherwise stops the
+// restore), makes it a new instance (dispatch.Reissue) and syncs its
+// folder, checks the directory is Fresh still and that no top-level name
+// it will rename is there (hooks/ aside, moved into the staging directory
+// first and removed with it), then
 // renames each top-level entry into place with a rename that refuses a
 // name already there (renameNoReplace), so a name another writer made
 // after the check is never renamed over, and syncs the data directory
