@@ -264,6 +264,8 @@ func TestSignInLimits(t *testing.T) {
 		{"a code while signed out", ext.SignInStatus{State: ext.SignedOut, Code: "WDJB-MJHT"}},
 		{"a page over http", ext.SignInStatus{State: ext.SignInCode, Code: "WDJB-MJHT", URL: "http://id.example.com/device"}},
 		{"no state", ext.SignInStatus{}},
+		{"a why that holds the workbench token", ext.SignInStatus{State: ext.SignedOut, Why: "use " + adminToken}},
+		{"a who that holds a host token", ext.SignInStatus{State: ext.SignedIn, Who: "test-host-token"}},
 	} {
 		g.SetStatus(c.s)
 		unavailable(c.what, "GET")

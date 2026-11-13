@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/rocksolidlabs/conductor/ext"
 )
@@ -15,7 +16,8 @@ import (
 // {"supported": false} to the read and 404 not_supported to the rest.
 // Every call is the guard's (extCallTold) in slots of its own
 // (kindIdentitySignIn), within ext.IdentityWait, and every status is
-// checked (ext.SignInStatus.Valid) before it is sent: a late, failing,
+// checked (ext.SignInStatus.Valid, and the detail's filter of the
+// credentials the server holds) before it is sent: a late, failing,
 // busy, panicking or invalid answer is 503 signin_unavailable, in the
 // server's own words. The status is sent to the caller and to nothing
 // else: no log line, event or error quotes it, and the guard's log of a
@@ -55,10 +57,24 @@ func (s *Server) signIn() (guardIdentity, ext.SignIn, bool) {
 }
 
 // signInStatus is si's status through the guard, and whether it answered
-// in time with one Valid takes.
+// in time with one Valid takes and that holds, as written, none of the
+// credentials providerCredentials lists as it is asked (the detail's
+// filter, guardIdentity.detail).
 func (g guardIdentity) signInStatus(ctx context.Context, si ext.SignIn) (ext.SignInStatus, bool) {
-	st, _, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, ext.SignInStatus{}, ext.SignInStatus.Valid,
-		func(context.Context) (ext.SignInStatus, error) { return si.SignInStatus(), nil })
+	own := g.s.providerCredentials()
+	st, _, ok := extCallTold(ctx, g.s, kindIdentitySignIn, g.name, ext.IdentityWait, ext.SignInStatus{}, func(st ext.SignInStatus) error {
+		if err := st.Valid(); err != nil {
+			return err
+		}
+		for _, tok := range own {
+			for _, v := range []string{st.Who, st.Code, st.URL, st.Why} {
+				if tok != "" && strings.Contains(v, tok) {
+					return errors.New("sign-in status: it holds a token")
+				}
+			}
+		}
+		return nil
+	}, func(context.Context) (ext.SignInStatus, error) { return si.SignInStatus(), nil })
 	return st, ok
 }
 
