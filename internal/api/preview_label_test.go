@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -235,9 +236,9 @@ func TestTheLabelsChangedPathsHoldNoOtherTreesSecret(t *testing.T) {
 	}
 }
 
-// A tree whose .git is gone, inside the run's checkout, is not read as
-// that checkout: git looks for a repository in the tree alone, the label
-// is unread and the log names the kind.
+// A tree whose .git is gone, inside the run's checkout, is not read: git
+// is given the tree's own .git by name, a tree without one is no
+// repository to it, the label is unread and the log names the kind.
 func TestALabelOfATreeWithNoGitOfItsOwnIsUnread(t *testing.T) {
 	logs := &logBuffer{}
 	p := previewEnvLogging(t, nil, logs)
@@ -343,36 +344,60 @@ func TestAReadThatEndsAfterTheStopBeganIsUnread(t *testing.T) {
 	}
 }
 
-// A read held at the runner's seam while the server's Shutdown begins and
-// is held in its waits (a run start under way, which it waits for before
-// it lists the runs to stop) is unread once let go: the stop is marked at
-// Shutdown's entry, before any wait.
+// A read held at the runner's seam while the server's Shutdown begins, and
+// let go while Shutdown is held in the first of its waits a test can hold,
+// is unread: the stop is marked at Shutdown's entry. What comes before
+// that wait, from Shutdown's first line: the end of the door to GitHub
+// (external.end, which takes its state's lock and waits on nothing), the
+// reads' mark, then Brakeman's quiesce, which takes the desk's admit and
+// mu locks and waits for the desk's loop and role to end (no seam holds
+// those) and then for every act whose operation has begun. The test holds
+// that last wait with an act begun (beginAct), looks for the desk closing
+// (set at quiesce's start, after the mark), lets the read go and ends the
+// act only once the label is answered: had the stop been marked anywhere
+// after quiesce began, the read would end before the mark and its label
+// be read, and the test fail.
 func TestAReadThatEndsWhileTheShutdownWaitsIsUnread(t *testing.T) {
 	p := previewEnv(t, nil)
+	desk := p.e.srv.brakeman
+	if desk == nil {
+		t.Fatal("the server has no Brakeman desk")
+	}
 	at, release := holdAfter(t, "write-tree")
+	letGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letGo)
 	done := p.labelAsync()
 	select {
 	case <-at:
 	case a := <-done:
 		t.Fatalf("answered before it was held: %d %s %v", a.status, a.body, a.err)
 	}
-	launches := &p.e.srv.launches
-	launches.starting.Add(1)
+	if !desk.beginAct() {
+		t.Fatal("the desk refused the act before the shutdown")
+	}
+	endAct := sync.OnceFunc(desk.actDone)
+	t.Cleanup(endAct)
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		// The shutdown's budget only bounds a hang: the act holds it.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		p.e.srv.Shutdown(ctx)
 	}()
-	waiting := waitFor(30*time.Second, func() bool { return gateSeam(launches, &launches.closed) })
-	close(release)
-	a := <-done
-	launches.starting.Done()
-	<-stopped
-	if !waiting {
-		t.Fatal("the shutdown never reached its wait for the runs being started")
+	t.Cleanup(func() { letGo(); endAct(); <-stopped })
+	if !waitFor(time.Minute, desk.closing.Load) {
+		t.Fatal("the shutdown never reached Brakeman's quiesce")
 	}
+	letGo()
+	a := <-done
+	select {
+	case <-stopped:
+		t.Fatal("the shutdown passed its wait for the act before the read ended")
+	default:
+	}
+	endAct()
+	<-stopped
 	unreadLabel(t, "the read that ended while the shutdown waited", a)
 }
 

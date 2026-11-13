@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -229,6 +230,23 @@ func TestTheWalkOpensFoldersAsFolders(t *testing.T) {
 				t.Fatalf("OpenTree with a pipe at %s: %v, want ErrTreeMoved", c.at, err)
 			}
 		})
+	}
+}
+
+// The run's own folder is opened as a folder only too: a named pipe put in
+// its place just before its open (the walk's seam, called with the run's
+// folder before it is opened) fails the open at once with the system's
+// error (not a directory), never waited on, and the tree is not read.
+func TestTheWalkOpensTheRunsFolderAsAFolder(t *testing.T) {
+	repo := newRepo(t)
+	wt := linkedTree(t, repo, "build.1")
+	pipeAtOpen(t, repo, repo)
+	err := openTreeWithin(t, repo, wt, repo)
+	if fi, lerr := os.Lstat(repo); lerr != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("the walk never put the pipe at the run's folder: %v %v", fi, lerr)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("OpenTree with a pipe at the run's folder: %v, want the system's not a directory", err)
 	}
 }
 
@@ -639,7 +657,9 @@ func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
 // The next read of that index names the content, as a read in a new
 // index does. What it waits on: the lock file git makes (looked for
 // until it is there, within the test's own minute), then the cut read's
-// return, which waits for the killed git.
+// return, which waits for the killed git. The look for the lock ends with
+// the test, also when the test fails: a cleanup tells it to stop and waits
+// for it.
 func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 	repo := newRepo(t)
 	wt := linkedTree(t, repo, "build.1")
@@ -659,20 +679,36 @@ func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	locked := make(chan bool, 1)
+	stop, looking := make(chan struct{}), &sync.WaitGroup{}
+	t.Cleanup(func() {
+		close(stop)
+		looking.Wait()
+	})
 	recordTreeGit(t, func(c gitCall) (bool, error) {
 		if c.args[0] != "add" || ctx.Err() != nil {
 			return false, nil
 		}
-		go func() {
-			// The test's own wait for git to make the lock: a minute.
-			seen := false
-			for end := time.Now().Add(time.Minute); !seen && time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
-				_, err := os.Lstat(ix.Path + ".lock")
-				seen = err == nil
+		looking.Go(func() {
+			defer cancel()
+			// The test's own wait for git to make the lock: a minute, or
+			// until the test ends.
+			end := time.After(time.Minute)
+			for {
+				if _, err := os.Lstat(ix.Path + ".lock"); err == nil {
+					locked <- true
+					return
+				}
+				select {
+				case <-stop:
+					locked <- false
+					return
+				case <-end:
+					locked <- false
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
 			}
-			locked <- seen
-			cancel()
-		}()
+		})
 		return true, gitcli.RunTree(ctx, c.workTree, c.env, input, io.Discard, "update-index", "--index-info")
 	})
 	if read, err := TreeRevision(ctx, tr, ix); !errors.Is(err, context.Canceled) || read.Content != "" {

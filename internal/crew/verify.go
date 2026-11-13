@@ -739,27 +739,36 @@ type Tree struct {
 }
 
 // beforeTreeOpen, when a test sets it, is called in OpenTree's walk with
-// each name after it was looked at and before it is opened.
+// root before the run's folder is opened, and with each name beneath it
+// after the name was looked at and before it is opened.
 var beforeTreeOpen func(name string)
 
 // OpenTree resolves where a read of the worktree at dir, which the engine
 // made under root (the run's working directory, an absolute path), runs.
-// From root, each name of dir under it is looked at without following it,
-// must be a directory, is opened through the one before it as a directory
-// only (the name and "/.", as internal/session's openDirOnly does: a name
-// that is not a directory at the open fails at once) and must be the
+// root is opened as a directory only (root and "/.", as internal/session's
+// openDirOnly does), and from it each name of dir under it is looked at
+// without following it, must be a directory, is opened through the one
+// before it as a directory only (the name and "/.") and must be the
 // directory that was looked at (os.SameFile): anything else is
-// ErrTreeMoved. The server opens nothing else in the tree but the one file
-// of its own the look at the executable bit makes and removes
-// (modesKept): git opens every existing file of the tree and of its git
-// directory, the git directory the tree's own .git names, whose
-// configuration applies, as for the engine's comparison of a checkout
-// (checkoutIntact); a tree with no .git at its top is no repository to
-// git (gitcli.ErrNotRepo).
+// ErrTreeMoved. A name that is no directory at the moment of its open
+// fails at once and the tree is not read: for root the failure is the
+// system's error, for a name beneath it ErrTreeMoved. A link put in place
+// of a name between its look and its open is followed only when it leads
+// to the very directory that was looked at (the comparison after the open
+// holds); any other is refused (ErrTreeMoved). The server opens nothing
+// else in the tree but the one file of its own the look at the executable
+// bit makes and removes (modesKept): git opens every existing file of the
+// tree and of its git directory, the git directory the tree's own .git
+// names, whose configuration applies, as for the engine's comparison of a
+// checkout (checkoutIntact); a tree with no .git at its top is no
+// repository to git (gitcli.ErrNotRepo).
 func OpenTree(root, dir string) (*Tree, error) {
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return nil, ErrTreeMoved
+	}
+	if beforeTreeOpen != nil {
+		beforeTreeOpen(root)
 	}
 	cur, err := os.OpenRoot(root + string(filepath.Separator) + ".")
 	if err != nil {
