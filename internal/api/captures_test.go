@@ -12,6 +12,7 @@ import (
 	"image/png"
 	"io"
 	"io/fs"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -24,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -550,10 +553,20 @@ func eachString(v reflect.Value, f func(set func(string))) {
 // is walked too) past every bound the store has; then the rules no text
 // carries: a count, a kind, the moment, a region without a screenshot, a
 // number, and a class list of 100 KiB of spaces, which the store refuses
-// for the report's measure as the bridge cut it.
+// for the report's measure as the bridge cut it; a region past the
+// screenshot's size (its header read); and what the store refuses of its
+// own rows: a retake of no capture, of a deleted one and of a link's, and
+// a capture past the live captures' bound.
 func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 	p := previewEnv(t, nil)
 	l := p.label(t)
+	gone := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+	if status, data, _ := p.e.callAs(t, adminToken, "POST", "/api/captures/"+gone+"/delete", map[string]any{"opId": "gone-1"}); status != http.StatusOK {
+		t.Fatalf("the delete: %d %s", status, data)
+	}
+	link := p.body(t, l)
+	link.From, link.Label = captureFrom{URL: p.page}, dispatch.TreeRead{}
+	linked := created(t, p.e, link, nil)["id"].(string)
 	full := func() captureCreateBody {
 		r := button()
 		r.Hints = []proto.ElementHint{{How: "vue", File: "src/Save.vue", Component: "Save"}}
@@ -565,8 +578,9 @@ func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 		return b
 	}
 	type refusal struct {
-		name string
-		set  func(b *captureCreateBody)
+		name  string
+		set   func(b *captureCreateBody)
+		image []byte
 	}
 	var cases []refusal
 	members := 0
@@ -598,7 +612,7 @@ func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 			}
 			eachString(reflect.ValueOf(&b.NewCapture).Elem(), past)
 			eachString(reflect.ValueOf(&b.Annotations).Elem(), past)
-		}})
+		}, nil})
 	}
 	if members < 40 {
 		t.Fatalf("the walk found %d string members", members)
@@ -606,25 +620,34 @@ func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 	cases = append(cases,
 		refusal{"21 annotations", func(b *captureCreateBody) {
 			b.Annotations = slices.Repeat(b.Annotations[:1], dispatch.MaxCaptureAnnotations+1)
-		}},
-		refusal{"a kind of none", func(b *captureCreateBody) { b.Annotations[0].Kind = "circle" }},
-		refusal{"an element of no moment", func(b *captureCreateBody) { b.Annotations[0].Observed = nil }},
-		refusal{"an element of another moment", func(b *captureCreateBody) { b.Annotations[0].Observed.Epoch++ }},
+		}, nil},
+		refusal{"a kind of none", func(b *captureCreateBody) { b.Annotations[0].Kind = "circle" }, nil},
+		refusal{"an element of no moment", func(b *captureCreateBody) { b.Annotations[0].Observed = nil }, nil},
+		refusal{"an element of another moment", func(b *captureCreateBody) { b.Annotations[0].Observed.Epoch++ }, nil},
 		refusal{"a region with no screenshot", func(b *captureCreateBody) {
 			b.Annotations = []captureAnnotation{{Kind: "region", Note: "here", Rect: dispatch.Rect{Width: 1, Height: 1}}}
-		}},
-		refusal{"a negative viewport", func(b *captureCreateBody) { b.Viewport.Width = -1; moment(b) }},
-		refusal{"a motion past the bridge's", func(b *captureCreateBody) { b.Annotations[0].Element.State.Motion = dispatch.MaxHintLine + 1 }},
+		}, nil},
+		refusal{"a negative viewport", func(b *captureCreateBody) { b.Viewport.Width = -1; moment(b) }, nil},
+		refusal{"a motion past the bridge's", func(b *captureCreateBody) { b.Annotations[0].Element.State.Motion = dispatch.MaxHintLine + 1 }, nil},
 		refusal{"a class list of 100 KiB of spaces", func(b *captureCreateBody) {
 			b.Annotations[0].Element.Classes = strings.Repeat(" ", 100<<10)
-		}},
+		}, nil},
+		refusal{"a region past the screenshot's size", func(b *captureCreateBody) {
+			*b = withImage(*b)
+			b.Annotations = append(b.Annotations, captureAnnotation{Kind: "region", Note: "here", Rect: dispatch.Rect{X: 2, Y: 2, Width: 3, Height: 1}})
+		}, pngOf(t, 4, 4)},
+		refusal{"a retake of no capture", func(b *captureCreateBody) { b.RetakeOf = "0123456789abcdef" }, nil},
+		refusal{"a retake of a deleted capture", func(b *captureCreateBody) { b.RetakeOf = gone }, nil},
+		refusal{"a retake of a link's capture", func(b *captureCreateBody) { b.RetakeOf = linked }, nil},
+		// Last: every create after it is refused by the bound.
+		refusal{"a capture past the live captures' bound", func(b *captureCreateBody) { fillCaptures(t, p.e, linked) }, nil},
 	)
 	reads := countTreeGit(t)
 	for _, c := range cases {
 		b := full()
 		c.set(&b)
-		status, out := postCapture(t, p.e, b, nil)
-		again, outAgain := postCapture(t, p.e, b, nil)
+		status, out := postCapture(t, p.e, b, c.image)
+		again, outAgain := postCapture(t, p.e, b, c.image)
 		rc, _ := out["receipt"].(map[string]any)
 		rcAgain, _ := outAgain["receipt"].(map[string]any)
 		if (status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge) || rc == nil || rc["status"] != "failed" ||
@@ -632,6 +655,10 @@ func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 			t.Errorf("%s: %d %v; again %d %v", c.name, status, out, again, outAgain)
 		}
 		if c.name == "a class list of 100 KiB of spaces" && (codeOf(out) != "bound" || !strings.Contains(apiMessage(out), "as the bridge measures it")) {
+			t.Errorf("%s: %v", c.name, out)
+		}
+		if (c.name == "a region past the screenshot's size" && !strings.Contains(apiMessage(out), "not within the 4 by 4 screenshot")) ||
+			(c.name == "a capture past the live captures' bound" && codeOf(out) != "bound") {
 			t.Errorf("%s: %v", c.name, out)
 		}
 		if n := reads.Load(); n != 0 {
@@ -747,20 +774,20 @@ func TestACaptureHoldsNoOtherTreesSecret(t *testing.T) {
 func TestADisplayNameHoldsNoTreesSecret(t *testing.T) {
 	p := previewEnv(t, nil)
 	b := p.body(t, p.label(t), button())
-	b.ByName = p.secret
+	b.ByName = "Nate " + p.secret[:55]
 	id := created(t, p.e, b, nil)["id"].(string)
 	for _, w := range []struct {
 		path string
 		body map[string]any
 	}{
-		{"/edit", map[string]any{"opId": "named-edit", "byName": p.secret, "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "plain"}}}},
-		{"/delete", map[string]any{"opId": "named-delete", "byName": strings.ToUpper(p.secret)}},
+		{"/edit", map[string]any{"opId": "named-edit", "byName": p.secret[4:], "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "plain"}}}},
+		{"/delete", map[string]any{"opId": "named-delete", "byName": strings.ToUpper(p.secret[:60])}},
 	} {
 		if status, data, _ := p.e.callAs(t, adminToken, "POST", "/api/captures/"+id+w.path, w.body); status != http.StatusOK {
 			t.Fatalf("%s: %d %s", w.path, status, data)
 		}
 	}
-	p.keptNowhere(t, p.secret)
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
 }
 
 // An edit is scrubbed of every tree's secret, its capture not looked up:
@@ -855,7 +882,7 @@ func TestACapturesChangedPathsAreCutByBytes(t *testing.T) {
 
 // A retake of the same run and task is related by the run; a deleted
 // capture, a link's and another repository's are refused.
-func TestARetakeAcrossTheRepairLaunch(t *testing.T) {
+func TestARetakeOfTheSameRunIsRelatedByTheRun(t *testing.T) {
 	p := previewEnv(t, nil)
 	l := p.label(t)
 	first := created(t, p.e, p.body(t, l, button()), nil)
@@ -933,9 +960,14 @@ func TestTheImageIsServedSandboxed(t *testing.T) {
 }
 
 // Every capture route is the admin's: a share link's viewer and
-// controller, an agent's session token, a host token and a Brakeman turn
-// are refused 401, and a switchyard answers 403.
+// controller, an agent's session token, a host token, a Brakeman turn and
+// an identity provider's principal with the decide grant alone or the host
+// grant alone are refused 401, and a switchyard answers 403.
 func TestCaptureRoutesAreAdminOnly(t *testing.T) {
+	fake := exttest.NewFakeIdentity("cloud")
+	fake.Add(passAna, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantDecide}})
+	fake.Add(passHostOnly, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantHost}})
+	provided := newTestEnvAgents(t, nil, slog.New(slog.DiscardHandler), nil, withIdentity(fake))
 	b := brakemanEnv(t, nil)
 	sid := b.createSession("cat")
 	tokens := map[string]string{"none": "", "session": b.agentToken(sid), "host": "test-host-token"}
@@ -964,6 +996,11 @@ func TestCaptureRoutesAreAdminOnly(t *testing.T) {
 		raw, _ := json.Marshal(body)
 		if status, data, _ := b.callAsTurn(t, btok, bsid, r[0], r[1], raw); status != http.StatusUnauthorized {
 			t.Errorf("%s %s as a Brakeman turn: %d %s", r[0], r[1], status, data)
+		}
+		for who, pass := range map[string]string{"the decide grant alone": passAna, "the host grant alone": passHostOnly} {
+			if status, data, _ := provided.callAs(t, pass, r[0], r[1], body); status != http.StatusUnauthorized {
+				t.Errorf("%s %s as a provider's principal with %s: %d %s", r[0], r[1], who, status, data)
+			}
 		}
 	}
 	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })

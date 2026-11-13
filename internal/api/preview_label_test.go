@@ -85,8 +85,15 @@ func launchPreview(t *testing.T, e *testEnv, c crew.Crew) *previewed {
 		// The reads' indexes go as the server's Shutdown removes them.
 		e.srv.trees.close(e.srv.log)
 	})
-	a := runningAttempt(t, e, run.ID, "build", 1)
-	p := &previewed{e: e, run: run.ID, dir: a["worktree"].(string)}
+	return previewedRun(t, e, run.ID)
+}
+
+// previewedRun is the run's attempt build.1 once its preview is open: its
+// worktree, its page and its tree's secret, read from the admin's label.
+func previewedRun(t *testing.T, e *testEnv, run string) *previewed {
+	t.Helper()
+	a := runningAttempt(t, e, run, "build", 1)
+	p := &previewed{e: e, run: run, dir: a["worktree"].(string)}
 	u, secret, _ := strings.Cut(p.label(t)["url"].(string), "#token=")
 	if len(secret) != 64 || strings.Contains(u, "#") {
 		t.Fatalf("the admin's label URL: %q", u+"#token="+secret)
@@ -688,7 +695,7 @@ func holdARead(t *testing.T, tr *treeReads, goOn <-chan struct{}) *heldRead {
 		return ctx.Err()
 	}))
 	go func() {
-		_, err := tr.read(context.Background(), crew.WorktreePreview{Root: root, Dir: dir})
+		_, err := tr.read(context.Background(), crew.WorktreePreview{Root: root, Dir: dir}, nil)
 		h.done <- err
 	}()
 	h.objects = <-held

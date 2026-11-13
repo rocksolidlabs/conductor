@@ -234,6 +234,10 @@ type Server struct {
 	// trees reads the trees of the previews, their indexes kept
 	// (preview_label.go).
 	trees treeReads
+	// afterCaptureRead, when a test sets it, is called once a capture's
+	// tree read has returned, before what it read is scrubbed
+	// (captures.go).
+	afterCaptureRead func()
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
