@@ -188,8 +188,9 @@ func TestAFileReplacedAsItIsOpenedIsRefused(t *testing.T) {
 //
 //   - each selector chain that starts at an identifier (os.Open,
 //     osfs.Default.Open, fs.root.OpenFile), as written: one in only is
-//     used in the functions it lists alone, and one in never (os.Open,
-//     os.OpenFile, os.ReadFile, os.Lstat, syscall.Open, syscall.Openat,
+//     used in the functions it lists alone (os.Lstat in gitDirs, the
+//     discovery's look for a .git), and one in never (os.Open,
+//     os.OpenFile, os.ReadFile, syscall.Open, syscall.Openat,
 //     unix.Openat, unix.Openat2, git.PlainOpen and the rest; anything of
 //     ioutil, osfs or go-billy's util; any method of os.Root named by its
 //     type) nowhere;
@@ -218,9 +219,10 @@ func TestTheRepositoryIsOpenedOneWay(t *testing.T) {
 		"fs.root.OpenFile":                 {"OpenFile", "ReadDir"},
 		"chroot.New":                       {"billy"},
 		"os.Stat":                          {"gitDirs", "named"},
+		"os.Lstat":                         {"gitDirs"},
 	}
 	never := []string{"git.PlainOpen", "git.PlainOpenWithOptions", "git.PlainInit", "git.PlainClone", "filesystem.NewStorage",
-		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.Lstat", "os.NewFile",
+		"os.Open", "os.OpenFile", "os.OpenInRoot", "os.Create", "os.ReadFile", "os.ReadDir", "os.DirFS", "os.NewFile",
 		"syscall.Open", "syscall.Openat", "unix.Openat", "unix.Openat2", "ioutil.", "osfs.", "util.", "os.Root."} // ending in '.': anything of that package or type
 	imports := []string{"github.com/go-git/go-billy/v5/osfs", "github.com/go-git/go-billy/v5/util", "io/ioutil"}
 	opens := []string{"OpenFile", "ReadDir"}

@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -279,17 +280,17 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 			}
 			files++
 		}
-		// The files as the package lists them, renames looked for among
-		// MaxRenamed files; where that is all of them, the same files as
-		// go-git's defaults list.
-		limited, err := object.DiffTreeWithOptions(context.Background(), tree(p[0]), tree(p[1]), renames)
+		// The files as the package lists them (withRenames); where its
+		// renames are not cut, the same files as go-git's defaults list.
+		plain, err := object.DiffTreeContext(context.Background(), tree(p[0]), tree(p[1]))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := patchDetail(t, limited)
-		want.RenamesCut = renamesCut(limited)
+		listed, looked, dropped := withRenames(r.Storer, plain)
+		want := patchDetail(t, listed)
+		want.RenamesCut = renamesCut(plain, listed, looked, dropped)
 		if all := patchDetail(t, changes); !want.RenamesCut && !slices.Equal(all.Changes, want.Changes) {
-			t.Errorf("%s..%s: renames looked for among every file, %+v; go-git's defaults list %+v", short(p[0]), short(p[1]), want.Changes, all.Changes)
+			t.Errorf("%s..%s: renames not cut, %+v; go-git's defaults list %+v", short(p[0]), short(p[1]), want.Changes, all.Changes)
 		}
 		var got []Detail
 		if p[0] == "" {
@@ -454,15 +455,12 @@ func renamed(d Detail) map[string]string {
 }
 
 // renamesAllocBound is what a comparison of 4,000 files of one content
-// moved may allocate: renames looked for among MaxRenamed files (13 MiB
-// measured).
+// moved may allocate: renames not looked for (13 MiB measured).
 const renamesAllocBound = 64 << 20
 
-// A commit that moves 4,000 files of one content is compared with renames
-// looked for among MaxRenamed files: go-git pairs at most MaxRenamed of
-// them by their names (the one rename it can find among them) and none by
-// content, so the comparison's memory stays small, and the answer says
-// renames were not looked for among them all.
+// A commit that moves 4,000 files of one content, past MaxRenamed, is
+// compared with renames not looked for, so the comparison's memory stays
+// small, and the answer says so.
 func TestRenamesAreLookedForAmongABoundedNumberOfFiles(t *testing.T) {
 	same := func(int) string { return "one content\n" }
 	dir, c1, c2 := movedFiles(t, 4000, same, same)
@@ -517,6 +515,105 @@ func TestRenamesAmongFiftyFilesAreFoundAsBefore(t *testing.T) {
 	}
 	if want := renamed(patchDetail(t, changes)); d.RenamesCut || len(renamed(d)) != 50 || !maps.Equal(renamed(d), want) {
 		t.Errorf("50 files moved: renames cut %v, %d renames %v; want %d, %v", d.RenamesCut, len(renamed(d)), renamed(d), len(want), want)
+	}
+}
+
+// searched counts the runs of go-git's search for renames (detectRenames),
+// each run handed on to the search, its answer then changed by answer
+// when answer is set.
+func searched(t *testing.T, answer func(object.Changes) object.Changes) *int {
+	t.Helper()
+	runs := new(int)
+	detectRenames = func(plain object.Changes, opts *object.DiffTreeOptions) (object.Changes, error) {
+		*runs++
+		got, err := object.DetectRenames(plain, opts)
+		if answer != nil {
+			got = answer(got)
+		}
+		return got, err
+	}
+	t.Cleanup(func() { detectRenames = object.DetectRenames })
+	return runs
+}
+
+// statuses is how many files d lists of each status.
+func statuses(d Detail) map[string]int {
+	out := map[string]int{}
+	for _, c := range d.Changes {
+		out[c.Status]++
+	}
+	return out
+}
+
+// Renames are looked for only in a small comparison: 100 files moved,
+// each its own content, are searched for once and found, every one; 101
+// files moved and changed a little (past MaxRenamed), and 100 files of
+// 256 KiB moved and changed a little (past MaxRenamedBytes), are listed
+// deleted and added, the search not run, and the answer says renames were
+// cut.
+func TestRenamesAreLookedForOnlyInASmallComparison(t *testing.T) {
+	own := func(i int) string { return fmt.Sprintf("the content of file %d\n", i) }
+	large := func(i int) string {
+		var b strings.Builder
+		for line := 0; b.Len() < 256<<10; line++ {
+			fmt.Fprintf(&b, "file %d, line %d\n", i, line)
+		}
+		return b.String()[:256<<10]
+	}
+	if 2*100*256<<10 <= MaxRenamedBytes {
+		t.Fatalf("100 files of 256 KiB moved are within MaxRenamedBytes (%d)", MaxRenamedBytes)
+	}
+	for _, c := range []struct {
+		name        string
+		n           int
+		body, moved func(i int) string
+		runs        int
+		want        map[string]int
+		cut         bool
+	}{
+		{"100 files moved", 100, own, own, 1, map[string]int{"R": 100}, false},
+		{"101 files moved and changed a little", 101, own, func(i int) string { return own(i) + "and a line more\n" }, 0, map[string]int{"A": 101, "D": 101}, true},
+		{"100 files of 256 KiB moved and changed a little", 100, large, func(i int) string { return "a first line\n" + large(i) }, 0, map[string]int{"A": 100, "D": 100}, true},
+	} {
+		dir, c1, c2 := movedFiles(t, c.n, c.body, c.moved)
+		runs := searched(t, nil)
+		d, err := Compare(context.Background(), dir, c1, c2)
+		if err != nil || *runs != c.runs || !maps.Equal(statuses(d), c.want) || d.RenamesCut != c.cut {
+			t.Errorf("%s: searched %d times, %v, renames cut %v, %v; want searched %d times, %v, renames cut %v", c.name, *runs, statuses(d), d.RenamesCut, err, c.runs, c.want, c.cut)
+		}
+	}
+}
+
+// An answer of the search that does not hold every path of the comparison
+// once (a path left out, a path twice) is not taken: the comparison is
+// listed without renames, and the answer says renames were cut, though the
+// two files are of different contents and ordinary ones.
+func TestASearchsAnswerIsTakenOnlyWhenItHoldsEveryPath(t *testing.T) {
+	dir := scratch(t)
+	write(t, dir, "gone.txt", "a file that goes\n")
+	c1 := commit(t, dir, time.Time{}, "one")
+	os.Remove(filepath.Join(dir, "gone.txt"))
+	write(t, dir, "other.txt", "1\n2\n3\n")
+	c2 := commit(t, dir, time.Time{}, "two")
+	want := []Change{{Path: "gone.txt", Status: "D", Removed: 1}, {Path: "other.txt", Status: "A", Added: 3}}
+	for name, answer := range map[string]func(object.Changes) object.Changes{
+		"as go-git answers it": nil,
+		"a path left out":      func(ch object.Changes) object.Changes { return ch[:len(ch)-1] },
+		"a path twice":         func(ch object.Changes) object.Changes { return append(ch, ch[0]) },
+	} {
+		runs := searched(t, answer)
+		d, err := Compare(context.Background(), dir, c1, c2)
+		if err != nil || *runs != 1 || !slices.Equal(d.Changes, want) || d.RenamesCut != (answer != nil) {
+			t.Errorf("%s: searched %d times, %+v, renames cut %v, %v; want searched once, %+v, renames cut %v", name, *runs, d.Changes, d.RenamesCut, err, want, answer != nil)
+		}
+	}
+}
+
+// The line diff is go-git's helper that takes a limit
+// (diff.DoWithTimeout), by default: counts hands it each file's time.
+func TestTheLineDiffIsGoGitsHelperWithALimit(t *testing.T) {
+	if got, want := reflect.ValueOf(diffLines).Pointer(), reflect.ValueOf(godiff.DoWithTimeout).Pointer(); got != want {
+		t.Errorf("the line diff is %s; want go-git's diff.DoWithTimeout", runtime.FuncForPC(got).Name())
 	}
 }
 
@@ -676,8 +773,11 @@ func wholeCounts(a, b string) (added, removed int, binary bool) {
 // (CRLF among them), each with a shared start and a shared end of every
 // length up to five lines, either side's last line with or without its
 // newline, an empty side, one side the start or the end of the other, and
-// equal texts: the counts, with the shared lines set aside, are the whole
-// texts' as go-git's line diff counts them.
+// equal texts; and texts made of pieces of lines, so that the bytes the
+// two sides share at their start and at their end begin or end inside a
+// line, and lines that are the start or the end of one another ("a",
+// "ab", "b", "ba"): the counts, with the shared lines set aside, are the
+// whole texts' as go-git's line diff counts them.
 func TestTheLinesSharedAtTheEndsAreSetAsideWithTheSameCounts(t *testing.T) {
 	stillClock(t)
 	rnd := rand.New(rand.NewPCG(874, 2))
@@ -713,6 +813,19 @@ func TestTheLinesSharedAtTheEndsAreSetAsideWithTheSameCounts(t *testing.T) {
 	for range 60 {
 		a, more := noNewline(lines(6)), lines(3)
 		cases = append(cases, [2]string{a, a}, [2]string{a, ""}, [2]string{"", a}, [2]string{a, a + more}, [2]string{a + more, a}, [2]string{more + a, a}, [2]string{a, more + a})
+	}
+	parts := []string{"a", "b", "ab", "ba", " ", "\n", "\r\n", "a\n", "ab\n", "b\n", "ba\n"}
+	pieces := func(most int) string {
+		var s strings.Builder
+		for range rnd.IntN(most + 1) {
+			s.WriteString(parts[rnd.IntN(len(parts))])
+		}
+		return s.String()
+	}
+	for range 600 {
+		start, end := pieces(4), pieces(4)
+		a, b := start+pieces(4)+end, start+pieces(4)+end
+		cases = append(cases, [2]string{a, b}, [2]string{a, a + pieces(2)}, [2]string{pieces(2) + a, a})
 	}
 	for _, c := range cases {
 		left := MaxCompareDiff

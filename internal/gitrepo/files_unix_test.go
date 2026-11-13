@@ -811,6 +811,41 @@ func TestADotGitThatIsALinkIsRefused(t *testing.T) {
 	}
 }
 
+// A folder beneath a repository whose .git is a link to a place that does
+// not exist, written as an absolute path or as a relative path out of the
+// folder, holds a .git to the discovery, which looks without following a
+// link: each of the four reads, started in that folder, is refused as the
+// opener refuses such a link, never answered with the history of the
+// repository above.
+func TestADotGitLinkToNothingBeneathARepositoryIsRefused(t *testing.T) {
+	const want = "a file of the repository was not read: .git is behind a link that is not followed: it leads out of its folder or is written as an absolute path"
+	for _, c := range []struct {
+		name   string
+		target func(t *testing.T) string
+	}{
+		{"an absolute link", func(t *testing.T) string { return filepath.Join(t.TempDir(), "nowhere", "git") }},
+		{"a relative link out of the folder", func(*testing.T) string { return filepath.Join("..", "nowhere", "git") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			r := ordinary(t)
+			sub := filepath.Join(r.wt, "sub")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(c.target(t), filepath.Join(sub, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			r.wt = sub
+			for _, rd := range readers {
+				if err := rd.read(context.Background(), r); !errors.Is(err, ErrUnreadable) || err.Error() != want {
+					t.Errorf("%s: %v, want %q", rd.name, err, want)
+				}
+			}
+		})
+	}
+}
+
 // moveTo moves the git directory of the working folder wt (its .git) to
 // path.
 func moveTo(t *testing.T, wt, path string) {

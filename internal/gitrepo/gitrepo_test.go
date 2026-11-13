@@ -323,6 +323,51 @@ func TestReadsSurviveARepackBetweenThem(t *testing.T) {
 	}
 }
 
+// A read whose first attempt finds an object gone (a repack after its
+// first commit is read, through afterCommit) and whose context ends on its
+// second attempt answers the context's error: the context ended after the
+// second opening, as the second run of Compare's function reads its first
+// commit (afterCommit), or after that run, as the second opening is closed
+// (rootsOpen). Its context not ended, the same read answers the
+// comparison.
+func TestASecondAttemptAnswersItsContextsError(t *testing.T) {
+	for _, at := range []string{"never", "after the second opening", "after the second run of its function"} {
+		dir := scratch(t)
+		write(t, dir, "a.txt", "one\n")
+		base := commit(t, dir, time.Time{}, "base")
+		gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+		write(t, dir, "a.txt", "one\ntwo\n")
+		head := commit(t, dir, time.Time{}, "head")
+		ctx, cancel := context.WithCancel(context.Background())
+		commits, closes := 0, 0
+		afterCommit = func() {
+			if commits++; commits == 1 {
+				gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+			} else if commits == 2 && at == "after the second opening" {
+				cancel()
+			}
+		}
+		rootsOpen = func(n int) {
+			if n > 0 {
+				return
+			}
+			if closes++; closes == 2 && at == "after the second run of its function" {
+				cancel()
+			}
+		}
+		d, err := Compare(ctx, dir, base, head)
+		afterCommit, rootsOpen = nil, nil
+		cancel()
+		if at == "never" {
+			if err != nil || len(d.Changes) != 1 || commits != 3 || closes != 2 {
+				t.Errorf("its context not ended: %+v, %v, %d commits read, %d openings closed; want the comparison, 3 and 2", d.Changes, err, commits, closes)
+			}
+		} else if !errors.Is(err, context.Canceled) || commits < 2 || closes != 2 {
+			t.Errorf("its context ended %s: %v, %d commits read, %d openings closed; want the context's error, a second attempt and 2", at, err, commits, closes)
+		}
+	}
+}
+
 // FileAt reads a file at a commit, by id: its bytes up to the bound
 // (truncated past it), a binary file without them, ErrNoFile for a path
 // the commit has no file at (none, a folder), ErrNoCommit for a commit

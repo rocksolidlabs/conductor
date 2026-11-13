@@ -3,9 +3,14 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -110,8 +115,8 @@ func TestLocatedJSONIsWithinTheMarksBound(t *testing.T) {
 }
 
 // A file the candidate's commit has no longer, in a comparison whose
-// renames were not looked for among every file (gitrepo.MaxRenamed), is
-// located unknown, saying why; where they were, it is gone.
+// renames were cut (gitrepo.Detail.RenamesCut), is located unknown,
+// saying why; where they were not, it is gone.
 func TestLocateSaysNotKnownWhereRenamesWereNotLookedFor(t *testing.T) {
 	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	f := dispatch.Finding{Kind: dispatch.FindingKindFile, Path: "x.txt", AnchorCommit: from}
@@ -131,93 +136,169 @@ func TestLocateSaysNotKnownWhereRenamesWereNotLookedFor(t *testing.T) {
 	}
 }
 
-// Twenty files of one content moved from one folder to another, in a real
-// repository: executable files and links, which go-git pairs by their
-// content only up to its limit on files of one content and never by
-// similarity, are compared with renames not looked for among every file,
-// and the locator answers each one moved renamed or not known, never
-// gone; ordinary files are all found renamed. A commit that deletes one
-// file and adds another of other content is compared with renames looked
-// for among every file, and the deleted file is gone.
+// gitFile is a file of a commit gitHistory makes: its mode as git's index
+// keeps it, and its body.
+type gitFile struct{ mode, body string }
+
+// gitHistory is a repository whose commits hold, one each, the files
+// given, path to file, put in git's index by their modes alone (no file
+// system modes or links, so the Mac makes the same): the repository and
+// its commits.
+func gitHistory(t *testing.T, steps ...map[string]gitFile) (string, []string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "repo")
+	gitInit(t, dir, false)
+	var ids []string
+	for _, files := range steps {
+		gitRun(t, dir, "read-tree", "--empty")
+		paths := slices.Sorted(maps.Keys(files))
+		bodies := t.TempDir()
+		var names []string
+		for i, p := range paths {
+			name := filepath.Join(bodies, strconv.Itoa(i))
+			if err := os.WriteFile(name, []byte(files[p].body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			names = append(names, name)
+		}
+		if len(names) > 0 {
+			blobs := strings.Fields(gitIn(t, dir, append([]string{"hash-object", "-w", "--"}, names...)...))
+			var index strings.Builder
+			for i, p := range paths {
+				fmt.Fprintf(&index, "%s %s\t%s\n", files[p].mode, blobs[i], p)
+			}
+			cmd := exec.Command("git", "-C", dir, "update-index", "--add", "--index-info")
+			cmd.Stdin = strings.NewReader(index.String())
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git update-index: %v\n%s", err, out)
+			}
+		}
+		gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "step")
+		ids = append(ids, gitIn(t, dir, "rev-parse", "HEAD"))
+	}
+	return dir, ids
+}
+
+// Files moved, deleted and added between two commits of a real repository,
+// compared by gitrepo.Compare and located by the locator: the comparison
+// holds every path that left the first commit and every path that came
+// into the second, and a file moved is located renamed to where it went,
+// or not known where renames were cut, and never gone; a file deleted is
+// gone where renames were not cut. Many files of one content moved with
+// more of it deleted, files of one content and one mode moved (ordinary,
+// executable, links), and an ordinary file moved and changed a little are
+// found renamed. Not known: an executable file moved and changed a
+// little, an executable file moved unchanged as an ordinary one, one
+// content deleted twice and added once under an unrelated name, and 101
+// files moved and changed a little. A file deleted while an unrelated one
+// is added, and a file deleted alone, are gone.
 func TestLocateNeverSaysAMovedFileIsGone(t *testing.T) {
 	ctx := t.Context()
-	// repo commits the files of names, path to mode, each holding body,
-	// then moves those it is told to: the repository and its two commits.
-	repo := func(t *testing.T, before, after map[string]string, body func(path string) string) (string, string, string) {
-		dir := filepath.Join(t.TempDir(), "repo")
-		gitInit(t, dir, false)
-		var ids []string
-		for _, files := range []map[string]string{before, after} {
-			gitRun(t, dir, "read-tree", "--empty")
-			for path, mode := range files {
-				content := filepath.Join(t.TempDir(), "content")
-				if err := os.WriteFile(content, []byte(body(path)), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				blob := gitIn(t, dir, "hash-object", "-w", content)
-				gitIn(t, dir, "update-index", "--add", "--cacheinfo", mode+","+blob+","+path)
+	const cutWhy = "more files changed than a rename is looked for in"
+	// files is n files under folder, from the from'th, of one mode, each
+	// holding body(i).
+	files := func(folder string, from, n int, mode string, body func(i int) string) map[string]gitFile {
+		out := map[string]gitFile{}
+		for i := from; i < from+n; i++ {
+			out[fmt.Sprintf("%s/f%03d", folder, i)] = gitFile{mode, body(i)}
+		}
+		return out
+	}
+	one := func(int) string { return "one content\n" }
+	own := func(i int) string { return fmt.Sprintf("the content of file %d\n", i) }
+	var lines strings.Builder
+	for i := range 20 {
+		fmt.Fprintf(&lines, "line %d\n", i)
+	}
+	text, changed := lines.String(), strings.Replace(lines.String(), "line 7\n", "line seven\n", 1)
+	// movedFrom is the place a file of old/ went to in new/, its name
+	// kept, for each file from first on; the others are gone.
+	movedFrom := func(first string) func(p string) string {
+		return func(p string) string {
+			if p < first {
+				return locatedFileGone
 			}
-			gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "step")
-			ids = append(ids, gitIn(t, dir, "rev-parse", "HEAD"))
+			return "new/" + path.Base(p)
 		}
-		return dir, ids[0], ids[1]
 	}
-	moved := func(mode string) (map[string]string, map[string]string) {
-		before, after := map[string]string{}, map[string]string{}
-		for i := range 20 {
-			before[fmt.Sprintf("old/f%02d", i)] = mode
-			after[fmt.Sprintf("new/f%02d", i)] = mode
-		}
-		return before, after
-	}
-	same := func(string) string { return "one content\n" }
+	always := func(state string) func(string) string { return func(string) string { return state } }
 	for _, c := range []struct {
-		name, mode string
-		cut        bool
-	}{{"executable files", "100755", true}, {"links", "120000", true}, {"ordinary files", "100644", false}} {
-		before, after := moved(c.mode)
-		dir, c1, c2 := repo(t, before, after, same)
-		d, err := gitrepo.Compare(ctx, dir, c1, c2)
+		name          string
+		before, after map[string]gitFile
+		cut           bool
+		// want is where each file of before that is not in after is
+		// located on the second commit: gone, unknown, or the path it
+		// was renamed to.
+		want func(p string) string
+	}{
+		{"9 files of one content moved and 3 more of it deleted", files("old", 0, 12, "100644", one), files("new", 3, 9, "100644", one), false, movedFrom("old/f003")},
+		{"11 files of one content moved and 10 more of it deleted", files("old", 0, 21, "100644", one), files("new", 10, 11, "100644", one), false, movedFrom("old/f010")},
+		{"20 ordinary files of one content moved", files("old", 0, 20, "100644", one), files("new", 0, 20, "100644", one), false, movedFrom("")},
+		{"20 executable files of one content moved", files("old", 0, 20, "100755", one), files("new", 0, 20, "100755", one), false, movedFrom("")},
+		{"20 links of one content moved", files("old", 0, 20, "120000", one), files("new", 0, 20, "120000", one), false, movedFrom("")},
+		{"an ordinary file moved and changed a little", map[string]gitFile{"old/notes.md": {"100644", text}}, map[string]gitFile{"new/notes.md": {"100644", changed}}, false, movedFrom("")},
+		{"an executable file moved and changed a little", map[string]gitFile{"old/run.sh": {"100755", text}}, map[string]gitFile{"new/run.sh": {"100755", changed}}, true, always(locatedUnknown)},
+		{"an executable file moved unchanged as an ordinary one", map[string]gitFile{"old/run.sh": {"100755", text}}, map[string]gitFile{"new/run.txt": {"100644", text}}, true, always(locatedUnknown)},
+		{"one content deleted twice and added once under an unrelated name", map[string]gitFile{"a.txt": {"100644", text}, "b.txt": {"100644", text}}, map[string]gitFile{"zz/q.md": {"100644", text}}, true, always(locatedUnknown)},
+		{"101 files moved and changed a little", files("old", 0, 101, "100644", own), files("new", 0, 101, "100644", func(i int) string { return own(i) + "and a line more\n" }), true, always(locatedUnknown)},
+		{"a file deleted while an unrelated one is added", map[string]gitFile{"gone.txt": {"100644", "a file that goes\n"}}, map[string]gitFile{"other.txt": {"100644", "1\n2\n3\n"}}, false, always(locatedFileGone)},
+		{"a file deleted alone", map[string]gitFile{"gone.txt": {"100644", "a file that goes\n"}, "keep.txt": {"100644", "kept\n"}}, map[string]gitFile{"keep.txt": {"100644", "kept\n"}}, false, always(locatedFileGone)},
+	} {
+		dir, ids := gitHistory(t, c.before, c.after)
+		d, err := gitrepo.Compare(ctx, dir, ids[0], ids[1])
 		if err != nil || d.RenamesCut != c.cut {
-			t.Fatalf("%s moved: renames cut %v, %v; want %v", c.name, d.RenamesCut, err, c.cut)
+			t.Errorf("%s: renames cut %v, %v; want %v", c.name, d.RenamesCut, err, c.cut)
+			continue
 		}
-		l := (&Server{}).newLocator()
-		l.repos["r"] = locatorRepo{dir: dir}
-		states := map[string]int{}
-		for path := range before {
-			st := l.locate(ctx, dispatch.Finding{Kind: dispatch.FindingKindFile, Path: path, AnchorCommit: c1}, dispatch.Candidate{Run: "r", Commit: c2})
-			switch {
-			case st == nil:
-				t.Fatalf("%s moved, %s: no state", c.name, path)
-			case st.State == locatedRenamed && strings.HasPrefix(st.Path, "new/"):
-			case st.State == locatedUnknown && c.cut && st.Why == "more files changed than a rename is looked for in":
-			default:
-				t.Errorf("%s moved, %s: %+v; want renamed into new/%s", c.name, path, st, map[bool]string{true: ", or not known"}[c.cut])
-			}
-			states[st.State]++
-		}
+		// Every path that left and every path that came, once.
+		left, came := map[string]int{}, map[string]int{}
 		renames := 0
 		for _, ch := range d.Changes {
-			if ch.Status == "R" {
+			switch ch.Status {
+			case "D":
+				left[ch.Path]++
+			case "A":
+				came[ch.Path]++
+			case "R":
+				left[ch.From]++
+				came[ch.Path]++
 				renames++
 			}
 		}
-		t.Logf("%s moved: %d of %d files listed renamed, located %v", c.name, renames, len(d.Changes), states)
-		if !c.cut && states[locatedRenamed] != 20 {
-			t.Errorf("%s moved: located %v; want all 20 renamed", c.name, states)
+		for p := range c.before {
+			if _, kept := c.after[p]; !kept && left[p] != 1 {
+				t.Errorf("%s: %s is listed as gone or moved %d times, want once", c.name, p, left[p])
+			}
 		}
-	}
-	dir, c1, c2 := repo(t, map[string]string{"gone.txt": "100644"}, map[string]string{"other.txt": "100644"}, func(path string) string {
-		return map[string]string{"gone.txt": "a file that goes\n", "other.txt": "1\n2\n3\n"}[path]
-	})
-	d, err := gitrepo.Compare(ctx, dir, c1, c2)
-	if err != nil || d.RenamesCut {
-		t.Fatalf("one file deleted, another added: renames cut %v, %v; want looked for among every file", d.RenamesCut, err)
-	}
-	l := (&Server{}).newLocator()
-	l.repos["r"] = locatorRepo{dir: dir}
-	if st := l.locate(ctx, dispatch.Finding{Kind: dispatch.FindingKindFile, Path: "gone.txt", AnchorCommit: c1}, dispatch.Candidate{Run: "r", Commit: c2}); st == nil || st.State != locatedFileGone {
-		t.Errorf("one file deleted, another added: %+v; want %s", st, locatedFileGone)
+		for p := range c.after {
+			if _, kept := c.before[p]; !kept && came[p] != 1 {
+				t.Errorf("%s: %s is listed as added or moved to %d times, want once", c.name, p, came[p])
+			}
+		}
+		// A locator for each file, so that none reads past its
+		// maxLocateFiles, sharing the comparison it made first.
+		diffs := map[[3]string]gitrepo.Detail{}
+		states := map[string]int{}
+		for p := range c.before {
+			if _, kept := c.after[p]; kept {
+				continue
+			}
+			l := (&Server{}).newLocator()
+			l.repos["r"], l.diffs = locatorRepo{dir: dir}, diffs
+			st := l.locate(ctx, dispatch.Finding{Kind: dispatch.FindingKindFile, Path: p, AnchorCommit: ids[0]}, dispatch.Candidate{Run: "r", Commit: ids[1]})
+			if st == nil {
+				t.Fatalf("%s, %s: no state", c.name, p)
+			}
+			states[st.State]++
+			switch want := c.want(p); {
+			case want == locatedUnknown && *st == locatedState{State: locatedUnknown, Why: cutWhy}:
+			case want == locatedFileGone && *st == locatedState{State: locatedFileGone}:
+			case st.State == locatedRenamed && st.Path == want:
+			default:
+				t.Errorf("%s, %s: %+v; want %s", c.name, p, st, want)
+			}
+		}
+		t.Logf("%s: renames cut %v, %d of %d files listed renamed, located %v", c.name, d.RenamesCut, renames, len(d.Changes), states)
 	}
 }
 

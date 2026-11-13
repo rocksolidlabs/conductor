@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,20 +51,32 @@ const (
 	// left of the comparison's MaxCompareDiff. A side with no line left
 	// is counted without a diff. A file past MaxDiffLines, one whose diff
 	// did not finish within its time, and every file after the
-	// comparison's time is spent are listed without their lines. On a
-	// loaded machine the slowest diffs measured at MaxDiffLines lines a
-	// side took 1.6 s; the slowest file of this repository's 3,860
-	// commits 45 ms, and its slowest commit's files together 0.2 s.
+	// comparison's time is spent are listed without their lines. The
+	// slowest diffs measured at MaxDiffLines lines a side took 1.6 s at a
+	// load average of 7 on 64 cores; a busier machine takes longer, and a
+	// file whose diff took its time is listed without its lines. The
+	// slowest file of this repository's 3,860 commits took 45 ms, and its
+	// slowest commit's files together 0.2 s.
 	MaxDiffLines   = 20000
 	MaxFileDiff    = 2 * time.Second
 	MaxCompareDiff = 10 * time.Second
-	// MaxRenamed is the added or deleted files of a comparison among
-	// which renames are looked for by content (go-git's RenameLimit, at
-	// most MaxRenamed squared pairs, each file hashed whole): past it, a
-	// file moved unchanged may still be found, and the others are listed
-	// as deleted and added (Detail.RenamesCut).
-	MaxRenamed = 100
-	shortLen   = 7
+	// MaxRenamed and MaxRenamedBytes bound the look for renames
+	// (withRenames). The files are compared first with no look for
+	// renames; renames are then looked for, by go-git's own search, whole,
+	// only when that comparison adds at most MaxRenamed files and deletes
+	// at most MaxRenamed, those files together at most MaxRenamedBytes as
+	// the object store records their sizes, and the search's answer is
+	// taken only when it holds every path of the comparison. Otherwise
+	// every file is listed as added or deleted, with its lines, and
+	// Detail.RenamesCut says so. The search hashes each deleted ordinary
+	// file once and each added one once for each deleted file of a size
+	// near its own: at MaxRenamedBytes, 100 files deleted and 100 added,
+	// all of one size, took it 1.1 s at a load average of 3 to 4 on 64
+	// cores, the slowest arrangement measured. It runs before the line
+	// diffs, outside their time.
+	MaxRenamed      = 100
+	MaxRenamedBytes = 1 << 20
+	shortLen        = 7
 )
 
 // clock is the time a file's line diff takes is read by (lineDiff); a
@@ -121,8 +134,9 @@ type Detail struct {
 	Added     int
 	Removed   int
 	Truncated bool
-	// RenamesCut says renames were not looked for among every file added
-	// and deleted (MaxRenamed): a file listed as deleted may have moved.
+	// RenamesCut says a file listed as deleted may have moved: renames
+	// were not looked for (MaxRenamed, MaxRenamedBytes), or not told
+	// apart, among the files added and deleted (renamesCut).
 	RenamesCut bool
 }
 
@@ -346,7 +360,7 @@ func commitDetail(ctx context.Context, seen *refusal, r *git.Repository, top, re
 			return out, err
 		}
 	}
-	return diffTrees(ctx, seen, out, parentTree, tree)
+	return diffTrees(ctx, seen, r.Storer, out, parentTree, tree)
 }
 
 // Compare is the files that differ between the trees of the commits from
@@ -381,7 +395,7 @@ func compare(ctx context.Context, seen *refusal, r *git.Repository, top, from, t
 	if err != nil {
 		return out, err
 	}
-	return diffTrees(ctx, seen, out, fromTree, toTree)
+	return diffTrees(ctx, seen, r.Storer, out, fromTree, toTree)
 }
 
 // File is a file's bytes at a commit (FileAt): at most the bound asked,
@@ -615,16 +629,17 @@ func fullID(s string) bool {
 }
 
 // diffTrees is out with the files that differ between the trees from (nil
-// for none: every file added) and to, renames found among at most
-// MaxRenamed added and deleted files, each with its counts (lineDiff), the
-// read's context asked between two files (ended): CommitDetail's and
-// Compare's walk.
-func diffTrees(ctx context.Context, seen *refusal, out Detail, from, to *object.Tree) (Detail, error) {
-	changes, err := object.DiffTreeWithOptions(ctx, from, to, renames)
+// for none: every file added) and to, renames found where they are looked
+// for (withRenames), each with its counts (lineDiff), the read's context
+// asked between two files (ended), and by each step that reads an object:
+// CommitDetail's and Compare's walk.
+func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer, out Detail, from, to *object.Tree) (Detail, error) {
+	plain, err := object.DiffTreeContext(ctx, from, to)
 	if err != nil {
 		return out, err
 	}
-	out.RenamesCut = renamesCut(changes)
+	changes, looked, dropped := withRenames(st, plain)
+	out.RenamesCut = renamesCut(plain, changes, looked, dropped)
 	if len(changes) > MaxFiles {
 		changes, out.Truncated = changes[:MaxFiles], true
 	}
@@ -660,35 +675,102 @@ func diffTrees(ctx context.Context, seen *refusal, out Detail, from, to *object.
 	return out, nil
 }
 
-// renames is how diffTrees looks for renames: go-git's defaults, among at
-// most MaxRenamed added and deleted files.
-var renames = &object.DiffTreeOptions{DetectRenames: true, RenameScore: 60, RenameLimit: MaxRenamed}
-
-// renamesCut reports whether go-git did not look for renames among every
-// file of changes, read from changes as it answered them: past MaxRenamed
-// added or deleted files left by its look for files moved unchanged, with
-// both left (it then looked for none by content), or some content left
-// both deleted and added (its look for files moved unchanged pairs at
-// most MaxRenamed files of one content). The second is true as well for a
-// file deleted while another of the same content and another mode is
-// added, which go-git does not pair.
-func renamesCut(changes object.Changes) bool {
+// withRenames is plain, a comparison without renames, with its renames
+// found by go-git's own search (detectRenames), whole (no limit of its
+// own) and with the score go-git's defaults use, when plain adds a file
+// and deletes one, at most MaxRenamed of each, those files together at
+// most MaxRenamedBytes as st, the read's object store, records their
+// sizes (a size st cannot say: not looked for). looked says the search
+// ran; dropped that its answer was not taken, because it does not hold
+// every path of plain (accounts): plain is answered then, and whenever
+// the search did not run, sorted by path as the search sorts its answer.
+func withRenames(st storer.EncodedObjectStorer, plain object.Changes) (changes object.Changes, looked, dropped bool) {
+	sort.Stable(plain)
+	var moved []plumbing.Hash
 	added, deleted := 0, 0
-	deletedAs := map[plumbing.Hash]bool{}
+	for _, ch := range plain {
+		switch {
+		case ch.From.Name == "":
+			added++
+			moved = append(moved, ch.To.TreeEntry.Hash)
+		case ch.To.Name == "":
+			deleted++
+			moved = append(moved, ch.From.TreeEntry.Hash)
+		}
+	}
+	if added == 0 || deleted == 0 || added > MaxRenamed || deleted > MaxRenamed {
+		return plain, false, false
+	}
+	var size int64
+	for _, h := range moved {
+		n, err := st.EncodedObjectSize(h)
+		if size += n; err != nil || size > MaxRenamedBytes {
+			return plain, false, false
+		}
+	}
+	answer, err := detectRenames(plain, &object.DiffTreeOptions{DetectRenames: true, RenameScore: 60})
+	if err != nil || !accounts(plain, answer) {
+		return plain, true, true
+	}
+	return answer, true, false
+}
+
+// detectRenames is go-git's search for renames (withRenames); a test sets
+// it.
+var detectRenames = object.DetectRenames
+
+// accounts reports whether answer, go-git's search over plain, holds every
+// path of plain once: each file plain adds as added or as where a rename
+// went, each it deletes as deleted or as where a rename came from, and
+// every other entry as plain has it.
+func accounts(plain, answer object.Changes) bool {
+	left := map[[2]string]object.Change{}
+	for _, ch := range plain {
+		left[[2]string{ch.From.Name, ch.To.Name}] = *ch
+	}
+	take := func(k [2]string, want object.Change) bool {
+		got, ok := left[k]
+		delete(left, k)
+		return ok && got == want
+	}
+	for _, ch := range answer {
+		if ch.From.Name == "" || ch.To.Name == "" || ch.From.Name == ch.To.Name {
+			if !take([2]string{ch.From.Name, ch.To.Name}, *ch) {
+				return false
+			}
+		} else if !take([2]string{"", ch.To.Name}, object.Change{To: ch.To}) || !take([2]string{ch.From.Name, ""}, object.Change{From: ch.From}) {
+			return false
+		}
+	}
+	return len(left) == 0
+}
+
+// renamesCut reports whether a file listed as deleted may have moved: plain
+// adds a file and deletes one, and renames were not looked for, or the
+// search's answer was not taken (withRenames), or changes, the files
+// listed, leave one content (a blob id) both deleted and added, or leave a
+// file that is not an ordinary one (an executable, a link) deleted while
+// another such file is added. go-git's search pairs files of one content
+// only by their names and modes, and other files by their content only
+// when both are ordinary ones.
+func renamesCut(plain, changes object.Changes, looked, dropped bool) bool {
+	if !slices.ContainsFunc(plain, func(ch *object.Change) bool { return ch.From.Name == "" }) ||
+		!slices.ContainsFunc(plain, func(ch *object.Change) bool { return ch.To.Name == "" }) {
+		return false
+	}
+	if !looked || dropped {
+		return true
+	}
+	deletedAs, other := map[plumbing.Hash]bool{}, false
 	for _, ch := range changes {
 		if ch.To.Name == "" {
-			deleted++
 			deletedAs[ch.From.TreeEntry.Hash] = true
+			other = other || ch.From.TreeEntry.Mode != filemode.Regular
 		}
 	}
-	for _, ch := range changes {
-		if ch.From.Name == "" {
-			if added++; deletedAs[ch.To.TreeEntry.Hash] {
-				return true
-			}
-		}
-	}
-	return added > 0 && deleted > 0 && max(added, deleted) > MaxRenamed
+	return slices.ContainsFunc(changes, func(ch *object.Change) bool {
+		return ch.From.Name == "" && (deletedAs[ch.To.TreeEntry.Hash] || (other && ch.To.TreeEntry.Mode != filemode.Regular))
+	})
 }
 
 // lineDiff is the lines added and removed between the files from and to

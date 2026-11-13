@@ -477,7 +477,8 @@ type refusal struct {
 // it (an object or a delta's base decoded, a small file within its bound
 // parsed), or is bounded otherwise: a folder's listing asks between two
 // batches and holds at most maxListed entries (ReadDir); renames are
-// looked for among at most MaxRenamed added and deleted files, and a
+// looked for only among at most MaxRenamed added and MaxRenamed deleted
+// files of at most MaxRenamedBytes together (withRenames), and a
 // comparison asks between two files, each file's line diff made on at most
 // MaxDiffLines lines a side, once the lines its sides share at their start
 // and their end are set aside, and within its time (diffTrees, lineDiff).
@@ -564,9 +565,11 @@ func (r *refusal) first() error {
 // the nearest one above it, with a .git, and the folder a .git file names
 // (a linked worktree's); the root as the git directory, with no working
 // tree, when no folder up to it has a .git. Whether a folder holds a .git
-// is a look (a stat), which needs the folder entered, not listed: a root
-// is opened only for the folder that holds it (and for the root of the
-// file system, when no folder up to it does). The read's context is asked
+// is a look that does not follow a link (an lstat), which needs the folder
+// entered, not listed: a .git that is a link, whatever it leads to, or to
+// nothing, is a .git there, and the root's look that follows judges it. A
+// root is opened only for the folder that holds it (and for the root of
+// the file system, when no folder up to it does). The read's context is asked
 // at each folder before its looks (ended), and a look that failed once it
 // had ended answers its error.
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
@@ -588,7 +591,7 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			return nil, nil, seen.or(err)
 		}
 		up := filepath.Dir(p)
-		if _, err := os.Stat(filepath.Join(folder, git.GitDirName)); os.IsNotExist(err) && up != p {
+		if _, err := os.Lstat(filepath.Join(folder, git.GitDirName)); os.IsNotExist(err) && up != p {
 			p = up
 			continue
 		} else if err != nil && !os.IsNotExist(err) {
