@@ -79,6 +79,8 @@ export interface CapacityView {
   readBy?: { program: string; version: string; qualified: string }
   fresh: 'fresh' | 'stale' | 'reset_passed' | 'none' | string
   nextReadAfter?: string
+  /** The variable (a name of at most 32 bytes) by which the agent's entry sets its login, for every account asked; absent for none. */
+  entryLogin?: string
 }
 
 /** Where a launch runs, as the view is asked for it. */
@@ -362,18 +364,28 @@ export function accountChoices(doc: AccountsLike | null | undefined, adapter: st
 
 /**
  * The Account choice of a launch on this server, decided by the server's view of the launch with no account named (`unnamed`): it is
- * offered unless that view says the launch has its own login (`env_set`); it shows the person's pick, else the account the view
- * resolved ('' before the view is here); and only a pick is sent, so a launch nobody chose an account for is the route's to resolve.
+ * offered unless that view says the launch has its own login (`env_set`) or the agent's entry sets one (`entryLogin`); it shows the
+ * person's pick, else the account the view resolved ('' before the view is here); and only a pick is sent, so a launch nobody chose
+ * an account for is the route's to resolve.
  */
-export function accountOfLaunch(choices: AccountChoice[], unnamed: Pick<CapacityView, 'state' | 'account'> | null, picked: string): { offered: boolean; shown: string; sent?: string } {
-  const offered = choices.length > 0 && unnamed?.state !== 'env_set'
+export function accountOfLaunch(choices: AccountChoice[], unnamed: Pick<CapacityView, 'state' | 'account' | 'entryLogin'> | null, picked: string): { offered: boolean; shown: string; sent?: string } {
+  const offered = choices.length > 0 && unnamed?.state !== 'env_set' && !unnamed?.entryLogin
   const resolved = unnamed && choices.some((c) => c.value === unnamed.account.id) ? unnamed.account.id : ''
   return { offered, shown: picked || resolved, sent: offered && picked ? picked : undefined }
 }
 
-/** Whether a view's launch uses its own login, not a registered account: on this computer, or a login its environment sets. */
-export function ownLogin(v: Pick<CapacityView, 'state' | 'host'>): boolean {
-  return v.host.kind === 'remote' || v.state === 'env_set'
+/** The login a view's launch uses, as the panel names it (`launchLogin`). */
+export type LaunchLogin = { kind: 'own' } | { kind: 'entry'; variable: string } | { kind: 'account' }
+
+/**
+ * The login a view's launch uses, as the panel names it: `own` for a launch with its own login, not a registered account (on this
+ * computer, where the other computer's login is used and nothing of the entry reaches it, or a login its environment sets); `entry`
+ * for a launch on this server whose agent's entry sets its login, with the entry's variable; `account` for any other.
+ */
+export function launchLogin(v: Pick<CapacityView, 'state' | 'host' | 'entryLogin'>): LaunchLogin {
+  if (v.host.kind === 'remote' || v.state === 'env_set') return { kind: 'own' }
+  if (v.entryLogin) return { kind: 'entry', variable: v.entryLogin }
+  return { kind: 'account' }
 }
 
 /** How long a reading is fresh (internal/capacity FreshFor). */

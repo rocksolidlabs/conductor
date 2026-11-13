@@ -698,6 +698,7 @@ func (d *capacityDesk) viewOf(ctx context.Context, agent catalog.Agent, q capaci
 	}
 	account.Plan = plan
 	v.Account, v.Model, v.Host, v.Counts = account, model, host, d.counts(k, doc)
+	v.EntryLogin = pinned // for every account asked: no choice of one moves this agent's login
 	return v, nil
 }
 
