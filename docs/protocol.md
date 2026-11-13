@@ -4635,26 +4635,39 @@ server logs it by its kind alone (late, not a repository, refused, git
 failed), never with git's message.
 
 Where a read runs. A tree's read is git's, run in the tree's directory
-as the server opened it, with the work tree named outright
-(`--work-tree`): on Linux by the open handle, elsewhere by its path,
-which is compared again after the read. From the run's working directory
-the tree is reached one name at a time, each looked at without following
-it, a directory, opened through the one before it and the directory that
-was looked at; a name that is a link is not read. The server opens
-nothing else in the tree. The tree's own `.git` says which git directory
-git reads, and that directory's configuration applies, as for the
-engine's own comparison of a checkout. git looks for the repository in
-the tree alone (`GIT_CEILING_DIRECTORIES` is the folder that holds it):
-a tree with no `.git` of its own is not read (not a repository). The
-commands, with the recorded commit id where they name one: `rev-parse
---verify HEAD^{commit}`, `read-tree --reset <commit>`, `add -A`,
-`write-tree` and `diff --cached --name-only -z <commit>`, with
-`GIT_NO_REPLACE_OBJECTS=1`, literal pathspecs, the stat data trusted in
-full, no sparse checkout, no split index, and `core.fileMode` true where
-a file made once per index in the tree keeps the executable bit (looked
-at through the file it opened). What each writes is bounded: an id at
+as the server opened it, with the tree's own `.git` and the work tree
+named outright (`-C <opened> --git-dir=<opened>/.git
+--work-tree=<opened>`): on Linux `<opened>` is the open handle,
+elsewhere the tree's path, which is compared again after the read. git
+looks for no repository: a `.git` that is a gitfile (a linked worktree)
+is followed, one that is a directory is opened, and a tree with no
+`.git` at its top is not read (not a repository). The git directory that
+`.git` names is the one git reads, and its configuration applies, as for
+the engine's own comparison of a checkout, save the forced settings: the
+stat settings (the stat data trusted in full), the sparse checkout
+(none), the split index (none) and, where the file system keeps it, the
+executable bit (`core.fileMode` true); every other setting of the
+repository's configuration applies.
+
+What the server itself opens: from the run's working directory the tree
+is reached one name at a time, each looked at without following it, a
+directory, opened through the one before it as a folder only (a name
+that is no folder at that moment fails at once) and the directory that
+was looked at; a name that is a link, or anything else than a folder, is
+not read. For the look at whether the file system keeps the executable
+bit, once per index, it makes one new file of its own in the tree and
+removes it, as the engine's comparison of a checkout does. Every
+existing file of a tree and of its git directory is opened by git.
+
+The commands, with the recorded commit id where they name one:
+`rev-parse --verify HEAD^{commit}`, `read-tree --reset <commit>`, `add
+-A`, `write-tree` and `diff --cached --name-only -z <commit>`, with
+`GIT_NO_REPLACE_OBJECTS=1` and literal pathspecs. Each of a read's own
+commands writes its answer and its error stream within a bound: an id at
 1 KiB, the diff as it comes within the paths' bounds, git's error stream
-at its first 4 KiB. A source's class, for the captures (a later row), is
+at its first 4 KiB. The filter look-up before a command (which turns the
+repository's filters off) is `main`'s and holds what git answers. A
+source's class, for the captures (a later row), is
 read the same way at the commit the read recorded: `ls-tree` of that
 commit for exactly the paths given, and `check-ignore` with them on its
 input (it takes no literal pathspec, so a path that begins with `:` is
@@ -4663,9 +4676,13 @@ each path, past which the class is not known.
 
 The kept indexes. The index is the server's own: one file, in a folder
 under the server's temporary directory, made the recorded commit's
-entries again at every read, so a read is the tree at that read alone;
-a file whose bytes and stat data did not change since the last read is
-not hashed again, as `git status` works. One read of a tree runs at a
+entries again at every read, so a read is the tree at that read alone.
+Edited and new files are hashed at every read; a tracked file whose
+bytes and stat data did not change since the last read is not hashed
+again, as `git status` works, so a change of the attributes that say how
+a file is recorded shows for the files that change after it. (The
+engine's comparison of a checkout, which decides a candidate, reads with
+a fresh index.) One read of a tree runs at a
 time, so a lock of its index found as a read starts is one a cut read
 left: the index and its lock are dropped and the read starts from none.
 At most eight indexes are kept: an index a read holds or waits for is
@@ -4673,10 +4690,11 @@ never let go, the least recently read of the others is to make room, and
 with all eight held a read of a ninth tree waits within its 5 s and then
 answers unread. They are not removed when a preview closes. A read's
 commands are ended at 5 s, the wait for a tree's turn counted in them.
-The server's stop is marked before it removes the folder, and a read
-asks the mark after its last command: once the stop has begun a read is
-unread and makes no folder and no index. A server ended without its stop
-leaves the folder to the system's cleanup.
+The server's stop is marked as it begins, before any of its waits, and
+removes the folder of indexes; a read asks the mark after its last
+command: a read that runs into the stop is unread, and once the stop has
+begun a read makes no folder and no index. A server ended without its
+stop leaves the folder to the system's cleanup.
 
 Where this differs from the plan: the label is the admin's alone until
 the row of the shared read; the classes are read by two commands over
