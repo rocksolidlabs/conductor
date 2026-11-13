@@ -214,7 +214,7 @@ func TestReadingFields(t *testing.T) {
 		{Limits{}, []string{"Source string", "Reached string", "SpendControl *bool", "OrdinaryAllowed *bool"}},
 		{View{}, []string{"Agent capacity.ViewAgent", "Model capacity.ViewModel", "Account capacity.ViewAccount", "Host capacity.ViewHost", "State string", "Words string",
 			"Windows []capacity.Window", "Credits []capacity.Credit", "Limits capacity.Limits", "Counts capacity.Counts", "ReadAt *time.Time", "ReadBy *capacity.ReadBy",
-			"Fresh string", "NextRead *time.Time", "Env string", "Filed string"}},
+			"Fresh string", "NextRead *time.Time", "EntryLogin string", "Env string", "Filed string"}},
 	} {
 		if got := fields(c.v); !slices.Equal(got, c.want) {
 			t.Errorf("%T's fields:\n%v\nwant\n%v", c.v, got, c.want)

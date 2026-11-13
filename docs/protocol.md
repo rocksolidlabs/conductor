@@ -6207,8 +6207,13 @@ its limit with every character escaped as JSON may escape it: an add's at
 
 A **view** is `{agent: {id, name, adapter, version}, model: {chosen,
 words}, account: {id, label, default, retired, plan}, host: {kind, name?,
-words?}, state, words, windows, credits, limits, counts, readAt?, readBy?:
-{program, version, qualified}, fresh, nextReadAfter?}`. `state` is one of
+words?}, entryLogin?, state, words, windows, credits, limits, counts,
+readAt?, readBy?: {program, version, qualified}, fresh, nextReadAfter?}`.
+`entryLogin`, in the view of every account asked of an agent whose entry
+(or the server's passthrough) sets its adapter's folder variable or one of
+its login variables, is that variable's name (one of a fixed list, at most
+32 bytes; never its value): every launch of the agent uses that login, so
+the launch dialog offers it no account. `state` is one of
 `ok`, `reading`, `never_read`, `signed_out`, `key_paid`, `unqualified`,
 `error`, `unsupported` (no reader for the agent), `not_installed` (also
 an entry whose command is a path relative to a working folder: no read,

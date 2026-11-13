@@ -246,6 +246,12 @@ type View struct {
 	ReadBy   *ReadBy     `json:"readBy,omitempty"`
 	Fresh    string      `json:"fresh"`
 	NextRead *time.Time  `json:"nextReadAfter,omitempty"`
+	// EntryLogin is the name of the variable by which the agent's entry,
+	// or the server's passthrough, sets its login (its adapter's folder
+	// variable or one of its login variables, a name of at most 32 bytes):
+	// every launch of the agent uses that login. Empty for one that sets
+	// none.
+	EntryLogin string `json:"entryLogin,omitempty"`
 	// Env is the reading's Env, kept out of the JSON (MarkEnv).
 	Env string `json:"-"`
 	// Filed is the reading's Filed, kept out of the JSON.
