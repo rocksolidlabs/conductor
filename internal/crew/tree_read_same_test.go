@@ -356,7 +356,12 @@ func settled(t *testing.T, dir string) {
 // changed and the tree read again in the same index, each read compared;
 // each read's lists (update-index's inputs: the paths to remove, the
 // paths to stage) are what it must be: empty at the first, the one path
-// at the second.
+// at the second. The rows of a stated difference are read twice in one
+// index, each read giving the same answer: a folder that is a repository
+// with no commit in place of a tracked file (add refuses the tree) is
+// left out, the tree plain git makes with the file's entry removed; a
+// tracked folder replaced by a link the read cannot follow (to itself, in
+// a loop, to a folder it cannot search) is the commit alone.
 func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 	type tc struct {
 		name   string
@@ -375,6 +380,24 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 		mustDo(t, os.Mkdir(filepath.Join(dir, "d"), 0o755))
 		writeFile(t, filepath.Join(dir, "d", "x"), "inside\n")
 		writeFile(t, filepath.Join(dir, "d", "y"), "inside too\n")
+	}
+	envFiles := func(t *testing.T, dir string) {
+		writeFile(t, filepath.Join(dir, ".gitattributes"), "*.env text eol=lf\n")
+		writeFile(t, filepath.Join(dir, ".env"), "A=one\n")
+	}
+	// The stated differences, each read twice in one index: where git's add
+	// refuses the tree, the read's content is what stated makes in a copy
+	// of the tree instead of add -A; where the read does not label (alone),
+	// each read answers the commit alone.
+	stated := map[string]func(t *testing.T, cp string){
+		"a tracked file replaced by a folder that is a repository with no commit": func(t *testing.T, cp string) {
+			plainGit(t, cp, "update-index", "--force-remove", "a")
+		},
+	}
+	alone := map[string]bool{
+		"a tracked folder replaced by a link to itself":                    true,
+		"a tracked folder replaced by a link in a loop":                    true,
+		"a tracked folder replaced by a link to a folder it cannot search": true,
 	}
 	cases := []tc{
 		{"a clean tree", nil, func(t *testing.T, dir string) string { return "" }},
@@ -441,6 +464,44 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 			replaceWith(t, dir, "d", "nowhere")
 			return ""
 		}},
+		{"a tracked file replaced by a folder that is a repository with no commit", func(t *testing.T, dir string) { writeFile(t, filepath.Join(dir, "a"), "a file\n") },
+			func(t *testing.T, dir string) string {
+				mustDo(t, os.Remove(filepath.Join(dir, "a")))
+				mustDo(t, os.Mkdir(filepath.Join(dir, "a"), 0o755))
+				runGit(t, filepath.Join(dir, "a"), "init", "-q")
+				writeFile(t, filepath.Join(dir, "a", "inside.txt"), "no commit\n")
+				return ""
+			}},
+		{"a tracked folder replaced by a link to itself", trackedFolder, func(t *testing.T, dir string) string {
+			replaceWith(t, dir, "d", "d")
+			return ""
+		}},
+		{"a tracked folder replaced by a link in a loop", trackedFolder, func(t *testing.T, dir string) string {
+			replaceWith(t, dir, "d", "e")
+			mustDo(t, os.Symlink("d", filepath.Join(dir, "e")))
+			return ""
+		}},
+		{"a tracked folder replaced by a link to a folder it cannot search", trackedFolder, func(t *testing.T, dir string) string {
+			if os.Geteuid() == 0 {
+				return "root searches every folder"
+			}
+			mustDo(t, os.Mkdir(filepath.Join(dir, "e"), 0o755))
+			replaceWith(t, dir, "d", "e")
+			mustDo(t, os.Chmod(filepath.Join(dir, "e"), 0))
+			t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "e"), 0o755) })
+			return ""
+		}},
+		{"an attributes file changed", envFiles, func(t *testing.T, dir string) string {
+			writeFile(t, filepath.Join(dir, ".gitattributes"), "*.env -text\n")
+			writeFile(t, filepath.Join(dir, ".env"), "A=two\r\n")
+			return ""
+		}},
+		{"a new attributes file", func(t *testing.T, dir string) { writeFile(t, filepath.Join(dir, ".env"), "A=one\n") },
+			func(t *testing.T, dir string) string {
+				writeFile(t, filepath.Join(dir, ".gitattributes"), "*.env text eol=lf\n")
+				writeFile(t, filepath.Join(dir, ".env"), "A=two\r\n")
+				return ""
+			}},
 		{"a tracked link replaced by a folder with files", func(t *testing.T, dir string) { mustDo(t, os.Symlink("README", filepath.Join(dir, "link"))) },
 			func(t *testing.T, dir string) string {
 				mustDo(t, os.Remove(filepath.Join(dir, "link")))
@@ -566,10 +627,12 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 			ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
 			for n := 0; n < 2; n++ {
 				if n == 1 {
-					if again[c.name] == nil {
+					if again[c.name] == nil && stated[c.name] == nil && !alone[c.name] {
 						break
 					}
-					again[c.name](t, dir)
+					if again[c.name] != nil {
+						again[c.name](t, dir)
+					}
 				}
 				lists = [2]string{}
 				tr, err := OpenTree(root, dir)
@@ -578,12 +641,24 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 				}
 				read, err := TreeRevision(t.Context(), tr, ix)
 				tr.Close()
+				if alone[c.name] {
+					if head := strings.TrimSpace(plainGit(t, dir, "rev-parse", "HEAD")); err == nil || read.Commit != head || read.Content != "" || read.Changed != 0 {
+						t.Fatalf("read %d: %+v %v, want the commit alone (%s)", n+1, read, err, head)
+					}
+					t.Logf("read %d: the commit alone: %v", n+1, err)
+					continue
+				}
 				if err != nil {
 					t.Fatalf("read %d: %v", n+1, err)
 				}
 				cp := filepath.Join(t.TempDir(), "copy")
 				copyTree(t, dir, cp)
-				plainGit(t, cp, "add", "-A")
+				if f := stated[c.name]; f != nil {
+					t.Logf("read %d: git add -A: %s", n+1, plainAdd(t, dir))
+					f(t, cp)
+				} else {
+					plainGit(t, cp, "add", "-A")
+				}
 				want := strings.TrimSpace(plainGit(t, cp, "write-tree"))
 				listed := strings.Split(strings.TrimSuffix(plainGit(t, cp, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"), "\x00"), "\x00")
 				if len(listed) == 1 && listed[0] == "" {
@@ -799,4 +874,78 @@ func TestAConversionGitsAddRefusesIsReadWithoutTheCheck(t *testing.T) {
 		}
 		t.Logf("the read %s; git add -A: %s", got, plainAdd(t, dir))
 	})
+}
+
+// A tree whose attributes file is gone, or is of another type than the
+// index has, and is not committed is answered with the commit alone
+// (errTreeAttributes): the read does not guess which rules git's add
+// would apply to which file. The commit holds an attributes file
+// ("*.env text eol=lf") and the files it governs, .env and z.env, each
+// "A=one\n"; then the attributes file is deleted (at the top with .env
+// changed, at the top with z.env changed, and in a folder), or replaced
+// by a link or by a folder, and the governed file is changed to
+// "A=two\r\n". Each tree is read twice in one index: each read gives the
+// commit alone and that error, no update-index is given a path to stage
+// or remove, the second read runs no update-index at all, and the index's
+// bytes after it are those after the first.
+func TestATreeWhoseAttributesFileIsGoneIsAnsweredWithTheCommitAlone(t *testing.T) {
+	cases := []struct {
+		name, folder, file string
+		change             func(t *testing.T, attrs string)
+	}{
+		{"deleted, .env changed", "", ".env", func(t *testing.T, attrs string) { mustDo(t, os.Remove(attrs)) }},
+		{"deleted, z.env changed", "", "z.env", func(t *testing.T, attrs string) { mustDo(t, os.Remove(attrs)) }},
+		{"deleted in a folder", "sub", ".env", func(t *testing.T, attrs string) { mustDo(t, os.Remove(attrs)) }},
+		{"replaced by a link", "", ".env", func(t *testing.T, attrs string) {
+			mustDo(t, os.Remove(attrs))
+			mustDo(t, os.Symlink("README", attrs))
+		}},
+		{"replaced by a folder", "", ".env", func(t *testing.T, attrs string) {
+			mustDo(t, os.Remove(attrs))
+			mustDo(t, os.Mkdir(attrs, 0o755))
+			writeFile(t, filepath.Join(attrs, "inside"), "*.env -text\n")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root, dir := standaloneTree(t, func(dir string) {
+				folder := filepath.Join(dir, c.folder)
+				mustDo(t, os.MkdirAll(folder, 0o755))
+				writeFile(t, filepath.Join(folder, ".gitattributes"), "*.env text eol=lf\n")
+				writeFile(t, filepath.Join(folder, ".env"), "A=one\n")
+				writeFile(t, filepath.Join(folder, "z.env"), "A=one\n")
+			})
+			c.change(t, filepath.Join(dir, c.folder, ".gitattributes"))
+			writeFile(t, filepath.Join(dir, c.folder, c.file), "A=two\r\n")
+			settled(t, dir)
+			head := strings.TrimSpace(plainGit(t, dir, "rev-parse", "HEAD"))
+			calls := recordTreeGit(t, nil)
+			tr, err := OpenTree(root, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tr.Close()
+			ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
+			var index []byte
+			for n := range 2 {
+				*calls = nil
+				read, err := TreeRevision(t.Context(), tr, ix)
+				if !errors.Is(err, errTreeAttributes) || read.Commit != head || read.Content != "" {
+					t.Fatalf("read %d: %+v %v, want the commit alone; git add -A makes %s", n+1, read, err, plainAdd(t, dir))
+				}
+				for _, g := range *calls {
+					if g.args[0] == "update-index" && (n == 1 || slices.Contains(g.args, "--stdin")) {
+						t.Fatalf("read %d ran %q", n+1, g.args)
+					}
+				}
+				b, err := os.ReadFile(ix.Path)
+				mustDo(t, err)
+				if n == 1 && !bytes.Equal(b, index) {
+					t.Fatalf("the index's bytes changed at the second read: %d bytes, %d before", len(b), len(index))
+				}
+				index = b
+			}
+			t.Logf("the commit alone at two reads: %v; git add -A makes %s", errTreeAttributes, plainAdd(t, dir))
+		})
+	}
 }

@@ -4740,16 +4740,32 @@ no file, save one whose times cannot tell it from the index's (changed
 in the same moment as the index was written), which git hashes itself;
 a changed or new file is hashed once a read; at a new index, and at a
 read whose lists pass their bound, every tracked file is compared once,
-by the refresh, and at another read a tracked file that did not change
-is not hashed. The content is the id of
+by the refresh, after which the kept index holds the stat data as it is
+now; at another read a tracked file whose bytes and stat data did not
+change is not hashed, and one whose stat data changed is hashed once, at
+the next read. No flag and no count is carried from one read to the
+next. A read that needs the refresh on a very large tree can run out of
+its time on a busy machine: it answers the commit alone, and when it was
+cut while the refresh held the index's lock, the next read starts from a
+new index. The content is the id of
 the tree the read stages, every path that differs named by the hash of
-its content as git converts it: the tree `git add -A` makes, with two
-differences. Where `add` would refuse a file's conversion (a line-ending
-check, `core.safecrlf`, or an encoding git cannot read,
-`working-tree-encoding`), the read still answers, the file hashed as it
-is converted without that check; and in a repository set to ignore case
+its content as git converts it: the tree `git add -A` makes, with these
+differences, each pinned by a test that reads the tree twice and gets
+the same answer. Where `add` would refuse the tree, the read still
+answers, with what it staged: a file whose conversion `add` refuses (a
+line-ending check, `core.safecrlf`, or an encoding git cannot read,
+`working-tree-encoding`) is hashed as it is converted without that
+check, and a folder that is a repository with no commit, in place of a
+tracked file, is left out. In a repository set to ignore case
 (`core.ignoreCase`), a new path under a folder whose case differs from
-the index's is staged under the tree's own spelling. The two lists of
+the index's is staged under the tree's own spelling. And the read
+answers the commit alone, the label unread, where it does not label: an
+attributes file (`.gitattributes`, in any folder) gone or of another
+type than the index has, and not committed (the read does not guess
+which rules `add` would apply to which file; it stages nothing and makes
+no refresh for it); a tracked folder replaced by a link the server
+cannot follow (a link to itself, a loop, a folder it cannot search);
+lists that still pass their bound after one refresh (below). The two lists of
 paths are kept in files beside the index for the read alone, within
 16 MiB together. At a read that did not make its index anew, lists that
 pass it are dropped, the index's stat data is brought up to date once

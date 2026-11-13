@@ -89,6 +89,10 @@ type treeReads struct {
 	// after, when set (by a test), stands in for time.After in the stop's
 	// wait for the reads (labelStopWait).
 	after func(time.Duration) <-chan time.Time
+	// limit, when set (by a test), stands in for a read's time limit
+	// (labelReadWait): the context the read runs in and its cancel, which
+	// the stop calls.
+	limit func(context.Context) (context.Context, context.CancelFunc)
 }
 
 // labelStopWait bounds the stop's wait for the reads it cancelled. Each
@@ -278,7 +282,13 @@ func (tr *treeReads) stopping() bool {
 // (errReadsStopped, whatever else ended it) gives the commit alone and the
 // error.
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) error) (crew.TreeRead, error) {
-	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
+	limit := func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, labelReadWait)
+	}
+	if tr.limit != nil {
+		limit = tr.limit
+	}
+	ctx, cancel := limit(ctx)
 	defer cancel()
 	end, ok := tr.begin(cancel)
 	if !ok {
