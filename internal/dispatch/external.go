@@ -667,8 +667,12 @@ func (s *Store) LinkedTicket(ctx context.Context, system, host, nodeID string) (
 
 // LinkedSince reports whether the linked issue of the ticket with the key
 // was set or emptied (a change of its external_id) after op's own last
-// change: the ticket unlinked, or linked to an item, since op.
+// change: the ticket unlinked, or linked to an item, since op, which is
+// an operation as any is (Op.check).
 func (s *Store) LinkedSince(ctx context.Context, op Op, key string) (since bool, err error) {
+	if err := op.check(); err != nil {
+		return false, err
+	}
 	err = s.read(ctx, func(q queryer) error {
 		return q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM changes c JOIN tickets t ON t.id = c.ticket_id WHERE t.key = ? AND c.field = 'external_id'
 			AND c.seq > (SELECT COALESCE(MAX(seq), 0) FROM changes WHERE actor = ? AND op_id = ?))`, key, op.Actor, op.ID).Scan(&since)

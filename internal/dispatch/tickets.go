@@ -499,7 +499,12 @@ func (t *tx) ticket(key string, deleted bool) (Ticket, Project, error) {
 // ticket so, then its row, whose revision it expects, then the project
 // (open).
 func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
-	tk, err := ticketByKey(t.ctx, t.tx, key)
+	return liveTicket(t.ctx, t.tx, key, deleted)
+}
+
+// liveTicket is ticketRow through q: a read asks it as the operation will.
+func liveTicket(ctx context.Context, q queryer, key string, deleted bool) (Ticket, error) {
+	tk, err := ticketByKey(ctx, q, key)
 	if isNoRows(err) {
 		return Ticket{}, refuse(RefusalNotFound, "no ticket %s", key)
 	}
@@ -514,8 +519,11 @@ func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
 
 // open reads the ticket's project inside the operation: archived when it
 // is, since an archived project refuses every write under it.
-func (t *tx) open(tk Ticket) (Project, error) {
-	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+func (t *tx) open(tk Ticket) (Project, error) { return openProject(t.ctx, t.tx, tk) }
+
+// openProject is open through q: a read asks it as the operation will.
+func openProject(ctx context.Context, q queryer, tk Ticket) (Project, error) {
+	p, err := projectByID(ctx, q, tk.ProjectID)
 	if err != nil {
 		return Project{}, err
 	}
@@ -1071,6 +1079,11 @@ type TicketView struct {
 	Owners       *Owners                    `json:"owners,omitempty"`
 	ExternalRead *TicketRead                `json:"externalRead,omitempty"`
 	LinkReads    map[string]LinkReadSummary `json:"linkReads"`
+	// Publications is the ticket's newest MaxTicketPublications
+	// publications without their bodies, and PublicationsNeedYou how many
+	// older ones a person can act on (Publications pages them).
+	Publications        []PublicationSummary `json:"publications"`
+	PublicationsNeedYou int                  `json:"publicationsNeedYou"`
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -1158,6 +1171,9 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 		v.LinkReads = map[string]LinkReadSummary{}
 		for id, r := range reads {
 			v.LinkReads[id] = r.summary()
+		}
+		if v.Publications, v.PublicationsNeedYou, err = ticketPublications(ctx, q, tk.ID); err != nil {
+			return err
 		}
 		if schemaOf(q) < 2 {
 			// A version 1 database, read as it was found: no launches.

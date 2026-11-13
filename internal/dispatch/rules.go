@@ -239,6 +239,18 @@ func Class(entity, field string) FieldClass {
 		case "files":
 			return ClassSet
 		}
+	case EntityPublication, "publications":
+		// A publication (Program item IN1a): what was prepared never changes;
+		// its send's record is written by the replica that sends, and only
+		// the instance that prepared it sends it (instance).
+		switch field {
+		case "id", "ticket_id", "target", "target_kind", "target_url", "target_ref", "target_node_id", "target_space_id", "instance", "marker", "body",
+			"post_sha256", "parts", "close_issue", "created_at", "created_by", "fingerprint":
+			return ClassImmutable
+		case "state", "tries", "attempt", "close_tries", "find_since", "sent_as_id", "sent_as_login", "remote_id", "remote_url", "close_state",
+			"close_error", "error", "sending_at", "sent_at", "sent_by":
+			return ClassScalar
+		}
 	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance":
 		// The reads of GitHub and the store's instance (schema version 4):
 		// each replica's own, every column.

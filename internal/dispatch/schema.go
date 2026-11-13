@@ -283,8 +283,10 @@ const storeInstanceTable = `CREATE TABLE store_instance (
 
 // publicationsTable is a ticket's publications, each one comment
 // Conductor posts to GitHub for a person (docs/plans/tracker-linking.md,
-// "publications"): made here by version 4, written by the operations of
-// a later row of the plan, which this version's store has none of.
+// "publications"): made here by version 4 and written by this package's
+// publication operations (publications.go): prepare inserts the row, and
+// the others change its state columns through one function
+// (changePublication).
 const publicationsTable = `CREATE TABLE publications (
 		id TEXT PRIMARY KEY,
 		ticket_id TEXT NOT NULL REFERENCES tickets(id),

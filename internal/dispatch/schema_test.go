@@ -335,11 +335,14 @@ func TestMigratedVersion2EqualsAFreshOne(t *testing.T) {
 // read-only, is read as it was found: a ticket with its links (their
 // candidate, receipt and fingerprint empty), no approved revision and no
 // launch; the links' own read; a ticket's revisions none and a revision's
-// read not_found; a pruned link add's resend too old to compare, and a
+// read not_found; no publication (noPublications); a pruned link add's
+// resend too old to compare, and a
 // new operation not found. Nothing reads what version 2 adds, which the
 // file has not, and the file stays version 1. The migration fails two
 // ways: a writer holding the database past the busy timeout, and a file
-// the store may not write.
+// the store may not write. A version 3 database the store cannot migrate,
+// the version just before the publications', is read the same way: no
+// publication on its ticket's read or anywhere else (noPublications).
 func TestAVersionOneDatabaseItCannotMigrateIsRead(t *testing.T) {
 	cases := []struct {
 		name string
@@ -415,6 +418,7 @@ func TestAVersionOneDatabaseItCannotMigrateIsRead(t *testing.T) {
 			if _, err := s.Plan(ctx, "0123456789abcdef"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("a revision's read: %v", err)
 			}
+			noPublications(t, s, key)
 			rc, found := replayed(t, s, testOp("l1"), IntentLinkAdd, LinkAddArgs{Key: key, NewLink: NewLink{Kind: LinkDelivery, URL: url}})
 			if !found || rc.Refusal != RefusalOpConflict || rc.Error != wordsTooOld {
 				t.Fatalf("a pruned add's resend: %+v %v", rc, found)
@@ -429,5 +433,56 @@ func TestAVersionOneDatabaseItCannotMigrateIsRead(t *testing.T) {
 				t.Fatalf("the file's version: %d %v", version, err)
 			}
 		})
+		// A version 3 database, the version just before the publications',
+		// read the same way: its ticket holds no publication and none
+		// needing a person, and no publication is found.
+		t.Run("version 3, "+tc.name, func(t *testing.T) {
+			dir := fixtureV3(t)
+			words := tc.fail(t, filepath.Join(dir, File))
+			s := openStore(t, dir)
+			if ro, why := s.ReadOnly(); !ro || !strings.Contains(why, words) {
+				t.Fatalf("read-only %v: %s", ro, why)
+			}
+			noPublications(t, s, "CND-1")
+			var version int
+			if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 3 {
+				t.Fatalf("the file's version: %d %v", version, err)
+			}
+		})
+	}
+}
+
+// noPublications fails the test unless a store of a version before the
+// publications' answers as one holding none: the ticket's read with no
+// publication and none needing a person, a publication's read not found,
+// the server's operations on one not_found and not applied, none being
+// sent, and the ticket's page empty.
+func noPublications(t *testing.T, s *Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	if v, err := s.Ticket(ctx, key); err != nil || len(v.Publications) != 0 || v.PublicationsNeedYou != 0 {
+		t.Fatalf("the ticket's read: %v publications, %d needing a person, %v", v.Publications, v.PublicationsNeedYou, err)
+	}
+	if _, err := s.Publication(ctx, "0123456789abcdef"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a publication's read: %v", err)
+	}
+	for name, call := range map[string]func() (Receipt, bool, error){
+		"a settle": func() (Receipt, bool, error) {
+			return s.SettlePublication(ctx, "0123456789abcdef", 1, Outcome{Words: "listed"})
+		},
+		"a close begun": func() (Receipt, bool, error) { return s.BeginClose(ctx, "0123456789abcdef") },
+		"a close's answer": func() (Receipt, bool, error) {
+			return s.SettleClose(ctx, "0123456789abcdef", CloseOutcome{State: CloseClosed})
+		},
+	} {
+		if _, applied, err := call(); applied || !isRefusal(err, RefusalNotFound) {
+			t.Fatalf("%s: %v %v", name, applied, err)
+		}
+	}
+	if ids, err := s.SendingPublications(ctx, 10); err != nil || len(ids) != 0 {
+		t.Fatalf("the publications being sent: %v %v", ids, err)
+	}
+	if page, _, err := s.Publications(ctx, key, "", false); err != nil || len(page) != 0 {
+		t.Fatalf("the ticket's publications: %v %v", page, err)
 	}
 }
