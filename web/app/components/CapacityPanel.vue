@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, ownLogin, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
+import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, launchLogin, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
 
 /**
  * The capacity panel (docs/plans/capacity.md, PR-5): what the server's capacity view says of an agent on an account before a launch.
@@ -8,7 +8,8 @@ import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshn
  * the provider's; Conductor's own count in another, marked as an estimate; how fresh it is. Every state that is not a reading says
  * what it is, in the server's words. It never disables a launch. `readOnOpen` asks the server to read as the panel shows a question
  * (the launch dialog's opening), which the server does at most once in five minutes per agent and account; `compact` is one line.
- * A launch with its own login (on this computer, or a login its environment sets) is shown with no account and no model.
+ * A launch with its own login (on this computer, or a login its environment sets) is shown with no account and no model; a launch on
+ * this server of an agent whose entry sets its login, with no account and the entry's variable named (`launchLogin` decides which).
  */
 const props = defineProps<{ query: CapacityQuery | null; compact?: boolean; readOnOpen?: boolean; /** The model the launch names, shown as typed. */ model?: string }>()
 
@@ -28,6 +29,7 @@ const view = computed(() => entry.value?.view ?? null)
 const state = computed(() => (view.value ? capacityStateWords(view.value) : null))
 const wait = computed(() => (view.value ? readWait(view.value, now.value) : null))
 const reading = computed(() => !!entry.value?.reading || view.value?.state === 'reading')
+const login = computed(() => (view.value ? launchLogin(view.value) : null))
 
 /** Shows a question: fetched now, then read when it is the opening's, still shown here, and the server reads it. */
 async function show(q: CapacityQuery, gone: () => boolean) {
@@ -83,15 +85,20 @@ const compactLine = computed(() => {
     <template v-else-if="view">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span data-capacity-host>{{ capacityHostWords(view.host) }}</span>
-        <template v-if="!ownLogin(view)">
-          <span aria-hidden="true">·</span>
-          <span>Account: <span class="text-default" data-capacity-account>{{ accountWords(view.account) }}</span></span>
+        <template v-if="login?.kind !== 'own'">
+          <template v-if="login?.kind === 'account'">
+            <span aria-hidden="true">·</span>
+            <span>Account: <span class="text-default" data-capacity-account>{{ accountWords(view.account) }}</span></span>
+          </template>
           <span aria-hidden="true">·</span>
           <span>Model: <span class="text-default" data-capacity-model>{{ model }}</span></span>
         </template>
         <UBadge v-if="plan" :label="plan" color="neutral" variant="subtle" size="sm" title="The plan as the agent's own tool reported it" data-capacity-plan />
       </div>
       <p v-if="view.host.kind === 'undetermined' && view.host.words" class="text-xs text-muted" data-capacity-host-words>{{ view.host.words }}</p>
+      <p v-if="login?.kind === 'entry'" class="text-xs text-muted [overflow-wrap:anywhere]" data-capacity-entry-login>
+        This agent's entry sets {{ login.variable }}: every launch of it uses that login, not an account chosen here.
+      </p>
 
       <div v-if="view.state !== 'ok'" class="flex items-start gap-2" data-capacity-words>
         <UIcon :name="view.state === 'error' ? 'i-lucide-circle-alert' : view.state === 'reading' ? 'i-lucide-loader-circle' : 'i-lucide-circle-help'" class="mt-0.5 size-4 flex-none text-muted" :class="view.state === 'reading' ? 'animate-spin' : ''" />
@@ -111,7 +118,7 @@ const compactLine = computed(() => {
       </p>
 
       <p v-if="provider.length" class="text-xs" data-capacity-provider><span class="text-muted">The provider's figures: </span>{{ provider.join(' · ') }}</p>
-      <p v-if="view.counts && !ownLogin(view)" class="text-xs" data-capacity-estimate><span class="text-muted">Conductor's estimate: </span>{{ countsWords(view.counts) }}</p>
+      <p v-if="view.counts && login?.kind !== 'own'" class="text-xs" data-capacity-estimate><span class="text-muted">Conductor's estimate: </span>{{ countsWords(view.counts) }}</p>
 
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs text-muted" data-capacity-fresh>{{ freshnessWords(view, now) }}</span>
