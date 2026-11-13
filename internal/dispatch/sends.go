@@ -901,13 +901,13 @@ func (w *ticketWords) say(line string) { w.WriteString(line + "\n") }
 // block adds a block of values, each on one line after its label (a word
 // of the store's, which value is given): every string of the capture but
 // the person's notes is written this way and no other. A value is written
-// as the capture holds it, folded onto one line (line), with addressFree
-// over it as a courtesy: it takes the user, the query and the fragment off
-// what it recognises as an address with a scheme, and changes nothing
-// else.
+// as the capture holds it, folded onto one line (line), with
+// schemedAddressFree over it as a courtesy: it takes the user, the query
+// and the fragment off what it recognises as an address with a scheme,
+// and changes nothing else.
 func (w *ticketWords) block(values func(value func(label, s string))) {
 	w.say(ticketFence)
-	values(func(label, s string) { w.line(label, addressFree(fitText(s, false))) })
+	values(func(label, s string) { w.line(label, schemedAddressFree(fitText(s, false))) })
 	w.say(ticketFence)
 }
 

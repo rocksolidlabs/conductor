@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -209,20 +210,34 @@ type CloseOutcome struct {
 	Words string `json:"words,omitempty"`
 }
 
-const publicationColumns = `p.id, t.key, p.ticket_id, t.project_id, p.target, p.target_kind, p.target_url, p.target_ref, p.target_node_id, p.target_space_id,
-	p.instance, p.marker, p.body, p.post_sha256, p.parts, p.close_issue, p.state, p.tries, p.attempt, p.find_since, p.sent_as_id, p.sent_as_login,
+// pubSummaryColumns is a publication's columns as a list reads them: all
+// but its body, which publicationColumns adds for its own read.
+const pubSummaryColumns = `p.id, t.key, p.ticket_id, t.project_id, p.target, p.target_kind, p.target_url, p.target_ref, p.target_node_id, p.target_space_id,
+	p.instance, p.marker, p.post_sha256, p.parts, p.close_issue, p.state, p.tries, p.attempt, p.find_since, p.sent_as_id, p.sent_as_login,
 	p.remote_id, p.remote_url, p.close_state, p.close_tries, p.close_error, p.error, p.sending_at, p.sent_at, p.sent_by, p.created_at, p.created_by, p.rev`
+
+const publicationColumns = pubSummaryColumns + `, p.body`
 
 const publicationFrom = ` FROM publications p JOIN tickets t ON t.id = p.ticket_id`
 
 func scanPublication(row interface{ Scan(...any) error }, instance string) (Publication, error) {
 	var p Publication
+	s, err := scanPubSummary(row, instance, &p.Body)
+	p.PublicationSummary = s
+	return p, err
+}
+
+// scanPubSummary reads pubSummaryColumns, then the columns after them
+// into more.
+func scanPubSummary(row interface{ Scan(...any) error }, instance string, more ...any) (PublicationSummary, error) {
+	var p PublicationSummary
 	var parts, since, sending, sent, created string
-	err := row.Scan(&p.ID, &p.Ticket, &p.TicketID, &p.ProjectID, &p.Target, &p.TargetKind, &p.TargetURL, &p.TargetRef, &p.TargetNodeID, &p.TargetSpaceID,
-		&p.Instance, &p.Marker, &p.Body, &p.PostSha256, &parts, &p.CloseIssue, &p.State, &p.Tries, &p.Attempt, &since, &p.SentAsID, &p.SentAsLogin,
-		&p.RemoteID, &p.RemoteURL, &p.CloseState, &p.CloseTries, &p.CloseError, &p.Error, &sending, &sent, &p.SentBy, &created, &p.CreatedBy, &p.Rev)
+	err := row.Scan(append([]any{&p.ID, &p.Ticket, &p.TicketID, &p.ProjectID, &p.Target, &p.TargetKind, &p.TargetURL, &p.TargetRef, &p.TargetNodeID,
+		&p.TargetSpaceID, &p.Instance, &p.Marker, &p.PostSha256, &parts, &p.CloseIssue, &p.State, &p.Tries, &p.Attempt, &since, &p.SentAsID,
+		&p.SentAsLogin, &p.RemoteID, &p.RemoteURL, &p.CloseState, &p.CloseTries, &p.CloseError, &p.Error, &sending, &sent, &p.SentBy, &created,
+		&p.CreatedBy, &p.Rev}, more...)...)
 	if err != nil {
-		return Publication{}, err
+		return PublicationSummary{}, err
 	}
 	_ = json.Unmarshal([]byte(parts), &p.Parts)
 	if p.Parts == nil {
@@ -265,10 +280,37 @@ func (p Publication) scalars() []fieldValue {
 		{"sending_at", stamp(p.SendingAt)}, {"sent_at", stamp(p.SentAt)}, {"sent_by", p.SentBy}}
 }
 
-// loginOf is an account's name as a publication keeps it: one line,
-// address-free, at most MaxSnapshotLogin bytes.
+// loginPattern is an account's login: letters, digits and hyphens, at most
+// MaxSnapshotLogin bytes.
+var loginPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,` + strconv.Itoa(MaxSnapshotLogin) + `}$`)
+
+// loginOf is an account's name as a publication keeps it: the login as
+// given when it is one (loginPattern), else none, the row's sent_as_login
+// empty; sent_as_id names the account either way, and a send is not
+// refused for it.
 func loginOf(s string) string {
-	return cutBytes(strings.TrimSpace(addressFree(cleanText(s, false))), MaxSnapshotLogin)
+	if loginPattern.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+// commentAnchor is a comment's anchor in its page's address.
+var commentAnchor = regexp.MustCompile(`^issuecomment-[0-9]{1,20}$`)
+
+// commentPage is a sent comment's page as its publication keeps it: what
+// the store keeps of an address (admitAddress: no query, no user), and the
+// fragment when it is the comment's anchor (#issuecomment- and digits),
+// no other; "" for an address the store does not admit.
+func commentPage(s string) string {
+	a, err := admitAddress("the comment's page", s)
+	if err != nil {
+		return ""
+	}
+	if _, frag, ok := strings.Cut(s, "#"); ok && commentAnchor.MatchString(frag) && len(a.kept)+1+len(frag) <= MaxExternalURL {
+		return a.kept + "#" + frag
+	}
+	return a.kept
 }
 
 // pubWords is a publication's words as its row keeps them (readWords).
@@ -300,14 +342,13 @@ func (p Publication) beginSend(digest string, by Sender, instance, author string
 	case p.Tries >= MaxPublicationTries:
 		return p, refuse(RefusalBound, "a publication is sent at most %d times", MaxPublicationTries)
 	}
-	login := loginOf(by.Login)
 	if err := checkRemoteID("the sender's id", by.ID); err != nil {
 		return p, err
 	}
-	if by.ID == "" || login == "" {
-		return p, refuse(RefusalInvalid, "a send names the account it posts as")
+	if by.ID == "" {
+		return p, refuse(RefusalInvalid, "a send names the account it posts as by its id")
 	}
-	p.State, p.Tries, p.Attempt, p.SendingAt, p.SentBy, p.SentAsID, p.SentAsLogin, p.Error = PublicationSending, p.Tries+1, p.Tries+1, now, author, by.ID, login, ""
+	p.State, p.Tries, p.Attempt, p.SendingAt, p.SentBy, p.SentAsID, p.SentAsLogin, p.Error = PublicationSending, p.Tries+1, p.Tries+1, now, author, by.ID, loginOf(by.Login), ""
 	if p.FindSince.IsZero() {
 		p.FindSince = now.Add(-PublicationFindWindow)
 	}
@@ -358,10 +399,7 @@ func (p Publication) settled(attempt int, o Outcome, instance string, now time.T
 		if restored || p.SentAsID == "" {
 			p.SentAsID, p.SentAsLogin = c.AuthorID, loginOf(c.Author)
 		}
-		p.RemoteID, p.RemoteURL = c.ID, ""
-		if a, err := admitAddress("the comment's page", c.URL); err == nil {
-			p.RemoteURL = a.kept
-		}
+		p.RemoteID, p.RemoteURL = c.ID, commentPage(c.URL)
 		p.State, p.SentAt, p.Error = PublicationSent, now, ""
 		if p.CloseIssue != "" {
 			p.CloseState = ClosePending
@@ -421,13 +459,32 @@ func (p Publication) discarded() (Publication, error) {
 	return p, nil
 }
 
+// admitted asks of a change a person starts on the publication (a send's
+// begin, a discard, a close's begin) what a comment's write asks (ticketRow,
+// open): its ticket live (not_found) and its project not archived
+// (archived). What settles work already begun asks neither, so a comment
+// that was posted is recorded as posted.
+func admitted(ctx context.Context, q queryer, p Publication) error {
+	tk, err := liveTicket(ctx, q, p.Ticket, false)
+	if err == nil {
+		_, err = openProject(ctx, q, tk)
+	}
+	return err
+}
+
 // changePublication runs decide on the publication with the id inside an
-// operation, its revision the one expected, and writes what it changed:
-// one set row per field, the publication's rev bumped.
-func (t *tx) changePublication(id string, decide func(p Publication, instance string) (Publication, error)) error {
+// operation, admitted when a person starts the change, its revision the
+// one expected, and writes what it changed: one set row per field, the
+// publication's rev bumped.
+func (t *tx) changePublication(id string, person bool, decide func(p Publication, instance string) (Publication, error)) error {
 	p, err := publicationOf(t.ctx, t.tx, id)
 	if err != nil {
 		return err
+	}
+	if person {
+		if err := admitted(t.ctx, t.tx, p); err != nil {
+			return err
+		}
 	}
 	if err := t.expect(p.Rev); err != nil {
 		return err
@@ -465,10 +522,12 @@ func normalBody(s string) (string, error) {
 // (publication.prepare): its target the ticket's linked issue (linked) or
 // one of its live delivery or external links (link:<id>), at the item the
 // API resolved a moment before (target: its node id, its kind as the
-// tracker types it, its repository's id), which must be the linked issue's
-// node, or the node the link's last read found; the body the person
-// composed (normalBody), the parts ticked, the close asked for (completed
-// or not_planned, for an issue alone), the marker mark gives of the id the
+// tracker types it, its repository's id), which must be the item the store
+// holds for that target, by its node, its host and its kind: the linked
+// issue's identity and snapshot, or the link's address and its last read;
+// the body the person composed (normalBody), the parts ticked, the close
+// asked for (completed or not_planned, for an issue by the store's kind
+// alone), the marker mark gives of the id the
 // transaction draws (holding the id, at most MaxPublicationMarker bytes),
 // post_sha256 the SHA-256 of the bytes a send posts (Posted), and the
 // store's instance. These are never written again: a publication goes to
@@ -487,8 +546,6 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 		switch {
 		case args.CloseIssue != "" && args.CloseIssue != "completed" && args.CloseIssue != "not_planned":
 			return refuse(RefusalInvalid, "a close is completed or not_planned")
-		case args.CloseIssue != "" && target.Kind != ExternalIssue:
-			return refuse(RefusalInvalid, "only an issue is closed: closing a pull request closes it unmerged")
 		case target.Kind != ExternalIssue && target.Kind != ExternalChange, !nodeIDPattern.MatchString(target.NodeID):
 			return refuse(RefusalInvalid, "the target is an issue or a pull request by its node id")
 		case target.SpaceID == "" || checkRemoteID("the target's repository", target.SpaceID) != nil:
@@ -507,23 +564,34 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 			}
 			parts = append(parts, part)
 		}
-		// The target is the ticket's linked issue, or a live link of it whose
-		// last read found the node.
+		// The target is the item the store holds: the ticket's linked issue
+		// (its identity's node and host, its snapshot's kind), or a live
+		// delivery or external link of it (the node and the kind its last
+		// read found, its address's host). Only an issue, by the store's
+		// kind, is closed.
+		var node, host, kind string
 		if args.Target == TargetLinked {
-			if i := strings.LastIndexByte(tk.ExternalID, ':'); tk.ExternalID == "" || tk.ExternalID[i+1:] != target.NodeID {
-				return refuse(RefusalInvalid, "the target read is not %s's linked issue", tk.Key)
+			if i, j := strings.IndexByte(tk.ExternalID, ':'), strings.LastIndexByte(tk.ExternalID, ':'); i < j {
+				host, node = tk.ExternalID[i+1:j], tk.ExternalID[j+1:]
 			}
-		} else {
-			linkID, ok := strings.CutPrefix(args.Target, "link:")
-			var node string
-			err := t.tx.QueryRowContext(t.ctx, `SELECT r.node_id FROM links l JOIN link_reads r ON r.link_id = l.id
-				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&node)
-			switch {
-			case err != nil && !isNoRows(err):
+			sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
+			kind = sn.Kind
+		} else if linkID, ok := strings.CutPrefix(args.Target, "link:"); ok {
+			var addr string
+			err := t.tx.QueryRowContext(t.ctx, `SELECT l.url, r.node_id, r.kind FROM links l JOIN link_reads r ON r.link_id = l.id
+				WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &node, &kind)
+			if err != nil && !isNoRows(err) {
 				return err
-			case !ok || node == "" || node != target.NodeID:
-				return refuse(RefusalInvalid, "the target is %s's linked issue or a live delivery or external link read from GitHub", tk.Key)
 			}
+			if a, err := admitAddress("the link", addr); err == nil {
+				host = a.host
+			}
+		}
+		if a, err := admitAddress("the target", page); err != nil || node == "" || node != target.NodeID || host != a.host || kind != target.Kind {
+			return refuse(RefusalInvalid, "the target is not an item %s holds: its linked issue, or a live delivery or external link read from GitHub", tk.Key)
+		}
+		if args.CloseIssue != "" && kind != ExternalIssue {
+			return refuse(RefusalInvalid, "only an issue is closed: closing a pull request closes it unmerged")
 		}
 		var n int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM publications WHERE ticket_id = ?", tk.ID).Scan(&n); err != nil {
@@ -576,7 +644,7 @@ type sendArgs struct {
 // publication's.
 func (s *Store) BeginSend(ctx context.Context, op Op, id, postSha256 string, by Sender) (rc Receipt, owned bool, err error) {
 	rc, err = s.Apply(ctx, op, IntentPublicationSend, sendArgs{id, postSha256}, func(t *tx) error {
-		return t.changePublication(id, func(p Publication, instance string) (Publication, error) {
+		return t.changePublication(id, true, func(p Publication, instance string) (Publication, error) {
 			return p.beginSend(postSha256, by, instance, t.op.author(), t.now)
 		})
 	})
@@ -590,26 +658,38 @@ func (s *Store) DiscardPublication(ctx context.Context, op Op, id string) (Recei
 	return s.Apply(ctx, op, IntentPublicationDiscard, struct {
 		ID string `json:"id"`
 	}{id}, func(t *tx) error {
-		return t.changePublication(id, func(p Publication, _ string) (Publication, error) { return p.discarded() })
+		return t.changePublication(id, true, func(p Publication, _ string) (Publication, error) { return p.discarded() })
 	})
 }
 
 // serverOp is an operation the server makes for itself on the publication
-// with the id (a settle, a close begun, a close's answer): decide is read
-// against the row first, and an outcome that changes nothing is not
-// applied at all (applied false: no operation, no receipt, no refusal
-// kept), nor is one decide refuses (its *Refusal returned, kept nowhere).
-// Otherwise it runs under DerivedOpID(id, phase, rev, the digest of what
-// it carries) at that revision, so the same input at the same revision is
-// a replay of one operation, and a different one a different id, which a
-// moved revision refuses (stale_revision), never op_conflict.
-func (s *Store) serverOp(ctx context.Context, actor, id, phase, intent string, input any, decide func(p Publication, instance string, now time.Time) (Publication, error)) (rc Receipt, applied bool, err error) {
+// with the id (a settle, a close begun, a close's answer), under
+// ActorServer, an actor no client's operation is ever given, so no
+// operation a client sends holds its receipt's key: decide is read against
+// the row first (admitted too when a person started the change: person),
+// and an outcome that changes nothing is not applied at all (applied
+// false: no operation, no receipt, no refusal kept), nor is one decide
+// refuses (its *Refusal returned, kept nowhere). Otherwise it runs under
+// DerivedOpID(id, phase, rev, the digest of what it carries) at that
+// revision, so the same input at the same revision is a replay of one
+// operation, and a different one a different id, which a moved revision
+// refuses (stale_revision), never op_conflict. applied is true only for
+// the call whose transaction made the change, a replay's answer false. A
+// refusal, the read's or the transaction's (unkeptRefusal), is returned as
+// its *Refusal and kept by no receipt, so the same input asked again once
+// the ticket is live again is decided anew.
+func (s *Store) serverOp(ctx context.Context, id, phase, intent string, person bool, input any, decide func(p Publication, instance string, now time.Time) (Publication, error)) (rc Receipt, applied bool, err error) {
 	var p Publication
 	var change bool
 	err = s.read(ctx, func(q queryer) error {
 		var err error
 		if p, err = publicationOf(ctx, q, id); err != nil {
 			return err
+		}
+		if person {
+			if err := admitted(ctx, q, p); err != nil {
+				return err
+			}
 		}
 		instance, err := instanceOf(ctx, q)
 		if err != nil {
@@ -626,43 +706,56 @@ func (s *Store) serverOp(ctx context.Context, actor, id, phase, intent string, i
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	op := Op{Actor: actor, ID: DerivedOpID(id, phase, strconv.FormatInt(p.Rev, 10), digest), ExpectedRev: p.Rev}
+	op := Op{Actor: ActorServer, ID: DerivedOpID(id, phase, strconv.FormatInt(p.Rev, 10), digest), ExpectedRev: p.Rev}
 	rc, err = s.Apply(ctx, op, intent, input, func(t *tx) error {
-		return t.changePublication(id, func(p Publication, instance string) (Publication, error) { return decide(p, instance, t.now) })
+		err := t.changePublication(id, person, func(p Publication, instance string) (Publication, error) { return decide(p, instance, t.now) })
+		if ref := (*Refusal)(nil); errors.As(err, &ref) {
+			return unkeptRefusal{ref}
+		}
+		return err
 	})
-	return rc, err == nil && rc.Status == StatusDone, err
+	var unkept unkeptRefusal
+	switch {
+	case errors.As(err, &unkept):
+		r := unkept.ref
+		return fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: r.Code, Error: words(r.Words)}), false, r
+	case err == nil && rc.Status != StatusDone:
+		err = &Refusal{Code: rc.Refusal, Words: rc.Error, Missing: rc.Missing, Key: rc.Key}
+	}
+	return rc, err == nil && !rc.Repeat, err
 }
 
 // SettlePublication settles the publication's send of attempt with what
-// was found (settled), as the server's operation under actor (serverOp).
-func (s *Store) SettlePublication(ctx context.Context, actor, id string, attempt int, o Outcome) (Receipt, bool, error) {
+// was found (settled), as the server's operation (serverOp).
+func (s *Store) SettlePublication(ctx context.Context, id string, attempt int, o Outcome) (Receipt, bool, error) {
 	input := struct {
 		ID      string  `json:"id"`
 		Attempt int     `json:"attempt"`
 		Outcome Outcome `json:"outcome"`
 	}{id, attempt, o}
-	return s.serverOp(ctx, actor, id, "settle", IntentPublicationSettle, input, func(p Publication, instance string, now time.Time) (Publication, error) {
+	return s.serverOp(ctx, id, "settle", IntentPublicationSettle, false, input, func(p Publication, instance string, now time.Time) (Publication, error) {
 		return p.settled(attempt, o, instance, now)
 	})
 }
 
 // BeginClose begins the close of a sent publication's issue (beginClose),
-// committed before the close is sent.
-func (s *Store) BeginClose(ctx context.Context, actor, id string) (Receipt, bool, error) {
+// committed before the close is sent; a person's act, so its ticket is
+// live and its project not archived (admitted).
+func (s *Store) BeginClose(ctx context.Context, id string) (Receipt, bool, error) {
 	input := struct {
 		ID    string `json:"id"`
 		Begin bool   `json:"begin"`
 	}{id, true}
-	return s.serverOp(ctx, actor, id, "close", IntentPublicationClose, input, func(p Publication, _ string, _ time.Time) (Publication, error) { return p.beginClose() })
+	return s.serverOp(ctx, id, "close", IntentPublicationClose, true, input, func(p Publication, _ string, _ time.Time) (Publication, error) { return p.beginClose() })
 }
 
 // SettleClose settles a close begun with its answer (closeSettled).
-func (s *Store) SettleClose(ctx context.Context, actor, id string, o CloseOutcome) (Receipt, bool, error) {
+func (s *Store) SettleClose(ctx context.Context, id string, o CloseOutcome) (Receipt, bool, error) {
 	input := struct {
 		ID      string       `json:"id"`
 		Outcome CloseOutcome `json:"outcome"`
 	}{id, o}
-	return s.serverOp(ctx, actor, id, "close", IntentPublicationClose, input, func(p Publication, _ string, _ time.Time) (Publication, error) {
+	return s.serverOp(ctx, id, "close", IntentPublicationClose, false, input, func(p Publication, _ string, _ time.Time) (Publication, error) {
 		return p.closeSettled(o)
 	})
 }
@@ -695,7 +788,7 @@ func publicationsOf(ctx context.Context, q queryer, ticketID, cursor string, nee
 	if err != nil {
 		return nil, err
 	}
-	stmt := "SELECT " + publicationColumns + publicationFrom + " WHERE p.ticket_id = ?"
+	stmt := "SELECT " + pubSummaryColumns + publicationFrom + " WHERE p.ticket_id = ?"
 	args := []any{ticketID}
 	if cursor != "" {
 		stmt += " AND (p.created_at, p.id) < (SELECT created_at, id FROM publications WHERE id = ? AND ticket_id = ?)"
@@ -707,14 +800,14 @@ func publicationsOf(ctx context.Context, q queryer, ticketID, cursor string, nee
 	}
 	defer rows.Close()
 	for rows.Next() && len(out) < n {
-		p, err := scanPublication(rows, instance)
+		p, err := scanPubSummary(rows, instance)
 		if err != nil {
 			return nil, err
 		}
 		if needYou && !p.NeedsYou() {
 			continue
 		}
-		out = append(out, p.PublicationSummary)
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

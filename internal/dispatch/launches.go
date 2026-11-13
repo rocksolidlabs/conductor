@@ -47,7 +47,9 @@ const (
 // ActorServer is the actor a launch's outcome is recorded under, whoever
 // records it (the launch route, or the reconcile at start), with the op
 // id <launch>.started or <launch>.failed: the first commit stands, and the
-// other is answered by its receipt.
+// other is answered by its receipt; and a publication's settles and closes
+// (serverOp), with a derived id. No client's operation is given it: the
+// API's actors are admin, user:<subject>, agent:<member> and brakeman.
 const ActorServer = "server"
 
 // LaunchArgs is ticket.launch's content, its fingerprint: the ticket's
