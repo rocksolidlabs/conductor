@@ -761,11 +761,13 @@ pass is held:
   before the router exists, takes the event first, rewrites the address
   without the fragment, ends the event there
   (`stopImmediatePropagation`: the router's listener does not run for
-  it), and hands what the fragment carried on for it alone (`stored`,
-  the tab's storage, for a pass; `handOn`, the tab's next load, for the
-  token), never to what the running page holds and sends; it loads the
-  page again at the clean address (`location.reload()`) only when that
-  was taken and changes what the next load sends. In the desktop
+  it). A pass is written to the tab's storage for it alone (`stored`),
+  never to what the running page holds and sends, and the page loads
+  again at the clean address (`location.reload()`) only when that write
+  was taken and changed what the storage held. A workbench token is
+  taken as a load's link by a page that holds none (the gate asks), and
+  changes nothing in a page that holds one, with no load either way
+  (`fromLaterLink`, #882). In the desktop
   app, which keeps the workbench token in memory from its bridge and
   not in the browser's storage, a later link's token is written nowhere
   and changes nothing. A fragment that
@@ -789,7 +791,8 @@ pass is held:
   is dropped whole), so it judges right whether it runs before or after
   the plugin; it stores nothing: the plugin, not the guard, takes a
   fragment at a load and at a later link. A workbench
-  token the browser keeps (#882), `/decide/<did>` goes to the operator's
+  token the page holds and has not seen refused, a link's being tried
+  among them (#882), `/decide/<did>` goes to the operator's
   `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
   workbench token and a pass held, the operator page's own address of
   one decision, `/decisions?item=decision:<did>`, goes to `/decide/<did>`

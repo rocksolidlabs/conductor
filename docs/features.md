@@ -6143,20 +6143,29 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   carries the pass or the workbench token, in any spelling: at a load the
   plugin runs before the router, and a fragment that arrives later is
   taken by the plugin's capture listener of `popstate`, ahead of the
-  router's; a fragment that holds both keys gives neither. A later link
-  is handed on for its credential alone (a pass to the tab's storage, a
-  workbench token to the tab's next load), never to what the running
-  page holds and sends, and loads the page again at the clean address
-  only when that changes what the next load sends; a load drops what
-  the page held (drafts, an answer whose outcome was not known). A
-  link's workbench token is kept once the server accepts it as the
-  workbench's (the events stream answers it, #882): a
-  refused one is dropped and the page loads again with the token the
-  browser keeps, a kept token the server refuses is removed, and only a
-  kept token opens the operator's page for a decide address. In the
-  desktop app the workbench token is kept in memory from the app's
-  bridge, not in the browser's storage, and a link's token changes
-  nothing there. Where the browser refuses the
+  router's; a fragment that holds both keys gives neither. A later
+  link's pass is written to the tab's storage for it alone, never to
+  what the running page holds and sends, and loads the page again at
+  the clean address only when it changed what that storage held; a
+  load drops what the page held (drafts, an answer whose outcome was
+  not known). A link's workbench token (#882) is sent by the page it
+  came with and kept once the server accepts it, while the browser
+  keeps no other token: accepted means the events stream answers it
+  with success, which the server gives to an operator's credential (the
+  workbench token, and, where an identity provider is registered, a
+  credential the provider admits with the admin grant); a reply of that
+  stream that is neither success nor `401` decides nothing. A token the
+  browser keeps is changed by the operator alone (the gate, "Forget
+  token"). A refused link's token is dropped and the page loads again
+  with the token the browser keeps; a kept token the server refuses
+  stays kept, and the gate asks for another. A later link's token is
+  taken by a page that holds none (the gate asks), with no load, and
+  changes nothing in a page that holds one. A decide address opens the
+  operator's page while the page holds a workbench token it has not
+  seen refused, a link's being tried among them. In the desktop app the
+  workbench token is kept in memory from the app's bridge, not in the
+  browser's storage, and a link's token changes nothing there. Where
+  the browser refuses the
   tab's storage, a link opened in a tab that already shows the page is
   not taken: load it in a new tab.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A

@@ -144,8 +144,8 @@ describe('a 401', () => {
     expect(admin.needsToken.value).toBe(true)
   })
 
-  // Routes beside the workbench's admit other credentials too (a session's own token reads its session): the events stream, which
-  // admits the workbench token alone, is what keeps a link's token (useAttention.test.ts).
+  // Routes beside the workbench's admit other credentials too (a session's own token reads its session): the events stream's success,
+  // which the server gives to an operator's credential alone, is what keeps a link's token (useAttention.test.ts).
   it.each(Object.keys(requests) as Array<keyof typeof requests>)("%s answered with success keeps no link's token; a 401 drops it", async (kind) => {
     const kept = new Map<string, string>()
     const reload = vi.fn()

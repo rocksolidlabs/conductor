@@ -73,6 +73,32 @@ describe('openEvents', () => {
     expect([...kept]).toEqual([['conductor.workbenchToken', 'link-token-9876543210']])
   })
 
+  it("with a link's token tried, a reply that is neither success nor 401, or none, decides nothing; a success then keeps it", async () => {
+    const kept = new Map<string, string>()
+    const reload = vi.fn()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) })
+    vi.stubGlobal('location', { reload })
+    admin.fromLink('link-token-0123456789')
+    for (const status of [403, 429, 503]) {
+      const answer = held()
+      const out = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+      answer(status)
+      expect((await out)?.status).toBe(status)
+    }
+    fetchFn.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await expect(openEvents('http://api.test/api/events', admin, false, new AbortController().signal)).rejects.toThrow('Failed to fetch')
+    expect(kept.size).toBe(0)
+    expect(admin.token.value).toBe('link-token-0123456789')
+    expect(admin.needsToken.value).toBe(false)
+    expect(reload).not.toHaveBeenCalled()
+    const accept = held()
+    const accepted = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+    accept(200)
+    expect((await accepted)?.status).toBe(200)
+    expect([...kept]).toEqual([['conductor.workbenchToken', 'link-token-0123456789']])
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   it('hands back a reply that is no refusal, asking for nothing', async () => {
     const answer = held()
     const out = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
