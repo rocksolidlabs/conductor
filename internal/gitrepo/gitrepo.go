@@ -24,11 +24,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
+	godiff "github.com/go-git/go-git/v5/utils/diff"
+	"github.com/sergi/go-diff/diffmatchpatch"
 
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
@@ -40,15 +41,28 @@ const (
 	MaxFiles   = 500     // files of one commit
 	MaxBody    = 4096    // bytes of a commit message's body
 	MaxDiffed  = 1 << 20 // a file larger than this is listed without its lines
-	// MaxPatched is the lines of a side a file's patch compares: a file
-	// with more on either side is listed without its lines. The patch is
-	// the one step of a comparison go-git runs without its context
-	// (ended), and its work grows with the square of its lines: 10,000
-	// lines a side, every line changed, took under a second where the
-	// package's tests ran.
-	MaxPatched = 10000
+	// MaxFileDiff and MaxCompareDiff bound a comparison's line diffs in
+	// time (lineDiff): one file's at most MaxFileDiff, the comparison's
+	// together at most MaxCompareDiff. A file whose diff did not finish
+	// within its time, and every file after the comparison's time is
+	// spent, is listed without its lines. A diff's work grows with the
+	// lines that differ: on a loaded machine 10,000 lines a side, every
+	// one changed, took 1.5 s; the slowest file of this repository's
+	// 3,860 commits 45 ms, and its slowest commit's files together 0.2 s.
+	MaxFileDiff    = 2 * time.Second
+	MaxCompareDiff = 10 * time.Second
+	// MaxRenamed is the added or deleted files of a comparison among
+	// which renames are looked for by content (go-git's RenameLimit, at
+	// most MaxRenamed squared pairs, each file hashed whole): past it, a
+	// file moved unchanged may still be found, and the others are listed
+	// as deleted and added (Detail.RenamesCut).
+	MaxRenamed = 100
 	shortLen   = 7
 )
+
+// clock is the time a file's line diff takes is read by (lineDiff); a
+// test sets it.
+var clock = time.Now
 
 // ErrNotRepo says the directory is not inside a repository.
 var ErrNotRepo = errors.New("not a git repository")
@@ -101,6 +115,9 @@ type Detail struct {
 	Added     int
 	Removed   int
 	Truncated bool
+	// RenamesCut says renames were not looked for among every file added
+	// and deleted (MaxRenamed): a file listed as deleted may have moved.
+	RenamesCut bool
 }
 
 // open is the repository at dir or the nearest folder above it, a crew's
@@ -183,14 +200,16 @@ func (c ending) Get(h plumbing.Hash) (plumbing.EncodedObject, bool) {
 // in a pack since removed. The second opening lists them again. A commit
 // or a file that truly is not there is looked for twice. A file refused
 // on the way (careOS) is the answer, whatever f made of it, and so is
-// ctx's error once a step has found ctx ended (ended).
-func read[T any](ctx context.Context, dir string, f func(r *git.Repository, top string) (T, error)) (T, error) {
+// ctx's error once ctx has ended, asked (ended) when f returns, whatever f
+// answered.
+func read[T any](ctx context.Context, dir string, f func(r *git.Repository, top string, seen *refusal) (T, error)) (T, error) {
 	var none T
 	r, top, seen, err := open(ctx, dir)
 	if err != nil {
 		return none, err
 	}
-	out, err := f(r, top)
+	out, err := f(r, top, seen)
+	seen.ended()
 	seen.close()
 	if refused := seen.first(); refused != nil {
 		return none, refused
@@ -201,7 +220,8 @@ func read[T any](ctx context.Context, dir string, f func(r *git.Repository, top 
 	if r, top, seen, err = open(ctx, dir); err != nil {
 		return out, err
 	}
-	out, err = f(r, top)
+	out, err = f(r, top, seen)
+	seen.ended()
 	if seen.close(); seen.first() != nil {
 		return none, seen.first()
 	}
@@ -224,7 +244,7 @@ const largeObject = 256 << 10
 // base with HEAD when base names a revision, else those committed at or
 // after since. A repository with no commit yet has none.
 func Commits(ctx context.Context, dir, base string, since time.Time) (Log, error) {
-	return read(ctx, dir, func(r *git.Repository, top string) (Log, error) { return commits(ctx, r, top, base, since) })
+	return read(ctx, dir, func(r *git.Repository, top string, _ *refusal) (Log, error) { return commits(ctx, r, top, base, since) })
 }
 
 func commits(ctx context.Context, r *git.Repository, top, base string, since time.Time) (Log, error) {
@@ -291,10 +311,12 @@ func commits(ctx context.Context, r *git.Repository, top, base string, since tim
 // CommitDetail is the commit rev names and its files against its first
 // parent (every file added, for a root commit), renames found.
 func CommitDetail(ctx context.Context, dir, rev string) (Detail, error) {
-	return read(ctx, dir, func(r *git.Repository, top string) (Detail, error) { return commitDetail(ctx, r, top, rev) })
+	return read(ctx, dir, func(r *git.Repository, top string, seen *refusal) (Detail, error) {
+		return commitDetail(ctx, seen, r, top, rev)
+	})
 }
 
-func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Detail, error) {
+func commitDetail(ctx context.Context, seen *refusal, r *git.Repository, top, rev string) (Detail, error) {
 	h, err := r.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
 		return Detail{}, fmt.Errorf("unknown revision %q", rev)
@@ -318,7 +340,7 @@ func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Deta
 			return out, err
 		}
 	}
-	return diffTrees(ctx, out, parentTree, tree)
+	return diffTrees(ctx, seen, out, parentTree, tree)
 }
 
 // Compare is the files that differ between the trees of the commits from
@@ -326,14 +348,16 @@ func commitDetail(ctx context.Context, r *git.Repository, top, rev string) (Deta
 // reference names another commit), renames found, each with its added and
 // removed lines, as CommitDetail answers for one commit against its
 // parent; Commit is to's. At most MaxFiles files, Truncated past them; a
-// file past MaxDiffed, or with more than MaxPatched lines on a side, is
-// listed without its lines. ErrNoCommit (wrapped)
-// for an id the repository has no commit of.
+// file past MaxDiffed, or whose line diff did not finish within its time
+// (lineDiff), is listed without its lines. ErrNoCommit (wrapped) for an id
+// the repository has no commit of.
 func Compare(ctx context.Context, dir, from, to string) (Detail, error) {
-	return read(ctx, dir, func(r *git.Repository, top string) (Detail, error) { return compare(ctx, r, top, from, to) })
+	return read(ctx, dir, func(r *git.Repository, top string, seen *refusal) (Detail, error) {
+		return compare(ctx, seen, r, top, from, to)
+	})
 }
 
-func compare(ctx context.Context, r *git.Repository, top, from, to string) (Detail, error) {
+func compare(ctx context.Context, seen *refusal, r *git.Repository, top, from, to string) (Detail, error) {
 	fc, err := commitByID(r, from)
 	if err != nil {
 		return Detail{}, err
@@ -351,7 +375,7 @@ func compare(ctx context.Context, r *git.Repository, top, from, to string) (Deta
 	if err != nil {
 		return out, err
 	}
-	return diffTrees(ctx, out, fromTree, toTree)
+	return diffTrees(ctx, seen, out, fromTree, toTree)
 }
 
 // File is a file's bytes at a commit (FileAt): at most the bound asked,
@@ -372,7 +396,9 @@ type File struct {
 // for an id the repository has no commit of, ErrNoFile for a path the
 // commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
-	return read(ctx, dir, func(r *git.Repository, _ string) (File, error) { return fileAt(ctx, r, dir, id, path, limit) })
+	return read(ctx, dir, func(r *git.Repository, _ string, _ *refusal) (File, error) {
+		return fileAt(ctx, r, dir, id, path, limit)
+	})
 }
 
 func fileAt(ctx context.Context, r *git.Repository, dir, id, path string, limit int) (File, error) {
@@ -583,18 +609,22 @@ func fullID(s string) bool {
 }
 
 // diffTrees is out with the files that differ between the trees from (nil
-// for none: every file added) and to, renames found, each with its counts
-// (CommitDetail's and Compare's walk).
-func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, error) {
-	changes, err := object.DiffTreeWithOptions(ctx, from, to, object.DefaultDiffTreeOptions)
+// for none: every file added) and to, renames found among at most
+// MaxRenamed added and deleted files, each with its counts (lineDiff), the
+// read's context asked between two files (ended): CommitDetail's and
+// Compare's walk.
+func diffTrees(ctx context.Context, seen *refusal, out Detail, from, to *object.Tree) (Detail, error) {
+	changes, err := object.DiffTreeWithOptions(ctx, from, to, renames)
 	if err != nil {
 		return out, err
 	}
+	out.RenamesCut = renamesCut(changes)
 	if len(changes) > MaxFiles {
 		changes, out.Truncated = changes[:MaxFiles], true
 	}
+	left := MaxCompareDiff
 	for _, ch := range changes {
-		if err := ctx.Err(); err != nil {
+		if err := seen.ended(); err != nil {
 			return out, err
 		}
 		fc := Change{}
@@ -612,33 +642,9 @@ func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, 
 		if err != nil {
 			return out, err
 		}
-		fromCounted, err := counted(from)
-		if err != nil {
-			return out, err
-		}
-		toCounted, err := counted(to)
-		if err != nil {
-			return out, err
-		}
-		if !fromCounted || !toCounted {
+		if (from != nil && from.Size > MaxDiffed) || (to != nil && to.Size > MaxDiffed) {
 			fc.Binary = true // too large to count; shown without its lines
-		} else if p, err := ch.PatchContext(ctx); err == nil {
-			for _, fp := range p.FilePatches() {
-				if fp.IsBinary() {
-					fc.Binary = true
-					continue
-				}
-				for _, chunk := range fp.Chunks() {
-					n := lineCount(chunk.Content())
-					switch chunk.Type() {
-					case diff.Add:
-						fc.Added += n
-					case diff.Delete:
-						fc.Removed += n
-					}
-				}
-			}
-		} else {
+		} else if fc.Added, fc.Removed, fc.Binary, err = lineDiff(from, to, &left); err != nil {
 			return out, err
 		}
 		out.Added += fc.Added
@@ -648,17 +654,74 @@ func diffTrees(ctx context.Context, out Detail, from, to *object.Tree) (Detail, 
 	return out, nil
 }
 
-// counted reports whether the patch counts the lines of f, one side of a
-// file: at most MaxDiffed bytes and MaxPatched lines (nil, no file, is).
-func counted(f *object.File) (bool, error) {
-	if f == nil {
-		return true, nil
+// renames is how diffTrees looks for renames: go-git's defaults, among at
+// most MaxRenamed added and deleted files.
+var renames = &object.DiffTreeOptions{DetectRenames: true, RenameScore: 60, RenameLimit: MaxRenamed}
+
+// renamesCut reports whether go-git did not look for renames by content
+// among changes, as it answered them: past MaxRenamed added or deleted
+// files left by its look for files moved unchanged, with both left.
+func renamesCut(changes object.Changes) bool {
+	added, deleted := 0, 0
+	for _, ch := range changes {
+		if ch.From.Name == "" {
+			added++
+		} else if ch.To.Name == "" {
+			deleted++
+		}
 	}
-	if f.Size > MaxDiffed {
-		return false, nil
+	return added > 0 && deleted > 0 && max(added, deleted) > MaxRenamed
+}
+
+// lineDiff is the lines added and removed between the files from and to
+// (nil for none), counted as go-git's patch counts them
+// (Change.PatchContext): binary, with no lines, when a side is binary or
+// the diff has nothing to compare. The diff, go-git's own
+// (diff.DoWithTimeout), is given the less of MaxFileDiff and left, what
+// is left of the comparison's time, which it spends; one that took its
+// time, finished or not, is listed without its lines.
+func lineDiff(from, to *object.File, left *time.Duration) (added, removed int, binary bool, err error) {
+	a, binary, err := text(from)
+	if err != nil || binary {
+		return 0, 0, binary, err
+	}
+	b, binary, err := text(to)
+	if err != nil || binary {
+		return 0, 0, binary, err
+	}
+	limit := min(MaxFileDiff, *left)
+	if limit <= 0 {
+		return 0, 0, true, nil
+	}
+	start := clock()
+	diffs := godiff.DoWithTimeout(a, b, limit)
+	took := clock().Sub(start)
+	*left -= took
+	if took >= limit || len(diffs) == 0 {
+		return 0, 0, true, nil
+	}
+	for _, d := range diffs {
+		switch d.Type {
+		case diffmatchpatch.DiffInsert:
+			added += lineCount(d.Text)
+		case diffmatchpatch.DiffDelete:
+			removed += lineCount(d.Text)
+		}
+	}
+	return added, removed, false, nil
+}
+
+// text is f's content, or binary when git would call it so ("" for no
+// file).
+func text(f *object.File) (string, bool, error) {
+	if f == nil {
+		return "", false, nil
+	}
+	if binary, err := f.IsBinary(); err != nil || binary {
+		return "", binary, err
 	}
 	s, err := f.Contents()
-	return lineCount(s) <= MaxPatched, err
+	return s, false, err
 }
 
 func summary(c *object.Commit, withBody bool) Commit {

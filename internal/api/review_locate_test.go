@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
+	"github.com/rocksolidlabs/conductor/internal/gitrepo"
 )
 
 // relocate is utils/quote.ts's relocate, on its own fixtures
@@ -102,6 +103,28 @@ func TestLocatedJSONIsWithinTheMarksBound(t *testing.T) {
 	back = locatedState{}
 	if err := json.Unmarshal(b, &back); err != nil || back.State != locatedUnknown || back.Why == "" || len(b) > dispatch.MaxMarkLocated {
 		t.Fatalf("a renamed path past the bound: %s %v", b, err)
+	}
+}
+
+// A file the candidate's commit has no longer, in a comparison whose
+// renames were not looked for among every file (gitrepo.MaxRenamed), is
+// located unknown, saying why; where they were, it is gone.
+func TestLocateSaysNotKnownWhereRenamesWereNotLookedFor(t *testing.T) {
+	from, to := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	f := dispatch.Finding{Kind: dispatch.FindingKindFile, Path: "x.txt", AnchorCommit: from}
+	for _, cut := range []bool{true, false} {
+		l := (&Server{}).newLocator()
+		l.repos["r"] = locatorRepo{dir: "repo"}
+		l.files[[2]string{to, "x.txt"}] = locatorFile{err: gitrepo.ErrNoFile}
+		l.diffs[[3]string{"repo", from, to}] = gitrepo.Detail{Changes: []gitrepo.Change{{Path: "x.txt", Status: "D"}}, RenamesCut: cut}
+		st := l.locate(t.Context(), f, dispatch.Candidate{Run: "r", Commit: to})
+		want := locatedState{State: locatedFileGone}
+		if cut {
+			want = locatedState{State: locatedUnknown, Why: "more files changed than a rename is looked for in"}
+		}
+		if st == nil || *st != want {
+			t.Errorf("renames cut %v: %+v, want %+v", cut, st, want)
+		}
 	}
 }
 

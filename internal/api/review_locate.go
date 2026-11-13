@@ -189,7 +189,8 @@ var errTooManyFiles = errors.New("too many files")
 
 // renamedTo is path's new path between the commits from and to, as
 // Compare finds renames: "" when it was not renamed, and whether Compare
-// listed every file (a rename past its bound is not found).
+// listed every file and looked for renames among them all (a rename past
+// either bound is not found).
 func (l *locator) renamedTo(ctx context.Context, repo, from, to, path string) (string, bool, error) {
 	k := [3]string{repo, from, to}
 	d, ok := l.diffs[k]
@@ -205,7 +206,7 @@ func (l *locator) renamedTo(ctx context.Context, repo, from, to, path string) (s
 			return c.Path, true, nil
 		}
 	}
-	return "", !d.Truncated, nil
+	return "", !d.Truncated && !d.RenamesCut, nil
 }
 
 // unknownOf is the unknown state of a read that failed, in words.

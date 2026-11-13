@@ -48,7 +48,18 @@ const (
 	// bytes a ref (an id, a name, a tag's peeled id), and 256 MiB holds the
 	// millions of refs of the largest repositories hosted today.
 	maxPackedRefs = 256 << 20
+	// maxListed bounds a folder's listing, in entries: git lists its
+	// folders of loose objects (a 256th of them each), of packs and of
+	// refs. This repository's largest is objects, 258; 100,000 holds a
+	// folder of loose objects of 25 million, or 100,000 loose refs.
+	maxListed = 100000
+	// listBatch is the entries a listing reads between two asks of the
+	// read's context (ReadDir).
+	listBatch = 1024
 )
+
+// listBound is maxListed, lowered by a test.
+var listBound = maxListed
 
 // bound is how much the opener reads of the file at rel, its path from the
 // folder of its file system ('/'): -1 for one under objects (a loose
@@ -306,7 +317,9 @@ func (fs *careOS) Stat(name string) (os.FileInfo, error) {
 // folder only (dirOnly) once the root's look finds a folder: a name the
 // look finds no folder is answered "not a directory" before any open, and
 // one put in the folder's place after the look fails the open with the
-// system's "not a directory".
+// system's "not a directory". It reads listBatch entries at a time and
+// asks the read's context between two (ended); a folder of more than
+// maxListed entries is refused.
 func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 	fi, err := fs.Stat(name)
 	if err == nil && !fi.IsDir() {
@@ -321,10 +334,31 @@ func (fs *careOS) ReadDir(name string) ([]os.FileInfo, error) {
 		return nil, fs.judge(rel, err)
 	}
 	defer f.Close()
-	list, err := f.Readdir(-1)
+	var list []os.FileInfo
+	for {
+		batch, err := f.Readdir(listBatch)
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		if list = append(list, batch...); len(list) > listBound {
+			return nil, fs.refuse("%s holds more than %d entries; at most %d of them are listed", filepath.ToSlash(rel), listBound, listBound)
+		}
+		if betweenBatches != nil {
+			betweenBatches(rel)
+		}
+		if err := fs.seen.ended(); err != nil {
+			return nil, err
+		}
+	}
 	slices.SortFunc(list, func(a, b os.FileInfo) int { return strings.Compare(a.Name(), b.Name()) })
-	return list, err
+	return list, nil
 }
+
+// betweenBatches, set by a test, runs between two batches of a listing
+// (ReadDir).
+var betweenBatches func(rel string)
 
 func (fs *careOS) Join(elem ...string) string { return filepath.Join(elem...) }
 
@@ -429,21 +463,39 @@ type refusal struct {
 
 // ended is the read's context's error once the context has ended, noted as
 // the opening's answer, and nil before. Every step of a read asks it before
-// it reads the repository: careOS's open, look and listing, careFile's Read
-// and ReadAt, and the object cache's look-up (ending). go-git reads each
-// object from that cache or from its file, so the candidates of a
-// revision's name, the commits of a walk and the files of a comparison each
-// ask, and the read ends at its next step whatever go-git makes of the
-// error. What runs between two asks works on what was read, in time that
-// grows with it (an object or a delta's base decoded, a small file within
-// its bound parsed), except one file's patch, whose work grows with the
-// square of its lines: MaxPatched bounds it.
+// it reads the repository: the discovery at each folder (gitDirs), careOS's
+// open and look, careFile's Read and ReadAt, and the object cache's look-up
+// (ending). go-git reads each object from that cache or from its file, so
+// the candidates of a revision's name, the commits of a walk and the files
+// of a comparison each ask, and the read ends at its next step whatever
+// go-git makes of the error; the read asks once more when it returns
+// (read), so it answers the context's error whichever step noticed. What
+// runs between two asks works on what was read, in time that grows with
+// it (an object or a delta's base decoded, a small file within its bound
+// parsed), or is bounded otherwise: a folder's listing asks between two
+// batches and holds at most maxListed entries (ReadDir); renames are
+// looked for among at most MaxRenamed added and deleted files, and a
+// comparison asks between two files, each file's line diff bounded in
+// time (diffTrees, lineDiff).
 func (r *refusal) ended() error {
 	if r.ctx == nil || r.ctx.Err() == nil {
 		return nil
 	}
 	return r.note(r.ctx.Err())
 }
+
+// or is the read's context's error once the context has ended (ended),
+// else err: a look that failed as the context ended.
+func (r *refusal) or(err error) error {
+	if ended := r.ended(); ended != nil {
+		return ended
+	}
+	return err
+}
+
+// looking, set by a test, runs as the discovery looks for .git in a folder
+// (gitDirs).
+var looking func(folder string)
 
 func (r *refusal) keep(fs *careOS) *careOS {
 	r.mu.Lock()
@@ -510,25 +562,33 @@ func (r *refusal) first() error {
 // tree, when no folder up to it has a .git. Whether a folder holds a .git
 // is a look (a stat), which needs the folder entered, not listed: a root
 // is opened only for the folder that holds it (and for the root of the
-// file system, when no folder up to it does).
+// file system, when no folder up to it does). The read's context is asked
+// at each folder before its looks (ended), and a look that failed once it
+// had ended answers its error.
 func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 	p, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, err
 	}
 	for {
+		if err := seen.ended(); err != nil {
+			return nil, nil, err
+		}
+		if looking != nil {
+			looking(p)
+		}
 		folder := p
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			folder = filepath.Dir(p)
 		} else if err != nil && !os.IsNotExist(err) {
-			return nil, nil, err
+			return nil, nil, seen.or(err)
 		}
 		up := filepath.Dir(p)
 		if _, err := os.Stat(filepath.Join(folder, git.GitDirName)); os.IsNotExist(err) && up != p {
 			p = up
 			continue
 		} else if err != nil && !os.IsNotExist(err) {
-			return nil, nil, err
+			return nil, nil, seen.or(err)
 		}
 		fs := careFS(folder, itsFolder, seen)
 		fi, err := fs.Stat(filepath.Join(fs.dir, git.GitDirName))
@@ -540,7 +600,7 @@ func gitDirs(dir string, seen *refusal) (dot, wt billy.Filesystem, err error) {
 			return dot, fs.billy(), err
 		}
 		if !os.IsNotExist(err) {
-			return nil, nil, err
+			return nil, nil, seen.or(err)
 		}
 		if up != p {
 			seen.drop(fs)

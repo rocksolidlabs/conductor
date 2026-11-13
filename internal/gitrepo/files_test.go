@@ -3,6 +3,7 @@ package gitrepo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -377,6 +378,76 @@ func TestEveryStepAsksWhetherTheContextHasEnded(t *testing.T) {
 	}
 	if cached || !errors.Is(seen.first(), context.Canceled) {
 		t.Errorf("the cache found the object once the context had ended (%v), and the opening answers %v; want nothing found and the context's error", cached, seen.first())
+	}
+}
+
+// A folder's listing reads its entries in batches and asks the read's
+// context between two: a context ended there, with a batch still to read,
+// ends the listing with the context's error.
+func TestAListingEndsWithItsContextBetweenTwoBatches(t *testing.T) {
+	dir := t.TempDir()
+	for i := range listBatch + 1 {
+		write(t, dir, fmt.Sprintf("f%05d", i), "")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seen := &refusal{ctx: ctx}
+	defer seen.close()
+	held := 0
+	betweenBatches = func(string) { held++; cancel() }
+	defer func() { betweenBatches = nil }()
+	list, err := careFS(dir, gitDir, seen).billy().ReadDir(".")
+	if !errors.Is(err, context.Canceled) || held != 1 || list != nil {
+		t.Errorf("a listing of %d entries, its context ended after the first batch: %d listed, held %d times, %v; want none, once, and the context's error", listBatch+1, len(list), held, err)
+	}
+}
+
+// A folder of as many entries as the listing's bound is listed; one entry
+// more is refused, in the opener's words.
+func TestAFolderPastTheListingsBoundIsRefused(t *testing.T) {
+	listBound = 3
+	defer func() { listBound = maxListed }()
+	dir := t.TempDir()
+	for i := range 3 {
+		write(t, dir, fmt.Sprintf("refs/f%d", i), "")
+	}
+	seen := &refusal{}
+	defer seen.close()
+	fs := careFS(dir, gitDir, seen).billy()
+	if list, err := fs.ReadDir("refs"); err != nil || len(list) != 3 {
+		t.Fatalf("a folder of 3 entries: %d listed, %v; want 3", len(list), err)
+	}
+	write(t, dir, "refs/f3", "")
+	const words = ": refs holds more than 3 entries; at most 3 of them are listed"
+	if list, err := fs.ReadDir("refs"); !errors.Is(err, ErrUnreadable) || !strings.HasSuffix(err.Error(), words) || list != nil || !errors.Is(seen.first(), ErrUnreadable) {
+		t.Errorf("a folder of 4 entries: %d listed, %v (noted %v); want it refused as %q", len(list), err, seen.first(), words)
+	}
+}
+
+// The discovery asks the read's context at each folder it tries before it
+// looks in it: a context ended as it looks in the second folder of four on
+// the way to the repository's top ends the read there, with the context's
+// error and no look after.
+func TestTheDiscoveryEndsWithItsContextBetweenTwoFolders(t *testing.T) {
+	dir := scratch(t)
+	write(t, dir, "a.txt", "one\n")
+	commit(t, dir, time.Time{}, "one")
+	deep := filepath.Join(dir, "a", "b", "c", "d")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var looked []string
+	looking = func(folder string) {
+		if looked = append(looked, folder); len(looked) == 2 {
+			cancel()
+		}
+	}
+	defer func() { looking = nil }()
+	_, err := Commits(ctx, deep, "", time.Time{})
+	if !errors.Is(err, context.Canceled) || len(looked) != 2 {
+		t.Errorf("a discovery whose context ended in its second folder: %v, looked in %q; want the context's error and two folders", err, looked)
 	}
 }
 

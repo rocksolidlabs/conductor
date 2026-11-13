@@ -1019,8 +1019,7 @@ func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 // a revision's name that names nothing (which go-git goes on trying); in
 // Commits at the second commit of its walk to the merge base with main
 // (which takes no context: it would read the third); in Compare at the
-// second file of the comparison (whose patch, ended, answers go-git's own
-// error, not the context's).
+// second file of the comparison.
 func TestAReadEndsWithItsContext(t *testing.T) {
 	r := ordinary(t)
 	gitIn(t, r.wt, time.Time{}, "pack-refs", "--all")
