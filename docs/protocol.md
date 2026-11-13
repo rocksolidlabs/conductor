@@ -4623,51 +4623,66 @@ with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
 place its value leaves the server: every other field is scrubbed of the
 secret of every tree the engine holds one for (in any case, made
 `${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
-The revision is read now, within 5 s for the wait and the read together,
-in an index of the server's own for that tree (made HEAD's entries again
-at every read, so a read is the tree at that read alone): `commit`
-HEAD's, `content` the tree id of everything the tree holds that git
-would see (uncommitted edits and new files that are not ignored),
-`changed` every path that differs from HEAD counted, `changedPaths` the
+The revision is read now: `commit` HEAD's commit as the read recorded
+it, `content` the tree id of everything the tree holds that git would
+see (uncommitted edits and new files that are not ignored), `changed`
+every path that differs from that commit counted, `changedPaths` the
 first of them within 200 and 16 KiB as encoded (a path with a control
 character left out, still counted), `changedCut` when some are left
-out. A read that fails or passes 5 s answers `content` `""` and `unread`
-in words, and the server logs it by its kind alone (late, not a
-repository, refused, git failed), never with git's message.
+out. A read that fails, passes 5 s or ends after the server's stop began
+answers `content` `""`, no changed path and `unread` in words, and the
+server logs it by its kind alone (late, not a repository, refused, git
+failed), never with git's message.
 
-Where a read runs. From the run's working directory the tree is reached
-one name at a time, each looked at without following it, a directory,
-opened through the one before it and the directory that was looked at;
-its git directory is the one its `.git` file names (at most 4 KiB), taken
-only when it is a folder directly under `worktrees` of the run's
-repository's common git directory whose `gitdir` file names this tree's
-`.git` back (the same file). No `.git` file, a `.git` directory, any
-other git directory, or a name that is a link: the tree is not read and
-no git command runs in it. Every command (`rev-parse HEAD`, `read-tree
---reset`, `add -A`, `write-tree`, `diff --cached --name-only -z`) names
-`--git-dir` and `--work-tree` outright, the work tree the opened
-directory, with `GIT_NO_REPLACE_OBJECTS=1`, literal pathspecs, the stat
-data trusted in full, no sparse checkout, `core.symlinks` from a link
-made and removed in the run's worktrees folder, and `core.fileMode` true
-where a file made once per index in the tree keeps the executable bit. A
-source's class, for the captures (a later row), is read the same way at
-the commit the read recorded: `ls-tree` of that commit for exactly the
-paths given, and `check-ignore` with them on its input (it takes no
-literal pathspec, so a path that begins with `:` is not given to it),
-each answer read within an entry
-and its bytes for each path, past which the class is not known.
+Where a read runs. A tree's read is git's, run in the tree's directory
+as the server opened it, with the work tree named outright
+(`--work-tree`): on Linux by the open handle, elsewhere by its path,
+which is compared again after the read. From the run's working directory
+the tree is reached one name at a time, each looked at without following
+it, a directory, opened through the one before it and the directory that
+was looked at; a name that is a link is not read. The server opens
+nothing else in the tree. The tree's own `.git` says which git directory
+git reads, and that directory's configuration applies, as for the
+engine's own comparison of a checkout. git looks for the repository in
+the tree alone (`GIT_CEILING_DIRECTORIES` is the folder that holds it):
+a tree with no `.git` of its own is not read (not a repository). The
+commands, with the recorded commit id where they name one: `rev-parse
+--verify HEAD^{commit}`, `read-tree --reset <commit>`, `add -A`,
+`write-tree` and `diff --cached --name-only -z <commit>`, with
+`GIT_NO_REPLACE_OBJECTS=1`, literal pathspecs, the stat data trusted in
+full, no sparse checkout, no split index, and `core.fileMode` true where
+a file made once per index in the tree keeps the executable bit (looked
+at through the file it opened). What each writes is bounded: an id at
+1 KiB, the diff as it comes within the paths' bounds, git's error stream
+at its first 4 KiB. A source's class, for the captures (a later row), is
+read the same way at the commit the read recorded: `ls-tree` of that
+commit for exactly the paths given, and `check-ignore` with them on its
+input (it takes no literal pathspec, so a path that begins with `:` is
+not given to it), each answer read within an entry and its bytes for
+each path, past which the class is not known.
 
-The kept indexes. One read of a tree runs at a time, so a lock of its
-index found as a read starts is one a cut read left: the index and its
-lock are dropped and the read starts from none. At most eight indexes are
-kept: an index a read holds or waits for is never let go, the least
-recently read of the others is to make room, and with all eight held a
-read of a ninth tree waits within its 5 s and then answers unread. Once
-the server's stop has begun, a read makes no folder and no index.
+The kept indexes. The index is the server's own: one file, in a folder
+under the server's temporary directory, made the recorded commit's
+entries again at every read, so a read is the tree at that read alone;
+a file whose bytes and stat data did not change since the last read is
+not hashed again, as `git status` works. One read of a tree runs at a
+time, so a lock of its index found as a read starts is one a cut read
+left: the index and its lock are dropped and the read starts from none.
+At most eight indexes are kept: an index a read holds or waits for is
+never let go, the least recently read of the others is to make room, and
+with all eight held a read of a ninth tree waits within its 5 s and then
+answers unread. They are not removed when a preview closes. A read's
+commands are ended at 5 s, the wait for a tree's turn counted in them.
+The server's stop is marked before it removes the folder, and a read
+asks the mark after its last command: once the stop has begun a read is
+unread and makes no folder and no index. A server ended without its stop
+leaves the folder to the system's cleanup.
 
 Where this differs from the plan: the label is the admin's alone until
 the row of the shared read; the classes are read by two commands over
-the exact paths; the index is made HEAD's again with `read-tree --reset`.
+the exact paths; the index is made the commit's again with `read-tree
+--reset`; at most eight indexes are kept, the least recently read let
+go, where the plan keeps one for the open preview's life.
 
 #### GitHub tokens
 
