@@ -61,9 +61,11 @@ func storedPaths(paths []string) []string {
 // within labelReadWait. At most maxTreeIndexes are kept: an entry a read
 // holds or waits for is reserved, and the least recently read of the
 // others is let go to make room; with none to let go, a read of another
-// tree waits for one. Once the server's stop has begun (mark, at
-// Shutdown's entry), a read makes nothing and a read that ends is unread;
-// the stop removes the folder of indexes (close).
+// tree waits for one. The stop begins at Shutdown's entry (mark): a read
+// that begins once it has begun makes no folder and no index; a read under
+// way when it begins may still run its commands and write its own index
+// until the stop removes the folder of indexes (close), and its label is
+// unread.
 type treeReads struct {
 	mu      sync.Mutex
 	dir     string

@@ -4689,12 +4689,17 @@ stat settings (the stat data trusted in full), the sparse checkout
 executable bit (`core.fileMode` true); every other setting of the
 repository's configuration applies.
 
-What the server itself opens: from the run's working directory the tree
-is reached one name at a time, each looked at without following it, a
-directory, opened through the one before it as a folder only (a name
-that is no folder at that moment fails at once) and the directory that
-was looked at; a name that is a link, or anything else than a folder, is
-not read. For the look at whether the file system keeps the executable
+What the server itself opens: the run's working directory, opened as a
+folder only, and from it the tree reached one name at a time, each looked
+at without following it, a directory, opened through the one before it as
+a folder only and the directory that was looked at. A name that is no
+folder at the moment of its open fails at once and the tree is not read
+(for the run's working directory the system's error, logged as `git
+failed`; for a name beneath it the read is refused). A name that is a
+link, or anything else than a folder, at its look is not read; a link
+put in place of a name between its look and its open is followed only
+when it leads to the very directory that was looked at, and any other is
+refused. For the look at whether the file system keeps the executable
 bit, once per index, it makes one new file of its own in the tree and
 removes it, as the engine's comparison of a checkout does. Every
 existing file of a tree and of its git directory is opened by git.
@@ -4731,10 +4736,12 @@ with all eight held a read of a ninth tree waits within its 5 s and then
 answers unread. They are not removed when a preview closes. A read's
 commands are ended at 5 s, the wait for a tree's turn counted in them.
 The server's stop is marked as it begins, before any of its waits, and
-removes the folder of indexes; a read asks the mark after its last
-command: a read that runs into the stop is unread, and once the stop has
-begun a read makes no folder and no index. A server ended without its
-stop leaves the folder to the system's cleanup.
+removes the folder of indexes. A read that begins once the stop has begun
+makes no folder and no index. A read under way when the stop begins may
+still run its commands and write its own index until the stop removes the
+folder; it asks the mark after its last command, and its label is unread.
+A server ended without its stop leaves the folder to the system's
+cleanup.
 
 Where this differs from the plan: the label is the admin's alone until
 the row of the shared read; the classes are read by two commands over
