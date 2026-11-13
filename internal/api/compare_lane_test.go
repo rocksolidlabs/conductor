@@ -110,9 +110,11 @@ func (b *bodySource) Read([]byte) (int, error) {
 
 // A door closed to a lane answers its token 409 lane without reading the
 // body: a body past every bound is not refused as too large, and the
-// handler answers with nothing read from the body's source. A handler
-// that reads fails the test at its first read; the request's context then
-// ends, closing the source, so it returns.
+// handler answers with nothing read from the body's source. The crew
+// route answers the admin's token on a lane's session the same way,
+// before its body is read. A handler that reads fails the test at its
+// first read; the request's context then ends, closing the source, so it
+// returns.
 func TestALaneIsRefusedBeforeItsBodyIsRead(t *testing.T) {
 	ce := newCompareEnv(t, compareOpts{})
 	big := bytes.Repeat([]byte(" "), 8<<20)
@@ -126,12 +128,18 @@ func TestALaneIsRefusedBeforeItsBodyIsRead(t *testing.T) {
 		}
 		laneRefused(t, path+" past its bound", status, raw, out)
 	}
-	for _, path := range []string{"/decisions", "/crew", "/ticket/comments"} {
+	for _, c := range []struct{ who, tok, path string }{
+		{"the lane's token", ce.bTok, "/decisions"},
+		{"the lane's token", ce.bTok, "/crew"},
+		{"the lane's token", ce.bTok, "/ticket/comments"},
+		{"the admin's token", adminToken, "/crew"},
+	} {
+		path := c.path + " to " + c.who
 		ctx, cancel := context.WithCancel(t.Context())
 		src := &bodySource{ctx: ctx, reading: make(chan struct{})}
-		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/sessions/"+ce.b+path, src)
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/sessions/"+ce.b+c.path, src)
 		req.ContentLength = 1 << 20
-		req.Header.Set("Authorization", "Bearer "+ce.bTok)
+		req.Header.Set("Authorization", "Bearer "+c.tok)
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		served := make(chan struct{})
@@ -151,7 +159,7 @@ func TestALaneIsRefusedBeforeItsBodyIsRead(t *testing.T) {
 		}
 		var out map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &out)
-		if path == "/ticket/comments" {
+		if c.path == "/ticket/comments" {
 			if rec.Code != http.StatusConflict || errorCode(out) != "lane" {
 				t.Errorf("%s with its body unread: %d %.300s", path, rec.Code, rec.Body)
 			}
@@ -275,14 +283,32 @@ func TestALanesViewOfAnEndedRunHasNoOutcome(t *testing.T) {
 	}
 }
 
+// laneLimitRoutes is the route each limit of the guide's overview names,
+// written out here and not read from limitRoutes: a limit with no entry
+// names no route.
+var laneLimitRoutes = map[string]string{
+	"report_message": "POST /api/sessions/{id}/attention",
+	"self_crews":     "POST /api/sessions/{id}/crew",
+	"self_links":     "POST /api/sessions/{id}/links/agent",
+	"message":        "POST /api/sessions/{id}/messages",
+	"inbox":          "GET /api/sessions/{id}/inbox",
+	"result_summary": "POST /api/sessions/{id}/task/result",
+	"result_issues":  "POST /api/sessions/{id}/task/result",
+	"comment":        "POST /api/sessions/{id}/ticket/comments",
+}
+
 // A lane's guide names no door the table refuses, in its operations or
 // in its limits, and not the ticket's comment; its overview names only
-// the limits of routes it is served; its ticket_read, run_status and
-// message_send say what each gives a lane. A comparison's task.md offers
+// the limits of routes it is served, each limit's route as
+// laneLimitRoutes has it; its ticket_read, run_status, message_send and
+// inbox_read say what each gives a lane. A comparison's task.md offers
 // no comment on the ticket. An ordinary run's member's guide names the
 // decision tools, its own link, its limits and a body's bound, and says
 // of each operation what it always has.
 func TestALanesGuideAndTaskNameOnlyItsDoors(t *testing.T) {
+	if !maps.Equal(limitRoutes, laneLimitRoutes) {
+		t.Fatalf("the limits' routes: %v, want %v", limitRoutes, laneLimitRoutes)
+	}
 	ce := newCompareEnv(t, compareOpts{})
 	ops := map[string]string{}
 	for _, op := range operationsTable() {
@@ -296,7 +322,7 @@ func TestALanesGuideAndTaskNameOnlyItsDoors(t *testing.T) {
 	}
 	for _, v := range ov["limits"].([]any) {
 		name, _, _ := strings.Cut(v.(string), ":")
-		if route, ok := limitRoutes[name]; !ok || compareDoors[route] == doorRefused || route == laneCommentPattern {
+		if route, ok := laneLimitRoutes[name]; !ok || compareDoors[route] == doorRefused || route == laneCommentPattern {
 			t.Errorf("the lane's guide names the limit %q, of no route it is served", v)
 		}
 	}
@@ -330,6 +356,39 @@ func TestALanesGuideAndTaskNameOnlyItsDoors(t *testing.T) {
 	}
 	if !strings.Contains(string(md), "`task_blocked` with why, or in your result's summary.") || strings.Contains(strings.ToLower(string(md)), "comment") {
 		t.Fatalf("approach-b's task.md:\n%s", md)
+	}
+}
+
+// A lane's ticket reply, as the server answers it for a comparison
+// launched from CND-1, has no status in its ticket, whichever token asks;
+// an ordinary run's member's reply has one, for a run linked to CND-1 and
+// for one launched from CND-2. The CLI tells a lane's reply by that.
+func TestALanesTicketReplyHasNoStatus(t *testing.T) {
+	ce := newCompareEnv(t, compareOpts{})
+	for _, tok := range []string{ce.bTok, adminToken} {
+		raw, out := ce.laneTicketOf(t, tok, ce.b)
+		if tk, _ := out["ticket"].(map[string]any); out["launch"] == nil || slices.Contains(objectKeys(tk), "status") {
+			t.Fatalf("the lane's ticket has a status: %s", raw)
+		}
+	}
+	ce.newDispatchTicket(t, "CND", "Slow lookup", map[string]any{"description": "Keep it simple."})
+	saved, err := ce.srv.crews.Create(managedCrew(filepath.Join(ce.root, "repo")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-2/plans", map[string]any{"opId": opID(), "crew": saved.ID}, http.StatusCreated, ""), "plan")["id"].(string)
+	ce.expect(t, "POST", "/api/dispatch/plans/"+plan+"/approve", map[string]any{"opId": opID(), "byName": "Nate", "note": "Go."}, http.StatusOK, "")
+	launched := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-2/launch", map[string]any{"opId": opID(), "plan": plan}, http.StatusCreated, ""), "launch")
+	sid, tok := ce.session(t, launched["runId"].(string), "build")
+	for _, s := range []struct{ sid, tok, what string }{
+		{ce.member, ce.plainTok, "linked"}, {ce.member, adminToken, "linked"},
+		{sid, tok, "launched"}, {sid, adminToken, "launched"},
+	} {
+		status, raw, out := ce.callAs(t, s.tok, "GET", "/api/sessions/"+s.sid+"/ticket", nil)
+		tk, _ := out["ticket"].(map[string]any)
+		if st, _ := tk["status"].(string); status != http.StatusOK || st == "" || (out["launch"] != nil) != (s.what == "launched") {
+			t.Fatalf("a member's ticket of an ordinary run %s: %d %.300s", s.what, status, raw)
+		}
 	}
 }
 

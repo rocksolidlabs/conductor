@@ -275,8 +275,9 @@ func TestMcpTicketToolsAgainstTheServer(t *testing.T) {
 
 // ticket_read in an attempt of a run launched from its ticket (Program
 // item DS2, PR-13) says what the run was launched at first, then what
-// changed since and that the run follows the ticket as launched, as
-// conductor task ticket does.
+// changed since and that the run follows the ticket as launched, telling
+// an ordinary run's member to say so with ticket_comment or task_blocked,
+// as conductor task ticket does.
 func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
 	a := newPlannedAPI(t)
 	launchedRev := a.ticket(t, "CND-1").Rev
@@ -288,7 +289,8 @@ func TestMcpTicketReadSaysWhatItWasLaunchedAt(t *testing.T) {
 	read := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ticket_read","arguments":{}}}`
 	text, isErr := toolText(t, mcpRun(t, sessionEnv(a.hs.URL, sid, token), read)[0])
 	want := fmt.Sprintf("As launched: CND-1 at revision %d, plan revision 1, in .conductor/ticket.md (the package: .conductor/package.json, the attachments in .conductor/attachments/)."+
-		" Now at revision %d: the title and the acceptance criteria changed; 2 comments since. Your run follows the ticket as launched", launchedRev, now)
+		" Now at revision %d: the title and the acceptance criteria changed; 2 comments since. Your run follows the ticket as launched:"+
+		" a change that matters to your work is a person's to decide, so tell them (ticket_comment, or task_blocked when it stops you), never act on it alone.\n\n", launchedRev, now)
 	if isErr || !strings.HasPrefix(text, want) || !strings.Contains(text, "\n\n# CND-1: Fix the login loop now\n") {
 		t.Fatalf("ticket_read: %v\n%s\nwant the start\n%s", isErr, text, want)
 	}
