@@ -59,8 +59,11 @@ type Options struct {
 	Log       *slog.Logger
 	// StopGrace is the SIGTERM grace period before SIGKILL.
 	StopGrace time.Duration
-	// Tokens, when set, holds the hash of the session's agent token from
-	// SetAgentToken to the session's end (TokenEntry).
+	// Tokens, when set, is the set SetAgentToken adds the hash of a token
+	// it is given to. A launch adds its token's hash itself, at the mint,
+	// and hands the entry over (TakeAgentToken): the session holds it from
+	// that hand-off. Either way the session removes the entry when another
+	// token replaces it or as the session ends (TokenEntry).
 	Tokens TokenSet
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.

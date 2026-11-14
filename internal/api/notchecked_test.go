@@ -27,6 +27,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/share"
@@ -779,15 +780,28 @@ func (l *liveTokens) size() int {
 // first (the session's report) it is served as a server with no provider
 // serves it, the provider never asked; at a route that does not take it, it
 // is a token the chain does not know: the provider is asked, and while it
-// cannot judge, 503 not_checked.
+// cannot judge, 503 not_checked. Nothing the session's host does after,
+// a resume with a token of its own, a status, or the session's leaving
+// the registry, puts anything in the set.
 func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	e, f := liveTokenEnv(t, nil)
 	free := newTestEnv(t, nil)
 	tok := unminted("h")
-	host := dialFakeHost(t, e, tok)
-	if n := e.srv.agentTokens.size(); n != 0 {
-		t.Fatalf("the set of live tokens holds %d tokens once a hosted session registered, not 0", n)
+	sess := func(agentToken string) proto.HostSession {
+		return proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, AgentToken: agentToken}
 	}
+	host, registered := dialFakeHostWith(t, e, proto.HostInfo{Name: "laptop"}, sess(tok), "Bearer test-host-token")
+	secret, _ := registered["secret"].(string)
+	if secret == "" {
+		t.Fatal("the server sent no secret to resume with")
+	}
+	setHolds := func(when string) {
+		t.Helper()
+		if n := e.srv.agentTokens.size(); n != 0 {
+			t.Fatalf("the set of live tokens holds %d tokens once %s, not 0", n, when)
+		}
+	}
+	setHolds("a hosted session registered")
 	report := principalPlaces[1]
 	want := placeAnswerOf(askPlace(free.srv, report, dialFakeHost(t, free, tok).sessionID, tok))
 	if got := placeAnswerOf(askAs(e.srv, report, host.sessionID, tok, "", &judgeCase{state: "fails"})); got != want || got.code != http.StatusOK {
@@ -800,10 +814,46 @@ func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	if n := f.timesAsked(tok); n != 1 {
 		t.Fatalf("the provider was asked %d times about a hosted session's token at a route that does not take it", n)
 	}
+
+	// The host goes and resumes the session with another token, which the
+	// session takes (before the server says it registered).
+	id := host.sessionID
+	host.c.CloseNow()
+	until(t, "the host gone", func() bool { return hostedSession(t, e, id).Info().Status == session.StatusHostDisconnected })
+	tok2 := unminted("r")
+	again, resumed := dialFakeHostRegister(t, e, proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: proto.HostInfo{Name: "laptop"}, Session: sess(tok2),
+		Resume: &proto.HostResume{SessionID: id, Secret: secret}}, "Bearer test-host-token", nil)
+	if resumed["resumed"] != true || again.sessionID != id {
+		t.Fatalf("resume: %v", resumed)
+	}
+	if !hostedSession(t, e, id).AgentTokenOK(tok2) {
+		t.Fatal("the resumed session does not hold the resume's token")
+	}
+	setHolds("the hosted session resumed with a token")
+
+	// A status, the session's end: the read loop has handled it once it
+	// answers a revoke sent after it.
+	again.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: id, Status: string(session.StatusExited)})
+	again.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "after-status", LinkID: "none"})
+	linkAnswer(t, again, "after-status")
+	if st := hostedSession(t, e, id).Info().Status; st != session.StatusExited {
+		t.Fatalf("the hosted session's status after its host said exited: %s", st)
+	}
+	setHolds("the hosted session's host sent a status")
+
+	// The ended session leaves the registry (Retire) before the answer.
+	if resp, out := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("removing the ended hosted session: %d %v", resp.StatusCode, out)
+	}
+	setHolds("the hosted session left the registry")
 }
 
-// No file of internal/signal names the set of live tokens: a hosted
-// session puts nothing in it and takes nothing out.
+// No Go file of internal/signal, its tests among them, holds an identifier
+// spelled TokenSet, TokenEntry, AddToken, TakeAgentToken, Tokens,
+// agentTokens or liveTokens, wherever it stands (a declaration, a field, a
+// selector), whatever it refers to. It looks inside that package alone and
+// by those names alone: a hosted session reaches the set of live tokens by
+// none of them.
 func TestNoHostedSessionNamesTheLiveTokens(t *testing.T) {
 	files, err := filepath.Glob("../signal/*.go")
 	if err != nil || len(files) == 0 {

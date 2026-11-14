@@ -2096,8 +2096,9 @@ type RefusedError struct {
 
 // CredentialWithheld is Withheld, whatever the refusal's status: a
 // server's publication refused so is owed when its tries end, judged on
-// its last try (a 401 ends them at once), and the next Share publishes it. conductor host's first registration
-// waits on a withheld 401 alone (withheldRefusal).
+// its last try (a 401 ends them at once), and the next Share publishes it.
+// conductor host's first registration waits on a withheld 401 alone
+// (withheldRefusal).
 func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
 
 func (e *RefusedError) Error() string {
