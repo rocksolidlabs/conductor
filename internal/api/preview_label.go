@@ -278,9 +278,11 @@ func (tr *treeReads) stopping() bool {
 
 // read reads the worktree of wp now (crew.TreeRevision) in its entry,
 // opened as the engine made it (crew.OpenTree: a tree that cannot be
-// reached so is not read), and then, when step is given, runs step in the
-// same tree, index, gate and time (a capture's sources, at the commit the
-// read recorded). A read that ends past labelReadWait, fails after naming
+// reached so is not read), and then, when step is given and the read named
+// the commit, runs step in the same tree, index, gate and time (a
+// capture's look for its repository's top and its sources, at the commit
+// the read recorded; whole says the rest of the read did not fail). A read
+// that ends past labelReadWait, fails after naming
 // HEAD (step's error among it), or ends once the stop has begun
 // (errReadsStopped, whatever else ended it) gives the commit alone and the
 // error. A capture's step whose time runs out inside it (its look for the
@@ -288,7 +290,7 @@ func (tr *treeReads) stopping() bool {
 // and the changed paths that were read are kept, the hints' classes are
 // not known (and the repository's top not named, when the time ran out in
 // its look), and the capture's log says so (captureFacts).
-func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) error) (crew.TreeRead, error) {
+func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string, whole bool) error) (crew.TreeRead, error) {
 	limit := func(ctx context.Context) (context.Context, context.CancelFunc) {
 		return context.WithTimeout(ctx, labelReadWait)
 	}
@@ -316,8 +318,10 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step fun
 	}
 	defer t.Close()
 	read, err := crew.TreeRevision(ctx, t, e.ix)
-	if err == nil && step != nil {
-		err = step(ctx, t, e.ix, read.Commit)
+	if step != nil && read.Commit != "" {
+		if serr := step(ctx, t, e.ix, read.Commit, err == nil); err == nil {
+			err = serr
+		}
 	}
 	if err == nil && !t.Still() {
 		err = crew.ErrTreeMoved

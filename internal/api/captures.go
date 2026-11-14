@@ -2,12 +2,15 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"mime"
@@ -37,8 +40,10 @@ import (
 // readCaptureEdit, readCaptureDelete) reads the body bounded as a whole
 // and in each part, decodes it once with no member unknown, refuses in
 // fixed words and takes the digest of what was decoded, the operation's
-// content. Then every string the request carries is scrubbed of the
-// secret of every tree the engine holds one for (scrubSecrets), each text
+// content. Then the secret of every tree the engine holds one for is read
+// once: an identifier kept as sent that holds a part of one is refused
+// (keptAsSent), and every string the request carries is scrubbed of them
+// (scrubSecrets); each text
 // of an element's report is made storable (dispatch.ReportText), and the
 // operation is answered by its receipt when it was seen
 // (dispatch.Store.Replay). A create is then checked whole by the store's
@@ -145,21 +150,33 @@ func decodeCapture(b []byte, v any) *apiError {
 // check of an operation (dispatch.Op.Check) as the request carried it,
 // before anything of it is scrubbed, so that a display name is judged the
 // same whatever secrets are held when it comes again (it is scrubbed later
-// with the body, never longer). An id the scrub would change (it holds a
-// part of one of secrets) is refused here, the one place an operation is
-// made from a request, before any call to the store: no operation's row,
-// receipt or reply carries it.
-func opOf(r *http.Request, id, by string, secrets []string) (dispatch.Op, *apiError) {
+// with the body, never longer).
+func opOf(r *http.Request, id, by string) (dispatch.Op, *apiError) {
 	op := dispatch.Op{Actor: actorOf(r), ID: id, By: by}
 	switch err := op.Check(); {
 	case errors.Is(err, dispatch.ErrBadOpID):
 		return dispatch.Op{}, badCapture("opId is 1 to 32 letters, digits, '.', '_', '~' or '-'")
 	case err != nil:
 		return dispatch.Op{}, badCapture(fmt.Sprintf("byName is a display name of at most %d characters", dispatch.MaxByName))
-	case holdsSecret(id, secrets):
-		return dispatch.Op{}, badCapture("opId holds a tree's secret")
 	}
 	return op, nil
+}
+
+// keptAsSent refuses, in fixed words, the identifiers a request carries
+// that are kept or answered as sent, the operation's id and the capture's
+// id of an edit's or a delete's path ("" for none), when one holds a part
+// of one of secrets as the scrub finds one. A write calls it once its body
+// is read, with the one reading of the secrets its body is then scrubbed
+// with, before any call to the store: no operation's row, receipt or reply
+// carries such an id.
+func keptAsSent(secrets []string, opID, captureID string) *apiError {
+	switch {
+	case holdsSecret(opID, secrets):
+		return badCapture("opId holds a tree's secret")
+	case holdsSecret(captureID, secrets):
+		return badCapture("the capture's id holds a tree's secret")
+	}
+	return nil
 }
 
 // readJSONBody reads a body of at most limit bytes whole: 413 bound past
@@ -181,8 +198,8 @@ func readJSONBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, 
 // maxCaptureJSON) and then, when there is a screenshot, its part image
 // (image/png, at most dispatch.MaxCaptureImage), each once and no other;
 // the digest of the capture as decoded with the screenshot's SHA-256 as
-// uploaded; the operation as opOf makes it (secrets the trees' held now).
-func readCaptureCreate(w http.ResponseWriter, r *http.Request, secrets []string) (captureRequest[captureCreateBody], *apiError) {
+// uploaded; the operation as opOf makes it.
+func readCaptureCreate(w http.ResponseWriter, r *http.Request) (captureRequest[captureCreateBody], *apiError) {
 	var req captureRequest[captureCreateBody]
 	mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "multipart/form-data" || params["boundary"] == "" {
@@ -208,7 +225,7 @@ func readCaptureCreate(w http.ResponseWriter, r *http.Request, secrets []string)
 			}
 			aerr := decodeCapture(capture, &req.body)
 			if aerr == nil {
-				req.op, aerr = opOf(r, req.body.OpID, req.body.ByName, secrets)
+				req.op, aerr = opOf(r, req.body.OpID, req.body.ByName)
 			}
 			if aerr != nil {
 				return req, aerr
@@ -257,14 +274,14 @@ func readCaptureCreate(w http.ResponseWriter, r *http.Request, secrets []string)
 
 // readCaptureEdit is the gate of an edit: one JSON object of at most
 // maxCaptureJSON; the digest of its revision and annotations.
-func readCaptureEdit(w http.ResponseWriter, r *http.Request, secrets []string) (captureRequest[captureEditBody], *apiError) {
+func readCaptureEdit(w http.ResponseWriter, r *http.Request) (captureRequest[captureEditBody], *apiError) {
 	var req captureRequest[captureEditBody]
 	b, aerr := readJSONBody(w, r, maxCaptureJSON)
 	if aerr == nil {
 		aerr = decodeCapture(b, &req.body)
 	}
 	if aerr == nil {
-		req.op, aerr = opOf(r, req.body.OpID, req.body.ByName, secrets)
+		req.op, aerr = opOf(r, req.body.OpID, req.body.ByName)
 	}
 	if aerr != nil {
 		return req, aerr
@@ -283,14 +300,14 @@ func readCaptureEdit(w http.ResponseWriter, r *http.Request, secrets []string) (
 
 // readCaptureDelete is the gate of a delete: {opId, byName?}, at most
 // maxBody.
-func readCaptureDelete(w http.ResponseWriter, r *http.Request, secrets []string) (captureRequest[captureDeleteBody], *apiError) {
+func readCaptureDelete(w http.ResponseWriter, r *http.Request) (captureRequest[captureDeleteBody], *apiError) {
 	var req captureRequest[captureDeleteBody]
 	b, aerr := readJSONBody(w, r, maxBody)
 	if aerr == nil {
 		aerr = decodeCapture(b, &req.body)
 	}
 	if aerr == nil {
-		req.op, aerr = opOf(r, req.body.OpID, req.body.ByName, secrets)
+		req.op, aerr = opOf(r, req.body.OpID, req.body.ByName)
 	}
 	return req, aerr
 }
@@ -324,7 +341,13 @@ func (s *Server) handleCaptureCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, aerr := readCaptureCreate(w, r, s.liveSecrets())
+	req, aerr := readCaptureCreate(w, r)
+	// The secrets held once the body is read, the one reading its ids are
+	// judged and its body scrubbed with.
+	secrets := s.liveSecrets()
+	if aerr == nil {
+		aerr = keptAsSent(secrets, req.body.OpID, "")
+	}
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
@@ -337,7 +360,7 @@ func (s *Server) handleCaptureCreate(w http.ResponseWriter, r *http.Request) {
 			measured[i] = proto.PreviewMeasure(*a.Element)
 		}
 	}
-	scrubSecrets(&req.body, s.liveSecrets())
+	scrubSecrets(&req.body, secrets)
 	req.op.By = req.body.ByName
 	n := req.body.NewCapture
 	n.Annotations = make([]dispatch.NewAnnotation, len(req.body.Annotations))
@@ -368,7 +391,7 @@ func (s *Server) handleCaptureCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.image != nil {
-		kept, aerr := keptScreenshot(ctx, req.image, s.liveSecrets())
+		kept, aerr := s.keptScreenshot(ctx, req.image, s.liveSecrets())
 		if aerr != nil {
 			writeAPIError(w, aerr)
 			return
@@ -405,12 +428,16 @@ func (s *Server) handleCaptureEdit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, aerr := readCaptureEdit(w, r, s.liveSecrets())
+	req, aerr := readCaptureEdit(w, r)
+	secrets := s.liveSecrets()
+	if aerr == nil {
+		aerr = keptAsSent(secrets, req.body.OpID, id)
+	}
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
-	scrubSecrets(&req.body, s.liveSecrets())
+	scrubSecrets(&req.body, secrets)
 	req.op.By = req.body.ByName
 	ctx, cancel := opContext(r)
 	defer cancel()
@@ -433,12 +460,16 @@ func (s *Server) handleCaptureDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	req, aerr := readCaptureDelete(w, r, s.liveSecrets())
+	req, aerr := readCaptureDelete(w, r)
+	secrets := s.liveSecrets()
+	if aerr == nil {
+		aerr = keptAsSent(secrets, req.body.OpID, id)
+	}
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
-	scrubSecrets(&req.body, s.liveSecrets())
+	scrubSecrets(&req.body, secrets)
 	req.op.By = req.body.ByName
 	ctx, cancel := opContext(r)
 	defer cancel()
@@ -593,7 +624,8 @@ func otherOrigin(page, want string, secrets []string) *apiError {
 // no_preview otherwise, a candidate's checkout among it), the page of
 // that preview's origin (400 invalid), the tree's revision read now by the
 // label's read (treeReads.read) with, as its step, the top of the run's
-// repository looked up and each element's sources made relative, checked
+// repository looked up (for every read that named the commit, the commit
+// alone among them) and each element's sources made relative, checked
 // and classed in the tree, and the run's scope. What the read gives
 // decides the create, here alone: a read that
 // gave no commit, or was refused (the tree moved, the stop began), is 503
@@ -637,14 +669,14 @@ func (s *Server) captureFacts(ctx context.Context, ds *dispatch.Store, from capt
 	var sources [][]dispatch.Source
 	var top string
 	var unclassed, untopped error
-	read, err := s.trees.read(ctx, wp, func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) (err error) {
-		// The repository's top is looked for here, in the read's time and
-		// under what the stop cancels and waits for: no git of a capture
-		// runs outside its read.
+	read, err := s.trees.read(ctx, wp, func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string, whole bool) (err error) {
+		// The repository's top is looked for here, for every read that
+		// named the commit, in the read's time and under what the stop
+		// cancels and waits for: no git of a capture runs outside its read.
 		if held {
 			top, untopped = s.topOf(ctx, run.Cwd)
 		}
-		if slices.ContainsFunc(hints, func(hs []dispatch.Hint) bool { return len(hs) > 0 }) {
+		if whole && slices.ContainsFunc(hints, func(hs []dispatch.Hint) bool { return len(hs) > 0 }) {
 			sources, unclassed, err = captureSources(ctx, t, ix, commit, wp.Dir, hints)
 		}
 		return err
@@ -808,9 +840,10 @@ func throughLink(root *os.Root, p string) bool {
 	return false
 }
 
-// pngDecodes holds the decode of a screenshot and its encoding to one at a
-// time: at most one 4,096-pixel image (128 MiB at 16 bits a channel) and
-// its kept file in memory.
+// pngDecodes holds the decode of a screenshot, its pixels made 8-bit RGBA
+// and their encoding to one at a time: at most one 4,096-pixel image
+// (128 MiB at 16 bits a channel), its 8-bit copy (64 MiB) and its kept file
+// in memory.
 var pngDecodes = make(chan struct{}, 1)
 
 // screenshotSize reads a screenshot's header, before a pixel is allocated
@@ -834,32 +867,66 @@ var pngKept = png.Encoder{CompressionLevel: png.DefaultCompression}
 
 // keptScreenshot is what the store keeps, hashes and serves of a
 // screenshot, its header read first (screenshotSize): the server's own PNG
-// encoding (pngKept) of the image the upload decodes to, and nothing else
-// of the upload (no chunk beside the pixels', nothing after their end),
-// the decode and the encoding made together one at a time (pngDecodes).
-// Refused, in fixed words: an upload that is not a whole PNG (400), a
-// kept file past dispatch.MaxCaptureImage (413 bound, the encoding cut
-// there), and one that holds a part of a tree's secret as the scrub finds
-// one (400).
-func keptScreenshot(ctx context.Context, b []byte, secrets []string) ([]byte, *apiError) {
+// encoding (pngKept) of the upload's pixels as 8-bit RGBA (rgba8), and
+// nothing else of the upload (no palette, no chunk beside the pixels',
+// nothing after their end), the decode, the conversion and the encoding
+// made together one at a time (pngDecodes). Refused, in fixed words: an
+// upload that is not a whole PNG (400), a kept file past
+// dispatch.MaxCaptureImage (413 bound, the encoding cut there), and one
+// that holds a part of a tree's secret as the scrub finds one (400).
+func (s *Server) keptScreenshot(ctx context.Context, b []byte, secrets []string) ([]byte, *apiError) {
 	select {
 	case pngDecodes <- struct{}{}:
 	case <-ctx.Done():
 		return nil, newAPIError(http.StatusServiceUnavailable, "busy", "the server is checking another screenshot: save again")
 	}
 	defer func() { <-pngDecodes }()
+	seam := func(string) {}
+	if s.inScreenshotGate != nil {
+		seam = s.inScreenshotGate
+	}
+	seam("decoding")
+	defer seam("kept")
 	img, err := png.Decode(bytes.NewReader(b))
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "invalid", "the screenshot is not a whole PNG")
 	}
-	kept := &boundedBuffer{max: dispatch.MaxCaptureImage}
-	if err := pngKept.Encode(kept, img); err != nil {
+	kept := &boundedBuffer{max: cmp.Or(s.keptImageMax, dispatch.MaxCaptureImage)}
+	if err := pngKept.Encode(kept, rgba8(img)); err != nil {
 		return nil, newAPIError(http.StatusRequestEntityTooLarge, "bound", fmt.Sprintf("the screenshot is more than %d MiB as the server keeps it", dispatch.MaxCaptureImage>>20))
 	}
 	if holdsSecret(kept.String(), secrets) {
 		return nil, newAPIError(http.StatusBadRequest, "invalid", "the screenshot holds a tree's secret")
 	}
 	return kept.Bytes(), nil
+}
+
+// rgba8 is img's pixels as 8-bit RGBA: img itself when it is already (an
+// RGBA or an NRGBA image), else each pixel's own colour at 8 bits a
+// channel, not premultiplied (a palette's entry, a grey; a 16-bit
+// channel's high byte), so no palette and no 16-bit value is kept.
+func rgba8(img image.Image) image.Image {
+	switch img.(type) {
+	case *image.RGBA, *image.NRGBA:
+		return img
+	}
+	b := img.Bounds()
+	out := image.NewNRGBA(b)
+	wide, _ := img.(*image.NRGBA64)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := out.Pix[out.PixOffset(b.Min.X, y):out.PixOffset(b.Max.X, y)]
+		if wide != nil {
+			from := wide.Pix[wide.PixOffset(b.Min.X, y):]
+			for i := range row {
+				row[i] = from[2*i]
+			}
+			continue
+		}
+		for x := b.Min.X; x < b.Max.X; x++ {
+			out.SetNRGBA(x, y, color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA))
+		}
+	}
+	return out
 }
 
 // boundedBuffer is a buffer that takes at most max bytes: a write past it

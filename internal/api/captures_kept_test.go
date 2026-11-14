@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -408,7 +409,8 @@ func TestATreeEndedAfterItsReadLeavesNoSecretInAPath(t *testing.T) {
 // A refusal of a capture or of an edit names the member and what it may
 // be, never what the request carried: the way it was made, the viewport's
 // mode, the selection's commit and content, how the screenshot was taken,
-// an annotation's kind, an edit's kind; the marker is in no reply, no
+// an annotation's kind, the capture retaken, the page's declared revision,
+// an edit's kind; the marker is in no reply, no
 // receipt and no file of the store.
 func TestACapturesRefusalQuotesNothingItCarried(t *testing.T) {
 	p := previewEnv(t, nil)
@@ -421,6 +423,8 @@ func TestACapturesRefusalQuotesNothingItCarried(t *testing.T) {
 		"the selection's content":      func(b *captureCreateBody) { b.Label.Content = marker; moment(b) },
 		"how the screenshot was taken": func(b *captureCreateBody) { b.ImageHow = marker },
 		"an annotation's kind":         func(b *captureCreateBody) { b.Annotations[0].Kind = marker },
+		"the capture retaken":          func(b *captureCreateBody) { b.RetakeOf = marker },
+		"the page's declared revision": func(b *captureCreateBody) { b.Revision = marker; moment(b) },
 	} {
 		b := p.body(t, l, button())
 		set(&b)
@@ -472,9 +476,34 @@ func encodedPNG(t *testing.T, img image.Image) []byte {
 	return b.Bytes()
 }
 
+// rawPNG is a PNG of w by h pixels of the colour type at 8 bits a channel,
+// Adam7-interlaced when interlaced, each pixel's bytes px(x, y), every row
+// unfiltered.
+func rawPNG(w, h int, colourType byte, interlaced bool, px func(x, y int) []byte) []byte {
+	passes := [][4]int{{0, 0, 1, 1}}
+	if interlaced {
+		passes = [][4]int{{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}}
+	}
+	var data []byte
+	for _, pass := range passes {
+		for y := pass[1]; y < h; y += pass[3] {
+			row := []byte{0}
+			for x := pass[0]; x < w; x += pass[2] {
+				row = append(row, px(x, y)...)
+			}
+			if len(row) > 1 {
+				data = append(data, row...)
+			}
+		}
+	}
+	ihdr := slices.Concat(binary32(uint32(w)), binary32(uint32(h)), []byte{8, colourType, 0, 0, map[bool]byte{true: 1}[interlaced]})
+	return slices.Concat([]byte("\x89PNG\r\n\x1a\n"), chunkOf("IHDR", ihdr), chunkOf("IDAT", zlibOf(data)), chunkOf("IEND", nil))
+}
+
 // screenshotKinds are a 5 by 3 screenshot of each kind of pixel: 8 bits
 // and 16 bits a channel, a palette and grey, each with and without
-// transparency (grey's tRNS chunk put in by hand).
+// transparency (grey's tRNS chunk put in by hand), grey with an alpha
+// channel, and a 9 by 9 interlaced grey one.
 func screenshotKinds(t *testing.T) map[string][]byte {
 	t.Helper()
 	r := image.Rect(0, 0, 5, 3)
@@ -498,11 +527,22 @@ func screenshotKinds(t *testing.T) map[string][]byte {
 	return map[string][]byte{"8-bit": encodedPNG(t, rgba), "8-bit, transparent": encodedPNG(t, nrgba),
 		"16-bit": encodedPNG(t, rgba64), "16-bit, transparent": encodedPNG(t, nrgba64),
 		"paletted": encodedPNG(t, paletted), "paletted, transparent": encodedPNG(t, palettedAlpha),
-		"grey": encodedPNG(t, gray), "grey, transparent": grayAlpha}
+		"grey": encodedPNG(t, gray), "grey, transparent": grayAlpha,
+		"grey with alpha": rawPNG(5, 3, 4, false, func(x, y int) []byte { return []byte{uint8(40*x + 60*y + 1), uint8(50*x + 10*y)} }),
+		"interlaced":      rawPNG(9, 9, 0, true, func(x, y int) []byte { return []byte{uint8(25*x + 3*y)} })}
+}
+
+// at8 is a pixel's colour at 8 bits a channel, not premultiplied: a 16-bit
+// channel's high byte.
+func at8(c color.Color) color.NRGBA {
+	if w, ok := c.(color.NRGBA64); ok {
+		return color.NRGBA{uint8(w.R >> 8), uint8(w.G >> 8), uint8(w.B >> 8), uint8(w.A >> 8)}
+	}
+	return color.NRGBAModel.Convert(c).(color.NRGBA)
 }
 
 // samePixels fails t unless the PNGs a and b decode to the same size and,
-// pixel by pixel, the same colours.
+// pixel by pixel, the same colours at 8 bits a channel.
 func samePixels(t *testing.T, name string, a, b []byte) {
 	t.Helper()
 	ia, err := png.Decode(bytes.NewReader(a))
@@ -518,7 +558,7 @@ func samePixels(t *testing.T, name string, a, b []byte) {
 	}
 	for x := ia.Bounds().Min.X; x < ia.Bounds().Max.X; x++ {
 		for y := ia.Bounds().Min.Y; y < ia.Bounds().Max.Y; y++ {
-			if ca, cb := color.NRGBA64Model.Convert(ia.At(x, y)), color.NRGBA64Model.Convert(ib.At(x, y)); ca != cb {
+			if ca, cb := at8(ia.At(x, y)), at8(ib.At(x, y)); ca != cb {
 				t.Fatalf("%s: pixel %d,%d is %v, the upload's %v", name, x, y, cb, ca)
 			}
 		}
@@ -534,16 +574,27 @@ func chunkTypes(b []byte) []string {
 	return types
 }
 
+// keptAsRGBA8 fails t unless the PNG b is a kept file's form: its chunks
+// the pixels' own alone (no palette), 8 bits a channel, truecolour (with
+// its alpha, or without where every pixel is opaque) and not interlaced.
+func keptAsRGBA8(t *testing.T, name string, b []byte) {
+	t.Helper()
+	if fmt.Sprint(chunkTypes(b)) != "[IHDR IDAT IEND]" || b[24] != 8 || (b[25] != 2 && b[25] != 6) || b[28] != 0 {
+		t.Errorf("%s: the kept file's chunks %v, its depth %d, colour type %d, interlace %d", name, chunkTypes(b), b[24], b[25], b[28])
+	}
+}
+
 // What is kept of a screenshot is the server's own encoding of its pixels
-// (pngKept): an upload with image data after its pixels' end, a text
-// chunk, a colour profile, each small colour chunk holding a marker, bytes
-// after its end, and an animated image's chunks are each kept (201) as
-// that encoding, holding none of the marker's bytes and no chunk but the
-// pixels' own, decoding to the upload's pixels at its size; the same upload
-// sent again is answered by the first's receipt. Every kind of pixel (8
-// and 16 bits, a palette, grey, each with and without transparency) is
-// kept pixel for pixel, and the image's route and its hash are the kept
-// file's.
+// as 8-bit RGBA (pngKept, rgba8): an upload with image data after its
+// pixels' end, a text chunk, a colour profile, each small colour chunk
+// holding a marker, bytes after its end, and an animated image's chunks
+// are each kept (201) as that encoding, holding none of the marker's bytes
+// and no chunk but the pixels' own, decoding to the upload's pixels at its
+// size; the same upload sent again is answered by the first's receipt.
+// Every kind of pixel (8 and 16 bits, a palette, grey, each with and
+// without transparency, grey with alpha, an interlaced one) is kept as
+// 8-bit RGBA, pixel for pixel at 8 bits, and the image's route and its
+// hash are the kept file's.
 func TestWhatIsKeptOfAScreenshotIsTheServersEncoding(t *testing.T) {
 	p := previewEnv(t, nil)
 	l := p.label(t)
@@ -563,9 +614,10 @@ func TestWhatIsKeptOfAScreenshotIsTheServersEncoding(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		var own bytes.Buffer
-		if err := pngKept.Encode(&own, img); err != nil || !bytes.Equal(served, own.Bytes()) {
+		if err := pngKept.Encode(&own, rgba8(img)); err != nil || !bytes.Equal(served, own.Bytes()) {
 			t.Fatalf("%s: the kept file is not the server's encoding of the upload's pixels (%v)", name, err)
 		}
+		keptAsRGBA8(t, name, served)
 		samePixels(t, name, upload, served)
 		return b, c, served
 	}
@@ -599,8 +651,8 @@ func TestWhatIsKeptOfAScreenshotIsTheServersEncoding(t *testing.T) {
 			chunkOf("fcTL", frame(1)), chunkOf("fdAT", slices.Concat(binary32(2), zlibOf(marker)))),
 	} {
 		b, c, served := kept(name, upload)
-		if bytes.Contains(served, marker[:4]) || fmt.Sprint(chunkTypes(served)) != "[IHDR IDAT IEND]" {
-			t.Errorf("%s: the kept file's chunks %v, the marker kept %v", name, chunkTypes(served), bytes.Contains(served, marker[:4]))
+		if bytes.Contains(served, marker[:4]) {
+			t.Errorf("%s: the marker is kept", name)
 		}
 		again, out := postCapture(t, p.e, b, upload)
 		if again != http.StatusOK || receiptOf(t, out)["repeat"] != true || receiptOf(t, out)["id"] != c["id"] {
@@ -1163,13 +1215,31 @@ func goroutineIn(fn string) bool {
 	return false
 }
 
+// within is what ch gives, failing t when hung ends first: the bound of a
+// hang, never of a step.
+func within[T any](t *testing.T, hung context.Context, what string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-hung.Done():
+		t.Fatalf("%s: hung", what)
+	}
+	var none T
+	return none
+}
+
 // A capture and a label of one tree at once: the tree's entry counts both
 // (reserved), and while the capture's git is held at the runner's seam the
 // label waits at the entry's gate, its own git not started, and is
-// answered once the capture's read is over.
+// answered once the capture's read is over. The reads' time limit is the
+// test's (treeReads.limit, a cancellation of its own): no time runs out
+// while git is held, and a separate bound only bounds a hang.
 func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 	p := previewEnv(t, nil)
 	b := p.body(t, p.label(t), button())
+	hung, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer stop()
 	held, goOn := make(chan struct{}), make(chan struct{})
 	var holding, during atomic.Bool
 	var first, let sync.Once
@@ -1192,6 +1262,7 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 		return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
 	}))
 	tr := &p.e.srv.trees
+	tr.limit = context.WithCancel
 	handed := make(chan int, 2)
 	tr.seam = func(at, dir string) {
 		if at == "handed" {
@@ -1201,10 +1272,10 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 		}
 	}
 	captured := p.postAsync(t, b)
-	<-handed
-	<-held
+	within(t, hung, "the capture's entry", handed)
+	within(t, hung, "the capture's git", held)
 	labelled := p.labelAsync()
-	if n := <-handed; n != 2 {
+	if n := within(t, hung, "the label's entry", handed); n != 2 {
 		t.Errorf("the entry counted %d reads, want the capture's and the label's", n)
 	}
 	// The label waits at the gate, seen in the runtime's stacks: polled,
@@ -1213,6 +1284,8 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 		select {
 		case a := <-labelled:
 			t.Fatalf("the label was answered while the capture's git was held: %d %s", a.status, a.body)
+		case <-hung.Done():
+			t.Fatal("the label never waited at the gate")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1220,10 +1293,10 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 		t.Error("the label started git while the capture's was held")
 	}
 	release()
-	if a := <-captured; a.status != http.StatusCreated {
+	if a := within(t, hung, "the capture", captured); a.status != http.StatusCreated {
 		t.Fatalf("the capture: %d %s %v", a.status, a.body, a.err)
 	}
-	if a := <-labelled; a.status != http.StatusOK || during.Load() {
+	if a := within(t, hung, "the label", labelled); a.status != http.StatusOK || during.Load() {
 		t.Fatalf("the label: %d %s; git started while held %v", a.status, a.body, during.Load())
 	}
 }
@@ -1248,10 +1321,10 @@ func TestACapturesStepThatFailsPanicsOrRunsPastItsLimit(t *testing.T) {
 		ended = cancel
 		return ctx, cancel
 	}
-	for name, step := range map[string]func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) error{
-		"fails":  func(context.Context, *crew.Tree, *crew.TreeIndex, string) error { return failed },
-		"panics": func(context.Context, *crew.Tree, *crew.TreeIndex, string) error { panic(failed) },
-		"outlives its limit": func(ctx context.Context, _ *crew.Tree, _ *crew.TreeIndex, _ string) error {
+	for name, step := range map[string]func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string, whole bool) error{
+		"fails":  func(context.Context, *crew.Tree, *crew.TreeIndex, string, bool) error { return failed },
+		"panics": func(context.Context, *crew.Tree, *crew.TreeIndex, string, bool) error { panic(failed) },
+		"outlives its limit": func(ctx context.Context, _ *crew.Tree, _ *crew.TreeIndex, _ string, _ bool) error {
 			ended()
 			<-ctx.Done()
 			return ctx.Err()
@@ -1292,7 +1365,8 @@ func TestACapturesStepThatFailsPanicsOrRunsPastItsLimit(t *testing.T) {
 
 // A capture of a tree whose committed attributes file is gone is kept
 // with its commit alone (201): no content and no changed paths, and the
-// log says so.
+// log says so; its scope names the run's repository, looked up in that
+// read, and a retake of it by the same run is taken.
 func TestACaptureOfATreeWithoutItsAttributesFileKeepsTheCommit(t *testing.T) {
 	logs := &logBuffer{}
 	p := previewEnvLogging(t, map[string]string{".gitattributes": "*.txt text\n"}, logs)
@@ -1300,11 +1374,334 @@ func TestACaptureOfATreeWithoutItsAttributesFileKeepsTheCommit(t *testing.T) {
 	if err := os.Remove(filepath.Join(p.dir, ".gitattributes")); err != nil {
 		t.Fatal(err)
 	}
-	o := originOf(created(t, p.e, p.body(t, l, button()), nil))
+	c := created(t, p.e, p.body(t, l, button()), nil)
+	o := originOf(c)
 	if o["commit"] != l["commit"] || o["content"] != nil || len(o["changedPaths"].([]any)) != 0 {
 		t.Fatalf("the origin: %v", o)
 	}
 	if !strings.Contains(logs.String(), "a capture's tree was read to its commit alone") {
 		t.Fatalf("the log: %s", logs.String())
+	}
+	if top := gitIn(t, p.e.root, "rev-parse", "--show-toplevel"); c["scope"].(map[string]any)["repo"] != top {
+		t.Fatalf("the scope %v, the repository's top %s", c["scope"], top)
+	}
+	again := p.body(t, l, button())
+	again.RetakeOf = c["id"].(string)
+	if status, out := postCapture(t, p.e, again, nil); status != http.StatusCreated || out["capture"].(map[string]any)["retakeVia"] != "run" {
+		t.Fatalf("the retake: %d %v", status, out)
+	}
+}
+
+// madeLater is a request's body the test holds: its first read says so
+// (reading) and waits for the body's bytes (made).
+type madeLater struct {
+	reading chan struct{}
+	made    chan []byte
+	once    sync.Once
+	rest    *bytes.Reader
+}
+
+func (h *madeLater) Read(b []byte) (int, error) {
+	h.once.Do(func() {
+		close(h.reading)
+		h.rest = bytes.NewReader(<-h.made)
+	})
+	return h.rest.Read(b)
+}
+
+// A create, an edit and a delete whose bodies are held open while a tree
+// starts, then finished with an operation's id that holds 8 characters of
+// that tree's secret: each is refused 400 in fixed words, and no file of
+// the store, the write-ahead file among them, holds 8 characters in a row
+// of the secret. Each request is sent with Expect: 100-continue, so its
+// body is first read once the server's handler reads it.
+func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
+	p := previewEnv(t, nil)
+	l := p.label(t)
+	id := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+	client := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: 10 * time.Minute}}
+	t.Cleanup(client.CloseIdleConnections)
+	const boundary = "a-held-capture"
+	b := p.body(t, l, button())
+	type held struct {
+		body  *madeLater
+		build func(opID string) []byte
+		done  chan labelAnswer
+	}
+	send := func(path, ct string, build func(opID string) []byte) held {
+		h := held{&madeLater{reading: make(chan struct{}), made: make(chan []byte, 1)}, build, make(chan labelAnswer, 1)}
+		t.Cleanup(func() {
+			select {
+			case h.body.made <- nil:
+			default:
+			}
+		})
+		go func() {
+			req, err := http.NewRequest("POST", p.e.http.URL+path, h.body)
+			if err != nil {
+				h.done <- labelAnswer{err: err}
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			req.Header.Set("Content-Type", ct)
+			req.Header.Set("Expect", "100-continue")
+			resp, err := client.Do(req)
+			if err != nil {
+				h.done <- labelAnswer{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			data, err := io.ReadAll(resp.Body)
+			h.done <- labelAnswer{resp.StatusCode, data, err}
+		}()
+		return h
+	}
+	jsonOf := func(v map[string]any) func(string) []byte {
+		return func(opID string) []byte {
+			v["opId"] = opID
+			return encodeNoHTML(t, v)
+		}
+	}
+	requests := map[string]held{
+		"the create": send("/api/captures", "multipart/form-data; boundary="+boundary, func(opID string) []byte {
+			b.OpID = opID
+			var buf bytes.Buffer
+			mw := multipart.NewWriter(&buf)
+			if err := mw.SetBoundary(boundary); err != nil {
+				t.Fatal(err)
+			}
+			part, _ := mw.CreateFormField("capture")
+			part.Write(encodeNoHTML(t, b))
+			mw.Close()
+			return buf.Bytes()
+		}),
+		"the edit": send("/api/captures/"+id+"/edit", "application/json",
+			jsonOf(map[string]any{"expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}})),
+		"the delete": send("/api/captures/"+id+"/delete", "application/json", jsonOf(map[string]any{})),
+	}
+	for _, h := range requests {
+		<-h.body.reading
+	}
+	q := p.another(t)
+	if !slices.Contains(p.e.srv.runs.TreeSecrets(), q.secret) {
+		t.Fatal("the new tree's secret is not held")
+	}
+	for name, h := range requests {
+		h.body.made <- h.build("op-" + strings.ToUpper(q.secret[8:16]) + "-" + name[4:])
+		a := <-h.done
+		var out map[string]any
+		_ = json.Unmarshal(a.body, &out)
+		if got := fmt.Sprintf("%d %s %s", a.status, codeOf(out), apiMessage(out)); a.err != nil || got != "400 invalid_request opId holds a tree's secret" {
+			t.Errorf("%s: %s %v", name, got, a.err)
+		}
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), q.secret)
+}
+
+// A capture's id in an edit's or a delete's path that is 16 characters of
+// a tree's secret is refused 400 in fixed words before any call to the
+// store: no file of the store, the write-ahead file among them, holds 8
+// characters in a row of the secret.
+func TestACapturesIDHoldingASecretIsRefused(t *testing.T) {
+	p := previewEnv(t, nil)
+	created(t, p.e, p.body(t, p.label(t), button()), nil)
+	for name, w := range map[string]struct {
+		path string
+		body map[string]any
+	}{
+		"the edit":   {"/edit", map[string]any{"opId": "edit-by-a-secret", "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}}},
+		"the delete": {"/delete", map[string]any{"opId": "delete-by-a-secret"}},
+	} {
+		status, _, out := p.e.callAs(t, adminToken, "POST", "/api/captures/"+p.secret[24:40]+w.path, w.body)
+		if got := fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out)); got != "400 invalid_request the capture's id holds a tree's secret" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
+}
+
+// A display name past its bound as carried that holds a whole secret is
+// refused 400 on a create, an edit and a delete: it is judged before the
+// scrub, which would make it shorter than its bound.
+func TestADisplayNamePastItsBoundWithASecretIsRefused(t *testing.T) {
+	p := previewEnv(t, nil)
+	l := p.label(t)
+	id := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+	by := "Nate " + p.secret
+	if n := len([]rune(by)); n <= dispatch.MaxByName {
+		t.Fatalf("the display name is %d characters", n)
+	}
+	b := p.body(t, l, button())
+	b.ByName = by
+	status, out := postCapture(t, p.e, b, nil)
+	answers := map[string]string{"the create": fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out))}
+	for name, w := range map[string]struct {
+		path string
+		body map[string]any
+	}{
+		"the edit":   {"/edit", map[string]any{"opId": "edit-by-long", "byName": by, "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}}},
+		"the delete": {"/delete", map[string]any{"opId": "delete-by-long", "byName": by}},
+	} {
+		status, _, out := p.e.callAs(t, adminToken, "POST", "/api/captures/"+id+w.path, w.body)
+		answers[name] = fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out))
+	}
+	for name, got := range answers {
+		if want := fmt.Sprintf("400 invalid_request byName is a display name of at most %d characters", dispatch.MaxByName); got != want {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
+}
+
+// served is the kept screenshot of the capture c, as the image route
+// serves it.
+func (p *previewed) served(t *testing.T, c map[string]any) []byte {
+	t.Helper()
+	resp, b := p.e.raw("/api/captures/"+c["id"].(string)+"/image", adminToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the image: %d", resp.StatusCode)
+	}
+	return b
+}
+
+// A one-pixel paletted upload whose palette's unused entries spell a
+// marker is kept as its pixel's own colour: no palette, and none of the
+// marker's runs of 4 bytes in the kept file or in the store.
+func TestAPalettesUnusedEntriesAreNotKept(t *testing.T) {
+	p := previewEnv(t, nil)
+	marker := []byte("Pq8vLx3nTzKw")
+	pal := color.Palette{color.NRGBA{10, 20, 30, 255}}
+	for i := 0; i < len(marker); i += 3 {
+		pal = append(pal, color.NRGBA{marker[i], marker[i+1], marker[i+2], 255})
+	}
+	upload := encodedPNG(t, image.NewPaletted(image.Rect(0, 0, 1, 1), pal))
+	if !bytes.Contains(upload, marker) {
+		t.Fatal("the upload's palette does not hold the marker")
+	}
+	served := p.served(t, created(t, p.e, withImage(p.body(t, p.label(t))), upload))
+	keptAsRGBA8(t, "a palette's unused entries", served)
+	samePixels(t, "a palette's unused entries", upload, served)
+	for i := 0; i+4 <= len(marker); i++ {
+		if bytes.Contains(served, marker[i:i+4]) {
+			t.Errorf("the kept file holds %q of the marker", marker[i:i+4])
+		}
+	}
+	p.keptNowhere(t, strings.ToLower(string(marker[:4])), strings.ToLower(string(marker[8:])))
+}
+
+// A kept file whose bytes hold a part of a tree's secret as text (pixels
+// whose bytes are kept as they are, in a stored block) is refused 400 in
+// fixed words, and no file of the store holds 8 characters in a row of
+// the secret.
+func TestAKeptFileHoldingASecretIsRefused(t *testing.T) {
+	p := previewEnv(t, nil)
+	part := []byte(p.secret[:16])
+	// Pixels of no pattern, so the encoding keeps them stored, the secret's
+	// part among the first row's: the first whose kept file holds it.
+	var upload []byte
+	for seed := uint64(1); upload == nil && seed <= 500; seed++ {
+		rng := rand.New(rand.NewPCG(seed, 865))
+		img := image.NewNRGBA(image.Rect(0, 0, 64, 4))
+		for i := range img.Pix {
+			img.Pix[i] = byte(rng.Uint32())
+		}
+		copy(img.Pix[16:], part)
+		var own bytes.Buffer
+		if err := pngKept.Encode(&own, rgba8(img)); err == nil && bytes.Contains(own.Bytes(), part) {
+			upload = encodedPNG(t, img)
+		}
+	}
+	if upload == nil {
+		t.Fatal("no kept file of 500 held the secret's part")
+	}
+	b := withImage(p.body(t, p.label(t)))
+	status, out := postCapture(t, p.e, b, upload)
+	if got := fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out)); got != "400 invalid the screenshot holds a tree's secret" {
+		t.Fatalf("the capture: %s", got)
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
+}
+
+// A kept file past its bound (made 32 bytes through its seam) is refused
+// 413 in fixed words and nothing of the capture is kept; within it, the
+// same request is kept.
+func TestAKeptFilePastItsBoundIsRefused(t *testing.T) {
+	p := previewEnv(t, nil)
+	b := withImage(p.body(t, p.label(t)))
+	b.Title = "Past its bound"
+	p.e.srv.keptImageMax = 32
+	status, out := postCapture(t, p.e, b, pngOf(t, 16, 16))
+	if got := fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out)); got != "413 bound the screenshot is more than 4 MiB as the server keeps it" {
+		t.Fatalf("the capture: %s", got)
+	}
+	if found := hasSecret(t, filepath.Join(p.e.srv.store.Dir(), "dispatch"), "past its bound"); len(found) > 0 {
+		t.Fatalf("the capture is kept in %v", found)
+	}
+	p.e.srv.keptImageMax = 0
+	created(t, p.e, b, pngOf(t, 16, 16))
+}
+
+// Two screenshots at once: the first held inside the gate once it is kept
+// (inScreenshotGate), the second is seen waiting at the gate, its decode
+// not begun; both are kept once the first goes on, the decode, the
+// conversion and the encoding of each between its "decoding" and its
+// "kept".
+func TestScreenshotsAreKeptOneAtATime(t *testing.T) {
+	p := previewEnv(t, nil)
+	l := p.label(t)
+	var mu sync.Mutex
+	var steps []string
+	held, goOn := make(chan struct{}), make(chan struct{})
+	var first, let sync.Once
+	release := func() { let.Do(func() { close(goOn) }) }
+	t.Cleanup(release)
+	p.e.srv.inScreenshotGate = func(at string) {
+		mu.Lock()
+		steps = append(steps, at)
+		mu.Unlock()
+		mine := false
+		if at == "kept" {
+			first.Do(func() { mine = true })
+		}
+		if mine {
+			close(held)
+			<-goOn
+		}
+	}
+	stepsNow := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return fmt.Sprint(steps)
+	}
+	post := func(shot []byte) <-chan labelAnswer {
+		ct, body := captureMultipart(encodeNoHTML(t, withImage(p.body(t, l))), shot, 0)
+		done := make(chan labelAnswer, 1)
+		go func() {
+			status, data, err := sendAs(p.e, "POST", "/api/captures", ct, body)
+			done <- labelAnswer{status, data, err}
+		}()
+		return done
+	}
+	one := post(pngOf(t, 3, 3))
+	<-held
+	two := post(screenshotKinds(t)["paletted"])
+	for !goroutineIn("(*Server).keptScreenshot") {
+		select {
+		case a := <-two:
+			t.Fatalf("the second was answered while the first was held: %d %s", a.status, a.body)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if got := stepsNow(); got != "[decoding kept]" {
+		t.Errorf("while the first was held: %s", got)
+	}
+	release()
+	for name, done := range map[string]<-chan labelAnswer{"the first": one, "the second": two} {
+		if a := <-done; a.err != nil || a.status != http.StatusCreated {
+			t.Errorf("%s: %d %s %v", name, a.status, a.body, a.err)
+		}
+	}
+	if got := stepsNow(); got != "[decoding kept decoding kept]" {
+		t.Errorf("the steps: %s", got)
 	}
 }

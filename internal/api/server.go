@@ -241,6 +241,11 @@ type Server struct {
 	// repoTop, when a test sets it, stands in for gitcli.TopOf in a
 	// capture's look for its run's repository (topOf, captures.go).
 	repoTop func(ctx context.Context, dir string) (string, error)
+	// inScreenshotGate, when a test sets it, is called inside the
+	// screenshots' gate, at "decoding" and at "kept" (keptScreenshot);
+	// keptImageMax, when set, stands in for the kept file's bound.
+	inScreenshotGate func(at string)
+	keptImageMax     int
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
