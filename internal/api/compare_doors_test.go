@@ -30,6 +30,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
@@ -788,7 +789,7 @@ func TestALaneWhoseRunIsGoneIsRefusedEveryDoor(t *testing.T) {
 // once: through a walk of every such door, the identity provider is asked
 // about no token. The same token on another session is answered as on
 // main, 401, and as a live token of the server's own it is never asked of
-// the provider (ownToken).
+// the provider (liveTokens); a token nobody minted is (providerAsked).
 func TestALaneRefusalAsksNoIdentityProvider(t *testing.T) {
 	idp := &tokenIdentity{}
 	ce := newCompareEnv(t, compareOpts{identity: idp})
@@ -807,6 +808,21 @@ func TestALaneRefusalAsksNoIdentityProvider(t *testing.T) {
 	ce.expectAs(t, ce.bTok, "POST", "/api/sessions/"+ce.member+"/crew", map[string]any{}, http.StatusUnauthorized, "unauthorized")
 	if got := idp.askedTokens()[asked:]; len(got) != 0 {
 		t.Fatalf("the provider was asked %d times about a token of the server's own", len(got))
+	}
+	providerAsked(t, ce, idp)
+}
+
+// providerAsked fails t unless ce's identity provider idp is asked once
+// about a token of the minted length that nobody minted, answered 401:
+// the control of a test that holds that idp is asked about no token of
+// the server's own, which fails where idp is not wired at all.
+func providerAsked(t *testing.T, ce *compareEnv, idp *tokenIdentity) {
+	t.Helper()
+	unknown := strings.Repeat("u", share.TokenLen)
+	before := len(idp.askedTokens())
+	ce.expectAs(t, unknown, "GET", "/api/whoami", nil, http.StatusUnauthorized, "unauthorized")
+	if got := idp.askedTokens()[before:]; !slices.Equal(got, []string{unknown}) {
+		t.Fatalf("the provider was asked %d times about a token nobody minted, not once", len(got))
 	}
 }
 
@@ -920,19 +936,18 @@ func TestALanesViewStaysWhileAnotherLaneEnds(t *testing.T) {
 }
 
 // tokenReaders are the methods that read a session's agent token: each
-// is called only by agentTokenOK and ownToken, in
-// internal/api/attention.go.
-var tokenReaders = []string{"AgentTokenOK", "HoldsAgentToken"}
+// is called only by agentTokenOK, in internal/api/attention.go.
+var tokenReaders = []string{"AgentTokenOK"}
 
 // No file under internal/ reads a session's agent token but agentTokenOK,
-// where a comparison's lanes are held to compareDoors, and ownToken, which
-// says a token is the server's own and admits nothing with it: no call,
-// method value or other selector of a token method elsewhere, in this
-// package or any other; and the token methods of a server session and a
-// hosted one are the ones named here, so a new reader is a new name this
-// test knows.
+// where a comparison's lanes are held to compareDoors: no call, method
+// value or other selector of a token method elsewhere, in this package or
+// any other; and the token methods of a server session and a hosted one
+// are the ones named here, so a new reader is a new name this test knows.
+// The question whether a token is a live one of the server's own reads
+// the index alone (liveTokens.holds), once, in tokenPrincipal: no session.
 func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
-	inGuard, inOwn := 0, 0
+	inGuard, inQuestion := 0, 0
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -953,15 +968,22 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 			fn, _ := decl.(*ast.FuncDecl)
 			ast.Inspect(decl, func(n ast.Node) bool {
 				sel, ok := n.(*ast.SelectorExpr)
-				if !ok || !slices.Contains(tokenReaders, sel.Sel.Name) {
+				if !ok {
 					return true
 				}
-				switch {
-				case guard && fn != nil && fn.Name.Name == "agentTokenOK" && fn.Recv != nil && sel.Sel.Name == "AgentTokenOK":
+				if x, ok := sel.X.(*ast.SelectorExpr); ok && x.Sel.Name == "agentTokens" && sel.Sel.Name == "holds" {
+					if filepath.ToSlash(path) == "../api/auth.go" && fn != nil && fn.Name.Name == "tokenPrincipal" {
+						inQuestion++
+					} else {
+						t.Errorf("%s: the index of live tokens is read outside tokenPrincipal", fset.Position(sel.Pos()))
+					}
+				}
+				if !slices.Contains(tokenReaders, sel.Sel.Name) {
+					return true
+				}
+				if guard && fn != nil && fn.Name.Name == "agentTokenOK" && fn.Recv != nil {
 					inGuard++
-				case guard && fn != nil && fn.Name.Name == "ownToken" && fn.Recv != nil:
-					inOwn++
-				default:
+				} else {
 					t.Errorf("%s: an agent token is read outside agentTokenOK", fset.Position(sel.Pos()))
 				}
 				return true
@@ -972,14 +994,14 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inGuard != 2 || inOwn != 2 {
-		t.Fatalf("agentTokenOK reads the token %d times and ownToken %d, not 2 each (a server session's, a hosted one's)", inGuard, inOwn)
+	if inGuard != 2 || inQuestion != 1 {
+		t.Fatalf("agentTokenOK reads the token %d times, not 2 (a server session's, a hosted one's); tokenPrincipal reads the index %d times, not 1", inGuard, inQuestion)
 	}
 	token := regexp.MustCompile(`(?i)agenttoken`)
 	for _, c := range []struct {
 		typ  reflect.Type
 		want []string
-	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "HoldsAgentToken", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
+	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
 		var got []string
 		for i := range c.typ.NumMethod() {
 			if name := c.typ.Method(i).Name; token.MatchString(name) {

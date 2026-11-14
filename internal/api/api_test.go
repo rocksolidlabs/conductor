@@ -29,6 +29,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -177,8 +178,8 @@ func (e *testEnv) createSession(agent string) string {
 	return id
 }
 
-// agentToken gives a server session a known agent token, as the process in it
-// receives one, and returns it.
+// agentToken gives a server session a known agent token of the length the
+// server mints, as the process in it receives one, and returns it.
 func (e *testEnv) agentToken(id string) string {
 	e.t.Helper()
 	d, ok := e.srv.registry.Get(id)
@@ -186,7 +187,7 @@ func (e *testEnv) agentToken(id string) string {
 	if !ok || !isLocal {
 		e.t.Fatalf("session %s is not a server session", id)
 	}
-	tok := "agent-token-" + id
+	tok := ("agent-token-" + id + strings.Repeat("-", share.TokenLen))[:share.TokenLen]
 	local.SetAgentToken(tok)
 	return tok
 }

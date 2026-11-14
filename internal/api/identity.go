@@ -18,8 +18,8 @@ import (
 // "C2, identity at authenticate and hostTokenOK"). It is asked last, for a
 // bearer token the server's own chain does not know: the workbench token,
 // each host token and the share links come first, and a link that is
-// expired or revoked is refused as a link, then a session's agent token
-// (ownToken), so a live token of this server's own never reaches a
+// expired or revoked is refused as a link, then a live agent token of the
+// server's own (liveTokens), so a live token of this server's own never reaches a
 // provider and the free path never waits on one. Its
 // answer goes through the guard (guardIdentity, extensions.go), which
 // bounds it by ext.IdentityWait: a principal with no grant is no

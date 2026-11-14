@@ -135,8 +135,8 @@ func presentedToken(r *http.Request, allowQuery bool) string {
 
 // authenticate resolves a presented token to a principal: the workbench
 // token, each host token, the share links, a live token of the server's own
-// (ownToken), and only then, for a token none of them knows, the identity
-// provider (providerPrincipal). Unknown tokens
+// (liveTokens, asked only when a provider is registered), and only then,
+// for a token none of them knows, the identity provider (providerPrincipal). Unknown tokens
 // yield an empty principal; callers decide the response. ok false: r was
 // answered already (tokenPrincipal), and the caller writes nothing more.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, allowQuery bool) (principal, bool) {
@@ -154,9 +154,9 @@ func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, tok stri
 	if p, known := s.chainPrincipal(tok); known {
 		return p, true
 	}
-	if s.ownToken(tok) {
-		// At a route that does not take it: known, no principal, and
-		// never asked of a provider.
+	if s.identityName() != "" && s.agentTokens.holds(tok) {
+		// A live token of the server's own, at a route that does not take
+		// it: known, no principal, and never asked of a provider.
 		return principal{}, true
 	}
 	p := s.providerPrincipal(r, tok)

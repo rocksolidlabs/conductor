@@ -210,10 +210,10 @@ func (s *Server) publish(local *session.Local) {
 			if !again {
 				local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "not shared through the switchyard: " + err.Error()})
 				setWhy(err.Error())
-				// Refused, at once or once its tries ended, when the identity
-				// provider had no credential to present for a token it owns:
-				// owed, as a stopped one is, so the next Share publishes it
-				// again (republish).
+				// Its tries ended (a 401 ends them at once): owed, as a
+				// stopped one is, when this last refusal says the identity
+				// provider had no credential to present for a token it owns,
+				// so the next Share publishes it again (republish).
 				var w interface{ CredentialWithheld() bool }
 				if errors.As(err, &w) && w.CredentialWithheld() {
 					s.pubMu.Lock()

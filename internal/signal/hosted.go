@@ -849,6 +849,8 @@ type HostedSession struct {
 	hasAgentToken  bool
 	conn           *HostConn
 	viewers        map[string]*Viewer
+	// indexed is the token's entry in the hub's Tokens while it lives.
+	indexed session.IndexedToken
 	// gone are the viewers its host's leaving let go (HostDisconnected),
 	// until whoever serves each removes it (RemoveViewer): a revoke of a
 	// link still finds them, and stops what they are still written
@@ -1201,6 +1203,10 @@ func (h *HostedSession) AgentTokenOK(tok string) bool {
 func (h *HostedSession) setAgentToken(tok string) {
 	h.agentTokenHash = sha256.Sum256([]byte(tok))
 	h.hasAgentToken = tok != ""
+	h.indexed.Drop()
+	if h.hasAgentToken && !h.info.Status.Ended() && !h.retired {
+		h.indexed.Set(h.hub.Tokens, h.agentTokenHash)
+	}
 }
 
 // SetAttention records an attention change without prompt details. See
@@ -2029,6 +2035,7 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 	h.info.Status = status
 	h.info.ExitCode = exitCode
 	if status.Ended() {
+		h.indexed.Drop()
 		if h.info.EndedAt == nil {
 			now := time.Now().UTC()
 			h.info.EndedAt = &now
@@ -2094,6 +2101,7 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
 	h.retired = true
+	h.indexed.Drop()
 	for id := range h.linkLapse {
 		h.forgetLink(id)
 	}

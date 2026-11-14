@@ -351,7 +351,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if id == "" {
 		id = session.NewID()
 	}
-	agentToken, _ := share.NewToken()
+	agentToken, agentHash := share.NewToken()
+	// Live from its minting, before its process starts: the launch's entry
+	// until this returns, the session's own from SetAgentToken to its end.
+	s.agentTokens.Put(agentHash)
+	defer s.agentTokens.Drop(agentHash)
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -479,6 +483,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		FileDenyFunc:    s.fileDeny,
 		Transport:       proto.TransportWS,
 		Log:             s.log,
+		Tokens:          &s.agentTokens,
 		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
 		OnChat:          s.localChat,

@@ -3,9 +3,12 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
@@ -93,24 +96,45 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
-// ownToken says tok is a live token of the server's own past the chain's
-// (tokenPrincipal): the agent token of a session that has not ended, a
-// Brakeman turn's among them, and on a switchyard a hosted session's,
-// compared as agentTokenOK compares it, noting nothing. Every session is
-// looked at: one comparison each.
-func (s *Server) ownToken(tok string) bool {
-	own := false
-	s.registry.Each(func(d session.Driver) {
-		var held bool
-		switch drv := d.(type) {
-		case *session.Local:
-			held = drv.HoldsAgentToken(tok)
-		case *signal.HostedSession:
-			held = drv.AgentTokenOK(tok)
-		}
-		own = own || held && !d.Info().Status.Ended()
-	})
-	return own
+// liveTokens is the index of the server's own live agent tokens
+// (session.TokenIndex): the hash of each, counted by its holders, from
+// the moment it is minted (createLocalSession) or registered (a hosted
+// session's) to its session's end. tokenPrincipal reads it.
+type liveTokens struct {
+	mu   sync.Mutex
+	held map[[32]byte]int
+	// hashed counts the presented tokens holds hashed.
+	hashed atomic.Int64
+}
+
+func (l *liveTokens) Put(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held == nil {
+		l.held = map[[32]byte]int{}
+	}
+	l.held[h]++
+}
+
+func (l *liveTokens) Drop(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held[h]--; l.held[h] <= 0 {
+		delete(l.held, h)
+	}
+}
+
+// holds says tok is one of the live tokens: one hash and one lookup, for a
+// token of the length the server mints (share.TokenLen) alone.
+func (l *liveTokens) holds(tok string) bool {
+	if len(tok) != share.TokenLen {
+		return false
+	}
+	l.hashed.Add(1)
+	h := share.HashToken(tok)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held[h] > 0
 }
 
 // reportTarget finds the session a report is about. A session whose launch

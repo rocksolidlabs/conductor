@@ -449,9 +449,10 @@ refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 for now). A server publishing its sessions tries a 429 or a 503 again after
 15 s, 30 s, 1 min, 2 min and 2 min, or after the `Retry-After` it is given
 when longer (at most 5 min), and stops when the session ends; a
-publication whose registration presented no credential, its provider
-withholding one, is owed once it ends unpublished (at once on a 401, when
-its tries end on a 429 or a 503), and the next Share publishes it.
+publication whose registration withheld its credential (its provider had
+none to present) is owed when its tries end, whatever the refusal was,
+judged on its last try (a 401 ends them at once), and the next Share
+publishes it once.
 `conductor host`'s first registration fails at once on a 503, as on a dial
 that failed; a re-registration tries it again with its backoff, as it tries
 a dial that failed. Text frames are JSON; binary frames are RELAY
@@ -2813,15 +2814,20 @@ frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. A token is read in this order: the workbench token, each host
-token, the share links, and only then, for a token none of them knows, the
-identity provider when the build has one registered (package `ext`; a plain
-build has none, so there the order ends at the links). An expired or revoked
-link is refused as a link and never asked of a provider, nor is a live token
-of this server's own (the agent token of a session that has not ended, a
-Brakeman turn's among them): at a route that does not take it, it is an
-unknown token answered without a provider, in every state of one. A token
-of a session that has ended, and a link forgotten with its session, are
-unknown tokens. A provider's principal with the `admin` grant is admin wherever
+token, the share links, then, only when the build has an identity provider
+registered, the server's own live agent tokens, and only then, for a token
+none of them knows, that provider (package `ext`; a plain build has none, so
+there the order ends at the links). A live agent token is one the server
+holds from the moment it is minted (a session's on this server, before its
+process starts) or registered (a hosted session's) to the end of its
+session; it is found by its hash in one index, and a token of another
+length than the 43 characters the server and `conductor host` mint is never
+one. An expired or revoked link is refused as a link and never asked of a
+provider, nor is a live agent token (a Brakeman turn's among them): at a
+route that does not take it, it is an unknown token answered without a
+provider, in every state of one. A token of a session that has ended, or
+whose launch failed, and a link forgotten with its session, are unknown
+tokens. A provider's principal with the `admin` grant is admin wherever
 the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
 host token's, at `GET /ws/host` too; a principal without a grant is an

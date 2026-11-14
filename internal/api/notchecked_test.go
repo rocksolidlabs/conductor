@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -23,8 +24,13 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // The answer to a request whose token the identity provider did not judge
@@ -185,6 +191,19 @@ func (c *cutRecorder) Write(b []byte) (int, error) {
 }
 func (c *cutRecorder) Flush() { c.ResponseRecorder.Flush(); c.cut() }
 
+// placeAnswer is what a request is answered: its status, its
+// WWW-Authenticate and its error's code and words.
+type placeAnswer struct {
+	code      int
+	auth, err string
+}
+
+func placeAnswerOf(rec *httptest.ResponseRecorder) placeAnswer {
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return placeAnswer{rec.Code, rec.Header().Get("WWW-Authenticate"), codeOf(out) + ": " + apiMessage(out)}
+}
+
 // askPlace is what the server answers place's request presenting tok, on a
 // server whose session is sid.
 func askPlace(srv *Server, pl principalPlace, sid, tok string) *httptest.ResponseRecorder {
@@ -240,15 +259,18 @@ func isNotChecked(t *testing.T, what string, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// holdSlots takes every call slot of the identity guard named name, and
-// gives them back when t ends.
+// holdSlots takes every call slot of the identity guard named name, each
+// as it is free (a call the guard's wait gave up on gives its slot back
+// once it returns), and gives them back when t ends.
 func holdSlots(t *testing.T, srv *Server, name string) func() {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), testWait)
+	defer cancel()
 	var held []extSlot
 	for range extInFlight {
-		sl, ok := srv.extTake(ext.KindIdentity, name)
+		sl, ok := srv.extAwait(ctx, ext.KindIdentity, name)
 		if !ok {
-			t.Fatal("a slot was taken already")
+			t.Fatalf("a slot was still taken after %s", testWait)
 		}
 		held = append(held, sl)
 	}
@@ -498,15 +520,6 @@ func TestOwnTokensAnsweredAsWithoutProvider(t *testing.T) {
 	f := &judgeIdentity{asked: map[string]int{}}
 	with, without := ownTokenEnv(t, f), ownTokenEnv(t, nil)
 	t.Cleanup(func() { extWaiting.Store(nil) })
-	type answer struct {
-		code      int
-		auth, err string
-	}
-	answerOf := func(rec *httptest.ResponseRecorder) answer {
-		var out map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &out)
-		return answer{rec.Code, rec.Header().Get("WWW-Authenticate"), codeOf(out) + ": " + apiMessage(out)}
-	}
 	presented := []struct {
 		what      string
 		tok, turn func(o ownTokens) string
@@ -519,11 +532,11 @@ func TestOwnTokensAnsweredAsWithoutProvider(t *testing.T) {
 		t.Helper()
 		for _, pl := range principalPlaces {
 			for _, p := range presented {
-				want := answerOf(askAs(without.e.srv, pl, without.sid, p.tok(without), p.turn(without), nil))
+				want := placeAnswerOf(askAs(without.e.srv, pl, without.sid, p.tok(without), p.turn(without), nil))
 				if state == "late" {
 					setGuardWait(time.Nanosecond)
 				}
-				got := answerOf(askAs(with.e.srv, pl, with.sid, p.tok(with), p.turn(with), &judgeCase{state: state}))
+				got := placeAnswerOf(askAs(with.e.srv, pl, with.sid, p.tok(with), p.turn(with), &judgeCase{state: state}))
 				extWaiting.Store(nil)
 				if got != want {
 					t.Fatalf("%s, %s, %s: %+v, want %+v", pl.at, state, p.what, got, want)
@@ -560,11 +573,242 @@ func TestOwnTokensAnsweredAsWithoutProvider(t *testing.T) {
 	}
 }
 
+// liveTokenEnv is a server whose identity provider, a judgeIdentity, has
+// started, every refusal the token's.
+func liveTokenEnv(t *testing.T, mutate func(*config.Config)) (*testEnv, *judgeIdentity) {
+	t.Helper()
+	f := &judgeIdentity{asked: map[string]int{}}
+	e := providerEnv(t, mutate, f)
+	e.srv.limiter = newRateLimiter(1e6, 1e6)
+	e.srv.StartExtensions(t.Context())
+	if !e.srv.ProviderStarted(t.Context(), "cloud") {
+		t.Fatal("the provider did not start")
+	}
+	return e, f
+}
+
+// unminted is a token of the length the server mints that nobody minted.
+func unminted(c string) string { return strings.Repeat(c, share.TokenLen) }
+
+// whoami is an admin route, which takes no agent token.
+var whoami = principalPlace{method: "GET", path: "/api/whoami"}
+
+// asAnUnknownToken fails t unless tok, presented at pl (sid and turn as
+// askAs takes them) while the provider fails, is answered as a token
+// nobody minted is once the provider judges it not its own: as a server
+// with no provider answers it (TestJudgedTokenAnsweredAsWithoutProvider).
+func asAnUnknownToken(t *testing.T, srv *Server, what string, pl principalPlace, sid, tok, turn string) {
+	t.Helper()
+	want := placeAnswerOf(askAs(srv, pl, sid, unminted("u"), turn, &judgeCase{state: "not mine"}))
+	if got := placeAnswerOf(askAs(srv, pl, sid, tok, turn, &judgeCase{state: "fails"})); got != want {
+		t.Fatalf("%s, %s %s: %+v, want %+v", what, pl.method, pl.path, got, want)
+	}
+}
+
+// Whether a token is a live one of the server's own is one hash of it and
+// one lookup, the same with no session and with a thousand, half of them
+// ended; a token of another length than the server mints is not hashed for
+// it, whatever its size; and a server with no provider registered does not
+// ask it.
+func TestALiveTokenIsOneHashAndOneLookup(t *testing.T) {
+	if tok, _ := share.NewToken(); len(tok) != share.TokenLen {
+		t.Fatalf("a minted token is %d long, not %d", len(tok), share.TokenLen)
+	}
+	e, _ := liveTokenEnv(t, func(c *config.Config) { c.MaxSessions = 2000 })
+	hashes := func(srv *Server, tok string) int64 {
+		before := srv.agentTokens.hashed.Load()
+		askPlace(srv, whoami, "", tok)
+		return srv.agentTokens.hashed.Load() - before
+	}
+	check := func(what string) {
+		t.Helper()
+		if n := hashes(e.srv, unminted("u")); n != 1 {
+			t.Fatalf("%s: a token nobody minted hashed %d times, not once", what, n)
+		}
+		for _, size := range []int{1, share.TokenLen - 1, share.TokenLen + 1, 64 << 10} {
+			if n := hashes(e.srv, strings.Repeat("u", size)); n != 0 {
+				t.Fatalf("%s: a token %d long hashed %d times", what, size, n)
+			}
+		}
+	}
+	check("no session")
+	for i := range 1000 {
+		proc := sessiontest.NewFakeProc()
+		l := session.NewLocal(session.Info{ID: session.NewID(), Kind: session.KindServer, Status: session.StatusRunning, Cols: 80, Rows: 24}, proc, session.Options{Tokens: &e.srv.agentTokens})
+		l.SetAgentToken(fmt.Sprintf("%0*d", share.TokenLen, i))
+		if err := e.srv.registry.Add(l); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { proc.End(0) })
+		if i%2 == 0 {
+			if err := l.Stop(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check("a thousand sessions, half of them ended")
+	free := newTestEnv(t, nil)
+	if n := hashes(free.srv, unminted("u")); n != 0 {
+		t.Fatalf("no provider registered: a token hashed %d times", n)
+	}
+}
+
+// heldLaunch launches agent on e and holds the launch at its "started"
+// seam, its process running and its session not yet in the registry: the
+// session's id, its process's token (read from tokFile, which the process
+// writes), the release of the launch and its answer's status.
+func heldLaunch(t *testing.T, e *testEnv, agent, tokFile string) (id, tok string, release func(), created <-chan int) {
+	t.Helper()
+	started := make(chan string, 1)
+	gate := make(chan struct{})
+	var held, let sync.Once
+	release = func() { let.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	hook := func(stage, sid string) {
+		if stage == "started" {
+			held.Do(func() {
+				started <- sid
+				<-gate
+			})
+		}
+	}
+	e.srv.launchHook.Store(&hook)
+	t.Cleanup(func() { e.srv.launchHook.Store(nil) })
+	answer := make(chan int, 1)
+	go func() {
+		resp, _ := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": agent})
+		answer <- resp.StatusCode
+	}()
+	id = <-started
+	if !waitFor(testWait, func() bool {
+		b, err := os.ReadFile(tokFile)
+		tok = string(b)
+		return err == nil
+	}) {
+		t.Fatal("the process never wrote its token")
+	}
+	if _, ok := e.srv.registry.Get(id); ok {
+		t.Fatal("the registry holds the session while its launch is held")
+	}
+	return id, tok, release, answer
+}
+
+// A session's token is the server's own from its minting, before its
+// process starts: while the launch is held after the process started and
+// before the registry holds its session, the provider failing, the
+// process's token at an admin route, at /api/me, at the session's read and
+// at a Brakeman turn's shared read naming the session is answered as a
+// server with no provider answers it, and the provider is never asked
+// about it. Once the session ends, its token is unknown at once: the
+// provider is asked, and while it cannot judge, 503. A launch that fails
+// once its token was minted (the registry full) leaves its token unknown.
+func TestALaunchingSessionsTokenIsTheServersOwn(t *testing.T) {
+	e, f := liveTokenEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
+	dir := t.TempDir()
+	write := `printf %s "$CONDUCTOR_NOTIFY_TOKEN" > "$1.tmp" && mv "$1.tmp" "$1"; exec /bin/cat`
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: []catalog.Agent{
+		{ID: "first", Name: "first", Command: []string{"/bin/sh", "-c", write, "sh", filepath.Join(dir, "first")}},
+		{ID: "second", Name: "second", Command: []string{"/bin/sh", "-c", write, "sh", filepath.Join(dir, "second")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(cat)
+
+	id, tok, release, created := heldLaunch(t, e, "first", filepath.Join(dir, "first"))
+	for _, pl := range []principalPlace{whoami, {method: "GET", path: "/api/me"}, {method: "GET", path: "/api/sessions/{sid}"}} {
+		asAnUnknownToken(t, e.srv, "a launching session's token", pl, id, tok, "")
+	}
+	asAnUnknownToken(t, e.srv, "a launching session's token, its session named", principalPlace{method: "GET", path: "/api/dispatch/tickets"}, id, tok, id)
+	if n := f.timesAsked(tok); n != 0 {
+		t.Fatalf("the provider was asked %d times about a launching session's token", n)
+	}
+	release()
+	if code := <-created; code != http.StatusCreated {
+		t.Fatalf("the launch: %d", code)
+	}
+	d, _ := e.srv.registry.Get(id)
+	if err := d.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	isNotChecked(t, "an ended session's token", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok); n != 1 {
+		t.Fatalf("the provider was asked %d times about an ended session's token", n)
+	}
+
+	id, tok, release, created = heldLaunch(t, e, "second", filepath.Join(dir, "second"))
+	asAnUnknownToken(t, e.srv, "a launching session's token", whoami, id, tok, "")
+	res, err := e.srv.Reserve(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(res.Release)
+	release()
+	if code := <-created; code != http.StatusConflict {
+		t.Fatalf("a launch past the registry's cap: %d", code)
+	}
+	isNotChecked(t, "a failed launch's token", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok); n != 1 {
+		t.Fatalf("the provider was asked %d times about a failed launch's token", n)
+	}
+}
+
+// A hosted session's token is the server's own from its registration to
+// its end: answered as a server with no provider answers it, never asked
+// of the provider; once its host says it exited, an unknown token.
+func TestAHostedSessionsTokenIsTheServersOwnUntilItEnds(t *testing.T) {
+	e, f := liveTokenEnv(t, nil)
+	tok := unminted("h")
+	host := dialFakeHost(t, e, tok)
+	asAnUnknownToken(t, e.srv, "a hosted session's token", whoami, "", tok, "")
+	if n := f.timesAsked(tok); n != 0 {
+		t.Fatalf("the provider was asked %d times about a hosted session's token", n)
+	}
+	d, _ := e.srv.registry.Get(host.sessionID)
+	code := 0
+	d.(*signal.HostedSession).HostStatus(session.StatusExited, &code)
+	isNotChecked(t, "an ended hosted session's token", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok); n != 1 {
+		t.Fatalf("the provider was asked %d times about an ended hosted session's token", n)
+	}
+}
+
+// The question notes nothing about a session: its token answered at a
+// route that does not take it, the session does not count as called by
+// its agent (AgentCalled).
+func TestTheQuestionNotesNoSession(t *testing.T) {
+	e, _ := liveTokenEnv(t, nil)
+	sid := e.createSession("cat")
+	tok := e.agentToken(sid)
+	asAnUnknownToken(t, e.srv, "a session's token", whoami, sid, tok, "")
+	d, _ := e.srv.registry.Get(sid)
+	if d.(*session.Local).AgentCalled() {
+		t.Fatal("the question noted the session as called by its agent")
+	}
+}
+
+// holdSlots waits for a slot a call still holds (a late call's, which
+// gives it back once it returns) instead of failing on it: one slot is
+// held here and given back only once holdSlots holds every other.
+func TestHoldSlotsWaitsForASlotStillTaken(t *testing.T) {
+	e, _ := liveTokenEnv(t, nil)
+	late, ok := e.srv.extTake(ext.KindIdentity, "cloud")
+	if !ok {
+		t.Fatal("no slot was free")
+	}
+	g := e.srv.guard(ext.KindIdentity, "cloud")
+	go func() {
+		waitFor(testWait, func() bool { return len(g.slots) == cap(g.slots) })
+		late.free()
+	}()
+	holdSlots(t, e.srv, "cloud")()
+}
+
 // The places that make a principal from a request are the table's, each
 // one reached through tokenPrincipal, whose second result says whether it
-// answered the request and is never dropped; the provider is asked about a
-// request's token by the maker alone (asksProvider); and notChecked alone
-// writes the code not_checked.
+// answered the request and is never dropped; the provider's ask about a
+// request's token is named by the maker alone, called or not
+// (asksProvider); and notChecked alone writes the code not_checked.
 func TestPrincipalPlacesAreTheTable(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -597,9 +841,9 @@ func TestPrincipalPlacesAreTheTable(t *testing.T) {
 			}
 			guards := guardNames(fn)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					if ask := asksProvider(call, guards); ask != "" && !askerOf(ask, fn) {
-						t.Errorf("%s: %s asks the provider (%s) outside the maker", fset.Position(call.Pos()), fn.Name.Name, ask)
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if ask := asksProvider(sel, guards); ask != "" && !askerOf(ask, fn) {
+						t.Errorf("%s: %s asks the provider (%s) outside the maker", fset.Position(sel.Pos()), fn.Name.Name, ask)
 					}
 				}
 				as, isAssign := n.(*ast.AssignStmt)
@@ -641,11 +885,11 @@ func TestPublishTriesNotCheckedAgain(t *testing.T) {
 
 // withheldPublisher is a switchyard's registration that presents no
 // credential, its provider withholding one, refused status while refuse
-// is set; once it is not, a publication.
+// is set; once it is not, a publication, counted in made.
 type withheldPublisher struct {
-	status int
-	refuse atomic.Bool
-	tries  atomic.Int32
+	status      int
+	refuse      atomic.Bool
+	tries, made atomic.Int32
 }
 
 func (p *withheldPublisher) Publish(_ context.Context, local *session.Local) (PublishedSession, error) {
@@ -653,6 +897,7 @@ func (p *withheldPublisher) Publish(_ context.Context, local *session.Local) (Pu
 	if p.refuse.Load() {
 		return nil, &hostagent.RefusedError{Status: p.status, Code: http.StatusText(p.status), Withheld: true}
 	}
+	p.made.Add(1)
 	return &gatedPublication{id: "there-" + local.Info().ID, done: make(chan struct{})}, nil
 }
 
@@ -661,8 +906,9 @@ func (p *withheldPublisher) Server() string { return "https://rendezvous.example
 // A publication whose registration presented no credential, its provider
 // withholding one, is owed once it ends without a publication, whatever
 // the refusal's status: refused 401 after its one try, refused 429 or 503
-// once its tries again have ended. A Share once the credential is back
-// publishes it.
+// once its tries again have ended, judged on its last. A Share once the
+// credential is back publishes it, once: a Share after it publishes
+// nothing more.
 func TestAWithheldPublicationIsOwedWhenItsTriesEnd(t *testing.T) {
 	was := publishBackoff
 	publishBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
@@ -693,6 +939,13 @@ func TestAWithheldPublicationIsOwedWhenItsTriesEnd(t *testing.T) {
 			if !waitFor(testWait, func() bool { return e.srv.publishedOf(id) != nil }) {
 				t.Fatal("the Share once the credential is back did not publish the session")
 			}
+			e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+			if !waitFor(testWait, func() bool { return !pending() }) {
+				t.Fatal("a publication is still under way")
+			}
+			if n := p.made.Load(); n != 1 {
+				t.Fatalf("the Shares published the session %d times, not once", n)
+			}
 		})
 	}
 }
@@ -708,20 +961,18 @@ func makesPrincipal(e ast.Expr) bool {
 }
 
 // asksProvider is the ask of the provider about a request's token that
-// call makes ("providerPrincipal", the guard's "judge", or "Authenticate"
-// of the server's identity extension or a guard), or "": guards are the
-// names the function holds a guardIdentity by.
-func asksProvider(call *ast.CallExpr, guards map[string]bool) string {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return ""
-	}
+// sel names ("providerPrincipal", the guard's "judge", or "Authenticate"
+// of the server's identity extension or a guard), called or not (a method
+// value, a method expression, an alias), or "": guards are the names the
+// function holds a guardIdentity by.
+func asksProvider(sel *ast.SelectorExpr, guards map[string]bool) string {
+	guard := isGuard(sel.X, guards) || isGuardType(sel.X)
 	switch name := sel.Sel.Name; {
 	case name == "providerPrincipal":
 		return name
-	case name == "judge" && isGuard(sel.X, guards):
+	case name == "judge" && guard:
 		return name
-	case name == "Authenticate" && isGuard(sel.X, guards):
+	case name == "Authenticate" && guard:
 		return name
 	case name == "Authenticate":
 		if x, ok := sel.X.(*ast.SelectorExpr); ok && x.Sel.Name == "identity" {
@@ -792,6 +1043,8 @@ func isGuard(e ast.Expr, names map[string]bool) bool {
 		return e.Type != nil && isGuardType(e.Type)
 	case *ast.CompositeLit:
 		return isGuardType(e.Type)
+	case *ast.StarExpr:
+		return isGuardType(e)
 	}
 	return false
 }
