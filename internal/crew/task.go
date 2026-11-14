@@ -516,6 +516,11 @@ type task struct {
 	holds []*decision
 }
 
+// next is the number of t's next attempt: after its attempts in this run
+// and those of the runs this one continues (prior). Every attempt and
+// every line that names the next one is numbered by it.
+func (t *task) next() int { return len(t.attempts) + t.prior + 1 }
+
 // standingFailed is failed t's standing failed candidate, as its attempt's
 // row: the last attempt a withdrawal has not taken back (lastKept), else,
 // in a continuation whose task has made no attempt of its own yet, the
@@ -1730,7 +1735,7 @@ func (e *Engine) pump(r *run) {
 			continue
 		}
 		ctx, cancel := context.WithCancel(r.ctx)
-		a := &attempt{t: t, m: m, n: len(t.attempts) + t.prior + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true,
+		a := &attempt{t: t, m: m, n: t.next(), state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true,
 			where: r.rt.Where()}
 		t.attempts = append(t.attempts, a)
 		t.state, t.reason = ledger.TaskRunning, ""
@@ -2816,7 +2821,7 @@ func (e *Engine) reopenFor(r *run, sub *task, rp *repair, who, ready string, gra
 		if rp.start != "" {
 			where = "where the reviewed commit's attempt started, as it was refused before its checks"
 		}
-		r.note(session.ActivityStatus, "task %s: %s asked for changes (%s); attempt %d starts %s", sub.def.ID, who, findingsWords(n), len(sub.attempts)+1, where)
+		r.note(session.ActivityStatus, "task %s: %s asked for changes (%s); attempt %d starts %s", sub.def.ID, who, findingsWords(n), sub.next(), where)
 	}
 	r.markTask(sub)
 	ev["task"], ev["findings"], ev["state"] = sub.def.ID, n, sub.state

@@ -968,7 +968,7 @@ func (e *Engine) reverify(r *run, t *task, m *member) {
 	c := *t.candidate
 	t.candidate = nil
 	ctx, cancel := context.WithCancel(r.ctx)
-	n := len(t.attempts) + t.prior + 1
+	n := t.next()
 	start := c.start
 	if start == "" {
 		start = c.commit
