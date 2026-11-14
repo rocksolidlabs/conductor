@@ -3,11 +3,15 @@ package crew
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -236,12 +240,16 @@ func TestAStopReturnsWhileAPreviewsEndIsOwed(t *testing.T) {
 }
 
 // A drain with a preview's ending writes refused returns once the
-// preview's services are stopped, under a context with no deadline; the
-// owed row is written later with the shutdown's reason.
+// preview's services are stopped, under a context with no deadline, and
+// ends the engine: the owed write is not tried again (its timer fired,
+// nothing writes), the preview is let go, and its row is left to the next
+// start's recovery.
 func TestADrainReturnsWhileAPreviewsEndIsOwed(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
 	waits := previewWaits(e)
+	finished := make(chan struct{}, 1)
+	e.previewFinished = func() { finished <- struct{}{} }
 	run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
 	openPreview(t, e, run.ID)
 	l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
@@ -256,13 +264,167 @@ func TestADrainReturnsWhileAPreviewsEndIsOwed(t *testing.T) {
 	if alive(pid) {
 		t.Fatalf("the preview's service %d outlived the drain", pid)
 	}
-	retry := retryWait(t, waits, nil)
+	await(t, "the preview let go", finished)
 	takeEnds(l)
-	retry.fire <- time.Now()
-	if row := l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow); row.Why != whyShutdown {
-		t.Fatalf("the ended row: %+v", row)
+	for len(waits) > 0 {
+		(<-waits).fire <- time.Now()
 	}
-	waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
+	if row, _ := l.previewRow(run.ID, "build", 1, 1); row.State == ledger.PreviewEnded {
+		t.Fatalf("the owed row written after the drain: %+v", row)
+	}
+	if previewHeld(e, run.ID, "build", 1) {
+		t.Fatal("the preview is held after the drain")
+	}
+}
+
+// endRefusingLedger is the SQL ledger with a preview's last write
+// (EndPreview) refused while refuse is set; tries counts those writes.
+type endRefusingLedger struct {
+	sqlLedger
+	refuse atomic.Bool
+	tries  atomic.Int32
+}
+
+func (l *endRefusingLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
+	return l.l.Transition(ctx, runID, func(tx *ledger.Tx) error { return fn(endRefusingTx{tx, l}) })
+}
+
+type endRefusingTx struct {
+	*ledger.Tx
+	l *endRefusingLedger
+}
+
+func (tx endRefusingTx) EndPreview(r ledger.PreviewRow) error {
+	tx.l.tries.Add(1)
+	if tx.l.refuse.Load() {
+		return errors.New("ledger: disk full (injected)")
+	}
+	return tx.Tx.EndPreview(r)
+}
+
+// stacks is every goroutine's stack, read once, by its id.
+func stacks() map[int]string {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	for n == len(buf) {
+		buf = make([]byte, 2*len(buf))
+		n = runtime.Stack(buf, true)
+	}
+	out := map[int]string{}
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		var id int
+		if _, err := fmt.Sscanf(g, "goroutine %d ", &id); err == nil {
+			out[id] = g
+		}
+	}
+	return out
+}
+
+// An owed write of a preview's end is tried again only while the engine
+// lives and its ledger is open: after the drain, or once the ledger
+// answers that it is closed, its retries stop (the timer fired, nothing
+// tries), the preview is let go (not counted, its ports free), and no
+// goroutine of its end or its serving waits on (read once, after the end
+// has signalled its exit); the next start's recovery ends its row.
+func TestAnOwedPreviewWriteEndsWithTheEngine(t *testing.T) {
+	for _, how := range []string{"the drain", "the ledger closed"} {
+		t.Run(how, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _ := readyEngine(t)
+			ldir := t.TempDir()
+			ld, err := ledger.Open(ldir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rl := &endRefusingLedger{sqlLedger: sqlLedger{l: ld}}
+			e.UseLedger(rl)
+			waits := previewWaits(e)
+			finished := make(chan struct{}, 1)
+			e.previewFinished = func() { finished <- struct{}{} }
+			run := launchManaged(t, e, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
+			waitTreesEnded(t, e, run.ID)
+			since := slices.Max(slices.Collect(maps.Keys(stacks())))
+			openPreview(t, e, run.ID)
+			ctx := context.Background()
+			waitFake(t, "the preview ready", func() bool {
+				ps, _ := ld.Previews(ctx, run.ID)
+				return len(ps) == 1 && ps[0].State == ledger.PreviewReady
+			})
+			r := runOf(t, e, run.ID)
+			e.mu.Lock()
+			pt := r.task("build").attempts[0].previewing.t
+			e.mu.Unlock()
+			rl.refuse.Store(true)
+			if err := e.ClosePreview(run.ID, "build", 1, 1); err != nil {
+				t.Fatal(err)
+			}
+			retry := retryWait(t, waits, nil)
+			tries := rl.tries.Load()
+			if how == "the drain" {
+				e.Drain(ctx)
+				await(t, "the preview let go", finished)
+				if err := ld.Close(); err != nil {
+					t.Fatal(err)
+				}
+				retry.fire <- time.Now()
+			} else {
+				if err := ld.Close(); err != nil {
+					t.Fatal(err)
+				}
+				// The try the timer lets go is answered closed before any
+				// write, and is the last.
+				retry.fire <- time.Now()
+				await(t, "the preview let go", finished)
+			}
+			if n := rl.tries.Load(); n != tries {
+				t.Fatalf("%d tries of the owed write, want %d", n, tries)
+			}
+			if len(retry.fire) != 1 && how == "the drain" {
+				t.Fatal("the retry's timer was taken after the drain")
+			}
+			if len(waits) > 0 {
+				t.Fatal("a next try was set once the retries stopped")
+			}
+			e.mu.Lock()
+			counted, ends := r.previews, r.trees.n
+			var leased []int
+			for n, x := range e.ports {
+				if x == pt {
+					leased = append(leased, n)
+				}
+			}
+			e.mu.Unlock()
+			if counted != 0 || ends != 0 || len(leased) != 0 || previewHeld(e, run.ID, "build", 1) {
+				t.Fatalf("after the retries stopped: %d previews counted, %d ends, ports %v leased", counted, ends, leased)
+			}
+			for id, g := range stacks() {
+				head, _, _ := strings.Cut(g, "\n")
+				if id > since && !strings.Contains(head, "[running]") && !strings.Contains(head, "[runnable]") &&
+					(strings.Contains(g, "(*Engine).finishPreview") || strings.Contains(g, "(*Engine).servePreview") || strings.Contains(g, "(*Engine).endNow")) {
+					t.Fatalf("a goroutine of the preview left:\n%s", g)
+				}
+			}
+			again, err := ledger.Open(ldir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer again.Close()
+			rec, err := again.Recover(ctx)
+			if err != nil || len(rec) != 1 || rec[0].Previews != 1 {
+				t.Fatalf("the recovery: %+v %v", rec, err)
+			}
+			ps, _ := again.Previews(ctx, run.ID)
+			if len(ps) != 1 || ps[0].State != ledger.PreviewEnded || !ps[0].Interrupted || ps[0].Why != "the owner stopped before the preview was ended" {
+				t.Fatalf("the preview after the recovery: %+v", ps)
+			}
+			if how != "the drain" {
+				e.Drain(ctx)
+			}
+		})
+	}
 }
 
 // A run stopped while its preview's second service is starting (its start
@@ -293,21 +455,31 @@ func TestAStopWhileAPreviewsServiceStartsRecordsTheStop(t *testing.T) {
 		p := e.previews[previewKey{run.ID, "build", 1}]
 		return p != nil && p.closed()
 	}
+	// The stop's wait for the start (the engine's seam) tells the test
+	// whether the preview's end had begun by then, and waits for the test.
+	waited, resume := make(chan bool, 1), make(chan struct{})
+	var first, resumed sync.Once
+	let := func() { resumed.Do(func() { close(resume) }) }
+	t.Cleanup(let)
 	e.awaitingStart = func(id string) {
 		if id != "api" {
 			return
 		}
-		once.Do(func() { close(gate) })
-		for deadline := time.Now().Add(10 * time.Second); !ending(); time.Sleep(10 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				t.Error("the preview's end did not begin")
-				return
-			}
-		}
+		first.Do(func() {
+			once.Do(func() { close(gate) })
+			waited <- ending()
+			<-resume
+		})
 	}
 	openPreview(t, e, run.ID)
 	await(t, "the second service's start held", arrived)
-	if err := e.Stop(t.Context(), run.ID); err != nil {
+	stopped := make(chan error, 1)
+	go func() { stopped <- e.Stop(t.Context(), run.ID) }()
+	if !await(t, "the stop's wait for the start", waited) {
+		t.Error("the preview's end had not begun when the stop waited for its service's start")
+	}
+	let()
+	if err := await(t, "the stop", stopped); err != nil {
 		t.Fatal(err)
 	}
 	if row := l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow); row.Why != whyRunStopped {

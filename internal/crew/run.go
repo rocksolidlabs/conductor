@@ -371,12 +371,17 @@ type Engine struct {
 	// time.After; checkoutBound makes the bound of a checkout's making;
 	// checkoutMade is called once the making has returned, before the open
 	// hands the preview over; beforeIdleEnd once the idle timer has fired,
-	// before the end's change.
-	previews      map[previewKey]*preview
-	idleTimer     func(time.Duration) <-chan time.Time
-	checkoutBound func() (context.Context, context.CancelFunc)
-	checkoutMade  func(dir string)
-	beforeIdleEnd func()
+	// before the end's change; previewFinished as a preview's end has let
+	// go of it (finishPreview). life ends with Drain (endLife): an owed
+	// write of a preview's end is not tried after it.
+	previews        map[previewKey]*preview
+	idleTimer       func(time.Duration) <-chan time.Time
+	checkoutBound   func() (context.Context, context.CancelFunc)
+	checkoutMade    func(dir string)
+	beforeIdleEnd   func()
+	previewFinished func()
+	life            context.Context
+	endLife         context.CancelFunc
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string
@@ -824,8 +829,10 @@ type member struct {
 // them again with lookup (the server's registry).
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	root, cut := context.WithCancel(context.Background())
+	life, endLife := context.WithCancel(context.Background())
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut, boot: newBoot()}
+		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut, boot: newBoot(),
+		life: life, endLife: endLife}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once

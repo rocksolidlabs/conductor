@@ -2373,9 +2373,12 @@ func (e *Engine) Drain(ctx context.Context) {
 	// whatever the ledger answers (preview.go: endNow), their teardowns
 	// counted in their runs' trees, which the wait below takes; a write the
 	// ledger refuses is tried again by the preview's own end, never waited
-	// for here. The server stops its runs first (api.Server.Shutdown), so a
-	// preview of a run it held has ended with that stop (run_stopped): what
-	// ends here, why shutdown, is a preview whose run was not stopped first.
+	// for here, and not after Drain returns (endLife): the next start's
+	// recovery ends that row. The server stops its runs first
+	// (api.Server.Shutdown), so a preview of a run it held has ended with
+	// that stop (run_stopped): what ends here, why shutdown, is a preview
+	// whose run was not stopped first.
+	defer e.endLife()
 	e.mu.Lock()
 	e.endPreviews(nil, whyShutdown)
 	e.mu.Unlock()

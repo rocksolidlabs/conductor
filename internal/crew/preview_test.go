@@ -625,10 +625,14 @@ func TestPreviewsAreBoundedPerServer(t *testing.T) {
 
 // A preview the owner left open (its ledger closed under it, the server
 // gone) is ended interrupted by the next start's recovery, its service
-// reported with its tree and never signalled.
+// reported with its tree and never signalled. The owner's engine is ended
+// after (its drain: the preview's writes answered closed, its service
+// stopped, the preview let go) before the test's folders go.
 func TestAPreviewLeftAtRestartIsReportedNotSignalled(t *testing.T) {
 	dir := newRepo(t)
 	e, _ := readyEngine(t)
+	finished := make(chan struct{}, 1)
+	e.previewFinished = func() { finished <- struct{}{} }
 	ldir := t.TempDir()
 	ld, err := ledger.Open(ldir)
 	if err != nil {
@@ -669,6 +673,11 @@ func TestAPreviewLeftAtRestartIsReportedNotSignalled(t *testing.T) {
 	}
 	if !alive(pid) {
 		t.Fatalf("the recovery signalled the preview's service %d", pid)
+	}
+	e.Drain(ctx)
+	await(t, "the owner's preview let go", finished)
+	if alive(pid) || previewHeld(e, run.ID, "build", 1) {
+		t.Fatalf("after the owner's drain: service %d alive %v, held %v", pid, alive(pid), previewHeld(e, run.ID, "build", 1))
 	}
 }
 

@@ -54,7 +54,7 @@ import (
 // per candidate at a time, ledger.MaxPreviews opens of a candidate, and
 // each ended once previewIdle has passed with no read of it (ReadPreview).
 // previewRetry is how long an owed write of a preview's end waits before
-// it is tried again (finishPreview).
+// it is tried again (finishPreview), until the engine ends.
 const (
 	maxPreviews  = 2
 	previewIdle  = 30 * time.Minute
@@ -692,9 +692,11 @@ func (e *Engine) endNow(p *preview, why string) {
 // cleanup, tries its last write (EndPreview and preview.ended, its ports
 // let go after that commit) and counts the teardown done. A last write the
 // ledger refused is owed: this goroutine alone tries it again every
-// previewRetry, whatever reads the preview, until it is written. Only then
-// is p dropped: it stays counted (e.previews, its run held) until its row
-// is ended.
+// previewRetry, whatever reads the preview, until it is written, the
+// engine ends (Drain) or the ledger answers that it is closed; the row is
+// then the next start's to end (ledger.Recover). Only then is p dropped,
+// its ports let go: it stays counted (e.previews, its run held) until
+// then.
 func (e *Engine) finishPreview(p *preview, tried <-chan struct{}) {
 	if tried != nil {
 		<-tried
@@ -704,14 +706,22 @@ func (e *Engine) finishPreview(p *preview, tried <-chan struct{}) {
 	e.mu.Unlock()
 	again := e.endTree(p.r, h)
 	for again != nil {
-		<-e.previewTimer(previewRetry)
-		if again() == nil {
+		select {
+		case <-e.previewTimer(previewRetry):
+			if err := again(); err == nil || errors.Is(err, ledger.ErrClosed) {
+				again = nil
+			}
+		case <-e.life.Done():
 			again = nil
 		}
 	}
 	e.mu.Lock()
+	e.release(h.t)
 	e.dropPreview(p)
 	e.mu.Unlock()
+	if e.previewFinished != nil {
+		e.previewFinished()
+	}
 }
 
 // ClosePreview ends the preview seq of attempt n of the task (Close): its
