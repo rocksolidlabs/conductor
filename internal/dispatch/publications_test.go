@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The tests of a ticket's publications (publications.go). Nothing here
@@ -76,9 +77,15 @@ func (f pubFixture) pub(t *testing.T, id string) Publication {
 	return p
 }
 
-// send begins a send of p as alice, failing unless the store answers.
+// send begins a send of p as alice, failing unless the store answers; a
+// try after an earlier one at the store's clock set past the quiet time
+// after that try began.
 func (f pubFixture) send(t *testing.T, opID string, p Publication) (Receipt, bool) {
 	t.Helper()
+	if now, err := f.s.Publication(context.Background(), p.ID); err == nil && now.Tries > 0 {
+		at := now.SendingAt.Add(PublicationQuiet)
+		f.s.SetClockForTest(func() time.Time { return at })
+	}
 	rc, owned, err := f.s.BeginSend(context.Background(), testOp(opID), p.ID, p.PostSha256, alice)
 	if err != nil {
 		t.Fatal(err)
@@ -91,9 +98,10 @@ func (f pubFixture) settle(p Publication, o Outcome) (Receipt, bool, error) {
 	return f.s.SettlePublication(context.Background(), p.ID, p.Attempt, o)
 }
 
-// beginClose begins the close of the publication's issue.
+// beginClose begins the close of the publication's issue, at its own
+// revision.
 func (f pubFixture) beginClose(id string) (Receipt, bool, error) {
-	return f.s.BeginClose(context.Background(), id)
+	return f.s.BeginClose(context.Background(), id, 0)
 }
 
 // settleClose settles the publication's close with o.
@@ -604,11 +612,11 @@ func TestServerOpsNeverNoop(t *testing.T) {
 		{PublicationSending, [nOps]string{"sending/", "failed/", "unconfirmed/", "sent/pending", refused, refused}},
 		{PublicationFailed, [nOps]string{refused, refused, refused, refused, refused, refused}},
 		{PublicationUnconfirmed, [nOps]string{"unconfirmed/", refused, same, "sent/pending", refused, refused}},
-		{"sent", [nOps]string{refused, refused, refused, refused, "sent/closing", refused}},
+		{"sent", [nOps]string{refused, refused, refused, refused, "sent/closing", "sent/closed"}},
 		{"closing", [nOps]string{refused, refused, refused, refused, "sent/closing", "sent/closed"}},
 		{PublicationDiscarded, [nOps]string{refused, refused, refused, refused, refused, refused}},
-		{"restored draft", [nOps]string{same, same, same, "sent/pending", refused, refused}},
-		{"restored failed", [nOps]string{same, same, same, "sent/pending", refused, refused}},
+		{"restored draft", [nOps]string{same, same, same, "sent/", refused, refused}},
+		{"restored failed", [nOps]string{same, same, same, "sent/", refused, refused}},
 	}
 	for _, row := range table {
 		for i, op := range ops {
@@ -784,6 +792,48 @@ func TestPublicationTriesBound(t *testing.T) {
 	}
 	if rc, owned := f.send(t, "s6", f.pub(t, p.ID)); owned || rc.Refusal != RefusalBound {
 		t.Fatalf("the sixth: %+v", rc)
+	}
+}
+
+// A try after an earlier one is begun only once the quiet time has passed
+// since that try began, by the clock of the transaction that would begin
+// it: before, and with that clock behind the try's start, the begin is a
+// TryTooSoon with the time left, nothing written and no receipt kept;
+// the same operation id at exactly the quiet time begins the try. A
+// publication never tried waits for nothing.
+func TestSendWaitsTheQuietTime(t *testing.T) {
+	f := newPubFixture(t)
+	p := f.prepared(t, "p1", "")
+	if p.TryWait(time.Now().Add(-time.Hour)) != 0 {
+		t.Fatal("a publication never tried waits")
+	}
+	f.send(t, "s1", p)
+	f.settle(f.pub(t, p.ID), Outcome{State: PublicationFailed})
+	before := f.pub(t, p.ID)
+	for _, c := range []struct {
+		name string
+		at   time.Duration
+		left time.Duration
+	}{
+		{"within the quiet time", 10*time.Second + 500*time.Millisecond, 19*time.Second + 500*time.Millisecond},
+		{"a clock behind the try's start", -5 * time.Second, PublicationQuiet + 5*time.Second},
+		{"a moment before the quiet time ends", PublicationQuiet - time.Nanosecond, time.Nanosecond},
+	} {
+		at := before.SendingAt.Add(c.at)
+		f.s.SetClockForTest(func() time.Time { return at })
+		rc, owned, err := f.s.BeginSend(context.Background(), testOp("s2"), p.ID, p.PostSha256, alice)
+		var soon *TryTooSoon
+		if !errors.As(err, &soon) || soon.Left != c.left || owned || rc.OpID != "" || before.TryWait(at) != c.left {
+			t.Fatalf("%s: %+v %v %v", c.name, rc, owned, err)
+		}
+		if after := f.pub(t, p.ID); after.Rev != before.Rev || after.Tries != 1 || countOf(t, f.s, "SELECT COUNT(*) FROM ops WHERE id = ?", "s2") != 0 {
+			t.Fatalf("%s: %+v, a receipt kept", c.name, after)
+		}
+	}
+	at := before.SendingAt.Add(PublicationQuiet)
+	f.s.SetClockForTest(func() time.Time { return at })
+	if rc, owned, err := f.s.BeginSend(context.Background(), testOp("s2"), p.ID, p.PostSha256, alice); err != nil || !owned || f.pub(t, p.ID).Tries != 2 {
+		t.Fatalf("at the quiet time: %+v %v %v", rc, owned, err)
 	}
 }
 
@@ -1132,7 +1182,7 @@ func TestServerOpsOnAReadOnlyStore(t *testing.T) {
 		{"a settle", func() (Receipt, bool, error) {
 			return ro.SettlePublication(ctx, sending.ID, sending.Attempt, found("7", "101"))
 		}},
-		{"a close begun", func() (Receipt, bool, error) { return ro.BeginClose(ctx, pending.ID) }},
+		{"a close begun", func() (Receipt, bool, error) { return ro.BeginClose(ctx, pending.ID, 0) }},
 		{"a close's answer", func() (Receipt, bool, error) {
 			return ro.SettleClose(ctx, closing.ID, CloseOutcome{State: CloseClosed})
 		}},
@@ -1291,9 +1341,12 @@ func routeWords() []string {
 		"closed on GitHub before Conductor's close",
 		"GitHub refused the comment",
 		"GitHub has not shown this comment; it may still appear",
+		"the issue was found closed on GitHub",
+		"GitHub's comments could not be listed whole, so nothing was posted; Send looks again",
 	}
 	for _, code := range routeCodes {
-		out = append(out, "GitHub's comments could not be listed: "+code+"; Check looks again", "GitHub refused the close: "+code, "GitHub refused the comment: "+code)
+		out = append(out, "GitHub's comments could not be listed: "+code+"; Check looks again", "GitHub refused the close: "+code, "GitHub refused the comment: "+code,
+			"an earlier try's comment could not be looked for ("+code+"), so nothing was posted; Send looks again")
 	}
 	return out
 }
@@ -1453,25 +1506,42 @@ func TestPublicationWordsArePlain(t *testing.T) {
 	}
 }
 
-// A sent comment's address keeps the comment's anchor (#issuecomment- and
-// digits), and no other fragment, no query and no user.
+// A sent comment's address is built from the page the comment's address
+// names (the item's page as the send's or the listing's resolve of the
+// target gave it), its query, user and fragment dropped, and the comment's
+// anchor (#issuecomment- and its id): a page under the repository's name
+// now (another than the prepare's) is kept so; the page alone for an id
+// that makes no anchor; none for a page on another host than the target's,
+// or none at all.
 func TestSentCommentKeepsItsAnchor(t *testing.T) {
 	f := newPubFixture(t)
-	for i, c := range []struct{ url, kept string }{
-		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153", "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153"},
-		{"https://github.com/rocksolidlabs/conductor/issues/612#top", "https://github.com/rocksolidlabs/conductor/issues/612"},
-		{"https://bob:hunter2@github.com/rocksolidlabs/conductor/issues/612?token=SECRET#issuecomment-7", "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7"},
-		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7x", "https://github.com/rocksolidlabs/conductor/issues/612"},
+	const place = "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153"
+	for i, c := range []struct{ url, id, kept string }{
+		{place, "2153", place},
+		{"https://GitHub.com/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612#top", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612", "2153", place},
+		{"https://bob:hunter2@github.com/rocksolidlabs/conductor/issues/612?token=SECRET#issuecomment-2153", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7", "2153", place},
+		// The repository under its name now, on the target's host.
+		{"https://github.com/rocksolidlabs/renamed/issues/612#issuecomment-2153", "2153", "https://github.com/rocksolidlabs/renamed/issues/612#issuecomment-2153"},
+		// Other hosts, and no address.
+		{"https://elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", ""},
+		{"https://github.com.elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", ""},
+		{"not an address", "2153", ""},
+		{"", "2153", ""},
+		// An id that makes no anchor: the page alone.
+		{place, "21x53", "https://github.com/rocksolidlabs/conductor/issues/612"},
 	} {
 		p := f.prepared(t, fmt.Sprint("p", i), "")
 		f.send(t, fmt.Sprint("s", i), p)
-		o := found("2153", "101")
+		o := found(c.id, "101")
 		o.Comment.URL = c.url
 		if _, applied, err := f.settle(f.pub(t, p.ID), o); !applied || err != nil {
 			t.Fatalf("%s: %v %v", c.url, applied, err)
 		}
 		if got := f.pub(t, p.ID).RemoteURL; got != c.kept {
-			t.Errorf("%s kept as %s", c.url, got)
+			t.Errorf("%s, id %s, kept as %s", c.url, c.id, got)
 		}
 	}
 }
@@ -1531,4 +1601,251 @@ func (q recordingQueryer) QueryRowContext(ctx context.Context, query string, arg
 	*q.seen = append(*q.seen, query)
 	q.mu.Unlock()
 	return q.queryer.QueryRowContext(ctx, query, args...)
+}
+
+// What a prepare needs no target for is one judgement (prepareJudged):
+// JudgePrepare gives each refusal PreparePublication gives with no target,
+// its code and its words, for a deleted ticket, an archived project (with
+// a link's target too), a body empty, of spaces, past its bound or with a
+// control character, a close or a part out of form, a target that is not
+// one, a link of another ticket or none, a linked target of a ticket with
+// no linked item, a revision expected that is not the ticket's, a close of
+// an item held as a pull request (the linked item's kind, a link's last
+// read, a link's address), and the bound on a ticket's publications; a
+// request it passes, linked or a link of the ticket's never read, at the
+// ticket's revision, is refused by PreparePublication only for its target.
+func TestPrepareJudgedWithoutTarget(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	n := 0
+	op := func() Op { n++; return testOp(fmt.Sprint("j", n)) }
+	_, other := newTicket(t, f.s, "CND", "Other")
+	rc, err := addLink(f.s, "l1", other, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/10"})
+	want(t, rc, err, StatusDone, "")
+	othersLink := rc.ID
+	rc, err = addLink(f.s, "l2", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/issues/11"})
+	want(t, rc, err, StatusDone, "")
+	ownLink := rc.ID
+	rc, err = addLink(f.s, "l3", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/pull/12"})
+	want(t, rc, err, StatusDone, "")
+	pullByAddress := rc.ID
+	rc, err = addLink(f.s, "l4", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/issues/13"})
+	want(t, rc, err, StatusDone, "")
+	pullByRead := rc.ID
+	if err := f.s.RecordRead(ctx, pullByRead, prRead("PR_13", 1, "open")); err != nil {
+		t.Fatal(err)
+	}
+	pr := ghRead("PR_20", 0, "A pull request", "b")
+	pr.Snapshot.Kind, pr.Snapshot.ID, pr.Snapshot.URL = ExternalChange, "20", "https://github.com/rocksolidlabs/conductor/pull/20"
+	pullKey := mustImport(t, f.s, "imp-pr", "CND", pr)
+	judgedAt := func(name string, args PublicationArgs, rev int64, code string) {
+		t.Helper()
+		err := f.s.JudgePrepare(ctx, args, rev)
+		o := op()
+		o.ExpectedRev = rev
+		rc, perr := f.s.PreparePublication(ctx, o, args, PublicationTarget{}, markOf)
+		var ref *Refusal
+		switch {
+		case perr != nil:
+			t.Errorf("%s: the prepare: %v", name, perr)
+		case code == "":
+			if err != nil || rc.Refusal != RefusalInvalid || !strings.Contains(rc.Error, "a target of") {
+				t.Errorf("%s: judged %v, prepared with no target %+v", name, err, rc)
+			}
+		case !errors.As(err, &ref) || ref.Code != code || rc.Refusal != code || rc.Error != words(ref.Words):
+			t.Errorf("%s: judged %v, prepared %+v; want %s", name, err, rc, code)
+		}
+	}
+	judged := func(name string, args PublicationArgs, code string) { t.Helper(); judgedAt(name, args, 0, code) }
+	with := func(fn func(*PublicationArgs)) PublicationArgs {
+		a := PublicationArgs{Key: f.key, Target: TargetLinked, Body: "Fixed in v2."}
+		fn(&a)
+		return a
+	}
+	judged("linked", with(func(*PublicationArgs) {}), "")
+	judged("a link of the ticket's", with(func(a *PublicationArgs) { a.Target = "link:" + ownLink }), "")
+	tk, err := f.s.Ticket(ctx, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{TargetLinked, "link:" + ownLink} {
+		judgedAt(target+", at the ticket's revision", with(func(a *PublicationArgs) { a.Target = target }), tk.Rev, "")
+		judgedAt(target+", at an older revision", with(func(a *PublicationArgs) { a.Target = target }), tk.Rev-1, RefusalStaleRevision)
+	}
+	judged("linked, a ticket with no linked item", PublicationArgs{Key: f.native, Target: TargetLinked, Body: "Fixed."}, RefusalInvalid)
+	for name, args := range map[string]PublicationArgs{
+		"a close of the linked pull request":         {Key: pullKey, Target: TargetLinked, Body: "Fixed.", CloseIssue: "completed"},
+		"a close of a link a pull request's address": with(func(a *PublicationArgs) { a.Target, a.CloseIssue = "link:"+pullByAddress, "completed" }),
+		"a close of a link read as a pull request":   with(func(a *PublicationArgs) { a.Target, a.CloseIssue = "link:"+pullByRead, "not_planned" }),
+	} {
+		judged(name, args, RefusalInvalid)
+		if err := f.s.JudgePrepare(ctx, args, 0); err == nil || !strings.Contains(err.Error(), "only an issue is closed") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	judged("no close of the linked pull request", PublicationArgs{Key: pullKey, Target: TargetLinked, Body: "Fixed."}, "")
+	for _, target := range []string{TargetLinked, "link:" + ownLink} {
+		for _, c := range []struct {
+			name string
+			fn   func(*PublicationArgs)
+			code string
+		}{
+			{"an empty body", func(a *PublicationArgs) { a.Body = "" }, RefusalInvalid},
+			{"a body of spaces", func(a *PublicationArgs) { a.Body = " \r\n\t " }, RefusalInvalid},
+			{"a body past its bound", func(a *PublicationArgs) { a.Body = strings.Repeat("a", MaxPublicationBody+1) }, RefusalBound},
+			{"a control character", func(a *PublicationArgs) { a.Body = "a\x1b[2Jb" }, RefusalInvalid},
+			{"a close out of form", func(a *PublicationArgs) { a.CloseIssue = "bogus" }, RefusalInvalid},
+			{"a part out of form", func(a *PublicationArgs) { a.Parts = []string{"x"} }, RefusalInvalid},
+			{"a part twice", func(a *PublicationArgs) { a.Parts = []string{"key", "key"} }, RefusalInvalid},
+		} {
+			judged(target+", "+c.name, with(func(a *PublicationArgs) { a.Target = target; c.fn(a) }), c.code)
+		}
+	}
+	judged("no target", with(func(a *PublicationArgs) { a.Target = "elsewhere" }), RefusalInvalid)
+	judged("a link of another ticket", with(func(a *PublicationArgs) { a.Target = "link:" + othersLink }), RefusalInvalid)
+	judged("no such link", with(func(a *PublicationArgs) { a.Target = "link:0123456789abcdef" }), RefusalInvalid)
+	rc, err = f.s.ArchiveProject(ctx, op(), "CND")
+	want(t, rc, err, StatusDone, "")
+	judged("an archived project", with(func(*PublicationArgs) {}), RefusalArchived)
+	judged("an archived project, a link", with(func(a *PublicationArgs) { a.Target = "link:" + ownLink }), RefusalArchived)
+	rc, err = f.s.UnarchiveProject(ctx, op(), "CND")
+	want(t, rc, err, StatusDone, "")
+	rc, err = f.s.DeleteTicket(ctx, op(), f.key)
+	want(t, rc, err, StatusDone, "")
+	judged("a deleted ticket", with(func(*PublicationArgs) {}), RefusalNotFound)
+	rc, err = f.s.UndeleteTicket(ctx, op(), f.key)
+	want(t, rc, err, StatusDone, "")
+	for range MaxPublications {
+		rc, err := f.s.PreparePublication(ctx, op(), with(func(*PublicationArgs) {}), issueTarget, markOf)
+		want(t, rc, err, StatusDone, "")
+	}
+	judged("the bound on a ticket's publications", with(func(*PublicationArgs) {}), RefusalBound)
+}
+
+// A publication of another instance (a restored copy) is never closed
+// here: one a finding makes sent carries no pending close and needs no
+// person, as does one the original had sent with its close pending; a
+// close's begin of either is refused, kept nowhere, the row unchanged.
+func TestRestoredNeverClosed(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	draft := f.prepared(t, "p1", "completed")
+	pending := f.sentWithClose(t, "p2")
+	f.s.Close()
+	if err := Reissue(ctx, filepath.Join(f.dir, File)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenOptions(f.dir, Options{Systems: []string{"github"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	f.s = s
+	if _, applied, err := f.settle(f.pub(t, draft.ID), found("71", "202")); !applied || err != nil {
+		t.Fatalf("a restored draft found: %v %v", applied, err)
+	}
+	if q := f.pub(t, draft.ID); q.CloseState != "" || q.CloseIssue != "completed" {
+		t.Errorf("a restored draft found: %+v", q)
+	}
+	for _, p := range []Publication{f.pub(t, draft.ID), f.pub(t, pending.ID)} {
+		if p.State != PublicationSent || !p.Restored || p.NeedsYou() {
+			t.Errorf("a restored sent publication: %+v, needs you %v", p, p.NeedsYou())
+		}
+		kept := countOf(t, f.s, "SELECT COUNT(*) FROM ops")
+		if _, applied, err := f.beginClose(p.ID); applied || !isRefusal(err, RefusalInvalid) {
+			t.Errorf("a restored publication's close begun: %v %v", applied, err)
+		}
+		if _, applied, err := f.settleClose(p.ID, CloseOutcome{State: CloseClosed, Words: "the issue was found closed on GitHub"}); applied || !isRefusal(err, RefusalInvalid) {
+			t.Errorf("a restored publication's issue recorded found closed: %v %v", applied, err)
+		}
+		if q := f.pub(t, p.ID); q.Rev != p.Rev || countOf(t, f.s, "SELECT COUNT(*) FROM ops") != kept {
+			t.Errorf("a refused begin or record moved the row or kept a receipt: %+v", q)
+		}
+	}
+	if page, _, err := f.s.Publications(ctx, f.key, "", true); err != nil || len(page) != 0 {
+		t.Errorf("needing a person: %+v %v", page, err)
+	}
+}
+
+// An issue found closed is recorded closed by the one decision of a
+// close's answer, from pending (no try spent), from closing, and from
+// refused at the bound of tries, with no begin; the publication then needs
+// no person. An answer to a close already closed changes nothing (not
+// applied, no receipt); a refused answer to one not closing is refused.
+func TestFoundClosedFromEveryClose(t *testing.T) {
+	f := newPubFixture(t)
+	pending := f.sentWithClose(t, "p1")
+	closing := f.sentWithClose(t, "p2")
+	if _, _, err := f.beginClose(closing.ID); err != nil {
+		t.Fatal(err)
+	}
+	refused := f.sentWithClose(t, "p3")
+	for range MaxPublicationCloseTries {
+		if _, _, err := f.beginClose(refused.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := f.settleClose(refused.ID, CloseOutcome{State: CloseRefused, Words: "GitHub refused the close"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := f.beginClose(refused.ID); !isRefusal(err, RefusalBound) {
+		t.Fatalf("past the bound: %v", err)
+	}
+	if _, _, err := f.settleClose(pending.ID, CloseOutcome{State: CloseRefused}); !isRefusal(err, RefusalInvalid) {
+		t.Errorf("a refused answer to a pending close: %v", err)
+	}
+	for _, c := range []struct {
+		p     Publication
+		tries int
+	}{{pending, 0}, {closing, 1}, {refused, MaxPublicationCloseTries}} {
+		before := f.pub(t, c.p.ID)
+		if _, applied, err := f.settleClose(c.p.ID, CloseOutcome{State: CloseClosed, Words: "the issue was found closed on GitHub"}); !applied || err != nil {
+			t.Fatalf("%s found closed: %v %v", before.CloseState, applied, err)
+		}
+		q := f.pub(t, c.p.ID)
+		if q.CloseState != CloseClosed || q.CloseTries != c.tries || q.CloseError != "the issue was found closed on GitHub" || q.NeedsYou() {
+			t.Errorf("%s found closed: %+v", before.CloseState, q)
+		}
+		kept := countOf(t, f.s, "SELECT COUNT(*) FROM ops")
+		for _, o := range []CloseOutcome{{State: CloseClosed}, {State: CloseRefused, Words: "late"}} {
+			if _, applied, err := f.settleClose(c.p.ID, o); applied || err != nil {
+				t.Errorf("an answer %s to a close closed: %v %v", o.State, applied, err)
+			}
+		}
+		if r := f.pub(t, c.p.ID); r.Rev != q.Rev || countOf(t, f.s, "SELECT COUNT(*) FROM ops") != kept {
+			t.Errorf("an answer to a close closed moved the row: %+v", r)
+		}
+	}
+}
+
+// A close is begun at the revision its caller decided from: of two
+// callers at one revision, one is applied and the other answered from its
+// receipt (applied false), whether they meet in the store or one comes
+// after the other's commit; a revision the row moved past with no begin
+// made at it is refused stale_revision, kept nowhere.
+func TestBeginCloseAtRevision(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	p := f.sentWithClose(t, "p1")
+	begin := func() (bool, error) { _, a, err := f.s.BeginClose(ctx, p.ID, p.Rev); return a, err }
+	applied, errs := heldAtOnce(t, f.s, begin, begin)
+	if errs[0] != nil || errs[1] != nil || applied[0] == applied[1] {
+		t.Errorf("two begins at rev %d: applied %v, %v", p.Rev, applied, errs)
+	}
+	if a, err := begin(); a || err != nil {
+		t.Errorf("a begin at rev %d after the first's commit: %v %v", p.Rev, a, err)
+	}
+	if q := f.pub(t, p.ID); q.CloseState != CloseClosing || q.CloseTries != 1 {
+		t.Errorf("after three begins at one revision: %+v", q)
+	}
+	if _, _, err := f.settleClose(p.ID, CloseOutcome{State: CloseRefused, Words: "no"}); err != nil {
+		t.Fatal(err)
+	}
+	q := f.pub(t, p.ID)
+	if _, a, err := f.s.BeginClose(ctx, p.ID, q.Rev-1); a || !isRefusal(err, RefusalStaleRevision) || failedReceipts(t, f.s, IntentPublicationClose) != 0 {
+		t.Errorf("a begin at a revision the row moved past: %v %v", a, err)
+	}
+	if _, a, err := f.s.BeginClose(ctx, p.ID, q.Rev); !a || err != nil {
+		t.Errorf("a begin at the row's revision: %v %v", a, err)
+	}
 }

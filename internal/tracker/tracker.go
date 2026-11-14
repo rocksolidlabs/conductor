@@ -264,7 +264,10 @@ type Target struct {
 	State   string   `json:"state"`
 }
 
-// Comment is a comment on an item.
+// Comment is a comment on an item. Its URL is the item's page as the
+// target's resolve gave it (the caller's for a post, the listing's own for
+// a comment found), with #issuecomment- and the comment's id; never an
+// address in the system's answer for the comment.
 type Comment struct {
 	ID        RemoteID  `json:"id"`
 	URL       string    `json:"url"`
@@ -363,11 +366,14 @@ func inForm(s string, max int, ok func(byte) bool) bool {
 
 // Match is what FindComment looks for: a comment whose body holds Marker
 // and whose normalised body (BodyDigest) has the SHA-256 BodySha256, and,
-// when AuthorID is not ”, whose author is AuthorID.
+// when AuthorID is not ”, whose author is AuthorID. Marked, FindComment
+// also says of the whole window read with no comment that matches whether
+// one holds Marker, by anyone and whatever its other bytes (FoundOther).
 type Match struct {
 	Marker     string   `json:"marker"`
 	BodySha256 string   `json:"bodySha256"`
 	AuthorID   RemoteID `json:"authorId,omitempty"`
+	Marked     bool     `json:"marked,omitempty"`
 }
 
 // Check refuses a match that could match nothing in particular.
@@ -412,8 +418,12 @@ type Found string
 const (
 	// FoundYes: a comment in the window matches.
 	FoundYes Found = "yes"
-	// FoundNo: the whole window was read and no comment in it matches.
+	// FoundNo: the whole window was read and no comment in it matches
+	// (nor, for a Match that is Marked, holds its marker).
 	FoundNo Found = "no"
+	// FoundOther: the whole window was read, no comment in it matches, and
+	// one holds the marker of a Match that is Marked.
+	FoundOther Found = "other"
 	// FoundUnknown: the window was not read whole (a page past the
 	// bound, a failure).
 	FoundUnknown Found = "unknown"

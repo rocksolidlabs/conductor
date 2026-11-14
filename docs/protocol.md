@@ -2936,7 +2936,7 @@ its run, and on no other.
 | `POST /api/dispatch/people` | admin | add a name (`person.add`): `{opId, byName?, name}`, 1 to 60 characters with no control character; reply `201 {receipt, person}`; `409 invalid` for a name held already |
 | `GET /api/dispatch/tickets` | admin | a page of a list of tickets, filtered and sorted on the server: `{tickets, next?, total}`, each a summary without its description, acceptance criteria and acceptance (`{id, projectId, number, key, title, status, priority, horizon, owner, assignees, labels, milestoneId, parentId, blocked, createdAt, updatedAt, closedAt?, deletedAt?, rev}`), `total` how many the whole list holds; `project` a project's key (every project's when absent); `status`, `priority` (its number, 0 none to 4 urgent), `label` (an id), `assignee` (`person:<name>` or `agent:<catalog id>`) and `horizon` (`now`, `next`, `later`, or empty for not planned) as often as wanted, a ticket holding any of them; `owner`, `milestone` (an id), `parent` (a ticket's key, its live children whether it is live or not) and `blocked=1` (a live ticket neither done nor cancelled blocks it); `q`, at most 200 characters of words, every one in the ticket's key, title, description or acceptance criteria or in one of its comments, the last a prefix, never search syntax; `sort` (`updated`, the default, `created`, `priority`, `status`, `title`, `key`, `milestone`) and `desc=1`; `deleted=1` for the tombstones beside the live tickets, which a list leaves out otherwise; `limit` 1 to 200 (100 when absent) and `cursor` (a page's opaque `next`, of the same sort); `400 invalid_request` for a bad value or a parameter the route does not take |
 | `POST /api/dispatch/tickets` | admin | make a ticket (`ticket.create`): `{opId, byName?, project, title, description?, acceptance?, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, parent?}`, at most 192 KiB (every field at its bound with each character doubled by escaping): `title` 1 to 200 characters, `description` Markdown of at most 64 KiB and `acceptance` of at most 16 KiB, `status` `backlog` (the default), `ready`, `in_progress`, `in_review`, `done` or `cancelled`, `priority` 0 to 4, `owner` a person's name, at most 8 `assignees` and 20 `labels` (ids), `milestone` an id and `parent` a key of the same project; its key `<project>-<n>` from the project's next number, never reassigned; reply `201 {receipt, ticket}`, the ticket in full; `404 not_found` for a project, parent, label or milestone missing or deleted; `409` for what the store refuses (`archived`, `invalid`, `bound`, `cycle`, `close_policy`) |
-| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); `launchCount`, how many launches it has; and `publications`, its newest 10 publications to GitHub without their bodies, with `publicationsNeedYou`, how many older ones a person can act on (`[]` and `0` until a route makes one: issue 877); at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
+| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery, verified}, missing, why?, verifiedWhy?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"), `verifiedWhy` those for `verified` unmet ("the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate"); `approved`, its approved plan revisions' summaries, newest first, at most 10 (`[]` for none; one on a local write, since an approval supersedes the others, more only where a merge left them), each `{id, ticketId, n, basedOn?, crewId, crewName, crewUpdatedAt?, base, digest, bytes, state, approvedAt, approvedBy, approvedNote?, approvedRev, approvedIntent, createdAt, createdBy, fingerprint, rev, stale?: {words, remedy}}`, `stale` saying why the approval no longer holds and its remedy, `approve` (the title, the description or the criteria changed since) or `revise` (a comment it hands over was edited or deleted); `launchCount`, how many launches it has; and `publications`, its newest 10 publications to GitHub without their bodies, with `publicationsNeedYou`, how many older ones a person can act on (A ticket's publications, below); at most 3.5 MiB with every field and set at its bound, fifty delivery links each naming its candidate with its receipt at 8 KiB among them (`MaxTicketReply`); `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/edit` | admin | edit a live ticket (`ticket.edit`), every change one operation: `{opId, expectedRev?, byName?, set?: {title?, description?, acceptance?, status?, priority?, horizon?, owner?, parent?, milestone?}, add?: {assignees?, labels?}, remove?: {assignees?, labels?}}`, at most 192 KiB, `parent` a key and `milestone` an id (`""` for none); reply `{receipt, ticket}`; `409 close_policy` for a move to `done` the project's close policy refuses, the receipt's `missing` naming what is lacking; `409 cycle` for a parent that would make a cycle or a chain of more than 8 |
 | `POST /api/dispatch/tickets/{key}/accept`, `…/unaccept` | admin | record the owner's acceptance of a live ticket (`ticket.accept`: `{opId, expectedRev?, byName?, note?}`, by the display name, for the owner the ticket has now and against its acceptance criteria as they stand, the note at most 1,000 characters), or clear it (`ticket.unaccept`: `{opId, expectedRev?, byName?}`); reply `{receipt, ticket}`; `409 invalid` for a ticket with no owner to accept it, or not accepted; neither touches the status |
 | `POST /api/dispatch/tickets/{key}/delete`, `…/undelete` | admin | delete a live ticket (`ticket.delete`): a tombstone, nothing else written, its children, relations and run links kept, inactive, and back with its undelete (`ticket.undelete`), which removes a run link of its naming a run another live ticket has linked meanwhile; `{opId, expectedRev?, byName?}`; reply `{receipt, ticket}`; a deleted ticket keeps its key, is listed only with `deleted=1`, its read answers, and every other write on it is `404 not_found`; `409 invalid` to undelete a live ticket; `503 ledger_unavailable` for an undelete when a run link's chain cannot be read, and `503 run_changing` (`Retry-After: 1`) while a run of it is being resumed (A ticket's runs below), nothing kept and no receipt, so the same `opId` may be sent again |
@@ -4698,8 +4698,9 @@ last change in the store's log (local to the database), `entity`
 `project`, `ticket`, `comment`, `label`, `milestone`, `view`,
 `person`, `plan` (a ticket's plan revision), `launch` (a ticket's
 launch), `review` (a person's review of a candidate: its submit and
-each change of its application) or `finding` (one of a review's
-findings: made with it, and again for each mark), `id` its id (`""` for a person, whose id is its name: the
+each change of its application), `finding` (one of a review's
+findings: made with it, and again for each mark) or `publication` (a
+ticket's publication: its prepare and each change of its state), `id` its id (`""` for a person, whose id is its name: the
 pickers read the directory again whole), `ticket` the id of the ticket
 it belongs to and `project` its project's key, `""` where there is
 none. A relation counts for both its tickets, and a label's or a
@@ -4708,7 +4709,7 @@ changed more than 64 entities of one kind in one project, the server
 sends one event for them, where the first of them would have been: that
 `entity`, `id` and `ticket` `""`, the project's key and the commit's
 `seq`, so a label deleted on 300 tickets is two events, the label's and
-its tickets'. An event is at most 160 bytes (the longest is 119: every
+its tickets'. An event is at most 160 bytes (the longest is 121: every
 value is digits, a word, hex or a key, never escaped). A page reads
 again what an event names, or what derives from it; an event with `id`
 and `ticket` `""` (but a person's, whose `id` is always `""`) names no
@@ -5103,6 +5104,182 @@ own on `GET /api/events`, never by a `dispatch` event: `{ticket,
 project, link?, readAt}`, at most 256 bytes, with **no `seq`**: a page
 reads the ticket again on it, and its sequence for the log does not
 move.
+
+#### A ticket's publications
+
+A **publication** is one comment Conductor posts to a ticket's GitHub
+item for a person (`docs/plans/tracker-linking.md`, PR-5): composed,
+previewed and sent once, never by anything but the person's Send. Its
+target is the ticket's linked issue (`linked`) or a live `delivery` or
+`external` link to a GitHub item (`link:<id>`), read from GitHub at
+prepare by the item's node id: its kind GitHub's type of the item (an
+`/issues/N` address GitHub answers as a pull request is kind `change`),
+its repository GitHub's id of it. That destination never changes: every
+write for the publication is sent to that node, after GitHub resolves it
+again to the same kind in the same repository (`409 target_changed`
+otherwise, nothing written; a repository renamed keeps its id and
+passes). The posted bytes are the body the person approved (`\r\n` and a
+lone `\r` made `\n`, trailing white space trimmed; 1 byte to 16 KiB of
+UTF-8 with no control character but line breaks and tabs), a blank line
+and GitHub's marker, `<!-- conductor-publication:<id> -->` (at most 128
+bytes, the publication's random id and nothing of the ticket), named by
+their SHA-256, `postSha256`, which Send must name. At most 100
+publications a ticket. The routes are the admin's alone (no Brakeman
+grant or shared read names one, and a session's or a host's token is
+refused) and a switchyard's `403`; a body is at most 64 KiB (`413
+bound`), which holds a 16 KiB body at twice its bytes as JSON with HTML
+escaping off; every request to GitHub is made with the token kept for
+the item's host (`412 no_token` without one) and logged as a line naming
+the route, the item and the status, never a body; GitHub's failures are
+answered as the GitHub item's routes answer them.
+
+A publication's `state` is `draft`, `sending`, `sent`, `failed`,
+`unconfirmed` or `discarded`. Send commits `sending` (one more of at most
+5 `tries`, the try its `attempt`, the account the token belongs to as
+`sentAsId` and `sentAsLogin`) before its one request to post, and posts
+only when that commit was its own: the same `opId` again is answered from
+its receipt and posts nothing, and the store's one transaction owns each
+try, so a comment is never posted twice. A try after an earlier one
+first looks at the item's comments and decides by the publication's
+marker alone, in the window the listing below reads: no comment holding
+the marker, by anyone, and the try posts; one by this try's account with
+the exact bytes, and the try is `sent` with that comment, nothing
+posted; any other holding the marker (another account's, or other
+bytes: the earlier try's comment edited, a comment quoting the marker),
+and nothing is posted, the try `failed` with the words `a comment
+carrying this publication's marker is on the item and is not this try's:
+nothing was posted; discard the publication and prepare a new one`; a
+listing not whole, one that failed, or an item that moved, and nothing
+is posted, the try `failed` with words, so Send looks again. That look
+costs at most one resolve and the listing's pages, within one post's
+cap. It is not trusted too soon: a try whose earlier try began less than
+30 s before (the quiet time the listing waits for below) is not begun,
+`503 tracker_busy` with `Retry-After` the seconds left, no try spent and
+no receipt kept, so the same `opId` may be sent again. The quiet time is
+the store's own rule, judged in the transaction that would begin the try,
+on the clock the store stamps a try with, whichever request of whichever
+server asks; a clock behind the earlier try's start waits the more. The
+route asks the same rule of the row it read before any token is read. A
+send stopped in the middle of its
+look leaves the publication `sending` with nothing posted, and a settle of
+it past the quiet time makes it `unconfirmed`, which is never sent again
+(a person prepares a new one). The post's answer settles the try it
+belongs to and no other: the comment, `sent` (`remoteId`, and
+`remoteUrl`, the comment's place on the target's item: the item's page as
+the send's own resolve of the target gave it, or for a comment a listing
+found as that listing's resolve gave it, with `#issuecomment-` and the
+comment's id; that page alone for an id that makes no anchor; never the
+page kept at the prepare and never an address in GitHub's answer for the
+comment, and none for a page on another host than the target's); an
+answer that proves nothing was posted (GitHub's `401`, `403` or
+`429`, or a refusal of the mutation with no data), `failed`, which Send
+may post again; anything else (a timeout, a reset, a `5xx`, the server
+stopping) leaves it `sending`, and the comment is looked for. The
+listing looks for the comment by its marker and exact bytes, by the
+account that sent it, from a day before its first send, in at most 10
+pages of 100 comments (read twice when there are several pages): found,
+`sent`; the whole window listed without it at least 30 s after the send
+began, `unconfirmed`, which nothing ever sends again (GitHub may still
+show it: Check looks again, and a person may publish the text as a new
+publication); a listing not whole (an item with more comments than those
+pages hold among it) keeps its words and the state. A server settles the
+publications it finds `sending` after it starts, in the background, one
+at a time, at most 256 within 2 minutes, and never posts or closes. A
+publication restored from an export is of another store instance (a
+restore makes one): it is never sent and never closed here (its close is
+the original's), and Check makes it `sent` only by its comment found, by
+any author, who is recorded as its sender, with no close pending; a
+restored one sent is not among those a person can act on. A close of the
+issue, asked for with `closeIssue` (`completed` or `not_planned`, for an
+issue alone), is made after the comment: `closeState` `pending`, then
+`closing` (one more of at most 5 `closeTries`, committed before the
+close is sent), then `closed` or `refused` (the comment stays); an
+answer that does not say leaves it `closing`, for Close now. A close
+looks at the item first, whatever its state and the count of tries: an
+issue found closed is recorded `closed` from `pending`, `closing` or
+`refused`, with no close begun and no try spent; only for an issue found
+open is the close begun, and sent. Its `closeError` for an issue found
+closed is `closed on GitHub before Conductor's close` when no close of
+Conductor's was begun, and `the issue was found closed on GitHub` when
+one was. Of one server's requests a close is one at a time: it is sent
+only by the request whose begin changed the row, and one that looked at
+the same row after another began it answers the publication as it
+stands. Two Conductor servers over one data directory can each begin a
+try for one publication when their requests overlap, so GitHub can be
+asked twice to close one issue, which changes nothing for an issue
+already closed; a close's answer that finds the close already recorded
+`closed` changes nothing and answers the publication as it stands; an
+issue a person reopened between the two closes is closed again by the
+later one. A
+comment is never posted twice (the store's one transaction owns each
+try). Each step the server makes for itself is applied only when it changes
+the row; one another change came before at the same revision is refused
+(`stale_revision`). A publication's `error` and `closeError` are one of
+the server's own sentences, with at most the code of GitHub's answer in
+it (as `tracker_unavailable`), never GitHub's words, an address or an
+item's name. What the server can refuse from what it holds is refused
+before any token is read or any request is made to GitHub: a prepare is
+judged by the store for all that needs no target (its ticket live, at
+the revision `expectedRev` names when the body carries one; its project
+not archived; the body, the close, the parts; a target the ticket holds,
+`linked` only for a ticket with a linked item and a link only the
+ticket's own; a close of no item the server holds as a pull request, by
+the linked item's kind, or a link's last read or its address; the bound
+of 100), its refusal kept with its receipt, a link not read and no read
+recorded, and judged so again once it holds the target's lock, so what
+another prepare or change made while it waited refuses it the same way;
+a person's act on a publication (Send, Check, Close now, Discard) needs
+its ticket live and its project not archived, as a comment's write does:
+`404 not_found` (`<key> is deleted`) or `409 archived`; and a repeat of a
+send's `opId` whose publication is still `sending` is settled first only
+while its ticket is live, and otherwise answers its receipt and the
+publication as it stands. What the server settles of a send already
+begun is not refused, so a comment that was posted is recorded as
+posted. A publication the store does not hold, as in a store from before
+its publications, is `404 not_found` on every route. A publication's
+route whose own context ends (the server stopping ends a prepare's, a
+send's, a Check's and a Close now's, or the route's time) answers
+whichever call met it (a replay, a begin, a read of the row, a step at
+GitHub, the lock) with `503 tracker_busy` (`Retry-After`) in words of its
+own, `the server is stopping or the request ran out of time: what was
+done is kept; send it again`; a route whose context is still live while
+the server stops answers what it answers otherwise (a publication that
+is not there, `404 not_found`); once the store itself has closed, the
+answer is the store's, `503 dispatch_unavailable`.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/dispatch/tickets/{key}/publish/offer` | none | `{parts, targets}`: `parts` what the composer may insert, each `{name, markdown}` the exact Markdown, at most 16 KiB (`deliveries`, the live delivery links' URLs and notes; `checks`, the newest delivered candidate's verification receipt, each check's name and passed or failed; `key`, the ticket's key and title), never a comment, a finding, a plan's text, an attachment or a check's output; `targets` `[{target, url}]`, the linked issue and each live delivery or external link to a GitHub item |
+| `POST /api/dispatch/tickets/{key}/publications` | `{opId, expectedRev?, byName?, target, body, parts?, closeIssue?}`, `expectedRev` the ticket's | replays first; then the store judges all that needs no target, its refusal kept with its receipt, GitHub not asked; then, under the target's lock, replays again (the same `opId` committed meanwhile answers its receipt, nothing read) and is judged again (a refusal kept with its receipt, nothing read), reads the target from GitHub (a link is read again and recorded as its read, then resolved) and runs `publication.prepare`: `201 {receipt, publication, preview, postSha256}`, `preview` the exact bytes Send posts. `404 not_found` for a deleted ticket, `409 archived`; `409 stale_revision` for an `expectedRev` that is not the ticket's; `409 invalid` for a target that is not the ticket's linked issue or one of its live delivery or external links (`linked` for a ticket with no linked item among them), a close of a pull request (one the server holds as one, or GitHub reads as one), a body, a close or a part out of form; `409 bound` for a body past 16 KiB or a ticket's 100 publications |
+| `GET /api/dispatch/tickets/{key}/publications` | query `cursor?` (a publication's id), `needYou?` (`1`) | `{publications, next}`: at most 50, newest first, without their bodies, `needYou=1` those a person can act on (one `sending`, `unconfirmed` or `failed`, a restored draft, or a sent one whose close is `pending`, `closing` or `refused`); `next` the cursor of the next page, `""` at the end |
+| `GET /api/dispatch/publications/{id}` | none | `{publication, preview, postSha256}`, its body among it |
+| `POST /api/dispatch/publications/{id}/send` | `{opId, expectedRev?, byName?, postSha256}` | replays first (a resend posts nothing, settles one `sending` first while its ticket is live, and answers its receipt); then, under the publication's lock, resolves the target and reads the token's account, commits `sending`, looks at the item's comments by the marker when there was an earlier try, and posts the preview's bytes to the node, settling the answer as above, then the close when asked: `200 {receipt, publication}`, also when a step after the post was refused (the publication says where it stands); `503 tracker_busy` (`Retry-After` the seconds left) for a try whose earlier try began less than 30 s before, nothing begun and no receipt kept; `503 tracker_busy` (`Retry-After`) when the server stops or the send's time ends, the same `opId` again answering it. Refused with its receipt kept, GitHub not asked: `404 not_found` for a deleted ticket, `409 archived`; `409 stale_revision` for a digest that is not the preview's or another revision; `409 invalid` for a publication not `draft` or `failed`, or restored; `409 bound` past 5 tries. `409 target_changed`, nothing kept |
+| `POST /api/dispatch/publications/{id}/check` | `{}` | looks for the comment now and settles what it found, for one `sending` or `unconfirmed`, or a restored draft or failed one: `200 {publication}`; `409 invalid` otherwise; `404 not_found` for a deleted ticket and `409 archived` before any token is read; `409 stale_revision` or `invalid` when another change to it came first. Posts nothing |
+| `POST /api/dispatch/publications/{id}/close` | `{opId, expectedRev?, byName?}` | Close now, for a sent one of this store's whose asked close is `pending`, `closing` or `refused`: looks at the item first, an issue found closed recorded `closed` with no close begun, then closes one found open as above: `200 {publication}`, one closed already answered as it stands; `404 not_found` for a deleted ticket, `409 archived` and `409 invalid` for a restored one, GitHub not asked; `409 stale_revision` for another revision; `409 target_changed`; `409 bound` past 5 closes, after the look |
+| `POST /api/dispatch/publications/{id}/discard` | `{opId, expectedRev?, byName?}` | `publication.discard`, for a `draft`, `failed` or `unconfirmed` one (its comment may still appear on GitHub): `{receipt, publication}`; `404 not_found` for a deleted ticket, `409 archived`, `409 invalid` otherwise, each with its receipt |
+
+A publication is `{id, ticket, target, targetKind, targetUrl, targetRef,
+targetNodeId, targetSpaceId, restored?, marker, postSha256, parts,
+closeIssue?, state, tries, attempt, findSince?, sentAsId?, sentAsLogin?,
+remoteId?, remoteUrl?, closeState?, closeTries, closeError?, error?,
+sendingAt?, sentAt?, sentBy?, createdAt, createdBy, rev}`, and `body`
+in its own read. A ticket's read (`GET /api/dispatch/tickets/{key}`)
+carries its newest 10 publications without their bodies
+(`publications`) and how many older ones a person can act on
+(`publicationsNeedYou`), within `MaxTicketReply`. Each step has its own
+cap, counted from the moment it starts: the wait for the lock 15 s; a
+look at the item (a resolve, with the account's read in a send; in a
+prepare a link's read, and the resolve after the read's record, each a
+look of its own) 45 s; one write to GitHub (the post, the close) or one
+listing of the comments 30 s; one step of the store's 30 s. Each route's
+deadline is the sum of its steps' caps: a send 315 s (the lock, a look,
+the send begun, a later try's look at the comments, the post, its
+settle, then either a listing and its settle or the close's steps), a
+prepare 165 s (the lock, a link's read, its record, the resolve, the
+prepare), a Check 75 s (the lock, a listing, its settle)
+and Close now 150 s (the lock and the close's steps: a look, the close
+begun, the close, its settle). A publication's routes wait for its lock
+at most that 15 s (`503 tracker_busy`, nothing read or written).
 
 ### Brakeman
 

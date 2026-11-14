@@ -1049,7 +1049,9 @@ func TestDispatchReadEvent(t *testing.T) {
 // Each deadline is the sum of its steps' caps. With the caps scaled down,
 // a request held behind a ticket's lock past the wait answers 503
 // tracker_busy with Retry-After, nothing read or written, and the route
-// holding the lock answers within its own deadline.
+// holding the lock answers within its own deadline; and the same for a
+// publication's send, Check and Close now behind a send whose post is
+// held at GitHub.
 func TestTrackerRouteDeadlines(t *testing.T) {
 	c := defaultTrackerCaps
 	for _, d := range []struct {
@@ -1065,7 +1067,7 @@ func TestTrackerRouteDeadlines(t *testing.T) {
 		}
 	}
 	e, g := externalEnv(t)
-	caps := trackerCaps{busy: 200 * time.Millisecond, reads: testWait, images: time.Second, merged: time.Second, write: testWait}
+	caps := trackerCaps{busy: 200 * time.Millisecond, reads: testWait, images: time.Second, merged: time.Second, write: testWait, post: testWait}
 	e.srv.external.caps = &caps
 	g.set(120, issue("I_kwDOitem120", "Busy", t0))
 	g.image("/1/a.png", []byte(pngBytes))
@@ -1092,43 +1094,94 @@ func TestTrackerRouteDeadlines(t *testing.T) {
 	if s := <-held; s != http.StatusOK {
 		t.Fatalf("the held refresh: %d", s)
 	}
+	// A publication of the ticket, its send's post held at GitHub with
+	// the publication's lock: a second send, a Check and a Close now each
+	// answer 503 tracker_busy past the wait, nothing asked of GitHub and no
+	// token read; the held send answers once its post is let go.
+	p := newPubGH(t, g)
+	p.node("I_kwDOitem120", "Issue", "octo/app", 120, 4000001)
+	prepared := e.prepare(t, key, nil, http.StatusCreated, "")
+	id, digest := pubOf(t, prepared)["id"].(string), prepared["postSha256"].(string)
+	reached := make(chan struct{})
+	p.set(func(p *pubGH) { p.mode, p.held, p.reached = postHold, make(chan struct{}), reached })
+	sent := make(chan int, 1)
+	go func() {
+		status, _, _ := e.call(t, "POST", "/api/dispatch/publications/"+id+"/send", map[string]any{"opId": opID(), "postSha256": digest})
+		sent <- status
+	}()
+	<-reached
+	asked, tokens := len(g.f.Requests()), e.srv.trackers.reached.Load()
+	for _, behind := range []struct {
+		route string
+		body  map[string]any
+	}{{"send", map[string]any{"opId": opID(), "postSha256": digest}}, {"check", map[string]any{}}, {"close", map[string]any{"opId": opID()}}} {
+		status, data, out := e.call(t, "POST", "/api/dispatch/publications/"+id+"/"+behind.route, behind.body)
+		if status != http.StatusServiceUnavailable || errorCode(out) != "tracker_busy" || len(g.f.Requests()) != asked || e.srv.trackers.reached.Load() != tokens {
+			t.Fatalf("a publication's %s behind its lock: %d %s", behind.route, status, data)
+		}
+	}
+	p.release()
+	if s := <-sent; s != http.StatusOK || p.adds() != 1 {
+		t.Fatalf("the held send: %d, %d posts", s, p.adds())
+	}
 }
 
 // Every route of this row that calls GitHub gets its credential from
 // credentialFor (the keep's seam counts the token leaving the value that
 // holds it while the route is served), and the fake sees that token on
 // every request to the API host during the route, in Authorization alone,
-// and on no image's fetch.
+// and on no image's fetch; a publication's routes on an Enterprise
+// Server's host send that host's token to its API alone, and github.com's
+// nowhere.
 func TestEveryTrackerRouteUsesCredentialFor(t *testing.T) {
 	e, g := externalEnv(t)
 	served := map[string]bool{}
-	do := func(pattern, path, body string, status int, code string) map[string]any {
-		t.Helper()
-		method, _, _ := strings.Cut(pattern, " ")
-		before, n := e.srv.trackers.reached.Load(), len(g.f.Requests())
-		got, data, out := e.callAs(t, adminToken, method, path, []byte(body))
-		if got != status || code != "" && errorCode(out) != code {
-			t.Fatalf("%s: %d %s", path, got, data)
-		}
-		// A reference out of form is refused before any credential.
-		if status != http.StatusBadRequest && e.srv.trackers.reached.Load() == before {
-			t.Errorf("%s reached no credential", pattern)
-		}
-		for _, r := range g.f.Requests()[n:] {
-			auth := r.Header.Get("Authorization")
-			if r.Host == "api.github.com" && auth != "Bearer "+plantedToken || r.Host != "api.github.com" && auth != "" {
-				t.Errorf("%s: a request to %s%s, Authorization given %v", pattern, r.Host, r.Path, auth != "")
+	doOn := func(api, tok string) func(pattern, path, body string, status int, code string) map[string]any {
+		return func(pattern, path, body string, status int, code string) map[string]any {
+			t.Helper()
+			method, _, _ := strings.Cut(pattern, " ")
+			before, n := e.srv.trackers.reached.Load(), len(g.f.Requests())
+			got, data, out := e.callAs(t, adminToken, method, path, []byte(body))
+			if got != status || code != "" && errorCode(out) != code {
+				t.Fatalf("%s: %d %s", path, got, data)
 			}
+			// A reference out of form is refused before any credential.
+			if status != http.StatusBadRequest && e.srv.trackers.reached.Load() == before {
+				t.Errorf("%s reached no credential", pattern)
+			}
+			for _, r := range g.f.Requests()[n:] {
+				auth := r.Header.Get("Authorization")
+				if r.Host == api && auth != "Bearer "+tok || r.Host != api && auth != "" {
+					t.Errorf("%s: a request to %s%s, Authorization given %v", pattern, r.Host, r.Path, auth != "")
+				}
+			}
+			served[pattern] = true
+			return out
 		}
-		served[pattern] = true
-		return out
 	}
+	do := doOn("api.github.com", plantedToken)
 	driveExternal(t, e, g, do)
-	for _, p := range externalTouching {
+	// A ticket's publications: each route's token is the one kept for the
+	// host the store fixed at prepare, never another's: on github.com, one
+	// kept for an Enterprise Server's host as well is sent nowhere; on that
+	// host, its own alone, github.com's sent nowhere.
+	if status, data, _ := e.saveToken(t, gheHost, plantedToken2); status != http.StatusOK {
+		t.Fatalf("the second host's token: %d %s", status, data)
+	}
+	drivePublications(t, e, g, "github.com", do)
+	drivePublications(t, e, g, gheHost, doOn(gheHost, plantedToken2))
+	for _, p := range slices.Concat(externalTouching, publicationTouching) {
 		if !served[p] {
 			t.Errorf("%s was not driven", p)
 		}
 	}
+}
+
+// publicationTouching is the routes of a ticket's publications that call
+// GitHub.
+var publicationTouching = []string{
+	"POST /api/dispatch/tickets/{key}/publications", "POST /api/dispatch/publications/{id}/send", "POST /api/dispatch/publications/{id}/check",
+	"POST /api/dispatch/publications/{id}/close",
 }
 
 // The guide's rows of a ticket's GitHub item: each the admin's, with no

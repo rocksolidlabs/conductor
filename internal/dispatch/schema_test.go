@@ -470,7 +470,7 @@ func noPublications(t *testing.T, s *Store, key string) {
 		"a settle": func() (Receipt, bool, error) {
 			return s.SettlePublication(ctx, "0123456789abcdef", 1, Outcome{Words: "listed"})
 		},
-		"a close begun": func() (Receipt, bool, error) { return s.BeginClose(ctx, "0123456789abcdef") },
+		"a close begun": func() (Receipt, bool, error) { return s.BeginClose(ctx, "0123456789abcdef", 0) },
 		"a close's answer": func() (Receipt, bool, error) {
 			return s.SettleClose(ctx, "0123456789abcdef", CloseOutcome{State: CloseClosed})
 		},

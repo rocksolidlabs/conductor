@@ -174,7 +174,6 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 		CommentEdge *struct {
 			Node *struct {
 				FullDatabaseID bigID     `json:"fullDatabaseId"`
-				URL            string    `json:"url"`
 				CreatedAt      time.Time `json:"createdAt"`
 				Repository     *repoJSON `json:"repository"`
 				Author         *struct {
@@ -192,16 +191,22 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 	if got.Subject == nil || got.Subject.ID != t.NodeID || n.Repository == nil || n.Repository.FullDatabaseID.remote() != t.SpaceID {
 		return tracker.Comment{}, tracker.Unknown(&tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: status, Err: tracker.ErrTargetChanged, Words: "the comment's answer does not name the target's node and repository"})
 	}
-	out = tracker.Comment{ID: n.FullDatabaseID.remote(), URL: n.URL, CreatedAt: n.CreatedAt, AuthorID: remoteID(n.Author.DatabaseID), Author: cut(n.Author.Login, 39)}
+	out = tracker.Comment{ID: n.FullDatabaseID.remote(), CreatedAt: n.CreatedAt, AuthorID: remoteID(n.Author.DatabaseID), Author: cut(n.Author.Login, 39)}
 	if out.Check() != nil {
 		return tracker.Comment{}, unknown
 	}
-	return out, nil
+	return onPage(out, t.URL), nil
+}
+
+// onPage is cm with its URL the item's page as a resolve gave it and the
+// comment's anchor (tracker.Comment).
+func onPage(cm tracker.Comment, page string) tracker.Comment {
+	cm.URL = page + "#issuecomment-" + string(cm.ID)
+	return cm
 }
 
 type commentJSON struct {
 	ID        json.Number `json:"id"`
-	HTMLURL   string      `json:"html_url"`
 	Body      string      `json:"body"`
 	CreatedAt time.Time   `json:"created_at"`
 	User      *struct {
@@ -228,7 +233,9 @@ type commentJSON struct {
 // comment deleted before a page's start moves the next one into the page
 // already read; a second pass that differs says the list moved); unknown
 // otherwise: a page past the bound, a failure, a list that moved, or a
-// comment whose bytes match but whose ids cannot be read.
+// comment whose bytes match (whose marker, for a Match that is Marked) but
+// whose ids cannot be read. Of a Match that is Marked, a window read so
+// with no match is other, not no, when a comment in it holds the marker.
 func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t tracker.Target, since time.Time, m tracker.Match) (tracker.Comment, tracker.Found, error) {
 	if err := m.Check(); err != nil {
 		return tracker.Comment{}, tracker.FoundUnknown, &tracker.RequestError{System: tracker.GitHub, Method: http.MethodGet, Path: "-", Err: tracker.ErrUnsupported, Words: err.Error()}
@@ -256,22 +263,23 @@ func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t track
 	case err != nil:
 		return tracker.Comment{}, tracker.FoundUnknown, err
 	case first.match != nil:
-		return *first.match, tracker.FoundYes, nil
+		return onPage(*first.match, now.URL), tracker.FoundYes, nil
 	case !first.whole || first.unreadable:
 		return tracker.Comment{}, tracker.FoundUnknown, nil
 	case first.pages == 1:
-		return tracker.Comment{}, tracker.FoundNo, nil
+		return tracker.Comment{}, first.none(), nil
 	}
 	again, err := a.listWindow(ctx, c, ep, path, since, m)
 	switch {
 	case err != nil:
 		return tracker.Comment{}, tracker.FoundUnknown, err
 	case again.match != nil:
-		return *again.match, tracker.FoundYes, nil
+		return onPage(*again.match, now.URL), tracker.FoundYes, nil
 	case !again.whole || again.unreadable || !slices.Equal(first.ids, again.ids):
 		return tracker.Comment{}, tracker.FoundUnknown, nil
 	}
-	return tracker.Comment{}, tracker.FoundNo, nil
+	again.other = again.other || first.other
+	return tracker.Comment{}, again.none(), nil
 }
 
 // window is one pass over a FindComment listing.
@@ -281,8 +289,18 @@ type window struct {
 	ids   []string
 	pages int
 	// whole: the last page was reached; unreadable: a comment's bytes
-	// matched but its ids or author could not be read.
-	whole, unreadable bool
+	// matched but its ids or author could not be read; other: a comment
+	// that does not match holds the marker of a Match that is Marked.
+	whole, unreadable, other bool
+}
+
+// none is a window read whole with no match: other when a comment in it
+// holds a Marked match's marker, no otherwise.
+func (w window) none() tracker.Found {
+	if w.other {
+		return tracker.FoundOther
+	}
+	return tracker.FoundNo
 }
 
 func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpoint, path string, since time.Time, m tracker.Match) (window, error) {
@@ -300,7 +318,7 @@ func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpo
 		w.pages = p
 		for _, cm := range list {
 			w.ids = append(w.ids, cm.ID.String())
-			if !m.MatchesBody(cm.Body) {
+			if !strings.Contains(cm.Body, m.Marker) || !m.Marked && !m.MatchesBody(cm.Body) {
 				continue
 			}
 			// GitHub's since is the time of a comment's last change: one
@@ -318,10 +336,11 @@ func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpo
 				continue
 			}
 			author := remoteID(cm.User.ID)
-			if m.AuthorID != "" && author != m.AuthorID {
+			if !m.Matches(cm.Body, author) {
+				w.other = w.other || m.Marked
 				continue
 			}
-			found := tracker.Comment{ID: remoteID(cm.ID), URL: cm.HTMLURL, CreatedAt: cm.CreatedAt, AuthorID: author, Author: cut(cm.User.Login, 39)}
+			found := tracker.Comment{ID: remoteID(cm.ID), CreatedAt: cm.CreatedAt, AuthorID: author, Author: cut(cm.User.Login, 39)}
 			if found.Check() != nil {
 				w.unreadable = true
 				continue
