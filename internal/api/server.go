@@ -793,6 +793,17 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.dropLinkFile(linkID)
 		if l, ok := s.links.Get(linkID); ok && l.Remote {
 			s.remoteRevoked(l)
+			// Its viewers through the switchyard are attached to the
+			// members' sessions here: each ends them as a session's own
+			// link's revoke does (OnRevoke), with neither the store's lock
+			// nor the publications' held.
+			if run, ok := s.runs.Get(runID); ok {
+				for _, m := range run.Members {
+					if d, ok := s.registry.Get(m.SessionID); ok && m.SessionID != "" {
+						d.DisconnectLink(linkID)
+					}
+				}
+			}
 			return
 		}
 		// A switchyard's group link holds viewers on its group's sessions

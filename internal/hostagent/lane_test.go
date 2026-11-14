@@ -35,6 +35,10 @@ type fakeDecisions struct {
 	mu      sync.Mutex
 	asked   []string
 	changed func()
+	// ended holds the links the publisher's store holds as ended
+	// (LinkEnded), which endedAsks counts the asks of.
+	ended     sync.Map
+	endedAsks atomic.Int32
 }
 
 func (f *fakeDecisions) note(what, linkID, sessionID string) {
@@ -98,6 +102,14 @@ func (f *fakeDecisions) Watch(linkID, sessionID string, changed func()) func() {
 }
 func (f *fakeDecisions) DecisionLink(linkID, sessionID, runID string) bool {
 	return linkID == "dl1" && (sessionID == "s" || (sessionID == "" && runID == "run-1"))
+}
+
+// LinkEnded answers whether linkID is among those ended, counting the
+// asks.
+func (f *fakeDecisions) LinkEnded(linkID string) bool {
+	f.endedAsks.Add(1)
+	_, ok := f.ended.Load(linkID)
+	return ok
 }
 
 // laneViewer is a viewer on a peer's data channel, as a test reads it.

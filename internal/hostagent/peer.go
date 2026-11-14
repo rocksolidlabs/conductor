@@ -878,7 +878,13 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 		Owner: p.owner, Replaces: replaces, Authorize: p.authorize, Fresh: p.fresh, Decisions: decides,
 	}, sink)
 	if err != nil {
-		p.a.sendViewerError(p.id, "attach_failed", err.Error())
+		code, msg := "attach_failed", err.Error()
+		if c, m, ok := session.LinkRefusal(err); ok {
+			// A link that no longer opens the session: revoked (or
+			// expired), as its viewers are told at a revoke.
+			code, msg = c, m
+		}
+		p.a.sendViewerError(p.id, code, msg)
 		return
 	}
 	p.mu.Lock()
@@ -912,13 +918,19 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 // is under way of the viewer's, on any of its subscriptions (one it had
 // before a move to the relay too), also once it has left, is withdrawn
 // then, and a text typed without its Enter holds the session's turn for a
-// person. It takes no lock.
+// person. A link the publisher's own store holds as ended
+// (Decisions.LinkEnded) is refused too, as a revoke here refuses it
+// (session.ErrRevoked), whatever the switchyard has said of it yet. It
+// takes no lock of the host's; the publisher's answer takes its store's.
 func (p *peer) authorize() (session.Grant, error) {
 	if why := p.letGo.Load(); why != nil {
 		return session.Grant{}, *why
 	}
 	if err := p.cred.err(); err != nil {
 		return session.Grant{}, err
+	}
+	if d := p.a.opts.Decisions; d != nil && p.linkID != "" && d.LinkEnded(p.linkID) {
+		return session.Grant{}, session.ErrRevoked
 	}
 	return session.Grant{Role: p.role}, nil
 }

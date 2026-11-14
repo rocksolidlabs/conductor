@@ -52,4 +52,11 @@ type Decisions interface {
 	// (PR-6), so a viewer of any other link, or a link of the server's
 	// own, has no lane through the switchyard.
 	DecisionLink(linkID, sessionID, runID string) bool
+	// LinkEnded says whether the publisher holds linkID as no longer live:
+	// revoked, or past its expiry, on its own link store. Every viewer that
+	// came with a link asks it beside the switchyard's word, at its attach
+	// and at each act (peer.authorize), so a link ended here opens none of
+	// the publisher's sessions from then on. A link the publisher does not
+	// hold is not ended. It must not call the session and must not wait.
+	LinkEnded(linkID string) bool
 }

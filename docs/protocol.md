@@ -2419,7 +2419,13 @@ kept (the desk may carry the revoke; one the switchyard ended is opened
 again for it), the revoke is tried again (2 s, then twice as long after
 each failure, a minute at most) and a revoke again from the list tries at
 once; the route answers `502 rendezvous_unavailable` meanwhile, and a
-revoke again once the switchyard has confirmed it answers `204`. A run's
+revoke again once the switchyard has confirmed it answers `204`. A link
+revoked (or expired) on the server opens none of its sessions from that
+moment, whatever the switchyard has taken yet: the publisher's host
+connection asks the server's own link store of every viewer that came
+with a link, at its attach (refused `revoked`) and at each act, and a run
+link's revoke ends its viewers on the run's members' sessions as a session
+link's ends its session's; the switchyard is told as before. A run's
 concurrent first decision links open one desk: the others wait for its
 opening and are minted over it. A publication's or a desk's viewers'
 lanes live under that connection, which ends them with itself: from its
