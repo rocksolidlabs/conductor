@@ -125,7 +125,8 @@ func argsOf(runs []*run) []string {
 }
 
 // A comparison of 100 changed files runs git twice, through gitcli, which
-// runs its look at the configuration before each (four processes): once
+// runs its look for the object store and at the configuration before each
+// (six processes): once
 // for the sizes of the 200 sides and once for their contents, each with
 // the 200 ids on its input, and each with replacements off and the cache
 // of deltas' bases at git's own default limit, as command-line

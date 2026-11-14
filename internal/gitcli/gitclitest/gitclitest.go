@@ -66,10 +66,12 @@ var Hooks = []string{"post-checkout", "reference-transaction", "post-index-chang
 
 // Git runs git -C dir args the way a test sets a repository up: not
 // through Conductor's runner, without the system configuration, as a test
-// identity. A failure fails the test.
+// identity, its automatic maintenance off, so that no git of it (from Git
+// 2.5x on, a commit's detached maintenance run) outlives the call. A
+// failure fails the test.
 func Git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "LC_ALL=C",
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")

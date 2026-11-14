@@ -589,8 +589,17 @@ func entryAt(r *git.Repository, tree *object.Tree, path string) (object.TreeEntr
 
 // runGit is how the package runs git: gitcli's RunTree, in the working
 // tree the read opened (top) with its own .git, the read's context its
-// end; a test sets it.
-var runGit = gitcli.RunTree
+// end, with an empty folder of its own as the folder RunTree has git
+// write objects to (the reader's gits write none), removed once git has
+// ended; a test sets it.
+var runGit = func(ctx context.Context, top string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+	objects, err := os.MkdirTemp("", "gitrepo-objects-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(objects)
+	return gitcli.RunTree(ctx, top, objects, env, in, w, args...)
+}
 
 // sizes is the size of each blob of hs as git records it, -1 for one git
 // cannot say (not there, not a blob), from one git (git cat-file
