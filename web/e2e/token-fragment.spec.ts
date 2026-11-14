@@ -374,8 +374,8 @@ test("at every load the framework's reload state is gone from the tab's storage"
 
 // A reload Nuxt makes itself: its chunk-reload plugin, told of a new build (`app:manifest:update`, what its build check announces),
 // turns the next navigation into a load at that address and first writes the page's state into the tab's storage
-// (`nuxt:reload:state`). Every write to the tab's storage is recorded, and the storage is read through the browser's devtools while
-// the next load is held.
+// (`nuxt:reload:state`). Every write to the tab's storage is recorded, and the document reads the whole of that storage as the next
+// load starts (the Navigation API's `navigate` event for another document), which the test holds.
 test("a reload Nuxt makes itself, while the page holds a kept token and while it holds a link's token still tried: the tab's storage never holds either, and the page that loads is signed in with the kept one", async ({ browser, state }) => {
   const token = state.token
   for (const holding of ['kept', 'trying'] as const) {
@@ -385,11 +385,16 @@ test("a reload Nuxt makes itself, while the page holds a kept token and while it
     page.on('request', (r) => sent.push(r))
     const rec = await recorder(page)
     await page.addInitScript(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any
       const set = Storage.prototype.setItem
       Storage.prototype.setItem = function (k: string, v: string) {
-        if (this === window.sessionStorage) (window as unknown as { __conductorRecord: (l: string) => void }).__conductorRecord(`tab ${k} ${v}`)
+        if (this === w.sessionStorage) w.__conductorRecord(`tab write ${k} ${v}`)
         return set.call(this, k, v)
       }
+      w.navigation?.addEventListener('navigate', (e: { destination: { sameDocument: boolean; url: string } }) => {
+        if (!e.destination.sameDocument) w.__conductorRecord(`tab at the load of ${e.destination.url} ${JSON.stringify(Object.entries(sessionStorage))}`)
+      })
     })
     const docs = await holdDocuments(page)
     if (holding === 'trying') {
@@ -406,29 +411,34 @@ test("a reload Nuxt makes itself, while the page holds a kept token and while it
     const before = rec.lines.length
     docs.on = true
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pushed = page.evaluate(() => void (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push('/sessions')).catch(() => {})
+    const pushed = page.evaluate(() => void (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push('/settings')).catch(() => {})
     const asked = await docs.asked
-    expect(new URL(asked.url()).pathname, holding).toBe('/sessions')
-    const cdp = await ctx.newCDPSession(page)
-    const tab = await cdp.send('DOMStorage.getDOMStorageItems', { storageId: { securityOrigin: new URL(asked.url()).origin, isLocalStorage: false } })
-    const writes = rec.lines.slice(before).filter((l) => l.startsWith('tab '))
-    expect(writes.some((l) => l.startsWith('tab nuxt:reload:state ')), `${holding}: Nuxt wrote its state`).toBe(true)
-    expect(tab.entries.map((e) => e[0]), holding).toContain('nuxt:reload:state')
-    for (const t of [token, UNKNOWN]) {
-      expect(JSON.stringify(tab.entries), holding).not.toContain(t)
-      expect(writes.join('\n'), holding).not.toContain(t)
-    }
+    expect(new URL(asked.url()).pathname, holding).toBe('/settings')
+    const atLoad = `tab at the load of ${asked.url()} `
+    await expect.poll(() => rec.lines.slice(before).some((l) => l.startsWith(atLoad))).toBe(true)
+    const read = rec.lines.slice(before).find((l) => l.startsWith(atLoad))!
+    expect(rec.lines.slice(before).some((l) => l.startsWith('tab write nuxt:reload:state ')), `${holding}: Nuxt wrote its state`).toBe(true)
+    expect(read, holding).toContain('nuxt:reload:state')
+    const tabLines = () => rec.lines.filter((l) => l.startsWith('tab ')).join('\n')
+    for (const t of [token, UNKNOWN]) expect(tabLines(), holding).not.toContain(t)
     const from = sent.length
+    const loads = rec.loads()
     docs.on = false
     docs.release()
     await pushed
+    await expect.poll(rec.loads).toBe(loads + 1)
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/settings')
     await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
-    await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
-    expect(triedSince(sent, from), `${holding}: the link's token after the load`).toBe(false)
-    expect(await workbenchHeld(page)).toEqual({ token, standing: '' })
+    // The page that loaded sends the kept token, and holds nothing of the link's.
+    expect(await workbenchHeld(page), holding).toEqual({ token, standing: '' })
+    const signedIn = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 200 && r.request().headers()['authorization'] === `Bearer ${token}`)
+    await shown(page)
+    await signedIn
+    expect(documents(sent.slice(from)), holding).toBe(0)
     expect(await stored(page)).toBe(token)
     await tabHoldsNoToken(page, token, UNKNOWN)
     expect(await page.evaluate(() => sessionStorage.getItem('nuxt:reload:state'))).toBeNull()
+    for (const t of [token, UNKNOWN]) expect(tabLines(), holding).not.toContain(t)
     await ctx.close()
   }
 })

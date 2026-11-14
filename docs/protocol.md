@@ -6223,12 +6223,12 @@ in any case of its letters, as the router draws the decide page there).
 In the desktop app the workbench token is the app's bridge's, kept in
 memory, not in the browser's storage, and a link's token changes nothing
 there, at a load or later; a fragment that holds both keys gives neither.
-A reload Nuxt itself makes (after a chunk that failed to load, or a new
-build) writes the page's state, the workbench token the page holds among
-it, into the tab's storage (`nuxt:reload:state`); the next load of the app
-in that tab removes it, and nothing in the app reads it back. When that
-load does not come (the server stopped), it stays there until the app
-loads in that tab again. The pass is kept for the tab
+The workbench token a page holds is kept in the page's memory, outside
+the state Nuxt writes into the tab's storage at a reload it makes itself
+(after a chunk that failed to load, or a new build; `nuxt:reload:state`),
+so that state holds no token; the next load of the app in that tab removes
+it, and nothing in the app reads it back. The gate's Cancel ends its ask:
+the next `401` opens it again. The pass is kept for the tab
 (`sessionStorage`) until a `401` to a request sent with it, or until a
 later link stores another, and sent only in
 the `Authorization` header of the four routes, never in a URL. The decide
