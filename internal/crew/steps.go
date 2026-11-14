@@ -2,6 +2,7 @@ package crew
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -197,10 +198,14 @@ type tree struct {
 	// recorded by (treeOwner): the attempt itself, or a preview of its
 	// result (preview.go). unmade, under e.mu, says the tree's directory
 	// is not made yet (a preview's checkout, added after its open is
-	// committed): its end runs no cleanup step in it.
+	// committed): its end runs no cleanup step in it. at, set with unmade
+	// cleared, is the working directory as the server opened it for a
+	// tree whose folders it holds (a preview's): no step starts where cwd
+	// no longer names it (moved).
 	a      *attempt
 	owner  treeOwner
 	unmade bool
+	at     os.FileInfo
 	busy   sync.WaitGroup
 	// handed, ending, ended, session, starting, services, ready, dead:
 	// see above.
@@ -481,9 +486,9 @@ var errAttemptClosed = errors.New("the attempt closed")
 // that state beside the manifest's own (tree.ready and tree.ended, or the
 // preview's); ready is the tree's readiness taken (true) or put back
 // (false), with what runs once the readiness is committed (the change's
-// done, nil for none); and serviceLost is what a service of the tree exiting after
-// readiness does: the words the run log adds, and what runs once that
-// change is committed. The receipts of the tree's steps are its attempt's
+// done, nil for none); and serviceLost is what a service of the tree
+// exiting after readiness does, in the change that records it: the words
+// the run log adds. The receipts of the tree's steps are its attempt's
 // whoever owns it (tree.a).
 type treeOwner interface {
 	closed() bool
@@ -493,7 +498,7 @@ type treeOwner interface {
 	putRow(row ledger.TreeRow) func(LedgerTx) error
 	lifecycle(t *tree, state string, more map[string]any) []event
 	ready(t *tree, on bool) (committed func())
-	serviceLost(r *run, t *tree) (words string, after func())
+	serviceLost(r *run, t *tree) (words string)
 }
 
 // The open attempt as its trees' owner: what resolveTree, treeReady,
@@ -539,12 +544,12 @@ func (a *attempt) ready(t *tree, on bool) func() {
 
 // serviceLost withdraws the worktree's preview: the tree no longer answers
 // whole. The attempt goes on.
-func (a *attempt) serviceLost(r *run, t *tree) (string, func()) {
+func (a *attempt) serviceLost(r *run, t *tree) string {
 	if t.kind == ledger.TreeWorktree && a.preview != "" {
 		a.preview = ""
-		return "; the preview is withdrawn", nil
+		return "; the preview is withdrawn"
 	}
-	return "", nil
+	return ""
 }
 
 // resolveAt is r's project manifest as a tree at commit has it: the crew's
@@ -950,7 +955,7 @@ func stepPayload(a *attempt, t *tree, phase, id string, k int, more map[string]a
 // tree's end records. A command that cannot start is the service's
 // failure, its row finished with why. The error is the failure's words.
 func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, ch Check) error {
-	if err := ctx.Err(); err != nil {
+	if err := cmp.Or(ctx.Err(), t.moved()); err != nil {
 		return fmt.Errorf("%s was not started: %w", ch.ID, err)
 	}
 	e.mu.Lock()
@@ -1067,7 +1072,6 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 		e.beforeServiceEnd(ts.ch.ID)
 	}
 	res := ts.svc.Result()
-	var after func()
 	err := e.transact(context.Background(), r, func() tx {
 		if ts.stopping != "" || ts.ended {
 			return tx{}
@@ -1101,8 +1105,7 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 				rule = ": " + foregroundRule
 				words, why = ts.ch.ID+" exited 0 while the tree was in use"+rule, "it exited 0 while the tree was in use"+rule
 			}
-			var withdrawn string
-			withdrawn, after = t.owner.serviceLost(r, t)
+			withdrawn := t.owner.serviceLost(r, t)
 			whose := t.whose()
 			r.note(session.ActivityError, "task %s: attempt %d: %sservice %s %s while the tree was in use%s%s", a.t.def.ID, a.n, whose, ts.ch.ID, serviceExit(res), rule, withdrawn)
 		}
@@ -1114,9 +1117,21 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 	if err != nil {
 		e.afterTransact(r, err)
 	}
-	if after != nil {
-		after()
+}
+
+// moved refuses a step of t, before it starts, when t's working directory
+// is held (at) and its path no longer names that directory: the step is
+// not started and fails in fixed words. The check comes just before the
+// start, and the same user can replace the folder between it and the
+// start; natively nothing closes that gap.
+func (t *tree) moved() error {
+	if t == nil || t.at == nil {
+		return nil
 	}
+	if fi, err := os.Stat(t.cwd); err == nil && os.SameFile(fi, t.at) {
+		return nil
+	}
+	return fmt.Errorf("%s is no longer the folder the server opened for the %s: the step is not started", t.cwd, t.kind)
 }
 
 // whose is the tree in the run log's words, before what of it they name:
@@ -1231,7 +1246,7 @@ var errServiceExited = errors.New("a service of the tree exited")
 // no try and no exit (tries 0, exit -1). It returns the stage and words of
 // a failure.
 func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Probe) (string, error) {
-	if err := ctx.Err(); err != nil {
+	if err := cmp.Or(ctx.Err(), t.moved()); err != nil {
 		return "ready " + p.ID, fmt.Errorf("%s was not run: %w", p.ID, err)
 	}
 	e.mu.Lock()
@@ -1501,6 +1516,9 @@ func (t *tree) row(runID, state string) ledger.TreeRow {
 func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase string, ch Check, gen int) (proc.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return proc.Result{Exit: -1, Canceled: true}, fmt.Errorf("%s was not run: %w", ch.ID, err)
+	}
+	if err := t.moved(); err != nil {
+		return proc.Result{Exit: -1}, fmt.Errorf("%s was not run: %w", ch.ID, err)
 	}
 	man, dir, subject := r.baseMan, r.cwd, r.base
 	env := t.env(r.id)
@@ -2064,8 +2082,11 @@ func (e *Engine) startTrees(r *run) {
 // context of their own, so the cut-off, which ends r.teardown, leaves them
 // their reserve (Draining). A refused commit is kept for the run's next
 // (transact), the ports with it, and a row left not ended is concluded by
-// the recovery at the next start, its cleanup not run.
-func (e *Engine) endTree(r *run, h treeEnd) {
+// the recovery at the next start, its cleanup not run; but a preview's is
+// its own to write (finishPreview): refused, it is undone, nothing of it
+// carried, and returned to be tried again (again), the tree counted done
+// all the same.
+func (e *Engine) endTree(r *run, h treeEnd) (again func() error) {
 	t := h.t
 	defer func() {
 		e.mu.Lock()
@@ -2094,25 +2115,38 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 		e.beforeTreeEnd(t.kind)
 	}
 	failed, cut := e.cleanTree(r, t)
-	_ = e.transact(context.Background(), r, func() tx {
-		if t.ended {
-			return tx{}
+	var undo func()
+	if t.kind == ledger.TreePreview {
+		undo = func() {
+			t.ended = false
+			r.pendingReleases = slices.DeleteFunc(r.pendingReleases, func(x *tree) bool { return x == t })
 		}
-		t.ended = true
-		r.pendingReleases = append(r.pendingReleases, t)
-		more := map[string]any{"why": h.why}
-		if failed != "" {
-			more["cleanupFailed"] = failed
-		}
-		if cut {
-			more["interrupted"] = true
-		}
-		out := tx{events: t.owner.lifecycle(t, ledger.TreeEnded, more)}
-		row := t.row(r.id, ledger.TreeEnded)
-		row.Why, row.Interrupted, row.EndedAt = session.CleanMessage(h.why), cut, time.Now().UTC()
-		out.more = t.owner.putRow(row)
-		return out
-	}, nil)
+	}
+	end := func() error {
+		return e.transact(context.Background(), r, func() tx {
+			if t.ended {
+				return tx{}
+			}
+			t.ended = true
+			r.pendingReleases = append(r.pendingReleases, t)
+			more := map[string]any{"why": h.why}
+			if failed != "" {
+				more["cleanupFailed"] = failed
+			}
+			if cut {
+				more["interrupted"] = true
+			}
+			out := tx{events: t.owner.lifecycle(t, ledger.TreeEnded, more)}
+			row := t.row(r.id, ledger.TreeEnded)
+			row.Why, row.Interrupted, row.EndedAt = session.CleanMessage(h.why), cut, time.Now().UTC()
+			out.more = t.owner.putRow(row)
+			return out
+		}, undo)
+	}
+	if end() != nil && undo != nil {
+		return end
+	}
+	return nil
 }
 
 // shutdownCut is why the server's shutdown cut-off (Draining) ended what a
@@ -2363,11 +2397,16 @@ func (e *Engine) Draining(ctx context.Context) {
 // calls it after it has stopped its runs, and before the ledger closes, so
 // a tree's end is recorded in the ledger it ends in.
 func (e *Engine) Drain(ctx context.Context) {
-	// The previews still open end as every tree does at the shutdown. The
-	// server stops its runs first (api.Server.Shutdown), so a preview of a
-	// run it held has ended with that stop (run_stopped): what ends here,
-	// why shutdown, is a preview whose run was not stopped first.
-	_ = e.endPreviews(nil, whyShutdown)
+	// The previews still open end as every tree does at the shutdown,
+	// whatever the ledger answers (preview.go: endNow), their teardowns
+	// counted in their runs' trees, which the wait below takes; a write the
+	// ledger refuses is tried again by the preview's own end, never waited
+	// for here. The server stops its runs first (api.Server.Shutdown), so a
+	// preview of a run it held has ended with that stop (run_stopped): what
+	// ends here, why shutdown, is a preview whose run was not stopped first.
+	e.mu.Lock()
+	e.endPreviews(nil, whyShutdown)
+	e.mu.Unlock()
 	for {
 		e.mu.Lock()
 		var idle <-chan struct{}

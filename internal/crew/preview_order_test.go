@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -129,11 +128,12 @@ func TestAPreviewOfARunContinuedAsItOpensIsRefused(t *testing.T) {
 // The preview's URL is offered only once its readiness is committed: held
 // before its commit, neither the label nor the attempt's Previewing offers
 // it, and it is offered once the commit is in; a readiness the ledger
-// refuses is never offered, and the preview ends not ready.
+// refuses is never offered, and the preview ends not ready, its service
+// stopped.
 func TestAPreviewIsOfferedOnceItsReadinessIsCommitted(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
-	run, _ := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
+	run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
 	offered := func(seq int) string {
 		t.Helper()
 		var words []string
@@ -154,20 +154,27 @@ func TestAPreviewIsOfferedOnceItsReadinessIsCommitted(t *testing.T) {
 			l.failOn, l.failOnce = "preview.ready", true
 		}
 		l.mu.Unlock()
+		// The reused checkout keeps seq 1's pid file: gone, the file read
+		// is the service's of this seq.
+		os.Remove(stateFile(ts.Attempt.Worktree+".preview", "web.pid"))
 		openPreview(t, e, run.ID)
 		await(t, "the readiness held", blocked)
 		if words := offered(seq); words != "" {
 			t.Fatalf("seq %d, its readiness not committed: %s", seq, words)
 		}
+		pid := pidIn(t, stateFile(ts.Attempt.Worktree+".preview", "web.pid"))
 		l.mu.Lock()
 		l.blockOn = ""
 		l.mu.Unlock()
 		release()
 		if !refuse {
+			// The ledger's row is committed before the engine publishes the
+			// address (the commit's done): the label is waited for.
 			l.previewWhen(t, run.ID, "build", 1, seq, "ready", previewReadyRow)
-			if label, ok := e.ReadPreview(run.ID, "build", 1, seq); !ok || label.Preview == "" || label.State != ledger.PreviewReady {
-				t.Fatalf("the label once the readiness is committed: %+v %v", label, ok)
-			}
+			waitFake(t, "the label offering the committed readiness", func() bool {
+				label, ok := e.ReadPreview(run.ID, "build", 1, seq)
+				return ok && label.Preview != "" && label.State == ledger.PreviewReady
+			})
 			if err := e.ClosePreview(run.ID, "build", 1, seq); err != nil {
 				t.Fatal(err)
 			}
@@ -176,6 +183,9 @@ func TestAPreviewIsOfferedOnceItsReadinessIsCommitted(t *testing.T) {
 			if words := offered(seq); words != "" || row.Preview != "" {
 				t.Fatalf("seq %d, its readiness refused: %s %+v", seq, words, row)
 			}
+		}
+		if row := l.previewWhen(t, run.ID, "build", 1, seq, "ended", previewEndedRow); alive(pid) {
+			t.Fatalf("seq %d ended %+v with its service %d alive", seq, row, pid)
 		}
 		l.previewWhen(t, run.ID, "build", 1, seq, "ended", previewEndedRow)
 		waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
@@ -335,8 +345,9 @@ func TestAStopTellsAMemberToStopWhileAPreviewWaitsOnTheLedger(t *testing.T) {
 
 // The idle end is judged as it is made: a read at the very moment the
 // idle timer fires keeps the preview open, whether the read comes before
-// the timer or after it, before the end's change (the test holds the
-// run's txMu there), and the timer is set again for a whole previewIdle.
+// the timer or after it, before the end's change (the engine's seam once
+// the timer has fired), and the timer is set again for a whole
+// previewIdle.
 func TestAPreviewReadAsItsIdleTimerFiresStaysOpen(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
@@ -355,11 +366,10 @@ func TestAPreviewReadAsItsIdleTimerFiresStaysOpen(t *testing.T) {
 	run, _ := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
 	openPreview(t, e, run.ID)
 	l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
-	r := runOf(t, e, run.ID)
 	read := func() {
 		t.Helper()
 		if _, ok := e.ReadPreview(run.ID, "build", 1, 1); !ok {
-			t.Fatal("the label is not read")
+			t.Error("the label is not read")
 		}
 	}
 	for _, readFirst := range []bool{true, false} {
@@ -372,13 +382,10 @@ func TestAPreviewReadAsItsIdleTimerFiresStaysOpen(t *testing.T) {
 			read()
 			w.fire <- clock.Now()
 		} else {
-			r.txMu.Lock()
+			// Woken, the idle end reads at the seam before its change: the
+			// read comes after the timer and before the end.
+			e.beforeIdleEnd = func() { e.beforeIdleEnd = nil; read() }
 			w.fire <- clock.Now()
-			// Woken, the idle end waits for the run's txMu to make its
-			// change: the read comes after the timer and before the end.
-			waitFake(t, "the idle end waiting for the run's txMu", func() bool { return parkedOnALock("servePreview") })
-			read()
-			r.txMu.Unlock()
 		}
 	}
 	if w := await(t, "the idle timer set again", waits); w.d != previewIdle {
@@ -391,19 +398,6 @@ func TestAPreviewReadAsItsIdleTimerFiresStaysOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow)
-}
-
-// parkedOnALock reports whether a goroutine with fn on its stack is
-// parked on a sync.Mutex.
-func parkedOnALock(fn string) bool {
-	buf := make([]byte, 1<<20)
-	buf = buf[:runtime.Stack(buf, true)]
-	for g := range strings.SplitSeq(string(buf), "\n\n") {
-		if strings.Contains(g, "[sync.Mutex.Lock") && strings.Contains(g, fn) {
-			return true
-		}
-	}
-	return false
 }
 
 // gateCheckoutGit puts a git first on PATH that, for the command between
@@ -477,9 +471,11 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 			if end == "stop" {
 				// A stopped run opens no preview: the checkout is judged as
 				// an open would judge it.
-				if reused, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result); !reused || err != nil {
-					t.Fatalf("the checkout after the stop: reused %v, %v", reused, err)
+				f, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result)
+				if err != nil || f.folder == nil {
+					t.Fatalf("the checkout after the stop: %+v, %v", f, err)
 				}
+				f.Close()
 				return
 			}
 			openPreview(t, e, run.ID)
