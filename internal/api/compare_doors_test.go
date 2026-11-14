@@ -600,7 +600,9 @@ func registeredPatterns(t *testing.T, s *Server) []string {
 // Every route an agent's token may call has its rule in compareDoors, and
 // the table answers a lane as it says, entry by entry: each entry is such
 // a route (the guide's operations of the agent's scopes, the granted
-// acts' routes, Brakeman's shared reads); a lane's own token is served
+// acts' routes, Brakeman's shared reads); the decision, crew, link and
+// capacity routes are refused by name, so a door that would serve them
+// fails here and not only in the calls below; a lane's own token is served
 // every own and lane entry and refused every other, 409 lane in one
 // sentence; the same token on another lane's session is refused every
 // entry, 401, as a token the route does not take; and a route the server
@@ -631,7 +633,8 @@ func TestEveryAgentDoorIsListed(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"POST /api/sessions/{id}/decisions", "GET /api/sessions/{id}/decisions", "GET /api/sessions/{id}/decisions/{did}",
-		"POST /api/sessions/{id}/decisions/{did}/withdraw", "POST /api/sessions/{id}/crew", "POST /api/sessions/{id}/run/members", "POST /api/sessions/{id}/links/agent"} {
+		"POST /api/sessions/{id}/decisions/{did}/withdraw", "POST /api/sessions/{id}/crew", "POST /api/sessions/{id}/run/members", "POST /api/sessions/{id}/links/agent",
+		"GET /api/capacity"} {
 		if rule, ok := compareDoors[p]; !ok || rule != doorRefused {
 			t.Errorf("%s is %v, not refused", p, rule)
 		}

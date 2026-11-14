@@ -3,14 +3,15 @@ const open = defineModel<boolean>('open', { default: false })
 const admin = useWorkbenchToken()
 const draft = ref('')
 
+// The draft starts from the token this browser keeps, never from one only this page holds.
 watch(open, (v) => {
-  if (v) draft.value = admin.token.value
+  if (v) draft.value = admin.kept()
 })
-// A 401 anywhere opens the gate.
+// A 401 anywhere opens the gate; a token the server has since accepted (a link's) closes it.
 watch(
   () => admin.needsToken.value,
   (v) => {
-    if (v) open.value = true
+    open.value = v
   },
 )
 
