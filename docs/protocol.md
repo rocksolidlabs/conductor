@@ -5043,7 +5043,7 @@ no text, no colour profile or colour chunk, no animation's frames: an
 animated image keeps its default image), nothing after the image's data
 or its end. A kept file past 4 MiB is `413 bound` (`the screenshot is
 more than 4 MiB as the server keeps it`); a paletted or grey upload's
-kept file is larger than the upload, and the bound is the kept file's.
+kept file can be larger than the upload, and the bound is the kept file's.
 The kept file's
 bytes are looked through as the scrub looks through a text, and one that
 holds a part of a tree's secret is refused (`the screenshot holds a
@@ -5088,14 +5088,18 @@ server's stop began), is `503 tree_unread` and nothing is kept; a read
 that named the commit and then failed (its 5 s ran out, git failed) keeps
 the capture with the commit alone, no content, no changed paths and no
 sources, as the label answers it (its drift then says the revision was
-not known), its scope naming the repository when the look found it.
+not known), its scope naming the repository when the look found it
+within the read's one time limit.
 Each is logged by its kind, never git's words. The changed paths: the
 read keeps the first of them within its own limit as read (200 paths
 and 16 KiB of their bytes), they are then scrubbed, and the store's cut
 (200 and 16 KiB as encoded) comes after. What the server read (the
 changed paths, the sources, the scope; git's ids aside) is scrubbed with
 the read's own tree's secret beside every secret held once the read is
-over (its own reading, not the request's). From those facts the store keeps
+over (its own reading, not the request's). A create scrubs what it keeps
+of the capture once more, with the secrets held after the tree's read,
+before the store's create (the operation's `byName` keeps the request's
+scrub). From those facts the store keeps
 the drift (the selection's read when the save's commit or content
 differs, or either was not read), what the page serves (`declared`,
 `stale` or `unconfirmed`), the changed paths' cut and how a retake is
