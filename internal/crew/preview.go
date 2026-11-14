@@ -97,6 +97,9 @@ var (
 	ErrPreviewsBusy = fmt.Errorf("the server has %d previews open, the most it keeps", maxPreviews)
 	// ErrPreviewNotFound says no such preview is open.
 	ErrPreviewNotFound = errors.New("no such preview is open")
+	// ErrPreviewOpening answers a Close of a preview whose open is under
+	// way: nothing of it changes, and it can be closed once it is open.
+	ErrPreviewOpening = errors.New("the preview is still opening: close it once it is open")
 	// ErrPreviewRefused refuses a checkout that is there already but not
 	// as the commit has it: Conductor removes nothing it made.
 	ErrPreviewRefused = errors.New("the preview's checkout is refused")
@@ -373,6 +376,9 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		err = cause // the bound's own words, not those of the git it cut
 	}
 	cancel()
+	if e.checkoutMade != nil {
+		e.checkoutMade(p.dir)
+	}
 	e.mu.Lock()
 	if err != nil {
 		e.endNow(p, "the checkout could not be made: "+session.CleanMessage(err.Error()))
@@ -711,13 +717,20 @@ func (e *Engine) finishPreview(p *preview, tried <-chan struct{}) {
 // ClosePreview ends the preview seq of attempt n of the task (Close): its
 // end begun, the rest of it on its own (closePreview). A first
 // transaction the ledger refused is the error, the preview left as it was.
+// While its open is under way (opening, until the open has handed it to
+// its serving or ended it) a Close is answered ErrPreviewOpening at once,
+// and nothing of the preview changes.
 func (e *Engine) ClosePreview(runID, taskID string, n, seq int) error {
 	e.mu.Lock()
 	p := e.previews[previewKey{runID, taskID, n}]
 	ok := p != nil && p.seq == seq && !p.closed()
+	opening := ok && p.opening
 	e.mu.Unlock()
-	if !ok {
+	switch {
+	case !ok:
 		return ErrPreviewNotFound
+	case opening:
+		return ErrPreviewOpening
 	}
 	return e.closePreview(p, whyPreviewClosed)
 }

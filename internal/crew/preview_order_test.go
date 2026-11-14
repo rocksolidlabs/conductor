@@ -425,9 +425,10 @@ func gateCheckoutGit(t *testing.T) (arrived, gate string) {
 // An end that comes while the preview's checkout is being added (held
 // between the add's two git commands) waits for the add: the add
 // finishes, the preview ends once, and the checkout is whole, a second
-// open of the candidate reusing it. A Close, a run's stop and a Drain.
+// open of the candidate reusing it. A run's stop and a Drain (a Close is
+// answered busy meanwhile: TestAClosedPreviewWhileItOpensIsBusy).
 func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
-	for _, end := range []string{"close", "stop", "drain"} {
+	for _, end := range []string{"stop", "drain"} {
 		t.Run(end, func(t *testing.T) {
 			dir := newRepo(t)
 			e, _, l := managedEngine(t)
@@ -439,14 +440,12 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 				opened <- err
 			}()
 			waitFake(t, "the checkout's add held", func() bool { _, err := os.Stat(arrived); return err == nil })
-			why := map[string]string{"close": whyPreviewClosed, "stop": whyRunStopped, "drain": whyShutdown}[end]
+			why := map[string]string{"stop": whyRunStopped, "drain": whyShutdown}[end]
 			ended := make(chan error, 1)
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				switch end {
-				case "close":
-					ended <- e.ClosePreview(run.ID, "build", 1, 1)
 				case "stop":
 					ended <- e.Stop(ctx, run.ID)
 				default:
@@ -482,6 +481,72 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			l.previewWhen(t, run.ID, "build", 1, 2, "ended", previewEndedRow)
+		})
+	}
+}
+
+// A Close of a preview whose open is under way, while its checkout is
+// being added (held between the add's git commands) and once the add has
+// returned (held at the engine's seam, before the open hands it over), is
+// answered busy at once, and nothing of the preview changes: its state,
+// its row, its writes. The open then completes and serves it, and a Close
+// after that ends it.
+func TestAClosedPreviewWhileItOpensIsBusy(t *testing.T) {
+	for _, at := range []string{"during the add", "after the add"} {
+		t.Run(at, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			run, _ := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
+			held, release := make(chan struct{}, 1), make(chan struct{})
+			var once sync.Once
+			let := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(let)
+			var arrived, gate string
+			if at == "during the add" {
+				arrived, gate = gateCheckoutGit(t)
+			} else {
+				e.checkoutMade = func(string) {
+					held <- struct{}{}
+					<-release
+				}
+			}
+			opened := make(chan error, 1)
+			go func() {
+				_, err := e.OpenPreview(context.Background(), run.ID, "build", 1, "admin")
+				opened <- err
+			}()
+			if at == "during the add" {
+				waitFake(t, "the checkout's add held", func() bool { _, err := os.Stat(arrived); return err == nil })
+			} else {
+				await(t, "the open held after the add", held)
+			}
+			if err := e.ClosePreview(run.ID, "build", 1, 1); !errors.Is(err, ErrPreviewOpening) {
+				t.Fatalf("a Close while the preview opens: %v", err)
+			}
+			if pv := taskOf(t, e, run.ID, "build").Attempt.Previewing; pv == nil || pv.State != ledger.PreviewResolved {
+				t.Fatalf("the preview after the Close: %+v", pv)
+			}
+			if w := l.writers(run.ID, "build", 1, 1); !slices.Equal(w, []string{"OpenPreview"}) {
+				t.Fatalf("the preview's writes after the Close: %v", w)
+			}
+			if at == "during the add" {
+				open(t, gate)
+			} else {
+				let()
+			}
+			if err := await(t, "the open", opened); err != nil {
+				t.Fatalf("the open: %v", err)
+			}
+			l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
+			if err := e.ClosePreview(run.ID, "build", 1, 1); err != nil {
+				t.Fatal(err)
+			}
+			if row := l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow); row.Why != whyPreviewClosed {
+				t.Fatalf("the ended row: %+v", row)
+			}
+			if w := l.writers(run.ID, "build", 1, 1); !slices.Equal(w, []string{"OpenPreview", "PreviewReady", "PreviewEnding", "EndPreview"}) {
+				t.Fatalf("the preview's writes: %v", w)
+			}
 		})
 	}
 }
