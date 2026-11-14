@@ -454,6 +454,8 @@ func TestMcpTicketCommentResendsAfterAStalledReply(t *testing.T) {
 // limit (2 an hour, not 2 a session) and report's message (500 bytes, not
 // characters). task_result has gained a repair's addressed since, its
 // schema's property and its description's sentence (RV1 PR-5).
+// ticket_read's and ticket_comment's name the ticket a run was launched
+// from as well as the one it is linked to, as the route answers (#887).
 func TestToolsListIsUnchanged(t *testing.T) {
 	golden, err := os.ReadFile("testdata/tools-list-main.json")
 	if err != nil {

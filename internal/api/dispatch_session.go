@@ -161,6 +161,21 @@ func linkedTicket(ctx context.Context, ds *dispatch.Store, run string) (dispatch
 	return dispatch.TicketView{}, false, nil
 }
 
+// memberTicket reads, whole, the ticket a member of the run reads: the
+// one the run was launched from (rt, its package's), whatever links say,
+// else the live ticket its live run link names. found false with rt set
+// is a launching ticket deleted or not in this store. The session's
+// ticket route answers by it and the guide lists the ticket's operations
+// by it (sessionCaller), so what is listed is what is served.
+func (s *Server) memberTicket(ctx context.Context, ds *dispatch.Store, run string) (v dispatch.TicketView, rt *crew.RunTicket, found bool, err error) {
+	if rt = s.runPackage(run); rt != nil {
+		v, found, err = packageTicket(ctx, ds, rt)
+		return v, rt, found, err
+	}
+	v, found, err = linkedTicket(ctx, ds, run)
+	return v, nil, found, err
+}
+
 // handleSessionTicket answers the ticket the session's run is linked to:
 // 200 {ticket, labels, milestone}, the ticket in full as the admin's read
 // gives it (its last 50 comments among it), labels the rows of its live
@@ -193,30 +208,21 @@ func (s *Server) handleSessionTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	var (
-		v      dispatch.TicketView
-		found  bool
-		err    error
-		launch *sessionLaunch
-	)
-	if rt := s.runPackage(run); rt != nil {
-		// Launched from a ticket: that ticket, whatever links say.
-		if v, found, err = packageTicket(ctx, ds, rt); err == nil && !found {
-			launchTicketGone(w, run, rt.Key)
-			return
+	var launch *sessionLaunch
+	v, rt, found, err := s.memberTicket(ctx, ds, run)
+	if rt != nil && err == nil && !found {
+		launchTicketGone(w, run, rt.Key)
+		return
+	}
+	if rt != nil && err == nil {
+		launch = &sessionLaunch{ID: rt.Launch, Rev: rt.Rev, Plan: sessionLaunchPlan{ID: rt.Plan, N: rt.PlanN}, Digest: rt.Digest}
+		switch changed, cerr := ds.ChangedSince(ctx, rt.Launch); {
+		case errors.Is(cerr, dispatch.ErrNotFound):
+		case cerr != nil:
+			err = cerr
+		default:
+			launch.Changed = &changed
 		}
-		if err == nil {
-			launch = &sessionLaunch{ID: rt.Launch, Rev: rt.Rev, Plan: sessionLaunchPlan{ID: rt.Plan, N: rt.PlanN}, Digest: rt.Digest}
-			switch changed, cerr := ds.ChangedSince(ctx, rt.Launch); {
-			case errors.Is(cerr, dispatch.ErrNotFound):
-			case cerr != nil:
-				err = cerr
-			default:
-				launch.Changed = &changed
-			}
-		}
-	} else {
-		v, found, err = linkedTicket(ctx, ds, run)
 	}
 	if err != nil {
 		s.dispatchError(w, "ticket", err)

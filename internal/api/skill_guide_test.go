@@ -108,11 +108,11 @@ var skillToolLeads = map[string]struct {
 }{
 	"In every session": {"session", 0},
 	"In a session the server runs (not a hosted one), while it lets agents serve themselves (its agents.selfService setting, on by default)": {"session", needSelfService},
-	"There, while the session is in no crew":                         {"session", needSelfService | needNoRun},
-	"There, once the session is in a crew":                           {"session", needSelfService | needRun},
-	"There, once the session is in a crew that is not a managed run": {"session", needSelfService | needRun | needUnmanaged},
-	"In an attempt of a managed run (CONDUCTOR_TASK is set)":         {"task", 0},
-	"In a run a person linked to a Dispatch ticket":                  {"ticket", 0},
+	"There, while the session is in no crew":                                       {"session", needSelfService | needNoRun},
+	"There, once the session is in a crew":                                         {"session", needSelfService | needRun},
+	"There, once the session is in a crew that is not a managed run":               {"session", needSelfService | needRun | needUnmanaged},
+	"In an attempt of a managed run (CONDUCTOR_TASK is set)":                       {"task", 0},
+	"In a run launched from a Dispatch ticket, or one a person linked to a ticket": {"ticket", 0},
 }
 
 // The skill names every tool the guide has, each under the condition the

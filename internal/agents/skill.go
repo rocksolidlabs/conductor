@@ -52,8 +52,8 @@ same.
   task_result, message_send, inbox_read, inbox_ack, task_blocked,
   task_checkpoint, decision_request, decision_list, decision_read and
   decision_withdraw.
-- In a run a person linked to a Dispatch ticket: ticket_read and
-  ticket_comment.
+- In a run launched from a Dispatch ticket, or one a person linked to
+  a ticket: ticket_read and ticket_comment.
 
 ## When to report
 

@@ -29,7 +29,7 @@ const taskUsage = `Usage:
                                                say what stops your attempt; the people watching see it and are asked
   conductor task checkpoint --done TEXT --remaining TEXT [--notes TEXT]
                                                save where you got to, tied to your worktree's commit (commit first)
-  conductor task ticket [--json]               print the Dispatch ticket your run is linked to, or its JSON
+  conductor task ticket [--json]               print the Dispatch ticket your run was launched from or is linked to, or its JSON
   conductor task ticket comment TEXT...        comment on that ticket, as your run's member
   conductor task decide --type clarification|approval|assignment --question TEXT [--context TEXT]
                         [--option "LABEL[: TRADEOFFS]"]... [--recommend N] [--uncertainty TEXT]
