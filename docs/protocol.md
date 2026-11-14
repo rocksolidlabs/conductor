@@ -4743,7 +4743,9 @@ changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
 unread?}`; `404 no_preview` when it is not open. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
 place its value leaves the server: the changed paths, the only names the
-label carries beside git's ids and its own words, are scrubbed of the
+label carries beside git's ids and its own words, kept by the read
+first within its own limit as read (200 paths and 16 KiB of their
+bytes), are then scrubbed of the
 secret of every tree the engine holds one for, as a capture is (a run
 that holds a whole secret made `${CONDUCTOR_TREE_SECRET}`, any other part
 of one at least 8 hexadecimal characters long, in any case, made
@@ -4931,12 +4933,12 @@ registered alone, the admin's check outermost.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
+| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels as 8-bit RGBA, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
 | `GET /api/captures` | `?run=&task=&attempt=` (an attempt from 1), `?ticket=` (the captures a send was sent to), `?after=` (a page's `next`), `?limit=` (1 to 100, 100 when absent); each at most once, `attempt` and `limit` in decimal digits alone | `{captures, next?}`, newest first, each with its first annotation alone, its note cut to 200 characters; `400 invalid_request` for a parameter given twice, an `attempt` or a `limit` given empty or with anything but digits (a sign among it), a limit of 0 or past 100, an attempt of 0, a task without its run or an attempt without its task |
 | `GET /api/captures/{id}` | none | the capture with its annotations and its sends (their requests aside); a deleted capture is its tombstone `{id, rev, createdAt, deletedAt}` |
 | `GET /api/captures/{id}/image` | none | the kept PNG, whole, `200` whatever range the request names (never a part): `Content-Type: image/png`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `Content-Disposition: inline`, `X-Conductor-SHA256` (the kept file's); `404 not_found` without one, and for a deleted capture |
-| `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`, `200` for a repeat; `400 invalid` (a new element report, a kind or a note the store refuses, a region outside the screenshot); `400 invalid_request` (the gate's refusals); `404 not_found` (a deleted or unknown capture); `409 stale_revision`; `409 op_conflict`; `413 bound` (the body past 2 MiB, more than 20 annotations, the 51st annotation set) |
-| `POST /api/captures/{id}/delete` | `{opId, byName?}`, at most 64 KiB | `200 {receipt}`, `200` for a repeat; `400 invalid_request` (the gate's refusals); `404 not_found` (a deleted or unknown capture); `409 op_conflict`; `413 bound` (the body past 64 KiB) |
+| `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`, `200` for a repeat; `400 invalid` (a new element report, a kind or a note the store refuses, a region outside the screenshot); `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 stale_revision`; `409 op_conflict`; `413 bound` (the body past 2 MiB, more than 20 annotations, the 51st annotation set) |
+| `POST /api/captures/{id}/delete` | `{opId, byName?}`, at most 64 KiB | `200 {receipt}`, `200` for a repeat; `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 op_conflict`; `413 bound` (the body past 64 KiB) |
 
 **The bounds.** A capture holds at most 20 annotations, each note at most
 4,000 characters; its page's address at most 2 KiB and its title at most
@@ -4955,20 +4957,25 @@ operation's content is the digest of the request as decoded (its JSON
 re-encoded, the screenshot's SHA-256 after it), taken before anything is
 changed. The operation's own members, `opId` and `byName`, are judged
 against their bounds as the request carried them, so a display name is
-judged the same whatever secrets are held when it comes again; an `opId`
-the scrub would change (it holds a part of the secret of a tree the
-engine holds one for) is refused there, `400 invalid_request` (`opId
-holds a tree's secret`), on a create, an edit and a delete, before any
-call to the store, so no operation's row, receipt or reply carries it.
-Then, in this order: every string the request carries (the client's
-words, `byName`, each annotation, each text of an element's report, an
-edit's notes, a link's and a page's URLs) is scrubbed of the secret of
-every tree the engine holds one for at that moment, whatever its
-preview's state, in any case: each run of at least 8 hexadecimal
-characters made of parts of such a secret is made a word no longer than
-itself, `${CONDUCTOR_TREE_SECRET}` for a run that holds a whole secret
-and `[secret]` for any other, so a secret a bound cut short at either end
-leaves nothing of itself and no text grows: a text at its bound stays
+judged the same whatever secrets are held when it comes again. Once the
+body is read, the secret of every tree the engine holds one for,
+whatever its preview's state, is read once (a tree that started while
+the body was still arriving among them), and that one reading serves
+both steps that follow. First, the identifiers the server keeps or
+answers as sent, the `opId` and an edit's or a delete's capture id in
+its path, are refused when one holds a part of such a secret, as the
+scrub finds one, `400 invalid_request` (`opId holds a tree's secret`,
+`the capture's id holds a tree's secret`), before any call to the store,
+so no operation's row, receipt or reply carries it. Then, in this order:
+every string the request carries (the client's words, `byName`, each
+annotation, each text of an element's report, an edit's notes, a link's
+and a page's URLs) is scrubbed of those secrets, in any case: each run
+of at least 8 hexadecimal characters made of parts of a secret is made a
+word no longer than itself, `${CONDUCTOR_TREE_SECRET}` for a run that
+holds a whole secret and `[secret]` for any other (it stands for any
+part of a secret, a stretch that joins parts of two secrets among it),
+so a secret a bound cut short at either end leaves nothing of itself and
+no text grows: a text at its bound stays
 within it, and a `byName` is kept as scrubbed, never longer than sent
 (one pass over each text, one look-up for each hexadecimal character; a
 run of fewer than 8 characters of a secret, and a run of hexadecimal
@@ -5012,19 +5019,30 @@ host's name or address and a port, and holds no tree's secret: otherwise
 the refusal says the page is of another origin than the preview, whose
 origin it names.
 
-**The screenshot.** Its header is read first (each side 1 to 4,096
-pixels, before any pixel is held). Then it is decoded whole (every
-chunk's CRC, every row; `the screenshot is not a whole PNG` otherwise),
-and what the store keeps, hashes and serves is the server's own PNG
-encoding of the decoded image (zlib's default level, at which the kept
+**The screenshot.** Its size is judged from its header, before the
+decode: each side 1 to 4,096 pixels, before any pixel is held. The
+decode then holds what the header declares, at most 128 MiB (4,096 by
+4,096 pixels of 16-bit RGBA). It is decoded whole (every chunk's CRC,
+every row; `the screenshot is not a whole PNG` otherwise), and what the
+store keeps, hashes and serves is the server's own PNG encoding of the
+decoded pixels as 8-bit RGBA (zlib's default level, at which the kept
 file of Chromium's screenshots of real pages, 1,024 to 4,096 pixels on
-the long side, was no larger than Chromium's), made with the decode, one
-at a time on the server; a screenshot that waits past the write's time
-for its turn is `503 busy`. Nothing else of the upload is kept: no chunk
-beside the pixels' own (no text, no colour profile or colour chunk, no
-animation's frames: an animated image keeps its default image), nothing after the
-image's data or its end. A kept file past 4 MiB is `413 bound` (`the
-screenshot is more than 4 MiB as the server keeps it`). The kept file's
+the long side, was no larger than Chromium's): an 8-bit RGBA upload is
+encoded as it was decoded; any other is made 8-bit RGBA first, its 8-bit
+copy at most 64 MiB, a paletted upload kept as its pixels' own colours
+with no palette, a 16-bit one at 8 bits a channel (each channel's high
+byte), a grey one as its grey in each colour. The file is truecolour at
+8 bits a channel, its alpha channel left out where every pixel is
+opaque, never interlaced. The decode, that conversion and the encoding
+are made together, one screenshot at a time on the server; a screenshot
+that waits past the write's time for its turn is `503 busy`. Nothing
+else of the upload is kept: no chunk beside the pixels' own (no palette,
+no text, no colour profile or colour chunk, no animation's frames: an
+animated image keeps its default image), nothing after the image's data
+or its end. A kept file past 4 MiB is `413 bound` (`the screenshot is
+more than 4 MiB as the server keeps it`); a paletted or grey upload's
+kept file is larger than the upload, and the bound is the kept file's.
+The kept file's
 bytes are looked through as the scrub looks through a text, and one that
 holds a part of a tree's secret is refused (`the screenshot holds a
 tree's secret`). The capture's `image.sha256`, the image route's
@@ -5036,9 +5054,11 @@ again is answered by the first's receipt.
 origin `attempt` with its run, task and number, the tree `worktree`,
 `mutable`, where it ran, and the revision read at the save by the
 label's own read, in the same index under the same turn, the top of the
-run's repository and its sources read as a step of that read, so the
-server's stop cancels and waits for every git command of a capture as it
-does a label's, and no git of a capture runs once its read has returned
+run's repository (looked up for every read that named the commit, one
+kept with the commit alone among them) and its sources (read when the
+rest of the read did not fail) as a step of that read, so the server's
+stop cancels and waits for every git command of a capture as it does a
+label's, and no git of a capture runs once its read has returned
 (when the read's time runs out inside that step, the content and the
 changed paths that were read are kept, the hints' classes are `unknown`,
 the repository is not named when the time ran out in its look, and the
@@ -5066,10 +5086,14 @@ server's stop began), is `503 tree_unread` and nothing is kept; a read
 that named the commit and then failed (its 5 s ran out, git failed) keeps
 the capture with the commit alone, no content, no changed paths and no
 sources, as the label answers it (its drift then says the revision was
-not known). Each is logged by its kind, never git's words. What the
-server read (the changed paths, the sources, the scope; git's ids aside)
-is scrubbed as the request is, with the read's own tree's secret beside
-every secret held once the read is over. From those facts the store keeps
+not known), its scope naming the repository when the look found it.
+Each is logged by its kind, never git's words. The changed paths: the
+read keeps the first of them within its own limit as read (200 paths
+and 16 KiB of their bytes), they are then scrubbed, and the store's cut
+(200 and 16 KiB as encoded) comes after. What the server read (the
+changed paths, the sources, the scope; git's ids aside) is scrubbed with
+the read's own tree's secret beside every secret held once the read is
+over (its own reading, not the request's). From those facts the store keeps
 the drift (the selection's read when the save's commit or content
 differs, or either was not read), what the page serves (`declared`,
 `stale` or `unconfirmed`), the changed paths' cut and how a retake is
@@ -5103,7 +5127,7 @@ only in the form above; the scrub takes the secret of every tree the
 engine holds, not only the capture's tree's, and every part of one at
 least 8 characters long, and an edit is scrubbed without looking its
 capture up; what is kept of a screenshot is the server's own encoding of
-its pixels; a source
+its pixels as 8-bit RGBA; a source
 may be `unknown`; a tag and an attribute's name are any name with no
 control character; Brakeman's reads pass over captures until PR-6.
 
