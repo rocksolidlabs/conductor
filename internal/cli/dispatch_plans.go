@@ -1418,8 +1418,10 @@ type sessionLaunchView struct {
 // launchText is what conductor task ticket and ticket_read say first of a
 // run launched from its ticket: the revision it was launched at, the plan
 // revision and where the package is; what changed since; and that the run
-// follows the ticket as launched, a change being a person's to decide.
-func launchText(key string, l sessionLaunchView) string {
+// follows the ticket as launched, a change being a person's to decide. A
+// comparison's lane, which comments on no ticket, is told to say it with
+// task_blocked or in its result's summary.
+func launchText(key string, l sessionLaunchView, lane bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "As launched: %s at revision %d, plan revision %d, in .conductor/ticket.md (the package: .conductor/package.json, the attachments in .conductor/attachments/).", oneLine(key), l.Rev, l.Plan.N)
 	switch c := l.Changed; {
@@ -1430,6 +1432,10 @@ func launchText(key string, l sessionLaunchView) string {
 	default:
 		s := changedWords(l.Rev, *c)
 		b.WriteString(" " + strings.ToUpper(s[:1]) + s[1:] + ".")
+	}
+	if lane {
+		b.WriteString(" Your run follows the ticket as launched: a change that matters to your work is a person's to decide, so say so (task_blocked with why, or your result's summary), never act on it alone.")
+		return b.String()
 	}
 	b.WriteString(" Your run follows the ticket as launched: a change that matters to your work is a person's to decide, so tell them (ticket_comment, or task_blocked when it stops you), never act on it alone.")
 	return b.String()

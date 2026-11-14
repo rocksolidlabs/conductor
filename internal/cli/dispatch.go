@@ -918,8 +918,11 @@ func size(n int64) string {
 func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 	fmt.Fprintf(w, "# %s: %s\n\n", oneLine(v.Key), oneLine(v.Title))
 	field := func(name, value string) { fmt.Fprintf(w, "- %s: %s\n", name, value) }
-	field("status", oneLine(v.Status))
-	field("priority", priorityWord(v.Priority))
+	if v.Status != "" {
+		// A comparison's lane reads the ticket without its status.
+		field("status", oneLine(v.Status))
+		field("priority", priorityWord(v.Priority))
+	}
 	if v.Horizon != "" {
 		field("horizon", oneLine(v.Horizon))
 	}
@@ -1033,6 +1036,10 @@ func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 				continue
 			}
 			head := fmt.Sprintf("### #%d %s, %s", c.N, oneLine(cmp.Or(c.By, c.Author)), when(c.CreatedAt))
+			if c.N == 0 {
+				// A comparison's lane reads its comments without numbers.
+				head = fmt.Sprintf("### %s, %s", oneLine(cmp.Or(c.By, c.Author)), when(c.CreatedAt))
+			}
 			if !c.EditedAt.IsZero() {
 				head += ", edited"
 			}
@@ -1078,7 +1085,8 @@ func readSessionTicket(ctx context.Context, c *crewClient) (json.RawMessage, ses
 }
 
 // sessionTicketText is the session's ticket as writeTicket prints it,
-// after what its launch says (launchText) for a run launched from it.
+// after what its launch says (launchText) for a run launched from it. A
+// comparison's lane reads its ticket without a status (writeTicket).
 func sessionTicketText(st sessionTicket) string {
 	var milestones []dispatch.Milestone
 	if st.Milestone != nil {
@@ -1086,7 +1094,7 @@ func sessionTicketText(st sessionTicket) string {
 	}
 	var b strings.Builder
 	if st.Launch != nil {
-		b.WriteString(launchText(st.Ticket.Key, *st.Launch) + "\n\n")
+		b.WriteString(launchText(st.Ticket.Key, *st.Launch, st.Ticket.Status == "") + "\n\n")
 	}
 	writeTicket(&b, st.Ticket, namesOf(st.Labels, milestones))
 	return b.String()

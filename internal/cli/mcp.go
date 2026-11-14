@@ -381,7 +381,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 				return "", err
 			}
 			run, _ := out["run"].(map[string]any)
-			return fmt.Sprintf("run %v (%v) %v; you are %v\n%s", run["id"], run["state"], run["name"], out["member"], membersText(run)), nil
+			return fmt.Sprintf("%s %v; you are %v\n%s", runHead(run), run["name"], out["member"], membersText(run)), nil
 		case "link":
 			out, err := c.call(cctx, http.MethodPost, "/links/agent", body)
 			if err != nil {
@@ -582,6 +582,15 @@ func inboxText(out map[string]any) string {
 		fmt.Fprintf(&b, "#%v from %v (%s): %v\n", m["seq"], m["from"], state, m["text"])
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// runHead is a session's run by its id and, when the reply gives one, its
+// state: a comparison's lane is told its own tasks' states alone.
+func runHead(run map[string]any) string {
+	if state, ok := run["state"]; ok {
+		return fmt.Sprintf("run %v (%v)", run["id"], state)
+	}
+	return fmt.Sprintf("run %v", run["id"])
 }
 
 // membersText lists a run's members as printMembers does, as text.
