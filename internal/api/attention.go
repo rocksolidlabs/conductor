@@ -96,32 +96,34 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
-// liveTokens is the index of the server's own live agent tokens
-// (session.TokenIndex): the hash of each, counted by its holders, from
-// the moment it is minted (createLocalSession) or registered (a hosted
-// session's) to its session's end. tokenPrincipal reads it.
+// liveTokens is the set of the live agent tokens this server minted
+// (session.TokenSet): the hash of each, from before the agent's process
+// starts (createLocalSession) until the session ends, or until its launch
+// fails, one owner of its entry at a time (session.TokenEntry). A hosted
+// session's agent token is minted by its host, not by this server, and is
+// not one of them: at a route that takes it first nothing changes, and at a
+// route that does not take it, it is asked of the provider as any token the
+// chain does not know. tokenPrincipal reads it.
 type liveTokens struct {
 	mu   sync.Mutex
-	held map[[32]byte]int
+	held map[[32]byte]struct{}
 	// hashed counts the presented tokens holds hashed.
 	hashed atomic.Int64
 }
 
-func (l *liveTokens) Put(h [32]byte) {
+func (l *liveTokens) Add(h [32]byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.held == nil {
-		l.held = map[[32]byte]int{}
+		l.held = map[[32]byte]struct{}{}
 	}
-	l.held[h]++
+	l.held[h] = struct{}{}
 }
 
-func (l *liveTokens) Drop(h [32]byte) {
+func (l *liveTokens) Remove(h [32]byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.held[h]--; l.held[h] <= 0 {
-		delete(l.held, h)
-	}
+	delete(l.held, h)
 }
 
 // holds says tok is one of the live tokens: one hash and one lookup, for a
@@ -134,7 +136,8 @@ func (l *liveTokens) holds(tok string) bool {
 	h := share.HashToken(tok)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.held[h] > 0
+	_, ok := l.held[h]
+	return ok
 }
 
 // reportTarget finds the session a report is about. A session whose launch

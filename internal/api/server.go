@@ -220,7 +220,7 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
-	// agentTokens is the index of the live agent tokens (liveTokens).
+	// agentTokens is the set of the live agent tokens (liveTokens).
 	agentTokens liveTokens
 	// captureWait, when a test sets it, bounds a hosted hook's wait for its
 	// recorder in place of launchWait (captureHostedAgentSession).
@@ -713,7 +713,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// The context providers: an attempt's context, and the files touched.
 	s.wireContext()
 	s.hosts = signal.NewHub(s.registry, log)
-	s.hosts.Tokens = &s.agentTokens
 	if cfg.MaxViewersPerSession > 0 {
 		s.hosts.MaxViewers = cfg.MaxViewersPerSession
 	}

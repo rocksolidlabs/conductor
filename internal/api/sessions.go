@@ -352,10 +352,11 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		id = session.NewID()
 	}
 	agentToken, agentHash := share.NewToken()
-	// Live from its minting, before its process starts: the launch's entry
-	// until this returns, the session's own from SetAgentToken to its end.
-	s.agentTokens.Put(agentHash)
-	defer s.agentTokens.Drop(agentHash)
+	// Live from its minting, before its process starts: the launch owns its
+	// entry until it hands it to the session (TakeAgentToken), which owns it
+	// to its end; a launch that fails first removes it as this returns.
+	entry := session.AddToken(&s.agentTokens, agentHash)
+	defer entry.Remove()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -509,7 +510,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
 	s.made(rc, local)
-	local.SetAgentToken(agentToken)
+	local.TakeAgentToken(agentToken, entry.Hand())
 	if req.spawned != nil {
 		req.spawned(local)
 	}

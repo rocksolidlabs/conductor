@@ -26,9 +26,6 @@ type Hub struct {
 	log      *slog.Logger
 	// MaxViewers caps viewers per hosted session.
 	MaxViewers int
-	// Tokens, when set, holds the hash of each hosted session's agent token
-	// from its registration to its end or its leaving the registry.
-	Tokens session.TokenIndex
 	// OnChange is called after a hosted session's Info changes.
 	OnChange func(session.Info)
 	// OnActivity is called with a hosted session's ID and each activity entry
@@ -167,7 +164,6 @@ func (hub *Hub) Register(reg proto.Register, conn *HostConn) (*HostedSession, bo
 	hs.setAgentToken(reg.Session.AgentToken)
 	hs.setAnswerAs(reg.Host.AnswerAs)
 	if err := hub.registry.Add(hs); err != nil {
-		hs.indexed.Drop()
 		return nil, false, err
 	}
 	hub.mu.Lock()

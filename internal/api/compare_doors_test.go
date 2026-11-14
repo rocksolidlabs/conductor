@@ -945,7 +945,9 @@ var tokenReaders = []string{"AgentTokenOK"}
 // any other; and the token methods of a server session and a hosted one
 // are the ones named here, so a new reader is a new name this test knows.
 // The question whether a token is a live one of the server's own reads
-// the index alone (liveTokens.holds), once, in tokenPrincipal: no session.
+// the set alone (liveTokens.holds), once, in tokenPrincipal: no session.
+// The read is seen by its field's name (agentTokens.holds); an alias of
+// the field is not followed.
 func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 	inGuard, inQuestion := 0, 0
 	fset := token.NewFileSet()
@@ -1001,7 +1003,7 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 	for _, c := range []struct {
 		typ  reflect.Type
 		want []string
-	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
+	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "SetAgentToken", "TakeAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
 		var got []string
 		for i := range c.typ.NumMethod() {
 			if name := c.typ.Method(i).Name; token.MatchString(name) {

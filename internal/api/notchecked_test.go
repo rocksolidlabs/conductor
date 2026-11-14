@@ -30,7 +30,6 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/share"
-	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 // The answer to a request whose token the identity provider did not judge
@@ -659,36 +658,51 @@ func TestALiveTokenIsOneHashAndOneLookup(t *testing.T) {
 // writes), the release of the launch and its answer's status.
 func heldLaunch(t *testing.T, e *testEnv, agent, tokFile string) (id, tok string, release func(), created <-chan int) {
 	t.Helper()
+	id, tok, release, created = heldLaunchAt(t, e, &e.srv.launchHook, "started", agent, tokFile)
+	if _, ok := e.srv.registry.Get(id); ok {
+		t.Fatal("the registry holds the session while its launch is held")
+	}
+	return id, tok, release, created
+}
+
+// heldLaunchAt is heldLaunch held at stage of the seam whose hook is hooks
+// (launchHook's, recordHook's).
+func heldLaunchAt(t *testing.T, e *testEnv, hooks *atomic.Pointer[func(stage, id string)], at, agent, tokFile string) (id, tok string, release func(), created <-chan int) {
+	t.Helper()
 	started := make(chan string, 1)
 	gate := make(chan struct{})
 	var held, let sync.Once
 	release = func() { let.Do(func() { close(gate) }) }
 	t.Cleanup(release)
 	hook := func(stage, sid string) {
-		if stage == "started" {
+		if stage == at {
 			held.Do(func() {
 				started <- sid
 				<-gate
 			})
 		}
 	}
-	e.srv.launchHook.Store(&hook)
-	t.Cleanup(func() { e.srv.launchHook.Store(nil) })
+	hooks.Store(&hook)
+	t.Cleanup(func() { hooks.Store(nil) })
 	answer := make(chan int, 1)
 	go func() {
-		resp, _ := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": agent})
+		resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": agent})
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
+			t.Errorf("the launch of %s: %d %v", agent, resp.StatusCode, out)
+		}
 		answer <- resp.StatusCode
 	}()
-	id = <-started
+	select {
+	case id = <-started:
+	case code := <-answer:
+		t.Fatalf("the launch of %s was answered %d before its %s seam", agent, code, at)
+	}
 	if !waitFor(testWait, func() bool {
 		b, err := os.ReadFile(tokFile)
 		tok = string(b)
 		return err == nil
 	}) {
 		t.Fatal("the process never wrote its token")
-	}
-	if _, ok := e.srv.registry.Get(id); ok {
-		t.Fatal("the registry holds the session while its launch is held")
 	}
 	return id, tok, release, answer
 }
@@ -753,23 +767,305 @@ func TestALaunchingSessionsTokenIsTheServersOwn(t *testing.T) {
 	}
 }
 
-// A hosted session's token is the server's own from its registration to
-// its end: answered as a server with no provider answers it, never asked
-// of the provider; once its host says it exited, an unknown token.
-func TestAHostedSessionsTokenIsTheServersOwnUntilItEnds(t *testing.T) {
+// size is how many tokens l holds.
+func (l *liveTokens) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.held)
+}
+
+// A hosted session's agent token is minted by its host, not by this server,
+// and the set of live tokens holds nothing for it. At a route that takes it
+// first (the session's report) it is served as a server with no provider
+// serves it, the provider never asked; at a route that does not take it, it
+// is a token the chain does not know: the provider is asked, and while it
+// cannot judge, 503 not_checked.
+func TestAHostedSessionsTokenIsAskedOfTheProvider(t *testing.T) {
 	e, f := liveTokenEnv(t, nil)
+	free := newTestEnv(t, nil)
 	tok := unminted("h")
 	host := dialFakeHost(t, e, tok)
-	asAnUnknownToken(t, e.srv, "a hosted session's token", whoami, "", tok, "")
-	if n := f.timesAsked(tok); n != 0 {
-		t.Fatalf("the provider was asked %d times about a hosted session's token", n)
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set of live tokens holds %d tokens once a hosted session registered, not 0", n)
 	}
-	d, _ := e.srv.registry.Get(host.sessionID)
-	code := 0
-	d.(*signal.HostedSession).HostStatus(session.StatusExited, &code)
-	isNotChecked(t, "an ended hosted session's token", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	report := principalPlaces[1]
+	want := placeAnswerOf(askPlace(free.srv, report, dialFakeHost(t, free, tok).sessionID, tok))
+	if got := placeAnswerOf(askAs(e.srv, report, host.sessionID, tok, "", &judgeCase{state: "fails"})); got != want || got.code != http.StatusOK {
+		t.Fatalf("a hosted session's report: %+v, want %+v (200)", got, want)
+	}
+	if n := f.timesAsked(tok); n != 0 {
+		t.Fatalf("the provider was asked %d times about a hosted session's report", n)
+	}
+	isNotChecked(t, "a hosted session's token at a route that does not take it", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
 	if n := f.timesAsked(tok); n != 1 {
-		t.Fatalf("the provider was asked %d times about an ended hosted session's token", n)
+		t.Fatalf("the provider was asked %d times about a hosted session's token at a route that does not take it", n)
+	}
+}
+
+// No file of internal/signal names the set of live tokens: a hosted
+// session puts nothing in it and takes nothing out.
+func TestNoHostedSessionNamesTheLiveTokens(t *testing.T) {
+	files, err := filepath.Glob("../signal/*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no file of internal/signal: %v", err)
+	}
+	names := []string{"TokenSet", "TokenEntry", "AddToken", "TakeAgentToken", "Tokens", "agentTokens", "liveTokens"}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && slices.Contains(names, id.Name) {
+				t.Errorf("%s: %s names the set of live tokens", fset.Position(id.Pos()), id.Name)
+			}
+			return true
+		})
+	}
+}
+
+// tokenWriters is a catalog of agents named names, each writing its
+// CONDUCTOR_NOTIFY_TOKEN to the file of its name in dir.
+func tokenWriters(t *testing.T, e *testEnv, dir string, names ...string) {
+	t.Helper()
+	write := `printf %s "$CONDUCTOR_NOTIFY_TOKEN" > "$1.tmp" && mv "$1.tmp" "$1"; exec /bin/cat`
+	var agents []catalog.Agent
+	for _, n := range names {
+		agents = append(agents, catalog.Agent{ID: n, Name: n, Command: []string{"/bin/sh", "-c", write, "sh", filepath.Join(dir, n)}})
+	}
+	cat, err := catalog.Load(catalog.File{DisableDefaults: true, Agents: agents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setCatalog(cat)
+}
+
+// A session's token has one owner at a time: its launch until the session
+// takes it, then the session. A session stopped while its launch is still
+// finishing (held after the registry holds it) is no longer the server's own
+// from that moment: the provider failing, its token is 503 not_checked at
+// once and the provider asked once, while the launch is held; the launch
+// let go, the set is empty. A session whose launch returned holds its
+// token: the server's own, never asked of the provider, until it ends. A
+// launch whose process could not start, and one refused after its process
+// started, leave the set empty.
+func TestASessionTakesItsTokenFromItsLaunch(t *testing.T) {
+	e, f := liveTokenEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
+	dir := t.TempDir()
+	tokenWriters(t, e, dir, "first", "second", "third")
+	id, tok, release, created := heldLaunchAt(t, e, &e.srv.recordHook, "afterRegistryAdd", "first", filepath.Join(dir, "first"))
+	d, ok := e.srv.registry.Get(id)
+	if !ok {
+		t.Fatal("the registry does not hold the session at its afterRegistryAdd seam")
+	}
+	if err := d.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	isNotChecked(t, "a stopped session's token, its launch held", askAs(e.srv, whoami, "", tok, "", &judgeCase{state: "fails"}))
+	if n := f.timesAsked(tok); n != 1 {
+		t.Fatalf("the provider was asked %d times about a stopped session's token, its launch held", n)
+	}
+	release()
+	if code := <-created; code != http.StatusCreated {
+		t.Fatalf("the launch: %d", code)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once the launch returned, not 0", n)
+	}
+
+	id, tok, release, created = heldLaunch(t, e, "second", filepath.Join(dir, "second"))
+	release()
+	if code := <-created; code != http.StatusCreated {
+		t.Fatalf("the launch: %d", code)
+	}
+	asAnUnknownToken(t, e.srv, "a session's token, its launch returned", whoami, id, tok, "")
+	if n, size := f.timesAsked(tok), e.srv.agentTokens.size(); n != 0 || size != 1 {
+		t.Fatalf("the provider was asked %d times about a live session's token, the set holds %d; want 0 and 1", n, size)
+	}
+	d, _ = e.srv.registry.Get(id)
+	if err := d.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once the session ended, not 0", n)
+	}
+
+	_, _, release, created = heldLaunch(t, e, "third", filepath.Join(dir, "third"))
+	res, err := e.srv.Reserve(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(res.Release)
+	release()
+	if code := <-created; code != http.StatusConflict {
+		t.Fatalf("a launch past the registry's cap: %d", code)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once a launch was refused, not 0", n)
+	}
+	res.Release()
+
+	e.save(map[string]any{"id": "ghost", "name": "Ghost", "command": []string{"definitely-not-a-real-binary-xyz"}})
+	if resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "ghost"}); resp.StatusCode != http.StatusBadGateway || errorCode(out) != "start_failed" {
+		t.Fatalf("a launch whose process cannot start: %d %v", resp.StatusCode, out)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once a launch whose process could not start returned, not 0", n)
+	}
+}
+
+// Twenty-four launches at once against a registry of six places, sessions
+// stopped at their launch's seam, others stopped and removed beside the
+// launches: the set never holds more tokens than the live sessions and the
+// launches under way, at every seam and every removal, and none once all
+// have ended.
+func TestTheLiveTokensAreTheLiveSessionsAndTheLaunches(t *testing.T) {
+	e, _ := liveTokenEnv(t, func(c *config.Config) { c.MaxSessions = 6 })
+	var (
+		mu             sync.Mutex
+		known          []session.Driver
+		sent, answered atomic.Int64
+	)
+	// The bound is read around the set's size so that it can only be
+	// larger than the owners at the size's moment: what ends or is
+	// answered before it, what starts or registers after it.
+	check := func(where string) {
+		mu.Lock()
+		gone := 0
+		for _, d := range known {
+			if d.Info().Status.Ended() {
+				gone++
+			}
+		}
+		mu.Unlock()
+		done := answered.Load()
+		size := e.srv.agentTokens.size()
+		mu.Lock()
+		live := len(known) - gone
+		mu.Unlock()
+		if under := int(sent.Load() - done); size > live+under {
+			t.Errorf("%s: the set holds %d tokens, more than %d live sessions and %d launches under way", where, size, live, under)
+		}
+	}
+	beside := make(chan string, 24)
+	registered := func(stage, id string) {
+		if stage != "afterRegistryAdd" {
+			return
+		}
+		d, ok := e.srv.registry.Get(id)
+		if !ok {
+			t.Errorf("the registry does not hold %s at its afterRegistryAdd seam", id)
+			return
+		}
+		mu.Lock()
+		known = append(known, d)
+		n := len(known)
+		mu.Unlock()
+		check("a registration")
+		switch n % 3 {
+		case 0:
+			if err := d.Stop(context.Background()); err != nil {
+				t.Errorf("a stop at the seam: %v", err)
+			}
+			check("a stop at the seam")
+		case 1:
+			beside <- id
+		}
+	}
+	started := func(stage, _ string) {
+		if stage == "started" {
+			check("a process started")
+		}
+	}
+	e.srv.recordHook.Store(&registered)
+	e.srv.launchHook.Store(&started)
+	t.Cleanup(func() { e.srv.recordHook.Store(nil); e.srv.launchHook.Store(nil) })
+	removed := make(chan struct{})
+	go func() {
+		defer close(removed)
+		for id := range beside {
+			e.do("DELETE", "/api/sessions/"+id, adminToken, nil)
+			check("a stop and removal beside the launches")
+		}
+	}()
+	var launches sync.WaitGroup
+	for range 24 {
+		sent.Add(1)
+		launches.Go(func() {
+			e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "ready-cat"})
+			answered.Add(1)
+		})
+	}
+	launches.Wait()
+	close(beside)
+	<-removed
+	check("all launches answered")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(known) < 6 {
+		t.Fatalf("%d sessions registered, not the registry's six at least", len(known))
+	}
+	for _, d := range known {
+		if err := d.Stop(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once every session ended, not 0", n)
+	}
+}
+
+// replacingSet is the server's set whose Remove calls between first: the
+// moment between a replacement's two steps.
+type replacingSet struct {
+	*liveTokens
+	between func()
+}
+
+func (r *replacingSet) Remove(h [32]byte) {
+	if r.between != nil {
+		r.between()
+	}
+	r.liveTokens.Remove(h)
+}
+
+// A token that replaces another on a live session is added before the old
+// one is removed: held between the two steps, both are the server's own;
+// then the new one is, and the old one is unknown. The session ended, the
+// set is empty, and a token handed to it then is removed at once.
+func TestAReplacedTokenIsNeverNeithersOwn(t *testing.T) {
+	e, f := liveTokenEnv(t, nil)
+	old, repl := unminted("o"), unminted("n")
+	set := &replacingSet{liveTokens: &e.srv.agentTokens}
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	l := session.NewLocal(session.Info{ID: session.NewID(), Kind: session.KindServer, Status: session.StatusRunning, Cols: 80, Rows: 24}, proc, session.Options{Tokens: set})
+	l.SetAgentToken(old)
+	held := false
+	set.between = func() {
+		set.between, held = nil, true
+		asAnUnknownToken(t, e.srv, "between the steps, the old token", whoami, "", old, "")
+		asAnUnknownToken(t, e.srv, "between the steps, the new token", whoami, "", repl, "")
+	}
+	l.SetAgentToken(repl)
+	if !held {
+		t.Fatal("the replacement removed no old token")
+	}
+	asAnUnknownToken(t, e.srv, "the new token", whoami, "", repl, "")
+	isNotChecked(t, "the replaced token", askAs(e.srv, whoami, "", old, "", &judgeCase{state: "fails"}))
+	if o, n := f.timesAsked(old), f.timesAsked(repl); o != 1 || n != 0 {
+		t.Fatalf("the provider was asked %d times about the replaced token and %d about the new one, not 1 and 0", o, n)
+	}
+	if err := l.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once the session ended, not 0", n)
+	}
+	l.TakeAgentToken(unminted("a"), session.AddToken(set, share.HashToken(unminted("a"))))
+	if n := e.srv.agentTokens.size(); n != 0 {
+		t.Fatalf("the set holds %d tokens once an ended session was handed one, not 0", n)
 	}
 }
 
@@ -808,7 +1104,11 @@ func TestHoldSlotsWaitsForASlotStillTaken(t *testing.T) {
 // one reached through tokenPrincipal, whose second result says whether it
 // answered the request and is never dropped; the provider's ask about a
 // request's token is named by the maker alone, called or not
-// (asksProvider); and notChecked alone writes the code not_checked.
+// (asksProvider); and notChecked alone writes the code not_checked. It sees
+// a call, a method value and a method expression of the provider's ask
+// inside function bodies; it does not follow an alias of the identity
+// extension or of the guard, a direct call of the guard's inner ask, or a
+// method value declared at package level.
 func TestPrincipalPlacesAreTheTable(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -945,6 +1245,94 @@ func TestAWithheldPublicationIsOwedWhenItsTriesEnd(t *testing.T) {
 			}
 			if n := p.made.Load(); n != 1 {
 				t.Fatalf("the Shares published the session %d times, not once", n)
+			}
+		})
+	}
+}
+
+// triesPublisher is a switchyard's registration answered refused for its
+// tries in order, then, once refuse is clear, a publication counted in
+// made.
+type triesPublisher struct {
+	refusals    []*hostagent.RefusedError
+	refuse      atomic.Bool
+	tries, made atomic.Int32
+}
+
+func (p *triesPublisher) Publish(_ context.Context, local *session.Local) (PublishedSession, error) {
+	n := p.tries.Add(1)
+	if p.refuse.Load() {
+		return nil, p.refusals[min(int(n), len(p.refusals))-1]
+	}
+	p.made.Add(1)
+	return &gatedPublication{id: "there-" + local.Info().ID, done: make(chan struct{})}, nil
+}
+
+func (p *triesPublisher) Server() string { return "https://rendezvous.example.net" }
+
+// A publication is owed by the withheld credential's rule as its last try
+// was answered, whatever its earlier tries were: withheld, then refused for
+// another reason at the last (a 503, a 401 that ends them at once), it is
+// not owed: a refusal like any other, its words the last one's, and a Share
+// publishes nothing; refused otherwise, then withheld at the last, it is
+// owed, and the next Share publishes it, once.
+func TestTheOwedRuleJudgesTheLastTry(t *testing.T) {
+	was := publishBackoff
+	publishBackoff = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { publishBackoff = was })
+	withheld := func(status int) *hostagent.RefusedError {
+		return &hostagent.RefusedError{Status: status, Code: http.StatusText(status), Withheld: true}
+	}
+	refused := func(status int) *hostagent.RefusedError {
+		return &hostagent.RefusedError{Status: status, Code: http.StatusText(status), Message: "refused for another reason"}
+	}
+	for _, c := range []struct {
+		name     string
+		refusals []*hostagent.RefusedError
+		owed     bool
+	}{
+		{"withheld, then 503 at the last", []*hostagent.RefusedError{withheld(503), withheld(429), withheld(503), refused(503)}, false},
+		{"withheld, then 401", []*hostagent.RefusedError{withheld(503), refused(401)}, false},
+		{"refused otherwise, then withheld at the last", []*hostagent.RefusedError{refused(503), refused(429), refused(503), withheld(503)}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			p := &triesPublisher{refusals: c.refusals}
+			p.refuse.Store(true)
+			e.srv.SetPublisher(p)
+			id := e.createSession("cat")
+			pending := func() bool {
+				e.srv.pubMu.Lock()
+				defer e.srv.pubMu.Unlock()
+				return e.srv.pubPending[id] != nil
+			}
+			if !waitFor(testWait, func() bool { return p.tries.Load() > 0 && !pending() }) {
+				t.Fatal("the publication did not end")
+			}
+			if n, owed := p.tries.Load(), e.srv.owedPublication(id); int(n) != len(c.refusals) || owed != c.owed {
+				t.Fatalf("%d tries, owed %v; want %d tries, owed %v", n, owed, len(c.refusals), c.owed)
+			}
+			p.refuse.Store(false)
+			for range 2 {
+				e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+				if !waitFor(testWait, func() bool { return !pending() }) {
+					t.Fatal("a publication is still under way")
+				}
+			}
+			want := int32(0)
+			if c.owed {
+				want = 1
+			}
+			if n := p.made.Load(); n != want {
+				t.Fatalf("the Shares published the session %d times, not %d", n, want)
+			}
+			if !c.owed {
+				e.srv.pubMu.Lock()
+				why := e.srv.pubErr[id]
+				e.srv.pubMu.Unlock()
+				if last := c.refusals[len(c.refusals)-1].Error(); why != last {
+					t.Fatalf("the publication's words: %q, want the last refusal's %q", why, last)
+				}
 			}
 		})
 	}

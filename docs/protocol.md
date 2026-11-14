@@ -2815,14 +2815,18 @@ Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. A token is read in this order: the workbench token, each host
 token, the share links, then, only when the build has an identity provider
-registered, the server's own live agent tokens, and only then, for a token
-none of them knows, that provider (package `ext`; a plain build has none, so
-there the order ends at the links). A live agent token is one the server
-holds from the moment it is minted (a session's on this server, before its
-process starts) or registered (a hosted session's) to the end of its
-session; it is found by its hash in one index, and a token of another
-length than the 43 characters the server and `conductor host` mint is never
-one. An expired or revoked link is refused as a link and never asked of a
+registered, the live agent tokens this server minted, and only then, for a
+token none of them knows, that provider (package `ext`; a plain build has
+none, so there the order ends at the links). A live agent token is one this
+server minted for a session it launches, from before the agent's process
+starts until the session ends, or until its launch fails; it is found by its
+hash in one set, which holds beyond the live sessions' tokens only those of
+the launches under way, and a token of another length than the 43
+characters the server mints is never one. A hosted session's agent token is
+minted by its host, not by this server, and is not one of them: at a route
+that takes it first nothing changes, and at a route that does not take it,
+it is asked of the provider as any token the chain does not know. An
+expired or revoked link is refused as a link and never asked of a
 provider, nor is a live agent token (a Brakeman turn's among them): at a
 route that does not take it, it is an unknown token answered without a
 provider, in every state of one. A token of a session that has ended, or
