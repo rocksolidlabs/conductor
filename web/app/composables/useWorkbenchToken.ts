@@ -1,3 +1,4 @@
+import { computed, ref, type Ref } from 'vue'
 import { desktopBridge } from '~/utils/desktop'
 
 const STORAGE_KEY = 'conductor.workbenchToken'
@@ -20,6 +21,26 @@ function readStored(): string {
   }
 }
 
+/** What the store knows of the token this page sends (`useWorkbenchToken`). */
+interface Held {
+  /** The token this page sends. */
+  token: Ref<string>
+  /** How many times `token` has changed in this page: what a list read with one token compares, so that it keeps no copy of it. */
+  changes: Ref<number>
+  /**
+   * What this page knows of `token`: '' nothing against it; 'trying' a link's the server has not answered yet; 'dropped' a link's the
+   * server refused, while the page loads again; 'refused' the server refused it, and the gate asks for another.
+   */
+  standing: Ref<'' | 'trying' | 'dropped' | 'refused'>
+  needsToken: Ref<boolean>
+}
+
+/**
+ * Where the store lives: a property of this page's Nuxt app, in the page's memory and outside its payload, so no state Nuxt writes
+ * at a reload it makes itself (`nuxt:reload:state`, the payload's `state`) holds the token or a copy of it.
+ */
+const HELD = '_conductorWorkbenchToken'
+
 /**
  * The workbench token typed by the operator, kept in localStorage for this browser; in the desktop app, the token the shell minted for
  * this run, read from its bridge and kept in memory only. A link's token is sent by the page it came with and kept once the server
@@ -28,23 +49,22 @@ function readStored(): string {
  */
 export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
-  /** The token this page sends. */
-  const token = useState<string>('workbenchToken', () => (import.meta.client && !desktop ? readStored() : ''))
-  /**
-   * What this page knows of `token`: '' nothing against it; 'trying' a link's the server has not answered yet; 'dropped' a link's the
-   * server refused, while the page loads again; 'refused' the server refused it, and the gate asks for another.
-   */
-  const standing = useState<'' | 'trying' | 'dropped' | 'refused'>('workbenchTokenStanding', () => '')
-  const needsToken = useState<boolean>('workbenchTokenNeeded', () => false)
-  const asked = useState<boolean>('workbenchTokenAskedDesktop', () => false)
-  if (desktop && !asked.value) {
-    asked.value = true
+  const app = useNuxtApp() as unknown as { [HELD]?: Held }
+  const first = !app[HELD]
+  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false) })
+  const { token, standing, needsToken } = held
+  if (desktop && first)
     desktop
       .token()
       .then((t) => {
         if (t) set(t)
       })
       .catch(() => {})
+
+  /** Every write of `token` is made here, and a change is counted. */
+  function send(value: string) {
+    if (value !== token.value) held.changes.value++
+    token.value = value
   }
 
   /** What this browser's storage holds: '' for none, null when it cannot be read. */
@@ -71,7 +91,7 @@ export function useWorkbenchToken() {
 
   /** The operator's token: sent and kept at once, with no refusal against it. */
   function set(value: string) {
-    token.value = value.trim()
+    send(value.trim())
     standing.value = ''
     if (!desktop) keep(token.value)
     if (token.value) needsToken.value = false
@@ -79,6 +99,11 @@ export function useWorkbenchToken() {
 
   function clear() {
     set('')
+  }
+
+  /** The gate closed with no token saved: the ask ends, so the next refusal asks again. */
+  function cancel() {
+    needsToken.value = false
   }
 
   /** Whether this page holds a token the server has not refused: a link's being tried counts, and so does one the browser does not keep. */
@@ -92,7 +117,7 @@ export function useWorkbenchToken() {
   function fromLink(value: string) {
     if (!value || desktop || value === token.value) return
     standing.value = 'trying'
-    token.value = value
+    send(value)
   }
 
   /**
@@ -132,10 +157,12 @@ export function useWorkbenchToken() {
 
   return {
     token,
+    changes: held.changes,
     hasToken: computed(() => token.value.length > 0),
     needsToken,
     set,
     clear,
+    cancel,
     kept,
     fromLink,
     fromLaterLink,

@@ -6,11 +6,11 @@ import { useWorkbenchToken } from './useWorkbenchToken'
 
 const raw = vi.fn()
 const fetchFn = Object.assign(vi.fn(), { raw })
-/** The workbench token as the app keeps it (useWorkbenchToken itself, over a stubbed useState), holding `workbench-token`. */
+/** The workbench token as the app keeps it (useWorkbenchToken itself, over a stubbed Nuxt app), holding `workbench-token`. */
 let admin: ReturnType<typeof useWorkbenchToken>
 
 // useApi reads Nuxt's auto-imports (useRuntimeConfig, computed, useWorkbenchToken, $fetch) as globals: each is stubbed here, and
-// useWorkbenchToken is the app's own over a useState of this test's.
+// useWorkbenchToken is the app's own over a Nuxt app of this test's.
 beforeEach(() => {
   raw.mockReset()
   fetchFn.mockReset()
@@ -19,6 +19,8 @@ beforeEach(() => {
     if (!state.has(key)) state.set(key, ref(init()))
     return state.get(key)
   })
+  const app = {}
+  vi.stubGlobal('useNuxtApp', () => app)
   vi.stubGlobal('useRuntimeConfig', () => ({ public: { apiBase: 'http://api.test' } }))
   vi.stubGlobal('computed', computed)
   vi.stubGlobal('useWorkbenchToken', useWorkbenchToken)
@@ -141,6 +143,17 @@ describe('a 401', () => {
     const out = requests[kind]('/api/guide').catch((e: unknown) => e)
     refuse()
     expect(await out).toMatchObject({ status: 401 })
+    expect(admin.needsToken.value).toBe(true)
+  })
+
+  it('asked for, then the gate cancelled: the ask ends, and the next refusal asks again', async () => {
+    fetchFn.mockRejectedValueOnce(unauthorized())
+    await useApi().request('/api/guide').catch(() => {})
+    expect(admin.needsToken.value).toBe(true)
+    admin.cancel()
+    expect(admin.needsToken.value).toBe(false)
+    fetchFn.mockRejectedValueOnce(unauthorized())
+    await useApi().request('/api/guide').catch(() => {})
     expect(admin.needsToken.value).toBe(true)
   })
 

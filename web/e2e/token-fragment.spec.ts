@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page, Request } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { addressHeld, apiSent, fragmentChanged, recorder } from './fragment-helpers'
+import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, workbenchHeld } from './fragment-helpers'
 
 /** A token shaped as one (16 to 256 of `A-Z a-z 0-9 _ -`) that the server does not know. */
 const UNKNOWN = 'e2e-unknown-token-0123456789'
@@ -13,18 +13,10 @@ async function tabHoldsNoToken(page: Page, ...tokens: string[]) {
   expect(held).not.toMatch(/workbench/i)
   for (const t of tokens) expect(held).not.toContain(t)
 }
-/** What the workbench token's store knows of the token the page sends ('trying': a link's not answered yet), read off the page's state. */
-const standing = (page: Page) =>
-  page.evaluate(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state.$sworkbenchTokenStanding as string
-  })
-/** The token the page sends, read off the page's state ('' none). */
-const held = (page: Page) =>
-  page.evaluate(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state.$sworkbenchToken as string
-  })
+/** What the workbench token's store knows of the token the page sends ('trying': a link's not answered yet), read off the store. */
+const standing = (page: Page) => workbenchHeld(page).then((h) => h.standing)
+/** The token the page sends, read off the store ('' none). */
+const held = (page: Page) => workbenchHeld(page).then((h) => h.token)
 /**
  * Another tab of `ctx` saving `token` in the browser's storage, as the gate of that tab does: a page of its own at an address of the
  * server's origin the test answers itself, so nothing of the app runs there.
@@ -377,6 +369,128 @@ test("at every load the framework's reload state is gone from the tab's storage"
   await page.reload()
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   expect(await page.evaluate(() => sessionStorage.getItem('nuxt:reload:state'))).toBeNull()
+  await ctx.close()
+})
+
+// A reload Nuxt makes itself: its chunk-reload plugin, told of a new build (`app:manifest:update`, what its build check announces),
+// turns the next navigation into a load at that address and first writes the page's state into the tab's storage
+// (`nuxt:reload:state`). Every write to the tab's storage is recorded, and the storage is read through the browser's devtools while
+// the next load is held.
+test("a reload Nuxt makes itself, while the page holds a kept token and while it holds a link's token still tried: the tab's storage never holds either, and the page that loads is signed in with the kept one", async ({ browser, state }) => {
+  const token = state.token
+  for (const holding of ['kept', 'trying'] as const) {
+    const ctx = await keeping(browser, token)
+    const page = await ctx.newPage()
+    const sent: Request[] = []
+    page.on('request', (r) => sent.push(r))
+    const rec = await recorder(page)
+    await page.addInitScript(() => {
+      const set = Storage.prototype.setItem
+      Storage.prototype.setItem = function (k: string, v: string) {
+        if (this === window.sessionStorage) (window as unknown as { __conductorRecord: (l: string) => void }).__conductorRecord(`tab ${k} ${v}`)
+        return set.call(this, k, v)
+      }
+    })
+    const docs = await holdDocuments(page)
+    if (holding === 'trying') {
+      const tried = await holdSentWith(page, UNKNOWN)
+      await page.goto(`/#token=${UNKNOWN}`)
+      await tried.asked
+    } else await page.goto('/')
+    await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+    expect(await workbenchHeld(page), holding).toEqual(holding === 'trying' ? { token: UNKNOWN, standing: 'trying' } : { token, standing: '' })
+    await page.evaluate(() =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.callHook('app:manifest:update', { id: 'e2e-new-build', timestamp: 0 }),
+    )
+    const before = rec.lines.length
+    docs.on = true
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pushed = page.evaluate(() => void (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push('/sessions')).catch(() => {})
+    const asked = await docs.asked
+    expect(new URL(asked.url()).pathname, holding).toBe('/sessions')
+    const cdp = await ctx.newCDPSession(page)
+    const tab = await cdp.send('DOMStorage.getDOMStorageItems', { storageId: { securityOrigin: new URL(asked.url()).origin, isLocalStorage: false } })
+    const writes = rec.lines.slice(before).filter((l) => l.startsWith('tab '))
+    expect(writes.some((l) => l.startsWith('tab nuxt:reload:state ')), `${holding}: Nuxt wrote its state`).toBe(true)
+    expect(tab.entries.map((e) => e[0]), holding).toContain('nuxt:reload:state')
+    for (const t of [token, UNKNOWN]) {
+      expect(JSON.stringify(tab.entries), holding).not.toContain(t)
+      expect(writes.join('\n'), holding).not.toContain(t)
+    }
+    const from = sent.length
+    docs.on = false
+    docs.release()
+    await pushed
+    await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+    await expect.poll(() => signedInSince(sent, from, token)).toBe(true)
+    expect(triedSince(sent, from), `${holding}: the link's token after the load`).toBe(false)
+    expect(await workbenchHeld(page)).toEqual({ token, standing: '' })
+    expect(await stored(page)).toBe(token)
+    await tabHoldsNoToken(page, token, UNKNOWN)
+    expect(await page.evaluate(() => sessionStorage.getItem('nuxt:reload:state'))).toBeNull()
+    await ctx.close()
+  }
+})
+
+test('the gate cancelled after a refusal: the ask ends, and the next refusal opens the gate again', async ({ browser, state }) => {
+  const ctx = await keeping(browser, state.token)
+  const page = await ctx.newPage()
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  // The next request sent with the workbench token is refused, one each round: nothing else is.
+  let refuse = 0
+  await page.route(
+    (u) => u.pathname.startsWith('/api/'),
+    (r) => {
+      if (refuse === 0 || r.request().headers()['authorization'] !== `Bearer ${state.token}`) return r.fallback()
+      refuse--
+      return r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unauthorized', message: 'unauthorized' } }) })
+    },
+  )
+  await page.goto('/')
+  await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  await expect(gate).toHaveCount(0)
+  for (const round of [1, 2]) {
+    refuse = 1
+    const refused = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 401)
+    await shown(page)
+    await refused
+    await expect(gate, `refusal ${round}`).toBeVisible()
+    await gate.getByRole('button', { name: 'Cancel' }).click()
+    await expect(gate, `cancelled ${round}`).toHaveCount(0)
+  }
+  expect(await stored(page)).toBe(state.token)
+  await ctx.close()
+})
+
+test('the accounts and the capacity are read again with each new token the page sends', async ({ browser, state }) => {
+  const token = state.token
+  const ctx = await keeping(browser, token)
+  const page = await ctx.newPage()
+  const sent: Request[] = []
+  page.on('request', (r) => sent.push(r))
+  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  const readWith = async (from: number, path: string, t: string) => (await apiSent(sent, from)).some((r) => r.path === path && r.auth === `Bearer ${t}`)
+  await page.goto('/settings')
+  await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+  await expect.poll(() => readWith(0, '/api/accounts', token)).toBe(true)
+  await expect.poll(() => readWith(0, '/api/capacity', token)).toBe(true)
+  // Another token saved at the gate: the accounts are read again with it; the server refuses it, and the gate asks.
+  const input = await gateOpened(page)
+  await input.fill(UNKNOWN)
+  await expect(input).toHaveValue(UNKNOWN)
+  let from = sent.length
+  await gate.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(() => readWith(from, '/api/accounts', UNKNOWN)).toBe(true)
+  await expect(gate).toBeVisible()
+  // The workbench token saved again: both are read again with it.
+  await gate.locator('input').fill(token)
+  await expect(gate.locator('input')).toHaveValue(token)
+  from = sent.length
+  await gate.getByRole('button', { name: 'Save' }).click()
+  await expect(gate).toHaveCount(0)
+  await expect.poll(() => readWith(from, '/api/accounts', token)).toBe(true)
+  await expect.poll(() => readWith(from, '/api/capacity', token)).toBe(true)
   await ctx.close()
 })
 

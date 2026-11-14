@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { computed, effectScope, nextTick, ref, watch, type Ref } from 'vue'
+import { computed, effectScope, nextTick, reactive, toRef, watch } from 'vue'
 import type { After, CapacityQuery, CapacityView } from '../utils/capacity'
 import { useAccounts } from './useAccounts'
+import { useWorkbenchToken } from './useWorkbenchToken'
 import { CapacityLive, READ_DEADLINE_MS, VIEW_DEADLINE_MS, useCapacity, type CapacityReads } from './useCapacity'
 
 // The capacity store (docs/plans/capacity.md, PR-5): one fetch per question at a time, a fetch again on its key's `capacity` event,
@@ -339,31 +340,47 @@ function fakeTimers() {
   }
 }
 
-// The token watched while a page shows the stores: another one, with a reply on its way for the old one, empties both, and the late
-// reply is dropped. The composables run in an effect scope, as a mounted component runs them, over the app's auto-imports stubbed.
+// The token watched while a page shows the stores: another one, with a reply on its way for the old one, empties both, the late
+// reply is dropped, and the accounts are read again. The composables run in an effect scope, as a mounted component runs them, over
+// the app's auto-imports stubbed and the workbench token's own store; useState writes into the Nuxt app's payload as Nuxt's does, and
+// no key of it holds a token at any step (the state Nuxt writes into the tab's storage at a reload it makes itself).
 describe('another workbench token while a page shows capacity and the accounts', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('empties both stores and drops the replies on their way for the old token', async () => {
-    const token = ref('the-first-token')
-    const state = new Map<string, Ref<unknown>>()
+  it('empties both stores, drops the replies on their way for the old token, reads the accounts again, and keeps no token in the state', async () => {
+    const tokens = ['the-first-token-0123', 'the-second-token-0123']
+    const app = { payload: { state: reactive({}) as Record<string, unknown> } }
     const held: Array<{ path: string; answer: (v: unknown) => void }> = []
+    vi.stubGlobal('useNuxtApp', () => app)
     vi.stubGlobal('useState', (key: string, init: () => unknown) => {
-      if (!state.has(key)) state.set(key, ref(init()))
-      return state.get(key)
+      const r = toRef(app.payload.state, `$s${key}`)
+      if (r.value === undefined) r.value = init()
+      return r
     })
     vi.stubGlobal('computed', computed)
     vi.stubGlobal('watch', watch)
-    vi.stubGlobal('useWorkbenchToken', () => ({ token }))
+    vi.stubGlobal('useWorkbenchToken', useWorkbenchToken)
     vi.stubGlobal('useApi', () => ({ request: (path: string) => new Promise((answer) => held.push({ path, answer })) }))
+    const noToken = () => {
+      const text = JSON.stringify(app.payload.state)
+      for (const t of tokens) expect(text).not.toContain(t)
+    }
+    const admin = useWorkbenchToken()
+    admin.set(tokens[0]!)
     const scope = effectScope()
     const { cap, acc } = scope.run(() => ({ cap: useCapacity(), acc: useAccounts() }))!
     const q = { agent: 'claude', account: 'a-work' }
     void cap.store.watch(q)
     const loading = acc.store.load()
     expect(held.map((h) => h.path)).toEqual(['/api/capacity', '/api/accounts'])
-    token.value = 'the-second-token'
+    noToken()
+    // The same token saved again is no change: nothing is forgotten or read again.
+    admin.set(tokens[0]!)
     await nextTick()
+    expect(held).toHaveLength(2)
+    admin.set(tokens[1]!)
+    await nextTick()
+    noToken()
     held[0]!.answer(view('claude', 'a-work', { state: 'ok', account: { id: 'a-work', label: 'Work' } }))
     held[1]!.answer({ owner: true, rev: 3, accounts: [{ id: 'a-work', adapter: 'claude', label: 'Work', folder: '/home/first/.claude-work', createdAt: '2026-11-12T10:00:00Z' }], adapters: [] })
     await loading
@@ -371,6 +388,9 @@ describe('another workbench token while a page shows capacity and the accounts',
     expect(cap.entry(q)).toMatchObject({ view: null, error: '' })
     expect(acc.doc.value).toBeNull()
     expect(acc.available.value).toBeNull()
+    expect(held.map((h) => h.path)).toEqual(['/api/capacity', '/api/accounts', '/api/accounts'])
+    noToken()
+    expect(Object.keys(app.payload.state).length).toBeGreaterThan(0)
     scope.stop()
     cap.store.unwatch(q)
   })

@@ -16,6 +16,17 @@ export const addressHeld = (page: Page) =>
   })
 
 /**
+ * The workbench token's store in the page drawn now (useWorkbenchToken: a property of the Nuxt app, outside the payload): the token
+ * the page sends ('' none) and what the store knows of it.
+ */
+export const workbenchHeld = (page: Page) =>
+  page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const h = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt._conductorWorkbenchToken
+    return { token: h.token.value as string, standing: h.standing.value as string }
+  })
+
+/**
  * Records, in every document the page loads and before its own scripts run: each load (`load <address>`), each address and state
  * the page writes to the history (`pushState …`, `replaceState …`), each `popstate` listener the window is given, in order, with
  * its phase (`listener <n> capture|bubble`), and each run of one (`ran <n>`). `routes(page)` adds the router's navigations
