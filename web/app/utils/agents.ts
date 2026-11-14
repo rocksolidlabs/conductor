@@ -16,6 +16,46 @@ export function identity(a: Pick<AgentInfo, 'identity' | 'command'>, host: strin
   return { state: 'unidentified', label: 'Version unrecognised', title: `${program} on ${where(host)} printed ${quote(id.output)}, which Conductor does not know as ${id.name ?? 'the agent'}'s yet` }
 }
 
+/** The badge of an agent the server is still checking (#704): its program being looked up, or run with its version flag. */
+export function checkingBadge(a: Pick<AgentInfo, 'identity' | 'command'>, host: string): { label: string; title: string } {
+  if (a.identity?.pending) return identity(a, host)
+  return { label: 'Checking…', title: `Looking for ${a.command[0] ?? ''} on ${where(host)}` }
+}
+
+/**
+ * Reads each agent the server is still checking until it has its answer (#704), `workers` at a time so the page's other requests are
+ * not queued behind them, and hands each answer to `apply`. A read waits on the server for the agent's checks (about 4 s at most); an
+ * agent still checking after it is read again, `reads` times in all. `stop` ends it (a newer read of the list, the page left); a read
+ * that fails is handed to `failed`.
+ */
+export async function settleChecks<T extends { checking?: boolean }>(
+  ids: readonly string[],
+  read: (id: string) => Promise<T>,
+  apply: (a: T) => void,
+  opts: { stop: () => boolean; failed: (id: string) => void; workers?: number; reads?: number },
+): Promise<void> {
+  const queue = [...ids]
+  const reads = opts.reads ?? 10
+  async function work() {
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      for (let n = 0; n < reads; n++) {
+        let a: T
+        try {
+          a = await read(id)
+        } catch {
+          if (!opts.stop()) opts.failed(id)
+          break
+        }
+        if (opts.stop()) return
+        apply(a)
+        if (!a.checking) break
+      }
+      if (opts.stop()) return
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(opts.workers ?? 2, queue.length) }, work))
+}
+
 function quote(s?: string): string {
   return s ? `"${s}"` : 'nothing'
 }

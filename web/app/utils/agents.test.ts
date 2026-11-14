@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents } from './agents'
+import { agentItem, checkingBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents, settleChecks } from './agents'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
 
@@ -100,5 +100,76 @@ describe("the Launch dialog's note where its agents go", () => {
     expect(launchListNote({ loading: false, known: 3, offered: 0, onServer: true })).toBe('none-installed')
     expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: true })).toBe('none')
     expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: false })).toBe('none')
+  })
+})
+
+describe('agents still being checked (#704)', () => {
+  it('says what is checked: the program looked up, or its version flag run', () => {
+    expect(checkingBadge(agent({ command: ['codex'] }), 'build-1')).toEqual({ label: 'Checking…', title: 'Looking for codex on build-1' })
+    expect(checkingBadge(agent({ command: ['codex'], identity: { ran: false, pending: true, identified: false, verified: true } }), '').label).toBe('Checking the version…')
+  })
+
+  /** A read the test answers by hand: one deferred answer per call, in the order they were asked. */
+  function reads() {
+    const asked: Array<{ id: string; answer: (a: { id: string; checking?: boolean }) => void; fail: () => void }> = []
+    const read = (id: string) =>
+      new Promise<{ id: string; checking?: boolean }>((resolve, reject) => asked.push({ id, answer: resolve, fail: () => reject(new Error('gone')) }))
+    return { asked, read }
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('fills each agent in as its read answers, two at a time, while a held one waits', async () => {
+    const { asked, read } = reads()
+    const applied: string[] = []
+    const done = settleChecks(['held', 'b', 'c'], read, (a) => applied.push(`${a.id}:${a.checking ? 'checking' : 'known'}`), { stop: () => false, failed: () => {} })
+    await tick()
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b'])
+    asked[1]!.answer({ id: 'b' })
+    await tick()
+    // b is known; c takes its place while held is still asked.
+    expect(applied).toEqual(['b:known'])
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b', 'c'])
+    asked[2]!.answer({ id: 'c' })
+    await tick()
+    expect(applied).toEqual(['b:known', 'c:known'])
+    // The held one comes back still checking: it is shown so and asked again.
+    asked[0]!.answer({ id: 'held', checking: true })
+    await tick()
+    expect(applied).toEqual(['b:known', 'c:known', 'held:checking'])
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b', 'c', 'held'])
+    asked[3]!.answer({ id: 'held' })
+    await done
+    expect(applied).toEqual(['b:known', 'c:known', 'held:checking', 'held:known'])
+  })
+
+  it('stops when told, reports a failed read, and asks no agent more than its reads', async () => {
+    const { asked, read } = reads()
+    let stopped = false
+    const applied: string[] = []
+    const failed: string[] = []
+    const done = settleChecks(['a', 'b'], read, (a) => applied.push(a.id), { stop: () => stopped, failed: (id) => failed.push(id), reads: 2 })
+    await tick()
+    asked[1]!.fail()
+    await tick()
+    expect(failed).toEqual(['b'])
+    asked[0]!.answer({ id: 'a', checking: true })
+    await tick()
+    asked[2]!.answer({ id: 'a', checking: true })
+    await done
+    // Two reads of a, both still checking: it is left so.
+    expect(asked.map((r) => r.id)).toEqual(['a', 'b', 'a'])
+    expect(applied).toEqual(['a', 'a'])
+
+    const again = reads()
+    const late: string[] = []
+    const done2 = settleChecks(['x', 'y', 'z'], again.read, (a) => late.push(a.id), { stop: () => stopped, failed: (id) => late.push(`failed:${id}`) })
+    await tick()
+    stopped = true
+    again.asked[0]!.answer({ id: 'x' })
+    again.asked[1]!.fail()
+    await done2
+    // A newer read of the list took over: nothing is applied, failed or asked after it.
+    expect(late).toEqual([])
+    expect(again.asked.map((r) => r.id)).toEqual(['x', 'y'])
   })
 })

@@ -151,6 +151,8 @@ export interface AgentInfo {
   probe?: boolean
   /** What the adapter's probe found the program on the server to be; absent for an agent that is not probed. */
   identity?: Identity
+  /** The server is still finding out about the agent (#704): its program's lookup, or its probe, is under way. */
+  checking?: boolean
   /** The browser its links open in (#436); absent (or without a name) is the computer's default browser. */
   browser?: AgentBrowser
 }
@@ -889,9 +891,14 @@ export function useSessions() {
     crewRuns: (id: string) => request<{ runs: RunInfo[]; live: number }>(`/api/crews/${encodeURIComponent(id)}/runs`),
     /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */
     catalogInfo: () => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
-    /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */
-    catalogWithHidden: () =>
-      request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
+    /**
+     * The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back, as the server knows them now (#704):
+     * nothing is waited for, and an agent whose program is still being looked up or run with its version flag has `checking`.
+     */
+    catalogNow: () =>
+      request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog', { query: { wait: '0' } }).then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
+    /** One agent as the catalog lists it, once the server's checks of it have answered (about 4 s at most; still `checking` past that). */
+    catalogAgent: (id: string) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}`).then((r) => r.agent),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */

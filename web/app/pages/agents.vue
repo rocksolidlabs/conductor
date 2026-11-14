@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { identity, isAvailable, notInstalledBadge } from '~/utils/agents'
+import { checkingBadge, identity, isAvailable, notInstalledBadge, settleChecks } from '~/utils/agents'
 
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
@@ -21,26 +21,47 @@ const error = ref('')
 const launch = useLaunchModal()
 const serverHost = useServerHost()
 
+// Each read of the list is a generation: the checks a read started filling
+// in stop once a newer one (or leaving the page) supersedes it.
+let generation = 0
+
+/**
+ * Draws the list from the server's answer of the moment, which waits for
+ * nothing (#704), then fills in each agent the server is still checking (its
+ * program looked up, its version flag run) as its own read answers.
+ */
 async function refresh() {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
+  const gen = ++generation
+  const stop = () => gen !== generation
   loading.value = true
   try {
-    const r = await api.catalogWithHidden()
+    const r = await api.catalogNow()
+    if (stop()) return
     agents.value = r.agents
     hidden.value = r.hidden
     error.value = ''
     serverHost.load()
+    const put = (id: string, f: (a: AgentInfo) => AgentInfo) => (agents.value = agents.value.map((x) => (x.id === id ? f(x) : x)))
+    void settleChecks(
+      r.agents.filter((a) => a.checking).map((a) => a.id),
+      api.catalogAgent,
+      (a) => put(a.id, () => a),
+      // A read that failed (the agent removed meanwhile) leaves what the list said, no longer spinning.
+      { stop, failed: (id) => put(id, (a) => ({ ...a, checking: false })) },
+    )
   } catch (e) {
-    error.value = (e as Error).message
+    if (!stop()) error.value = (e as Error).message
   } finally {
-    loading.value = false
+    if (!stop()) loading.value = false
   }
 }
 
 onMounted(refresh)
+onBeforeUnmount(() => generation++)
 watch(() => admin.token.value, refresh)
 
 // Add, edit and clone share one slideover; `editing` is the agent being
@@ -173,7 +194,17 @@ usePalette().registerPage(() => ({
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
                 <UBadge
-                  v-if="!isAvailable(a)"
+                  v-if="a.checking"
+                  :label="checkingBadge(a, serverHost.host.value).label"
+                  :title="checkingBadge(a, serverHost.host.value).title"
+                  icon="i-lucide-loader-circle"
+                  color="neutral"
+                  variant="subtle"
+                  size="sm"
+                  data-checking
+                />
+                <UBadge
+                  v-else-if="!isAvailable(a)"
                   :label="notInstalledBadge(a, serverHost.host.value).label"
                   :title="notInstalledBadge(a, serverHost.host.value).title"
                   icon="i-lucide-circle-off"
