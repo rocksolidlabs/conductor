@@ -3,6 +3,8 @@ package capacity
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 	"unicode/utf8"
 )
@@ -45,6 +47,10 @@ var stateWords = map[string]string{
 
 // StateWords answers a state's words, "" for no state of a View.
 func StateWords(state string) string { return stateWords[state] }
+
+// States is every state of a View, from the table of their words, in
+// order by name.
+func States() []string { return slices.Sorted(maps.Keys(stateWords)) }
 
 // The freshness of a View.
 const (

@@ -2166,6 +2166,9 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 			d.noteAsked(asked)
 		}
 	}()
+	// The request's capacity view is made before admission, never under
+	// its lock, for the configuration as it is now (queuedView).
+	view, viewRev := s.queuedView()
 	// Brakeman on is read and the request kept in admission's order
 	// (admit), so a save that turns Brakeman off is before this ask, which
 	// is refused, or after it, and cancels it with the queue.
@@ -2198,6 +2201,11 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	if !cfg.Enabled {
 		writeError(w, http.StatusConflict, "brakeman_off", "Brakeman is off: turn it on in Settings")
 		return
+	}
+	// The request keeps its agent's capacity view as it is queued, made
+	// for the configuration it is admitted under.
+	if cfg.Rev == viewRev {
+		in.Capacity = view
 	}
 	// The queue's bound and the day's budget are held under the desk's
 	// mutex with the creation, so two requests at once never pass them.
