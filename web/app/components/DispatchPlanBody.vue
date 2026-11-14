@@ -2,7 +2,7 @@
 import type { DispatchTicket, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { handedCommentWords } from '~/utils/dispatch'
-import { argvLine, expectedChecks, planForWords, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
+import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, shortCommit, yoloWords } from '~/utils/dispatchPlans'
 
 /**
  * A plan revision's body as the ticket page shows it (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): exactly what its
@@ -61,6 +61,7 @@ const manifestWords = computed(() => {
           <span class="flex min-w-0 flex-wrap items-baseline gap-x-2">
             <span class="font-medium text-highlighted">{{ m.name }}</span>
             <span class="text-muted">{{ agentName(m.agentId) }}</span>
+            <span class="text-xs text-muted">Model: <span class="text-default" data-plan-member-model>{{ planMemberModel(m) }}</span></span>
             <span v-if="tasksOf(m.name).length" class="text-xs text-dimmed">does {{ tasksOf(m.name).join(', ') }}</span>
           </span>
           <span v-if="m.args?.length" class="text-xs text-muted">Arguments: <code class="break-all font-mono">{{ argvLine(m.args) }}</code></span>

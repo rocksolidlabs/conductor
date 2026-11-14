@@ -10,6 +10,7 @@ import {
   holderOf,
   planDecisionsOut,
   planForWords,
+  planMemberModel,
   expectedChecks,
   historyLaunches,
   keptComments,
@@ -140,6 +141,13 @@ describe('the command as resolved', () => {
     expect(resolvedArgv({ command: ['aider', '--model', 'sonnet'], startArgs: ['--session-id', '{id}'], yoloArgs: ['--yes'] }, ['--verbose'])).toEqual(['aider', '--model', 'sonnet', '--session-id', '{id}', '--verbose', '--yes'])
     expect(resolvedArgv(undefined, ['-x'])).toEqual(['-x'])
     expect(argvLine(['go', 'test', 'a b', '', 'it"s'])).toBe('go test "a b" "" "it\\"s"')
+  })
+
+  it("names the member's model as its launch runs it, in the capacity rows' words", () => {
+    expect(planMemberModel({ model: 'claude-opus-4-1' })).toBe('claude-opus-4-1')
+    expect(planMemberModel({ model: ' gpt-5 ' })).toBe('gpt-5')
+    expect(planMemberModel({})).toBe("the agent's default")
+    expect(planMemberModel({ model: '' })).toBe("the agent's default")
   })
 
   it('says the yolo choice plainly', () => {
