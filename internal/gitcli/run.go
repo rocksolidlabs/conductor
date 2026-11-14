@@ -154,6 +154,15 @@ func RunEnv(ctx context.Context, dir string, env map[string]string, args ...stri
 	return runEnv(ctx, "", []string{"-C", dir}, env, args)
 }
 
+// RunAt is RunEnv in the work tree workTree whose git directory gitDir its
+// caller found: both are named outright (-C workTree --git-dir=gitDir
+// --work-tree=workTree), as RunTree names its own, so nothing the folder's
+// .git names and no work tree a configuration names takes part; the
+// filter look-up before the command takes the same location.
+func RunAt(ctx context.Context, gitDir, workTree string, env map[string]string, args ...string) (string, error) {
+	return runEnv(ctx, "", []string{"-C", workTree, "--git-dir=" + gitDir, "--work-tree=" + workTree}, env, args)
+}
+
 // run runs git with args where loc points it (-C dir, or a git directory
 // and a working tree named outright), for the filter look-up and the
 // command alike.

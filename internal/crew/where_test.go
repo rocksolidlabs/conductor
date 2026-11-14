@@ -17,10 +17,11 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
-// version8Added is what ledger version 8 added (the decision tables),
-// dropped, children first: the start of every list here that makes a
-// ledger an older version's (the ledger package's tests keep the same).
-var version8Added = []string{"DROP TABLE decision_refunds", "DROP TABLE decision_holds", "DROP TABLE decision_history", "DROP TABLE decision_responses", "DROP TABLE decisions"}
+// version8Added is what ledger versions 8 to 11 added (the decision
+// tables, the previews), dropped, children first: the start of every list
+// here that makes a ledger an older version's (the ledger package's tests
+// keep the same).
+var version8Added = []string{"DROP TABLE previews", "DROP TABLE decision_refunds", "DROP TABLE decision_holds", "DROP TABLE decision_history", "DROP TABLE decision_responses", "DROP TABLE decisions"}
 
 // Where an attempt and its evidence ran (docs/plans/runtime.md, PR-4): an
 // attempt's where is its run's Runtime's, fixed as it is made, and its

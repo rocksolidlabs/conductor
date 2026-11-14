@@ -687,11 +687,23 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   for that commit (`resolveTree` with the preview as its owner, a `file`
   manifest read at the commit as EN1 reads it); the checkout is
   `<worktree>.preview`, added detached at the
-  commit (`gitcli.AddDetachedWorktree`), or, when it is there already,
-  reused only if `checkoutIntact` finds it at the commit with no tracked
-  change (untracked files, a dev server's caches, are left as they are)
-  and refused otherwise with the path and the changed files named:
-  Conductor removes nothing it made (EN1's R7). Then EN1's
+  commit (`gitcli.AddDetachedWorktree`, under a bound of its own that no
+  end cuts: an end that comes meanwhile waits for the add), or, when it
+  is there already, reused only if it is the repository's own worktree
+  by the repository's word (an entry of the repository's `worktrees`
+  folder whose `gitdir` names the folder's `.git`, and that `.git` a
+  regular file naming the entry, each compared as the file it is), and
+  the comparison at the commit, run with that git directory and the
+  folder as its work tree named outright (`gitcli.RunAt`), finds no
+  tracked change (untracked files, a dev server's caches, are left as
+  they are); refused otherwise with the path and what is wrong named:
+  Conductor removes nothing it made (EN1's R7). A reused checkout is
+  served as it was judged when the preview opened; natively the same
+  user can change its files afterwards. A checkout a server left half
+  made when it died (the add's first command done, not its second) is
+  refused as changed; the person removes it (`git worktree remove
+  --force <path>` in the run's repository) and the next open makes it
+  again. Then EN1's
   `prepareTree` and `treeReady` run on it with the preview as owner:
   setup, services, readiness and preview, every step a receipt under the
   attempt (the `checks` table, its phase, `dir` the checkout's, the next
@@ -702,8 +714,16 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   most 2 preview checkouts open per server (`maxPreviews`, `429
   previews_busy` naming the open ones); one per candidate at a time; 20
   opens per candidate in the ledger. Ends: Close; 30 minutes with no read
-  of its label (`previewIdle`, the pane reads it every 5 s); the run's
-  stop; the server's shutdown, as every tree's. A checkout's services
+  of its label (`previewIdle`, the pane reads it every 5 s, judged as
+  the end is made); the run's stop (its sessions and services, a
+  preview's among them, told to stop first, the preview's rows after);
+  the server's shutdown, as every tree's. The shutdown stops each run
+  it holds before it drains, so a held run's preview ends with that stop
+  (`run_stopped`); `shutdown` is recorded only for a preview whose run
+  was not stopped first. The URL is offered once its readiness is
+  committed; an end's first write (the URL cleared) is committed before
+  anything of the preview is signalled, and one the ledger refuses
+  leaves the preview as it was, a Close answering the refusal. A checkout's services
   that the last server left running are reported at the next start,
   never signalled (EN1's rule).
 - **A run the engine no longer holds** (PR-7). `Engine.Get` and
