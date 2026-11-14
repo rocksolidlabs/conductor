@@ -20,7 +20,7 @@ let asked = 0
 
 // Read again when the workbench token changes (the gate saved the right one after this read was refused): the run page around it reads
 // again then, and this panel stays mounted. A reply to the read made with the token before is dropped (`asked`), and its refusal does
-// not ask for the token again (admin.refused judges it by the token it carried).
+// not ask for the token again (admin.answered judges it by the token it carried).
 watch(
   () => [props.runId, props.command, props.actor, admin.token.value] as const,
   async ([run, id, actor]) => {

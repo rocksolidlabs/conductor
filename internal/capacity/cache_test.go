@@ -225,6 +225,50 @@ func TestCacheKeepsEight(t *testing.T) {
 	}
 }
 
+// Kept answers the reading made at the time asked while the key keeps it,
+// as its own view (not the newest, and not reading while a read runs),
+// reads nothing and moves no key's place; once the reading has been
+// dropped, or for a time no reading was made at, it answers none.
+func TestCacheKeptByItsTime(t *testing.T) {
+	c, clock, r := newTestCache(t, true)
+	k := key(1)
+	close(r.release)
+	c.Read(context.Background(), k, ReadOptions{})
+	first := t0
+	clock.Advance(MinInterval)
+	c.Read(context.Background(), k, ReadOptions{})
+	reads := r.count()
+	if v, ok := c.Kept(k, first); !ok || !v.ReadAt.Equal(first) || v.State != StateOK || len(v.Windows) != 1 {
+		t.Fatalf("the first reading: %v %+v", ok, v)
+	}
+	if _, ok := c.Kept(k, first.Add(time.Second)); ok {
+		t.Fatal("a time no reading was made at")
+	}
+	if _, ok := c.Kept(key(2), first); ok {
+		t.Fatal("a key never read")
+	}
+	if r.count() != reads {
+		t.Fatalf("Kept read: %d reads, then %d", reads, r.count())
+	}
+	c.mu.Lock()
+	asked := c.keys[k].asked
+	c.mu.Unlock()
+	c.Kept(k, first)
+	c.mu.Lock()
+	moved := c.keys[k].asked != asked
+	c.mu.Unlock()
+	if moved {
+		t.Fatal("Kept moved the key's place")
+	}
+	for range KeepPerKey {
+		clock.Advance(MinInterval)
+		c.Read(context.Background(), k, ReadOptions{})
+	}
+	if _, ok := c.Kept(k, first); ok {
+		t.Fatal("a reading dropped from the key is still answered")
+	}
+}
+
 // orderReader answers every read at once, but a read of the key it is told
 // to hold waits at its gate (entered tells it has started), and a read of
 // the key it is told to refuse answers a refusal.

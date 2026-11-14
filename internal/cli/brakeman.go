@@ -45,7 +45,8 @@ In a Brakeman turn's session (CONDUCTOR_BRAKEMAN is set), with the session's tok
                                             read one thing within the turn's scope and visibility:
                                             WHAT is changes, status, screen, overlaps, briefs, runs, run,
                                             task, steps, log, command, messages, projects, tickets,
-                                            ticket, history, comments, sessions or touched, and each
+                                            ticket, history, comments, sessions, touched or capacity
+                                            (the last reading kept, never a new one), and each
                                             --KEY one of its route's parameters (conductor guide
                                             --section operations lists them under observe_WHAT)
   conductor brakeman act OPERATION [--KEY VALUE]... [--body-file F] [--op-id ID] [--json]
