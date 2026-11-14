@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { relativeTime } from '~/utils/sessions'
-import { inboxKindWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
+import { inboxKindWords, itemTimeWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
 import type { LaneEvidence } from '~/utils/transport/decide'
 
 /**
@@ -46,6 +45,8 @@ const props = defineProps<{
 const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
+/** The heading's time: waiting while the item is open, when it was answered once it is not (itemTimeWords). */
+const timeWords = computed(() => itemTimeWords(props.item))
 /** A DR1 record: its record, alternatives, controls and four states are DR1's card's (the `record` slot). */
 const durable = computed(() => props.item.kind === 'decision')
 const evidence = computed(() => (props.drawn?.length ? (props.item.evidence ?? []).filter((e) => !props.drawn!.includes(e.ref)) : (props.item.evidence ?? [])))
@@ -115,7 +116,7 @@ function sendComment() {
       <h2 class="text-base font-semibold text-highlighted text-pretty" data-inbox-title>{{ item.title }}</h2>
       <p class="text-xs text-muted">
         <span>{{ inboxKindWords(item.kind) }}</span>
-        <span v-if="item.since"> · waiting {{ relativeTime(item.since) }}</span>
+        <span v-if="timeWords" data-inbox-time> · {{ timeWords }}</span>
       </p>
     </header>
 

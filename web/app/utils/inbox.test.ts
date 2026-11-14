@@ -37,6 +37,7 @@ import {
   stepsFinal,
   ticketOf,
   itemOf,
+  itemTimeWords,
   decisionIdOf,
   inboxKindWords,
   inboxSections,
@@ -431,5 +432,25 @@ describe('the decision kind', () => {
     expect(kept.map((e) => e.ref)).toEqual(['task:crew-0000aaaa-11112222/build'])
     const stored = { getItem: () => JSON.stringify([{ ref: 'decision:dr-2', receipt: 'r', at: now - 10 }]) }
     expect(readRecentActions(stored, now)).toEqual([])
+  })
+})
+
+describe("an item's time", () => {
+  const now = Date.parse('2026-11-14T12:00:00Z')
+  const since = '2026-11-14T10:33:00Z'
+  const recorded = { step: 'recorded' as const, state: 'done' as const, at: '2026-11-14T11:30:00Z', words: 'recorded' }
+
+  it('says how long an open item waits', () => {
+    expect(itemTimeWords({ kind: 'decision', state: 'open', since }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'question', since }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'task', since, now: 'build is failed now' }, now)).toBe('waiting 1h 27m')
+  })
+
+  it('never says waiting for an item no longer open: when it was answered, or nothing', () => {
+    expect(itemTimeWords({ kind: 'decision', state: 'applied', since, delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'decision', state: 'answered', since, delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'decision', state: 'cancelled', since, delivery: [{ ...recorded, state: 'not_applicable', at: undefined }] }, now)).toBe('')
+    expect(itemTimeWords({ kind: 'question', since, now: 'no longer open: answered', delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'question', since, now: 'not open now: set aside' }, now)).toBe('')
   })
 })

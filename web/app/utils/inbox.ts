@@ -5,6 +5,7 @@
 // (utils/decisions.ts is the durable decision record's).
 
 import { NO_QUESTION, ReplyError } from './reply'
+import { relativeTime } from './sessions'
 import { CommandRefused } from './tasks'
 
 /** One item as the list shows it, folded: no action's input or scope (the page reads the item before it acts). */
@@ -74,6 +75,8 @@ export interface InboxItem {
   /** The ref Ask Brakeman and the evidence use. */
   subject: string
   kind: string
+  /** A DR1 record's state (`decision` items): open, answered, applied, cancelled… */
+  state?: string
   since: string
   title: string
   brief: string
@@ -408,6 +411,18 @@ export function isDecisionRef(ref: string): boolean {
 /** The DR1 record's id a ref names (`dr-<n>`), or ''. */
 export function decisionIdOf(ref: string): string {
   return isDecisionRef(ref) ? ref.slice('decision:'.length) : ''
+}
+
+/**
+ * The time an item's card heads it with: an open item "waiting <for how long>"; one no longer open (a durable decision past `open`, a
+ * question the server says is not open now) never waits: "answered <how long> ago" when its recorded step carries that time, else
+ * nothing.
+ */
+export function itemTimeWords(it: Pick<InboxItem, 'kind' | 'state' | 'since' | 'now' | 'delivery'>, now = Date.now()): string {
+  const closed = it.kind === 'decision' ? !!it.state && it.state !== 'open' : it.kind === 'question' && !!it.now
+  if (!closed) return it.since ? `waiting ${relativeTime(it.since, now)}` : ''
+  const at = it.delivery?.find((s) => s.step === 'recorded' && s.state === 'done')?.at
+  return at ? `answered ${relativeTime(at, now, { suffix: true })}` : ''
 }
 
 /**
