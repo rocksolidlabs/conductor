@@ -38,6 +38,10 @@ type catalogEntry struct {
 	// Identity is what the adapter's probe found the program to be (see
 	// Identity); absent for an agent that is not probed.
 	Identity *Identity `json:"identity,omitempty"`
+	// Checking says the server is still finding out about the agent: the
+	// lookup of its program, or its probe, is under way (#704). The
+	// listing's routes set it; GET /api/catalog/{id} waits for the checks.
+	Checking bool `json:"checking,omitempty"`
 }
 
 // entry is a as the routes show it, by the effective catalog cat, the
@@ -95,34 +99,91 @@ type saveAgentRequest struct {
 	Source    json.RawMessage `json:"source,omitempty"`
 	Replaces  json.RawMessage `json:"replaces,omitempty"`
 	Available json.RawMessage `json:"available,omitempty"`
+	Checking  json.RawMessage `json:"checking,omitempty"`
 }
 
 // handleCatalog lists the launchable agents, env values masked, and the IDs
-// the overlay hides, which POST /api/catalog/{id}/unhide brings back.
+// the overlay hides, which POST /api/catalog/{id}/unhide brings back. With
+// wait=0 it answers at once with what the server knows (#704): the checks
+// it has no fresh answer from are started and waited for by none, their
+// agents marked checking, and GET /api/catalog/{id} waits for each.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
-	out, hidden := s.catalogEntries(r.Context())
+	now := false
+	switch r.URL.Query().Get("wait") {
+	case "":
+	case "0":
+		now = true
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", "wait is 0 or left out")
+		return
+	}
+	out, hidden := s.catalogEntries(r.Context(), now)
 	// yoloDefault is the server's yolo choice, which a launch or a crew that
 	// says nothing follows.
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "hidden": hidden, "yoloDefault": s.cfg.Yolo})
 }
 
+// handleCatalogAgent answers with one agent as GET /api/catalog lists it,
+// its checks waited for as that route waits (#704): the Agents page draws
+// the list from a read that waits for nothing and fills each agent checking
+// in from this one.
+func (s *Server) handleCatalogAgent(w http.ResponseWriter, r *http.Request) {
+	s.catalogMu.Lock()
+	cat := s.catalog
+	s.catalogMu.Unlock()
+	a, ok := cat.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no agent with that id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": s.entriesOf(r.Context(), cat, []catalog.Agent{a}, false)[0]})
+}
+
 // catalogEntries lists the catalog's agents with what this server knows of
 // them, waiting for ctx at most about lookupWait for the programs and
-// probeWait for the probes, and the IDs the overlay hides.
-func (s *Server) catalogEntries(ctx context.Context) ([]catalogEntry, []string) {
+// probeWait for the probes, and the IDs the overlay hides. now waits for
+// nothing: see entriesOf.
+func (s *Server) catalogEntries(ctx context.Context, now bool) ([]catalogEntry, []string) {
 	s.catalogMu.Lock()
 	cat, hidden := s.catalog, uniqueIDs(s.overlay.Hidden)
 	s.catalogMu.Unlock()
-	list := cat.List()
+	return s.entriesOf(ctx, cat, cat.List(), now), hidden
+}
+
+// entriesOf is list, agents of cat, with what this server knows of them,
+// waiting as catalogEntries says. now answers at once (#704): the lookups
+// and probes with no fresh answer are started and waited for by none, a
+// program whose answer has expired keeps it meanwhile (lookupTTL only
+// bounds how late a program installed since is seen), and an agent whose
+// check is under way with nothing to show is marked checking.
+func (s *Server) entriesOf(ctx context.Context, cat catalog.Catalog, list []catalog.Agent, now bool) []catalogEntry {
 	// The programs are asked about together: a request waits about one
 	// lookup's time for those not looked up lately, at most lookupWait.
 	programs := make([]string, 0, len(list))
+	kept := map[string]lookupAnswer{}
 	for _, a := range list {
 		if len(a.Command) > 0 {
 			programs = append(programs, a.Command[0])
+			if now {
+				// Read before the lookups start: one that lands drops the
+				// answers that have expired.
+				kept[a.Command[0]] = s.lookups.held(a.Command[0])
+			}
 		}
 	}
+	if now {
+		// A context already done: every wait for a lookup or a probe ends
+		// at once, and the lookup or probe goes on, its answer kept.
+		done, cancel := context.WithCancel(ctx)
+		cancel()
+		ctx = done
+	}
 	answers := s.lookups.warmPaths(ctx, programs)
+	for p, a := range answers {
+		if k := kept[p]; !a.known && k.known {
+			answers[p] = k
+		}
+	}
 	installed := func(program string) bool { return answers[program].installed }
 	// The probes of the agents found are asked for together, and waited for
 	// together: probeWait in all, not each (asked one after another, a cold
@@ -151,11 +212,13 @@ func (s *Server) catalogEntries(ctx context.Context) ([]catalogEntry, []string) 
 	for _, a := range list {
 		e := entry(a, cat, s.base, installed, identity)
 		if len(a.Command) > 0 {
-			e.OnWindows = answers[a.Command[0]].onWindows
+			ans := answers[a.Command[0]]
+			e.OnWindows = ans.onWindows
+			e.Checking = !ans.known || (e.Identity != nil && e.Identity.Pending)
 		}
 		out = append(out, e)
 	}
-	return out, hidden
+	return out
 }
 
 // WarmCatalog does at the server's start what the first GET /api/catalog
@@ -163,7 +226,7 @@ func (s *Server) catalogEntries(ctx context.Context) ([]catalogEntry, []string) 
 // Launch dialog first opened after the app starts finds them known (inside
 // WSL the first lookups and probes of a dozen agents take seconds).
 func (s *Server) WarmCatalog(ctx context.Context) {
-	s.catalogEntries(ctx)
+	s.catalogEntries(ctx, false)
 }
 
 // handleSaveAgent adds an agent to the overlay, or replaces the agent with the
