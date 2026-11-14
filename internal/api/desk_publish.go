@@ -351,15 +351,13 @@ func (s *Server) runTakesCommands(runID string) bool {
 
 // deskNeededLocked says whether the run's desk is still needed, minting
 // aside: a decision link of the run minted at the rendezvous still stands
-// here, or one revoked here is still owed its revoke there (revokePending:
-// the desk may be what carries it). The caller holds pubMu; the link
+// here, or one revoked here is still owed its revoke there (the desk may
+// be what carries it; decisionLinksLocked). The caller holds pubMu; the link
 // store's lock is taken under it, never the other way round (the store
 // tells its hooks outside its lock).
 func (s *Server) deskNeededLocked(runID string) bool {
-	for _, rl := range s.remoteRunLinks[runID] {
-		if rl.Decide && rl.revokePending {
-			return true
-		}
+	if standing, owed := s.decisionLinksLocked(runID); standing || owed {
+		return true
 	}
 	for _, l := range s.links.ListByRun(runID) {
 		if l.Remote {
@@ -444,12 +442,38 @@ func (s *Server) deskCheck(runID string) {
 // links minted at the rendezvous is still owed there. The caller holds
 // pubMu.
 func (s *Server) revokeOwedLocked(runID string) bool {
-	for _, rl := range s.remoteRunLinks[runID] {
-		if rl.Decide && rl.revokePending {
-			return true
+	_, owed := s.decisionLinksLocked(runID)
+	return owed
+}
+
+// decisionLinksLocked judges each of the run's decision links minted at
+// the rendezvous: whether one still stands here (standing), and whether a
+// revoke of one is still owed there (owed): its record marked so
+// (revokePending), or its link already revoked in the store. The store
+// marks a link revoked under its lock and tells its hook, which marks the
+// record (remoteRevoked), after it: a judgement between the two that took
+// the record's mark alone would find the link ended and owed nothing, and
+// end the desk its revoke needs. Each link is read from the store once
+// (Live says both whether it stands and whether it was revoked): two reads
+// of it, one before the store's mark and one after, would see it neither
+// standing nor revoked (#281). The caller holds pubMu.
+func (s *Server) decisionLinksLocked(runID string) (standing, owed bool) {
+	for id, rl := range s.remoteRunLinks[runID] {
+		if !rl.Decide {
+			continue
+		}
+		if rl.revokePending {
+			owed = true
+			continue
+		}
+		switch _, err := s.links.Live(id); {
+		case err == nil:
+			standing = true
+		case errors.Is(err, share.ErrRevoked):
+			owed = true
 		}
 	}
-	return false
+	return standing, owed
 }
 
 // remoteRevoked is a remote decision link's end here (revoked, expired),

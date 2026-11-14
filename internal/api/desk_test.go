@@ -1340,6 +1340,69 @@ func TestAMembersLinkGoneIsNoRunLinksEnd(t *testing.T) {
 	}
 }
 
+// The link store marks a run decision link revoked under its lock and
+// tells its hook, which marks the link's record owed its revoke there,
+// after it: a judgement of the run's desk made between the two (the run's
+// own change asks one at any moment, OnRunChange) finds the link ended and
+// its record not yet owed, and still keeps the desk, which the owed revoke
+// needs. For the desk's link_gone and for the switchyard's word that it
+// ended the link, the hook is held behind a judgement made in that window;
+// the desk stays, the retry carries the revoke over it, the switchyard
+// holds the link no more, and then the desk ends (#281).
+func TestADeskCheckBeforeTheRevokeIsOwedKeepsTheDesk(t *testing.T) {
+	for _, ended := range []bool{false, true} {
+		name := "link_gone"
+		if ended {
+			name = "ended"
+		}
+		t.Run(name, func(t *testing.T) {
+			yard, local := deskPair(t, true)
+			next := retries(local)
+			run, _ := heldRun(t, local)
+			linkID, token := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+			deskID := deskOf(t, yard, token)
+			judged := make(chan struct{}, 1)
+			told := local.srv.links.OnRevokeRun
+			local.srv.links.OnRevokeRun = func(runID, lid string) {
+				if lid == linkID {
+					// The link is revoked in the store; its record is not
+					// marked owed yet: the desk is judged now.
+					local.srv.deskCheck(runID)
+					select {
+					case judged <- struct{}{}:
+					default:
+					}
+				}
+				told(runID, lid)
+			}
+			local.srv.RemoteLinkGone(linkID, "", run.ID, ended)
+			select {
+			case <-judged:
+			case <-time.After(testWait):
+				t.Fatal("the link was never revoked here")
+			}
+			until(t, "the link owed its revoke", func() bool {
+				l := linksOf(t, local, "/api/runs/"+run.ID+"/links")
+				return len(l) == 1 && l[0]["revokePending"] == true
+			})
+			if local.srv.liveDesk(run.ID) == nil {
+				t.Fatal("a judgement before the revoke was owed ended the desk")
+			}
+			select {
+			case try := <-next:
+				try()
+			case <-time.After(testWait):
+				t.Fatal("no revoke there was armed")
+			}
+			until(t, "the switchyard confirmed", func() bool { return len(linksOf(t, local, "/api/runs/"+run.ID+"/links")) == 0 })
+			if code, _ := joinStatus(t, yard, token); code != http.StatusNotFound {
+				t.Fatalf("the link still joins at the switchyard: %d", code)
+			}
+			deskGone(t, yard, local, run.ID, deskID)
+		})
+	}
+}
+
 // A member whose publication has ended (its session's end; it stays in the
 // published map until its session leaves the server) carries nothing and
 // is named in no group: the run's group names no session of it, and the
