@@ -7,7 +7,7 @@ import { useWorkbenchToken } from './useWorkbenchToken'
 
 // The events stream's request as the layout makes it as it mounts: with a wrong token in the browser it is refused, and its refusal
 // can land after the gate saved the right one (#281). It is judged by the token it carried. useWorkbenchToken is the app's own, over
-// a useState of this test's; fetch is stubbed.
+// a Nuxt app of this test's; fetch is stubbed.
 describe('openEvents', () => {
   let admin: ReturnType<typeof useWorkbenchToken>
   const fetchFn = vi.fn()
@@ -20,6 +20,8 @@ describe('openEvents', () => {
       if (!state.has(key)) state.set(key, ref(init()))
       return state.get(key)
     })
+    const app = {}
+    vi.stubGlobal('useNuxtApp', () => app)
     vi.stubGlobal('computed', computed)
     vi.stubGlobal('fetch', fetchFn)
     admin = useWorkbenchToken()

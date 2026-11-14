@@ -215,14 +215,15 @@ export function useAccounts() {
     setDefault: (ad, body, signal) => request(`/api/accounts/defaults/${id(ad)}`, { method: 'PUT', body, signal }),
   })
   store.changed = () => version.value++
-  // The token is watched while a page shows the accounts: another one empties the store and reads it again with the new one (forget).
-  const held = useState<string | null>('accountsToken', () => null)
+  // The token is watched while a page shows the accounts, by its count of changes (no copy of it is kept): another one empties the
+  // store and reads it again with the new one (forget).
+  const seen = useState<number | null>('accountsTokenChanges', () => null)
   const judge = () => {
-    if (held.value !== null && held.value !== admin.token.value) store.forget()
-    held.value = admin.token.value
+    if (seen.value !== null && seen.value !== admin.changes.value) store.forget()
+    seen.value = admin.changes.value
   }
   judge()
-  watch(admin.token, judge)
+  watch(admin.changes, judge)
 
   const doc = computed(() => {
     void version.value

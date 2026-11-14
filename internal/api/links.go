@@ -544,10 +544,11 @@ func (s *Server) handleRevokeRunLink(w http.ResponseWriter, r *http.Request) {
 	} else {
 		found, revoked = s.links.RevokeRun(id, linkID)
 	}
-	if !found && remote && !s.hasRemoteRunLink(id, linkID) {
-		// Revoked here with no record of it kept: the rendezvous confirmed
-		// its revoke (or it expired there by the same deadline), and this
-		// is a revoke again, its answer lost: done, as the first was.
+	if !found && remote && !s.runRevokeOwed(id, linkID) {
+		// Revoked here with no record of it kept owing its revoke there
+		// (decisionLinkLocked): the rendezvous confirmed its revoke (or it
+		// expired there by the same deadline), and this is a revoke again,
+		// its answer lost: done, as the first was.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
