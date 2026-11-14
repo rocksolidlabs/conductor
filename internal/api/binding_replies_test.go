@@ -51,7 +51,8 @@ func TestSelfCrewEffectiveLogin(t *testing.T) {
 // A run answered from its record, its members on a registered account and
 // on a pinned entry, carries no folder, label, fingerprint or binding in
 // any reply: the admin's GET /api/runs and GET /api/runs/{run}, and
-// Brakeman's reads of both (observe runs, observe run).
+// Brakeman's reads of both (observe runs, observe run), with its Capacity
+// class off and on.
 func TestRunRepliesCarryNoFolder(t *testing.T) {
 	f := newObsFixture(t)
 	path := filepath.Join(f.srv.store.Dir(), "runs", f.run+".json")
@@ -77,11 +78,21 @@ func TestRunRepliesCarryNoFolder(t *testing.T) {
 	if err := os.Rename(path+".new", path); err != nil {
 		t.Fatal(err)
 	}
-	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"runs": []string{f.run}} })
+	capacityOn := func(on bool) func(c map[string]any) {
+		return func(c map[string]any) {
+			c["scope"] = map[string]any{"runs": []string{f.run}}
+			c["visibility"].(map[string]any)["capacity"] = on
+		}
+	}
+	f.turn(t, capacityOn(false))
 	var replies []string
 	for _, p := range []string{"/api/runs", "/api/runs/" + f.run} {
 		_, data, _ := f.call(t, "GET", p, nil)
 		replies = append(replies, string(data))
+		replies = append(replies, mustJSON(f.expectRead(t, p, http.StatusOK, "")))
+	}
+	f.again(t, capacityOn(true))
+	for _, p := range []string{"/api/runs", "/api/runs/" + f.run} {
 		replies = append(replies, mustJSON(f.expectRead(t, p, http.StatusOK, "")))
 	}
 	if !strings.Contains(replies[2], "a-aaaaaaaaaaaa") {

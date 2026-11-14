@@ -612,10 +612,10 @@ func TestAProjectKeyIsReadWithDispatch(t *testing.T) {
 // whole, the earlier brief is read in those classes too.
 func TestABriefWithoutAFootprintCarriesItsClasses(t *testing.T) {
 	f := newObsFixture(t)
-	all := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched}
+	all := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched, brakeman.ClassCapacity}
 	vis := func(c map[string]any) {
 		c["scope"] = map[string]any{}
-		c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true}
+		c["visibility"] = map[string]any{"runs": true, "logs": true, "dispatch": true, "sessions": true, "touched": true, "capacity": true}
 	}
 	early := f.keepEarlier(t, brakeman.DefaultConfig(f.root), []brakeman.Item{fact("TestTurnstile failed in build", ref(t, "run:"+f.run))}, "TestTurnstile failed.",
 		[]brakeman.Read{{Ref: ref(t, "run:"+f.run), Class: brakeman.ClassRuns, At: time.Now()}})

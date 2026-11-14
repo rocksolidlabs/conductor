@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -40,6 +41,10 @@ const (
 	// DR1's decision record (Program item DR1): what a route_decision act
 	// routes, read in its run's decisions.
 	RefDecision = "decision" // decision:<dr-n>
+	// AC1's capacity view (docs/plans/capacity.md, PR-6): one reading of an
+	// agent's usage on an account, by the time it was read (RFC 3339 in
+	// UTC, as the view gives it).
+	RefCapacity = "capacity" // capacity:<agent>/<account>@<readAt>
 )
 
 // The shapes of a ref's parts, each the one its own package gives it,
@@ -65,6 +70,9 @@ var (
 	requestIDPattern = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 	// A decision record's id (ledger.DecisionID).
 	decisionIDPattern = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
+	// An account's id: the agent's own login, or a minted one
+	// (capacity.ValidID).
+	accountIDPattern = regexp.MustCompile(`^(default|a-[a-z2-7]{12})$`)
 )
 
 // maxActor is a Dispatch actor's bound (dispatch.MaxActor).
@@ -94,6 +102,9 @@ type Ref struct {
 	Item     int    // brief: the item's index, from 0
 	Launch   string // launch: its id, 16 hex digits
 	Decision string // decision: dr-n
+	Agent    string // capacity: a catalog agent's id
+	Account  string // capacity: an account's id
+	ReadAt   string // capacity: when the reading was made, RFC 3339 in UTC as time.RFC3339Nano writes it
 }
 
 // RefError is a ref that does not parse: the ref and why.
@@ -261,6 +272,13 @@ func ParseRef(s string) (Ref, error) {
 			return bad("want decision:<dr-n>")
 		}
 		r.Decision = parts[0]
+	case RefCapacity:
+		account, at, ok := strings.Cut(strings.Join(parts[1:], "/"), "@")
+		t, err := time.Parse(time.RFC3339Nano, at)
+		if !want(2) || !ok || !agentIDPattern.MatchString(parts[0]) || !accountIDPattern.MatchString(account) || err != nil || t.UTC().Format(time.RFC3339Nano) != at {
+			return bad("want capacity:<agent>/<account>@<readAt>, readAt in UTC as the view gives it")
+		}
+		r.Agent, r.Account, r.ReadAt = parts[0], account, at
 	default:
 		return bad("no kind %q: a ref is one of %s", kind, refFormsWords())
 	}
@@ -335,6 +353,8 @@ func (r Ref) String() string {
 		return "candidate:" + r.Run + "/" + r.Task + "/" + itoa(r.N)
 	case RefDecision:
 		return "decision:" + r.Decision
+	case RefCapacity:
+		return "capacity:" + r.Agent + "/" + r.Account + "@" + r.ReadAt
 	}
 	return ""
 }

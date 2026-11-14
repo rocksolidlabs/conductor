@@ -1392,7 +1392,7 @@ func TestAKeptBriefRecordsTheFootprintOfItsReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{ClassRuns, ClassLogs, ClassDispatch, ClassSessions, ClassTerminals}; kept.Footprint == nil || !slices.Equal(kept.Footprint.Classes, want) {
+	if want := []string{ClassRuns, ClassLogs, ClassDispatch, ClassSessions, ClassTerminals, ClassCapacity}; kept.Footprint == nil || !slices.Equal(kept.Footprint.Classes, want) {
 		t.Fatalf("the footprint of a log that dropped reads: %+v, want %v", kept.Footprint, want)
 	}
 

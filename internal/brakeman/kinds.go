@@ -107,6 +107,7 @@ var refForms = []RefForm{
 	{RefLaunch, "launch:<id>", "a launch from an approved plan revision, 16 hex digits", "launch:" + exLaunch},
 	{RefCandidate, "candidate:<run>/<task>/<n>", "a run's candidate: attempt n of the task, which submitted something", "candidate:" + exRun + "/build/3"},
 	{RefDecision, "decision:<dr-n>", "a decision record, as its run's read lists it", "decision:dr-7"},
+	{RefCapacity, "capacity:<agent>/<account>@<readAt>", "a reading of an agent's usage on an account, as observe_capacity gives its ref", "capacity:claude/default@2026-11-11T03:00:00Z"},
 }
 
 // RefForms is every ref a brief may cite, as Evidence references names
