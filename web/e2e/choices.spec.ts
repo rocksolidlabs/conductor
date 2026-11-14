@@ -58,6 +58,31 @@ test('the wall queue offers the same buttons', async ({ page, api, state }) => {
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
 })
 
+test("the wall queue wraps a question's three choices onto lines of their own: none is cut off (#906)", async ({ page, api }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e three choices' })
+  sessions.push(s.id)
+  // Three labels as a permission prompt words them: each fits the card alone, together they do not fit one line of it.
+  const labels = ['Yes', "Yes, and don't ask again", 'No, tell Claude why']
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Run git status?', options: labels.map((label, i) => ({ label, input: String(i + 1) })) })
+  await page.goto('/yard')
+  const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
+  await expect(card).toBeVisible({ timeout: 30_000 })
+  const choices = labels.map((label) => card.getByRole('button', { name: label, exact: true }))
+  const inside = (await card.boundingBox())!
+  for (let i = 0; i < labels.length; i++) {
+    const choice = choices[i]!
+    await expect(choice).toBeVisible()
+    const box = (await choice.boundingBox())!
+    expect(box.x, labels[i]).toBeGreaterThanOrEqual(inside.x)
+    expect(box.x + box.width, labels[i]).toBeLessThanOrEqual(inside.x + inside.width)
+    expect(await choice.locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth), labels[i]).toBe(true)
+  }
+  // A label wider than the card would be shortened: its whole text is the button's title.
+  for (let i = 0; i < labels.length; i++) await expect(choices[i]!).toHaveAttribute('title', labels[i]!)
+  // More than one line: the third went below the first.
+  expect((await choices[2]!.boundingBox())!.y).toBeGreaterThan((await choices[0]!.boundingBox())!.y)
+})
+
 test('the sidebar row offers the choices, numbered, and a click types one without opening the session', async ({ page, api, state }) => {
   const s = await ask(api)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
