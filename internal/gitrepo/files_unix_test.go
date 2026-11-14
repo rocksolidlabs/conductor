@@ -1802,3 +1802,52 @@ func TestAReadWithARelativeTemporaryDirectoryAnswersAsAnother(t *testing.T) {
 		}
 	}
 }
+
+// A read whose temporary directory (TMPDIR) is a path through a symbolic
+// link and "..", absolute or relative, answers as with any other and
+// leaves nothing in the folder the system made there (the link's target's
+// parent's tmp), which the path's letters cleaned do not name: Compare,
+// CommitDetail and FileAt. Through the same link to a folder that is not
+// there, a read starts no git and answers ErrNoTemp, in its fixed words,
+// which name no path.
+func TestAReadWithATemporaryDirectoryThroughALinkAnswersAsAnother(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	root := t.TempDir()
+	for _, d := range []string{"a/b", "a/tmp"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "a", "b"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "tmp")); !os.IsNotExist(err) {
+		t.Fatalf("the cleaned path is there: %v", err)
+	}
+	started := gitCounted(t)
+	t.Chdir(root)
+	for _, tmp := range []string{root + "/link/../tmp", "link/../tmp"} {
+		t.Setenv("TMPDIR", tmp)
+		for _, rd := range movedReads(dir, c1, c2) {
+			if err := rd.read(context.Background()); err != nil {
+				t.Errorf("TMPDIR %s, %s: %v", tmp, rd.name, err)
+			}
+			if left := tempLeft(t, filepath.Join(root, "a", "tmp")); len(left) != 0 {
+				t.Errorf("TMPDIR %s, %s left in the temporary directory: %q", tmp, rd.name, left)
+			}
+		}
+	}
+	for _, tmp := range []string{root + "/link/../missing", "link/../missing"} {
+		t.Setenv("TMPDIR", tmp)
+		for _, rd := range movedReads(dir, c1, c2) {
+			started()
+			err := rd.read(context.Background())
+			if !errors.Is(err, ErrNoTemp) || err.Error() != ErrNoTemp.Error() || strings.Contains(err.Error(), "/") {
+				t.Errorf("TMPDIR %s, %s: %v, want %q", tmp, rd.name, err, ErrNoTemp)
+			}
+			if n := started(); n != 0 {
+				t.Errorf("TMPDIR %s, %s: %d git processes started, want none", tmp, rd.name, n)
+			}
+		}
+	}
+}

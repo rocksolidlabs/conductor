@@ -751,6 +751,78 @@ func TestTheSearchForRenamesAsksItsCandidatesFirst(t *testing.T) {
 	}
 }
 
+// The search for renames' candidates are files: a comparison that moves a
+// file (a line changed) and adds or deletes a submodule's entry answers as
+// origin/main's go-git reads answered (taken from that code at 93afee23,
+// the same repositories, Compare and CommitDetail): with the submodule's
+// commit held by the repository, the file listed as moved, with its lines,
+// and the renames not cut; with it not held, renames not looked for, as
+// when go-git's store could not say that id's size. The entry is listed
+// without its lines, and its id, a commit's, is never handed to git: git
+// runs twice for the search and twice for the comparison, or only for the
+// comparison.
+func TestTheSearchForRenamesComparesFilesBesideASubmodule(t *testing.T) {
+	ghost := strings.Repeat("cd", 20)
+	for _, held := range []bool{true, false} {
+		for _, deleted := range []bool{false, true} {
+			dir := scratch(t)
+			write(t, dir, "a.txt", tenLines("three"))
+			first := commit(t, dir, time.Time{}, "first")
+			sub := ghost
+			if held {
+				sub = first
+			}
+			link := func() { gitIn(t, dir, time.Time{}, "update-index", "--add", "--cacheinfo", "160000,"+sub+",sub") }
+			if deleted {
+				link()
+			}
+			base := gitIn(t, dir, time.Time{}, "commit-tree", gitIn(t, dir, time.Time{}, "write-tree"), "-p", first, "-m", "base")
+			gitIn(t, dir, time.Time{}, "read-tree", base)
+			gitIn(t, dir, time.Time{}, "rm", "-q", "--cached", "a.txt")
+			if deleted {
+				gitIn(t, dir, time.Time{}, "rm", "-q", "--cached", "sub")
+			} else {
+				link()
+			}
+			write(t, dir, "b.txt", tenLines("THREE"))
+			gitIn(t, dir, time.Time{}, "add", "b.txt")
+			head := gitIn(t, dir, time.Time{}, "commit-tree", gitIn(t, dir, time.Time{}, "write-tree"), "-p", base, "-m", "head")
+			entry := Change{Path: "sub", Status: "A", Binary: true}
+			if deleted {
+				entry.Status = "D"
+			}
+			want := []Change{{Path: "b.txt", From: "a.txt", Status: "R", Added: 1, Removed: 1}, entry}
+			args := []string{"cat-file --batch-check", "cat-file --batch", "cat-file --batch-check", "cat-file --batch"}
+			if !held {
+				want = []Change{{Path: "a.txt", Status: "D", Removed: 10}, {Path: "b.txt", Status: "A", Added: 10}, entry}
+				args = args[2:]
+			}
+			ctx := context.Background()
+			for name, read := range map[string]func() (Detail, error){
+				"Compare":      func() (Detail, error) { return Compare(ctx, dir, base, head) },
+				"CommitDetail": func() (Detail, error) { return CommitDetail(ctx, dir, head) },
+			} {
+				t.Run(fmt.Sprintf("%s, held %v, deleted %v", name, held, deleted), func(t *testing.T) {
+					runs := watchGit(t, nil)
+					d, err := read()
+					t.Logf("%+v, renames cut %v, %v; git ran %q", d.Changes, d.RenamesCut, err, argsOf(*runs))
+					if err != nil || !slices.Equal(d.Changes, want) || d.RenamesCut != !held {
+						t.Errorf("%+v (renames cut %v) %v, want %+v, renames cut %v", d.Changes, d.RenamesCut, err, want, !held)
+					}
+					if !slices.Equal(argsOf(*runs), args) {
+						t.Errorf("git ran %q, want %q", argsOf(*runs), args)
+					}
+					for _, r := range *runs {
+						if slices.Contains(r.ids, sub) {
+							t.Errorf("git %q was handed %s, a submodule's commit", r.args, sub)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 // The two settings that decide what git holds of one object are the
 // reader's own, whatever the repository's configuration says: in a
 // repository that sets both far above git's defaults, git run as the

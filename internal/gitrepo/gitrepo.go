@@ -589,7 +589,8 @@ func ask(seen *refusal, st storer.EncodedObjectStorer, hs []plumbing.Hash) (map[
 // heldSizes is sizes of hs, -1 for one held says the store does not list
 // (ask), whose id git is never handed; with every, nil, and no git run,
 // when one of hs is not listed. An id ask was not asked about is an
-// error, and no git runs.
+// error, and this call starts no git (the search's own gits may have run
+// before it).
 func heldSizes(ctx context.Context, top string, held map[plumbing.Hash]bool, hs []plumbing.Hash, every bool) ([]int64, error) {
 	out, asked, at := make([]int64, len(hs)), []plumbing.Hash(nil), []int(nil)
 	for i, h := range hs {
@@ -652,18 +653,25 @@ func entryAt(r *git.Repository, tree *object.Tree, path string) (object.TreeEntr
 // runGit is how the package runs git: gitcli's RunTree, in the working
 // tree the read opened (top) with its own .git, the read's context its
 // end, with an empty folder of its own as the folder RunTree has git
-// write objects to (the reader's gits write none), handed on by its
+// write objects to (the reader's gits write none), handed on by an
 // absolute path and removed once git has ended (ErrNoTemp, and no git
-// run, when it cannot be made or RunTree refuses it); a test sets it.
+// run, when it cannot be made or RunTree refuses it); a test sets it. A
+// relative path has the working directory put in front of it, and no
+// path is cleaned: one through a link and ".." names the folder the
+// system made, not the one its letters spell once cleaned.
 var runGit = func(ctx context.Context, top string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 	objects, err := os.MkdirTemp("", "gitrepo-objects-")
 	if err != nil {
 		return ErrNoTemp
 	}
 	defer os.RemoveAll(objects)
-	abs, err := filepath.Abs(objects)
-	if err != nil {
-		return ErrNoTemp
+	abs := objects
+	if !filepath.IsAbs(abs) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return ErrNoTemp
+		}
+		abs = wd + string(filepath.Separator) + abs
 	}
 	if err = gitcli.RunTree(ctx, top, abs, env, in, w, args...); errors.Is(err, gitcli.ErrNoObjects) {
 		return ErrNoTemp
@@ -1002,14 +1010,20 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 	return out, nil
 }
 
-// needed is every id a comparison of plain, sorted by path, may hand git
-// (diffTrees): the search's candidates, and the sides that are files of
-// plain's first MaxFiles files, or, when renames are looked for, of the
-// first MaxFiles it modifies, which the search's answer, sorted by path,
-// keeps in their order.
+// needed is every id a comparison of plain, sorted by path, asks the
+// store about before any git runs (diffTrees): the search's candidates
+// (git is never handed one that is not a file, a submodule's:
+// withRenames), and the sides that are files of plain's first MaxFiles
+// files, or, when renames are looked for, of the first MaxFiles it
+// modifies, which the search's answer, sorted by path, keeps in their
+// order.
 func needed(plain object.Changes) []plumbing.Hash {
 	moved := candidates(plain)
-	hs, n := slices.Clone(moved), 0
+	var hs []plumbing.Hash
+	for _, e := range moved {
+		hs = append(hs, e.Hash)
+	}
+	n := 0
 	for _, ch := range plain {
 		if moved != nil && (ch.From.Name == "" || ch.To.Name == "") {
 			continue
@@ -1026,20 +1040,22 @@ func needed(plain object.Changes) []plumbing.Hash {
 	return hs
 }
 
-// candidates is the ids of the files plain adds and deletes, in its order,
-// when renames are looked for among them (withRenames): plain adds a file
-// and deletes one, at most MaxRenamed of each; nil otherwise.
-func candidates(plain object.Changes) []plumbing.Hash {
-	var moved []plumbing.Hash
+// candidates is the entries plain adds and deletes, in its order, when
+// renames are looked for among them (withRenames): plain adds an entry and
+// deletes one, at most MaxRenamed of each; nil otherwise. An entry that is
+// not a file (a submodule's, whose id names a commit) is no file of the
+// search: the search pairs it by its id alone and reads nothing of it.
+func candidates(plain object.Changes) []object.TreeEntry {
+	var moved []object.TreeEntry
 	added, deleted := 0, 0
 	for _, ch := range plain {
 		switch {
 		case ch.From.Name == "":
 			added++
-			moved = append(moved, ch.To.TreeEntry.Hash)
+			moved = append(moved, ch.To.TreeEntry)
 		case ch.To.Name == "":
 			deleted++
-			moved = append(moved, ch.From.TreeEntry.Hash)
+			moved = append(moved, ch.From.TreeEntry)
 		}
 	}
 	if added == 0 || deleted == 0 || added > MaxRenamed || deleted > MaxRenamed {
@@ -1051,9 +1067,12 @@ func candidates(plain object.Changes) []plumbing.Hash {
 // withRenames is plain, a comparison without renames sorted by path, with
 // its renames found by go-git's own search (detectRenames), whole (no
 // limit of its own) and with the score go-git's defaults use, among its
-// candidates (candidates), those files together at most MaxRenamedBytes
-// as git records their sizes (heldSizes; one the store does not list as
-// held says, or whose size cannot be had: not looked for). The search
+// candidates (candidates), the files of them together at most
+// MaxRenamedBytes as git records their sizes (heldSizes; one the store
+// does not list as held says, or whose size cannot be had: not looked
+// for). A candidate that is not a file (a submodule's) is never handed to
+// git and counts nothing toward MaxRenamedBytes, and renames are not
+// looked for when the store does not list its id (held). The search
 // reads those files from memory, read by git (blobs, fromMemory), and its
 // answer's changes are used by their names, modes and ids. looked says
 // the search ran; dropped that its answer was not taken, because it
@@ -1065,16 +1084,24 @@ func withRenames(ctx context.Context, top string, held map[plumbing.Hash]bool, p
 	if moved == nil {
 		return plain, false, false, nil
 	}
-	size, err := heldSizes(ctx, top, held, moved, true)
+	var files []plumbing.Hash
+	for _, e := range moved {
+		if e.Mode.IsFile() {
+			files = append(files, e.Hash)
+		} else if !held[e.Hash] {
+			return plain, false, false, nil
+		}
+	}
+	size, err := heldSizes(ctx, top, held, files, true)
 	if err != nil || size == nil {
 		return plain, false, false, err
 	}
-	want, total := make([]blob, len(moved)), int64(0)
+	want, total := make([]blob, len(files)), int64(0)
 	for i, n := range size {
 		if total += n; n < 0 || total > MaxRenamedBytes {
 			return plain, false, false, nil
 		}
-		want[i] = blob{moved[i], n, n}
+		want[i] = blob{files[i], n, n}
 	}
 	mem := inMemory{&memory.NewStorage().ObjectStorage, ctx}
 	err = blobs(ctx, top, want, func(_ int, b []byte) error {
