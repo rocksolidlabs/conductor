@@ -158,6 +158,9 @@ type Store struct {
 	// first is done: a test holds two writes there, so the lock alone
 	// orders them.
 	beforeLock func()
+	// clock, when set (SetClockForTest), is the clock an operation's
+	// transaction reads in place of time.Now, read under mu.
+	clock func() time.Time
 
 	// The attachments' files (attachments.go, sweep.go). syncDir makes a
 	// directory's entries durable (syncDirectory; on Windows the move is
