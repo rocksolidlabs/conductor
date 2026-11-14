@@ -140,7 +140,7 @@ func Lines(text string) []string {
 // breaks reports whether a reader may take r as a line's end.
 func breaks(r rune) bool {
 	switch r {
-	case '\r', '\v', '\f', '\u0085', ' ', ' ':
+	case '\r', '\v', '\f', 0x85, 0x2028, 0x2029:
 		return true
 	}
 	return false
@@ -150,7 +150,7 @@ func breaks(r rune) bool {
 // Arabic letter mark, the left-to-right and right-to-left marks, the
 // embeddings, overrides and their pop, the isolates and their pop.
 func reorders(r rune) bool {
-	return r == '؜' || r == '‎' || r == '‏' || (r >= '‪' && r <= '‮') || (r >= '⁦' && r <= '⁩')
+	return r == 0x061c || r == 0x200e || r == 0x200f || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // written is the source's author and system in words.

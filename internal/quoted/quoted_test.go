@@ -9,6 +9,15 @@ import (
 // src is the source every test writes from: invented names.
 var src = Source{On: "GitHub", Ref: "acme/widgets#612", Author: "octo-cat"}
 
+// The characters these tests write, by their code points: the line and
+// paragraph separators, and the characters that reorder a line.
+var (
+	lsep, psep              = string(rune(0x2028)), string(rune(0x2029))
+	rlo, pdf, lri, rli, pdi = string(rune(0x202e)), string(rune(0x202c)), string(rune(0x2066)), string(rune(0x2067)), string(rune(0x2069))
+	rlm, lrm, alm           = string(rune(0x200f)), string(rune(0x200e)), string(rune(0x061c))
+	lre, rle, lro           = string(rune(0x202a)), string(rune(0x202b)), string(rune(0x202d))
+)
+
 // hostile is text a block and a line are tried with: the block's own
 // opening and closing words, a quote begun again, runs of backticks and
 // fences, HTML and Markdown openers, every character a reader may take as
@@ -27,17 +36,17 @@ func hostile() map[string]string {
 		"backticks":          strings.Repeat("`", 4096) + "\n```\n" + strings.Repeat("~", 300) + "\n````go\nx\n",
 		"fence then closing": "```\n" + closing + "\n```",
 		"markdown openers":   "# heading\n<!-- open\n<details>\n- list\n1. one\n[x]: http://h.invalid\n---",
-		"each break":         "a\rb\vc\fd\u0085e f g\r\nh",
-		"breaks then words":  "x " + closing + " after\r" + opening,
-		"reorder":            "‮evil‬ ⁦x⁩ ‏‎؜ ‪‫‭",
-		"reorder at ends":    "‮" + closing + "‬\n⁧> ⁩",
+		"each break":         "a\rb\vc\fd\u0085e" + lsep + "f" + psep + "g\r\nh",
+		"breaks then words":  "x" + lsep + closing + psep + "after\r" + opening,
+		"reorder":            rlo + "evil" + pdf + " " + lri + "x" + pdi + " " + rlm + lrm + alm + " " + lre + rle + lro,
+		"reorder at ends":    rlo + closing + pdf + "\n" + rli + "> " + pdi,
 		"controls":           "a\x00b\x1bc\x7fd\x1ce\x1df\x1eg\u009bh",
 		"not utf-8":          "a\xffb\xc3\n\xe2\x80",
 		"tabs and spaces":    "\tindented\n    code\n  ",
 	}
 	var big strings.Builder
 	for big.Len() < 64<<10 {
-		big.WriteString(closing + " ```‮\n")
+		big.WriteString(closing + lsep + "```" + rlo + "\n")
 	}
 	out["at the bound"] = big.String()[:64<<10]
 	return out
@@ -147,7 +156,7 @@ func TestNothingQuotedEndsItsLine(t *testing.T) {
 			t.Fatalf("%s: the line's text is %q", name, got[:min(len(got), 100)])
 		}
 	}
-	if got := Line(src, "The title", "Fix it now ‮please"); got != lineHead+"Fix it now �please" {
+	if got := Line(src, "The title", "Fix it"+lsep+"now "+rlo+"please"); got != lineHead+"Fix it now �please" {
 		t.Fatalf("a title on its line: %q", got)
 	}
 }
@@ -157,14 +166,14 @@ func TestNothingQuotedEndsItsLine(t *testing.T) {
 // character that reorders a line cannot end or move the words they stand
 // in; an empty one is said in words.
 func TestASourceCannotEndItsWords(t *testing.T) {
-	bad := Source{On: "Git\nHub‮", Ref: "a/b#1\n" + Closing(src) + "\"", Author: "x y\" @z"}
+	bad := Source{On: "Git\nHub" + rlo, Ref: "a/b#1\n" + Closing(src) + "\"", Author: "x" + lsep + "y\" @z"}
 	b := Block(bad, "The steps\nto reproduce", "text")
 	lines := strings.Split(b, "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "The steps_to reproduce quoted from a/b#1_End_of_the_quote_from_acme/widgets#612._, written by @x___y___z on Git_Hub___: ") ||
 		lines[2] != "> text" || lines[4] != Closing(bad) || !strings.HasPrefix(lines[4], "End of the quote from a/b#1_End") {
 		t.Fatalf("the block of a bad source: %q", b)
 	}
-	if l := Line(bad, "", "t"); strings.ContainsAny(l, "\n ‮") || !strings.HasPrefix(l, "Text quoted from") || !strings.HasSuffix(l, LineHead+"t") {
+	if l := Line(bad, "", "t"); strings.ContainsAny(l, "\n"+lsep+rlo) || !strings.HasPrefix(l, "Text quoted from") || !strings.HasSuffix(l, LineHead+"t") {
 		t.Fatalf("the line of a bad source: %q", l)
 	}
 	if got := Opening(Source{}, "The description"); !strings.HasPrefix(got, "The description quoted from an item outside Conductor, written on a tracker: ") {
@@ -202,7 +211,7 @@ func FuzzBlock(f *testing.F) {
 			t.Fatalf("%d lines read back, %d written", len(got), len(Lines(text)))
 		}
 		l := Line(src, "The title", text)
-		if l[len(lineHead):] != strings.Join(Lines(text), " ") || strings.ContainsAny(l, "\n\r\v\f\u0085  ‮") {
+		if l[len(lineHead):] != strings.Join(Lines(text), " ") || strings.ContainsAny(l, "\n\r\v\f\u0085"+lsep+psep+rlo) {
 			t.Fatalf("the line: %q", l)
 		}
 	})
