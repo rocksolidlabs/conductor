@@ -6,9 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,6 +32,13 @@ const hangWait = time.Minute
 // words that name what was read (what), back by then or not.
 func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) error {
 	t.Helper()
+	return withinFor(t, hangWait, pipe, what, f)
+}
+
+// withinFor is within with wait in hangWait's place before f's context is
+// cancelled.
+func withinFor(t *testing.T, wait time.Duration, pipe, what string, f func(ctx context.Context) error) error {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -36,7 +46,7 @@ func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) 
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(hangWait):
+	case <-time.After(wait):
 	}
 	cancel()
 	letGo := time.After(hangWait)
@@ -46,9 +56,9 @@ func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) 
 		}
 		select {
 		case err := <-done:
-			t.Fatalf("%s: not back after %v; back once let go, with %v", what, hangWait, err)
+			t.Fatalf("%s: not back after %v; back once let go, with %v", what, wait, err)
 		case <-letGo:
-			t.Fatalf("%s: not back after %v, nor %v after it was let go", what, hangWait, hangWait)
+			t.Fatalf("%s: not back after %v, nor %v after it was let go", what, wait, hangWait)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -136,8 +146,8 @@ var readers = []struct {
 // regular file past its bound: each of the package's four reads that opens
 // it returns at once with the package's refusal. Compare and FileAt read
 // commits by id and open no ref through the package, so packed-refs is
-// Commits' and CommitDetail's here (FileAt's git binary opens it itself:
-// TestFileAtsGitIsEndedAtItsCap).
+// Commits' and CommitDetail's here (nor does the git binary that reads
+// their files: TestGitReadsAnObjectByItsIDWithoutOpeningARef).
 func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.T) {
 	limits := map[string]int64{".git": maxSmall, "commondir": maxSmall, "HEAD": maxSmall, "config": maxConfig, "packed-refs": maxPackedRefs}
 	kinds := []struct {
@@ -201,14 +211,16 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 	}
 }
 
-// FileAt's git binary opens the repository's files itself and is ended at
-// its cap whatever context FileAt is given: with packed-refs a named pipe
-// with no writer (git opens it to see whether the id is also a ref's
-// name), FileAt returns the cap's error and no git is left holding the
-// pipe; Commits and CommitDetail refuse the pipe at once, and Compare,
-// which opens no ref, reads. A repository as git wrote it is read with
-// the product's cap.
-func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
+// The git binary that reads FileAt's and a comparison's files opens the
+// repository's files itself, and its batch reads look an object up by its
+// id alone, never as a ref's name: with packed-refs a named pipe with no
+// writer, FileAt and Compare read and no git is left holding the pipe;
+// Commits and CommitDetail refuse the pipe at once. The reads run under
+// the product's caps (maxGitRead, maxCompareRead), and each is waited for
+// as long as both together, the test's timeout above that: a git that
+// waited in its open would be ended at its cap and the read answer the
+// cap's error. A repository as git wrote it is read too.
+func TestGitReadsAnObjectByItsIDWithoutOpeningARef(t *testing.T) {
 	r := linked(t)
 	pipe := r.files["packed-refs"]
 	if err := os.Remove(pipe); err != nil {
@@ -217,28 +229,25 @@ func TestFileAtsGitIsEndedAtItsCap(t *testing.T) {
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	gitCap = time.Second
-	defer func() { gitCap = maxGitRead }()
-	want := map[string]error{"FileAt": ErrGitCap, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
+	want := map[string]error{"FileAt": nil, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
 	for _, rd := range readers {
-		err := within(t, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
+		err := withinFor(t, maxGitRead+maxCompareRead, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
 		if !errors.Is(err, want[rd.name]) || (err == nil) != (want[rd.name] == nil) {
 			t.Errorf("%s: %v, want %v", rd.name, err, want[rd.name])
 		}
-		if rd.name != "FileAt" {
+		if rd.name != "FileAt" && rd.name != "Compare" {
 			continue
 		}
-		// FileAt returns once gitcli has waited for its git: a process
+		// The read returns once gitcli has waited for its git: a process
 		// with the pipe open for reading, or waiting in its open, would
 		// let a writer open it.
 		if fd, err := syscall.Open(pipe, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			syscall.Close(fd)
-			t.Errorf("a process still has packed-refs open for reading after FileAt returned")
+			t.Errorf("a process still has packed-refs open for reading after %s returned", rd.name)
 		} else if err != syscall.ENXIO {
 			t.Errorf("open packed-refs for writing: %v, want ENXIO (no reader)", err)
 		}
 	}
-	gitCap = maxGitRead
 	ordinary := linked(t)
 	if err := readers[len(readers)-1].read(context.Background(), ordinary); err != nil {
 		t.Errorf("FileAt with the product's cap: %v", err)
@@ -521,12 +530,113 @@ func TestFileAtAnswersItsCapOrTheCallersOwnError(t *testing.T) {
 				_, err := FileAt(ctx, r.wt, r.c2, "a.txt", 100)
 				return err
 			})
-			if c.want == ErrGitCap && err != nil && err.Error() != "the git binary reading the file was ended at its cap of 1s" {
+			if c.want == ErrGitCap && err != nil && err.Error() != "the git binary of the read was ended at its cap of 1s" {
 				t.Errorf("FileAt: %q, want the cap's words with the shortened cap", err)
 			}
 			if !errors.Is(err, c.want) || (c.want != ErrGitCap && errors.Is(err, ErrGitCap)) || !made || openings != 1 {
 				t.Errorf("FileAt: %v after %d openings (config made a pipe: %v), want %v after one", err, openings, made, c.want)
 			}
+			noReader(t, config, "FileAt")
+		})
+	}
+}
+
+// noReader fails the test when a process has the named pipe at path open
+// for reading, or waits in its open of it: a non-blocking open of it for
+// writing succeeds only then. what is the read that has returned.
+func noReader(t *testing.T, path, what string) {
+	t.Helper()
+	if fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		syscall.Close(fd)
+		t.Errorf("a process still has %s open for reading after %s returned", filepath.Base(path), what)
+	} else if err != syscall.ENXIO {
+		t.Errorf("open %s for writing: %v, want ENXIO (no reader)", filepath.Base(path), err)
+	}
+}
+
+// A comparison's git runs end at the comparison's cap (compareCap), which
+// takes the caller's context's place in none of its errors: with a named
+// pipe the repository's configuration includes (include.path, which only
+// git reads), the first git a comparison starts waits in its open of the
+// pipe. The cap shortened, Compare and CommitDetail answer the cap's
+// error; the cap far above the test's waits and the caller's context
+// ended once git has the pipe open (writeEnd), they answer the caller's
+// own error. After each returns no process has the pipe open.
+func TestAComparisonAnswersItsCapOrTheCallersOwnError(t *testing.T) {
+	r := ordinary(t)
+	pipe := fifo(t, filepath.Join(t.TempDir(), "included"))
+	config, err := os.OpenFile(filepath.Join(r.wt, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(config, "[include]\n\tpath = %s\n", pipe); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reads := map[string]func(ctx context.Context) error{
+		"Compare": func(ctx context.Context) error {
+			_, err := Compare(ctx, r.wt, r.c1, r.c2)
+			return err
+		},
+		"CommitDetail": func(ctx context.Context) error {
+			_, err := CommitDetail(ctx, r.wt, r.c2)
+			return err
+		},
+	}
+	for name, read := range reads {
+		t.Run(name+", the cap ends git", func(t *testing.T) {
+			compareCap = time.Second
+			defer func() { compareCap = maxCompareRead }()
+			err := within(t, pipe, "a pipe the configuration includes, "+name, read)
+			if !errors.Is(err, ErrGitCap) || err.Error() != "the git binary of the read was ended at its cap of 1s" {
+				t.Errorf("%s: %v, want the cap's error with the shortened cap", name, err)
+			}
+			noReader(t, pipe, name)
+		})
+		t.Run(name+", the caller's context ends first", func(t *testing.T) {
+			compareCap = 10 * hangWait
+			back := make(chan struct{})
+			defer func() {
+				select {
+				case <-back:
+					compareCap = maxCompareRead
+				case <-time.After(hangWait):
+					t.Errorf("%s is still not back %v after the helper let it go; the cap is left as the call reads it", name, hangWait)
+				}
+			}()
+			held := false
+			err := within(t, pipe, "a pipe the configuration includes, git has it open, "+name, func(helper context.Context) error {
+				defer close(back)
+				ctx, cancel := context.WithCancel(helper)
+				defer cancel()
+				returned, polled, made := make(chan struct{}), make(chan bool, 1), make(chan struct{})
+				close(made)
+				go func() {
+					fd := writeEnd(ctx, pipe, made)
+					if fd < 0 {
+						polled <- false
+						return
+					}
+					cancel()
+					select {
+					case <-returned:
+					case <-helper.Done():
+					}
+					syscall.Close(fd)
+					polled <- true
+				}()
+				err := read(ctx)
+				close(returned)
+				cancel()
+				held = <-polled
+				return err
+			})
+			if !held || !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap) {
+				t.Errorf("%s: %v (git had the pipe open: %v), want the caller's own error (%v)", name, err, held, context.Canceled)
+			}
+			noReader(t, pipe, name)
 		})
 	}
 }
@@ -1154,7 +1264,8 @@ func TestFileAtAnswersTheCallersOwnErrorWhileGitRuns(t *testing.T) {
 // a revision's name that names nothing (which go-git goes on trying); in
 // Commits at the second commit of its walk to the merge base with main
 // (which takes no context: it would read the third); in Compare at the
-// second file of the comparison.
+// second commit's tree, the last object go-git reads of it (the git binary
+// reads its files: TestAComparisonEndsWithItsContextWhileGitIsHeld).
 func TestAReadEndsWithItsContext(t *testing.T) {
 	r := ordinary(t)
 	gitIn(t, r.wt, time.Time{}, "pack-refs", "--all")
@@ -1180,7 +1291,7 @@ func TestAReadEndsWithItsContext(t *testing.T) {
 			_, err := Commits(ctx, r.wt, "main", time.Time{})
 			return err
 		}},
-		{"Compare", object(c3 + ":f1.txt"), func(ctx context.Context) error {
+		{"Compare", object(c3 + "^{tree}"), func(ctx context.Context) error {
 			_, err := Compare(ctx, r.wt, r.c2, c3)
 			return err
 		}},
@@ -1206,6 +1317,79 @@ func TestAReadEndsWithItsContext(t *testing.T) {
 		}
 		if left := leftBehind(); len(left) > 0 {
 			t.Errorf("%s left %d goroutines behind:\n%s", c.name, len(left), strings.Join(left, "\n\n"))
+		}
+	}
+}
+
+// heldInput is git's input held at the seam: its first read closes held,
+// and every read waits for the run's context to end and answers its error.
+type heldInput struct {
+	ctx  context.Context
+	held chan struct{}
+	once sync.Once
+}
+
+func (h *heldInput) Read([]byte) (int, error) {
+	h.once.Do(func() { close(h.held) })
+	<-h.ctx.Done()
+	return 0, h.ctx.Err()
+}
+
+// A comparison whose context ends while its git is held, started and
+// waiting on its input (held at the seam, runGit), answers the context's
+// error once gitcli has ended and waited for that git (the run is back
+// before the read), starts no diff and leaves no goroutine behind (none
+// waits on a process or on git's input): in Compare and in CommitDetail,
+// git held as it reads the files' sizes and as it reads their contents.
+func TestAComparisonEndsWithItsContextWhileGitIsHeld(t *testing.T) {
+	dir, c1, c2 := changedFiles(t, 3)
+	for _, at := range []string{"--batch-check", "--batch"} {
+		for name, read := range map[string]func(ctx context.Context) error{
+			"Compare": func(ctx context.Context) error {
+				_, err := Compare(ctx, dir, c1, c2)
+				return err
+			},
+			"CommitDetail": func(ctx context.Context) error {
+				_, err := CommitDetail(ctx, dir, c2)
+				return err
+			},
+		} {
+			t.Run(name+", git "+at+" held", func(t *testing.T) {
+				held := make(chan struct{})
+				runs := watchGit(t, func(ctx context.Context, args []string, in io.Reader) io.Reader {
+					if args[len(args)-1] != at {
+						return in
+					}
+					return &heldInput{ctx: ctx, held: held}
+				})
+				diffs := fakeClock(t, func(int) time.Duration { return 0 }, nil)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- read(ctx) }()
+				select {
+				case <-held:
+				case err := <-done:
+					t.Fatalf("back before git was held: %v (git ran %q)", err, argsOf(*runs))
+				}
+				cancel()
+				err := <-done
+				last := (*runs)[len(*runs)-1]
+				if !errors.Is(err, context.Canceled) || last.args[len(last.args)-1] != at || !last.returned || last.err == nil || *diffs != 0 {
+					t.Errorf("%v, git ran %q, the held run back %v with %v, %d diffs started; want the context's error, the held run back with an error, no diff", err, argsOf(*runs), last.returned, last.err, *diffs)
+				}
+				// The run's own goroutines (os/exec's) may still be on
+				// their way out of their last send once Wait has
+				// returned: none may stay.
+				left := leftBehind()
+				for give := time.After(hangWait); len(left) > 0; left = leftBehind() {
+					select {
+					case <-give:
+						t.Fatalf("%d goroutines left behind %v after the read returned:\n%s", len(left), hangWait, strings.Join(left, "\n\n"))
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			})
 		}
 	}
 }
@@ -1352,5 +1536,249 @@ func TestTheDiscoveryLooksThroughAFolderItMayEnterButNotList(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s beneath a folder of mode 0311: %v, want it read", rd.name, err)
 		}
+	}
+}
+
+// movedAndChanged is a repository whose second commit moves a.txt to b.txt
+// with a line changed and changes m.txt's line: a comparison of its two
+// commits looks for renames, so it runs git four times (the search's sizes
+// and contents, then the comparison's).
+func movedAndChanged(t *testing.T) (dir, c1, c2 string) {
+	t.Helper()
+	dir = scratch(t)
+	write(t, dir, "a.txt", tenLines("three"))
+	write(t, dir, "m.txt", "one\n")
+	c1 = commit(t, dir, time.Time{}, "one")
+	gitIn(t, dir, time.Time{}, "rm", "-q", "a.txt")
+	write(t, dir, "b.txt", tenLines("THREE"))
+	write(t, dir, "m.txt", "two\n")
+	return dir, c1, commit(t, dir, time.Time{}, "two")
+}
+
+// tempLeft is the names of what is in the folder tmp.
+func tempLeft(t *testing.T, tmp string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// movedReads are Compare and CommitDetail of movedAndChanged's commits, with
+// the files they list, and FileAt of m.txt at the second commit, with the
+// number of gits each runs.
+func movedReads(dir, c1, c2 string) []struct {
+	name string
+	runs int
+	read func(ctx context.Context) error
+} {
+	want := []Change{{Path: "b.txt", From: "a.txt", Status: "R", Added: 1, Removed: 1}, {Path: "m.txt", Status: "M", Added: 1, Removed: 1}}
+	detail := func(d Detail, err error) error {
+		if err == nil && (!slices.Equal(d.Changes, want) || d.RenamesCut) {
+			return fmt.Errorf("%+v, renames cut %v; want %+v", d.Changes, d.RenamesCut, want)
+		}
+		return err
+	}
+	return []struct {
+		name string
+		runs int
+		read func(ctx context.Context) error
+	}{
+		{"Compare", 4, func(ctx context.Context) error { return detail(Compare(ctx, dir, c1, c2)) }},
+		{"CommitDetail", 4, func(ctx context.Context) error { return detail(CommitDetail(ctx, dir, c2)) }},
+		{"FileAt", 2, func(ctx context.Context) error {
+			f, err := FileAt(ctx, dir, c2, "m.txt", 100)
+			if err == nil && string(f.Content) != "two\n" {
+				return fmt.Errorf("%q, want %q", f.Content, "two\n")
+			}
+			return err
+		}},
+	}
+}
+
+// Every git a read runs ends at the read's cap, and with the caller's
+// context: in a comparison that looks for renames, the search's sizes and
+// contents and the comparison's (Compare, CommitDetail), and FileAt's
+// sizes and content, the k-th git held at the seam on its input (runGit)
+// for each k. The cap ended then (capping), the read answers the cap's
+// error; the caller's context ended then, the caller's own error. Either
+// way every git the read ran is back (gitcli has waited for its process),
+// no goroutine waits on a process, and no folder is left in the
+// temporary directory.
+func TestEveryGitOfAReadEndsAtItsCapOrWithItsCallersContext(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	for _, rd := range movedReads(dir, c1, c2) {
+		for k := 1; k <= rd.runs; k++ {
+			for _, byCap := range []bool{true, false} {
+				ender := map[bool]string{true: "the cap", false: "the caller's context"}[byCap]
+				t.Run(fmt.Sprintf("%s, git %d of %d held, %s ends it", rd.name, k, rd.runs, ender), func(t *testing.T) {
+					tmp := t.TempDir()
+					t.Setenv("TMPDIR", tmp)
+					// The caps far above the test's waits: the cap is
+					// ended through capping, which the read hands its
+					// cap's end as it takes the cap.
+					caps := make(chan func(), 1)
+					gitCap, compareCap, capping = 10*hangWait, 10*hangWait, func(end func()) { caps <- end }
+					t.Cleanup(func() { gitCap, compareCap, capping = maxGitRead, maxCompareRead, nil })
+					held, calls := make(chan struct{}), 0
+					runs := watchGit(t, func(ctx context.Context, _ []string, in io.Reader) io.Reader {
+						if calls++; calls != k {
+							return in
+						}
+						return &heldInput{ctx: ctx, held: held}
+					})
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					done := make(chan error, 1)
+					go func() { done <- rd.read(ctx) }()
+					select {
+					case <-held:
+					case err := <-done:
+						t.Fatalf("back before git %d was held: %v (git ran %q)", k, err, argsOf(*runs))
+					}
+					select {
+					case end := <-caps:
+						if byCap {
+							end()
+						} else {
+							cancel()
+						}
+					default:
+						cancel()
+						t.Fatalf("git %d was held before the read took its cap (back with %v once the caller's context ended)", k, <-done)
+					}
+					var err error
+					select {
+					case err = <-done:
+					case <-time.After(hangWait):
+						cancel()
+						t.Fatalf("not back %v after %s ended git %d; back once the caller's context ended, with %v", hangWait, ender, k, <-done)
+					}
+					if byCap && (!errors.Is(err, ErrGitCap) || err.Error() != fmt.Sprintf("%v of %v", ErrGitCap, 10*hangWait)) {
+						t.Errorf("%v, want the cap's error", err)
+					}
+					if !byCap && (!errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap)) {
+						t.Errorf("%v, want the caller's own error (%v)", err, context.Canceled)
+					}
+					if len(*runs) != k {
+						t.Errorf("git ran %q, want %d runs, the last held", argsOf(*runs), k)
+					}
+					for i, r := range *runs {
+						if !r.returned || (i == k-1 && r.err == nil) {
+							t.Errorf("git %q (run %d) back %v with %v; want every run back, the held one with an error", r.args, i+1, r.returned, r.err)
+						}
+					}
+					left := leftBehind()
+					for give := time.After(hangWait); len(left) > 0; left = leftBehind() {
+						select {
+						case <-give:
+							t.Fatalf("%d goroutines left behind %v after the read returned:\n%s", len(left), hangWait, strings.Join(left, "\n\n"))
+						case <-time.After(10 * time.Millisecond):
+						}
+					}
+					if left := tempLeft(t, tmp); len(left) != 0 {
+						t.Errorf("left in the temporary directory: %q", left)
+					}
+				})
+			}
+		}
+	}
+}
+
+// gitCounted puts a git first on PATH that notes each start of it in a
+// file of its own and runs the real git: started is the number of git
+// processes started since its last call.
+func gitCounted(t *testing.T) (started func() int) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	notes := filepath.Join(bin, "started")
+	script := "#!/bin/sh\necho started >> '" + notes + "'\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		b, err := os.ReadFile(notes)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		os.Remove(notes)
+		return strings.Count(string(b), "\n")
+	}
+}
+
+// A read starts the processes the reader's description states, and leaves
+// no folder: gitcli runs its look for the object store and at the
+// configuration before each git, three processes a git, so a comparison
+// with no look for renames starts six, one that looks for renames twelve,
+// and FileAt six; each run's folder of objects is removed once its git has
+// ended.
+func TestAReadStartsThreeProcessesAGitAndLeavesNoFolder(t *testing.T) {
+	plain, p1, p2 := changedFiles(t, 3)
+	dir, c1, c2 := movedAndChanged(t)
+	started := gitCounted(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	ctx := context.Background()
+	type read struct {
+		name string
+		want int
+		read func(ctx context.Context) error
+	}
+	reads := []read{
+		{"Compare, no look for renames", 6, func(ctx context.Context) error { _, err := Compare(ctx, plain, p1, p2); return err }},
+		{"CommitDetail, no look for renames", 6, func(ctx context.Context) error { _, err := CommitDetail(ctx, plain, p2); return err }},
+	}
+	for _, rd := range movedReads(dir, c1, c2) {
+		reads = append(reads, read{rd.name, 3 * rd.runs, rd.read})
+	}
+	for _, rd := range reads {
+		started()
+		err := rd.read(ctx)
+		if n := started(); err != nil || n != rd.want {
+			t.Errorf("%s: %v, %d git processes started; want %d", rd.name, err, n, rd.want)
+		}
+		if left := tempLeft(t, tmp); len(left) != 0 {
+			t.Errorf("%s left in the temporary directory: %q", rd.name, left)
+		}
+	}
+}
+
+// A read whose git's temporary folder cannot be made (TMPDIR names a file)
+// starts no git and answers ErrNoTemp, in its fixed words, which name no
+// path: Compare, CommitDetail and FileAt. Nothing is made beside the file.
+func TestAReadAnswersInFixedWordsWhenItsFolderCannotBeMade(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	parent := t.TempDir()
+	file := filepath.Join(parent, "a file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", file)
+	started := gitCounted(t)
+	for _, rd := range movedReads(dir, c1, c2) {
+		started()
+		err := rd.read(context.Background())
+		if !errors.Is(err, ErrNoTemp) || err.Error() != ErrNoTemp.Error() || strings.Contains(err.Error(), "/") {
+			t.Errorf("%s: %v, want %q", rd.name, err, ErrNoTemp)
+		}
+		if n := started(); n != 0 {
+			t.Errorf("%s: %d git processes started, want none", rd.name, n)
+		}
+	}
+	if left := tempLeft(t, parent); !slices.Equal(left, []string{"a file"}) {
+		t.Errorf("beside the file: %q, want nothing", left)
 	}
 }

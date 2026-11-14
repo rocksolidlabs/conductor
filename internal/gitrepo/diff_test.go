@@ -205,6 +205,21 @@ func pairs(commits []string) [][2]string {
 	return out
 }
 
+// onTrees is listed, withRenames' answer, each side's entry taken from
+// plain by its path, so that go-git's patch reads it from the repository
+// (withRenames' search reads its files from memory).
+func onTrees(plain, listed object.Changes) object.Changes {
+	from, to := map[string]object.ChangeEntry{}, map[string]object.ChangeEntry{}
+	for _, ch := range plain {
+		from[ch.From.Name], to[ch.To.Name] = ch.From, ch.To
+	}
+	out := make(object.Changes, len(listed))
+	for i, ch := range listed {
+		out[i] = &object.Change{From: from[ch.From.Name], To: to[ch.To.Name]}
+	}
+	return out
+}
+
 // patchDetail is the files of changes as diffTrees lists them, counted by
 // go-git's patch (patchCounts): what Compare and CommitDetail answer.
 func patchDetail(t *testing.T, changes object.Changes) Detail {
@@ -239,9 +254,33 @@ func patchDetail(t *testing.T, changes object.Changes) Detail {
 	return out
 }
 
-// Every file of every comparison of the fixtures gets the same lines and
-// the same binary flag from lineDiff as from go-git's patch
-// (Change.PatchContext), and Compare and CommitDetail answer the files,
+// readThrough is the bytes of each blob of hs, read as a comparison reads
+// them (sizes, then blobs), in the repository whose top is dir.
+func readThrough(t *testing.T, dir string, hs []plumbing.Hash) map[plumbing.Hash][]byte {
+	t.Helper()
+	ctx := context.Background()
+	size, err := sizes(ctx, dir, hs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]blob, len(hs))
+	for i, h := range hs {
+		if size[i] < 0 {
+			t.Fatalf("git cannot say the size of %s", h)
+		}
+		want[i] = blob{h, size[i], size[i]}
+	}
+	out := map[plumbing.Hash][]byte{}
+	if err := blobs(ctx, dir, want, func(i int, b []byte) error { out[hs[i]] = b; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Every file of every comparison of the fixtures, its sides read through
+// the package's reader, gets the same lines and the same binary flag from
+// lineDiff as from go-git's patch (Change.PatchContext), and Compare and
+// CommitDetail answer the files,
 // flags and lines go-git's patch and its rename defaults give. The clock
 // stands still (stillClock): no file is out of time.
 func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
@@ -273,19 +312,38 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		within := func(f *object.File) bool { return f == nil || f.Size <= MaxDiffed }
+		var hs []plumbing.Hash
 		for _, ch := range changes {
 			from, to, err := ch.Files()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (from != nil && from.Size > MaxDiffed) || (to != nil && to.Size > MaxDiffed) {
+			for _, f := range []*object.File{from, to} {
+				if f != nil && within(from) && within(to) {
+					hs = append(hs, f.Hash)
+				}
+			}
+		}
+		// Each side read through the package's reader, all of a
+		// comparison's in one git.
+		read := readThrough(t, dir, hs)
+		side := func(f *object.File) []byte {
+			if f == nil {
+				return nil
+			}
+			return read[f.Hash]
+		}
+		for _, ch := range changes {
+			from, to, _ := ch.Files()
+			if !within(from) || !within(to) {
 				continue
 			}
 			wa, wr, wb, werr := patchCounts(ch)
 			left := MaxCompareDiff
-			ga, gr, gb, gerr := lineDiff(from, to, &left)
-			if ga != wa || gr != wr || gb != wb || (gerr == nil) != (werr == nil) {
-				t.Errorf("%s..%s %s: +%d -%d binary %v (%v); go-git's patch: +%d -%d binary %v (%v)", short(p[0]), short(p[1]), ch, ga, gr, gb, gerr, wa, wr, wb, werr)
+			ga, gr, gb := lineDiff(side(from), side(to), &left)
+			if ga != wa || gr != wr || gb != wb || werr != nil {
+				t.Errorf("%s..%s %s: +%d -%d binary %v; go-git's patch: +%d -%d binary %v (%v)", short(p[0]), short(p[1]), ch, ga, gr, gb, wa, wr, wb, werr)
 			}
 			files++
 		}
@@ -295,8 +353,11 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, looked, dropped := withRenames(r.Storer, plain)
-		want := patchDetail(t, listed)
+		listed, looked, dropped, err := withRenames(ctx, &refusal{}, r.Storer, dir, plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := patchDetail(t, onTrees(plain, listed))
 		want.RenamesCut = renamesCut(plain, listed, looked, dropped)
 		if all := patchDetail(t, changes); !want.RenamesCut && !slices.Equal(all.Changes, want.Changes) {
 			t.Errorf("%s..%s: renames not cut, %+v; go-git's defaults list %+v", short(p[0]), short(p[1]), want.Changes, all.Changes)

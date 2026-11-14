@@ -464,6 +464,7 @@ type refusal struct {
 	err   error
 	roots []*os.Root
 	ctx   context.Context // the read's; nil for an opening of a test's, which never ends
+	again bool            // the read's second opening (read): an object its store does not list is not there (holds)
 }
 
 // ended is the read's context's error once the context has ended, noted as
