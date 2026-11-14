@@ -30,22 +30,24 @@ import (
 // that the result is that commit and the run neither continued nor
 // stopping, and leases the tree's ports before the checkout is added or
 // any step runs; the checkout is made under a bound of its own, which no
-// end cuts, in folders the server opened once and holds (previewFolder),
-// and no step starts in a folder its path no longer names (tree.moved);
-// each step is a receipt before its process starts; ready is committed to
-// the row of its seq (preview.ready) before the preview is offered, its
-// URL shown from that commit on. An end is of two kinds. One a person can
-// ask again (a Close, the idle end) commits its first transaction (the URL
-// cleared, the preview ending and its tree's end counted: beginEnd) before
-// any of it is signalled, and a refused one leaves the preview as it was.
-// Every other (an open that failed, a service lost, the run's stop, the
-// server's drain) happens whatever the ledger answers (endNow): the
-// preview ended in memory at once, its teardown begun, its first write
-// tried once, its last, refused, owed and tried again until it is written
-// (finishPreview). The ports are let go once the end's last transaction
-// (preview.ended) is committed. The run is held against eviction
-// (r.previews) from the reservation until the preview's row is ended, so
-// nothing but the preview's own end stops its services.
+// end cuts, and made, judged and used as the checks' checkout is, by its
+// path (makePreviewCheckout); each step is a receipt before its process
+// starts; ready is committed to the row of its seq (preview.ready) before
+// the preview is offered, its URL shown from that commit on. A Close while
+// the open is under way is answered busy (ErrPreviewOpening). An end is of
+// two kinds. One a person can ask again (a Close, the idle end) commits
+// its first transaction (the URL cleared, the preview ending and its
+// tree's end counted: beginEnd) before any of it is signalled, and a
+// refused one leaves the preview as it was. Every other (an open that
+// failed, a service lost, the run's stop, the server's drain) happens
+// whatever the ledger answers (endNow): the preview ended in memory at
+// once, its teardown begun, its first write tried once, its last, refused,
+// owed and tried again until it is written, the engine ends or the ledger
+// is closed (finishPreview). The ports are let go once the end's last
+// transaction (preview.ended) is committed, or the owed write is no longer
+// tried. The run is held against eviction (r.previews) from the
+// reservation until then, so nothing but the preview's own end stops its
+// services.
 //
 // This row opens a preview of a run the engine holds; a run it no longer
 // holds (evicted, or an earlier server's) is refused as not found.

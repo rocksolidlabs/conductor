@@ -686,36 +686,28 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   the run (below): the run's project manifest is resolved
   for that commit (`resolveTree` with the preview as its owner, a `file`
   manifest read at the commit as EN1 reads it); the checkout is
-  `<worktree>.preview`. The way to it is judged from the run's working
-  directory as an attempt's dispatch judges its worktrees folder (no
-  link on the way), and the run's worktrees folder opened, before a
-  fresh add and before a reuse; the checkout's folder is opened once in
-  it, without following a link, and the server holds its folders open
-  until the preview ends. The checkout is added detached at the commit
-  (`gitcli.AddDetachedWorktree`, under a bound of its own that no end
-  cuts: an end that comes meanwhile waits for the add, and an add that
-  outlives the bound ends the open with the bound's words), then opened
-  the same way and its HEAD read with its git directory named outright;
-  or, when it is there already, reused only if it is the repository's
-  own worktree by the repository's word, judged from the opened folder
-  in one read whatever the repository holds (the folder's `.git`, a
-  regular file in it, names an entry, taken by its name alone in the
-  repository's `worktrees` folder, opened without following a link;
-  that entry's `gitdir`, a regular file opened without blocking, names
-  the `.git` inside the opened folder, the folder it is in compared with
-  the opened folder), and the comparison at the commit, run with that
-  git directory and the folder as its work tree named outright
-  (`gitcli.RunAt`), finds no tracked change (untracked files, a dev
-  server's caches, are left as they are); refused otherwise with the
-  path and what is wrong named: Conductor removes nothing it made (EN1's
-  R7). The crew's directory and the state directory are made inside the
-  folder as opened. Before each step of the preview starts (setup, a
-  service, a probe, cleanup), its path is checked to name that opened
-  folder still; one that does not starts no step, and the preview ends
-  in fixed words. What is left: the same user can replace the folder
-  between that check and the step's start. A reused checkout is served
-  as it was judged when the preview opened; natively the same user can
-  change its files afterwards. A checkout a server left half made when
+  `<worktree>.preview`. A preview's checkout is made, judged and used by
+  the rule of the checks' checkout (`verify`): by its path under the
+  run's worktrees folder, with git finding its repository from the
+  folder; the server makes no further promise about a folder that
+  another process of the same user replaces while it works. Before
+  anything is made or read, the run's worktrees folder is judged as an
+  attempt's dispatch judges it (`checkWorktreesDir`, in the same words).
+  The checkout is added detached at the commit
+  (`AddDetachedWorktree`, under the repository's lock and a bound of
+  its own that no end cuts: an end that comes meanwhile waits for the
+  add, and an add that outlives the bound ends the open with the
+  bound's words) and its HEAD read and compared with the preview's
+  commit; or, when it is there already, reused only if
+  `checkoutIntact` finds it at the commit with no tracked change
+  (untracked files, a dev server's caches, are left as they are);
+  refused otherwise with the path and what is wrong named: Conductor
+  removes nothing it made (EN1's R7). Then the crew's directory is
+  judged as `verify` judges it (`checkMemberDir`: a link or a file
+  there is refused in its words) and made, with the state directory. A
+  reused checkout is served as it was judged when the preview opened;
+  natively the same user can change its files afterwards. A checkout a
+  server left half made when
   it died (the add's first command done, not its last) is refused as
   changed; the person removes it (`git worktree remove --force <path>`
   in the run's repository) and the next open makes it again. Then EN1's
@@ -737,16 +729,24 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   their first write (the URL cleared) before anything of the preview is
   signalled; one the ledger refuses leaves the preview as it was, a Close
   answering the refusal and the idle end trying again a `previewIdle`
-  later. Every other end happens whatever the ledger answers: the
+  later. While the preview's open is under way (from its reservation
+  until the open has handed it to its serving or ended it), a Close is
+  answered busy at once (`ErrPreviewOpening`, `409 preview_opening`)
+  and nothing of the preview changes. Every other end happens whatever
+  the ledger answers: the
   preview is ended in the server's memory at once (no reader shows its
   address from then), its steps' context ended, its teardown registered
   and its services stopped as a tree's; its first write is tried once,
   and its last (`preview.ended`, which records all the first would),
-  when the ledger refuses it, is owed and tried again by the preview's
-  own end every 10 s, whatever reads its label, until it is written;
-  the preview stays counted (its candidate's one open, the
-  server's two, its run held) until its row is ended, and a start's
-  recovery ends a row it finds open. The reason recorded is the one of
+  when the ledger refuses it, is owed. An owed write is tried again by
+  the preview's own end every 10 s, whatever reads its label, until it
+  is written, the engine ends (the shutdown's drain) or the ledger
+  answers that it is closed; the preview stays counted (its candidate's
+  one open, the server's two, its run held, its ports leased) until
+  then, and then is let go, the row left to the next start's recovery,
+  which ends a row it finds open. While a write is owed the ledger's row
+  can still read ready, and neither reader shows it: the label refuses
+  the preview and `Previewing` says it is ending, with no address. The reason recorded is the one of
   the end that began first: the run's stop begins its previews' ends
   before anything of the stop can fail a step of theirs, so a preview
   still starting its services when its run stopped records the stop. A
@@ -869,7 +869,8 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   /api/runs/{run}/tasks/{task}/attempts/{n}/preview` (admin, `{commandId}`
   → `202 {seq, state}`; `200` for a repeat; `409 not_candidate`, `409
   run_continued`, `409 preview_dirty`, `429 previews_busy`) and `POST
-  …/preview/{seq}/close` (admin, `{commandId}` → `{state}`); each a
+  …/preview/{seq}/close` (admin, `{commandId}` → `{state}`; `409
+  preview_opening` while its open is under way); each a
   command with its receipt in the ledger, as the task commands are.
 - **Captures** (`captures.go`, new; admin only, `requireAdmin`; every
   JSON body read with `DisallowUnknownFields`):
@@ -1514,15 +1515,19 @@ and the ticket attachments they made stay).
   every other end (an open that failed, a service that exits after
   readiness, `why: service_exited`, the run's stop, the shutdown) closes
   the preview owner in memory at once, whatever the ledger answers, and
-  its last write, refused, is owed and tried again until written. Either
+  its last write, refused, is owed and tried again until written, or
+  until the engine ends or the ledger answers that it is closed, when
+  the row is the next start's recovery's to end. A Close while the
+  preview opens changes nothing of it. Either
   way no label offers a URL a teardown is ending and no late step of
   that `seq` writes a row, and the port lease is released only once the
-  end is committed (EN1's rule for trees). The result checkout's
+  end is committed (EN1's rule for trees), or once an owed write is no
+  longer tried. The result checkout's
   `trees` row and the attempt's `a.trees` are never written by a
   preview. At most one open per candidate; `seq` only grows. Its run is
   held against eviction (`r.previews`) from the open's first
-  transaction until its row is ended, so nothing but its own end stops
-  its services.
+  transaction until its row is ended or its owed write is no longer
+  tried, so nothing but its own end stops its services.
 - **The bridge's messages.** The bridge answers only `window.parent` at
   an origin the server wrote into it (or the shell, for the desktop),
   with the nonce of its `hello`, a message at most 4 KiB, and posts only
