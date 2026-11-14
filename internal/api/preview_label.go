@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,8 +65,9 @@ func storedPaths(paths []string) []string {
 // tree waits for one. The stop begins at Shutdown's entry (mark): a read
 // that begins once it has begun makes no folder and no index; a read under
 // way when it begins may still run its commands and write its own index
-// until the stop removes the folder of indexes (close), and its label is
-// unread.
+// until the stop ends it (close: its git ends with its context), and its
+// label is unread. A server that does not stop leaves its folder in the
+// temporary folder.
 type treeReads struct {
 	mu      sync.Mutex
 	dir     string
@@ -75,11 +77,27 @@ type treeReads struct {
 	// freed is closed, and made again, when an entry stops being
 	// reserved, and at the stop.
 	freed chan struct{}
+	// reads cancels each read under way; running counts them.
+	reads   map[*context.CancelFunc]bool
+	running sync.WaitGroup
 	// seam, when set (by a test), is called at "handed" (a read has its
-	// entry and has not yet taken its gate) and at "waiting" (a read waits
-	// for room).
+	// entry and has not yet taken its gate), at "waiting" (a read waits
+	// for room), at "closing" (the stop has cancelled the reads and
+	// waits for them) and at "removing" (every read has returned and the
+	// folder is about to go, under the reads' lock).
 	seam func(at, dir string)
+	// after, when set (by a test), stands in for time.After in the stop's
+	// wait for the reads (labelStopWait).
+	after func(time.Duration) <-chan time.Time
+	// limit, when set (by a test), stands in for a read's time limit
+	// (labelReadWait): the context the read runs in and its cancel, which
+	// the stop calls.
+	limit func(context.Context) (context.Context, context.CancelFunc)
 }
+
+// labelStopWait bounds the stop's wait for the reads it cancelled. Each
+// read's git ends with its context, so the bound only bounds a hang.
+const labelStopWait = time.Minute
 
 // treeEntry is a tree's kept index, its gate (held by sending to it) and
 // how many reads hold or wait for it.
@@ -113,10 +131,11 @@ func (tr *treeReads) take(ctx context.Context, dir string) (*treeEntry, error) {
 		}
 		e = tr.entries[dir]
 		// Past the bound, the least recently read entry no read holds or
-		// waits for goes, its index and the index's lock with it.
+		// waits for goes, its index, the index's lock and its objects
+		// with it.
 		for i := 0; e == nil && i < len(tr.order) && len(tr.order) >= maxTreeIndexes; {
 			if old := tr.entries[tr.order[i]]; old.reserved == 0 {
-				_, _ = os.Remove(old.ix.Path), os.Remove(old.ix.Path+".lock")
+				old.ix.Remove()
 				delete(tr.entries, tr.order[i])
 				tr.order = slices.Delete(tr.order, i, i+1)
 			} else {
@@ -181,17 +200,68 @@ func (tr *treeReads) mark() {
 }
 
 // close ends the reads at the stop: the stop is marked (if it is not
-// already), then the reads' indexes are removed and a read waiting for
-// room is let go.
-func (tr *treeReads) close() {
+// already) and every read under way is cancelled, its git ending with its
+// context, and waited for within labelStopWait. Once each of them has
+// returned, the folder of indexes is removed. When one has not, the stop
+// returns without removing it (left as a server that does not stop leaves
+// it), and log says so.
+func (tr *treeReads) close(log *slog.Logger) {
+	tr.mu.Lock()
+	tr.stopped = true
+	for cancel := range tr.reads {
+		(*cancel)()
+	}
+	tr.mu.Unlock()
+	if tr.seam != nil {
+		tr.seam("closing", "")
+	}
+	returned := make(chan struct{})
+	go func() {
+		tr.running.Wait()
+		close(returned)
+	}()
+	after := time.After
+	if tr.after != nil {
+		after = tr.after
+	}
+	select {
+	case <-returned:
+	case <-after(labelStopWait):
+		log.Warn("the preview labels' folder was left at the stop: a read had not returned", "why", "late")
+		return
+	}
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	tr.stopped = true
 	if tr.dir != "" {
+		if tr.seam != nil {
+			tr.seam("removing", tr.dir)
+		}
 		_ = os.RemoveAll(tr.dir)
 		close(tr.freed)
 		tr.dir, tr.order, tr.entries, tr.freed = "", nil, nil, nil
 	}
+}
+
+// begin counts a read under way, cancelled by cancel at the stop; false
+// once the stop has begun. end, given back, ends the count.
+func (tr *treeReads) begin(cancel context.CancelFunc) (end func(), ok bool) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.stopped {
+		return nil, false
+	}
+	if tr.reads == nil {
+		tr.reads = map[*context.CancelFunc]bool{}
+	}
+	key := &cancel
+	tr.reads[key] = true
+	tr.running.Add(1)
+	return func() {
+		tr.mu.Lock()
+		delete(tr.reads, key)
+		tr.mu.Unlock()
+		tr.running.Done()
+	}, true
 }
 
 // stopping reports whether the stop has begun, under the reads' lock: a
@@ -206,12 +276,26 @@ func (tr *treeReads) stopping() bool {
 // read reads the worktree of wp now (crew.TreeRevision) in its entry,
 // opened as the engine made it (crew.OpenTree: a tree that cannot be
 // reached so is not read). A read that ends past labelReadWait, fails
-// after naming HEAD, or ends once the stop has begun (errReadsStopped)
-// gives the commit alone and the error.
+// after naming HEAD, or ends once the stop has begun (errReadsStopped,
+// whatever else ended it) gives the commit alone and the error.
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.TreeRead, error) {
-	ctx, cancel := context.WithTimeout(ctx, labelReadWait)
+	limit := func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, labelReadWait)
+	}
+	if tr.limit != nil {
+		limit = tr.limit
+	}
+	ctx, cancel := limit(ctx)
 	defer cancel()
+	end, ok := tr.begin(cancel)
+	if !ok {
+		return crew.TreeRead{}, errReadsStopped
+	}
+	defer end()
 	e, err := tr.take(ctx, wp.Dir)
+	if err != nil && tr.stopping() {
+		err = errReadsStopped
+	}
 	if err != nil {
 		return crew.TreeRead{}, err
 	}
@@ -225,7 +309,7 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview) (crew.Tr
 	if err == nil && !t.Still() {
 		err = crew.ErrTreeMoved
 	}
-	if err == nil && tr.stopping() {
+	if tr.stopping() {
 		err = errReadsStopped
 	}
 	if err != nil {
@@ -314,7 +398,7 @@ func readFailure(err error) string {
 		return "late"
 	case errors.Is(err, gitcli.ErrNotRepo):
 		return "not a repository"
-	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped):
+	case errors.Is(err, crew.ErrTreeMoved), errors.Is(err, errReadsStopped), errors.Is(err, gitcli.ErrNoObjects):
 		return "refused"
 	}
 	return "git failed"

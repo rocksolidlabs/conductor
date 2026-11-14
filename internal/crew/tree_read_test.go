@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -35,10 +36,10 @@ func linkedTree(t *testing.T, repo, name string) string {
 // gitCall is a git command of a tree's read as its runner was given it,
 // with what it was given on its input and what it wrote.
 type gitCall struct {
-	workTree string
-	env      map[string]string
-	args     []string
-	in, out  string
+	workTree, objects string
+	env               map[string]string
+	args              []string
+	in, out           string
 }
 
 // recordTreeGit wraps the runner of a tree's read (treeGit) for the test:
@@ -49,8 +50,8 @@ func recordTreeGit(t *testing.T, before func(c gitCall) (bool, error)) *[]gitCal
 	t.Helper()
 	calls := &[]gitCall{}
 	run := treeGit
-	t.Cleanup(SetTreeGitForTest(func(ctx context.Context, workTree string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
-		c := gitCall{workTree: workTree, env: env, args: args}
+	t.Cleanup(SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		c := gitCall{workTree: workTree, objects: objects, env: env, args: args}
 		if in != nil {
 			b, err := io.ReadAll(in)
 			if err != nil {
@@ -65,7 +66,7 @@ func recordTreeGit(t *testing.T, before func(c gitCall) (bool, error)) *[]gitCal
 			}
 		}
 		var out bytes.Buffer
-		err := run(ctx, workTree, env, in, io.MultiWriter(w, &out), args...)
+		err := run(ctx, workTree, objects, env, in, io.MultiWriter(w, &out), args...)
 		c.out = out.String()
 		*calls = append(*calls, c)
 		return err
@@ -390,12 +391,13 @@ func readGitArgv(t *testing.T, log string) []gitArgv {
 }
 
 // Every git command of a tree's read, the revision's and the classes',
-// and the filter look-up before each that has one, runs in the tree's
-// opened directory with the tree's own .git and the work tree named
-// outright (-C <opened> --git-dir=<opened>/.git --work-tree=<opened>) and
-// no ceiling in its environment; each command with no replacement object,
-// the reader's own index, literal pathspecs (check-ignore aside), and the
-// configuration forced.
+// the look-up of the object store before each and the filter look-up
+// before each that has one, runs in the tree's opened directory with the
+// tree's own .git and the work tree named outright (-C <opened>
+// --git-dir=<opened>/.git --work-tree=<opened>) and no ceiling in its
+// environment; each command with no replacement object, the reader's own
+// index and its folder of objects, literal pathspecs (check-ignore
+// aside), and the configuration forced.
 func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 	repo := newRepo(t)
 	wt := linkedTree(t, repo, "build.1")
@@ -425,8 +427,13 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 		}
 		gits = append(gits, g.args[i+4])
 	}
-	// rev-parse takes no filter look-up; every other command one before it.
-	if want := []string{"rev-parse", "config", "read-tree", "config", "add", "config", "write-tree", "config", "diff", "config", "ls-tree", "config", "check-ignore"}; !slices.Equal(gits, want) {
+	// Every command has the look-up of the object store (rev-parse) before
+	// it; rev-parse takes no filter look-up, every other command one
+	// after the store's.
+	if want := []string{"rev-parse", "rev-parse", "rev-parse", "config", "read-tree", "rev-parse", "config", "update-index",
+		"rev-parse", "config", "diff-files", "rev-parse", "config", "ls-files",
+		"rev-parse", "config", "update-index", "rev-parse", "config", "update-index", "rev-parse", "config", "write-tree",
+		"rev-parse", "config", "diff", "rev-parse", "config", "ls-tree", "rev-parse", "config", "check-ignore"}; !slices.Equal(gits, want) {
 		t.Errorf("the gits run: %v, want %v", gits, want)
 	}
 	forced := map[string]string{"core.ignoreStat": "false", "core.checkStat": "default", "core.trustctime": "true",
@@ -442,22 +449,44 @@ func TestEveryCommandOfATreesReadNamesTheTreesOwnGit(t *testing.T) {
 			literal = ""
 		}
 		_, ceiling := c.env["GIT_CEILING_DIRECTORIES"]
-		if !sameDir(c.workTree, wt) || (runtime.GOOS == "linux") != strings.HasPrefix(c.workTree, "/proc/") ||
+		if !sameDir(c.workTree, wt) || (runtime.GOOS == "linux") != strings.HasPrefix(c.workTree, "/proc/") || c.objects != ix.Objects() ||
 			ceiling || c.env["GIT_NO_REPLACE_OBJECTS"] != "1" ||
 			c.env["GIT_INDEX_FILE"] != ix.Path || c.env["GIT_LITERAL_PATHSPECS"] != literal || !maps.Equal(configOf(c.env), forced) {
 			t.Errorf("git %v: work tree %s, environment %v", c.args, c.workTree, c.env)
 		}
 	}
-	if want := []string{"rev-parse", "read-tree", "add", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
+	if want := []string{"rev-parse", "read-tree", "update-index", "diff-files", "ls-files", "update-index", "update-index", "write-tree", "diff", "ls-tree", "check-ignore"}; !slices.Equal(subs, want) {
 		t.Fatalf("the commands: %v, want %v", subs, want)
 	}
 	if args := (*calls)[0].args; !slices.Equal(args, []string{"rev-parse", "--verify", "--quiet", "HEAD^{commit}"}) {
 		t.Errorf("rev-parse: %v", args)
 	}
-	for _, c := range (*calls)[1:5] {
-		if c.args[0] != "add" && c.args[0] != "write-tree" && c.args[len(c.args)-1] != read.Commit {
-			t.Errorf("git %v does not name the recorded commit %s", c.args, read.Commit)
+	for _, c := range [][]string{(*calls)[1].args, (*calls)[8].args} {
+		if c[len(c)-1] != read.Commit {
+			t.Errorf("git %v does not name the recorded commit %s", c, read.Commit)
 		}
+	}
+	// The index is new: its stat data is brought up to date before the
+	// listing, which then holds the changed path alone, with its kind;
+	// nothing is gone, and the changed path is staged.
+	if args := (*calls)[2].args; !slices.Equal(args, []string{"update-index", "-q", "--refresh"}) {
+		t.Errorf("the refresh: %v", args)
+	}
+	if listed := (*calls)[3].out + (*calls)[4].out; listed != "M\x00README\x00" {
+		t.Errorf("listed %q", listed)
+	}
+	for i, want := range []string{"", "README\x00"} {
+		if stage := (*calls)[5+i]; stage.in != want {
+			t.Errorf("update-index %v's input %q, want %q", stage.args, stage.in, want)
+		}
+	}
+	// A later read in the same index brings no stat data up to date.
+	*calls = nil
+	if _, err := TreeRevision(t.Context(), tr, ix); err != nil {
+		t.Fatal(err)
+	}
+	if (*calls)[2].args[0] != "diff-files" {
+		t.Errorf("the later read's commands: %v", *calls)
 	}
 }
 
@@ -516,7 +545,7 @@ func TestASplitIndexRepositoryKeepsNothingOfTheRead(t *testing.T) {
 		if after := gitDirNames(t, dirs...); !slices.Equal(before, after) {
 			t.Errorf("%v: the git directories after ten reads: %v, before %v", cfg, after, before)
 		}
-		if kept := gitDirNames(t, folder); !slices.Equal(kept, []string{filepath.Join(folder, "index")}) {
+		if kept := gitDirNames(t, folder); !slices.Equal(kept, []string{filepath.Join(folder, "index"), ix.Objects()}) {
 			t.Errorf("%v: the reader's folder: %v", cfg, kept)
 		}
 	}
@@ -626,11 +655,11 @@ func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
 	}
 	defer tr.Close()
 	ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
-	// The runner stands in for add -A: it takes the index's lock, as git
-	// does, and the read is cut there.
+	// The runner stands in for update-index: it takes the index's lock, as
+	// git does, and the read is cut there.
 	ctx, cancel := context.WithCancel(t.Context())
 	recordTreeGit(t, func(c gitCall) (bool, error) {
-		if c.args[0] != "add" || ctx.Err() != nil {
+		if c.args[0] != "update-index" || ctx.Err() != nil {
 			return false, nil
 		}
 		writeFile(t, ix.Path+".lock", "")
@@ -650,8 +679,8 @@ func TestALockACutReadLeftIsDroppedByTheNextRead(t *testing.T) {
 	}
 }
 
-// A read cut while a real git holds the index's lock: at the read's add
-// -A the runner runs git update-index --index-info in the read's index,
+// A read cut while a real git holds the index's lock: at the read's
+// update-index the runner runs git update-index --index-info in the read's index,
 // which takes the lock and then waits on its input; once the lock file
 // is there the read's context ends, git is killed and its lock stays.
 // The next read of that index names the content, as a read in a new
@@ -685,7 +714,7 @@ func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 		looking.Wait()
 	})
 	recordTreeGit(t, func(c gitCall) (bool, error) {
-		if c.args[0] != "add" || ctx.Err() != nil {
+		if c.args[0] != "update-index" || ctx.Err() != nil {
 			return false, nil
 		}
 		looking.Go(func() {
@@ -709,7 +738,7 @@ func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 				}
 			}
 		})
-		return true, gitcli.RunTree(ctx, c.workTree, c.env, input, io.Discard, "update-index", "--index-info")
+		return true, gitcli.RunTree(ctx, c.workTree, c.objects, c.env, input, io.Discard, "update-index", "--index-info")
 	})
 	if read, err := TreeRevision(ctx, tr, ix); !errors.Is(err, context.Canceled) || read.Content != "" {
 		t.Fatalf("the cut read: %+v %v", read, err)
@@ -722,6 +751,193 @@ func TestALockARealGitHeldIsDroppedByTheNextRead(t *testing.T) {
 	}
 	read, err := TreeRevision(t.Context(), tr, ix)
 	fresh, ferr := TreeRevision(t.Context(), tr, &TreeIndex{Path: filepath.Join(t.TempDir(), "index")})
+	if err != nil || ferr != nil || read.Content == "" || read.Content != fresh.Content || read.Changed != 1 {
+		t.Fatalf("the next read: %+v %v (a read in a new index: %+v %v)", read, err, fresh, ferr)
+	}
+}
+
+// storeFiles counts the files of repo's object store.
+func storeFiles(t *testing.T, repo string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(filepath.Join(repo, ".git", "objects"), func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			n++
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// folderObjects is the type of every object in the folder of objects,
+// git asked for each with the folder as its only store; the folder holds
+// one file for each, and nothing else.
+func folderObjects(t *testing.T, dir, folder string) []string {
+	t.Helper()
+	files := 0
+	if err := filepath.WalkDir(folder, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files++
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", dir, "cat-file", "--batch-all-objects", "--batch-check=%(objecttype)")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_OBJECT_DIRECTORY="+folder)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := strings.Fields(string(out))
+	if len(types) != files {
+		t.Fatalf("the folder of objects holds %d files, %d objects", files, len(types))
+	}
+	return types
+}
+
+// A tree's read writes nothing into the repository's object store: read
+// in one kept index as the tree is clean, then with a changed file, a new
+// file, a deleted file and an ignored file, each read leaves the store
+// with as many files as before it and answers what plain git makes of the
+// tree; the index's own folder holds trees alone, the object of the file
+// a read is the first to hash among none of them.
+func TestATreesReadWritesNothingIntoTheRepositorysStore(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, filepath.Join(repo, ".gitignore"), "*.log\n")
+	writeFile(t, filepath.Join(repo, "gone.txt"), "gone\n")
+	commitAll(t, repo, "more")
+	wt := linkedTree(t, repo, "build.1")
+	tr, err := OpenTree(repo, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
+	all := []string{"README", "gone.txt", "new.txt"}
+	// made is the file whose object the read is the first to make: plain
+	// git, run after the read for its answer, writes it into the store.
+	for _, c := range []struct {
+		name, made string
+		change     func()
+		paths      []string
+	}{
+		{"clean", "", func() {}, nil},
+		{"a changed file", "README", func() { writeFile(t, filepath.Join(wt, "README"), "edited\n") }, []string{"README"}},
+		{"a new file", "new.txt", func() { writeFile(t, filepath.Join(wt, "new.txt"), "new\n") }, []string{"README", "new.txt"}},
+		{"a deleted file", "", func() { _ = os.Remove(filepath.Join(wt, "gone.txt")) }, all},
+		{"an ignored file", "", func() { writeFile(t, filepath.Join(wt, "x.log"), "log\n") }, all},
+	} {
+		c.change()
+		before := storeFiles(t, repo)
+		read, err := TreeRevision(t.Context(), tr, ix)
+		if after := storeFiles(t, repo); err != nil || after != before {
+			t.Fatalf("%s: the store holds %d files after the read, %d before (%v)", c.name, after, before, err)
+		}
+		if c.made != "" {
+			id := runGit(t, wt, "hash-object", c.made)
+			if _, err := os.Stat(filepath.Join(ix.Objects(), id[:2], id[2:])); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("%s: %s's object in the index's folder: %v", c.name, c.made, err)
+			}
+		}
+		for _, kind := range folderObjects(t, wt, ix.Objects()) {
+			if kind != "tree" {
+				t.Errorf("%s: a %s in the index's folder", c.name, kind)
+			}
+		}
+		if read.Commit != runGit(t, wt, "rev-parse", "HEAD") || read.Content != plainContent(t, wt) || read.Changed != len(c.paths) || !slices.Equal(read.Paths, c.paths) {
+			t.Fatalf("%s: the read: %+v", c.name, read)
+		}
+	}
+}
+
+// A read cut while git writes its objects: at the read's update-index the
+// runner runs git index-pack --stdin in the read's index and folder, which
+// makes its temporary pack there and then waits on its input, a pack's
+// header with nothing of its one object; once that file is there the
+// read's context ends and git is killed. The repository's store holds the
+// files it held before, and the next read of that index starts from an
+// empty folder and names the content, as a read in a new index does. What
+// it waits on: the pack file git makes (looked for in the folder and in
+// the store until it is there, within the test's own minute), then the
+// cut read's return, which waits for the killed git. The look ends with
+// the test, also when it fails.
+func TestAReadCutWhileGitWritesLeavesNothingInTheStore(t *testing.T) {
+	repo := newRepo(t)
+	wt := linkedTree(t, repo, "build.1")
+	writeFile(t, filepath.Join(wt, "README"), "edited\n")
+	tr, err := OpenTree(repo, wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	ix := &TreeIndex{Path: filepath.Join(t.TempDir(), "index")}
+	input, held, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	defer held.Close()
+	if _, err := held.Write([]byte("PACK\x00\x00\x00\x02\x00\x00\x00\x01")); err != nil {
+		t.Fatal(err)
+	}
+	before := storeFiles(t, repo)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	writing := make(chan bool, 1)
+	stop, looking := make(chan struct{}), &sync.WaitGroup{}
+	t.Cleanup(func() {
+		close(stop)
+		looking.Wait()
+	})
+	var atStart []string
+	recordTreeGit(t, func(c gitCall) (bool, error) {
+		if ctx.Err() != nil && c.args[0] == "rev-parse" && atStart == nil {
+			atStart = append([]string{}, gitDirNames(t, c.objects)...)
+		}
+		if c.args[0] != "update-index" || ctx.Err() != nil {
+			return false, nil
+		}
+		looking.Go(func() {
+			defer cancel()
+			end := time.After(time.Minute)
+			for {
+				made, _ := filepath.Glob(filepath.Join(c.objects, "pack", "tmp_pack_*"))
+				inStore, _ := filepath.Glob(filepath.Join(repo, ".git", "objects", "pack", "tmp_pack_*"))
+				if len(made)+len(inStore) > 0 {
+					writing <- true
+					return
+				}
+				select {
+				case <-stop:
+					writing <- false
+					return
+				case <-end:
+					writing <- false
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+		})
+		return true, gitcli.RunTree(ctx, c.workTree, c.objects, c.env, input, io.Discard, "index-pack", "--stdin")
+	})
+	if read, err := TreeRevision(ctx, tr, ix); !errors.Is(err, context.Canceled) || read.Content != "" {
+		t.Fatalf("the cut read: %+v %v", read, err)
+	}
+	if !<-writing {
+		t.Fatal("git made no pack")
+	}
+	if after := storeFiles(t, repo); after != before {
+		t.Fatalf("the store holds %d files after the cut read, %d before", after, before)
+	}
+	read, err := TreeRevision(t.Context(), tr, ix)
+	fresh, ferr := TreeRevision(t.Context(), tr, &TreeIndex{Path: filepath.Join(t.TempDir(), "index")})
+	if atStart == nil || len(atStart) != 0 {
+		t.Fatalf("the index's folder as the next read began: %v", atStart)
+	}
 	if err != nil || ferr != nil || read.Content == "" || read.Content != fresh.Content || read.Changed != 1 {
 		t.Fatalf("the next read: %+v %v (a read in a new index: %+v %v)", read, err, fresh, ferr)
 	}
