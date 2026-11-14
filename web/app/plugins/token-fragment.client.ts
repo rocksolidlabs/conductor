@@ -21,9 +21,9 @@ export default defineNuxtPlugin({
   name: 'conductor:fragment-credentials',
   order: -25,
   setup() {
-    // A reload Nuxt itself makes (after a chunk that failed to load, or a new build) writes the page's state, the workbench token the
-    // page holds among it, under this key; nothing in this app reads it back (no `experimental.restoreState`), so every load of the
-    // app removes it, first in this plugin.
+    // A reload Nuxt itself makes (after a chunk that failed to load, or a new build) writes the page's state under this key (the
+    // workbench token is not part of it: useWorkbenchToken); nothing in this app reads it back (no `experimental.restoreState`), so
+    // every load of the app removes it, first in this plugin.
     try {
       sessionStorage.removeItem('nuxt:reload:state')
     } catch {

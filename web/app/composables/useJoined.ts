@@ -1,5 +1,6 @@
 import type { JoinInfo } from './useSessions'
 import { ApiError } from './useApi'
+import { usePageMemory } from './usePageMemory'
 import { joinedFromInfo, joinedStatusOf, patchJoined, readJoined, removeJoined, upsertJoined, writeJoined, JOINED_KEY, type JoinedEntry } from '~/utils/joined'
 
 /** How often the kept links are looked at again, and the pause between two looks (the join route allows 5 a second). */
@@ -9,10 +10,11 @@ let started = false
 
 /**
  * The share links joined from this workbench (utils/joined.ts): kept in this browser, listed in the sidebar under "Shared with you",
- * looked at again every minute while the tab is visible so a revoked link or an ended session says so.
+ * looked at again every minute while the tab is visible so a revoked link or an ended session says so. The page holds the list in its
+ * memory (usePageMemory), outside the state Nuxt writes at a reload: each entry carries its link's token.
  */
 export function useJoined() {
-  const list = useState<JoinedEntry[]>('joined', () => (import.meta.client ? readJoined(localStorage) : []))
+  const list = usePageMemory<JoinedEntry[]>('joined', () => (import.meta.client ? readJoined(localStorage) : []))
   const api = useSessions()
 
   function save(next: JoinedEntry[]) {
