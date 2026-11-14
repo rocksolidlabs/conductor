@@ -40,6 +40,10 @@ type fakeLedger struct {
 	// writer's name and the row).
 	previews      map[string]ledger.PreviewRow
 	previewWrites []previewWrite
+	// failWriter names a preview writer whose next write fails, once;
+	// holdWriter one whose next write, once, tells blocked and waits for
+	// release to close, inside its transaction.
+	failWriter, holdWriter string
 	// commandCap, when set, is how many commands a run takes (the ledger's
 	// 4096), for a test of the cap.
 	commandCap int
@@ -491,6 +495,22 @@ func (tx *fakeTx) movePreview(writer string, r ledger.PreviewRow, f func(*ledger
 // state but ended).
 func (tx *fakeTx) movePreviewFrom(writer, from string, r ledger.PreviewRow, f func(*ledger.PreviewRow)) error {
 	r.RunID = tx.runID
+	tx.l.mu.Lock()
+	fail, hold, blocked, release := tx.l.failWriter == writer, tx.l.holdWriter == writer, tx.l.blocked, tx.l.release
+	if fail {
+		tx.l.failWriter = ""
+	}
+	if hold {
+		tx.l.holdWriter = ""
+	}
+	tx.l.mu.Unlock()
+	if fail {
+		return errors.New("ledger: disk full (injected)")
+	}
+	if hold {
+		blocked <- struct{}{}
+		<-release
+	}
 	cur, ok := ledger.PreviewRow{}, false
 	for i := len(tx.previews) - 1; i >= 0 && !ok; i-- {
 		if previewKeyOf(tx.previews[i].row) == previewKeyOf(r) {

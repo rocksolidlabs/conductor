@@ -661,9 +661,11 @@ func TestAContinuedRunRefusesAPreview(t *testing.T) {
 	stopRun(t, e, next.ID)
 }
 
-// The server's shutdown ends a preview still open as it ends every tree
-// (Drain): why shutdown, its service gone, its row ended before Drain
-// returns.
+// Drain ends a preview still open whose run was not stopped first as it
+// ends every tree: why shutdown, its service gone, its row ended before
+// Drain returns. (The server stops its runs before it drains, so a run it
+// holds ends its previews with its stop: TestShutdownEndsAPreviewWithItsRunsStop
+// in internal/api.)
 func TestAPreviewEndsAtTheShutdown(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)

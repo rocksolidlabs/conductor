@@ -367,9 +367,12 @@ type Engine struct {
 	ports          map[int]*tree
 	// previews are the candidates' preview checkouts open now, at most
 	// maxPreviews (preview.go), and idleTimer, when a test sets it, their
-	// idle end's timer in place of time.After. previews is under mu.
-	previews  map[previewKey]*preview
-	idleTimer func(time.Duration) <-chan time.Time
+	// idle end's timer in place of time.After; memberDirChecked, when set,
+	// is called with each part of the crew's directory a preview's
+	// checkout has taken (memberDirIn). previews is under mu.
+	previews         map[previewKey]*preview
+	idleTimer        func(time.Duration) <-chan time.Time
+	memberDirChecked func(part string)
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string
@@ -2144,9 +2147,6 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	r.stopping = true
 	e.mu.Unlock()
 	r.cancel()
-	// Its previews end first, each end's first transaction in before their
-	// services are signalled; their ends are waited for with the trees'.
-	e.endPreviews(r, whyRunStopped)
 	waitFor(ctx, &r.starts)
 	e.mu.Lock()
 	var ids []string
@@ -2159,6 +2159,12 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// stop is recorded: the trees' ends follow its commit, and a stop the
 	// ledger refuses hands no tree over (steps.go: stopServices).
 	svcs := r.stopServices()
+	// Its previews' services too (preview.go), beside the attempts'.
+	for _, p := range e.previews {
+		if p.r == r && p.t != nil {
+			svcs = p.t.stopServices(svcs)
+		}
+	}
 	e.mu.Unlock()
 	errs := make([]error, len(ids))
 	var wg sync.WaitGroup
@@ -2177,6 +2183,12 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 		wg.Go(func() { e.stopService(ctx, ts) })
 	}
 	wg.Wait()
+	// Its previews end once every session and service of the run is told
+	// to stop: each end's first transaction committed before its tree's end
+	// begins, the ends waited for with the trees'.
+	if err := e.endPreviews(r, whyRunStopped); err != nil {
+		errs = append(errs, fmt.Errorf("the ledger could not record a preview's end: %w", err))
+	}
 	// The handoffs left are dropped; one being typed ends with its session.
 	waitFor(ctx, &r.deliveries)
 	// A managed run's checks, and its prerequisites (r.starts), end with

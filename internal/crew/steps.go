@@ -473,23 +473,26 @@ var errAttemptClosed = errors.New("the attempt closed")
 // (*preview, preview.go). Every method is called under e.mu, in a
 // transaction's change of the tree's run. closed reports whether the owner
 // takes no tree and records no readiness any more (an attempt closed, a
-// preview whose end has begun); own and disown put the tree in its list,
+// preview whose end has begun), and refused what else refuses the tree's
+// first transaction (nil for the attempt); own and disown put the tree in its list,
 // and take it out in the undo of the change that put it there, its ports
 // leased while it is listed; putRow is the writer of the tree's row in the
 // state the row says (resolved, ready or ended); lifecycle the events of
 // that state beside the manifest's own (tree.ready and tree.ended, or the
 // preview's); ready is the tree's readiness taken (true) or put back
-// (false); and serviceLost is what a service of the tree exiting after
+// (false), with what runs once the readiness is committed (the change's
+// done, nil for none); and serviceLost is what a service of the tree exiting after
 // readiness does: the words the run log adds, and what runs once that
 // change is committed. The receipts of the tree's steps are its attempt's
 // whoever owns it (tree.a).
 type treeOwner interface {
 	closed() bool
+	refused() error
 	own(t *tree)
 	disown(t *tree)
 	putRow(row ledger.TreeRow) func(LedgerTx) error
 	lifecycle(t *tree, state string, more map[string]any) []event
-	ready(t *tree, on bool)
+	ready(t *tree, on bool) (committed func())
 	serviceLost(r *run, t *tree) (words string, after func())
 }
 
@@ -498,6 +501,8 @@ type treeOwner interface {
 // owner.
 
 func (a *attempt) closed() bool { return !a.closedAt.IsZero() }
+
+func (a *attempt) refused() error { return nil }
 
 func (a *attempt) own(t *tree) { a.trees = append(a.trees, t) }
 
@@ -521,7 +526,7 @@ func (a *attempt) lifecycle(t *tree, state string, more map[string]any) []event 
 
 // ready offers the worktree's preview as the attempt's from its tree.ready
 // on, and takes it back with the undo.
-func (a *attempt) ready(t *tree, on bool) {
+func (a *attempt) ready(t *tree, on bool) func() {
 	switch {
 	case t.kind != ledger.TreeWorktree:
 	case on:
@@ -529,6 +534,7 @@ func (a *attempt) ready(t *tree, on bool) {
 	default:
 		a.preview = ""
 	}
+	return nil
 }
 
 // serviceLost withdraws the worktree's preview: the tree no longer answers
@@ -626,10 +632,14 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, o treeOwne
 			t.bridge = bridge
 		}
 		closed, held := false, false
+		var refused error
 		draw = nil
 		err = e.transact(ctx, r, func() tx {
 			if o.closed() {
 				closed = true
+				return tx{}
+			}
+			if refused = o.refused(); refused != nil {
 				return tx{}
 			}
 			if draw = e.heldPorts(t); len(draw) > 0 {
@@ -665,6 +675,8 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, o treeOwne
 		switch {
 		case closed:
 			return nil, errAttemptClosed
+		case refused != nil:
+			return nil, refused
 		case err != nil:
 			return nil, fmt.Errorf("the ledger could not record the manifest: %w", err)
 		case len(draw) > 0:
@@ -752,6 +764,11 @@ func makeStateDir(cwd string, checkout bool) error {
 		return err
 	}
 	defer root.Close()
+	return makeStateDirIn(root, checkout)
+}
+
+// makeStateDirIn is makeStateDir in the working directory root, opened.
+func makeStateDirIn(root *os.Root, checkout bool) error {
 	if err := mkdirIn(root, taskDir); err != nil {
 		return err
 	}
@@ -1435,8 +1452,7 @@ func (e *Engine) treeReady(ctx context.Context, r *run, a *attempt, t *tree) (st
 			return tx{}
 		}
 		t.ready = true
-		t.owner.ready(t, true)
-		out := tx{events: t.owner.lifecycle(t, ledger.TreeReady, map[string]any{"preview": t.preview})}
+		out := tx{events: t.owner.lifecycle(t, ledger.TreeReady, map[string]any{"preview": t.preview}), done: t.owner.ready(t, true)}
 		out.more = t.owner.putRow(t.row(r.id, ledger.TreeReady))
 		return out
 	}, func() {
@@ -2255,23 +2271,31 @@ func (r *run) stopServices() []*treeService {
 	for _, tk := range r.tasks {
 		for _, a := range tk.attempts {
 			for _, t := range a.trees {
-				if t.ended {
-					continue
-				}
-				t.ending = true
-				for _, ts := range t.services {
-					ts.stopFor("the run was stopped")
-					svcs = append(svcs, ts)
-				}
-				if ts := t.starting; ts != nil {
-					// Nothing else ends it: it has no handle yet.
-					if ts.stopping == "" {
-						ts.stopping = "the run was stopped"
-					}
-					svcs = append(svcs, ts)
-				}
+				svcs = t.stopServices(svcs)
 			}
 		}
+	}
+	return svcs
+}
+
+// stopServices is the run's stop for the tree t (a preview's too): t,
+// unless ended, marked ending and its services, the one starting among
+// them, marked stopping and added to svcs. The caller holds e.mu.
+func (t *tree) stopServices(svcs []*treeService) []*treeService {
+	if t.ended {
+		return svcs
+	}
+	t.ending = true
+	for _, ts := range t.services {
+		ts.stopFor("the run was stopped")
+		svcs = append(svcs, ts)
+	}
+	if ts := t.starting; ts != nil {
+		// Nothing else ends it: it has no handle yet.
+		if ts.stopping == "" {
+			ts.stopping = "the run was stopped"
+		}
+		svcs = append(svcs, ts)
 	}
 	return svcs
 }
@@ -2339,8 +2363,11 @@ func (e *Engine) Draining(ctx context.Context) {
 // calls it after it has stopped its runs, and before the ledger closes, so
 // a tree's end is recorded in the ledger it ends in.
 func (e *Engine) Drain(ctx context.Context) {
-	// The previews still open end as every tree does at the shutdown.
-	e.endPreviews(nil, whyShutdown)
+	// The previews still open end as every tree does at the shutdown. The
+	// server stops its runs first (api.Server.Shutdown), so a preview of a
+	// run it held has ended with that stop (run_stopped): what ends here,
+	// why shutdown, is a preview whose run was not stopped first.
+	_ = e.endPreviews(nil, whyShutdown)
 	for {
 		e.mu.Lock()
 		var idle <-chan struct{}

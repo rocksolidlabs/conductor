@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -26,17 +29,22 @@ import (
 // seq (never the trees'), its steps are receipts of the attempt (the
 // checks table, the attempt's next k, the checkout's dir).
 //
-// The order: the open's first transaction (preview.opened, the row
-// resolved) leases the tree's ports before the checkout is added or any
-// step runs; each step is a receipt before its process starts; ready is
+// The order: the reservation, under the run's txMu, takes the result's
+// commit, one the ledger holds, and every later step uses that copy; the
+// open's first transaction (preview.opened, the row resolved) judges again
+// that the result is that commit and the run neither continued nor
+// stopping, and leases the tree's ports before the checkout is added or
+// any step runs; the checkout is made under a bound of its own, which no
+// end cuts; each step is a receipt before its process starts; ready is
 // committed to the row of its seq (preview.ready) before the preview is
-// offered; an end's first transaction (the URL cleared, the preview
-// closed: closePreview) is committed before any service is signalled, so
-// nothing offers a URL a teardown is ending and no late step of that seq
-// writes its row; the ports are let go once the end's last transaction
-// (preview.ended) is committed. The run is held against eviction
-// (r.previews) from the reservation to that last transaction, so nothing
-// but the preview's own end stops its services.
+// offered, its URL shown from that commit on; an end's first transaction
+// (the URL cleared, the preview ending and its tree's end counted:
+// beginEnd) is committed before any of it is signalled, so nothing offers
+// a URL a teardown is ending and no late step of that seq writes its row,
+// and a refused one leaves the preview as it was; the ports are let go
+// once the end's last transaction (preview.ended) is committed. The run is
+// held against eviction (r.previews) from the reservation to that last
+// transaction, so nothing but the preview's own end stops its services.
 //
 // This row opens a preview of a run the engine holds; a run it no longer
 // holds (evicted, or an earlier server's) is refused as not found.
@@ -139,15 +147,17 @@ type previewKey struct {
 // (own); t, its tree from then on; state, "" until then, resolved, ready
 // once its readiness is recorded, ending from its end's first
 // transaction, ended once dropped; url, its tree's preview while ready;
-// why it ends; read, when it was last read (ReadPreview). ctx is what its
-// steps run under, beneath the run's teardown, cancelled once its end's
-// first transaction is committed.
+// why it ends; read, when it was last read (ReadPreview). commit is the
+// result's commit as the reservation took it, the one commit of the
+// preview. ctx is what its steps run under, beneath the run's teardown,
+// cancelled once its end's first transaction is committed.
 type preview struct {
 	e        *Engine
 	key      previewKey
 	r        *run
 	a        *attempt
 	by       string
+	commit   string
 	dir, cwd string
 	seq      int
 	t        *tree
@@ -161,6 +171,21 @@ type preview struct {
 // The preview as its tree's owner (treeOwner). The caller holds e.mu.
 
 func (p *preview) closed() bool { return p.state == previewEnding || p.state == previewEnded }
+
+// refused judges the open's first transaction again, in its change: the
+// run continued or being so (as a command's change reads it), stopping, or
+// the attempt's result no longer the commit the reservation took.
+func (p *preview) refused() error {
+	switch err := p.e.continued(p.r); {
+	case err != nil:
+		return err
+	case p.r.stopping:
+		return fmt.Errorf("%w: the run was stopped as the preview opened", ErrRunStopped)
+	case p.a.result != p.commit:
+		return fmt.Errorf("%w: its result is no longer %s", ErrNoCandidate, short(p.commit))
+	}
+	return nil
+}
 
 func (p *preview) own(t *tree) {
 	p.t = t
@@ -202,12 +227,14 @@ func (p *preview) lifecycle(t *tree, state string, more map[string]any) []event 
 	return []event{{kind, payload}}
 }
 
-func (p *preview) ready(t *tree, on bool) {
-	if on {
-		p.state, p.url = ledger.PreviewReady, t.preview
-		return
+// ready offers the preview's URL only once its readiness is committed
+// (the change's done), never in the change itself: a reader is never
+// shown a URL whose readiness the ledger may yet refuse.
+func (p *preview) ready(t *tree, on bool) func() {
+	if !on {
+		return nil
 	}
-	p.state, p.url = ledger.PreviewResolved, ""
+	return func() { p.state, p.url = ledger.PreviewReady, t.preview }
 }
 
 // serviceLost ends the preview: its URL withdrawn in the change that
@@ -217,7 +244,7 @@ func (p *preview) serviceLost(r *run, t *tree) (string, func()) {
 		return "", nil
 	}
 	p.url = ""
-	return "; the preview is ended", func() { p.e.closePreview(p, whyServiceExited) }
+	return "; the preview is ended", func() { _ = p.e.closePreview(p, whyServiceExited) }
 }
 
 // previewing is p as AttemptState reports it, nil before its first
@@ -231,7 +258,7 @@ func (p *preview) previewing() *Previewing {
 
 // stateOf is p as the routes read it. The caller holds e.mu.
 func (p *preview) stateOf() PreviewState {
-	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.a.result, By: p.by, Where: string(p.r.rt.Where())}
+	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.commit, By: p.by, Where: string(p.r.rt.Where())}
 	if pv := p.previewing(); pv != nil {
 		ps.State, ps.Preview = pv.State, pv.Preview
 	}
@@ -244,28 +271,45 @@ func (p *preview) stateOf() PreviewState {
 // OpenPreview opens a preview checkout of attempt n of the task, which
 // submitted a result whose commit is known, in a managed run the engine
 // holds and that is not stopped or continued (ErrRunContinued), whose
-// project manifest serves it. In order: the candidate reserved, within the
+// project manifest serves it. In order: the candidate reserved, under the
+// run's txMu, so a change under way commits or is undone first, within the
 // bounds (one per candidate, ErrPreviewOpen; maxPreviews on the server, a
 // PreviewsBusyError naming the open ones; ledger.MaxPreviews opens of it,
-// ErrPreviewLimit); a checkout at <worktree>.preview that is there
-// already taken only when it is at the commit with no tracked change, and
-// refused otherwise with its path and the changed files named
-// (ErrPreviewRefused), nothing of it removed; the run's manifest resolved
-// for the commit with the preview as the tree's owner (resolveTree), whose
-// transaction is the open's first (preview.opened, its row resolved);
-// then the checkout added detached at the commit when it was not there,
-// with its state directory; then its phases (prepareTree: setup, services,
-// ready, its readiness written to its row) and its idle end, on a
-// goroutine the run's stop waits for. It returns the preview as it is
-// once its checkout is made: resolved, its readiness to come.
+// ErrPreviewLimit), the result's commit copied into the preview, the one
+// commit every later step uses; a checkout at <worktree>.preview that is
+// there already taken only when it is the repository's own worktree by
+// the repository's word, at the commit with no tracked change
+// (previewReusable), and refused otherwise with its path and what is
+// wrong (ErrPreviewRefused), nothing of it removed; the run's manifest
+// resolved for the commit with the preview as the tree's owner
+// (resolveTree), whose transaction is the open's first (preview.opened,
+// its row resolved), refused, nothing written, for a run continued or
+// stopping or a result that is no longer the commit (refused); then the
+// checkout added detached at the commit when it was not there, with the
+// crew's directory and its state directory, under previewCheckoutTimeout,
+// which no end cuts; then its phases (prepareTree: setup, services, ready,
+// its readiness written to its row) and its idle end, on a goroutine the
+// run's stop waits for. It returns the preview as it is once its checkout
+// is made: resolved, its readiness to come.
 func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, by string) (PreviewState, error) {
 	e.mu.Lock()
-	p, err := e.reservePreview(runID, taskID, n, by)
+	r := e.runs[runID]
 	e.mu.Unlock()
+	if r == nil || !r.managed {
+		return PreviewState{}, ErrRunNotFound
+	}
+	if e.afterLookup != nil {
+		e.afterLookup(runID)
+	}
+	r.txMu.Lock()
+	e.mu.Lock()
+	p, err := e.reservePreview(r, taskID, n, by)
+	e.mu.Unlock()
+	r.txMu.Unlock()
 	if err != nil {
 		return PreviewState{}, err
 	}
-	r, a := p.r, p.a
+	a := p.a
 	unreserve := func(err error) (PreviewState, error) {
 		e.mu.Lock()
 		e.dropPreview(p)
@@ -273,22 +317,27 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		p.cancel()
 		return PreviewState{}, err
 	}
-	reused, err := previewReusable(ctx, r.cwd, p.dir, a.result)
+	reused, err := previewReusable(ctx, r.cwd, p.dir, p.commit)
 	if err != nil {
 		return unreserve(err)
 	}
-	tr, err := e.resolveTree(ctx, r, a, p, ledger.TreePreview, p.dir, p.cwd, a.result)
+	tr, err := e.resolveTree(ctx, r, a, p, ledger.TreePreview, p.dir, p.cwd, p.commit)
 	switch {
 	case errors.Is(err, errAttemptClosed):
 		return unreserve(fmt.Errorf("%w: the run was stopped as the preview opened", ErrRunStopped))
+	case errors.Is(err, ErrRunContinued), errors.Is(err, ErrRunNotFound), errors.Is(err, ErrRunStopped), errors.Is(err, ErrNoCandidate):
+		return unreserve(err) // refused in the first transaction's change
 	case err != nil:
 		return unreserve(fmt.Errorf("the preview's manifest: %w", err))
 	}
 	// The preview has its row from here: every way out ends it.
-	if err := e.makePreviewCheckout(p.ctx, r, p, reused); err != nil {
+	mk, cancel := context.WithTimeout(context.Background(), previewCheckoutTimeout)
+	err = e.makePreviewCheckout(mk, r, p, reused)
+	cancel()
+	if err != nil {
 		tr.busy.Done()
 		words := session.CleanMessage(err.Error())
-		e.closePreview(p, "the checkout could not be made: "+words)
+		_ = e.closePreview(p, "the checkout could not be made: "+words)
 		return PreviewState{}, fmt.Errorf("the preview's checkout %s: %w", p.dir, err)
 	}
 	e.mu.Lock()
@@ -307,14 +356,11 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 	return ps, nil
 }
 
-// reservePreview reserves the candidate's preview, within the bounds, and
-// counts it on its run (r.previews), which holds the run against eviction
-// until the preview is dropped. The caller holds e.mu.
-func (e *Engine) reservePreview(runID, taskID string, n int, by string) (*preview, error) {
-	r := e.runs[runID]
-	if r == nil || !r.managed {
-		return nil, ErrRunNotFound
-	}
+// reservePreview reserves the candidate's preview of r, within the
+// bounds, with the result's commit as the run's transactions have left it,
+// and counts it on its run (r.previews), which holds the run against
+// eviction until the preview is dropped. The caller holds r.txMu and e.mu.
+func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*preview, error) {
 	if err := e.continued(r); err != nil {
 		return nil, err
 	}
@@ -339,7 +385,7 @@ func (e *Engine) reservePreview(runID, taskID string, n int, by string) (*previe
 	case !r.hasManifest():
 		return nil, ErrNoPreviewManifest
 	}
-	key := previewKey{runID, taskID, n}
+	key := previewKey{r.id, taskID, n}
 	if e.previews[key] != nil {
 		return nil, ErrPreviewOpen
 	}
@@ -354,7 +400,7 @@ func (e *Engine) reservePreview(runID, taskID string, n int, by string) (*previe
 		return nil, ErrPreviewLimit
 	}
 	dir := a.worktree + ".preview"
-	p := &preview{e: e, key: key, r: r, a: a, by: by, dir: dir, cwd: filepath.Join(dir, r.prefix), read: e.now()}
+	p := &preview{e: e, key: key, r: r, a: a, by: by, commit: a.result, dir: dir, cwd: filepath.Join(dir, r.prefix), read: e.now()}
 	p.ctx, p.cancel = context.WithCancel(r.teardown)
 	if e.previews == nil {
 		e.previews = map[previewKey]*preview{}
@@ -381,12 +427,15 @@ func (e *Engine) dropPreview(p *preview) {
 }
 
 // previewReusable reports whether a checkout is at dir to be taken as it
-// is: none (false), or a worktree the repository at repo lists, at commit
-// with no tracked change (true); any other is refused with its path and
-// what is wrong, and nothing of it is removed. git is run in it only once
-// the repository lists it, so a directory someone else made there, with a
-// .git of its own, is never read. Untracked files, a dev server's caches,
-// are left as they are.
+// is: none (false), or the repository's own worktree by the repository's
+// word (previewGitDir), at commit with no tracked change, compared with
+// its git directory and the folder as its work tree named outright
+// (checkoutIntactBy, gitcli.RunAt), so nothing the folder's .git names
+// and no work tree a configuration names takes part (true); any other is
+// refused with its path and what is wrong, and nothing of it is removed.
+// Untracked files, a dev server's caches, are left as they are. What is
+// judged is the checkout as it is now: the preview serves its files as
+// they are, and natively the same user may change them later.
 func previewReusable(ctx context.Context, repo, dir, commit string) (bool, error) {
 	fi, err := os.Lstat(dir)
 	switch {
@@ -397,13 +446,14 @@ func previewReusable(ctx context.Context, repo, dir, commit string) (bool, error
 	case !fi.IsDir():
 		return false, fmt.Errorf("%w: %s is there and is not a directory; nothing of it is removed", ErrPreviewRefused, dir)
 	}
-	switch listed, err := listedWorktree(ctx, repo, fi); {
-	case err != nil:
-		return false, fmt.Errorf("%w: the repository's worktrees could not be listed: %s", ErrPreviewRefused, session.CleanMessage(err.Error()))
-	case !listed:
-		return false, fmt.Errorf("%w: %s is there and is not a worktree of the repository; nothing of it is removed", ErrPreviewRefused, dir)
+	gitDir, err := previewGitDir(ctx, repo, dir)
+	if err != nil {
+		return false, err
 	}
-	moved, changed, _, err := checkoutIntact(ctx, dir, commit)
+	told := func(env map[string]string, args ...string) (string, error) {
+		return gitcli.RunAt(ctx, gitDir, dir, env, args...)
+	}
+	moved, changed, _, err := checkoutIntactBy(dir, told, commit)
 	switch {
 	case err != nil:
 		return false, fmt.Errorf("%w: %s could not be compared with %s: %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit), session.CleanMessage(err.Error()))
@@ -415,76 +465,164 @@ func previewReusable(ctx context.Context, repo, dir, commit string) (bool, error
 	return true, nil
 }
 
-// listedWorktree reports whether the directory fi is a worktree git lists
-// for the repository at repo (git worktree list), compared as files, not
-// as paths a link could spell twice.
-func listedWorktree(ctx context.Context, repo string, fi fs.FileInfo) (bool, error) {
-	out, err := gitcli.Run(ctx, repo, "worktree", "list", "--porcelain")
+// previewGitDir is the git directory of the checkout found at dir when the
+// repository at repo says it is one of its worktrees, judged before any
+// git runs in or about dir: an entry of the repository's worktrees folder
+// whose gitdir file names dir's .git, found from the repository's side,
+// and dir's .git a regular file, opened without following a link, that
+// names that entry, each compared as the file it is, not by its text.
+// Otherwise the checkout is refused in fixed words that name dir.
+func previewGitDir(ctx context.Context, repo, dir string) (string, error) {
+	notOurs := fmt.Errorf("%w: %s is there and is not a worktree of the repository; nothing of it is removed", ErrPreviewRefused, dir)
+	_, common, err := gitcli.RepoOf(ctx, repo)
 	if err != nil {
-		return false, err
+		return "", fmt.Errorf("%w: the repository could not be read: %s", ErrPreviewRefused, session.CleanMessage(err.Error()))
 	}
-	for line := range strings.Lines(out) {
-		if p, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "worktree "); ok {
-			if wi, err := os.Lstat(p); err == nil && os.SameFile(fi, wi) {
-				return true, nil
-			}
+	f, err := os.OpenFile(filepath.Join(dir, ".git"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", notOurs
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", notOurs
+	}
+	named, ok := strings.CutPrefix(firstLine(f), "gitdir: ")
+	if !ok {
+		return "", notOurs
+	}
+	if !filepath.IsAbs(named) {
+		named = filepath.Join(dir, named)
+	}
+	entries, _ := os.ReadDir(filepath.Join(common, "worktrees"))
+	for _, ent := range entries {
+		admin := filepath.Join(common, "worktrees", ent.Name())
+		back, err := os.Open(filepath.Join(admin, "gitdir"))
+		if err != nil {
+			continue
 		}
+		gi, err := os.Lstat(firstLine(back))
+		back.Close()
+		if err != nil || !os.SameFile(fi, gi) {
+			continue
+		}
+		ai, err := os.Stat(admin)
+		ni, nerr := os.Stat(named)
+		if err != nil || nerr != nil || !os.SameFile(ai, ni) {
+			return "", notOurs
+		}
+		return admin, nil
 	}
-	return false, nil
+	return "", notOurs
 }
 
+// firstLine is the first line of what r holds, within 4 KiB.
+func firstLine(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 4<<10))
+	line, _, _ := strings.Cut(string(b), "\n")
+	return strings.TrimSuffix(line, "\r")
+}
+
+// previewCheckoutTimeout bounds the making of a preview's checkout, under
+// a context of its own that no end cancels: an end that comes meanwhile
+// waits for it (the tree is held busy), so the server never leaves the
+// checkout half made between the add's two git commands.
+const previewCheckoutTimeout = 10 * time.Minute
+
 // makePreviewCheckout makes p's checkout usable to its steps: added
-// detached at the commit unless reused, checked at it, the crew's
-// directory in it as in the worktree (checkMemberDir), and its state
-// directory with .conductor's .gitignore (makeStateDir).
+// detached at the commit unless reused, checked at it, then, inside the
+// checkout's folder opened once, the crew's directory walked and made
+// (memberDirIn) and its state directory with .conductor's .gitignore
+// (makeStateDirIn).
 func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, reused bool) error {
-	commit := p.a.result
 	if !reused {
 		e.gitMu.Lock()
-		err := AddDetachedWorktree(ctx, r.cwd, p.dir, commit)
+		err := AddDetachedWorktree(ctx, r.cwd, p.dir, p.commit)
 		e.gitMu.Unlock()
 		if err != nil {
 			return err
 		}
-		if head, err := headCommit(ctx, p.dir); err != nil || head != commit {
-			return fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(commit))
+		if head, err := headCommit(ctx, p.dir); err != nil || head != p.commit {
+			return fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(p.commit))
 		}
 	}
-	if err := checkMemberDir(p.dir, r.prefix); err != nil {
+	root, err := os.OpenRoot(p.dir)
+	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(p.cwd, 0o755); err != nil {
+	defer root.Close()
+	member, err := memberDirIn(root, r.prefix, e.memberDirChecked)
+	if err != nil {
 		return err
 	}
-	return makeStateDir(p.cwd, true)
+	defer member.Close()
+	return makeStateDirIn(member, true)
+}
+
+// memberDirIn walks the crew's directory rel inside root, making each part
+// that is missing, and opens it: every part is taken through root, never
+// by a path resolved again, so a part that is or becomes a link cannot
+// send the making outside the checkout (os.Root refuses a way out), and a
+// part that is a link or a file is refused as checkMemberDir refuses it.
+// checked, when set, is called with each part once it is taken.
+func memberDirIn(root *os.Root, rel string, checked func(part string)) (*os.Root, error) {
+	at := "."
+	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(rel)), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		at = path.Join(at, part)
+		fi, err := root.Lstat(at)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			err = root.Mkdir(at, 0o755)
+		case err != nil:
+		case fi.Mode()&fs.ModeSymlink != 0:
+			err = invalidf("%s in the member's worktree is a symbolic link: the member's directory must stay inside the worktree", quote(at))
+		case !fi.IsDir():
+			err = invalidf("%s in the member's worktree is a file, not a directory: the member's directory must be one", quote(at))
+		}
+		if err != nil {
+			return nil, err
+		}
+		if checked != nil {
+			checked(at)
+		}
+	}
+	return root.OpenRoot(at)
 }
 
 // servePreview runs p's phases on its tree, held, under p.ctx (setup,
 // services, ready probes, its readiness: prepareTree), lets go of the
-// tree, and then ends p once previewIdle has passed with no read of it;
-// one that could not be made ready is ended with where and why. It runs
-// counted in r.checks, which the run's stop waits for once it has begun
-// the end of its previews.
+// tree, and then ends p once previewIdle has passed with no read of it,
+// judged as the end is made (beginEnd); one that could not be made ready
+// is ended with where and why. An end the ledger refused is tried again
+// at the next idle end. It runs counted in r.checks, which the run's stop
+// waits for once it has begun the end of its previews.
 func (e *Engine) servePreview(p *preview, tr *tree) {
 	defer p.r.checks.Done()
 	stage, err := e.prepareTree(p.ctx, p.r, p.a, tr)
 	tr.busy.Done()
+	why := whyPreviewIdle
 	if err != nil {
-		e.closePreview(p, fmt.Sprintf("not ready at %s: %s", stage, session.CleanMessage(err.Error())))
-		return
-	}
-	for {
-		e.mu.Lock()
-		read := p.read
-		e.mu.Unlock()
-		left := previewIdle - e.now().Sub(read)
-		if left <= 0 {
-			e.closePreview(p, whyPreviewIdle)
+		why = fmt.Sprintf("not ready at %s: %s", stage, session.CleanMessage(err.Error()))
+		if e.closePreview(p, why) == nil {
 			return
 		}
+	}
+	e.mu.Lock()
+	left := previewIdle - e.now().Sub(p.read)
+	e.mu.Unlock()
+	for {
 		select {
 		case <-e.previewTimer(left):
 		case <-p.ctx.Done():
+			return
+		}
+		var err error
+		if left, err = e.beginEnd(p, why, true); err != nil {
+			left = previewIdle
+		} else if left <= 0 {
 			return
 		}
 	}
@@ -498,43 +636,66 @@ func (e *Engine) previewTimer(d time.Duration) <-chan time.Time {
 	return time.After(d)
 }
 
-// closePreview begins p's end, once, for why: its first transaction clears
-// its URL and closes it as its tree's owner (its row's preview cleared,
-// why written), committed before anything of it is signalled; then its
-// steps' context ends, and its tree's end (endTree, on a goroutine counted
-// in r.trees, which Drain and the run's stop wait for) stops its
-// services, runs its cleanup and records preview.ended, its ports let go
-// after that commit; then it is dropped (finishPreview). A preview whose
-// first transaction never committed has nothing to end and is dropped by
-// its open. A first transaction the ledger refused is carried by the
-// run's next commit, and the end goes on.
-func (e *Engine) closePreview(p *preview, why string) {
+// closePreview begins p's end for why (beginEnd, judged on nothing else).
+func (e *Engine) closePreview(p *preview, why string) error {
+	_, err := e.beginEnd(p, why, false)
+	return err
+}
+
+// beginEnd begins p's end, once, for why. Its first transaction's change,
+// under e.mu: nothing for a preview whose end has begun; for an idle end
+// (idle), nothing for one read less than previewIdle ago, the time left
+// returned; else p marked ending, its URL cleared, and, once its tree is
+// its own, its tree's end counted in r.trees (which Drain and the run's
+// stop wait for) in that same step, so nothing sees it ending with no end
+// in flight, and its row's PreviewEnding written. Only once that is
+// committed is anything of it signalled: its steps' context ends, and its
+// tree's end (finishPreview: endTree stops its services, runs its cleanup
+// and records preview.ended, its ports let go after that commit; then it
+// is dropped). Refused, the change is undone: the preview as it was, its
+// end not counted, nothing signalled, and the refusal returned. A preview
+// whose first transaction has not committed has nothing to end: marked
+// ending, its open refuses and drops it.
+func (e *Engine) beginEnd(p *preview, why string, idle bool) (time.Duration, error) {
 	r := p.r
-	began := false
-	_ = e.transact(context.Background(), r, func() tx {
+	var left time.Duration
+	began, counted := false, false
+	var state, url, was string
+	err := e.transact(context.Background(), r, func() tx {
 		if p.closed() {
 			return tx{}
 		}
-		began = true
+		if idle {
+			if left = previewIdle - e.now().Sub(p.read); left > 0 {
+				return tx{}
+			}
+		}
+		began, state, url, was = true, p.state, p.url, p.why
 		p.state, p.url, p.why = previewEnding, "", why
 		if p.t == nil {
 			return tx{}
 		}
+		counted = true
+		r.trees.add()
 		row := ledger.PreviewRow{TaskID: p.a.t.def.ID, N: p.a.n, Seq: p.seq, Why: session.CleanMessage(why)}
 		return tx{more: func(ltx LedgerTx) error { return ltx.PreviewEnding(row) }}
-	}, nil)
-	if !began {
-		return
+	}, func() {
+		if began {
+			p.state, p.url, p.why = state, url, was
+		}
+		if counted {
+			r.trees.done()
+		}
+		began, counted = false, false
+	})
+	if err != nil || !began {
+		return left, err
 	}
 	p.cancel()
-	e.mu.Lock()
-	if p.t == nil {
-		e.mu.Unlock()
-		return // its open drops it, its first transaction refused
+	if counted {
+		go e.finishPreview(p)
 	}
-	r.trees.add()
-	e.mu.Unlock()
-	go e.finishPreview(p)
+	return 0, nil
 }
 
 // finishPreview ends p's tree (endTree, its owner the preview) and drops p
@@ -547,7 +708,8 @@ func (e *Engine) finishPreview(p *preview) {
 }
 
 // ClosePreview ends the preview seq of attempt n of the task (Close): its
-// end begun, the rest of it on its own (closePreview).
+// end begun, the rest of it on its own (closePreview). A first
+// transaction the ledger refused is the error, the preview left as it was.
 func (e *Engine) ClosePreview(runID, taskID string, n, seq int) error {
 	e.mu.Lock()
 	p := e.previews[previewKey{runID, taskID, n}]
@@ -556,8 +718,7 @@ func (e *Engine) ClosePreview(runID, taskID string, n, seq int) error {
 	if !ok {
 		return ErrPreviewNotFound
 	}
-	e.closePreview(p, whyPreviewClosed)
-	return nil
+	return e.closePreview(p, whyPreviewClosed)
 }
 
 // ReadPreview is the preview seq of attempt n of the task while it is
@@ -575,8 +736,9 @@ func (e *Engine) ReadPreview(runID, taskID string, n, seq int) (PreviewState, bo
 }
 
 // endPreviews begins the end of every preview of r (every preview, for a
-// nil r) with why, and returns once each end's first transaction is in.
-func (e *Engine) endPreviews(r *run, why string) {
+// nil r) with why, and returns once each end's first transaction is in,
+// with the refusals.
+func (e *Engine) endPreviews(r *run, why string) error {
 	e.mu.Lock()
 	var ps []*preview
 	for _, p := range e.previews {
@@ -585,7 +747,9 @@ func (e *Engine) endPreviews(r *run, why string) {
 		}
 	}
 	e.mu.Unlock()
+	var errs []error
 	for _, p := range ps {
-		e.closePreview(p, why)
+		errs = append(errs, e.closePreview(p, why))
 	}
+	return errors.Join(errs...)
 }

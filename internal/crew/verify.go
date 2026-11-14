@@ -513,13 +513,23 @@ func changedList(changed []string) string {
 // through an index of its own (read-tree, add -u, write-tree) that
 // carries no flag a command could set to hide a change. It reports
 // whether HEAD moved, the tracked paths that differ, and the untracked
-// paths left (ignored ones aside).
+// paths left (ignored ones aside). git finds the checkout's repository
+// from dir (checkoutIntactBy).
 func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, changed, untracked []string, err error) {
-	head, err := headCommit(ctx, dir)
+	return checkoutIntactBy(dir, func(env map[string]string, args ...string) (string, error) {
+		return gitcli.RunEnv(ctx, dir, env, args...)
+	}, commit)
+}
+
+// checkoutIntactBy is the comparison of checkoutIntact with every git
+// command of it run by git, which says where git finds the checkout (a
+// preview's reuse names its git directory and work tree outright).
+func checkoutIntactBy(dir string, git func(env map[string]string, args ...string) (string, error), commit string) (moved bool, changed, untracked []string, err error) {
+	out, err := git(nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if err != nil {
 		return false, nil, nil, err
 	}
-	if head != commit {
+	if head := strings.TrimSpace(out); head != commit {
 		return true, nil, nil, nil
 	}
 	f, err := os.CreateTemp("", "conductor-index-")
@@ -537,22 +547,22 @@ func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, change
 		// makes a file executable is seen.
 		env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"] = "1", "core.fileMode", "true"
 	}
-	if _, err := gitcli.RunEnv(ctx, dir, env, "read-tree", commit); err != nil {
+	if _, err := git(env, "read-tree", commit); err != nil {
 		return false, nil, nil, err
 	}
-	if _, err := gitcli.RunEnv(ctx, dir, env, "add", "-u"); err != nil {
+	if _, err := git(env, "add", "-u"); err != nil {
 		return false, nil, nil, err
 	}
-	tree, err := gitcli.RunEnv(ctx, dir, env, "write-tree")
+	tree, err := git(env, "write-tree")
 	if err != nil {
 		return false, nil, nil, err
 	}
-	want, err := gitcli.Run(ctx, dir, "rev-parse", commit+"^{tree}")
+	want, err := git(nil, "rev-parse", commit+"^{tree}")
 	if err != nil {
 		return false, nil, nil, err
 	}
 	if strings.TrimSpace(tree) != strings.TrimSpace(want) {
-		out, err := gitcli.RunEnv(ctx, dir, env, "diff", "--cached", "--name-only", "-z", commit)
+		out, err := git(env, "diff", "--cached", "--name-only", "-z", commit)
 		if err != nil {
 			return false, nil, nil, err
 		}
@@ -561,7 +571,7 @@ func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, change
 			changed = []string{"(the tree differs)"}
 		}
 	}
-	out, err := gitcli.RunEnv(ctx, dir, env, "ls-files", "--others", "--exclude-standard", "-z")
+	out, err = git(env, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return false, changed, nil, err
 	}
