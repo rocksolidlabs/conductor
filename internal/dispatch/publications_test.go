@@ -605,7 +605,7 @@ func TestServerOpsNeverNoop(t *testing.T) {
 		{PublicationSending, [nOps]string{"sending/", "failed/", "unconfirmed/", "sent/pending", refused, refused}},
 		{PublicationFailed, [nOps]string{refused, refused, refused, refused, refused, refused}},
 		{PublicationUnconfirmed, [nOps]string{"unconfirmed/", refused, same, "sent/pending", refused, refused}},
-		{"sent", [nOps]string{refused, refused, refused, refused, "sent/closing", refused}},
+		{"sent", [nOps]string{refused, refused, refused, refused, "sent/closing", "sent/closed"}},
 		{"closing", [nOps]string{refused, refused, refused, refused, "sent/closing", "sent/closed"}},
 		{PublicationDiscarded, [nOps]string{refused, refused, refused, refused, refused, refused}},
 		{"restored draft", [nOps]string{same, same, same, "sent/", refused, refused}},
@@ -1457,30 +1457,40 @@ func TestPublicationWordsArePlain(t *testing.T) {
 	}
 }
 
-// A sent comment's address keeps the comment's anchor (#issuecomment- and
-// digits), and no other fragment, no query and no user; it is kept only on
-// the target's host, the target's page otherwise.
+// A sent comment's address is its place on the target's own item: the
+// target's page with the comment's anchor (#issuecomment- and its id),
+// kept as the answer gave it when it is that, and built from the target's
+// page and the comment's id for any other (another fragment, a query, a
+// user, another item on the same host, another host); the target's page
+// alone for an id that makes no anchor.
 func TestSentCommentKeepsItsAnchor(t *testing.T) {
 	f := newPubFixture(t)
-	for i, c := range []struct{ url, kept string }{
-		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153", "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153"},
-		{"https://github.com/rocksolidlabs/conductor/issues/612#top", "https://github.com/rocksolidlabs/conductor/issues/612"},
-		{"https://bob:hunter2@github.com/rocksolidlabs/conductor/issues/612?token=SECRET#issuecomment-7", "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7"},
-		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7x", "https://github.com/rocksolidlabs/conductor/issues/612"},
-		// On another host than the target's: the target's page.
-		{"https://elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-7", issueTarget.URL},
-		{"https://github.com.elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-7", issueTarget.URL},
-		{"https://GitHub.com/rocksolidlabs/conductor/issues/612#issuecomment-8", "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-8"},
+	const place = "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153"
+	for i, c := range []struct{ url, id, kept string }{
+		{place, "2153", place},
+		{"https://GitHub.com/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612#top", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612", "2153", place},
+		{"https://bob:hunter2@github.com/rocksolidlabs/conductor/issues/612?token=SECRET#issuecomment-2153", "2153", place},
+		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7", "2153", place},
+		// Another item on the target's host, and other hosts.
+		{"https://github.com/rocksolidlabs/conductor/issues/999#issuecomment-2153", "2153", place},
+		{"https://github.com/someone/else/pull/1#issuecomment-2153", "2153", place},
+		{"https://elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
+		{"https://github.com.elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
+		{"not an address", "2153", place},
+		// An id that makes no anchor: the target's page.
+		{place, "21x53", issueTarget.URL},
 	} {
 		p := f.prepared(t, fmt.Sprint("p", i), "")
 		f.send(t, fmt.Sprint("s", i), p)
-		o := found("2153", "101")
+		o := found(c.id, "101")
 		o.Comment.URL = c.url
 		if _, applied, err := f.settle(f.pub(t, p.ID), o); !applied || err != nil {
 			t.Fatalf("%s: %v %v", c.url, applied, err)
 		}
 		if got := f.pub(t, p.ID).RemoteURL; got != c.kept {
-			t.Errorf("%s kept as %s", c.url, got)
+			t.Errorf("%s, id %s, kept as %s", c.url, c.id, got)
 		}
 	}
 }
@@ -1547,9 +1557,12 @@ func (q recordingQueryer) QueryRowContext(ctx context.Context, query string, arg
 // its code and its words, for a deleted ticket, an archived project (with
 // a link's target too), a body empty, of spaces, past its bound or with a
 // control character, a close or a part out of form, a target that is not
-// one, a link of another ticket or none, and the bound on a ticket's
-// publications; a request it passes, linked or a link of the ticket's
-// never read, is refused by PreparePublication only for its target.
+// one, a link of another ticket or none, a linked target of a ticket with
+// no linked item, a revision expected that is not the ticket's, a close of
+// an item held as a pull request (the linked item's kind, a link's last
+// read, a link's address), and the bound on a ticket's publications; a
+// request it passes, linked or a link of the ticket's never read, at the
+// ticket's revision, is refused by PreparePublication only for its target.
 func TestPrepareJudgedWithoutTarget(t *testing.T) {
 	f := newPubFixture(t)
 	ctx := context.Background()
@@ -1562,10 +1575,24 @@ func TestPrepareJudgedWithoutTarget(t *testing.T) {
 	rc, err = addLink(f.s, "l2", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/issues/11"})
 	want(t, rc, err, StatusDone, "")
 	ownLink := rc.ID
-	judged := func(name string, args PublicationArgs, code string) {
+	rc, err = addLink(f.s, "l3", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/pull/12"})
+	want(t, rc, err, StatusDone, "")
+	pullByAddress := rc.ID
+	rc, err = addLink(f.s, "l4", f.key, NewLink{Kind: LinkExternal, URL: "https://github.com/rocksolidlabs/conductor/issues/13"})
+	want(t, rc, err, StatusDone, "")
+	pullByRead := rc.ID
+	if err := f.s.RecordRead(ctx, pullByRead, prRead("PR_13", 1, "open")); err != nil {
+		t.Fatal(err)
+	}
+	pr := ghRead("PR_20", 0, "A pull request", "b")
+	pr.Snapshot.Kind, pr.Snapshot.ID, pr.Snapshot.URL = ExternalChange, "20", "https://github.com/rocksolidlabs/conductor/pull/20"
+	pullKey := mustImport(t, f.s, "imp-pr", "CND", pr)
+	judgedAt := func(name string, args PublicationArgs, rev int64, code string) {
 		t.Helper()
-		err := f.s.JudgePrepare(ctx, args)
-		rc, perr := f.s.PreparePublication(ctx, op(), args, PublicationTarget{}, markOf)
+		err := f.s.JudgePrepare(ctx, args, rev)
+		o := op()
+		o.ExpectedRev = rev
+		rc, perr := f.s.PreparePublication(ctx, o, args, PublicationTarget{}, markOf)
 		var ref *Refusal
 		switch {
 		case perr != nil:
@@ -1578,6 +1605,7 @@ func TestPrepareJudgedWithoutTarget(t *testing.T) {
 			t.Errorf("%s: judged %v, prepared %+v; want %s", name, err, rc, code)
 		}
 	}
+	judged := func(name string, args PublicationArgs, code string) { t.Helper(); judgedAt(name, args, 0, code) }
 	with := func(fn func(*PublicationArgs)) PublicationArgs {
 		a := PublicationArgs{Key: f.key, Target: TargetLinked, Body: "Fixed in v2."}
 		fn(&a)
@@ -1585,6 +1613,26 @@ func TestPrepareJudgedWithoutTarget(t *testing.T) {
 	}
 	judged("linked", with(func(*PublicationArgs) {}), "")
 	judged("a link of the ticket's", with(func(a *PublicationArgs) { a.Target = "link:" + ownLink }), "")
+	tk, err := f.s.Ticket(ctx, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{TargetLinked, "link:" + ownLink} {
+		judgedAt(target+", at the ticket's revision", with(func(a *PublicationArgs) { a.Target = target }), tk.Rev, "")
+		judgedAt(target+", at an older revision", with(func(a *PublicationArgs) { a.Target = target }), tk.Rev-1, RefusalStaleRevision)
+	}
+	judged("linked, a ticket with no linked item", PublicationArgs{Key: f.native, Target: TargetLinked, Body: "Fixed."}, RefusalInvalid)
+	for name, args := range map[string]PublicationArgs{
+		"a close of the linked pull request":         {Key: pullKey, Target: TargetLinked, Body: "Fixed.", CloseIssue: "completed"},
+		"a close of a link a pull request's address": with(func(a *PublicationArgs) { a.Target, a.CloseIssue = "link:"+pullByAddress, "completed" }),
+		"a close of a link read as a pull request":   with(func(a *PublicationArgs) { a.Target, a.CloseIssue = "link:"+pullByRead, "not_planned" }),
+	} {
+		judged(name, args, RefusalInvalid)
+		if err := f.s.JudgePrepare(ctx, args, 0); err == nil || !strings.Contains(err.Error(), "only an issue is closed") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	judged("no close of the linked pull request", PublicationArgs{Key: pullKey, Target: TargetLinked, Body: "Fixed."}, "")
 	for _, target := range []string{TargetLinked, "link:" + ownLink} {
 		for _, c := range []struct {
 			name string
@@ -1656,12 +1704,66 @@ func TestRestoredNeverClosed(t *testing.T) {
 		if _, applied, err := f.beginClose(p.ID); applied || !isRefusal(err, RefusalInvalid) {
 			t.Errorf("a restored publication's close begun: %v %v", applied, err)
 		}
+		if _, applied, err := f.settleClose(p.ID, CloseOutcome{State: CloseClosed, Words: "the issue was found closed on GitHub"}); applied || !isRefusal(err, RefusalInvalid) {
+			t.Errorf("a restored publication's issue recorded found closed: %v %v", applied, err)
+		}
 		if q := f.pub(t, p.ID); q.Rev != p.Rev || countOf(t, f.s, "SELECT COUNT(*) FROM ops") != kept {
-			t.Errorf("a refused begin moved the row or kept a receipt: %+v", q)
+			t.Errorf("a refused begin or record moved the row or kept a receipt: %+v", q)
 		}
 	}
 	if page, _, err := f.s.Publications(ctx, f.key, "", true); err != nil || len(page) != 0 {
 		t.Errorf("needing a person: %+v %v", page, err)
+	}
+}
+
+// An issue found closed is recorded closed by the one decision of a
+// close's answer, from pending (no try spent), from closing, and from
+// refused at the bound of tries, with no begin; the publication then needs
+// no person. An answer to a close already closed changes nothing (not
+// applied, no receipt); a refused answer to one not closing is refused.
+func TestFoundClosedFromEveryClose(t *testing.T) {
+	f := newPubFixture(t)
+	pending := f.sentWithClose(t, "p1")
+	closing := f.sentWithClose(t, "p2")
+	if _, _, err := f.beginClose(closing.ID); err != nil {
+		t.Fatal(err)
+	}
+	refused := f.sentWithClose(t, "p3")
+	for range MaxPublicationCloseTries {
+		if _, _, err := f.beginClose(refused.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := f.settleClose(refused.ID, CloseOutcome{State: CloseRefused, Words: "GitHub refused the close"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := f.beginClose(refused.ID); !isRefusal(err, RefusalBound) {
+		t.Fatalf("past the bound: %v", err)
+	}
+	if _, _, err := f.settleClose(pending.ID, CloseOutcome{State: CloseRefused}); !isRefusal(err, RefusalInvalid) {
+		t.Errorf("a refused answer to a pending close: %v", err)
+	}
+	for _, c := range []struct {
+		p     Publication
+		tries int
+	}{{pending, 0}, {closing, 1}, {refused, MaxPublicationCloseTries}} {
+		before := f.pub(t, c.p.ID)
+		if _, applied, err := f.settleClose(c.p.ID, CloseOutcome{State: CloseClosed, Words: "the issue was found closed on GitHub"}); !applied || err != nil {
+			t.Fatalf("%s found closed: %v %v", before.CloseState, applied, err)
+		}
+		q := f.pub(t, c.p.ID)
+		if q.CloseState != CloseClosed || q.CloseTries != c.tries || q.CloseError != "the issue was found closed on GitHub" || q.NeedsYou() {
+			t.Errorf("%s found closed: %+v", before.CloseState, q)
+		}
+		kept := countOf(t, f.s, "SELECT COUNT(*) FROM ops")
+		for _, o := range []CloseOutcome{{State: CloseClosed}, {State: CloseRefused, Words: "late"}} {
+			if _, applied, err := f.settleClose(c.p.ID, o); applied || err != nil {
+				t.Errorf("an answer %s to a close closed: %v %v", o.State, applied, err)
+			}
+		}
+		if r := f.pub(t, c.p.ID); r.Rev != q.Rev || countOf(t, f.s, "SELECT COUNT(*) FROM ops") != kept {
+			t.Errorf("an answer to a close closed moved the row: %+v", r)
+		}
 	}
 }
 

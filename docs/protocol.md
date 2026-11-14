@@ -5121,14 +5121,31 @@ A publication's `state` is `draft`, `sending`, `sent`, `failed`,
 5 `tries`, the try its `attempt`, the account the token belongs to as
 `sentAsId` and `sentAsLogin`) before its one request to post, and posts
 only when that commit was its own: the same `opId` again is answered from
-its receipt and posts nothing. A try after an earlier one first looks for
-that try's comment (the listing below): found, `sent` with that comment,
-nothing posted; the whole window listed without it, posted; a listing not
-whole or failed, nothing posted and the try `failed` with words, so Send
-looks again. The post's answer settles the try it belongs to and no
-other: the comment, `sent` (`remoteId`, `remoteUrl`, the comment's page
-on the target's host, the target's page for an address on another);
-an answer that proves nothing was posted (GitHub's `401`, `403` or
+its receipt and posts nothing, and the store's one transaction owns each
+try, so a comment is never posted twice. A try after an earlier one
+first looks at the item's comments and decides by the publication's
+marker alone, in the window the listing below reads: no comment holding
+the marker, by anyone, and the try posts; one by this try's account with
+the exact bytes, and the try is `sent` with that comment, nothing
+posted; any other holding the marker (another account's, or other
+bytes: the earlier try's comment edited, a comment quoting the marker),
+and nothing is posted, the try `failed` with the words `a comment
+carrying this publication's marker is on the item and is not this try's:
+nothing was posted; discard the publication and prepare a new one`; a
+listing not whole, one that failed, or an item that moved, and nothing
+is posted, the try `failed` with words, so Send looks again. That look
+costs at most one resolve and the listing's pages, within one post's
+cap. It is not trusted too soon: a try whose earlier try began less than
+30 s before (the quiet time the listing waits for below) is not begun,
+`503 tracker_busy` with `Retry-After` the seconds left and no try spent,
+so the same `opId` may be sent again. A send stopped in the middle of its
+look leaves the publication `sending` with nothing posted, and a settle of
+it past the quiet time makes it `unconfirmed`, which is never sent again
+(a person prepares a new one). The post's answer settles the try it
+belongs to and no other: the comment, `sent` (`remoteId`, and
+`remoteUrl`, the comment's place on the target's item: the target's page
+with `#issuecomment-` and the comment's id, whatever address GitHub
+answered); an answer that proves nothing was posted (GitHub's `401`, `403` or
 `429`, or a refusal of the mutation with no data), `failed`, which Send
 may post again; anything else (a timeout, a reset, a `5xx`, the server
 stopping) leaves it `sending`, and the comment is looked for. The
@@ -5152,24 +5169,36 @@ issue alone), is made after the comment: `closeState` `pending`, then
 `closing` (one more of at most 5 `closeTries`, committed before the
 close is sent), then `closed` or `refused` (the comment stays); an
 answer that does not say leaves it `closing`, for Close now. A close
-looks at the item first, whatever the count of tries: an issue found
-closed whose close is `closing` is settled `closed` from where it is, no
-try spent; otherwise the close is begun, and sent for an issue found
-open. Its `closeError` for an issue found closed is `closed on GitHub
-before Conductor's close` when no close of Conductor's was begun, and
-`the issue was found closed on GitHub` when one was. The close is sent
-only by the request whose begin changed the row: one that looked at the
-same row after another began it answers the publication as it stands.
-Each step the server makes for itself is applied only when it changes
+looks at the item first, whatever its state and the count of tries: an
+issue found closed is recorded `closed` from `pending`, `closing` or
+`refused`, with no close begun and no try spent; only for an issue found
+open is the close begun, and sent. Its `closeError` for an issue found
+closed is `closed on GitHub before Conductor's close` when no close of
+Conductor's was begun, and `the issue was found closed on GitHub` when
+one was. Of one server's requests a close is one at a time: it is sent
+only by the request whose begin changed the row, and one that looked at
+the same row after another began it answers the publication as it
+stands. Two Conductor servers over one data directory can each begin a
+try for one publication when their requests overlap, so GitHub can be
+asked twice to close one issue, which changes nothing for an issue
+already closed; a close's answer that finds the close already recorded
+`closed` changes nothing and answers the publication as it stands. A
+comment is never posted twice (the store's one transaction owns each
+try). Each step the server makes for itself is applied only when it changes
 the row; one another change came before at the same revision is refused
 (`stale_revision`). A publication's `error` and `closeError` are one of
 the server's own sentences, with at most the code of GitHub's answer in
 it (as `tracker_unavailable`), never GitHub's words, an address or an
 item's name. What the server can refuse from what it holds is refused
 before any token is read or any request is made to GitHub: a prepare is
-judged by the store for all that needs no target (its ticket live, its
-project not archived, the body, the close, the parts, a link the
-ticket's own, the bound of 100), a link not read and no read recorded;
+judged by the store for all that needs no target (its ticket live, at
+the revision `expectedRev` names when the body carries one; its project
+not archived; the body, the close, the parts; a target the ticket holds,
+`linked` only for a ticket with a linked item and a link only the
+ticket's own; a close of no item the server holds as a pull request, by
+the linked item's kind, or a link's last read or its address; the bound
+of 100), its refusal kept with its receipt, a link not read and no read
+recorded;
 a person's act on a publication (Send, Check, Close now, Discard) needs
 its ticket live and its project not archived, as a comment's write does:
 `404 not_found` (`<key> is deleted`) or `409 archived`; and a repeat of a
@@ -5178,17 +5207,23 @@ while its ticket is live, and otherwise answers its receipt and the
 publication as it stands. What the server settles of a send already
 begun is not refused, so a comment that was posted is recorded as
 posted. A publication the store does not hold, as in a store from before
-its publications, is `404 not_found` on every route.
+its publications, is `404 not_found` on every route. A publication's
+route whose context ends (the server stopping, or the route's time)
+answers whichever call met it (a replay, a begin, a read of the row, a
+step at GitHub, the lock) with `503 tracker_busy` (`Retry-After`) in
+words of its own, `the server is stopping or the request ran out of
+time: what was done is kept; send it again`; once the store itself has
+closed, the answer is the store's, `503 dispatch_unavailable`.
 
 | Route | Body | Answer |
 |---|---|---|
 | `GET /api/dispatch/tickets/{key}/publish/offer` | none | `{parts, targets}`: `parts` what the composer may insert, each `{name, markdown}` the exact Markdown, at most 16 KiB (`deliveries`, the live delivery links' URLs and notes; `checks`, the newest delivered candidate's verification receipt, each check's name and passed or failed; `key`, the ticket's key and title), never a comment, a finding, a plan's text, an attachment or a check's output; `targets` `[{target, url}]`, the linked issue and each live delivery or external link to a GitHub item |
-| `POST /api/dispatch/tickets/{key}/publications` | `{opId, byName?, target, body, parts?, closeIssue?}` | replays first; then the store judges all that needs no target, its refusal kept with its receipt, GitHub not asked; then, under the target's lock, reads the target from GitHub (a link is read again and recorded as its read) and runs `publication.prepare`: `201 {receipt, publication, preview, postSha256}`, `preview` the exact bytes Send posts. `404 not_found` for a deleted ticket, `409 archived`; `409 invalid` for a target that is not the ticket's linked issue or one of its live delivery or external links, a close of a pull request, a body, a close or a part out of form; `409 bound` for a body past 16 KiB or a ticket's 100 publications |
+| `POST /api/dispatch/tickets/{key}/publications` | `{opId, expectedRev?, byName?, target, body, parts?, closeIssue?}`, `expectedRev` the ticket's | replays first; then the store judges all that needs no target, its refusal kept with its receipt, GitHub not asked; then, under the target's lock, replays again (the same `opId` committed meanwhile answers its receipt, nothing read), reads the target from GitHub (a link is read again and recorded as its read, then resolved) and runs `publication.prepare`: `201 {receipt, publication, preview, postSha256}`, `preview` the exact bytes Send posts. `404 not_found` for a deleted ticket, `409 archived`; `409 stale_revision` for an `expectedRev` that is not the ticket's; `409 invalid` for a target that is not the ticket's linked issue or one of its live delivery or external links (`linked` for a ticket with no linked item among them), a close of a pull request (one the server holds as one, or GitHub reads as one), a body, a close or a part out of form; `409 bound` for a body past 16 KiB or a ticket's 100 publications |
 | `GET /api/dispatch/tickets/{key}/publications` | query `cursor?` (a publication's id), `needYou?` (`1`) | `{publications, next}`: at most 50, newest first, without their bodies, `needYou=1` those a person can act on (one `sending`, `unconfirmed` or `failed`, a restored draft, or a sent one whose close is `pending`, `closing` or `refused`); `next` the cursor of the next page, `""` at the end |
 | `GET /api/dispatch/publications/{id}` | none | `{publication, preview, postSha256}`, its body among it |
-| `POST /api/dispatch/publications/{id}/send` | `{opId, expectedRev?, byName?, postSha256}` | replays first (a resend posts nothing, settles one `sending` first while its ticket is live, and answers its receipt); then, under the publication's lock, resolves the target and reads the token's account, commits `sending`, looks for an earlier try's comment when there was one, and posts the preview's bytes to the node, settling the answer as above, then the close when asked: `200 {receipt, publication}`, also when a step after the post was refused (the publication says where it stands); `503 tracker_busy` (`Retry-After`) when the server stops or the send's time ends before the publication could be read for the reply, the same `opId` again answering it. Refused with its receipt kept, GitHub not asked: `404 not_found` for a deleted ticket, `409 archived`; `409 stale_revision` for a digest that is not the preview's or another revision; `409 invalid` for a publication not `draft` or `failed`, or restored; `409 bound` past 5 tries. `409 target_changed`, nothing kept |
+| `POST /api/dispatch/publications/{id}/send` | `{opId, expectedRev?, byName?, postSha256}` | replays first (a resend posts nothing, settles one `sending` first while its ticket is live, and answers its receipt); then, under the publication's lock, resolves the target and reads the token's account, commits `sending`, looks at the item's comments by the marker when there was an earlier try, and posts the preview's bytes to the node, settling the answer as above, then the close when asked: `200 {receipt, publication}`, also when a step after the post was refused (the publication says where it stands); `503 tracker_busy` (`Retry-After` the seconds left) for a try whose earlier try began less than 30 s before, nothing begun; `503 tracker_busy` (`Retry-After`) when the server stops or the send's time ends, the same `opId` again answering it. Refused with its receipt kept, GitHub not asked: `404 not_found` for a deleted ticket, `409 archived`; `409 stale_revision` for a digest that is not the preview's or another revision; `409 invalid` for a publication not `draft` or `failed`, or restored; `409 bound` past 5 tries. `409 target_changed`, nothing kept |
 | `POST /api/dispatch/publications/{id}/check` | `{}` | looks for the comment now and settles what it found, for one `sending` or `unconfirmed`, or a restored draft or failed one: `200 {publication}`; `409 invalid` otherwise; `404 not_found` for a deleted ticket and `409 archived` before any token is read; `409 stale_revision` or `invalid` when another change to it came first. Posts nothing |
-| `POST /api/dispatch/publications/{id}/close` | `{opId, expectedRev?, byName?}` | Close now, for a sent one of this store's whose asked close is `pending`, `closing` or `refused`: looks at the item first, then closes as above: `200 {publication}`, one closed already answered as it stands; `404 not_found` for a deleted ticket, `409 archived` and `409 invalid` for a restored one, GitHub not asked; `409 stale_revision` for another revision; `409 target_changed`; `409 bound` past 5 closes, after the look |
+| `POST /api/dispatch/publications/{id}/close` | `{opId, expectedRev?, byName?}` | Close now, for a sent one of this store's whose asked close is `pending`, `closing` or `refused`: looks at the item first, an issue found closed recorded `closed` with no close begun, then closes one found open as above: `200 {publication}`, one closed already answered as it stands; `404 not_found` for a deleted ticket, `409 archived` and `409 invalid` for a restored one, GitHub not asked; `409 stale_revision` for another revision; `409 target_changed`; `409 bound` past 5 closes, after the look |
 | `POST /api/dispatch/publications/{id}/discard` | `{opId, expectedRev?, byName?}` | `publication.discard`, for a `draft`, `failed` or `unconfirmed` one (its comment may still appear on GitHub): `{receipt, publication}`; `404 not_found` for a deleted ticket, `409 archived`, `409 invalid` otherwise, each with its receipt |
 
 A publication is `{id, ticket, target, targetKind, targetUrl, targetRef,
@@ -5201,14 +5236,15 @@ carries its newest 10 publications without their bodies
 (`publications`) and how many older ones a person can act on
 (`publicationsNeedYou`), within `MaxTicketReply`. Each step has its own
 cap, counted from the moment it starts: the wait for the lock 15 s; a
-look at the item (a resolve, with the account's read in a send, or a
-link's read with the resolve in a prepare) 45 s; one write to GitHub
-(the post, the close) or one listing of the comments 30 s; one step of
-the store's 30 s. Each route's deadline is the sum of its steps' caps: a
-send 315 s (the lock, a look, the send begun, a listing for an earlier
-try's comment, the post, its settle, then either a listing and its
-settle or the close's steps), a prepare 120 s (the lock, a look, two
-steps of the store's), a Check 75 s (the lock, a listing, its settle)
+look at the item (a resolve, with the account's read in a send; in a
+prepare a link's read, and the resolve after the read's record, each a
+look of its own) 45 s; one write to GitHub (the post, the close) or one
+listing of the comments 30 s; one step of the store's 30 s. Each route's
+deadline is the sum of its steps' caps: a send 315 s (the lock, a look,
+the send begun, a later try's look at the comments, the post, its
+settle, then either a listing and its settle or the close's steps), a
+prepare 165 s (the lock, a link's read, its record, the resolve, the
+prepare), a Check 75 s (the lock, a listing, its settle)
 and Close now 150 s (the lock and the close's steps: a look, the close
 begun, the close, its settle). A publication's routes wait for its lock
 at most that 15 s (`503 tracker_busy`, nothing read or written).

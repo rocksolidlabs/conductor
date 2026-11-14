@@ -1095,17 +1095,22 @@ func (s *Server) readableLink(ctx context.Context, w http.ResponseWriter, ds *di
 	if !ok {
 		return tracker.Ref{}, false
 	}
-	i := slices.IndexFunc(tv.Links, func(l dispatch.Link) bool { return l.ID == id && l.DeletedAt.IsZero() })
-	if i < 0 || tv.Links[i].Kind != dispatch.LinkDelivery && tv.Links[i].Kind != dispatch.LinkExternal {
-		writeError(w, http.StatusNotFound, "not_found", "no such live delivery or external link of "+key)
-		return tracker.Ref{}, false
-	}
-	ref, ae := s.parseItem(tv.Links[i].URL, "")
+	ref, ae := s.linkRef(tv, id)
 	if ae != nil {
 		writeAPIError(w, ae)
 		return tracker.Ref{}, false
 	}
 	return ref, true
+}
+
+// linkRef is the item tv's live delivery or external link with the id
+// names (readableLink's answers otherwise).
+func (s *Server) linkRef(tv dispatch.TicketView, id string) (tracker.Ref, *apiError) {
+	i := slices.IndexFunc(tv.Links, func(l dispatch.Link) bool { return l.ID == id && l.DeletedAt.IsZero() })
+	if i < 0 || tv.Links[i].Kind != dispatch.LinkDelivery && tv.Links[i].Kind != dispatch.LinkExternal {
+		return tracker.Ref{}, newAPIError(http.StatusNotFound, "not_found", "no such live delivery or external link of "+tv.Key)
+	}
+	return s.parseItem(tv.Links[i].URL, "")
 }
 
 // readLink reads the item a link names and records it (RecordRead): its

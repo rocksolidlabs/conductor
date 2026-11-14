@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -305,28 +306,22 @@ func loginOf(s string) string {
 // commentAnchor is a comment's anchor in its page's address.
 var commentAnchor = regexp.MustCompile(`^issuecomment-[0-9]{1,20}$`)
 
-// commentPage is a sent comment's page as its publication keeps it: what
-// the store keeps of an address (admitAddress: no query, no user), on the
-// host of the target's page (target) and no other, and the fragment when
-// it is the comment's anchor (#issuecomment- and digits), no other; the
-// target's page for an address on another host, "" for one the store does
-// not admit.
-func commentPage(s, target string) string {
-	a, err := admitAddress("the comment's page", s)
-	if err != nil {
-		return ""
-	}
+// commentPage is a sent comment's page as its publication keeps it: its
+// place on the target's own item, the target's page (target, as the store
+// keeps an address) with the comment's anchor, #issuecomment- and the
+// comment's id. That is the address GitHub gives a comment on that item,
+// so an answer's address that is it is kept as it is, and any other, on
+// the same host or not, is replaced by it. The target's page alone for an
+// id that makes no anchor; "" for a target the store does not admit.
+func commentPage(target, id string) string {
 	t, err := admitAddress("the target", target)
 	if err != nil {
 		return ""
 	}
-	if a.host != t.host {
-		return t.kept
+	if frag := "issuecomment-" + id; commentAnchor.MatchString(frag) && len(t.kept)+1+len(frag) <= MaxExternalURL {
+		return t.kept + "#" + frag
 	}
-	if _, frag, ok := strings.Cut(s, "#"); ok && commentAnchor.MatchString(frag) && len(a.kept)+1+len(frag) <= MaxExternalURL {
-		return a.kept + "#" + frag
-	}
-	return a.kept
+	return t.kept
 }
 
 // pubWords is an outcome's words as a publication's row keeps them (its
@@ -426,7 +421,7 @@ func (p Publication) settled(attempt int, o Outcome, instance string, now time.T
 		if restored || p.SentAsID == "" {
 			p.SentAsID, p.SentAsLogin = c.AuthorID, loginOf(c.Author)
 		}
-		p.RemoteID, p.RemoteURL = c.ID, commentPage(c.URL, p.TargetURL)
+		p.RemoteID, p.RemoteURL = c.ID, commentPage(p.TargetURL, c.ID)
 		p.State, p.SentAt, p.Error = PublicationSent, now, ""
 		if p.CloseIssue != "" && !restored {
 			p.CloseState = ClosePending
@@ -469,11 +464,24 @@ func (p Publication) beginClose(instance string) (Publication, error) {
 	return p, nil
 }
 
-// closeSettled is the decision of a close's answer: a closing one becomes
-// closed or refused, with its words.
-func (p Publication) closeSettled(o CloseOutcome) (Publication, error) {
-	if p.CloseState != CloseClosing || (o.State != CloseClosed && o.State != CloseRefused) {
-		return p, refuse(RefusalInvalid, "a close's answer settles a closing close as closed or refused")
+// closeSettled is the decision of a close's answer and of an issue found
+// closed: a closing close becomes closed or refused, with its words; an
+// issue found closed makes a pending, closing or refused close closed,
+// with no begin and no try spent; an answer to a close another request
+// recorded closed changes nothing. A restored one is never closed here:
+// its close is the original's.
+func (p Publication) closeSettled(o CloseOutcome, instance string) (Publication, error) {
+	switch {
+	case p.Instance != instance:
+		return p, refuse(RefusalInvalid, "restored from an export: its issue's close is the original's")
+	case p.State != PublicationSent || p.CloseIssue == "":
+		return p, refuse(RefusalInvalid, "only a sent publication whose close was asked for is closed")
+	case p.CloseState == CloseClosed && (o.State == CloseClosed || o.State == CloseRefused):
+		return p, nil
+	case o.State == CloseClosed && (p.CloseState == ClosePending || p.CloseState == CloseClosing || p.CloseState == CloseRefused),
+		o.State == CloseRefused && p.CloseState == CloseClosing:
+	default:
+		return p, refuse(RefusalInvalid, "a close's answer settles a closing close as closed or refused, and an issue found closed as closed")
 	}
 	p.CloseState, p.CloseError = o.State, pubWords(o.Words, "")
 	return p, nil
@@ -549,15 +557,21 @@ func normalBody(s string) (string, error) {
 }
 
 // prepareJudged is the one judgement of a prepare that needs no target,
-// read through q: the ticket live (not_found) and its project not
-// archived (archived); the body (normalBody); the close asked, completed
-// or not_planned; the parts, each one offered and once; the target linked,
-// or link:<id> naming a live delivery or external link of this ticket (its
-// read not needed here); and at most MaxPublications a ticket (bound). It
-// gives the ticket, the body and the parts as a publication keeps them.
-func prepareJudged(ctx context.Context, q queryer, args PublicationArgs) (Ticket, string, []string, error) {
+// read through q: the ticket live (not_found), at the revision expected
+// when one is (stale_revision), and its project not archived (archived);
+// the body (normalBody); the close asked, completed or not_planned; the
+// parts, each one offered and once; the target linked, for a ticket with a
+// linked item, or link:<id> naming a live delivery or external link of
+// this ticket (its read not needed here); a close asked only of an item
+// not held as a pull request (the linked item's kind, a link's last read
+// or its address); and at most MaxPublications a ticket (bound). It gives
+// the ticket, the body and the parts as a publication keeps them.
+func prepareJudged(ctx context.Context, q queryer, args PublicationArgs, expectedRev int64) (Ticket, string, []string, error) {
 	tk, err := liveTicket(ctx, q, args.Key, false)
 	if err != nil {
+		return Ticket{}, "", nil, err
+	}
+	if err := expected(expectedRev, tk.Rev); err != nil {
 		return Ticket{}, "", nil, err
 	}
 	if _, err := openProject(ctx, q, tk); err != nil {
@@ -577,17 +591,30 @@ func prepareJudged(ctx context.Context, q queryer, args PublicationArgs) (Ticket
 		}
 		parts = append(parts, part)
 	}
-	held := args.Target == TargetLinked
-	if linkID, ok := strings.CutPrefix(args.Target, "link:"); ok {
-		var n int
-		if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM links WHERE id = ? AND ticket_id = ? AND deleted_at = '' AND kind IN (?, ?)`,
-			linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&n); err != nil {
+	held, pull := args.Target == TargetLinked && tk.ExternalID != "", false
+	if held {
+		sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
+		pull = sn.Kind == ExternalChange
+	} else if linkID, ok := strings.CutPrefix(args.Target, "link:"); ok {
+		var addr, read string
+		err := q.QueryRowContext(ctx, `SELECT l.url, COALESCE(r.kind, '') FROM links l LEFT JOIN link_reads r ON r.link_id = l.id
+			WHERE l.id = ? AND l.ticket_id = ? AND l.deleted_at = '' AND l.kind IN (?, ?)`, linkID, tk.ID, LinkDelivery, LinkExternal).Scan(&addr, &read)
+		if err != nil && !isNoRows(err) {
 			return Ticket{}, "", nil, err
 		}
-		held = n > 0
+		var seg []string
+		if u, perr := url.Parse(addr); perr == nil {
+			seg = strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+		}
+		held, pull = err == nil, read == ExternalChange || len(seg) == 4 && seg[2] == "pull"
 	}
-	if !held {
+	switch {
+	case args.Target == TargetLinked && !held:
+		return Ticket{}, "", nil, refuse(RefusalInvalid, "%s has no linked issue", tk.Key)
+	case !held:
 		return Ticket{}, "", nil, refuse(RefusalInvalid, "the target is not an item %s holds: its linked issue, or a live delivery or external link read from GitHub", tk.Key)
+	case args.CloseIssue != "" && pull:
+		return Ticket{}, "", nil, refuse(RefusalInvalid, "only an issue is closed, and the target of %s is a pull request: closing one closes it unmerged", tk.Key)
 	}
 	var n int
 	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM publications WHERE ticket_id = ?", tk.ID).Scan(&n); err != nil {
@@ -599,13 +626,14 @@ func prepareJudged(ctx context.Context, q queryer, args PublicationArgs) (Ticket
 	return tk, body, parts, nil
 }
 
-// JudgePrepare judges a prepare of args as publication.prepare will, for
-// all it needs no target for (prepareJudged), so a route refuses what the
-// store would before it reads anything from the tracker; nil when the
-// prepare may go on to its target.
-func (s *Store) JudgePrepare(ctx context.Context, args PublicationArgs) error {
+// JudgePrepare judges a prepare of args, its operation expecting the
+// ticket's revision expectedRev (none when 0), as publication.prepare
+// will, for all it needs no target for (prepareJudged), so a route refuses
+// what the store would before it reads anything from the tracker; nil when
+// the prepare may go on to its target.
+func (s *Store) JudgePrepare(ctx context.Context, args PublicationArgs, expectedRev int64) error {
 	return s.read(ctx, func(q queryer) error {
-		_, _, _, err := prepareJudged(ctx, q, args)
+		_, _, _, err := prepareJudged(ctx, q, args, expectedRev)
 		return err
 	})
 }
@@ -629,10 +657,7 @@ func (s *Store) JudgePrepare(ctx context.Context, args PublicationArgs) error {
 // judgement JudgePrepare reads. The receipt's id is the publication's.
 func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationArgs, target PublicationTarget, mark func(id string) string) (Receipt, error) {
 	return s.Apply(ctx, op, IntentPublicationPrepare, args, func(t *tx) error {
-		if _, _, err := t.ticket(args.Key, false); err != nil {
-			return err
-		}
-		tk, body, parts, err := prepareJudged(t.ctx, t.tx, args)
+		tk, body, parts, err := prepareJudged(t.ctx, t.tx, args, t.op.ExpectedRev)
 		if err != nil {
 			return err
 		}
@@ -682,7 +707,7 @@ func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationA
 			return refuse(RefusalInvalid, "the target is not an item %s holds: its linked issue, or a live delivery or external link read from GitHub", tk.Key)
 		}
 		if args.CloseIssue != "" && kind != ExternalIssue {
-			return refuse(RefusalInvalid, "only an issue is closed: closing a pull request closes it unmerged")
+			return refuse(RefusalInvalid, "only an issue is closed, and the target of %s is a pull request: closing one closes it unmerged", tk.Key)
 		}
 		instance, err := instanceOf(t.ctx, t.tx)
 		if err != nil {
@@ -853,14 +878,15 @@ func (s *Store) BeginClose(ctx context.Context, id string, rev int64) (Receipt, 
 	})
 }
 
-// SettleClose settles a close begun with its answer (closeSettled).
+// SettleClose settles a close begun with its answer, or records an issue
+// found closed (closeSettled).
 func (s *Store) SettleClose(ctx context.Context, id string, o CloseOutcome) (Receipt, bool, error) {
 	input := struct {
 		ID      string       `json:"id"`
 		Outcome CloseOutcome `json:"outcome"`
 	}{id, o}
-	return s.serverOp(ctx, id, "close", IntentPublicationClose, false, 0, input, func(p Publication, _ string, _ time.Time) (Publication, error) {
-		return p.closeSettled(o)
+	return s.serverOp(ctx, id, "close", IntentPublicationClose, false, 0, input, func(p Publication, instance string, _ time.Time) (Publication, error) {
+		return p.closeSettled(o, instance)
 	})
 }
 
