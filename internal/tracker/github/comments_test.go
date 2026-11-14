@@ -806,6 +806,52 @@ func TestFindNoOnlyFromAWholeListing(t *testing.T) {
 	}
 }
 
+// A Match that is Marked looks at every comment holding its marker: the
+// comment that matches (its author, its exact bytes) is found wherever it
+// is in the window; with none that matches, a comment holding the marker
+// by another account, edited, or only quoting it, makes the whole window
+// other, on one page and over two; no comment holding it, no. A Match not
+// Marked answers no for each of those.
+func TestFindMarkedSaysOther(t *testing.T) {
+	r := newRig(t)
+	r.answerAll()
+	marker := r.a.Marker("p1")
+	posted := "Fixed in the delivery.\n\n" + marker
+	m := tracker.Match{Marker: marker, BodySha256: tracker.BodyDigest(posted), AuthorID: "9000001", Marked: true}
+	unmarked := m
+	unmarked.Marked = false
+	for _, c := range []struct {
+		name          string
+		pages         int
+		list          []map[string]any
+		want, without tracker.Found
+	}{
+		{"its own comment after another's", 1, []map[string]any{comment(7700002, 9000002, posted), comment(7700001, 9000001, posted)}, tracker.FoundYes, tracker.FoundYes},
+		{"another account's copy", 1, []map[string]any{comment(7700002, 9000002, posted)}, tracker.FoundOther, tracker.FoundNo},
+		{"its comment edited", 1, []map[string]any{comment(7700001, 9000001, "Fixed, edited.\n\n"+marker)}, tracker.FoundOther, tracker.FoundNo},
+		{"a quote of the marker", 1, []map[string]any{comment(7700003, 9000002, "see "+marker+" above")}, tracker.FoundOther, tracker.FoundNo},
+		{"a quote on the second page", 2, []map[string]any{comment(7700003, 9000002, "see "+marker)}, tracker.FoundOther, tracker.FoundNo},
+		{"no marker", 1, []map[string]any{comment(7700004, 9000002, "an unrelated comment")}, tracker.FoundNo, tracker.FoundNo},
+	} {
+		r.comments(c.pages, func(p, i int) map[string]any {
+			switch {
+			case p == c.pages && i < len(c.list):
+				return c.list[i]
+			case p < c.pages:
+				return comment(7600000+i, 9000002, "an unrelated comment")
+			}
+			return nil
+		})
+		got, found, err := r.a.FindComment(ctx, r.cred, target, now, m)
+		if err != nil || found != c.want || found == tracker.FoundYes && got.ID != "7700001" {
+			t.Errorf("%s, marked: %v %+v %v", c.name, found, got, err)
+		}
+		if _, found, err := r.a.FindComment(ctx, r.cred, target, now, unmarked); err != nil || found != c.without {
+			t.Errorf("%s, not marked: %v %v", c.name, found, err)
+		}
+	}
+}
+
 // Resolve answers only what it read: a node answered with errors beside it
 // (a field that failed is null and its error listed) or with a state GitHub
 // gives no such item is an answer Conductor cannot read, never one whose
