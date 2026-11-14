@@ -373,6 +373,9 @@ type RecipeQuestion struct {
 	AnswersFromScreen bool           `json:"answersFromScreen,omitempty"`
 	ModeAnswers       string         `json:"modeAnswers,omitempty"`
 	TypedAnswers      string         `json:"typedAnswers,omitempty"`
+	// Line marks a startup question with no answers that takes a line of
+	// text (catalog.Question.Line); an older host ignores it.
+	Line bool `json:"line,omitempty"`
 }
 
 // Bounds of a HostRecipe: the catalog's own (catalog.MaxQuestions,

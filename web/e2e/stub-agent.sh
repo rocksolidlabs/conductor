@@ -22,6 +22,8 @@
 #                   $HOME/.codex/config.toml; Down then Enter, or Esc,
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
+#   STUB_SIGNIN     an invented code: the stub starts on Claude Code's
+#                   sign-in screen and takes that code alone (sign_in)
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
@@ -1122,6 +1124,47 @@ mcp_ok() {
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
 # first writes the trust the way Codex keeps it; on Quit the stub exits, as
 # Codex does.
+# sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
+# browser's link, then "Paste code here if prompted >"), bracketed paste on,
+# and reads a line without echoing it: the invented code STUB_SIGNIN names
+# signs in ("Login successful."), any other is refused ("That code was not
+# accepted.") and the screen drawn again. A window resized has the screen
+# drawn again whole, as Claude Code's TUI does. The transcript says only
+# whether a code was taken, never the line; the stub signs in to nothing.
+sign_in() {
+	local code note='' st resized=''
+	signin_draw() {
+		printf '\e[2J\e[H\e[?2004h%sWelcome to Claude Code\r\n\r\n Browser didn'"'"'t open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > ' "$note"
+	}
+	# Bash runs a trap only between reads: the read waits a moment at a time
+	# (the terminal hands it whole lines), and a resize noted meanwhile has
+	# the screen drawn again.
+	trap 'resized=1' WINCH
+	while :; do
+		signin_draw
+		while :; do
+			IFS= read -rs -t 0.2 code && break
+			st=$?
+			((st > 128)) || exit 0
+			if [[ -n $resized ]]; then
+				resized=''
+				signin_draw
+			fi
+		done
+		code=${code//"$paste_start"/}
+		code=${code//"$paste_end"/}
+		code=${code%$'\r'}
+		if [[ $code == "$STUB_SIGNIN" ]]; then
+			trap - WINCH
+			printf 'signin: accepted\n' >>"$transcript"
+			printf '\e[2J\e[HLogin successful.\r\n'
+			return
+		fi
+		printf 'signin: refused\n' >>"$transcript"
+		note=$' That code was not accepted.\r\n\r\n'
+	done
+}
+
 trust_dialog() {
 	local sel=0 key seq
 	draw() {
@@ -1587,6 +1630,9 @@ if [[ -n $resume_id ]]; then
 	fi
 else
 	: >>"$transcript"
+fi
+if [[ -n ${STUB_SIGNIN:-} ]]; then
+	sign_in
 fi
 if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 	trust_dialog

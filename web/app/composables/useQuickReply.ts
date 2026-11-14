@@ -78,19 +78,20 @@ export function useQuickReply() {
     return (await over(session, opts.token, { question: opts.question, input, reqId: opts.reqId }, opts.server)) !== 'not_sent'
   }
 
-  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<boolean> {
-    return (await answer(session, { text }, opts)) !== 'not_sent'
+  /** `line`: the text answers a startup question that takes a line (#902, a sign-in code): it is not remembered as the typed answer. */
+  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string; reqId?: string; line?: boolean } = {}): Promise<boolean> {
+    return (await answer(session, { text, line: opts.line }, opts)) !== 'not_sent'
   }
 
   /**
    * Answers a question with a choice's keys (`input`) or a typed line (`text`), and says what became of it (AnswerOutcome): the
    * decision page keeps the owner's word, and only that, as its action's outcome (useInbox).
    */
-  async function answer(session: Pick<SessionInfo, 'id' | 'kind'>, what: { input: string } | { text: string }, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<AnswerOutcome> {
+  async function answer(session: Pick<SessionInfo, 'id' | 'kind'>, what: { input: string } | { text: string; line?: boolean }, opts: { token?: string; server?: string; question?: string; reqId?: string } = {}): Promise<AnswerOutcome> {
     const out = await over(session, opts.token, { ...what, question: opts.question, reqId: opts.reqId }, opts.server)
     // The line sent, this browser shows it under the question to its own person: the owner repeats no typed line (#364). One
-    // not sent (a reply under way from here, a duplicate) is not remembered.
-    if (out !== 'not_sent' && 'text' in what) typedAnswers.remember(opts.question, what.text)
+    // not sent (a reply under way from here, a duplicate) is not remembered, nor a startup question's line (#902: a sign-in code).
+    if (out !== 'not_sent' && 'text' in what && !what.line) typedAnswers.remember(opts.question, what.text)
     return out
   }
 

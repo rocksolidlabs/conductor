@@ -147,6 +147,25 @@ async function pasteClipboard(): Promise<void> {
     notice.value = 'This page cannot read the clipboard: paste with Ctrl+Shift+V'
   }
 }
+/**
+ * A touch device's paste (#902): a page served over plain http on a LAN is given no clipboard to read, and a phone's own paste does
+ * not reach xterm, so a controller's terminal there offers a field to paste into. Its text is typed into the terminal as keys (a
+ * paste, bracketed when the program asked), with no Enter added: line breaks at its end are dropped. The text is held in the field
+ * alone and emptied once typed or the field is closed.
+ */
+const touch = ref(false)
+const pasteOpen = ref(false)
+const pasteText = ref('')
+const pasteForm = useId()
+watch(pasteOpen, (open) => {
+  if (!open) pasteText.value = ''
+})
+function typePaste() {
+  const text = pasteText.value.replace(/[\r\n]+$/, '')
+  pasteOpen.value = false
+  pasteText.value = ''
+  if (text && canPaste() && term) term.paste(text)
+}
 /** Whether the program running asked for mouse reports. */
 function appHoldsMouse(): boolean {
   return !!term && term.modes.mouseTrackingMode !== 'none'
@@ -535,7 +554,7 @@ function handleControl(msg: ControlMessage) {
       break
     case 'attention':
       // A question answered by keys in the terminal reads as none to offer (liveAttention, #258).
-      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision }))
+      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision, line: msg.line }))
       break
     case 'viewers':
       roster.value = msg.list ?? []
@@ -731,6 +750,7 @@ onMounted(() => {
     rightClickSelectsWord: false,
   })
   rightClickPastes.value = readRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage)
+  touch.value = navigator.maxTouchPoints > 0 || !!window.matchMedia?.('(pointer: coarse)').matches
   term.onSelectionChange(() => (hasSelection.value = !!term?.hasSelection()))
   term.onResize(({ cols, rows }) => (grid.value = { cols, rows }))
   stopTheme = watch(theme, (t) => {
@@ -857,6 +877,23 @@ onBeforeUnmount(() => {
       <span class="text-muted">Sized by <span class="font-medium text-default" data-sizer-name>{{ sizerChip.who }}</span> · <span class="font-mono">{{ sizerChip.cols }} × {{ sizerChip.rows }}</span></span>
       <UButton label="Fit to my window" icon="i-lucide-maximize-2" size="xs" color="neutral" variant="soft" data-fit-mine @click="takeSize" />
     </div>
+
+    <template v-if="touch && !compact && canPaste()">
+      <UButton icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" aria-label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
+      <UModal v-model:open="pasteOpen" title="Paste into the terminal" description="What you paste or type here is typed into the terminal as keys, with no Enter.">
+        <template #body>
+          <form :id="pasteForm" @submit.prevent="typePaste">
+            <UTextarea v-model="pasteText" :rows="3" autofocus autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" class="w-full" aria-label="Text to type into the terminal" data-terminal-paste-text />
+          </form>
+        </template>
+        <template #footer>
+          <div class="flex w-full justify-end gap-2">
+            <UButton label="Cancel" color="neutral" variant="outline" @click="pasteOpen = false" />
+            <UButton type="submit" :form="pasteForm" label="Type it" icon="i-lucide-keyboard" :disabled="!pasteText" data-terminal-paste-send />
+          </div>
+        </template>
+      </UModal>
+    </template>
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />

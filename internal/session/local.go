@@ -1157,7 +1157,11 @@ func (s *Local) fireTrust(text string) {
 			// is never asked.
 			return
 		}
-		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
+		rules := unlessWaiting | startupLook
+		if q.Line && len(q.Answers) == 0 {
+			rules |= takesLine
+		}
+		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), rules, anyTurn, s.trust.LookedAt(), "")
 		if len(q.Answers) == 0 {
 			if hook := s.afterAsked.Load(); hook != nil {
 				(*hook)()
@@ -1261,6 +1265,42 @@ func (s *Local) startupOnScreen() bool {
 	whole, _, _, _ := s.asked.Whole()
 	uncut, _, _ := s.asked.DrawnAt()
 	return uncut && s.lastStartup(whole) != ""
+}
+
+// takesLine reports whether a reply's line from by may be typed into the
+// question named id, its Enter after it (#902): by is a controller (a
+// viewer's answer, never Conductor's own text), id the startup question
+// the session shows, marked as one that takes a line (Attention.Line), and
+// the screen as it is now, a whole frame with nothing cut, shows that
+// question as the only startup question on it, with its words, and no
+// dialog's numbered choice. Every other startup question (the trust
+// question, an update dialog, any with choices or none that is not
+// marked) takes no line: its Enter would pick what it highlights.
+func (s *Local) takesLine(id string, by *Subscription) bool {
+	if id == "" || by == nil || s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	s.mu.Lock()
+	att := s.info.Attention
+	s.mu.Unlock()
+	if att.ID != id || att.State != AttentionNeedsInput || att.Source != SourceTrust || !att.Line || len(att.Options) != 0 || att.Decision != "" {
+		return false
+	}
+	whole, settled, _, _ := s.asked.Whole()
+	uncut, _, _ := s.asked.DrawnAt()
+	if !settled || !uncut || startupChoiceShown(whole) {
+		return false
+	}
+	var shown *StartupQuestion
+	for i := range s.questions {
+		if q := &s.questions[i]; q.Pattern.MatchString(whole) {
+			if shown != nil {
+				return false
+			}
+			shown = q
+		}
+	}
+	return shown != nil && shown.Line && len(shown.Answers) == 0 && sameWords(shown.words(whole), att.words())
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a
@@ -1379,6 +1419,11 @@ type StartupQuestion struct {
 	// highlight stands before one, the dialog's keys type into its field,
 	// and the question offers no choices.
 	Typed *regexp.Regexp
+	// Line marks a startup question with no answers that takes a line of
+	// text (the catalog's line: Claude Code's sign-in screen): a
+	// controller's reply naming it is typed into it with its Enter
+	// (takesLine). Ignored on a question with answers or asked at any time.
+	Line bool
 }
 
 // read returns what text, the screen the questions asked during the work
@@ -1868,6 +1913,9 @@ const (
 	// question asked during the work (keepAsked), whether or not it spends
 	// a token here (a forwarded report paid on the server).
 	fromReport
+	// takesLine (fireTrust) marks a startup question with no answers that
+	// takes a line of text (StartupQuestion.Line): Attention.Line.
+	takesLine
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -2266,7 +2314,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
 	}
-	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
+	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list,
+		Line: rules&takesLine != 0 && state == AttentionNeedsInput && source == SourceTrust && len(options) == 0}
 	// The plan the change names rides its question; the approval's dialog
 	// read off the screen (planApproval) that takes the place of a wait
 	// carrying one (the hook's report of that approval) keeps it; any
@@ -2393,7 +2442,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan, Decision: att.Decision}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan, Decision: att.Decision, Line: att.Line}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -3473,7 +3522,12 @@ func (s *Local) claimLocked(id, decision string) (uint64, error) {
 	case SourceQuestion:
 		s.noteDialogAnswered(att.words())
 	case SourceTrust:
-		s.startupAnsweredWords = att.words()
+		// A question that takes a line is not noted answered by its words:
+		// drawn again after its line (a code the program refused), it is
+		// asked again, to take another.
+		if !att.Line {
+			s.startupAnsweredWords = att.words()
+		}
 	}
 	return c.token, nil
 }

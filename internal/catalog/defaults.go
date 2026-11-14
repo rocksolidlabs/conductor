@@ -123,9 +123,13 @@ func defaults() []Agent {
 				// screen with no answers: no key of Conductor's passes it,
 				// so it holds the session's first line as every startup
 				// question does, shows under Needs you with its words, and
-				// a Brakeman turn that meets it ends (heldAtStartup).
+				// a Brakeman turn that meets it ends (heldAtStartup). It
+				// takes a line (#902): the code a browser on another device
+				// shows, which a controller's answer types into its field
+				// with its Enter.
 				Prompt: `(?i)paste\s*code\s*here\s*if\s*prompted`,
 				Words:  `(?i)browser\s*didn.t\s*open\?\s*use\s*the\s*url\s*below\s*to\s*sign\s*in`,
+				Line:   true,
 			}, {
 				// On an account folder never used (2.1.319 under an empty
 				// CLAUDE_CONFIG_DIR, seen by #659's third live check on

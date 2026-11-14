@@ -225,6 +225,8 @@ export interface AgentQuestion {
   answersFromScreen?: boolean
   /** RE2 matching the labels of its answers that change the session's permission mode: no number key, never offered first. */
   modeAnswers?: string
+  /** A startup question with no answers that takes a line of text (Claude Code's sign-in screen, #902). */
+  line?: boolean
 }
 
 /** Body of POST /api/sessions/{id}/events: something the agent did, or an attention word. */

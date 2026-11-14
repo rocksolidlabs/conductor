@@ -1207,6 +1207,14 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: ".*"}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: "("}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: ".*"}},
+		// A line is taken only by a startup question with no answers (#902):
+		// never by a dialog with choices (an update dialog), one asked at
+		// any time, or one whose answers are read off the screen.
+		{{Prompt: "Update now", Line: true, Answers: []Answer{{Label: "Skip", Input: "\x1b"}}}},
+		{{Prompt: "Paste code", Line: true, Anytime: true}},
+		{{Prompt: "Paste code", Line: true, Anytime: true, AnswersFromScreen: true}},
+		{{Prompt: "Paste code", Line: true, TypedAnswers: "x"}},
+		{{Prompt: "Paste code", Line: true, ModeAnswers: "x"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1215,9 +1223,30 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}, {Prompt: "Paste code", Line: true}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Of the built-in entries' questions, Claude Code's sign-in screen alone
+// takes a line (#902): no trust question can (it is no question of the
+// list), and no update dialog or other question with choices does.
+func TestOnlyTheSignInScreenTakesALine(t *testing.T) {
+	var lines []string
+	for _, a := range Default().List() {
+		for _, q := range a.Questions {
+			if !q.Line {
+				continue
+			}
+			lines = append(lines, a.ID+": "+q.Prompt)
+			if q.Anytime || len(q.Answers) > 0 || q.AnswersFromScreen {
+				t.Errorf("%s: a question that takes a line has choices: %+v", a.ID, q)
+			}
+		}
+	}
+	if want := []string{`claude: (?i)paste\s*code\s*here\s*if\s*prompted`}; !slices.Equal(lines, want) {
+		t.Fatalf("the questions that take a line: %q, want %q", lines, want)
 	}
 }
 

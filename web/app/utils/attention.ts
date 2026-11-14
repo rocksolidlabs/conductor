@@ -49,17 +49,34 @@ export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'option
  * command palette) asks this one function: the session waits for its terminal (waitsForTerminal), the question is answered in
  * the terminal (answersInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
  */
-export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined): string | undefined {
+export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision' | 'line'> | undefined): string | undefined {
   if (waitsForTerminal(a)) return TERMINAL_FIRST
   if (answersInTerminal(a)) return ANSWER_IN_TERMINAL
   const d = decisionOf(a)
-  return d ? decisionAnsweredBy(d) : undefined
+  if (d) return decisionAnsweredBy(d)
+  // A startup question with no choices (#902): a typed line's Enter would pick what its screen highlights, so the owner refuses it,
+  // but for the one its catalog entry marks as taking a line, which the session's own question bar alone takes (takesLine).
+  if (a?.state === 'needs_input' && a.source === 'trust' && !a.options?.length) return takesLine(a) ? OPEN_TO_ANSWER : ANSWER_IN_TERMINAL
+  return undefined
 }
 
 /** Whether a page takes a typed reply to a from a viewer of role: a controller's, unless a takes none (noReply). */
-export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
+export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision' | 'line'> | undefined, role: Role): boolean {
   return role === 'control' && noReply(a) === undefined
 }
+
+/**
+ * Whether a is the startup question that takes a line (#902): the agent's catalog entry marks it (`line`: Claude Code's sign-in
+ * screen, which asks for the code a browser on another device shows), it offers no choices and mirrors no decision. The question
+ * bar offers a field for it, whose text is sent as the answer's line and kept nowhere (no draft, no storage, no typed answer shown
+ * under the question); every other place says OPEN_TO_ANSWER.
+ */
+export function takesLine(a: Pick<Attention, 'state' | 'source' | 'options' | 'decision' | 'line'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'trust' && a.line === true && !a.options?.length && !a.decision
+}
+
+/** What a reply field away from the question bar says for a question that takes a line (takesLine). */
+export const OPEN_TO_ANSWER = 'Open the session to answer it'
 
 /** Where a question that mirrors decision id (decisionOf) is answered, said in place of a reply: by the operator, in Conductor. */
 export function decisionAnsweredBy(id: string): string {

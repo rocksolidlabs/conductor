@@ -205,6 +205,12 @@ export interface Attention {
    * (`decision`). Absent from every other question, and from an older owner.
    */
   decision?: string
+  /**
+   * A startup question (`source` `trust`, no options) that takes a line of text, as its agent's catalog entry marks it (Claude Code's
+   * sign-in screen, #902): the question bar offers a field for it (`takesLine`), whose text goes as an `answer`'s `text` and is kept
+   * nowhere. Absent from every other question, and from an older owner.
+   */
+  line?: boolean
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
@@ -508,7 +514,7 @@ export type ControlMessage =
   /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
-  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string; decision?: string }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string; decision?: string; line?: boolean }
   /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
   | { t: 'answer_ok'; requestId: string }
   /** The owner entered the line of the submit `requestId` (#322): its text typed and its Enter written. */
@@ -1034,6 +1040,8 @@ export interface HostRecipeQuestion {
   answersFromScreen?: boolean
   modeAnswers?: string
   typedAnswers?: string
+  /** A startup question with no answers that takes a line of text (the catalog's `line`, #902); an older host ignores it. */
+  line?: boolean
 }
 /** The recipe's bounds: questions, answers to each (labels in characters once trimmed, as the catalog counts; keys in bytes), a pattern's bytes, the encoding's bytes. */
 export const HOST_MAX_RECIPE_QUESTIONS = 8

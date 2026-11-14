@@ -210,6 +210,10 @@ type submitState struct {
 	claim       *atomic.Uint64
 	// decision is the decision the line answers (Submission.Decision).
 	decision string
+	// line says the submission is a controller's line to the startup
+	// question that takes one (takesLine), as it began: looked at again
+	// as the writer takes its text and its Enter.
+	line bool
 }
 
 // claimed reports whether the submission holds a claim on its question.
@@ -312,7 +316,11 @@ type SubmitResult struct {
 //     a person's and Conductor's own alike (with UnlessWaiting it writes
 //     nothing and returns a zero result, as for any prompt):
 //     ErrTrustQuestion for a trust or startup question, ErrQuestion for
-//     one asked during the work. A session with a watcher for the latter
+//     one asked during the work; but a controller's line (By) naming the
+//     startup question that takes one (takesLine: the sign-in screen's
+//     code) is typed into it with its Enter, each looked at again as the
+//     writer takes it, and the startup questions are watched still after
+//     it. A session with a watcher for the latter
 //     looks at its screen first, so that a dialog drawn and not yet seen
 //     quiet counts.
 //   - It records one input entry: always, with the text, for what Conductor
@@ -392,6 +400,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if err != nil {
 		return res, err
 	}
+	// A controller's line naming the startup question that takes one (the
+	// sign-in screen's code): the one startup question a line is typed into,
+	// never an Enter alone.
+	line := sub.Question != "" && text != "" && s.takesLine(sub.Question, sub.By)
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
@@ -426,7 +438,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// Nothing is typed into a question the session holds, whoever types:
 	// a person's reply, and Conductor's own text too (a crew's prompt, which
 	// waits for the answer and is typed then).
-	if showing && source == SourceTrust {
+	if showing && source == SourceTrust && !line {
 		return res, ErrTrustQuestion
 	}
 	if showing && source == SourceQuestion {
@@ -440,7 +452,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	// A startup question the screen still shows, answered or not (the
 	// program slow to move on from it): nothing is typed into it either.
-	if s.startupOnScreen() {
+	if !line && s.startupOnScreen() {
 		if sub.UnlessWaiting {
 			return res, nil
 		}
@@ -458,6 +470,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		aside:    aside,
 		claim:    new(atomic.Uint64),
 		decision: sub.Decision,
+		line:     line,
 	}
 	// A claim the line made and did not resolve is given up as it ends
 	// (claimSettled): here, or by the goroutine it is handed to.
@@ -989,7 +1002,13 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// As the writer takes the Enter it looks again: a prompt raised while
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
-	wait.guard = s.enterGuard(st.comesAfter)
+	mayShow := s.startupMayShow
+	if st.line {
+		// A line's Enter into the startup question that takes one: that
+		// question alone may show, looked at as the writer takes it.
+		mayShow = func() bool { return s.startupMayShow() && !s.takesLine(sub.Question, sub.By) }
+	}
+	wait.guard = s.enterGuard(st.comesAfter, mayShow)
 	if sub.OnlyAtPrompt {
 		enter := wait.guard
 		wait.guard = func() error {
@@ -1073,8 +1092,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// An Enter whose write has begun lands when the program reads again:
 	// the submission is entered, and nothing more is pressed for it.
 	res.Entered = true
-	if s.trust != nil {
-		// A trust question comes before the first prompt, never after.
+	if s.trust != nil && !st.line {
+		// A trust question comes before the first prompt, never after. A
+		// line into a startup question is no prompt: the questions after
+		// it (the folder's trust after the sign-in) are watched still.
 		s.trust.Stop()
 		if s.asked != nil && len(s.askedQuestions) == 0 {
 			// The screen kept for the startup questions alone.
@@ -1219,10 +1240,12 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		s.mu.Unlock()
 		showing := att.State == AttentionNeedsInput && !(sub.Decision != "" && att.Decision != "")
 		startup := s.startupOnScreen()
+		// The line to the startup question that takes one, looked at again.
+		line := st.line && att.ID == sub.Question && s.takesLine(sub.Question, sub.By)
 		switch {
 		case sub.UnlessWaiting && (showing || dialog || startup):
 			return errWaiting
-		case showing && att.Source == SourceTrust || startup:
+		case (showing && att.Source == SourceTrust || startup) && !line:
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
@@ -1262,12 +1285,12 @@ var errPromptCame = errors.New("session: a prompt came before the Enter")
 // last; a wait showing keeps the question from being raised,
 // unlessWaiting, so the attention alone does not tell of it, #263): the
 // Enter would pick what the dialog highlights.
-func (s *Local) enterGuard(waits func(Attention) bool) func() error {
+func (s *Local) enterGuard(waits func(Attention) bool, startupMayShow func() bool) func() error {
 	return func() error {
 		if s.asked != nil && (s.asked.Held() || s.asked.CheckNow()) {
 			return errPromptCame
 		}
-		if s.startupMayShow() {
+		if startupMayShow() {
 			return errPromptCame
 		}
 		s.mu.Lock()
@@ -1363,7 +1386,7 @@ func (s *Local) enterAgain(ctx context.Context, onlyAtPrompt bool) bool {
 	// meanwhile is answered by it.
 	guard := s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput
-	})
+	}, s.startupMayShow)
 	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: func() error {
 		if onlyAtPrompt && !s.atPrompt() {
 			return errPromptCame

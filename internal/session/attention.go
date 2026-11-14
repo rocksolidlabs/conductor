@@ -176,6 +176,11 @@ type Attention struct {
 	// attention message's `decision`, proto.Attention.Decision) and in
 	// Info, so that a page offers no reply to it.
 	Decision string `json:"decision,omitempty"`
+	// Line marks a startup question that takes a line of text
+	// (StartupQuestion.Line): a client offers a field for it, and only for
+	// it, since a reply's line is refused at every other startup question
+	// (ErrTrustQuestion). Sent to viewers (proto.Attention.Line) and in Info.
+	Line bool `json:"line,omitempty"`
 	// approval marks a dialog read off the screen as a plan's approval (its
 	// footer says so: planApprovalShown, #289): the one a late report of
 	// that approval names the plan for, and the one that keeps the plan of

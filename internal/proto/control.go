@@ -590,6 +590,12 @@ type Attention struct {
 	// an answer naming it is refused (ErrCodeDecision). Absent from every
 	// other question, and from an older owner.
 	Decision string `json:"decision,omitempty"`
+	// Line marks a startup question (source trust, no options) that takes
+	// a line of text (catalog.Question.Line: Claude Code's sign-in screen):
+	// a client offers a field for it, its text sent as an answer's Text, and
+	// keeps the text nowhere. Absent from every other question, and from an
+	// older owner.
+	Line bool `json:"line,omitempty"`
 }
 
 // MaxDecisionRef bounds a durable decision's id where the protocol carries

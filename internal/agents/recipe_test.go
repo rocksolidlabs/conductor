@@ -55,6 +55,29 @@ func TestRecipeOfTheBuiltInAgents(t *testing.T) {
 	if err != nil || !w.ConfirmSubmit || len(w.Questions) == 0 || !w.Questions[0].FromScreen {
 		t.Fatalf("claude: %+v %v", w, err)
 	}
+	// Claude Code's sign-in screen alone takes a line (#902), as its entry
+	// marks it; a recipe's mark on a question with answers, or asked at
+	// any time, is dropped as it is compiled.
+	lines := 0
+	for _, q := range w.Questions {
+		if q.Line {
+			lines++
+			if !q.Pattern.MatchString("Paste code here if prompted >") || q.Anytime || len(q.Answers) > 0 {
+				t.Errorf("claude: the question that takes a line: %+v", q)
+			}
+		}
+	}
+	if lines != 1 {
+		t.Errorf("claude: %d questions take a line, want the sign-in screen's", lines)
+	}
+	marked, err := CompileRecipe(&proto.HostRecipe{Questions: []proto.RecipeQuestion{
+		{Prompt: "paste", Line: true},
+		{Prompt: "update now", Line: true, Answers: []proto.RecipeAnswer{{Label: "Skip", Input: "\x1b"}}},
+		{Prompt: "proceed", Line: true, Anytime: true},
+	}})
+	if err != nil || !marked.Questions[0].Line || marked.Questions[1].Line || marked.Questions[2].Line {
+		t.Fatalf("the marks compiled: %+v %v", marked.Questions, err)
+	}
 	if r := Recipe(catalog.Agent{ID: "plain", Command: []string{"sh"}}); r != nil {
 		t.Fatalf("an agent with nothing to watch: %+v", r)
 	}
