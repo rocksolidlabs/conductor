@@ -51,6 +51,15 @@ export function runBadge(state: RunState, needs: number): { label: string; color
   return { label: 'Running', color: 'success' }
 }
 
+/**
+ * Whether a member's controls offer Start now (the run page's tile, the graph's node and its list): a member waiting to start in a run
+ * not stopped, as the server takes it (POST /api/runs/{id}/members/{name}/start); never in a managed run, whose tasks start its members
+ * (409 managed_run).
+ */
+export function offersStart(status: MemberStatus | undefined, run: { stopped: boolean; managed: boolean }): boolean {
+  return status === 'pending' && !run.stopped && !run.managed
+}
+
 /** A member's status as a dot beside its avatar, and in words. */
 export function memberDot(status: MemberStatus): { label: string; dot: string } {
   switch (status) {

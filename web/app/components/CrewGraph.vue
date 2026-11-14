@@ -30,6 +30,8 @@ const props = withDefaults(
     editable?: boolean
     runId?: string
     stopped?: boolean
+    /** A managed run: its tasks start its members, and no member offers Start now (offersStart). */
+    managed?: boolean
     selected?: string
     now?: number
     /** Fill the height the parent gives (a page body); else the canvas is a fixed 24 rem tall (a form). */
@@ -45,7 +47,7 @@ const props = withDefaults(
     /** The task selected in Tasks mode. */
     selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
+  { editable: false, runId: '', stopped: false, managed: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -125,7 +127,7 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         id: n.id,
         type: 'member',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, agentName: props.agentNames[n.member.agentId] ?? '' },
+        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, managed: props.managed, agentName: props.agentNames[n.member.agentId] ?? '' },
         connectable: props.editable,
         draggable: false,
         selected: n.id === props.selected,
@@ -295,7 +297,7 @@ const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
         </div>
       </li>
     </ol>
-    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :stopped="stopped" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
+    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :stopped="stopped" :managed="managed" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
     <div v-else class="relative overflow-hidden rounded-md border border-default bg-elevated/30" :class="fill ? 'min-h-72 flex-1' : 'h-96'" data-graph-canvas>
       <VueFlow
         :id="flowId"

@@ -2,6 +2,7 @@
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection, GraphNode } from '~/utils/crewGraph'
 import { memberDotClass, memberWords, startWords } from '~/utils/crewWords'
+import { offersStart } from '~/utils/runs'
 
 /**
  * One member on the crew graph: its agent, name, status dot and needs-input
@@ -19,6 +20,8 @@ export interface MemberNodeData {
   /** The run the member is in; empty for a saved crew. */
   runId: string
   stopped: boolean
+  /** A managed run, whose tasks start its members (offersStart). */
+  managed?: boolean
   /** The agent's name from the catalog; its id when unknown. */
   agentName: string
 }
@@ -83,7 +86,7 @@ const menu = computed(() => [
       </template>
       <template v-else-if="state === 'pending'">
         <span class="truncate" :class="tone[words.tone]">{{ words.text }}</span>
-        <UButton v-if="!data.stopped" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" class="nodrag ml-auto" @click.stop="emit('start', n.id)" />
+        <UButton v-if="offersStart(state, { stopped: data.stopped, managed: !!data.managed })" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" class="nodrag ml-auto" @click.stop="emit('start', n.id)" />
       </template>
       <template v-else-if="state === 'ended'">
         <span class="truncate" :class="tone[words.tone]" :title="words.text">{{ words.text }}</span>

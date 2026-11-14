@@ -9,6 +9,7 @@ import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
 import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
+import { offersStart } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
@@ -335,6 +336,8 @@ function placeholder(t: Tile): { text: string; tone: 'warning' | 'error' | 'mute
 }
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
 
+/** What offersStart reads of the run: whether it stopped, and whether its tasks start its members. */
+const startRun = computed(() => ({ stopped: !!run.value?.stoppedAt, managed: !!run.value?.managed }))
 const starting = ref('')
 async function startMember(name: string) {
   starting.value = name
@@ -455,7 +458,7 @@ palette.registerPage(() => {
         prompt: s ? rowPrompt(sessionRow(s)) : null,
         run: () => {
           if (s && !ended) openMember(t.name)
-          else if (pending && m.start.when === 'manual' && !stopped) void startMember(t.name)
+          else if (pending && m.start.when === 'manual' && offersStart(m.status, startRun.value)) void startMember(t.name)
           else if (ended && !stopped) void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
@@ -535,6 +538,7 @@ palette.registerPage(() => {
             :handoffs="handoffs"
             :run-id="runId"
             :stopped="!!run?.stoppedAt"
+            :managed="!!run?.managed"
             :selected="selectedMember"
             :now="now"
             :tasks="run?.tasks ?? []"
@@ -576,7 +580,7 @@ palette.registerPage(() => {
                 <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
                   <span :class="tone[placeholder(t).tone]" data-member-words>{{ placeholder(t).text }}</span>
                   <UButton
-                    v-if="t.member?.status === 'pending' && !run?.stoppedAt"
+                    v-if="offersStart(t.member?.status, startRun)"
                     label="Start now"
                     icon="i-lucide-play"
                     size="xs"
