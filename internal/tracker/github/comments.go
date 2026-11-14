@@ -174,7 +174,6 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 		CommentEdge *struct {
 			Node *struct {
 				FullDatabaseID bigID     `json:"fullDatabaseId"`
-				URL            string    `json:"url"`
 				CreatedAt      time.Time `json:"createdAt"`
 				Repository     *repoJSON `json:"repository"`
 				Author         *struct {
@@ -192,16 +191,22 @@ func (a *Adapter) Comment(ctx context.Context, c tracker.Credential, t tracker.T
 	if got.Subject == nil || got.Subject.ID != t.NodeID || n.Repository == nil || n.Repository.FullDatabaseID.remote() != t.SpaceID {
 		return tracker.Comment{}, tracker.Unknown(&tracker.RequestError{System: tracker.GitHub, Method: r.method, Path: ep.errPath(r), Status: status, Err: tracker.ErrTargetChanged, Words: "the comment's answer does not name the target's node and repository"})
 	}
-	out = tracker.Comment{ID: n.FullDatabaseID.remote(), URL: n.URL, CreatedAt: n.CreatedAt, AuthorID: remoteID(n.Author.DatabaseID), Author: cut(n.Author.Login, 39)}
+	out = tracker.Comment{ID: n.FullDatabaseID.remote(), CreatedAt: n.CreatedAt, AuthorID: remoteID(n.Author.DatabaseID), Author: cut(n.Author.Login, 39)}
 	if out.Check() != nil {
 		return tracker.Comment{}, unknown
 	}
-	return out, nil
+	return onPage(out, t.URL), nil
+}
+
+// onPage is cm with its URL the item's page as a resolve gave it and the
+// comment's anchor (tracker.Comment).
+func onPage(cm tracker.Comment, page string) tracker.Comment {
+	cm.URL = page + "#issuecomment-" + string(cm.ID)
+	return cm
 }
 
 type commentJSON struct {
 	ID        json.Number `json:"id"`
-	HTMLURL   string      `json:"html_url"`
 	Body      string      `json:"body"`
 	CreatedAt time.Time   `json:"created_at"`
 	User      *struct {
@@ -258,7 +263,7 @@ func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t track
 	case err != nil:
 		return tracker.Comment{}, tracker.FoundUnknown, err
 	case first.match != nil:
-		return *first.match, tracker.FoundYes, nil
+		return onPage(*first.match, now.URL), tracker.FoundYes, nil
 	case !first.whole || first.unreadable:
 		return tracker.Comment{}, tracker.FoundUnknown, nil
 	case first.pages == 1:
@@ -269,7 +274,7 @@ func (a *Adapter) FindComment(ctx context.Context, c tracker.Credential, t track
 	case err != nil:
 		return tracker.Comment{}, tracker.FoundUnknown, err
 	case again.match != nil:
-		return *again.match, tracker.FoundYes, nil
+		return onPage(*again.match, now.URL), tracker.FoundYes, nil
 	case !again.whole || again.unreadable || !slices.Equal(first.ids, again.ids):
 		return tracker.Comment{}, tracker.FoundUnknown, nil
 	}
@@ -335,7 +340,7 @@ func (a *Adapter) listWindow(ctx context.Context, c tracker.Credential, ep endpo
 				w.other = w.other || m.Marked
 				continue
 			}
-			found := tracker.Comment{ID: remoteID(cm.ID), URL: cm.HTMLURL, CreatedAt: cm.CreatedAt, AuthorID: author, Author: cut(cm.User.Login, 39)}
+			found := tracker.Comment{ID: remoteID(cm.ID), CreatedAt: cm.CreatedAt, AuthorID: author, Author: cut(cm.User.Login, 39)}
 			if found.Check() != nil {
 				w.unreadable = true
 				continue

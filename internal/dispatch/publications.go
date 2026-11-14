@@ -77,6 +77,10 @@ const (
 	// listing starts (find_since): a server's clock hours off GitHub's
 	// still lists the comment.
 	PublicationFindWindow = 24 * time.Hour
+	// PublicationQuiet is how long after a try began no other try of its
+	// publication is begun (TryWait), and a listing without the try's
+	// comment does not make it unconfirmed.
+	PublicationQuiet = 30 * time.Second
 )
 
 // The intents of a publication's operations.
@@ -153,6 +157,29 @@ func (p PublicationSummary) Since() time.Time {
 	return p.CreatedAt.Add(-PublicationFindWindow)
 }
 
+// TryWait is how long, at now, before another try of the publication may
+// begin: PublicationQuiet less the time since its last try began (more
+// than PublicationQuiet for a clock behind that try's start), 0 for one
+// never tried or once that time has passed. The store's begin of a send
+// asks it on the clock it stamps a try with, and a route asks it of the
+// row it read.
+func (p PublicationSummary) TryWait(now time.Time) time.Duration {
+	if p.Tries == 0 {
+		return 0
+	}
+	return max(PublicationQuiet-now.Sub(p.SendingAt), 0)
+}
+
+// TryTooSoon is a send's begin not made because an earlier try began less
+// than PublicationQuiet ago (TryWait): Left is the time left. It is no
+// refusal, so no receipt keeps it and the same operation id may be sent
+// again.
+type TryTooSoon struct{ Left time.Duration }
+
+func (e *TryTooSoon) Error() string {
+	return "dispatch: the publication's last try began less than " + PublicationQuiet.String() + " ago"
+}
+
 // NeedsYou reports a publication a person can act on: one being sent, not
 // confirmed or failed, a restored draft, or a sent one of this store's
 // instance whose close did not finish (a restored one is never closed
@@ -199,8 +226,9 @@ type Outcome struct {
 	Words   string       `json:"words,omitempty"`
 }
 
-// SentComment is a comment on the tracker: its id, its page and its
-// author's id and login.
+// SentComment is a comment on the tracker: its id, its address on the
+// item's page as the send's or the listing's resolve gave it (the row
+// keeps it by commentPage), and its author's id and login.
 type SentComment struct {
 	ID       string `json:"id"`
 	URL      string `json:"url"`
@@ -306,22 +334,23 @@ func loginOf(s string) string {
 // commentAnchor is a comment's anchor in its page's address.
 var commentAnchor = regexp.MustCompile(`^issuecomment-[0-9]{1,20}$`)
 
-// commentPage is a sent comment's page as its publication keeps it: its
-// place on the target's own item, the target's page (target, as the store
-// keeps an address) with the comment's anchor, #issuecomment- and the
-// comment's id. That is the address GitHub gives a comment on that item,
-// so an answer's address that is it is kept as it is, and any other, on
-// the same host or not, is replaced by it. The target's page alone for an
-// id that makes no anchor; "" for a target the store does not admit.
-func commentPage(target, id string) string {
-	t, err := admitAddress("the target", target)
-	if err != nil {
+// commentPage is a sent comment's page as its publication keeps it: the
+// item's page that the send's or the listing's own resolve of the target
+// gave (page, as the store keeps an address, its query and fragment
+// dropped) with the comment's anchor, #issuecomment- and the comment's id;
+// that page alone for an id that makes no anchor. "" for a page the store
+// does not admit or on another host than the target's (target, the page
+// kept at the prepare, which names the host and nothing else here).
+func commentPage(target, page, id string) string {
+	t, terr := admitAddress("the target", target)
+	a, err := admitAddress("the comment's page", page)
+	if terr != nil || err != nil || a.host != t.host {
 		return ""
 	}
-	if frag := "issuecomment-" + id; commentAnchor.MatchString(frag) && len(t.kept)+1+len(frag) <= MaxExternalURL {
-		return t.kept + "#" + frag
+	if frag := "issuecomment-" + id; commentAnchor.MatchString(frag) && len(a.kept)+1+len(frag) <= MaxExternalURL {
+		return a.kept + "#" + frag
 	}
-	return t.kept
+	return a.kept
 }
 
 // pubWords is an outcome's words as a publication's row keeps them (its
@@ -345,7 +374,9 @@ func plainWord(r rune) bool {
 // beginSend is the decision of a send (publication.send): the row made
 // sending with a new attempt, or why not. Only a draft or a failed
 // publication of this store's instance is sent, with the digest of the
-// bytes its preview showed, at most MaxPublicationTries times.
+// bytes its preview showed, at most MaxPublicationTries times, and a try
+// after an earlier one only once TryWait at now is 0 (a *TryTooSoon
+// otherwise).
 func (p Publication) beginSend(digest string, by Sender, instance, author string, now time.Time) (Publication, error) {
 	switch {
 	case digest != p.PostSha256:
@@ -362,6 +393,9 @@ func (p Publication) beginSend(digest string, by Sender, instance, author string
 		return p, refuse(RefusalInvalid, "the publication is %s", p.State)
 	case p.Tries >= MaxPublicationTries:
 		return p, refuse(RefusalBound, "a publication is sent at most %d times", MaxPublicationTries)
+	}
+	if left := p.TryWait(now); left > 0 {
+		return p, &TryTooSoon{Left: left}
 	}
 	if err := checkRemoteID("the sender's id", by.ID); err != nil {
 		return p, err
@@ -421,7 +455,7 @@ func (p Publication) settled(attempt int, o Outcome, instance string, now time.T
 		if restored || p.SentAsID == "" {
 			p.SentAsID, p.SentAsLogin = c.AuthorID, loginOf(c.Author)
 		}
-		p.RemoteID, p.RemoteURL = c.ID, commentPage(p.TargetURL, c.ID)
+		p.RemoteID, p.RemoteURL = c.ID, commentPage(p.TargetURL, c.URL, c.ID)
 		p.State, p.SentAt, p.Error = PublicationSent, now, ""
 		if p.CloseIssue != "" && !restored {
 			p.CloseState = ClosePending
@@ -750,7 +784,9 @@ type sendArgs struct {
 // transaction made that change: a resend of the same operation id is
 // answered from its receipt (Apply looks it up before anything) and owns
 // nothing, and its caller posts nothing. An expected revision is the
-// publication's.
+// publication's. A try after an earlier one that began less than
+// PublicationQuiet ago, by the clock of the transaction that would begin
+// it, is a *TryTooSoon: nothing written, no receipt kept.
 func (s *Store) BeginSend(ctx context.Context, op Op, id, postSha256 string, by Sender) (rc Receipt, owned bool, err error) {
 	rc, err = s.Apply(ctx, op, IntentPublicationSend, sendArgs{id, postSha256}, func(t *tx) error {
 		return t.changePublication(id, true, func(p Publication, instance string) (Publication, error) {
@@ -758,6 +794,15 @@ func (s *Store) BeginSend(ctx context.Context, op Op, id, postSha256 string, by 
 		})
 	})
 	return rc, err == nil && rc.Status == StatusDone && !rc.Repeat, err
+}
+
+// SetClockForTest sets the clock the store's operations read for their
+// time (nil for time.Now), for a test of the store's callers that moves
+// it past a rule of the store's (a publication's quiet time).
+func (s *Store) SetClockForTest(fn func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clock = fn
 }
 
 // DiscardPublication discards a draft, a failed or an unconfirmed

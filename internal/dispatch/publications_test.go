@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The tests of a ticket's publications (publications.go). Nothing here
@@ -76,9 +77,15 @@ func (f pubFixture) pub(t *testing.T, id string) Publication {
 	return p
 }
 
-// send begins a send of p as alice, failing unless the store answers.
+// send begins a send of p as alice, failing unless the store answers; a
+// try after an earlier one at the store's clock set past the quiet time
+// after that try began.
 func (f pubFixture) send(t *testing.T, opID string, p Publication) (Receipt, bool) {
 	t.Helper()
+	if now, err := f.s.Publication(context.Background(), p.ID); err == nil && now.Tries > 0 {
+		at := now.SendingAt.Add(PublicationQuiet)
+		f.s.SetClockForTest(func() time.Time { return at })
+	}
 	rc, owned, err := f.s.BeginSend(context.Background(), testOp(opID), p.ID, p.PostSha256, alice)
 	if err != nil {
 		t.Fatal(err)
@@ -788,6 +795,48 @@ func TestPublicationTriesBound(t *testing.T) {
 	}
 }
 
+// A try after an earlier one is begun only once the quiet time has passed
+// since that try began, by the clock of the transaction that would begin
+// it: before, and with that clock behind the try's start, the begin is a
+// TryTooSoon with the time left, nothing written and no receipt kept;
+// the same operation id at exactly the quiet time begins the try. A
+// publication never tried waits for nothing.
+func TestSendWaitsTheQuietTime(t *testing.T) {
+	f := newPubFixture(t)
+	p := f.prepared(t, "p1", "")
+	if p.TryWait(time.Now().Add(-time.Hour)) != 0 {
+		t.Fatal("a publication never tried waits")
+	}
+	f.send(t, "s1", p)
+	f.settle(f.pub(t, p.ID), Outcome{State: PublicationFailed})
+	before := f.pub(t, p.ID)
+	for _, c := range []struct {
+		name string
+		at   time.Duration
+		left time.Duration
+	}{
+		{"within the quiet time", 10*time.Second + 500*time.Millisecond, 19*time.Second + 500*time.Millisecond},
+		{"a clock behind the try's start", -5 * time.Second, PublicationQuiet + 5*time.Second},
+		{"a moment before the quiet time ends", PublicationQuiet - time.Nanosecond, time.Nanosecond},
+	} {
+		at := before.SendingAt.Add(c.at)
+		f.s.SetClockForTest(func() time.Time { return at })
+		rc, owned, err := f.s.BeginSend(context.Background(), testOp("s2"), p.ID, p.PostSha256, alice)
+		var soon *TryTooSoon
+		if !errors.As(err, &soon) || soon.Left != c.left || owned || rc.OpID != "" || before.TryWait(at) != c.left {
+			t.Fatalf("%s: %+v %v %v", c.name, rc, owned, err)
+		}
+		if after := f.pub(t, p.ID); after.Rev != before.Rev || after.Tries != 1 || countOf(t, f.s, "SELECT COUNT(*) FROM ops WHERE id = ?", "s2") != 0 {
+			t.Fatalf("%s: %+v, a receipt kept", c.name, after)
+		}
+	}
+	at := before.SendingAt.Add(PublicationQuiet)
+	f.s.SetClockForTest(func() time.Time { return at })
+	if rc, owned, err := f.s.BeginSend(context.Background(), testOp("s2"), p.ID, p.PostSha256, alice); err != nil || !owned || f.pub(t, p.ID).Tries != 2 {
+		t.Fatalf("at the quiet time: %+v %v %v", rc, owned, err)
+	}
+}
+
 // The marker the adapter gives is stored and inside post_sha256, and is
 // immutable; one without the id, or past 128 bytes, is invalid.
 func TestPrepareKeepsTheMarker(t *testing.T) {
@@ -1457,12 +1506,13 @@ func TestPublicationWordsArePlain(t *testing.T) {
 	}
 }
 
-// A sent comment's address is its place on the target's own item: the
-// target's page with the comment's anchor (#issuecomment- and its id),
-// kept as the answer gave it when it is that, and built from the target's
-// page and the comment's id for any other (another fragment, a query, a
-// user, another item on the same host, another host); the target's page
-// alone for an id that makes no anchor.
+// A sent comment's address is built from the page the comment's address
+// names (the item's page as the send's or the listing's resolve of the
+// target gave it), its query, user and fragment dropped, and the comment's
+// anchor (#issuecomment- and its id): a page under the repository's name
+// now (another than the prepare's) is kept so; the page alone for an id
+// that makes no anchor; none for a page on another host than the target's,
+// or none at all.
 func TestSentCommentKeepsItsAnchor(t *testing.T) {
 	f := newPubFixture(t)
 	const place = "https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-2153"
@@ -1473,14 +1523,15 @@ func TestSentCommentKeepsItsAnchor(t *testing.T) {
 		{"https://github.com/rocksolidlabs/conductor/issues/612", "2153", place},
 		{"https://bob:hunter2@github.com/rocksolidlabs/conductor/issues/612?token=SECRET#issuecomment-2153", "2153", place},
 		{"https://github.com/rocksolidlabs/conductor/issues/612#issuecomment-7", "2153", place},
-		// Another item on the target's host, and other hosts.
-		{"https://github.com/rocksolidlabs/conductor/issues/999#issuecomment-2153", "2153", place},
-		{"https://github.com/someone/else/pull/1#issuecomment-2153", "2153", place},
-		{"https://elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
-		{"https://github.com.elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", place},
-		{"not an address", "2153", place},
-		// An id that makes no anchor: the target's page.
-		{place, "21x53", issueTarget.URL},
+		// The repository under its name now, on the target's host.
+		{"https://github.com/rocksolidlabs/renamed/issues/612#issuecomment-2153", "2153", "https://github.com/rocksolidlabs/renamed/issues/612#issuecomment-2153"},
+		// Other hosts, and no address.
+		{"https://elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", ""},
+		{"https://github.com.elsewhere.example/rocksolidlabs/conductor/issues/612#issuecomment-2153", "2153", ""},
+		{"not an address", "2153", ""},
+		{"", "2153", ""},
+		// An id that makes no anchor: the page alone.
+		{place, "21x53", "https://github.com/rocksolidlabs/conductor/issues/612"},
 	} {
 		p := f.prepared(t, fmt.Sprint("p", i), "")
 		f.send(t, fmt.Sprint("s", i), p)

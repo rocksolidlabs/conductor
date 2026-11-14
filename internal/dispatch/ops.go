@@ -629,7 +629,11 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if found {
 		return rc, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
+	now := time.Now()
+	if s.clock != nil {
+		now = s.clock()
+	}
+	t := &tx{ctx: ctx, tx: dbtx, now: now.UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between

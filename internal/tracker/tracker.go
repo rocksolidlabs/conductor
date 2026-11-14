@@ -264,7 +264,10 @@ type Target struct {
 	State   string   `json:"state"`
 }
 
-// Comment is a comment on an item.
+// Comment is a comment on an item. Its URL is the item's page as the
+// target's resolve gave it (the caller's for a post, the listing's own for
+// a comment found), with #issuecomment- and the comment's id; never an
+// address in the system's answer for the comment.
 type Comment struct {
 	ID        RemoteID  `json:"id"`
 	URL       string    `json:"url"`
