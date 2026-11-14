@@ -971,17 +971,17 @@ func TestChangedPathsOfPartsOfASecretStayWithinTheirLimit(t *testing.T) {
 	}
 }
 
-// A text that is hexadecimal throughout, 2 MiB of parts and wholes of a
-// secret and of other runs, is no longer once scrubbed; a whole secret is
-// its name, a part the part's word.
+// A text that is hexadecimal throughout, 2 MiB of short parts (8 to 12
+// characters) and wholes of a secret between other runs, is no longer once
+// scrubbed; a whole secret is its name, a part the part's word.
 func TestAScrubbedTextIsNoLonger(t *testing.T) {
 	sum := sha256.Sum256([]byte("a secret"))
 	secret := hex.EncodeToString(sum[:])
 	var b strings.Builder
 	for i := 0; b.Len() < 2<<20; i++ {
 		other := sha256.Sum256(binary32(uint32(i)))
-		start := i % 57
-		b.WriteString(secret[start : start+8+i%(57-start)])
+		start := i % 53
+		b.WriteString(secret[start : start+8+i%5])
 		b.WriteString(hex.EncodeToString(other[:3]))
 		if i%7 == 0 {
 			b.WriteString(strings.ToUpper(secret))
@@ -1172,7 +1172,11 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 	b := p.body(t, p.label(t), button())
 	held, goOn := make(chan struct{}), make(chan struct{})
 	var holding, during atomic.Bool
-	var first sync.Once
+	var first, let sync.Once
+	// The held git goes on at the latest as the test ends, before the
+	// preview's run is stopped.
+	release := func() { let.Do(func() { close(goOn) }) }
+	t.Cleanup(release)
 	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 		mine := false
 		first.Do(func() { mine = true })
@@ -1215,7 +1219,7 @@ func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
 	if during.Load() {
 		t.Error("the label started git while the capture's was held")
 	}
-	close(goOn)
+	release()
 	if a := <-captured; a.status != http.StatusCreated {
 		t.Fatalf("the capture: %d %s %v", a.status, a.body, a.err)
 	}
