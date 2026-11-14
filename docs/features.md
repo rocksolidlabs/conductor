@@ -6143,16 +6143,48 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   carries the pass or the workbench token, in any spelling: at a load the
   plugin runs before the router, and a fragment that arrives later is
   taken by the plugin's capture listener of `popstate`, ahead of the
-  router's; a fragment that holds both keys gives neither. A later link
-  is written to the browser's storage for its credential alone, never
-  to what the running page holds and sends, and loads the page again at
+  router's; a fragment that holds both keys gives neither. A later
+  link's pass is written to the tab's storage for it alone, never to
+  what the running page holds and sends, and loads the page again at
   the clean address only when it changed what that storage held; a
   load drops what the page held (drafts, an answer whose outcome was
-  not known). In the desktop app the workbench token is kept in memory
-  from the app's bridge, not in the browser's storage, and a later
-  link's token changes nothing there. Where the browser refuses the
-  tab's storage, a link opened in a tab that already shows the page is
-  not taken: load it in a new tab.
+  not known). A link's workbench token (#882), unless it is the token
+  the page already holds, is sent by the page it came with and kept
+  once the server accepts it, when a read of the browser's storage
+  finds no other token (a storage that cannot be read keeps nothing):
+  accepted means the events stream itself answers it (`200`, not
+  reached through a redirect, `text/event-stream`), which the server
+  does for an operator's credential (the workbench token, and, where an
+  identity provider is registered, a credential the provider admits
+  with the admin grant); any other reply of that stream but `401`
+  decides nothing. A token the browser keeps is changed by the operator
+  alone (the gate, whose field starts from the kept token, and "Forget
+  token"). A refused link's token is dropped and the page loads again
+  with the token the browser keeps; a kept token the server refuses
+  stays kept, and the gate asks for another. A later link's token is
+  taken by a page that holds none, or one it has seen refused (the gate
+  asks), with no load while it is tried or once it is accepted, and its
+  refusal loads the page once, as a load's refused link does; it
+  changes nothing in a page that holds a token it has not seen refused,
+  when it is the page's own token, refused or not, or on a decide
+  address. A decide address (`/decide`, `/decide/<did>`) is known in
+  any case of its letters, as the router draws the decide page there.
+  A decide address opens the operator's page while the page holds a
+  workbench token it has not seen refused, a link's being tried among
+  them. In the desktop app the workbench token is the app's bridge's,
+  kept in memory, not in the browser's storage, and a link's token
+  changes nothing there, at a load or later; the gate's field starts
+  empty there. A reload Nuxt itself makes (after a chunk that failed to
+  load, or a new build) writes the page's state, the workbench token
+  the page holds among it, into the tab's storage
+  (`nuxt:reload:state`); the next load of the app in that tab removes
+  it, first in the fragment plugin, and nothing in the app reads it
+  back. When that load does not come (the server stopped), it stays
+  there until the app loads in that tab again. Where the browser
+  refuses the tab's storage, the pass of a link opened in a tab that
+  already shows the page is not taken: load it in a new tab. That is
+  the pass alone: a later link's workbench token does not go through
+  the tab's storage.
 - **A main hands in its own third-party notices (#662, 2026-11-05).** A
   `main` built outside this repository on `app.Run` links more modules than
   this one, and its server served this module's embedded notices, which do

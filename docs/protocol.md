@@ -6141,12 +6141,35 @@ desktop app's `token` (1 to 2,048 characters, 2 KiB, of `A-Z a-z 0-9 . _ -`):
 a navigation the browser starts (a load, a fragment change, back or forward)
 never lets the app's router read a fragment that carries either key, in any
 spelling: the fragment is taken out of the address before the app's router
-reads it, and one that arrives after the load is written to the browser's
-storage for its credential alone and loads the page again at the clean
-address only when it changed what that storage held (in the desktop app the
-workbench token is kept in memory from the app's bridge, not in the
-browser's storage, and a later link's token changes nothing there); a
-fragment that holds both keys gives neither. The pass is kept for the tab
+reads it. A pass that arrives after the load is written to the tab's
+storage for it alone and loads the page again at the clean address only
+when it changed what that storage held. A link's workbench token, unless it
+is the token the page already holds, is sent by the page it came with and
+kept in the browser's storage once the server accepts it, when a read of
+that storage finds no other token (one that cannot be read keeps nothing):
+accepted means the events stream (`GET /api/events`) itself answers it
+(`200`, not reached through a redirect, `Content-Type: text/event-stream`),
+which the server does for an operator's credential (the workbench token,
+and, where an identity provider is registered, a credential the provider
+admits with the admin grant); any other reply of that stream but `401`
+decides nothing. Refused (`401`, by any route), a link's token is dropped
+and the page loads again with the token the browser keeps; a kept token
+refused stays kept, and the page asks for another. A workbench token that
+arrives after the load is taken by a page that holds none, or one it has
+seen refused, with no load while it is tried or once it is accepted (its
+refusal loads the page once, as a load's does), and changes nothing in a
+page that holds a token it has not seen refused, when it is the page's own
+token, refused or not, or on a decide address (`/decide`, `/decide/<did>`,
+in any case of its letters, as the router draws the decide page there).
+In the desktop app the workbench token is the app's bridge's, kept in
+memory, not in the browser's storage, and a link's token changes nothing
+there, at a load or later; a fragment that holds both keys gives neither.
+A reload Nuxt itself makes (after a chunk that failed to load, or a new
+build) writes the page's state, the workbench token the page holds among
+it, into the tab's storage (`nuxt:reload:state`); the next load of the app
+in that tab removes it, and nothing in the app reads it back. When that
+load does not come (the server stopped), it stays there until the app
+loads in that tab again. The pass is kept for the tab
 (`sessionStorage`) until a `401` to a request sent with it, or until a
 later link stores another, and sent only in
 the `Authorization` header of the four routes, never in a URL. The decide
