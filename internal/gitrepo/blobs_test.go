@@ -606,6 +606,107 @@ func TestASideIsAskedForAgainAfterAReopen(t *testing.T) {
 	})
 }
 
+// A comparison asks the store about every side it may hand git, the
+// search for renames' candidates and its own files' sides, before it
+// starts any git. One that finds a moved file as a rename beside a file
+// whose new side no store holds opens the repository twice, takes its cap
+// once and runs git four times (the search's sizes and contents, then the
+// comparison's), that side listed without its lines and never handed to
+// git. When a side the first opening listed is not listed by the second (a
+// repack at the second opening's look at its loose file, the packs listed
+// already), the read answers ErrChanged, after two openings.
+func TestAComparisonAsksAboutEverySideBeforeAnyGit(t *testing.T) {
+	ghost := strings.Repeat("ab", 20)
+	// build is a repository whose base, packed, has a.txt and m.txt, and
+	// whose head changes a line of a.txt (moved to b.txt when moved) and
+	// gives m.txt a blob no store holds; blob is the head's a.txt or b.txt.
+	build := func(t *testing.T, moved bool) (dir, base, head, blob string) {
+		t.Helper()
+		dir = scratch(t)
+		write(t, dir, "a.txt", tenLines("three"))
+		write(t, dir, "m.txt", "one\n")
+		base = commit(t, dir, time.Time{}, "base")
+		gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+		path := "a.txt"
+		if moved {
+			gitIn(t, dir, time.Time{}, "rm", "-q", "a.txt")
+			path = "b.txt"
+		}
+		write(t, dir, path, tenLines("THREE"))
+		gitIn(t, dir, time.Time{}, "add", path)
+		gitIn(t, dir, time.Time{}, "update-index", "--add", "--cacheinfo", "100644,"+ghost+",m.txt")
+		head = gitIn(t, dir, time.Time{}, "commit-tree", gitIn(t, dir, time.Time{}, "write-tree", "--missing-ok"), "-p", base, "-m", "head")
+		return dir, base, head, gitIn(t, dir, time.Time{}, "rev-parse", head+":"+path)
+	}
+	// watch counts the openings closed and the caps taken, and, when
+	// repack, packs blob into a pack of its own and removes its loose file
+	// (git repacks so; a whole repack would not take a tree with a blob
+	// missing), once, at the look at that file once the first opening has
+	// closed.
+	watch := func(t *testing.T, dir, blob string, repack bool) (closes, caps, repacks *int) {
+		t.Helper()
+		closes, caps, repacks = new(int), new(int), new(int)
+		loose := blob[:2] + "/" + blob[2:]
+		afterLook = func(rel string) {
+			if repack && *repacks == 0 && *closes == 1 && strings.HasSuffix(filepath.ToSlash(rel), loose) {
+				pack := exec.Command("git", "pack-objects", "-q", filepath.Join(".git", "objects", "pack", "pack"))
+				pack.Dir, pack.Stdin = dir, strings.NewReader(blob+"\n")
+				if out, err := pack.CombinedOutput(); err != nil {
+					t.Fatalf("git pack-objects: %v\n%s", err, out)
+				}
+				gitIn(t, dir, time.Time{}, "prune-packed", "-q")
+				*repacks++
+			}
+		}
+		rootsOpen = func(n int) {
+			if n == 0 {
+				*closes++
+			}
+		}
+		capping = func(func()) { *caps++ }
+		t.Cleanup(func() { afterLook, rootsOpen, capping = nil, nil, nil })
+		return closes, caps, repacks
+	}
+	ctx := context.Background()
+	for _, name := range []string{"Compare", "CommitDetail"} {
+		read := func(dir, base, head string) (Detail, error) {
+			if name == "Compare" {
+				return Compare(ctx, dir, base, head)
+			}
+			return CommitDetail(ctx, dir, head)
+		}
+		t.Run(name+", a rename beside a side no store holds", func(t *testing.T) {
+			dir, base, head, blob := build(t, true)
+			closes, caps, _ := watch(t, dir, blob, false)
+			runs := watchGit(t, nil)
+			d, err := read(dir, base, head)
+			want := []Change{{Path: "b.txt", From: "a.txt", Status: "R", Added: 1, Removed: 1}, {Path: "m.txt", Status: "M", Binary: true}}
+			if err != nil || !slices.Equal(d.Changes, want) || d.RenamesCut {
+				t.Errorf("%+v (renames cut %v) %v, want %+v", d.Changes, d.RenamesCut, err, want)
+			}
+			args := []string{"cat-file --batch-check", "cat-file --batch", "cat-file --batch-check", "cat-file --batch"}
+			if got := argsOf(*runs); !slices.Equal(got, args) || *caps != 1 || *closes != 2 {
+				t.Errorf("git ran %q under %d caps, %d openings; want %q under one cap, two openings", got, *caps, *closes, args)
+			}
+			for _, r := range *runs {
+				if slices.Contains(r.ids, ghost) {
+					t.Errorf("git %q was handed %s, a blob no store holds", r.args, ghost)
+				}
+			}
+		})
+		for _, moved := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, a side no store holds and a repack in the second opening, moved %v", name, moved), func(t *testing.T) {
+				dir, base, head, blob := build(t, moved)
+				closes, _, repacks := watch(t, dir, blob, true)
+				d, err := read(dir, base, head)
+				if !errors.Is(err, ErrChanged) || *repacks != 1 || *closes != 2 {
+					t.Errorf("%+v (renames cut %v) %v after %d repacks and %d openings; want %v after one repack and two openings", d.Changes, d.RenamesCut, err, *repacks, *closes, ErrChanged)
+				}
+			})
+		}
+	}
+}
+
 // The search for renames asks whether the repository's own store holds
 // every one of its candidates before it starts any git: a deleted file
 // beside an added one whose blob only another store the repository names

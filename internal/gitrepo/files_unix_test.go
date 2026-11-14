@@ -1782,3 +1782,23 @@ func TestAReadAnswersInFixedWordsWhenItsFolderCannotBeMade(t *testing.T) {
 		t.Errorf("beside the file: %q, want nothing", left)
 	}
 }
+
+// A read whose temporary directory is a relative path (TMPDIR) hands git
+// its folder by its absolute path and answers as with any other, leaving
+// nothing in the directory: Compare, CommitDetail and FileAt.
+func TestAReadWithARelativeTemporaryDirectoryAnswersAsAnother(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", "tmp")
+	for _, rd := range movedReads(dir, c1, c2) {
+		if err := rd.read(context.Background()); err != nil {
+			t.Errorf("%s: %v", rd.name, err)
+		}
+		if left := tempLeft(t, "tmp"); len(left) != 0 {
+			t.Errorf("%s left in the temporary directory: %q", rd.name, left)
+		}
+	}
+}

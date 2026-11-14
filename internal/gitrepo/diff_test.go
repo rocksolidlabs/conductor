@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -353,7 +354,12 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, looked, dropped, err := withRenames(ctx, &refusal{}, r.Storer, dir, plain)
+		sort.Stable(plain)
+		held, err := ask(&refusal{}, r.Storer, needed(plain))
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed, looked, dropped, err := withRenames(ctx, dir, held, plain)
 		if err != nil {
 			t.Fatal(err)
 		}
