@@ -400,6 +400,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if err != nil {
 		return res, err
 	}
+	if sub.Question != "" && text != "" && sub.By != nil {
+		s.awaitDrawn(ctx, sub.Question)
+	}
 	// A controller's line naming the startup question that takes one (the
 	// sign-in screen's code): the one startup question a line is typed into,
 	// never an Enter alone.
@@ -1204,6 +1207,47 @@ func (s *Local) lookAsked(ctx context.Context) (bool, error) {
 		}
 	}
 	return s.asked.CheckNow(), nil
+}
+
+// drawnWait bounds how long a line to the startup question that takes one
+// waits for the program to draw its screen again after the window was made
+// smaller (awaitDrawn): it only bounds a program that never does.
+const drawnWait = 5 * time.Second
+
+// awaitDrawn waits, for a line naming the question id while that is the
+// startup question that takes one (Attention.Line), until the screen the
+// line is weighed against (takesLine) is a whole frame no window made
+// smaller has cut: a phone's layout moving its terminal (the question bar
+// shown again) resizes the session just before the line comes, and a TUI
+// draws its screen again at once. At most drawnWait, or until ctx or the
+// session ends; takesLine judges what the screen is then.
+func (s *Local) awaitDrawn(ctx context.Context, id string) {
+	if s.asked == nil {
+		return
+	}
+	s.mu.Lock()
+	att := s.info.Attention
+	s.mu.Unlock()
+	if att.ID != id || !att.Line {
+		return
+	}
+	deadline := time.Now().Add(drawnWait)
+	for {
+		_, settled, _, _ := s.asked.Whole()
+		if uncut, _, _ := s.asked.DrawnAt(); settled && uncut || time.Now().After(deadline) {
+			return
+		}
+		t := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-s.ended:
+			t.Stop()
+			return
+		}
+	}
 }
 
 // lookBudget bounds how long Submit waits, before its Enter, for the screen

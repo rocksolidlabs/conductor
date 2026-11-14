@@ -23,7 +23,7 @@
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
 #   STUB_SIGNIN     an invented code: the stub starts on Claude Code's
-#                   sign-in screen and takes that code alone (sign_in)
+#                   sign-in screen and takes that code alone (claude_sign_in)
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
@@ -1119,19 +1119,14 @@ mcp_ok() {
 	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
 }
 
-# trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
-# and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
-# selection and redraw, Esc quits, anything else is ignored. Enter on the
-# first writes the trust the way Codex keeps it; on Quit the stub exits, as
-# Codex does.
-# sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
+# claude_sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
 # browser's link, then "Paste code here if prompted >"), bracketed paste on,
 # and reads a line without echoing it: the invented code STUB_SIGNIN names
 # signs in ("Login successful."), any other is refused ("That code was not
 # accepted.") and the screen drawn again. A window resized has the screen
 # drawn again whole, as Claude Code's TUI does. The transcript says only
 # whether a code was taken, never the line; the stub signs in to nothing.
-sign_in() {
+claude_sign_in() {
 	local code note='' st resized=''
 	signin_draw() {
 		printf '\e[2J\e[H\e[?2004h%sWelcome to Claude Code\r\n\r\n Browser didn'"'"'t open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > ' "$note"
@@ -1165,6 +1160,11 @@ sign_in() {
 	done
 }
 
+# trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
+# and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
+# selection and redraw, Esc quits, anything else is ignored. Enter on the
+# first writes the trust the way Codex keeps it; on Quit the stub exits, as
+# Codex does.
 trust_dialog() {
 	local sel=0 key seq
 	draw() {
@@ -1632,7 +1632,7 @@ else
 	: >>"$transcript"
 fi
 if [[ -n ${STUB_SIGNIN:-} ]]; then
-	sign_in
+	claude_sign_in
 fi
 if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 	trust_dialog

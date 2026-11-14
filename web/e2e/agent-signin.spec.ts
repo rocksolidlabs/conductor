@@ -4,7 +4,7 @@ import type { BrowserContext, Page } from '@playwright/test'
 import { expect, showView, test, type Session } from './fixtures'
 import { stubFiles } from './held-helpers'
 
-// A sign-in code given to an agent from a phone (#902). The stub signed out (claude-signed-out in conductor.e2e.json) starts on
+// A sign-in code given to an agent from a phone (#902). The stub signed out (signed-out in conductor.e2e.json) starts on
 // Claude Code's sign-in screen, the startup question its entry marks as taking a line: at a phone's width the question bar offers
 // a field for it, a refused code has the screen drawn again and asked again, the code it takes signs it in, and the code is kept
 // nowhere Conductor keeps anything (the session, the chat, the activity log, the server's log). The terminal's paste control on a
@@ -43,7 +43,7 @@ function partOf(text: string, code: string): string {
 }
 
 test('the sign-in screen takes a code at a phone’s width, a refused one is asked again, and no code is kept', async ({ api, page, state }) => {
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude-signed-out', name: 'e2e sign-in' })
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'signed-out', name: 'e2e sign-in' })
   sessions.push(s.id)
   const stub = stubFiles(state.home, s)
   const signIn = async () => {

@@ -1582,7 +1582,10 @@ taken. It is typed only while the screen as it is now, a whole frame with
 nothing cut by a window made smaller, shows that question as the only
 startup question on it and no dialog's numbered choice, looked at as the
 answer arrives and again as the session's writer takes its text and its
-Enter; otherwise it is refused in the words above, nothing typed (or its
+Enter. A screen cut by a window made smaller (a phone's question bar shown
+again shrinks its terminal just before the line) is waited for, at most
+5 s, until the program has drawn it again, as a TUI does at once;
+otherwise it is refused in the words above, nothing typed (or its
 Enter left out, as for a question come in a `submit`'s pause). An `answer`
 with `text` naming any other startup question (the trust question, an
 update dialog, a screen the entry does not mark), a `submit`, a `chat` to

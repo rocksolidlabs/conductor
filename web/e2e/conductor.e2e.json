@@ -25,9 +25,9 @@
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },
       {
-        "id": "claude-signed-out",
-        "name": "Claude Code, signed out (e2e stub)",
-        "description": "The Claude Code stub that starts on its sign-in screen and takes only the invented code STUB_SIGNIN names: no real tool, no real sign-in.",
+        "id": "signed-out",
+        "name": "Signed out (e2e stub)",
+        "description": "The stub that starts on the agent's sign-in screen and takes only the invented code STUB_SIGNIN names: no real tool, no real sign-in.",
         "command": ["@BASH@", "@STUB@"],
         "allowArgs": true,
         "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_SIGNIN": "e2e-Code-7Hq2Wx9Kp4" },

@@ -253,6 +253,49 @@ func TestASignInScreenBesideAnotherStartupQuestionTakesNoLine(t *testing.T) {
 	}
 }
 
+// The question bar shown again on a phone shrinks its terminal, and the
+// session with it, just before the line comes: the screen the line is
+// weighed against is cut by the window made smaller until the program
+// draws it again, as a TUI does at once. The line waits for that, nothing
+// typed meanwhile, and is typed once the screen shows the sign-in whole.
+func TestALineWaitsForTheSignInScreenDrawnAgainAfterAResize(t *testing.T) {
+	s, p := newLocalWith(t, quiet(claudeTrustOptions(t)))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(claudeSignInScreen))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.Line })
+	if err := s.Resize(nater, 38, 20); err != nil {
+		t.Fatal(err)
+	}
+	if uncut, _, _ := s.asked.DrawnAt(); uncut {
+		t.Fatal("the screen is not cut by the window made smaller")
+	}
+	done := make(chan error, 1)
+	go func() {
+		res, err := s.Submit(t.Context(), Submission{Text: signInCode, By: nater, Question: q.ID})
+		if err == nil && !res.Entered {
+			err = errors.New("not entered")
+		}
+		done <- err
+	}()
+	noWrite(t, p, 100*time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("the line did not wait for the screen drawn again: %v", err)
+	default:
+	}
+	// Drawn again at the new size.
+	p.outW.Write([]byte(claudeSignInScreen))
+	if got := nextWrite(t, p); got != signInCode {
+		t.Fatalf("typed %q", got)
+	}
+	if got := nextWrite(t, p); got != "\r" {
+		t.Fatalf("then %q", got)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the line: %v", err)
+	}
+}
+
 // A line to the sign-in screen is no first prompt: the startup questions
 // are watched still. The program drawing the folder's trust question after
 // the sign-in has it asked, with its answers, and a person's text is
