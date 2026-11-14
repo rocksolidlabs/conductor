@@ -878,6 +878,7 @@ func TestPrepareVerifiesTarget(t *testing.T) {
 func TestSendRefusesChangedTarget(t *testing.T) {
 	e, p := pubEnv(t)
 	out := e.prepare(t, "PUB-1", nil, http.StatusCreated, "")
+	lost := e.prepare(t, "PUB-1", map[string]any{"body": "Its answer lost."}, http.StatusCreated, "")
 	p.edit(pubNodeID, func(n *pubNode) { n.name = "octo/renamed" })
 	const other = "I_kwDOnewrepo12"
 	p.node(other, "Issue", "octo/app", 12, 4000009)
@@ -890,7 +891,6 @@ func TestSendRefusesChangedTarget(t *testing.T) {
 		t.Fatalf("the comment's address: %v, want %s", sent["remoteUrl"], want)
 	}
 	p.set(func(p *pubGH) { p.mode = postLost })
-	lost := e.prepare(t, "PUB-1", map[string]any{"body": "Its answer lost."}, http.StatusCreated, "")
 	found := pubOf(t, e.sendPub(t, pubOf(t, lost)["id"].(string), opID(), lost["postSha256"].(string), http.StatusOK, ""))
 	if c := p.commented(pubNodeID); found["state"] != "sent" || len(c) != 2 || found["remoteUrl"] != "https://github.com/octo/renamed/issues/12#issuecomment-"+strconv.FormatInt(c[1].id, 10) {
 		t.Fatalf("a comment a listing found: %v", found)
