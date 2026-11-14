@@ -347,7 +347,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	longest := 0
 	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
 		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch, dispatch.EntityReview,
-		dispatch.EntityFinding} {
+		dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend} {
 		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		if entity == dispatch.EntityPerson {
@@ -377,10 +377,10 @@ func TestEventHubDispatchEvent(t *testing.T) {
 			t.Fatalf("a %s's event %s reads as %+v (%v), want %+v", entity, data, got, err, want)
 		}
 	}
-	// The bound is the longest payload's, with room: a milestone's is 119
-	// bytes, as events.go derives it.
-	if longest != 119 {
-		t.Fatalf("the longest event is %d bytes, not the 119 events.go derives", longest)
+	// The bound is the longest payload's, with room: a capture send's is
+	// 122 bytes, as events.go derives it.
+	if longest != 122 {
+		t.Fatalf("the longest event is %d bytes, not the 122 events.go derives", longest)
 	}
 	// Every field is there when it is empty: a person's event names no
 	// ticket and no project.
@@ -556,14 +556,14 @@ func TestEventHubDispatchEntryIsBounded(t *testing.T) {
 	ch := h.subscribe()
 	kinds := []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
 		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch,
-		dispatch.EntityReview, dispatch.EntityFinding}
+		dispatch.EntityReview, dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend}
 	projects := []string{"ABCDEF", "GHIJKL"}
 	framing := len("event: dispatch\ndata: \n\n")
 	bound := len(projects) * len(kinds) * maxDispatchEach * (maxDispatchEvent + framing)
-	// events.go's arithmetic: 11,776 bytes a kind and project, eleven
-	// kinds an operation's one project, 129,536 bytes.
-	if each, op := maxDispatchEach*(maxDispatchEvent+framing), len(kinds)*maxDispatchEach*(maxDispatchEvent+framing); len(kinds) != 11 || each != 11776 || op != 129536 {
-		t.Fatalf("%d kinds, %d bytes a kind and project, %d an operation's: not events.go's 11, 11,776 and 129,536", len(kinds), each, op)
+	// events.go's arithmetic: 11,776 bytes a kind and project, thirteen
+	// kinds an operation's, 153,088 bytes.
+	if each, op := maxDispatchEach*(maxDispatchEvent+framing), len(kinds)*maxDispatchEach*(maxDispatchEvent+framing); len(kinds) != 13 || each != 11776 || op != 153088 {
+		t.Fatalf("%d kinds, %d bytes a kind and project, %d an operation's: not events.go's 13, 11,776 and 153,088", len(kinds), each, op)
 	}
 	entry := func(what string, changes []dispatch.Change) []byte {
 		t.Helper()

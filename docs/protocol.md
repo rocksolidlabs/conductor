@@ -4696,8 +4696,12 @@ last change in the store's log (local to the database), `entity`
 `project`, `ticket`, `comment`, `label`, `milestone`, `view`,
 `person`, `plan` (a ticket's plan revision), `launch` (a ticket's
 launch), `review` (a person's review of a candidate: its submit and
-each change of its application) or `finding` (one of a review's
-findings: made with it, and again for each mark), `id` its id (`""` for a person, whose id is its name: the
+each change of its application), `finding` (one of a review's
+findings: made with it, and again for each mark), `capture` (a
+person's capture of a preview: its create, each edit and its delete;
+Captures, below) or `capture_send` (one of a capture's sends: made, and
+each outcome and cancel; a capture and a send name no ticket or project,
+a send to a ticket telling the ticket's own changes too), `id` its id (`""` for a person, whose id is its name: the
 pickers read the directory again whole), `ticket` the id of the ticket
 it belongs to and `project` its project's key, `""` where there is
 none. A relation counts for both its tickets, and a label's or a
@@ -4706,7 +4710,7 @@ changed more than 64 entities of one kind in one project, the server
 sends one event for them, where the first of them would have been: that
 `entity`, `id` and `ticket` `""`, the project's key and the commit's
 `seq`, so a label deleted on 300 tickets is two events, the label's and
-its tickets'. An event is at most 160 bytes (the longest is 119: every
+its tickets'. An event is at most 160 bytes (the longest is 122, a `capture_send`'s: every
 value is digits, a word, hex or a key, never escaped). A page reads
 again what an event names, or what derives from it; an event with `id`
 and `ticket` `""` (but a person's, whose `id` is always `""`) names no
@@ -4736,9 +4740,12 @@ offered: `{url, tree: "worktree", commit, content, changed,
 changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
 unread?}`; `404 no_preview` when it is not open. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
-place its value leaves the server: every other field is scrubbed of the
-secret of every tree the engine holds one for (in any case, made
-`${CONDUCTOR_TREE_SECRET}`), a changed path that holds one among them.
+place its value leaves the server: the changed paths, the only names the
+label carries beside git's ids and its own words, are scrubbed of the
+secret of every tree the engine holds one for, as a capture is (a run
+that holds a whole secret made `${CONDUCTOR_TREE_SECRET}`, any other part
+of one at least 8 hexadecimal characters long, in any case, made
+`[secret]`), and then cut to their bound.
 The revision is read now: `commit` HEAD's commit as the read recorded
 it, `content` the tree id of everything the tree holds that git would
 see (uncommitted edits and new files that are not ignored; a file at a
@@ -4816,7 +4823,8 @@ its time on a busy machine: it answers the commit alone, and when it was
 cut while the refresh held the index's lock, the next read starts from a
 new index. A first read that was cut after its index was made and before
 the index's stat data was brought up to date leaves an index the next
-read does not refresh: that read hashes every tracked file once; its
+read does not refresh (unless that read's lists pass their bound, when
+it makes its one refresh): that read hashes every tracked file once; its
 answer is the same. The content is the id of
 the tree the read stages, every path that differs named by the hash of
 its content as git converts it: the tree `git add -A` makes, with these
@@ -4828,14 +4836,14 @@ line-ending check, `core.safecrlf`, or an encoding git cannot read,
 check, and a folder that is a repository with no commit, in place of a
 tracked file, is left out. In a repository set to ignore case
 (`core.ignoreCase`), a new path under a folder whose case differs from
-the index's is staged under the tree's own spelling. Where a path
-changed its kind and is now a file (a tracked link, or a submodule's
-entry, replaced by a file), the read removes the old entry before it
-stages the file, where `add` judges the file's line endings with the old
-entry still in the index: when that entry's content holds a carriage
+the index's is staged under the tree's own spelling. Where a tracked
+link was replaced by a file, the read removes the link's entry before it
+stages the file, where `add` judges the file's line endings with the
+link's entry still in the index: when the link's target holds a carriage
 return and the tree converts line endings by itself (`core.autocrlf`, or
 `text=auto`), `add` keeps the file's line endings as they are and the
-read converts them, and the two ids differ. And the read
+read converts them, and the two ids differ (a submodule's entry replaced
+by a file is staged as `add` stages it). And the read
 answers the commit alone, the label unread, where it does not label: an
 attributes file (`.gitattributes`, in any folder) gone or of another
 type than the index has, and not committed (the read does not guess
@@ -4909,6 +4917,193 @@ the row of the shared read; the classes are read by two commands over
 the exact paths; the index is made the commit's again with `read-tree
 --reset`; at most eight indexes are kept, the least recently read let
 go, where the plan keeps one for the open preview's life.
+
+#### Captures
+
+A person's captures of a preview (`docs/plans/browser-evidence.md`) are
+Dispatch's records, kept in its store with their screenshots as content
+files beside the attachments. Every route below is the admin's: everyone
+else (a share link, a session's token, a host token, a Brakeman turn) is
+answered `401`, and a switchyard `403 switchyard`. Each route is
+registered alone, the admin's check outermost.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
+| `GET /api/captures` | `?run=&task=&attempt=` (an attempt from 1), `?ticket=` (the captures a send was sent to), `?after=` (a page's `next`), `?limit=` (1 to 100, 100 when absent); each at most once, `attempt` and `limit` in decimal digits alone | `{captures, next?}`, newest first, each with its first annotation alone, its note cut to 200 characters; `400 invalid_request` for a parameter given twice, an `attempt` or a `limit` given empty or with anything but digits (a sign among it), a limit of 0 or past 100, an attempt of 0, a task without its run or an attempt without its task |
+| `GET /api/captures/{id}` | none | the capture with its annotations and its sends (their requests aside); a deleted capture is its tombstone `{id, rev, createdAt, deletedAt}` |
+| `GET /api/captures/{id}/image` | none | the kept PNG, whole, `200` whatever range the request names (never a part): `Content-Type: image/png`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `Content-Disposition: inline`, `X-Conductor-SHA256` (the kept file's); `404 not_found` without one, and for a deleted capture |
+| `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`, `200` for a repeat; `400 invalid` (a new element report, a kind or a note the store refuses, a region outside the screenshot); `400 invalid_request` (the gate's refusals); `404 not_found` (a deleted or unknown capture); `409 stale_revision`; `409 op_conflict`; `413 bound` (the body past 2 MiB, more than 20 annotations, the 51st annotation set) |
+| `POST /api/captures/{id}/delete` | `{opId, byName?}`, at most 64 KiB | `200 {receipt}`, `200` for a repeat; `400 invalid_request` (the gate's refusals); `404 not_found` (a deleted or unknown capture); `409 op_conflict`; `413 bound` (the body past 64 KiB) |
+
+**The bounds.** A capture holds at most 20 annotations, each note at most
+4,000 characters; its page's address at most 2 KiB and its title at most
+200 characters; an element at most 8 hints, each hint's file at most
+1 KiB; a capture at most 50 annotation sets (an edit makes one). The store
+keeps at most 5,000 live captures. A create's body is at most 6 MiB +
+64 KiB, its capture part at most 2 MiB and its screenshot at most 4 MiB;
+an edit's body at most 2 MiB and a delete's at most 64 KiB. A tree's read
+for a capture takes at most 5 s, as the label's does, every git command
+the capture starts among it, and a write at most 30 s.
+
+**A write's order.** A body is read whole within its bound (`413
+bound` past it), decoded once with no member it does not take, and
+refused in fixed words, never a parser's (`400 invalid_request`). The
+operation's content is the digest of the request as decoded (its JSON
+re-encoded, the screenshot's SHA-256 after it), taken before anything is
+changed. The operation's own members, `opId` and `byName`, are judged
+against their bounds as the request carried them, so a display name is
+judged the same whatever secrets are held when it comes again; an `opId`
+the scrub would change (it holds a part of the secret of a tree the
+engine holds one for) is refused there, `400 invalid_request` (`opId
+holds a tree's secret`), on a create, an edit and a delete, before any
+call to the store, so no operation's row, receipt or reply carries it.
+Then, in this order: every string the request carries (the client's
+words, `byName`, each annotation, each text of an element's report, an
+edit's notes, a link's and a page's URLs) is scrubbed of the secret of
+every tree the engine holds one for at that moment, whatever its
+preview's state, in any case: each run of at least 8 hexadecimal
+characters made of parts of such a secret is made a word no longer than
+itself, `${CONDUCTOR_TREE_SECRET}` for a run that holds a whole secret
+and `[secret]` for any other, so a secret a bound cut short at either end
+leaves nothing of itself and no text grows: a text at its bound stays
+within it, and a `byName` is kept as scrubbed, never longer than sent
+(one pass over each text, one look-up for each hexadecimal character; a
+run of fewer than 8 characters of a secret, and a run of hexadecimal
+characters that is no part of one, is kept as sent; a secret in another
+encoding, or drawn in a screenshot's pixels, is not looked for); each
+text of an element's report is made storable
+without growing as encoded (a carriage return a line feed, every other
+control character but a line feed and a tab a space, bytes that are not
+UTF-8 a space); the operation is answered by its receipt when its `opId`
+was seen (a create or an edit sent again after its reply was lost answers
+its receipt, `repeat: true`, whatever the tree has become, its preview
+closed, its secret gone and the server restarted among it; another
+request under the same `opId` is `409 op_conflict`); the screenshot's
+header; the store's look before any tree is read: its own check of a new
+capture as it is handed in (every text's bound and form, every count,
+each element report's measure as the bridge cut it, taken before the
+server put it in the store's shape, each annotation's kind, the one
+moment every element was selected at, and each region within the
+screenshot's size as its header gives it), then, in a read of the store,
+the store's one rule for what needs no tree: an attempt's capture whose
+selection names no content or no commit names its read's time (such a
+selection is never the tree's, so it is kept as the drift whatever the
+tree holds), room for one more live capture and the capture retaken
+(there, live, and of the same kind: a link's retakes a link's of the same
+page origin, an attempt's an attempt's); the screenshot decoded and its
+kept file made (below); the preview and the page's origin; the tree's
+read; the store's create, which judges the same rule again in its
+transaction, and then the rules that need the tree's facts: a selection
+that names content, compared with the tree's read (kept as the drift, it
+names its read's time), and the retake's repository. A request
+the store's look refuses is refused by the store with its receipt, so a
+repeat is answered the same, and reads no tree. An edit is checked by the
+store's check of an edit, then against the capture. A refusal of the
+store's is answered with its own code and words, `{error, receipt}`:
+`400 invalid`, `413 bound`, `404 not_found`, `409` for every other
+(`stale_revision`, `op_conflict`, `expired` among them); it names the
+member that is wrong and what it may be, never a value the request
+carried. No log line of these routes carries a request's text, and a
+page's origin is quoted in a refusal only when it is plain ASCII, a
+host's name or address and a port, and holds no tree's secret: otherwise
+the refusal says the page is of another origin than the preview, whose
+origin it names.
+
+**The screenshot.** Its header is read first (each side 1 to 4,096
+pixels, before any pixel is held). Then it is decoded whole (every
+chunk's CRC, every row; `the screenshot is not a whole PNG` otherwise),
+and what the store keeps, hashes and serves is the server's own PNG
+encoding of the decoded image (zlib's default level, at which the kept
+file of Chromium's screenshots of real pages, 1,024 to 4,096 pixels on
+the long side, was no larger than Chromium's), made with the decode, one
+at a time on the server; a screenshot that waits past the write's time
+for its turn is `503 busy`. Nothing else of the upload is kept: no chunk
+beside the pixels' own (no text, no colour profile or colour chunk, no
+animation's frames: an animated image keeps its default image), nothing after the
+image's data or its end. A kept file past 4 MiB is `413 bound` (`the
+screenshot is more than 4 MiB as the server keeps it`). The kept file's
+bytes are looked through as the scrub looks through a text, and one that
+holds a part of a tree's secret is refused (`the screenshot holds a
+tree's secret`). The capture's `image.sha256`, the image route's
+`X-Conductor-SHA256` and the store's file are the kept file's; the
+operation's content (above) is the upload's, so the same upload sent
+again is answered by the first's receipt.
+
+**What the server fills, never the client.** For an attempt: the
+origin `attempt` with its run, task and number, the tree `worktree`,
+`mutable`, where it ran, and the revision read at the save by the
+label's own read, in the same index under the same turn, the top of the
+run's repository and its sources read as a step of that read, so the
+server's stop cancels and waits for every git command of a capture as it
+does a label's, and no git of a capture runs once its read has returned
+(when the read's time runs out inside that step, the content and the
+changed paths that were read are kept, the hints' classes are `unknown`,
+the repository is not named when the time ran out in its look, and the
+log says so); the run's scope
+(its crew, the top of its repository, the project of the ticket it was
+launched from); and
+each element's sources, its hints' files made relative to the tree (a
+file outside it kept as reported, `outside`; a form of the tree's path
+with its links resolved counts as the tree only when it is the folder
+the read opened), `found` when the tree holds it (looked up through the
+tree as the server opened it, no link followed out of it), classed
+`tracked` (in the recorded commit's tree), `ignored` (left out by the
+tree's ignore rules; `check-ignore`'s answer judged by its exit status,
+so a warning git prints leaves the classes known), `untracked`, `vendor`
+(a path with a `node_modules` element) or `unknown`, ordered by that
+class, the innermost first within each, so the app's own file comes
+first. A hint whose path begins with `:`, or has a link, or anything but
+a folder, among its folders (looked at through the opened tree, without
+following it) is not handed to git and is `unknown`; when git will not class the paths it is
+asked (a path inside a submodule), every hint it was asked of is
+`unknown` and the capture keeps the content and the changed paths it
+read, the log saying so by its kind. What the read gave decides the
+create: a read that gave no commit, or was refused (the tree moved, the
+server's stop began), is `503 tree_unread` and nothing is kept; a read
+that named the commit and then failed (its 5 s ran out, git failed) keeps
+the capture with the commit alone, no content, no changed paths and no
+sources, as the label answers it (its drift then says the revision was
+not known). Each is logged by its kind, never git's words. What the
+server read (the changed paths, the sources, the scope; git's ids aside)
+is scrubbed as the request is, with the read's own tree's secret beside
+every secret held once the read is over. From those facts the store keeps
+the drift (the selection's read when the save's commit or content
+differs, or either was not read), what the page serves (`declared`,
+`stale` or `unconfirmed`), the changed paths' cut and how a retake is
+related (`run`, `ticket` or `repo`). For a link, the origin `url` alone.
+
+**The capture document** (`conductor.capture/1`), what a send freezes:
+`{schema, id, rev, url, title, viewport: {mode, width, height, scale,
+dpr, colorScheme, userAgent, scrollX, scrollY}, selectedAt, savedAt,
+origin: {kind, run?, task?, attempt?, tree?, commit?, changed,
+changedPaths, changedCut, content?, mutable, candidate?, where?, drift?,
+serving: {state, page?}}, image: {sha256?, width?, height?, bytes?, how,
+why?, scale?}, annotations: [{k, kind, note, rect, element?, observed?,
+sources?}], retakeOf?, retakeVia?}`, at most 2 MiB as encoded. An
+element is kept in the store's shape, its classes a list, and measured
+as the bridge cut it: at most 32 KiB. The store takes what the bridge's
+own bounds allow: a box of any finite numbers with no negative size, a
+motion and a hint's line and column from 0 to 2^53 - 1, a state's words
+of at most 1,024 bytes, and a tag or an attribute's name of any form
+within its bound with no control character; an element whose tag or an
+attribute's name is not of an element's or an attribute's form keeps no
+`value` attribute, and an input's or a password field's attributes are
+all of the form. The store's field rules hold every other text (no
+control character but a line feed and a tab in the long ones).
+
+**Brakeman.** A turn's read of Dispatch's changes passes over a
+capture's and a send's rows, whatever its grant, until a turn has a read
+of captures (the plan's PR-6).
+
+Where this differs from the plan: a page's origin is quoted in a refusal
+only in the form above; the scrub takes the secret of every tree the
+engine holds, not only the capture's tree's, and every part of one at
+least 8 characters long, and an edit is scrubbed without looking its
+capture up; what is kept of a screenshot is the server's own encoding of
+its pixels; a source
+may be `unknown`; a tag and an attribute's name are any name with no
+control character; Brakeman's reads pass over captures until PR-6.
 
 #### GitHub tokens
 

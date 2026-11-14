@@ -427,7 +427,8 @@ func execGitIO(ctx context.Context, cwd string, argv []string, env map[string]st
 }
 
 // gitError is the error of a git that failed: ctx's when it ended,
-// ErrNotRepo, or the line of its standard error that says why.
+// ErrNotRepo, or the line of its standard error that says why with its
+// exit status kept (said); the exit status itself when git said nothing.
 func gitError(ctx context.Context, sub, stderr string, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -436,9 +437,40 @@ func gitError(ctx context.Context, sub, stderr string, err error) error {
 		if strings.Contains(msg, "not a git repository") {
 			return ErrNotRepo
 		}
-		return fmt.Errorf("git %s: %s", sub, msg)
+		s := &said{msg: fmt.Sprintf("git %s: %s", sub, msg), exit: -1}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			s.exit = exit.ExitCode()
+		}
+		return s
 	}
 	return fmt.Errorf("git %s: %w", sub, err)
+}
+
+// said is a git that exited with words on its standard error: the line
+// that says why, and its exit status (ExitStatus), which it does not
+// unwrap to, so a caller that asks for git's exit status alone (an
+// *exec.ExitError) finds it only where git said nothing.
+type said struct {
+	msg  string
+	exit int
+}
+
+func (s *said) Error() string { return s.msg }
+
+// ExitStatus is the exit status of the git that err says failed, whether
+// it said why on its standard error or not; -1 for an error that is no
+// git's exit.
+func ExitStatus(err error) int {
+	var s *said
+	if errors.As(err, &s) {
+		return s.exit
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
 }
 
 // filterArgs are the -c options that turn off every clean, smudge and

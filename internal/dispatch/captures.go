@@ -120,7 +120,8 @@ func (s *Store) withUpload(ctx context.Context, op Op, intent string, args captu
 // CreateCapture records a capture (capture.create), received the digest
 // of the client's request, n the client's words, f what the API read, and
 // image the screenshot's PNG (nil for none: n says why). Everything is
-// checked first (checkCapture: every bound, the one moment, the origin);
+// checked first (checkCapture: CheckNewCapture's rules first, then the
+// origin and the facts);
 // the screenshot is a PNG of at most MaxCaptureImage bytes and
 // MaxCaptureImageSide pixels a side, its size read from its header before
 // it is published, its regions within it; then one transaction writes the
@@ -152,11 +153,8 @@ func (s *Store) CreateCapture(ctx context.Context, op Op, digest string, n NewCa
 		return nil
 	}
 	return s.withUpload(ctx, op, IntentCaptureCreate, captureArgs{Received: digest}, pre, image, MaxCaptureImage, check, func(t *tx, u *received) error {
-		var live int
-		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM captures WHERE deleted_at = ''").Scan(&live); err != nil {
-			return err
-		}
-		if err := checkCount("live captures", live+1, MaxCaptures); err != nil {
+		first, err := captureRoom(t.ctx, t.tx, n, f.Origin == OriginURL)
+		if err != nil {
 			return err
 		}
 		c.ID, c.CreatedAt, c.SavedAt, c.CreatedBy, c.Actor = newID(), t.now, t.now, t.op.author(), t.op.Actor
@@ -164,8 +162,7 @@ func (s *Store) CreateCapture(ctx context.Context, op Op, digest string, n NewCa
 			c.Image.SHA256, c.Image.Bytes = u.sum, u.size
 		}
 		if c.RetakeOf != "" {
-			var err error
-			if c.RetakeVia, err = t.retakeVia(c); err != nil {
+			if c.RetakeVia, err = t.retakeVia(c, first); err != nil {
 				return err
 			}
 		}
@@ -201,29 +198,73 @@ type captureCreated struct {
 	Fingerprint string    `json:"fingerprint"`
 }
 
-// retakeVia checks the capture c retakes and says how the two are related:
-// run (the same run and task), else ticket (c's run was launched from a
-// ticket that a send of the first was sent to, by sendState: sentTo),
-// else repo (the same repository); a link's capture retakes a link's of
-// the same page origin (pageOrigin), related so by nothing more. A
-// deleted capture, another repository's or another origin's is refused
-// invalid. One query decides the ticket, whatever the sends and the
-// launches number; a retake written before the sends were the store's
-// stays as it was recorded.
-func (t *tx) retakeVia(c Capture) (string, error) {
-	first, _, err := readCapture(t.ctx, t.tx, c.RetakeOf)
-	if err != nil || !first.DeletedAt.IsZero() {
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return "", err
-		}
-		return "", refuse(RefusalInvalid, "the capture retaken, %s, is not a live capture", c.RetakeOf)
+// CheckCaptureCreate judges a create by every rule of the store's that
+// needs no tree's facts, before the API reads the tree: the client's words
+// (CheckNewCapture; img nil for no screenshot, else its size as its header
+// gives it), then, in one read of the store, room for the capture and the
+// capture it retakes (captureRoom; link says the capture is a link's). A
+// refusal is kept as the create's own, with its receipt, so a resend is
+// answered by it (refused true); otherwise nothing is written.
+func (s *Store) CheckCaptureCreate(ctx context.Context, op Op, digest string, n NewCapture, img *CaptureImage, link bool) (Receipt, bool, error) {
+	err := CheckNewCapture(n, img)
+	if err == nil {
+		err = s.read(ctx, func(q queryer) error {
+			_, err := captureRoom(ctx, q, n, link)
+			return err
+		})
 	}
-	link, firstLink := c.Origin.Kind == OriginURL, first.Origin.Kind == OriginURL
+	var ref *Refusal
+	if !errors.As(err, &ref) {
+		return Receipt{}, false, err
+	}
+	rc, err := s.Apply(ctx, op, IntentCaptureCreate, captureArgs{Received: digest}, func(*tx) error { return ref })
+	return rc, err == nil, err
+}
+
+// captureRoom judges what a create asks of the store that no tree's facts
+// decide: an attempt's or a candidate's capture whose selection names no
+// commit or no content says when its read was made (such a selection is
+// never the tree's, so it is kept as the drift, whatever the tree holds);
+// room for one more live capture (MaxCaptures, bound); and, when n retakes
+// one, the capture retaken there, live and of the same kind (link is
+// whether n is a link's): a link's retakes a link's of the same page
+// origin (pageOrigin), an attempt's an attempt's. It gives the capture
+// retaken. The look before a tree is read (CheckCaptureCreate) and the
+// create's transaction both judge by it.
+func captureRoom(ctx context.Context, q queryer, n NewCapture, link bool) (Capture, error) {
+	if !link && (n.Label.Commit == "" || n.Label.Content == "") && n.Label.ReadAt.IsZero() {
+		return Capture{}, refuse(RefusalInvalid, "the selection's read, kept as the drift, names no time")
+	}
+	var live int
+	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM captures WHERE deleted_at = ''").Scan(&live); err != nil {
+		return Capture{}, err
+	}
+	if err := checkCount("live captures", live+1, MaxCaptures); err != nil || n.RetakeOf == "" {
+		return Capture{}, err
+	}
+	first, _, err := readCapture(ctx, q, n.RetakeOf)
 	switch {
-	case link || firstLink:
-		if link != firstLink || pageOrigin(c.URL) == "" || pageOrigin(c.URL) != pageOrigin(first.URL) {
-			return "", refuse(RefusalInvalid, "a link's capture retakes only a link's of the same page origin")
-		}
+	case errors.Is(err, ErrNotFound) || (err == nil && !first.DeletedAt.IsZero()):
+		return Capture{}, refuse(RefusalInvalid, "the capture retaken is not a live capture")
+	case err != nil:
+		return Capture{}, err
+	case link != (first.Origin.Kind == OriginURL) || (link && (pageOrigin(n.URL) == "" || pageOrigin(n.URL) != pageOrigin(first.URL))):
+		return Capture{}, refuse(RefusalInvalid, "a link's capture retakes only a link's of the same page origin, and an attempt's an attempt's")
+	}
+	return first, nil
+}
+
+// retakeVia says how c is related to first, the capture it retakes as
+// captureRoom gave it: run (the same run and task), else ticket (c's run
+// was launched from a ticket that a send of the first was sent to, by
+// sendState: sentTo), else repo (the same repository); a link's retake is
+// related so by nothing more. Another repository's is refused invalid.
+// One query decides the ticket, whatever the sends and the launches
+// number; a retake written before the sends were the store's stays as it
+// was recorded.
+func (t *tx) retakeVia(c, first Capture) (string, error) {
+	switch {
+	case c.Origin.Kind == OriginURL:
 		return "", nil
 	case c.Scope.Repo == "" || first.Scope.Repo != c.Scope.Repo:
 		return "", refuse(RefusalInvalid, "the capture retaken is another repository's")
@@ -378,19 +419,22 @@ func (t *tx) liveCapture(id string) (Capture, error) {
 // each one it holds named by its place (K) with its note, and a region's
 // rectangle within the screenshot, or a new region (K 0); one left out is
 // removed. An element keeps its report, moment and sources as saved, and a
-// new element's report is refused invalid ("Capture again"). One
-// transaction writes a version of each annotation that changed, a new set
-// and the pointer, and bumps the capture's rev. Refused stale_revision for
-// another revision, not_found for a deleted capture, bound past
-// MaxAnnotationSets.
+// new element's report is refused invalid ("Capture again"). The edit is
+// checked first as it is handed in (CheckCaptureEdit). One transaction
+// writes a version of each annotation that changed, a new set and the
+// pointer, and bumps the capture's rev. Refused stale_revision for another
+// revision, not_found for a deleted capture, bound past MaxAnnotationSets.
 func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expectedRev int64, edits []AnnotationEdit) (Receipt, error) {
 	return s.withUpload(ctx, op, IntentCaptureEdit, captureArgs{ID: id, Received: digest}, func() error { return nil }, nil, 0, nil, func(t *tx, _ *received) error {
+		if err := CheckCaptureEdit(edits); err != nil {
+			return err
+		}
 		c, err := t.liveCapture(id)
 		if err != nil {
 			return err
 		}
 		if c.Rev != expectedRev {
-			return refuse(RefusalStaleRevision, "the capture is at r%d, not r%d", c.Rev, expectedRev)
+			return refuse(RefusalStaleRevision, "the capture is at r%d, not the revision the edit names", c.Rev)
 		}
 		ch := &checker{}
 		ch.count("annotations", len(edits), MaxCaptureAnnotations)
@@ -401,13 +445,13 @@ func (s *Store) EditCapture(ctx context.Context, op Op, digest, id string, expec
 			a := Annotation{Kind: AnnotationRegion}
 			ch.must(e.Element == nil, RefusalInvalid, "%s brings a new element: a new element is a new capture: Capture again", label)
 			if e.K != 0 {
-				ch.must(e.K >= 1 && e.K <= len(c.Annotations) && !seen[e.K], RefusalInvalid, "%s names annotation %d, which is not one of the capture's once", label, e.K)
+				ch.must(e.K >= 1 && e.K <= len(c.Annotations) && !seen[e.K], RefusalInvalid, "%s names an annotation that is not one of the capture's once", label)
 				if ch.err != nil {
 					return ch.err
 				}
 				seen[e.K], a = true, c.Annotations[e.K-1]
 			}
-			ch.must(e.Kind == a.Kind, RefusalInvalid, "%s is %s, not %s", label, a.Kind, e.Kind)
+			ch.must(e.Kind == a.Kind, RefusalInvalid, "%s is not of the kind the capture holds there", label)
 			ch.field("annotation.note", label+"'s note", e.Note)
 			a.K, a.Note = len(next)+1, e.Note
 			if a.Kind == AnnotationRegion {
@@ -616,6 +660,15 @@ func (s *Store) Capture(ctx context.Context, id string) (Capture, error) {
 		return Capture{}, err
 	}
 	return c, nil
+}
+
+// Answer is c as a read answers it: a deleted capture's tombstone alone
+// (its id, its revision and its times), else c.
+func (c Capture) Answer() any {
+	if !c.DeletedAt.IsZero() {
+		return tombstoneOf(c)
+	}
+	return c
 }
 
 // tombstoneOf is a deleted capture as every read gives it.
