@@ -86,12 +86,15 @@ type turnBriefing struct {
 	Coverage *brakeman.Coverage `json:"coverage,omitempty"`
 }
 
-// turnRequest is GET …/brakeman/request's request.
+// turnRequest is a request as its turn is told it (turnRequestOf): GET
+// …/brakeman/request's, and a brief's submit's without what that route
+// alone resolves (subjects, lastBriefing, batch, notes). These fields and
+// no other: never the request as kept.
 type turnRequest struct {
 	ID       string        `json:"id"`
 	Kind     string        `json:"kind"`
 	State    string        `json:"state"`
-	Subjects []turnSubject `json:"subjects"`
+	Subjects []turnSubject `json:"subjects,omitzero"`
 	Note     string        `json:"note,omitempty"`
 	Since    time.Time     `json:"since,omitzero"`
 	// LastBriefing is the newest briefing kept whose grant this turn's
@@ -114,10 +117,24 @@ type turnRequest struct {
 	Notes []crew.RoleNote `json:"notes,omitempty"`
 }
 
+// turnRequestOf is what a turn is told of req under cfg, the
+// configuration now, at now: the one maker of every reply to a turn that
+// carries its request.
+func turnRequestOf(req brakeman.Request, cfg brakeman.Config, now time.Time) turnRequest {
+	out := turnRequest{ID: req.ID, Kind: req.Kind, State: req.State, Note: req.Note, Since: req.Since,
+		Scope: req.Config.Scope, Visibility: bothVisible(req.Config.Visibility, cfg.Visibility), Permissions: bothPermit(req.Config.Permissions, cfg.Permissions),
+		Budget: turnBudget{ReadsLeft: max(0, req.Config.Budget.ReadsPerTurn-req.Reads), Deadline: req.Deadline, Seconds: max(0, int(req.Deadline.Sub(now).Seconds()))}}
+	if b, _ := json.Marshal(cfg.Scope); string(b) != mustJSON(req.Config.Scope) {
+		sc := cfg.Scope
+		out.ScopeNow = &sc
+	}
+	return out
+}
+
 // bothVisible is the visibility two configurations allow together.
 func bothVisible(a, b brakeman.Visibility) brakeman.Visibility {
 	return brakeman.Visibility{Runs: a.Runs && b.Runs, Logs: a.Logs && b.Logs, Dispatch: a.Dispatch && b.Dispatch,
-		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals}
+		Sessions: a.Sessions && b.Sessions, Touched: a.Touched && b.Touched, Terminals: a.Terminals && b.Terminals, Capacity: a.Capacity && b.Capacity}
 }
 
 // bothPermit is the permissions two configurations allow together: the
@@ -181,14 +198,8 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 			}
 		}
 	}
-	now := d.now()
-	out := turnRequest{ID: req.ID, Kind: req.Kind, State: req.State, Subjects: []turnSubject{}, Note: req.Note, Since: req.Since,
-		Scope: req.Config.Scope, Visibility: bothVisible(req.Config.Visibility, cfg.Visibility), Permissions: bothPermit(req.Config.Permissions, cfg.Permissions),
-		Budget: turnBudget{ReadsLeft: max(0, req.Config.Budget.ReadsPerTurn-req.Reads), Deadline: req.Deadline, Seconds: max(0, int(req.Deadline.Sub(now).Seconds()))}}
-	if b, _ := json.Marshal(cfg.Scope); string(b) != mustJSON(req.Config.Scope) {
-		sc := cfg.Scope
-		out.ScopeNow = &sc
-	}
+	out := turnRequestOf(req, cfg, d.now())
+	out.Subjects = []turnSubject{}
 	log, err := d.st.Reads(id)
 	if err != nil {
 		s.brakemanError(w, err)
@@ -427,29 +438,36 @@ func (s *Server) handleSessionBrakemanBrief(w http.ResponseWriter, r *http.Reque
 		}
 		d.publish(id)
 		d.poke()
-		writeJSON(w, http.StatusCreated, map[string]any{"request": kept})
+		writeJSON(w, http.StatusCreated, map[string]any{"request": turnRequestOf(kept, cfg, d.now())})
 		return
 	}
 }
 
 // repeatBrief answers a submission to a request whose brief is kept
-// (req, as read): the same opId and brief 200 with the request, compared
-// as kept, never resolved or checked again against the catalog and the
-// folders, whatever the records, the catalog and the request say now (a
-// drafted crew's agent removed since is still the brief kept); any other
-// brief 409 brief_exists.
+// (req, as read): the same opId and brief 200 with the request as the
+// turn is told it (turnRequestOf), compared as kept, never resolved or
+// checked again against the catalog and the folders, whatever the
+// records, the catalog and the request say now (a drafted crew's agent
+// removed since is still the brief kept); any other brief 409
+// brief_exists.
 func (s *Server) repeatBrief(w http.ResponseWriter, req brakeman.Request, body briefBody) {
+	d := s.brakeman
 	b, err := brakeman.DecodeBrief(body.Brief, req.Config.Permissions, keptFacts{brakemanFacts{s: s}})
 	if err != nil {
 		s.brakemanError(w, fmt.Errorf("%w: %s", brakeman.ErrBriefExists, req.ID))
 		return
 	}
-	kept, err := s.brakeman.st.KeepBrief(req.ID, brakeman.Kept{OpID: body.OpID, Brief: b})
+	kept, err := d.st.KeepBrief(req.ID, brakeman.Kept{OpID: body.OpID, Brief: b})
 	if err != nil {
 		s.brakemanError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"request": kept})
+	cfg, err := d.st.Config()
+	if err != nil {
+		s.brakemanError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"request": turnRequestOf(kept, cfg, d.now())})
 }
 
 // briefChecks is how many times a brief is checked against a

@@ -45,6 +45,11 @@ type Visibility struct {
 	Sessions  bool `json:"sessions"`  // the sessions list: names, states, questions, quiet time
 	Touched   bool `json:"touched"`   // the touched index
 	Terminals bool `json:"terminals"` // a session's screen text; off by default
+	// Capacity is the capacity view: each agent's usage on its accounts,
+	// labels and figures, never a folder (docs/plans/capacity.md, PR-6).
+	// On in DefaultConfig; a configuration saved before it has none, and
+	// reads it off until the person turns it on.
+	Capacity bool `json:"capacity"`
 }
 
 // The visibility classes, as a read log and a footprint name them.
@@ -55,10 +60,11 @@ const (
 	ClassSessions  = "sessions"
 	ClassTouched   = "touched"
 	ClassTerminals = "terminals"
+	ClassCapacity  = "capacity"
 )
 
 // Classes is every visibility class, in the order Visibility has them.
-var Classes = []string{ClassRuns, ClassLogs, ClassDispatch, ClassSessions, ClassTouched, ClassTerminals}
+var Classes = []string{ClassRuns, ClassLogs, ClassDispatch, ClassSessions, ClassTouched, ClassTerminals, ClassCapacity}
 
 // Has reports whether the class is visible; an unknown class never is.
 func (v Visibility) Has(class string) bool {
@@ -75,6 +81,8 @@ func (v Visibility) Has(class string) bool {
 		return v.Touched
 	case ClassTerminals:
 		return v.Terminals
+	case ClassCapacity:
+		return v.Capacity
 	}
 	return false
 }
@@ -237,7 +245,7 @@ var projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,5}$`)
 func DefaultConfig(cwd string) Config {
 	return Config{
 		Cwd:         cwd,
-		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true},
+		Visibility:  Visibility{Runs: true, Logs: true, Dispatch: true, Sessions: true, Touched: true, Capacity: true},
 		Permissions: Permissions{Observe: true, Draft: true, Propose: true},
 		Wake:        defaultWake(),
 		Budget:      Budget{TurnMinutes: DefaultTurnMinutes, ReadsPerTurn: DefaultReadsPerTurn, TurnsPerDay: DefaultTurnsPerDay, MinutesPerDay: DefaultMinutesPerDay},

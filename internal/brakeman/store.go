@@ -845,6 +845,9 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 	if err := ask.checkAsked(); err != nil {
 		return Request{}, false, err
 	}
+	if err := checkCapacity("capacity", in.Capacity); err != nil {
+		return Request{}, false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.writable(); err != nil {
@@ -887,6 +890,7 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 	}
 	r = ask
 	r.Schema, r.ID, r.CreatedAt, r.State = Schema, requestID(st.Last), s.now().UTC(), StateQueued
+	r.Capacity = in.Capacity
 	if !r.Since.IsZero() {
 		r.Since = r.Since.UTC()
 	}
@@ -1370,6 +1374,14 @@ type Resolution struct {
 	Ref  Ref      `json:"ref"`
 	Seen RefState `json:"seen"`
 	Now  RefState `json:"now"`
+	// Capacity is a capacity: ref's reading as the server held it when
+	// the brief was kept (its state, plan, windows, credits and limits,
+	// its time and what read it), the agent by its catalog entry, the
+	// account by its id, label and retired mark as the accounts list had
+	// them then, and the server's counts then; no host and no default
+	// mark. It stays checkable once the reading has left the server's
+	// memory; at most MaxCapacity bytes.
+	Capacity *Capacity `json:"capacity,omitempty"`
 }
 
 // RefState is a ref's record at one time.
@@ -1464,6 +1476,9 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 			return Request{}, err
 		}
 		if err := res.Now.check(field + ".now"); err != nil {
+			return Request{}, err
+		}
+		if err := checkCapacity(field+".capacity", res.Capacity); err != nil {
 			return Request{}, err
 		}
 	}
