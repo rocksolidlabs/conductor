@@ -75,6 +75,9 @@ test('an edit to the saved crew gets its own bar, which names what changed and d
 test('Launch run from the home opens the run page; the crew then says a run is live, and its Runs tab lists it', async ({ page, api }) => {
   await page.goto('/crews')
   await page.locator(`[data-launch-crew="${crewId}"]`).click()
+  // A launch asks first, each member on its line (docs/plans/capacity.md, PR-7); its Launch launches.
+  await expect(page.locator('[data-crew-launch-line="lead"]')).toBeVisible()
+  await page.locator('[data-crew-launch-confirm]').click()
   await page.waitForURL(/\/runs\/e2e-crews-page-[0-9a-f]{8}$/)
   const runId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   runs.push(runId)
@@ -125,6 +128,8 @@ test('a run named at launch is called by its name on its page, the home card and
   await page.locator('[data-launch-menu]').click()
   await page.locator('[data-launch-name]').fill('e2e named run')
   await page.locator('[data-launch-named]').click()
+  await expect(page.getByRole('dialog')).toContainText('As the run e2e named run')
+  await page.locator('[data-crew-launch-confirm]').click()
   await page.waitForURL(/\/runs\/e2e-crews-page-[0-9a-f]{8}$/)
   const runId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   runs.push(runId)

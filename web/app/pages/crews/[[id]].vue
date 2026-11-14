@@ -4,6 +4,7 @@ import { ApiError } from '~/composables/useApi'
 import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
+import { modelProblem } from '~/utils/capacity'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -190,6 +191,8 @@ const ruleProblem = computed(() => {
     const err = memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name))
     if (err) return err
     if (!m.agentId) return `${m.name || 'A member'} needs an agent`
+    const model = modelProblem(m.model ?? '')
+    if (model) return `${m.name || 'A member'}: ${model}`
   }
   // The server checks the tasks, then the people (internal/crew Validate).
   return taskProblems(d)[0] ?? peopleProblems(d)[0] ?? ''
@@ -432,7 +435,32 @@ function launchNamed() {
   const label = runName.value
   nameOpen.value = false
   runName.value = ''
-  launch('', label)
+  askLaunch('', label)
+}
+
+/**
+ * A launch asks first (docs/plans/capacity.md, PR-7): the sheet lists each member with its agent, model, account and a line of its
+ * usage, and its Launch launches. The crew shown is what launches: the draft on the crew's page (saved first when it changed), the
+ * crew as saved from a row of the home or the palette.
+ */
+const sheet = reactive<{ open: boolean; id: string; label: string; crew: { name: string; members: CrewInfo['members']; managed: boolean; yolo: boolean } | null }>({ open: false, id: '', label: '', crew: null })
+async function askLaunch(id = '', label = '') {
+  let c: Pick<CrewInfo, 'name' | 'members' | 'tasks' | 'yolo'> | undefined
+  if (id) {
+    try {
+      c = full.value[id] ?? (await api.getCrew(id))
+    } catch (e) {
+      fail('Launch failed', e)
+      return
+    }
+  } else c = draft.value
+  if (!c) return
+  Object.assign(sheet, { open: true, id, label, crew: { name: c.name, members: c.members, managed: !!c.tasks, yolo: c.yolo ?? yoloDefault.value } })
+}
+async function launchFromSheet() {
+  const { id, label } = sheet
+  await launch(id, label)
+  sheet.open = false
 }
 
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (deleteOpen.value = true) }]])
@@ -556,8 +584,8 @@ usePalette().registerPage(() => ({
       icon: 'i-lucide-play',
       note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : undefined,
       disabled: c.where === 'host',
-      run: () => launch(c.id),
-      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => launch(c.id, label.trim()) },
+      run: () => askLaunch(c.id),
+      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => askLaunch(c.id, label.trim()) },
       actions: c.where === 'host' ? undefined : [{ id: 'field', kind: 'page' as const, target: c.id, label: 'Launch named…', icon: 'i-lucide-tag', kbds: ['L'], run: () => {} }],
     })),
   ],
@@ -602,7 +630,7 @@ usePalette().registerPage(() => ({
           </UDropdownMenu>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
             <UFieldGroup>
-              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="launch()"><span class="hidden sm:inline">Launch run</span></UButton>
+              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="askLaunch()"><span class="hidden sm:inline">Launch run</span></UButton>
               <UPopover v-model:open="nameOpen" :content="{ align: 'end' }">
                 <UButton icon="i-lucide-chevron-down" :disabled="!!launchBlocked || saving" aria-label="Name this run" class="border-l border-inverted/20" data-launch-menu />
                 <template #content>
@@ -642,7 +670,7 @@ usePalette().registerPage(() => ({
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
             <span class="text-xs text-muted">plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
-          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="launch($event)" />
+          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="askLaunch($event)" />
           <UEmpty
             v-else-if="loaded"
             icon="i-lucide-users"
@@ -760,6 +788,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
+      <CrewLaunchSheet v-model:open="sheet.open" :crew="sheet.crew" :agents="agents" :label="sheet.label" :launching="launchingKey !== undefined && launchingKey === (sheet.id || selectedKey)" @launch="launchFromSheet" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">

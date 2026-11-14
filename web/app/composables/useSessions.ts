@@ -363,6 +363,10 @@ export interface CrewMember {
   /** At most 32, of at most 4096 bytes each and 8 KiB in all. */
   args?: string[]
   start: CrewStart
+  /** The account it launches on (docs/protocol.md, Capacity): an account's id, `default` for the agent's own login; absent for its adapter's default at the launch. */
+  account?: string
+  /** Its model (1 to 100 of `A-Z a-z 0-9 . _ : / @ -`); absent for the agent's default. */
+  model?: string
 }
 
 /**
@@ -528,6 +532,10 @@ export interface RunMember {
   name: string
   agentId: string
   start: CrewStart
+  /** The login the launch bound it to, by its id and source alone (never its folder); absent for the agent's own login. */
+  account?: { id: string; source: string }
+  /** Its model as launched; absent for the agent's default. */
+  model?: string
   /** The member's session, once it has started. */
   sessionId?: string
   /** With worktree isolation, once it has started: its branch (`crew/<run>/<member>`) and worktree. */
@@ -771,6 +779,8 @@ export interface RunInfo {
   resumedBy?: string
   /** The ticket it was launched from, whose package it and its continuations follow; absent for a run with no package. */
   ticket?: RunTicket
+  /** `brakeman` for a Brakeman turn's run; absent for a person's. */
+  class?: string
   /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
   managed?: { revision: number }
   /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */

@@ -4,6 +4,9 @@ import { agentIcon } from '~/utils/agentIcons'
 import { agentItem } from '~/utils/agents'
 import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } from '~/utils/crews'
 import { startWords } from '~/utils/crewWords'
+import type { AccountsDoc } from '~/composables/useAccounts'
+import { modelProblem } from '~/utils/capacity'
+import { AT_LAUNCH, memberAccountItems } from '~/utils/crewLaunch'
 
 /**
  * The members of a crew, one row each: name, agent, first prompt and when it
@@ -13,15 +16,18 @@ import { startWords } from '~/utils/crewWords'
  * adding a member to a run; `others` are the names outside the table (the
  * run's members), which a row may not take and may start after; `people`
  * the run's people, whose names a row may not take (a person is never a
- * member) and never starts after.
+ * member) and never starts after. A member of an agent whose tool's login Conductor can move (the
+ * adapters `accounts` lists) has a second line: its account (the default at launch, its default login or
+ * an account added in Settings) and its model (empty for the agent's default).
  */
 const members = defineModel<DraftMember[]>({ required: true })
-const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean }>(), {
+const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean; accounts?: AccountsDoc | null }>(), {
   others: () => [],
   people: () => [],
   single: false,
   host: '',
   managed: false,
+  accounts: null,
 })
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
@@ -105,7 +111,19 @@ function rename(key: number, name: string) {
 function setAgent(key: number, agentId: string) {
   // An agent that takes no extra arguments is refused at launch with some: they go with the switch.
   const takesArgs = agentOf(agentId)?.allowArgs ?? true
-  update(key, takesArgs ? { agentId } : { agentId, args: undefined, argsText: '' })
+  // An account is its tool's: another tool's agent starts from the default at launch, and one whose login is not moved names no model.
+  const was = members.value.find((m) => m.key === key)
+  const login = was && agentOf(was.agentId)?.adapter === agentOf(agentId)?.adapter ? {} : { account: undefined, model: memberAccountItems(props.accounts, agentOf(agentId)?.adapter).length ? was?.model : undefined }
+  update(key, takesArgs ? { agentId, ...login } : { agentId, args: undefined, argsText: '', ...login })
+}
+
+/** A member's Account choice, [] for an agent whose login is not one Conductor moves: such a member names none. */
+function accountItems(m: DraftMember) {
+  return memberAccountItems(props.accounts, agentOf(m.agentId)?.adapter, m.account)
+}
+
+function setAccount(key: number, value: string) {
+  update(key, { account: value === AT_LAUNCH ? undefined : value })
 }
 
 function setArgs(key: number, text: string) {
@@ -235,6 +253,36 @@ const focusedPrompt = ref<number | null>(null)
           <UDropdownMenu v-if="!single" :items="menu(m, i)" :content="{ align: 'end' }">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${who(m, i)}: more`" data-member-menu />
           </UDropdownMenu>
+        </div>
+      </div>
+
+      <div v-if="accountItems(m).length" class="flex flex-wrap items-start gap-2 pl-0 @min-[52rem]:pl-[18.5rem]" data-member-login>
+        <USelect
+          :model-value="m.account || AT_LAUNCH"
+          :items="accountItems(m)"
+          icon="i-lucide-key-round"
+          size="sm"
+          :aria-label="`Account for ${who(m, i)}`"
+          class="w-full max-w-64"
+          data-member-account
+          @update:model-value="setAccount(m.key, String($event))"
+        />
+        <div class="flex w-full max-w-64 flex-col gap-1">
+          <UInput
+            :model-value="m.model ?? ''"
+            placeholder="the agent's default model"
+            maxlength="100"
+            autocapitalize="off"
+            spellcheck="false"
+            size="sm"
+            :color="modelProblem(m.model ?? '') ? 'error' : undefined"
+            :highlight="!!modelProblem(m.model ?? '')"
+            :aria-label="`Model for ${who(m, i)}`"
+            :ui="{ base: 'font-mono text-xs' }"
+            data-member-model
+            @update:model-value="update(m.key, { model: String($event) || undefined })"
+          />
+          <span v-if="modelProblem(m.model ?? '')" class="text-xs leading-snug text-error" data-member-model-error>{{ modelProblem(m.model ?? '') }}</span>
         </div>
       </div>
 

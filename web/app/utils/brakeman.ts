@@ -3,6 +3,8 @@
 // and what it is called, the order a brief's items are shown in, and the configuration form's checks, which mirror the server's
 // (internal/brakeman/config.go, Validate) so the form says what is wrong before a save is refused for it. Pure: no Nuxt, no fetch.
 
+import { capacityStateWords, clockWords, countsWords, creditWords, limitsWords, planWords, windowWords, type CapacityCounts, type CapacityCredit, type CapacityLimits, type CapacityWindow } from './capacity'
+
 /** What Brakeman may see, a switch a class. */
 export interface BrakemanVisibility {
   runs: boolean
@@ -11,6 +13,8 @@ export interface BrakemanVisibility {
   sessions: boolean
   touched: boolean
   terminals: boolean
+  /** The capacity view (docs/plans/capacity.md, PR-6): on for a new configuration, absent (off) in one saved before it. */
+  capacity?: boolean
 }
 
 /** What Brakeman may see of each kind: a selector left empty is all of it. */
@@ -256,6 +260,48 @@ export interface RefResolution {
   ref: string
   seen: RefState
   now: RefState
+  /** A capacity: ref's reading as the server kept it with the brief (docs/protocol.md, Brakeman): labels and figures, never a folder. */
+  capacity?: CapacitySnapshot
+}
+
+/** A reading a brief cites, as the server copied it when the brief was kept (internal/brakeman Capacity). */
+export interface CapacitySnapshot {
+  agent: { id: string; name?: string; adapter?: string; version?: string }
+  account: { id: string; label?: string; retired?: boolean; plan?: string }
+  state: string
+  words?: string
+  windows: CapacityWindow[]
+  credits: CapacityCredit[]
+  limits?: CapacityLimits
+  counts?: CapacityCounts
+  countedAt?: string
+  readAt?: string
+  readBy?: { program: string; version: string; qualified: string }
+  fresh?: string
+}
+
+/**
+ * A capacity: ref's chip in words, from the reading kept with the brief (PR-7): the agent and the account by their names, a short
+ * summary (each window the provider reported with its share used, or the state's title), and its title, every fact the reading
+ * holds: the plan as the tool reported it, each window with its reset, the provider's figures, Conductor's estimate apart, and when it
+ * was read and by what. A window the provider did not report is in none of them. Null without a reading.
+ */
+export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, timeZone?: string): { label: string; summary: string; title: string } | null {
+  if (!c) return null
+  const account = c.account.id === 'default' ? 'its default login' : (c.account.label || c.account.id) + (c.account.retired ? ' (retired)' : '')
+  const label = `capacity of ${c.agent.name || c.agent.id} on ${account}`
+  const state = capacityStateWords({ state: c.state, words: c.words })
+  const summary = c.state === 'ok' ? c.windows.map((w) => `${w.name} ${w.percent}%`).join(' · ') || 'no windows reported' : state.title
+  const at = Date.parse(c.readAt ?? '')
+  const lines = [
+    planWords(c.account.plan, c.agent.adapter),
+    c.state === 'ok' ? '' : `${state.title}: ${state.words}`,
+    ...c.windows.map((w) => windowWords(w, now, timeZone)),
+    [...c.credits.map(creditWords), ...limitsWords(c.limits)].map((x) => `The provider's: ${x}`).join(' · '),
+    c.counts ? `Conductor's estimate: ${countsWords(c.counts)}` : '',
+    Number.isNaN(at) ? '' : `Read ${clockWords(at, timeZone)}${c.readBy ? ` by ${c.readBy.program} ${c.readBy.version}` : ''}`,
+  ]
+  return { label, summary, title: lines.filter(Boolean).join('\n') }
 }
 
 /** The kinds a request may have, in the order the composer offers them, with what the page calls each. */

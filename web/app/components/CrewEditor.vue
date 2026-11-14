@@ -26,6 +26,9 @@ const toast = useToast()
 // The agent select names the server's host beside an agent not installed there.
 const serverHost = useServerHost()
 serverHost.load()
+// Each member's Account choice is made of the accounts (docs/plans/capacity.md, PR-7): read as the editor shows.
+const accounts = useAccounts()
+onMounted(() => void accounts.store.load())
 
 // The git state of the working directory, read 300 ms after it last
 // changed; stale replies are dropped. The line it makes explains a launch
@@ -235,7 +238,7 @@ function refused(message: string) {
         <span class="min-w-0 text-[12.5px] text-muted" data-start-sentence>{{ startSentence(crew.members) }}</span>
         <UTabs v-if="!managed" v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="ml-auto" data-members-view />
       </div>
-      <CrewMembersTable v-if="managed || membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" :managed="managed" @update:model-value="setMembers" @add="addMember" @add-from-session="pickOpen = true" />
+      <CrewMembersTable v-if="managed || membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" :managed="managed" :accounts="accounts.doc.value" @update:model-value="setMembers" @add="addMember" @add-from-session="pickOpen = true" />
       <template v-else>
         <CrewGraph :members="crew.members" :agent-names="agentNames" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
         <div class="flex flex-wrap gap-x-4 gap-y-1">

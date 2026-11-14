@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanAct, BrakemanConfig, BriefItem } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BriefItem, CapacitySnapshot } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, groupItems, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -726,5 +726,48 @@ describe("Brakeman's reading", () => {
     }
     expect(readingBlocks({ summary: 'Quiet.' }).map((b) => b.key)).toEqual(['summary'])
     expect(readingBlocks({ summary: 'Quiet.', uncertainty: '  ' }).map((b) => b.key)).toEqual(['summary'])
+  })
+})
+
+describe("a capacity: ref's chip (docs/plans/capacity.md, PR-7)", () => {
+  const now = Date.parse('2026-11-11T00:00:00Z')
+  const reading: CapacitySnapshot = {
+    agent: { id: 'claude', name: 'Claude Code', adapter: 'claude', version: '2.1.322' },
+    account: { id: 'a-aaaaaaaaaaaa', label: 'Work', plan: 'max' },
+    state: 'ok',
+    windows: [{ source: 'provider', kind: 'weekly_all', name: 'Weekly, all models', percent: 40, resetsAt: '2026-11-16T03:00:00Z', severity: 'normal' }],
+    credits: [{ source: 'provider', kind: 'extra_usage', enabled: false }],
+    counts: { source: 'conductor', estimate: true, running: 1, started5h: 2, started7d: 3 },
+    readAt: '2026-11-10T23:57:00Z',
+    readBy: { program: 'Claude Code', version: '2.1.322', qualified: '2.1.322' },
+  }
+
+  it('names the agent and the account and sums up the windows the provider reported', () => {
+    const w = capacityRefWords(reading, now, 'UTC')!
+    expect(w.label).toBe('capacity of Claude Code on Work')
+    expect(w.summary).toBe('Weekly, all models 40%')
+    expect(w.title.split('\n')).toEqual([
+      'Claude Max',
+      'Weekly, all models: 40% used, resets Mon 16 Nov 03:00, in 5 days',
+      "The provider's: Extra usage: off",
+      "Conductor's estimate: 1 session running on this account here, 2 started in the last 5 hours, 3 in the last 7 days, counted by this server since it started",
+      'Read Tue 10 Nov 23:57 by Claude Code 2.1.322',
+    ])
+  })
+
+  it('says a state that is no reading in its words, a default login as such, and nothing without a reading', () => {
+    const w = capacityRefWords({ ...reading, account: { id: 'default' }, state: 'signed_out', windows: [], credits: [], counts: undefined, readAt: undefined }, now, 'UTC')!
+    expect(w.label).toBe('capacity of Claude Code on its default login')
+    expect(w.summary).toBe('Signed out')
+    expect(w.title).toBe('Signed out: the agent is signed out on this account')
+    expect(capacityRefWords({ ...reading, windows: [] }, now)!.summary).toBe('no windows reported')
+    expect(capacityRefWords(undefined, now)).toBeNull()
+  })
+
+  it('reads the snapshot the refs route answers, and the chip draws it', () => {
+    expect(readFileSync(new URL('../../../internal/brakeman/store.go', import.meta.url), 'utf8')).toContain('Capacity *Capacity `json:"capacity,omitempty"`')
+    const chip = readFileSync(new URL('../components/BrakemanRefChip.vue', import.meta.url), 'utf8')
+    expect(chip).toContain('capacityRefWords(props.resolution?.capacity, Date.now())')
+    expect(chip).toContain('data-ref-capacity')
   })
 })
