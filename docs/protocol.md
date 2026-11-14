@@ -3329,8 +3329,10 @@ operations' `bounds` name all three: `overview`, `section` and
   it names: asked what it can do here, the agent tells the person both
   lists, the operations it may call and the limits it must keep (#726). `kind` is `admin` or `session`; a
   session's `kinds` are `plain` (in no run) or `run_member`, `attempt` (of
-  a managed run) and `ticket_member` (of a run a live ticket's run link
-  names), or `brakeman` (a Brakeman turn's, which is never a ticket's
+  a managed run) and `ticket_member` (of a run whose ticket
+  `GET /api/sessions/{id}/ticket` answers: the one it was launched from,
+  or else the live ticket its live run link names; a comparison's lane
+  only when its run was launched from one), or `brakeman` (a Brakeman turn's, which is never a ticket's
   member); `scopes` are the operations' scopes it reaches (`session`, and
   `task` for an attempt, `ticket` for a ticket's member, `observe` for a
   Brakeman turn: its request and its brief, and `act` for a Brakeman turn
