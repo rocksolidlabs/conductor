@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -129,10 +130,11 @@ func argsOf(runs []*run) []string {
 // (six processes): once
 // for the sizes of the 200 sides and once for their contents, each with
 // the 200 ids on its input, and each with replacements off and the cache
-// of deltas' bases at git's own default limit, as command-line
-// configuration (readEnv).
+// of deltas' bases and the size past which git streams a blob at git's own
+// defaults, as command-line configuration (readEnv).
 func TestAComparisonOfAHundredFilesRunsGitTwice(t *testing.T) {
-	want := map[string]string{"GIT_NO_REPLACE_OBJECTS": "1", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.deltaBaseCacheLimit", "GIT_CONFIG_VALUE_0": "96m"}
+	want := map[string]string{"GIT_NO_REPLACE_OBJECTS": "1", "GIT_CONFIG_COUNT": "2",
+		"GIT_CONFIG_KEY_0": "core.deltaBaseCacheLimit", "GIT_CONFIG_VALUE_0": "96m", "GIT_CONFIG_KEY_1": "core.bigFileThreshold", "GIT_CONFIG_VALUE_1": "512m"}
 	dir, c1, c2 := changedFiles(t, 100)
 	ctx := context.Background()
 	for name, read := range map[string]func() (Detail, error){
@@ -206,13 +208,22 @@ func TestAFileWhoseSizeGitCannotSayIsListedWithoutItsLines(t *testing.T) {
 	}
 }
 
-// No call of go-git that reads a blob's content or its size, or decodes a
-// blob to read it, is left in the package's code: a comparison and FileAt
-// read a file's size and content through git (sizes, blobs), and go-git's
-// search for renames reads the files git read, from memory (withRenames).
+// The package's code calls none of go-git's calls that read a blob's
+// content or its size through the repository's store: a file's and an
+// object's readers and sizes (Contents, Reader, Files, BlobObject,
+// EncodedObjectSize and the rest of never), a patch and its counts
+// (Patch, Stats), the tree diffs that look for renames (Tree.Diff,
+// DiffContext, DiffTreeWithOptions) and the reads of an object of any type
+// (GetObject, DecodeObject, Repository.Object). A comparison and FileAt
+// read a file's size and content through git (sizes, blobs). go-git's
+// search for renames is called through detectRenames, on changes made from
+// memory (fromMemory), which this list cannot tell from others: the heap
+// test of a moved file is that guard
+// (TestAMovedFilePackedAsADeltaOfALargeBlobIsFoundWithBoundedMemory).
 func TestNoBlobIsReadThroughGoGit(t *testing.T) {
 	never := []string{"Contents", "IsBinary", "Reader", "Lines", "Files", "File", "TreeEntryFile", "BlobObject", "BlobObjects", "GetBlob", "DecodeBlob", "NewFile",
-		"EncodedObjectSize", "EncodedObject", "Patch", "PatchContext", "Stats"}
+		"EncodedObjectSize", "EncodedObject", "Patch", "PatchContext", "Stats",
+		"Diff", "DiffContext", "DiffTreeWithOptions", "GetObject", "DecodeObject", "Object"}
 	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -371,6 +382,7 @@ func TestTheReaderTakesOnlyTheAnswerAsked(t *testing.T) {
 		{"another id", obj(h2, "two\n") + obj(h1, "one\n"), false},
 		{"an id not asked", obj(h3, "one\n") + obj(h2, "two\n"), false},
 		{"another size", h1 + " blob 5\none\n!\n" + obj(h2, "two\n"), false},
+		{"another size, the bytes after it lined up at the size asked", h1 + " blob 5\none\n\n" + obj(h2, "two\n"), false},
 		{"another type", h1 + " tree 4\none\n\n" + obj(h2, "two\n"), false},
 		{"missing", h1 + " missing\n" + obj(h2, "two\n"), false},
 		{"no newline after the bytes", h1 + " blob 4\none\n!" + obj(h2, "two\n"), false},
@@ -393,6 +405,26 @@ func TestTheReaderTakesOnlyTheAnswerAsked(t *testing.T) {
 					return nil
 				})
 				if (err == nil) != c.ok || (c.ok && !slices.Equal(got, contents)) {
+					t.Errorf("%q, %v; want refused: %v", got, err, !c.ok)
+				}
+			})
+		}
+	}
+	// A blob kept in part (n below its size): the answer with the size
+	// asked is taken, its first n bytes; one with another size is refused.
+	for _, c := range []struct {
+		name, out string
+		ok        bool
+	}{
+		{"kept in part, the answer asked", h1 + " blob 4\none\n", true},
+		{"kept in part, another size", h1 + " blob 5\none\n!\n", false},
+	} {
+		for _, byByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("blobs, %s, a byte a write %v", c.name, byByte), func(t *testing.T) {
+				playGit(t, c.out, byByte)
+				var got []byte
+				err := blobs(context.Background(), t.TempDir(), []blob{{plumbing.NewHash(h1), 4, 2}}, func(_ int, b []byte) error { got = b; return nil })
+				if (err == nil) != c.ok || (c.ok && string(got) != "on") {
 					t.Errorf("%q, %v; want refused: %v", got, err, !c.ok)
 				}
 			})
@@ -466,5 +498,178 @@ func TestFileAtEndsGitOnceTheHeadIsIn(t *testing.T) {
 	}
 	if n := wrote["cat-file --batch"]; n == 0 || n >= b.Len() {
 		t.Errorf("git wrote %d bytes of a blob of %d; want it ended once the head was in", n, b.Len())
+	}
+}
+
+// tenLines is ten lines of text, the third as third.
+func tenLines(third string) string {
+	lines := []string{"one", "two", third, "four", "five", "six", "seven", "eight", "nine", "ten"}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// A repack between a comparison's trees and its look at a side (git packs a
+// repository by itself, `git maintenance run --auto`) loses no side's
+// lines: the store as the read opened it lists the side neither in its
+// pack indexes nor in its loose files, and the read opens the repository
+// again and asks once more (holds, read). The base is packed and the new
+// commit's objects loose; the repack is made at the look at the new side's
+// loose file (afterLook): at a modified file's side, at the search for
+// renames' look at its candidates (a file moved and changed by a line),
+// and at FileAt's. A side that truly is not there is listed without its
+// lines, after one reopen.
+func TestASideIsAskedForAgainAfterAReopen(t *testing.T) {
+	build := func(t *testing.T, moved bool) (dir, base, head, path, blob string) {
+		t.Helper()
+		dir = scratch(t)
+		write(t, dir, "a.txt", tenLines("three"))
+		base = commit(t, dir, time.Time{}, "base")
+		gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+		path = "a.txt"
+		if moved {
+			gitIn(t, dir, time.Time{}, "rm", "-q", "a.txt")
+			path = "b.txt"
+		}
+		write(t, dir, path, tenLines("THREE"))
+		head = commit(t, dir, time.Time{}, "head")
+		return dir, base, head, path, gitIn(t, dir, time.Time{}, "rev-parse", head+":"+path)
+	}
+	// arm repacks dir once, at the look at blob's loose file, and counts
+	// the openings closed.
+	arm := func(t *testing.T, dir, blob string) (repacks, closes *int) {
+		t.Helper()
+		repacks, closes = new(int), new(int)
+		loose := blob[:2] + "/" + blob[2:]
+		afterLook = func(rel string) {
+			if *repacks == 0 && strings.HasSuffix(filepath.ToSlash(rel), loose) {
+				gitIn(t, dir, time.Time{}, "repack", "-a", "-d", "-q")
+				*repacks++
+			}
+		}
+		rootsOpen = func(n int) {
+			if n == 0 {
+				*closes++
+			}
+		}
+		t.Cleanup(func() { afterLook, rootsOpen = nil, nil })
+		return repacks, closes
+	}
+	ctx := context.Background()
+	for _, moved := range []bool{false, true} {
+		want := []Change{{Path: "a.txt", Status: "M", Added: 1, Removed: 1}}
+		if moved {
+			want = []Change{{Path: "b.txt", From: "a.txt", Status: "R", Added: 1, Removed: 1}}
+		}
+		for _, name := range []string{"Compare", "CommitDetail"} {
+			t.Run(fmt.Sprintf("%s, moved %v", name, moved), func(t *testing.T) {
+				dir, base, head, _, blob := build(t, moved)
+				repacks, closes := arm(t, dir, blob)
+				var d Detail
+				var err error
+				if name == "Compare" {
+					d, err = Compare(ctx, dir, base, head)
+				} else {
+					d, err = CommitDetail(ctx, dir, head)
+				}
+				if err != nil || !slices.Equal(d.Changes, want) || d.RenamesCut || *repacks != 1 || *closes != 2 {
+					t.Errorf("%+v (renames cut %v) %v after %d repacks and %d openings; want %+v after one repack and two openings", d.Changes, d.RenamesCut, err, *repacks, *closes, want)
+				}
+			})
+		}
+	}
+	t.Run("FileAt", func(t *testing.T) {
+		// The new commit and its tree packed beside the base, its blob
+		// alone loose: FileAt lists the packs as it reads the commit.
+		dir, _, head, path, blob := build(t, false)
+		pack := exec.Command("git", "pack-objects", "-q", filepath.Join(".git", "objects", "pack", "pack"))
+		pack.Dir, pack.Stdin = dir, strings.NewReader(head+"\n"+gitIn(t, dir, time.Time{}, "rev-parse", head+"^{tree}")+"\n")
+		if out, err := pack.CombinedOutput(); err != nil {
+			t.Fatalf("git pack-objects: %v\n%s", err, out)
+		}
+		gitIn(t, dir, time.Time{}, "prune-packed", "-q")
+		repacks, closes := arm(t, dir, blob)
+		f, err := FileAt(ctx, dir, head, path, 100)
+		if err != nil || string(f.Content) != tenLines("THREE") || *repacks != 1 || *closes != 2 {
+			t.Errorf("%q %v after %d repacks and %d openings; want the file after one repack and two openings", f.Content, err, *repacks, *closes)
+		}
+	})
+	t.Run("a side that is not there", func(t *testing.T) {
+		dir := scratch(t)
+		write(t, dir, "a.txt", "one\n")
+		c1 := commit(t, dir, time.Time{}, "one")
+		gitIn(t, dir, time.Time{}, "update-index", "--add", "--cacheinfo", "100644,"+strings.Repeat("ab", 20)+",ghost.txt")
+		c2 := gitIn(t, dir, time.Time{}, "commit-tree", gitIn(t, dir, time.Time{}, "write-tree", "--missing-ok"), "-p", c1, "-m", "a blob missing")
+		_, closes := arm(t, dir, strings.Repeat("ab", 20))
+		want := []Change{{Path: "ghost.txt", Status: "A", Binary: true}}
+		if d, err := Compare(ctx, dir, c1, c2); err != nil || !slices.Equal(d.Changes, want) || *closes != 2 {
+			t.Errorf("%+v %v after %d openings; want %+v after two", d.Changes, err, *closes, want)
+		}
+	})
+}
+
+// The search for renames asks whether the repository's own store holds
+// every one of its candidates before it starts any git: a deleted file
+// beside an added one whose blob only another store the repository names
+// holds (objects/info/alternates), its content the deleted file's with a
+// line changed, is not found as a rename, and no git runs for the search:
+// git runs twice, for the comparison's sizes and contents, and is never
+// handed that id.
+func TestTheSearchForRenamesAsksItsCandidatesFirst(t *testing.T) {
+	other := scratch(t)
+	write(t, other, "there.txt", tenLines("THREE"))
+	elsewhere := gitIn(t, other, time.Time{}, "hash-object", "-w", "there.txt")
+	dir := scratch(t)
+	write(t, dir, "a.txt", tenLines("three"))
+	c1 := commit(t, dir, time.Time{}, "one")
+	if err := os.WriteFile(filepath.Join(dir, ".git", "objects", "info", "alternates"), []byte(filepath.Join(other, ".git", "objects")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, time.Time{}, "rm", "-q", "--cached", "a.txt")
+	gitIn(t, dir, time.Time{}, "update-index", "--add", "--cacheinfo", "100644,"+elsewhere+",b.txt")
+	c2 := gitIn(t, dir, time.Time{}, "commit-tree", gitIn(t, dir, time.Time{}, "write-tree"), "-p", c1, "-m", "moved, its blob only another store holds")
+	ctx := context.Background()
+	want := []Change{{Path: "a.txt", Status: "D", Removed: 10}, {Path: "b.txt", Status: "A", Binary: true}}
+	for name, read := range map[string]func() (Detail, error){
+		"Compare":      func() (Detail, error) { return Compare(ctx, dir, c1, c2) },
+		"CommitDetail": func() (Detail, error) { return CommitDetail(ctx, dir, c2) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs := watchGit(t, nil)
+			d, err := read()
+			if err != nil || !slices.Equal(d.Changes, want) || !d.RenamesCut {
+				t.Errorf("%+v (renames cut %v) %v, want %+v, renames cut", d.Changes, d.RenamesCut, err, want)
+			}
+			if args := []string{"cat-file --batch-check", "cat-file --batch"}; !slices.Equal(argsOf(*runs), args) {
+				t.Errorf("git ran %q, want %q: none for the search", argsOf(*runs), args)
+			}
+			for _, r := range *runs {
+				if slices.Contains(r.ids, elsewhere) {
+					t.Errorf("git %q was handed %s, a blob only another store holds", r.args, elsewhere)
+				}
+			}
+		})
+	}
+}
+
+// The two settings that decide what git holds of one object are the
+// reader's own, whatever the repository's configuration says: in a
+// repository that sets both far above git's defaults, git run as the
+// reader runs it (runGit, readEnv) uses git's defaults, 96m for the cache
+// of deltas' bases and 512m for the size past which a blob is streamed.
+func TestTheReadersGitTakesItsOwnSettingsForAnObject(t *testing.T) {
+	dir := scratch(t)
+	gitIn(t, dir, time.Time{}, "config", "core.deltaBaseCacheLimit", "8g")
+	gitIn(t, dir, time.Time{}, "config", "core.bigFileThreshold", "8g")
+	for key, want := range map[string]string{"core.deltaBaseCacheLimit": "96m", "core.bigFileThreshold": "512m"} {
+		for _, env := range []map[string]string{nil, readEnv} {
+			var out bytes.Buffer
+			if err := runGit(context.Background(), dir, env, nil, &out, "config", "--get", key); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(out.String()); env == nil && got != "8g" {
+				t.Fatalf("%s without the reader's settings: %q, want the repository's 8g", key, got)
+			} else if env != nil && got != want {
+				t.Errorf("%s as the reader runs git: %q, want %q", key, got, want)
+			}
+		}
 	}
 }

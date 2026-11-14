@@ -353,7 +353,7 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, looked, dropped, err := withRenames(ctx, r.Storer, dir, plain)
+		listed, looked, dropped, err := withRenames(ctx, &refusal{}, r.Storer, dir, plain)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,8 +5,11 @@
 // opens through its common directory. A commit's files, a comparison's
 // files and a file's content are found with go-git and read through the
 // git binary, their sizes and their contents (sizes, blobs, which say
-// why). The working tree's status and a file at a revision stay with
-// internal/gitcli, which the git binary does faster.
+// why); git is handed only ids the opened repository's own store lists,
+// in its pack indexes and its loose files (holds), and reads, itself, that
+// store and whatever stores it names. The working tree's status and a
+// file at a revision stay with internal/gitcli, which the git binary does
+// faster.
 package gitrepo
 
 import (
@@ -72,10 +75,7 @@ const (
 	// every file is listed as added or deleted, with its lines, and
 	// Detail.RenamesCut says so. The search hashes each deleted ordinary
 	// file once and each added one once for each deleted file of a size
-	// near its own: at the bound, on a machine of 64 cores at a load
-	// average of 15, it took about 1.5 s for files all of one size and up
-	// to about 7 s in the slowest arrangement measured (about 760 MiB
-	// allocated in all, a peak of 17 MiB held). Its time is beside the
+	// near its own, from memory, read by git. Its time is beside the
 	// comparison's time for line diffs (MaxCompareDiff), not inside it:
 	// it runs before them, and it ends with the read's context, and at the
 	// comparison's cap, at its next read of a file (fromMemory).
@@ -224,8 +224,9 @@ func (c ending) Get(h plumbing.Hash) (plumbing.EncodedObject, bool) {
 // `git maintenance run --auto`, which from Git 2.5x on packs a few hundred
 // loose objects and deletes them, and drops packs it merged), so a read
 // begun before the repack looks for an object in a pack it never listed or
-// in a pack since removed. The second opening lists them again. A commit
-// or a file that truly is not there is looked for twice. Once ctx has
+// in a pack since removed. The second opening lists them again. A commit,
+// a file or an object the store does not list (holds) that truly is not
+// there is looked for twice. Once ctx has
 // ended, as read is about to answer (an opening failed, or f returned, on
 // either attempt), ctx's error is the answer, whatever the opening kept
 // and whatever f answered; before that, a file refused on the way
@@ -247,6 +248,7 @@ func read[T any](ctx context.Context, dir string, f func(r *git.Repository, top 
 	if r, top, seen, err = open(ctx, dir); err != nil {
 		return out, cmp.Or(ctx.Err(), err)
 	}
+	seen.again = true
 	out, err = f(r, top, seen)
 	seen.close()
 	if refused := cmp.Or(ctx.Err(), seen.first()); refused != nil {
@@ -423,12 +425,12 @@ type File struct {
 // for an id the repository has no commit of, ErrNoFile for a path the
 // commit has no file at.
 func FileAt(ctx context.Context, dir, id, path string, limit int) (File, error) {
-	return read(ctx, dir, func(r *git.Repository, top string, _ *refusal) (File, error) {
-		return fileAt(ctx, r, top, id, path, limit)
+	return read(ctx, dir, func(r *git.Repository, top string, seen *refusal) (File, error) {
+		return fileAt(ctx, seen, r, top, id, path, limit)
 	})
 }
 
-func fileAt(ctx context.Context, r *git.Repository, top, id, path string, limit int) (File, error) {
+func fileAt(ctx context.Context, seen *refusal, r *git.Repository, top, id, path string, limit int) (File, error) {
 	c, err := commitByID(r, id)
 	if err != nil {
 		return File{}, err
@@ -441,7 +443,7 @@ func fileAt(ctx context.Context, r *git.Repository, top, id, path string, limit 
 	if err != nil {
 		return File{}, err
 	}
-	if ok, err := holds(r.Storer, e.Hash); err != nil {
+	if ok, err := holds(seen, r.Storer, e.Hash); err != nil {
 		return File{}, err
 	} else if !ok {
 		return File{}, ErrNoFile
@@ -500,13 +502,28 @@ var gitCap, compareCap = maxGitRead, maxCompareRead
 
 // ErrGitCap says the git binary of a read (FileAt's, a comparison's) was
 // ended at its cap (capped).
-var ErrGitCap = errors.New("the git binary reading the file was ended at its cap")
+var ErrGitCap = errors.New("the git binary of the read was ended at its cap")
 
 // capped is ctx ended at the cap d, its cause ErrGitCap with d: the one way
 // a read caps its git binary.
 func capped(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeoutCause(ctx, d, fmt.Errorf("%w of %v", ErrGitCap, d))
+	cause := fmt.Errorf("%w of %v", ErrGitCap, d)
+	ctx, cancel := context.WithTimeoutCause(ctx, d, cause)
+	if capping == nil {
+		return ctx, cancel
+	}
+	ctx, end := context.WithCancelCause(ctx)
+	capping(func() { end(cause) })
+	return ctx, func() { end(nil); cancel() }
 }
+
+// capping, set by a test, is handed, as a read takes its cap, a function
+// that ends the read's gits as the cap does, at a moment of the test's.
+var capping func(end func())
+
+// ErrNoTemp says a git of the read could not be started: the folder of its
+// own it is given (runGit) could not be made in the temporary directory.
+var ErrNoTemp = errors.New("the git binary of the read could not be started: no folder could be made for it in the temporary directory")
 
 // atCap is err, or the cap's error when the cap ended ctx (capped).
 func atCap(ctx context.Context, err error) error {
@@ -517,26 +534,35 @@ func atCap(ctx context.Context, err error) error {
 }
 
 // holds reports whether the repository's own object store (st, the one
-// the opener opened) holds the object h, from its pack indexes and its
-// loose objects, reading no content: the one look a read makes before it
-// hands an id to git, which would also look in another store the
-// repository names (objects/info/alternates).
-func holds(st storer.EncodedObjectStorer, h plumbing.Hash) (bool, error) {
+// the opener opened) lists the object h, in its pack indexes or its loose
+// files, reading no content: the one look a read makes before it hands an
+// id to git (heldSizes, fileAt), so git is handed only ids that store
+// lists. git itself reads that store and whatever stores it names, so an
+// object the store lists and cannot give is read where git finds it. The
+// store is looked at as the read opened it, and a repack meanwhile moves
+// objects into a pack it does not list: on the read's first opening an
+// object it does not list is an object not found, and the read opens the
+// repository again and asks once more (read); on the second, false.
+func holds(seen *refusal, st storer.EncodedObjectStorer, h plumbing.Hash) (bool, error) {
 	err := st.HasEncodedObject(h)
-	if errors.Is(err, plumbing.ErrObjectNotFound) {
+	if errors.Is(err, plumbing.ErrObjectNotFound) && seen.again {
 		return false, nil
 	}
 	return err == nil, err
 }
 
 // heldSizes is sizes of hs, -1 for one the repository does not hold
-// (holds), whose id git is never handed.
-func heldSizes(ctx context.Context, st storer.EncodedObjectStorer, top string, hs []plumbing.Hash) ([]int64, error) {
+// (holds), whose id git is never handed; with every, nil, and no git run,
+// when one of hs is not held. Each of hs is asked before git runs.
+func heldSizes(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer, top string, hs []plumbing.Hash, every bool) ([]int64, error) {
 	out, asked, at := make([]int64, len(hs)), []plumbing.Hash(nil), []int(nil)
 	for i, h := range hs {
-		ok, err := holds(st, h)
+		ok, err := holds(seen, st, h)
 		if err != nil {
 			return nil, err
+		}
+		if !ok && every {
+			return nil, nil
 		}
 		if out[i] = -1; ok {
 			asked, at = append(asked, h), append(at, i)
@@ -591,11 +617,12 @@ func entryAt(r *git.Repository, tree *object.Tree, path string) (object.TreeEntr
 // tree the read opened (top) with its own .git, the read's context its
 // end, with an empty folder of its own as the folder RunTree has git
 // write objects to (the reader's gits write none), removed once git has
-// ended; a test sets it.
+// ended (ErrNoTemp, and no git run, when it cannot be made); a test sets
+// it.
 var runGit = func(ctx context.Context, top string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
 	objects, err := os.MkdirTemp("", "gitrepo-objects-")
 	if err != nil {
-		return err
+		return ErrNoTemp
 	}
 	defer os.RemoveAll(objects)
 	return gitcli.RunTree(ctx, top, objects, env, in, w, args...)
@@ -664,8 +691,9 @@ type blob struct {
 // its id as it reads it, nor did go-git). A blob kept in part (n below
 // its size) is the last read: git is ended once its n bytes are in. git,
 // a process of its own that ends with the read, resolves a delta and its
-// base, whatever their sizes, holding one object whole and the bases of
-// deltas in its cache within the limit readEnv sets. This process holds
+// base, whatever their sizes, within the two settings readEnv sets: one
+// object held whole, a blob past its size streamed, and the bases of
+// deltas in its cache within its limit. This process holds
 // what each keeps and the pipe's buffers, never a blob past its n, its
 // delta or its base: go-git reads a delta's base whole (a packed blob
 // stored as a delta of a 32 MiB one, 165 MiB allocated for its first MiB,
@@ -748,14 +776,20 @@ func (r *batch) Write(p []byte) (int, error) {
 // readEnv is the reader's git's environment beside gitcli's: replacement
 // objects (refs/replace) off, so the blob read is the one the tree
 // records, as go-git reads it (go-git knows no replacements), never one
-// put in its place; and the cache of deltas' bases at git's own default
-// limit (core.deltaBaseCacheLimit, 96 MiB), set as command-line
-// configuration, which outranks the repository's files.
+// put in its place; and the two settings that decide what git holds for
+// one object at git's own defaults, the limit of its cache of deltas'
+// bases (core.deltaBaseCacheLimit, 96 MiB) and the size past which it
+// streams a blob rather than holding it whole (core.bigFileThreshold, 512
+// MiB), set as command-line configuration, which outranks the
+// repository's files. What git maps of a pack still follows the
+// repository.
 var readEnv = map[string]string{
 	"GIT_NO_REPLACE_OBJECTS": "1",
-	"GIT_CONFIG_COUNT":       "1",
+	"GIT_CONFIG_COUNT":       "2",
 	"GIT_CONFIG_KEY_0":       "core.deltaBaseCacheLimit",
 	"GIT_CONFIG_VALUE_0":     "96m",
+	"GIT_CONFIG_KEY_1":       "core.bigFileThreshold",
+	"GIT_CONFIG_VALUE_1":     "512m",
 }
 
 // headWriter keeps what is written to it up to its buffer's capacity and
@@ -836,7 +870,7 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 	}
 	ctx, cancel := capped(ctx, compareCap)
 	defer cancel()
-	changes, looked, dropped, err := withRenames(ctx, st, top, plain)
+	changes, looked, dropped, err := withRenames(ctx, seen, st, top, plain)
 	if err != nil {
 		return out, atCap(ctx, err)
 	}
@@ -870,7 +904,7 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 	if err := seen.ended(); err != nil {
 		return out, err
 	}
-	size, err := heldSizes(ctx, st, top, hs)
+	size, err := heldSizes(ctx, seen, st, top, hs, false)
 	if err != nil {
 		return out, atCap(ctx, err)
 	}
@@ -920,15 +954,16 @@ func diffTrees(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer
 // found by go-git's own search (detectRenames), whole (no limit of its
 // own) and with the score go-git's defaults use, when plain adds a file
 // and deletes one, at most MaxRenamed of each, those files together at
-// most MaxRenamedBytes as git records their sizes (heldSizes; a size that
-// cannot be had: not looked for). The search reads those files from
-// memory, read by git (blobs, fromMemory), and its answer's changes are
+// most MaxRenamedBytes as git records their sizes (heldSizes, each asked
+// whether the repository holds it before any git runs; one not held, or
+// whose size cannot be had: not looked for). The search reads those files
+// from memory, read by git (blobs, fromMemory), and its answer's changes are
 // used by their names, modes and ids. looked says the search ran; dropped
 // that its answer was not taken, because it failed or does not hold every
 // path of plain (accounts): plain is answered then, and whenever the
 // search did not run, sorted by path as the search sorts its answer. err
 // is a git's, or ctx's once it has ended.
-func withRenames(ctx context.Context, st storer.EncodedObjectStorer, top string, plain object.Changes) (changes object.Changes, looked, dropped bool, err error) {
+func withRenames(ctx context.Context, seen *refusal, st storer.EncodedObjectStorer, top string, plain object.Changes) (changes object.Changes, looked, dropped bool, err error) {
 	sort.Stable(plain)
 	var moved []plumbing.Hash
 	added, deleted := 0, 0
@@ -945,8 +980,8 @@ func withRenames(ctx context.Context, st storer.EncodedObjectStorer, top string,
 	if added == 0 || deleted == 0 || added > MaxRenamed || deleted > MaxRenamed {
 		return plain, false, false, nil
 	}
-	size, err := heldSizes(ctx, st, top, moved)
-	if err != nil {
+	size, err := heldSizes(ctx, seen, st, top, moved, true)
+	if err != nil || size == nil {
 		return plain, false, false, err
 	}
 	want, total := make([]blob, len(moved)), int64(0)

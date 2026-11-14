@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -528,7 +530,7 @@ func TestFileAtAnswersItsCapOrTheCallersOwnError(t *testing.T) {
 				_, err := FileAt(ctx, r.wt, r.c2, "a.txt", 100)
 				return err
 			})
-			if c.want == ErrGitCap && err != nil && err.Error() != "the git binary reading the file was ended at its cap of 1s" {
+			if c.want == ErrGitCap && err != nil && err.Error() != "the git binary of the read was ended at its cap of 1s" {
 				t.Errorf("FileAt: %q, want the cap's words with the shortened cap", err)
 			}
 			if !errors.Is(err, c.want) || (c.want != ErrGitCap && errors.Is(err, ErrGitCap)) || !made || openings != 1 {
@@ -588,7 +590,7 @@ func TestAComparisonAnswersItsCapOrTheCallersOwnError(t *testing.T) {
 			compareCap = time.Second
 			defer func() { compareCap = maxCompareRead }()
 			err := within(t, pipe, "a pipe the configuration includes, "+name, read)
-			if !errors.Is(err, ErrGitCap) || err.Error() != "the git binary reading the file was ended at its cap of 1s" {
+			if !errors.Is(err, ErrGitCap) || err.Error() != "the git binary of the read was ended at its cap of 1s" {
 				t.Errorf("%s: %v, want the cap's error with the shortened cap", name, err)
 			}
 			noReader(t, pipe, name)
@@ -1534,5 +1536,249 @@ func TestTheDiscoveryLooksThroughAFolderItMayEnterButNotList(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s beneath a folder of mode 0311: %v, want it read", rd.name, err)
 		}
+	}
+}
+
+// movedAndChanged is a repository whose second commit moves a.txt to b.txt
+// with a line changed and changes m.txt's line: a comparison of its two
+// commits looks for renames, so it runs git four times (the search's sizes
+// and contents, then the comparison's).
+func movedAndChanged(t *testing.T) (dir, c1, c2 string) {
+	t.Helper()
+	dir = scratch(t)
+	write(t, dir, "a.txt", tenLines("three"))
+	write(t, dir, "m.txt", "one\n")
+	c1 = commit(t, dir, time.Time{}, "one")
+	gitIn(t, dir, time.Time{}, "rm", "-q", "a.txt")
+	write(t, dir, "b.txt", tenLines("THREE"))
+	write(t, dir, "m.txt", "two\n")
+	return dir, c1, commit(t, dir, time.Time{}, "two")
+}
+
+// tempLeft is the names of what is in the folder tmp.
+func tempLeft(t *testing.T, tmp string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// movedReads are Compare and CommitDetail of movedAndChanged's commits, with
+// the files they list, and FileAt of m.txt at the second commit, with the
+// number of gits each runs.
+func movedReads(dir, c1, c2 string) []struct {
+	name string
+	runs int
+	read func(ctx context.Context) error
+} {
+	want := []Change{{Path: "b.txt", From: "a.txt", Status: "R", Added: 1, Removed: 1}, {Path: "m.txt", Status: "M", Added: 1, Removed: 1}}
+	detail := func(d Detail, err error) error {
+		if err == nil && (!slices.Equal(d.Changes, want) || d.RenamesCut) {
+			return fmt.Errorf("%+v, renames cut %v; want %+v", d.Changes, d.RenamesCut, want)
+		}
+		return err
+	}
+	return []struct {
+		name string
+		runs int
+		read func(ctx context.Context) error
+	}{
+		{"Compare", 4, func(ctx context.Context) error { return detail(Compare(ctx, dir, c1, c2)) }},
+		{"CommitDetail", 4, func(ctx context.Context) error { return detail(CommitDetail(ctx, dir, c2)) }},
+		{"FileAt", 2, func(ctx context.Context) error {
+			f, err := FileAt(ctx, dir, c2, "m.txt", 100)
+			if err == nil && string(f.Content) != "two\n" {
+				return fmt.Errorf("%q, want %q", f.Content, "two\n")
+			}
+			return err
+		}},
+	}
+}
+
+// Every git a read runs ends at the read's cap, and with the caller's
+// context: in a comparison that looks for renames, the search's sizes and
+// contents and the comparison's (Compare, CommitDetail), and FileAt's
+// sizes and content, the k-th git held at the seam on its input (runGit)
+// for each k. The cap ended then (capping), the read answers the cap's
+// error; the caller's context ended then, the caller's own error. Either
+// way every git the read ran is back (gitcli has waited for its process),
+// no goroutine waits on a process, and no folder is left in the
+// temporary directory.
+func TestEveryGitOfAReadEndsAtItsCapOrWithItsCallersContext(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	for _, rd := range movedReads(dir, c1, c2) {
+		for k := 1; k <= rd.runs; k++ {
+			for _, byCap := range []bool{true, false} {
+				ender := map[bool]string{true: "the cap", false: "the caller's context"}[byCap]
+				t.Run(fmt.Sprintf("%s, git %d of %d held, %s ends it", rd.name, k, rd.runs, ender), func(t *testing.T) {
+					tmp := t.TempDir()
+					t.Setenv("TMPDIR", tmp)
+					// The caps far above the test's waits: the cap is
+					// ended through capping, which the read hands its
+					// cap's end as it takes the cap.
+					caps := make(chan func(), 1)
+					gitCap, compareCap, capping = 10*hangWait, 10*hangWait, func(end func()) { caps <- end }
+					t.Cleanup(func() { gitCap, compareCap, capping = maxGitRead, maxCompareRead, nil })
+					held, calls := make(chan struct{}), 0
+					runs := watchGit(t, func(ctx context.Context, _ []string, in io.Reader) io.Reader {
+						if calls++; calls != k {
+							return in
+						}
+						return &heldInput{ctx: ctx, held: held}
+					})
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					done := make(chan error, 1)
+					go func() { done <- rd.read(ctx) }()
+					select {
+					case <-held:
+					case err := <-done:
+						t.Fatalf("back before git %d was held: %v (git ran %q)", k, err, argsOf(*runs))
+					}
+					select {
+					case end := <-caps:
+						if byCap {
+							end()
+						} else {
+							cancel()
+						}
+					default:
+						cancel()
+						t.Fatalf("git %d was held before the read took its cap (back with %v once the caller's context ended)", k, <-done)
+					}
+					var err error
+					select {
+					case err = <-done:
+					case <-time.After(hangWait):
+						cancel()
+						t.Fatalf("not back %v after %s ended git %d; back once the caller's context ended, with %v", hangWait, ender, k, <-done)
+					}
+					if byCap && (!errors.Is(err, ErrGitCap) || err.Error() != fmt.Sprintf("%v of %v", ErrGitCap, 10*hangWait)) {
+						t.Errorf("%v, want the cap's error", err)
+					}
+					if !byCap && (!errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap)) {
+						t.Errorf("%v, want the caller's own error (%v)", err, context.Canceled)
+					}
+					if len(*runs) != k {
+						t.Errorf("git ran %q, want %d runs, the last held", argsOf(*runs), k)
+					}
+					for i, r := range *runs {
+						if !r.returned || (i == k-1 && r.err == nil) {
+							t.Errorf("git %q (run %d) back %v with %v; want every run back, the held one with an error", r.args, i+1, r.returned, r.err)
+						}
+					}
+					left := leftBehind()
+					for give := time.After(hangWait); len(left) > 0; left = leftBehind() {
+						select {
+						case <-give:
+							t.Fatalf("%d goroutines left behind %v after the read returned:\n%s", len(left), hangWait, strings.Join(left, "\n\n"))
+						case <-time.After(10 * time.Millisecond):
+						}
+					}
+					if left := tempLeft(t, tmp); len(left) != 0 {
+						t.Errorf("left in the temporary directory: %q", left)
+					}
+				})
+			}
+		}
+	}
+}
+
+// gitCounted puts a git first on PATH that notes each start of it in a
+// file of its own and runs the real git: started is the number of git
+// processes started since its last call.
+func gitCounted(t *testing.T) (started func() int) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	notes := filepath.Join(bin, "started")
+	script := "#!/bin/sh\necho started >> '" + notes + "'\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		b, err := os.ReadFile(notes)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		os.Remove(notes)
+		return strings.Count(string(b), "\n")
+	}
+}
+
+// A read starts the processes the reader's description states, and leaves
+// no folder: gitcli runs its look for the object store and at the
+// configuration before each git, three processes a git, so a comparison
+// with no look for renames starts six, one that looks for renames twelve,
+// and FileAt six; each run's folder of objects is removed once its git has
+// ended.
+func TestAReadStartsThreeProcessesAGitAndLeavesNoFolder(t *testing.T) {
+	plain, p1, p2 := changedFiles(t, 3)
+	dir, c1, c2 := movedAndChanged(t)
+	started := gitCounted(t)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	ctx := context.Background()
+	type read struct {
+		name string
+		want int
+		read func(ctx context.Context) error
+	}
+	reads := []read{
+		{"Compare, no look for renames", 6, func(ctx context.Context) error { _, err := Compare(ctx, plain, p1, p2); return err }},
+		{"CommitDetail, no look for renames", 6, func(ctx context.Context) error { _, err := CommitDetail(ctx, plain, p2); return err }},
+	}
+	for _, rd := range movedReads(dir, c1, c2) {
+		reads = append(reads, read{rd.name, 3 * rd.runs, rd.read})
+	}
+	for _, rd := range reads {
+		started()
+		err := rd.read(ctx)
+		if n := started(); err != nil || n != rd.want {
+			t.Errorf("%s: %v, %d git processes started; want %d", rd.name, err, n, rd.want)
+		}
+		if left := tempLeft(t, tmp); len(left) != 0 {
+			t.Errorf("%s left in the temporary directory: %q", rd.name, left)
+		}
+	}
+}
+
+// A read whose git's temporary folder cannot be made (TMPDIR names a file)
+// starts no git and answers ErrNoTemp, in its fixed words, which name no
+// path: Compare, CommitDetail and FileAt. Nothing is made beside the file.
+func TestAReadAnswersInFixedWordsWhenItsFolderCannotBeMade(t *testing.T) {
+	dir, c1, c2 := movedAndChanged(t)
+	parent := t.TempDir()
+	file := filepath.Join(parent, "a file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", file)
+	started := gitCounted(t)
+	for _, rd := range movedReads(dir, c1, c2) {
+		started()
+		err := rd.read(context.Background())
+		if !errors.Is(err, ErrNoTemp) || err.Error() != ErrNoTemp.Error() || strings.Contains(err.Error(), "/") {
+			t.Errorf("%s: %v, want %q", rd.name, err, ErrNoTemp)
+		}
+		if n := started(); n != 0 {
+			t.Errorf("%s: %d git processes started, want none", rd.name, n)
+		}
+	}
+	if left := tempLeft(t, parent); !slices.Equal(left, []string{"a file"}) {
+		t.Errorf("beside the file: %q, want nothing", left)
 	}
 }
