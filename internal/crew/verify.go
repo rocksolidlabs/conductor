@@ -825,7 +825,10 @@ func (t *Tree) Still() bool { return t.still() }
 // candidate, reads with a fresh index). A read that needs the refresh on
 // a very large tree can run out of its time on a busy machine: it answers
 // the commit alone, and cut while the refresh holds the index's lock, the
-// next read starts from a new index. And whether the file system
+// next read starts from a new index. A first read that was cut after its
+// index was made and before the index's stat data was brought up to date
+// leaves an index the next read does not refresh: that read hashes every
+// tracked file once; its answer is the same. And whether the file system
 // under the tree keeps the executable bit (modesKept), looked at once, at
 // the index's first read, with one new file of the server's own made in
 // the tree and removed.
@@ -956,6 +959,13 @@ const maxTreeID = 1 << 10
 // that is a repository with no commit, in place of a tracked file, is left
 // out. In a repository set to ignore case, a new path under a folder whose
 // case differs from the index's is staged under the tree's own spelling.
+// Where a path changed its kind and is now a file (a tracked link, or a
+// submodule's entry, replaced by a file), the read removes the old entry
+// before it stages the file, where git's add judges the file's line
+// endings with the old entry still in the index: when that entry's
+// content holds a carriage return and the tree converts line endings by
+// itself (core.autocrlf, or text=auto), add keeps the file's line endings
+// as they are and the read converts them, and the two ids differ.
 // And the read answers the commit alone where it does not label: an
 // attributes file (.gitattributes, in any folder) gone or of another type
 // than the index has, and not committed (errTreeAttributes, before

@@ -360,8 +360,11 @@ func settled(t *testing.T, dir string) {
 // index, each read giving the same answer: a folder that is a repository
 // with no commit in place of a tracked file (add refuses the tree) is
 // left out, the tree plain git makes with the file's entry removed; a
-// tracked folder replaced by a link the read cannot follow (to itself, in
-// a loop, to a folder it cannot search) is the commit alone.
+// tracked link whose target holds a carriage return, replaced by a file
+// with CRLF under core.autocrlf, is the tree plain git makes with the
+// link's entry removed before its add, and git add -A's id differs from
+// it; a tracked folder replaced by a link the read cannot follow (to
+// itself, in a loop, to a folder it cannot search) is the commit alone.
 func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 	type tc struct {
 		name   string
@@ -389,10 +392,34 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 	// refuses the tree, the read's content is what stated makes in a copy
 	// of the tree instead of add -A; where the read does not label (alone),
 	// each read answers the commit alone.
+	const crlfLink = "a tracked link whose target holds a carriage return replaced by a file with CRLF, under core.autocrlf"
 	stated := map[string]func(t *testing.T, cp string){
 		"a tracked file replaced by a folder that is a repository with no commit": func(t *testing.T, cp string) {
 			plainGit(t, cp, "update-index", "--force-remove", "a")
 		},
+		// Difference (d): git's add judges the new file's line endings with
+		// the link's old entry, whose target holds a carriage return, still
+		// in the index, and keeps them as they are; the read removes that
+		// entry first, and the file is converted as a new path is (p\nq\n).
+		// git add -A's id differs from the read's (differs below). The same
+		// paths with no carriage return in the old entry give plain git's id
+		// (the next row, and a link turned into a file).
+		crlfLink: func(t *testing.T, cp string) {
+			plainGit(t, cp, "update-index", "--force-remove", "l")
+			plainGit(t, cp, "add", "-A")
+		},
+	}
+	differs := map[string]bool{crlfLink: true}
+	crlfLinkCommit := func(target string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			runGit(t, dir, "config", "core.autocrlf", "true")
+			mustDo(t, os.Symlink(target, filepath.Join(dir, "l")))
+		}
+	}
+	crlfFile := func(t *testing.T, dir string) string {
+		mustDo(t, os.Remove(filepath.Join(dir, "l")))
+		writeFile(t, filepath.Join(dir, "l"), "p\r\nq\r\n")
+		return ""
 	}
 	alone := map[string]bool{
 		"a tracked folder replaced by a link to itself":                    true,
@@ -502,6 +529,8 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 				writeFile(t, filepath.Join(dir, ".env"), "A=two\r\n")
 				return ""
 			}},
+		{crlfLink, crlfLinkCommit("t\r\nu"), crlfFile},
+		{"a tracked link whose target holds a line feed alone replaced by a file with CRLF, under core.autocrlf", crlfLinkCommit("t\nu"), crlfFile},
 		{"a tracked link replaced by a folder with files", func(t *testing.T, dir string) { mustDo(t, os.Symlink("README", filepath.Join(dir, "link"))) },
 			func(t *testing.T, dir string) string {
 				mustDo(t, os.Remove(filepath.Join(dir, "link")))
@@ -654,7 +683,11 @@ func TestATreesReadIsWhatAddMakesOfIt(t *testing.T) {
 				cp := filepath.Join(t.TempDir(), "copy")
 				copyTree(t, dir, cp)
 				if f := stated[c.name]; f != nil {
-					t.Logf("read %d: git add -A: %s", n+1, plainAdd(t, dir))
+					added := plainAdd(t, dir)
+					t.Logf("read %d: git add -A: %s", n+1, added)
+					if differs[c.name] && (added == read.Content || strings.HasPrefix(added, "refused")) {
+						t.Fatalf("read %d: git add -A made %s and the read %s; the two must differ", n+1, added, read.Content)
+					}
 					f(t, cp)
 				} else {
 					plainGit(t, cp, "add", "-A")
