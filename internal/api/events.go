@@ -290,12 +290,12 @@ const maxDispatchEvent = 160
 // framing: at most 11,776 bytes a kind and project, whatever the
 // commit's size. An operation of the store changes entities of one
 // project at most, beside the people its tickets name and a capture's
-// and a send's, which name none, so thirteen kinds at most (a plan
-// revision's, a launch's, a review's, a finding's, a capture's and a
-// send's among them: a review's submit is the review and its fifty
-// findings, two kinds; a send to a ticket the send, the ticket and its
-// comment, three), and its entry is at most 153,088 bytes; the label
-// deleted on 10,000 tickets is two events.
+// and a send's, which name none, so fourteen kinds at most (a plan
+// revision's, a launch's, a review's, a finding's, a publication's, a
+// capture's and a send's among them: a review's submit is the review and
+// its fifty findings, two kinds; a send to a ticket the send, the ticket
+// and its comment, three), and its entry is at most 164,864 bytes; the
+// label deleted on 10,000 tickets is two events.
 const maxDispatchEach = 64
 
 // dispatch announces a commit of Dispatch's store, what it changed

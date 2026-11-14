@@ -556,14 +556,14 @@ func TestEventHubDispatchEntryIsBounded(t *testing.T) {
 	ch := h.subscribe()
 	kinds := []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
 		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch,
-		dispatch.EntityReview, dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend}
+		dispatch.EntityReview, dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend, dispatch.EntityPublication}
 	projects := []string{"ABCDEF", "GHIJKL"}
 	framing := len("event: dispatch\ndata: \n\n")
 	bound := len(projects) * len(kinds) * maxDispatchEach * (maxDispatchEvent + framing)
-	// events.go's arithmetic: 11,776 bytes a kind and project, thirteen
-	// kinds an operation's, 153,088 bytes.
-	if each, op := maxDispatchEach*(maxDispatchEvent+framing), len(kinds)*maxDispatchEach*(maxDispatchEvent+framing); len(kinds) != 13 || each != 11776 || op != 153088 {
-		t.Fatalf("%d kinds, %d bytes a kind and project, %d an operation's: not events.go's 13, 11,776 and 153,088", len(kinds), each, op)
+	// events.go's arithmetic: 11,776 bytes a kind and project, fourteen
+	// kinds an operation's, 164,864 bytes.
+	if each, op := maxDispatchEach*(maxDispatchEvent+framing), len(kinds)*maxDispatchEach*(maxDispatchEvent+framing); len(kinds) != 14 || each != 11776 || op != 164864 {
+		t.Fatalf("%d kinds, %d bytes a kind and project, %d an operation's: not events.go's 14, 11,776 and 164,864", len(kinds), each, op)
 	}
 	entry := func(what string, changes []dispatch.Change) []byte {
 		t.Helper()
