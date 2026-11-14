@@ -471,11 +471,9 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 			if end == "stop" {
 				// A stopped run opens no preview: the checkout is judged as
 				// an open would judge it.
-				f, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result)
-				if err != nil || f.folder == nil {
-					t.Fatalf("the checkout after the stop: %+v, %v", f, err)
+				if reused, err := previewReusable(t.Context(), checkout, ts.Attempt.Result); err != nil || !reused {
+					t.Fatalf("the checkout after the stop: %v, %v", reused, err)
 				}
-				f.Close()
 				return
 			}
 			openPreview(t, e, run.ID)
@@ -488,42 +486,29 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 	}
 }
 
-// The crew's directory and the state directory of a preview's checkout
-// are made inside its folder, opened once: a part of the crew's path
-// swapped for a link to a folder outside once it was taken makes nothing
-// outside, and the open is refused.
-func TestAPreviewsFoldersAreMadeInsideItsCheckout(t *testing.T) {
-	dir := newRepo(t)
-	if err := os.MkdirAll(filepath.Join(dir, "sub", "app"), 0o755); err != nil {
-		t.Fatal(err)
+// A preview of a result whose crew's directory is a file or a link is
+// refused as verify refused that result at its checkout, in its words:
+// the open's error and the ended row say them, nothing is made where the
+// link leads, and the preview is let go.
+func TestAPreviewOfAResultThatBreaksTheCrewsDirectoryIsRefused(t *testing.T) {
+	for _, how := range []string{"file", "link"} {
+		t.Run(how, func(t *testing.T) {
+			outside := t.TempDir()
+			e, l, run, _ := brokenCandidate(t, how, outside)
+			words := l.attemptRow(t, run.ID, "build", 1).Error
+			if !strings.Contains(words, "in the member's worktree is a") {
+				t.Fatalf("verify's refusal: %q", words)
+			}
+			if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err == nil || !strings.Contains(err.Error(), words) {
+				t.Fatalf("the open: %v, want %q", err, words)
+			}
+			l.previewWhen(t, run.ID, "build", 1, 1, "ended", func(r ledger.PreviewRow) bool {
+				return r.State == ledger.PreviewEnded && r.Why == "the checkout could not be made: "+words
+			})
+			if made, _ := os.ReadDir(outside); len(made) != 0 {
+				t.Fatalf("made where the link leads: %v", made)
+			}
+			waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
+		})
 	}
-	writeFile(t, filepath.Join(dir, "sub", "app", "app.txt"), "app\n")
-	commitAll(t, dir, "app")
-	e, _, l := managedEngine(t)
-	c := repoManifestCrew(dir, previewManifest(), work("build", "lead"))
-	c.Cwd = filepath.Join(dir, "sub", "app")
-	run, ts := candidateOf(t, e, l, c)
-	checkout := ts.Attempt.Worktree + ".preview"
-	outside := t.TempDir()
-	e.memberDirChecked = func(part string) {
-		if part != "sub" {
-			return
-		}
-		if err := os.Rename(filepath.Join(checkout, "sub"), filepath.Join(t.TempDir(), "sub")); err != nil {
-			t.Error(err)
-		}
-		if err := os.Symlink(outside, filepath.Join(checkout, "sub")); err != nil {
-			t.Error(err)
-		}
-	}
-	if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err == nil {
-		t.Fatal("the open with its crew's directory moved outside went on")
-	}
-	if made, _ := os.ReadDir(outside); len(made) != 0 {
-		t.Fatalf("made outside the checkout: %v", made)
-	}
-	l.previewWhen(t, run.ID, "build", 1, 1, "ended", func(r ledger.PreviewRow) bool {
-		return r.State == ledger.PreviewEnded && strings.HasPrefix(r.Why, "the checkout could not be made")
-	})
-	waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
 }

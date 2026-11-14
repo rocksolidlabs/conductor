@@ -369,16 +369,12 @@ type Engine struct {
 	// maxPreviews (preview.go), under mu. When a test sets them: idleTimer
 	// is their idle end's and their owed writes' timer in place of
 	// time.After; checkoutBound makes the bound of a checkout's making;
-	// checkoutJudged is called once a checkout's folder is opened and
-	// judged, before anything is made in it; memberDirChecked with each part
-	// of the crew's directory a checkout has taken (memberDirIn);
-	// beforeIdleEnd once the idle timer has fired, before the end's change.
-	previews         map[previewKey]*preview
-	idleTimer        func(time.Duration) <-chan time.Time
-	checkoutBound    func() (context.Context, context.CancelFunc)
-	checkoutJudged   func(dir string)
-	memberDirChecked func(part string)
-	beforeIdleEnd    func()
+	// beforeIdleEnd is called once the idle timer has fired, before the
+	// end's change.
+	previews      map[previewKey]*preview
+	idleTimer     func(time.Duration) <-chan time.Time
+	checkoutBound func() (context.Context, context.CancelFunc)
+	beforeIdleEnd func()
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string

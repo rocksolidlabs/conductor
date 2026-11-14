@@ -479,14 +479,29 @@ func TestAPreviewHoldsItsRunAgainstEviction(t *testing.T) {
 	}
 }
 
-// A preview's checkout found there with a tracked file changed is refused,
-// its path and the file named, and left as it is; one found at the commit
-// with no tracked change (an untracked file beside it) is taken; a
-// directory there that is no worktree of the repository is refused.
+// adds counts the worktree adds of checkout in wrapGit's log.
+func adds(t *testing.T, log, checkout string) int {
+	t.Helper()
+	n := 0
+	for _, g := range readGitArgv(t, log) {
+		if i := slices.Index(g.args, "add"); i > 0 && g.args[i-1] == "worktree" && slices.Contains(g.args, checkout) {
+			n++
+		}
+	}
+	return n
+}
+
+// A preview's checkout is added at the first open and reused by the next
+// (no second add, an untracked file beside it kept) when checkoutIntact
+// finds it at the commit with no tracked change; one with a tracked file
+// changed, or at another commit, is refused, its path and what is wrong
+// named, and left as it is; a directory there whose .git names no
+// repository is refused.
 func TestAPreviewCheckoutWithChangesIsRefused(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
 	run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
+	log := wrapGit(t)
 	openPreview(t, e, run.ID)
 	l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
 	if err := e.ClosePreview(run.ID, "build", 1, 1); err != nil {
@@ -506,6 +521,12 @@ func TestAPreviewCheckoutWithChangesIsRefused(t *testing.T) {
 	}
 	l.previewWhen(t, run.ID, "build", 1, 2, "ended", previewEndedRow)
 	waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
+	if n := adds(t, log, checkout); n != 1 {
+		t.Fatalf("%d adds of the checkout over two opens", n)
+	}
+	if b, err := os.ReadFile(filepath.Join(checkout, "cache.txt")); err != nil || string(b) != "untracked\n" {
+		t.Fatalf("the untracked file after the reuse: %q %v", b, err)
+	}
 	writeFile(t, filepath.Join(checkout, "built.txt"), "changed\n")
 	_, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
 	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), checkout) || !strings.Contains(err.Error(), "built.txt") {
@@ -516,6 +537,19 @@ func TestAPreviewCheckoutWithChangesIsRefused(t *testing.T) {
 	}
 	if _, ok := l.previewRow(run.ID, "build", 1, 3); ok || previewHeld(e, run.ID, "build", 1) {
 		t.Fatal("the refused open made a row or a preview")
+	}
+	// At another commit, with no tracked change: refused, left there.
+	runGit(t, checkout, "checkout", "-q", "--", "built.txt")
+	runGit(t, checkout, "checkout", "-q", "--detach", ts.Attempt.Start)
+	_, err = e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
+	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), checkout+" is not at "+short(ts.Attempt.Result)) {
+		t.Fatalf("a checkout at another commit: %v", err)
+	}
+	if head, err := headCommit(t.Context(), checkout); err != nil || head != ts.Attempt.Start {
+		t.Fatalf("the checkout after the refusal is at %s (%v)", head, err)
+	}
+	if n := adds(t, log, checkout); n != 1 {
+		t.Fatalf("%d adds of the checkout", n)
 	}
 	// A directory there whose .git names no repository: refused, as git
 	// cannot compare it, and left as it is.

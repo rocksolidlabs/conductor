@@ -768,24 +768,6 @@ var beforeTreeOpen func(name string)
 // checkout (checkoutIntact); a tree with no .git at its top is no
 // repository to git (gitcli.ErrNotRepo).
 func OpenTree(root, dir string) (*Tree, error) {
-	cur, err := openUnder(root, dir)
-	if err != nil {
-		return nil, err
-	}
-	defer cur.Close()
-	f, err := cur.Open(".")
-	if err != nil {
-		return nil, err
-	}
-	t := &Tree{dir: f}
-	t.at, t.still = gitcli.OpenedPath(f, dir)
-	return t, nil
-}
-
-// openUnder is OpenTree's walk from root to dir, each name opened through
-// the one before it (openIn): dir opened, or ErrTreeMoved (root's own
-// failure as the system's error).
-func openUnder(root, dir string) (*os.Root, error) {
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel == "." || !filepath.IsLocal(rel) {
 		return nil, ErrTreeMoved
@@ -797,41 +779,33 @@ func openUnder(root, dir string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() { cur.Close() }()
 	for _, name := range strings.Split(rel, string(filepath.Separator)) {
-		next, err := openIn(cur, name)
-		cur.Close()
+		fi, err := cur.Lstat(name)
+		if err != nil || !fi.IsDir() {
+			return nil, ErrTreeMoved
+		}
+		if beforeTreeOpen != nil {
+			beforeTreeOpen(name)
+		}
+		next, err := cur.OpenRoot(name + string(filepath.Separator) + ".")
 		if err != nil {
 			return nil, ErrTreeMoved
 		}
+		if got, err := next.Stat("."); err != nil || !os.SameFile(fi, got) {
+			next.Close()
+			return nil, ErrTreeMoved
+		}
+		cur.Close()
 		cur = next
 	}
-	return cur, nil
-}
-
-// openIn opens the directory name in dir without following a link: looked
-// at first (a directory, never a link: ErrTreeMoved), opened through dir as
-// a directory only (the name and "/."), and the very directory looked at
-// (os.SameFile), else ErrTreeMoved; a name not there is the look's error.
-func openIn(dir *os.Root, name string) (*os.Root, error) {
-	fi, err := dir.Lstat(name)
+	f, err := cur.Open(".")
 	if err != nil {
 		return nil, err
 	}
-	if !fi.IsDir() {
-		return nil, ErrTreeMoved
-	}
-	if beforeTreeOpen != nil {
-		beforeTreeOpen(name)
-	}
-	next, err := dir.OpenRoot(name + string(filepath.Separator) + ".")
-	if err != nil {
-		return nil, ErrTreeMoved
-	}
-	if got, err := next.Stat("."); err != nil || !os.SameFile(fi, got) {
-		next.Close()
-		return nil, ErrTreeMoved
-	}
-	return next, nil
+	t := &Tree{dir: f}
+	t.at, t.still = gitcli.OpenedPath(f, dir)
+	return t, nil
 }
 
 // Close lets the tree's directory go.

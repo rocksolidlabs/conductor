@@ -7,9 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -160,7 +158,7 @@ type previewKey struct {
 // reservation until the open hands the preview over, while an end that
 // must happen leaves the start of its teardown to the open (handoff, its
 // first write's try); after, the reason of such an end that came while an
-// asked end's first write was in flight (beginEnd); held, its folders.
+// asked end's first write was in flight (beginEnd).
 type preview struct {
 	e        *Engine
 	key      previewKey
@@ -179,7 +177,6 @@ type preview struct {
 	opening  bool
 	handoff  chan struct{}
 	after    string
-	held     *previewFolder
 }
 
 // The preview as its tree's owner (treeOwner). The caller holds e.mu.
@@ -298,22 +295,23 @@ func (p *preview) stateOf() PreviewState {
 // bounds (one per candidate, ErrPreviewOpen; maxPreviews on the server, a
 // PreviewsBusyError naming the open ones; ledger.MaxPreviews opens of it,
 // ErrPreviewLimit), the result's commit copied into the preview, the one
-// commit every later step uses; the run's worktrees folder opened from its
-// working directory with no link on the way, and a checkout at
-// <worktree>.preview that is there already opened in it once and taken
-// only when it is the repository's own worktree by the repository's word,
-// at the commit with no tracked change (previewReusable), and refused
-// otherwise with its path and what is wrong (ErrPreviewRefused), nothing
-// of it removed; the run's manifest
+// commit every later step uses. Its checkout, <worktree>.preview, is made,
+// judged and used as the checks' checkout is (verify), by its path under
+// the run's worktrees folder, git finding its repository from the folder:
+// the worktrees folder judged as an attempt's dispatch judges it
+// (checkWorktreesDir); a checkout there already taken only when
+// checkoutIntact finds it at the commit with no tracked change
+// (previewReusable), and refused otherwise with its path and what is
+// wrong (ErrPreviewRefused), nothing of it removed; the run's manifest
 // resolved for the commit with the preview as the tree's owner
 // (resolveTree), whose transaction is the open's first (preview.opened,
 // its row resolved), refused, nothing written, for a run continued or
 // stopping or a result that is no longer the commit (refused); then the
-// checkout added detached at the commit when it was not there, opened and
-// judged, with the crew's directory and its state directory made in the
-// folder as opened (makePreviewCheckout), under previewCheckoutTimeout,
-// which no end cuts; a checkout that cannot be made ends the preview
-// whatever the ledger answers (endNow); then its phases (prepareTree: setup, services, ready,
+// checkout added detached at the commit when it was not there, and the
+// crew's directory and its state directory made in it
+// (makePreviewCheckout), under previewCheckoutTimeout, which no end cuts;
+// a checkout that cannot be made ends the preview whatever the ledger
+// answers (endNow); then its phases (prepareTree: setup, services, ready,
 // its readiness written to its row) and its idle end, on a goroutine the
 // run's stop waits for. It returns the preview as it is once its checkout
 // is made: resolved, its readiness to come.
@@ -346,13 +344,13 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		p.cancel()
 		return PreviewState{}, err
 	}
-	held, err := previewReusable(ctx, r.cwd, p.dir, p.commit)
+	if err := checkWorktreesDir(r.cwd); err != nil {
+		return unreserve(err)
+	}
+	reused, err := previewReusable(ctx, p.dir, p.commit)
 	if err != nil {
 		return unreserve(err)
 	}
-	e.mu.Lock()
-	p.held = held
-	e.mu.Unlock()
 	tr, err := e.resolveTree(ctx, r, a, p, ledger.TreePreview, p.dir, p.cwd, p.commit)
 	switch {
 	case errors.Is(err, errAttemptClosed):
@@ -370,7 +368,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		}
 	}
 	mk, cancel := bound()
-	err = e.makePreviewCheckout(mk, r, p, held)
+	err = e.makePreviewCheckout(mk, r, p, reused)
 	if cause := context.Cause(mk); err != nil && cause != nil {
 		err = cause // the bound's own words, not those of the git it cut
 	}
@@ -469,79 +467,29 @@ func (e *Engine) dropPreview(p *preview) {
 	if p.a.previewing == p {
 		p.a.previewing = nil
 	}
-	if p.held != nil {
-		p.held.Close()
-		p.held = nil
-	}
 	p.state = previewEnded
 	p.r.touch()
 }
 
-// previewFolder is a preview's folders as the server opened them, each
-// once and without following a link, held open until the preview is
-// dropped, so no identity it compares can pass to a folder made again at
-// the path: the run's worktrees folder (parent), reached from the run's
-// working directory with no link on the way (openUnder), as the
-// attempts' dispatch judges it; the checkout's folder in it (folder, nil
-// until a fresh add has made it); and the crew's directory in the checkout
-// (member), where its steps run.
-type previewFolder struct {
-	parent, folder, member *os.Root
-}
-
-// Close lets go of the folders.
-func (f *previewFolder) Close() {
-	for _, d := range []*os.Root{f.parent, f.folder, f.member} {
-		if d != nil {
-			d.Close()
-		}
+// previewReusable reports whether a checkout at dir is there to be taken
+// as it is: false for none; true for one checkoutIntact finds at commit
+// with no tracked change. Any other is refused with its path and what is
+// wrong, and nothing of it is removed. Untracked files, a dev server's
+// caches, are left as they are.
+func previewReusable(ctx context.Context, dir, commit string) (bool, error) {
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
 	}
-}
-
-// open opens the checkout dir in the parent (openIn: a name not there is
-// the look's error).
-func (f *previewFolder) open(dir string) error {
-	folder, err := openIn(f.parent, filepath.Base(dir))
-	if err != nil {
-		return err
+	moved, changed, _, err := checkoutIntact(ctx, dir, commit)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("%w: %s could not be compared with %s: %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit), session.CleanMessage(err.Error()))
+	case moved:
+		return false, fmt.Errorf("%w: %s is not at %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit))
+	case len(changed) > 0:
+		return false, fmt.Errorf("%w: %s has changes to tracked files: %s; nothing of it is removed", ErrPreviewRefused, dir, changedList(changed))
 	}
-	f.folder = folder
-	return nil
-}
-
-// previewReusable opens the folders of a checkout at dir and reports
-// whether one is there to be taken as it is: none (f.folder nil), or one
-// checkoutIntact finds at commit with no tracked change; any other is
-// refused with its path and what is wrong, and nothing of it is removed,
-// as is a way to it that is not the run's own folders. Untracked files, a
-// dev server's caches, are left as they are.
-func previewReusable(ctx context.Context, repo, dir, commit string) (*previewFolder, error) {
-	parent, err := openUnder(repo, filepath.Dir(dir))
-	if err != nil {
-		return nil, fmt.Errorf("%w: the way to %s from the run's working directory is not the run's own folders (a link, a file or nothing on it); nothing of it is removed", ErrPreviewRefused, dir)
-	}
-	f := &previewFolder{parent: parent}
-	switch err = f.open(dir); {
-	case errors.Is(err, fs.ErrNotExist):
-		return f, nil
-	case errors.Is(err, ErrTreeMoved):
-		err = fmt.Errorf("%w: %s is there and is not a directory; nothing of it is removed", ErrPreviewRefused, dir)
-	case err == nil:
-		moved, changed, _, cerr := checkoutIntact(ctx, dir, commit)
-		switch {
-		case cerr != nil:
-			err = fmt.Errorf("%w: %s could not be compared with %s: %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit), session.CleanMessage(cerr.Error()))
-		case moved:
-			err = fmt.Errorf("%w: %s is not at %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit))
-		case len(changed) > 0:
-			err = fmt.Errorf("%w: %s has changes to tracked files: %s; nothing of it is removed", ErrPreviewRefused, dir, changedList(changed))
-		}
-	}
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
+	return true, nil
 }
 
 // previewCheckoutTimeout bounds the making of a preview's checkout, under
@@ -553,70 +501,30 @@ const previewCheckoutTimeout = 10 * time.Minute
 
 var errCheckoutBound = fmt.Errorf("the checkout was not made within %s", previewCheckoutTimeout)
 
-// makePreviewCheckout makes p's checkout usable to its steps, in the
-// folders f holds: added detached at the commit unless reused, then opened
-// in the run's worktrees folder held since before the add and judged
-// (previewFolder.open), and its HEAD read with that git directory named
-// outright; then, inside the checkout's folder as opened, the crew's
-// directory walked and made (memberDirIn) and held, and its state
-// directory with .conductor's .gitignore (makeStateDirIn).
-func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, f *previewFolder) error {
-	if f.folder == nil {
+// makePreviewCheckout makes p's checkout usable to its steps as verify
+// makes the checks' checkout: added detached at the commit unless reused,
+// under the repository's lock, and its HEAD read; the crew's directory in
+// it as in the worktree (checkMemberDir), made; and its state directory
+// with .conductor's .gitignore (makeStateDir).
+func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, reused bool) error {
+	if !reused {
 		e.gitMu.Lock()
 		err := AddDetachedWorktree(ctx, r.cwd, p.dir, p.commit)
 		e.gitMu.Unlock()
 		if err != nil {
 			return err
 		}
-		if err := f.open(p.dir); err != nil {
-			return fmt.Errorf("the checkout just added could not be opened: %w", err)
-		}
 		if head, err := headCommit(ctx, p.dir); err != nil || head != p.commit {
 			return fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(p.commit))
 		}
 	}
-	if e.checkoutJudged != nil {
-		e.checkoutJudged(p.dir)
-	}
-	member, err := memberDirIn(f.folder, r.prefix, e.memberDirChecked)
-	if err != nil {
+	if err := checkMemberDir(p.dir, r.prefix); err != nil {
 		return err
 	}
-	f.member = member
-	return makeStateDirIn(member, true)
-}
-
-// memberDirIn walks the crew's directory rel inside root, making each part
-// that is missing, and opens it: every part is taken through root, never
-// by a path resolved again, so a part that is or becomes a link cannot
-// send the making outside the checkout (os.Root refuses a way out), and a
-// part that is a link or a file is refused as checkMemberDir refuses it.
-// checked, when set, is called with each part once it is taken.
-func memberDirIn(root *os.Root, rel string, checked func(part string)) (*os.Root, error) {
-	at := "."
-	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(rel)), "/") {
-		if part == "" || part == "." {
-			continue
-		}
-		at = path.Join(at, part)
-		fi, err := root.Lstat(at)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			err = root.Mkdir(at, 0o755)
-		case err != nil:
-		case fi.Mode()&fs.ModeSymlink != 0:
-			err = invalidf("%s in the member's worktree is a symbolic link: the member's directory must stay inside the worktree", quote(at))
-		case !fi.IsDir():
-			err = invalidf("%s in the member's worktree is a file, not a directory: the member's directory must be one", quote(at))
-		}
-		if err != nil {
-			return nil, err
-		}
-		if checked != nil {
-			checked(at)
-		}
+	if err := os.MkdirAll(p.cwd, 0o755); err != nil {
+		return err
 	}
-	return root.OpenRoot(at)
+	return makeStateDir(p.cwd, true)
 }
 
 // servePreview runs p's phases on its tree, held, under p.ctx (setup,

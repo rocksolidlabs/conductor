@@ -70,13 +70,17 @@ func takeEnds(l *fakeLedger) {
 
 // endedInMemory fails the test unless the candidate's preview seq is held
 // ending with no address, whatever its row says: the label refuses it and
-// the attempt's Previewing says ending, with no URL.
+// attempt 1's Previewing says ending, with no URL.
 func endedInMemory(t *testing.T, e *Engine, runID string, seq int) {
 	t.Helper()
 	if label, ok := e.ReadPreview(runID, "build", 1, seq); ok {
 		t.Fatalf("the label of an ended preview: %+v", label)
 	}
-	if pv := taskOf(t, e, runID, "build").Attempt.Previewing; pv == nil || pv.State != previewEnding || pv.Preview != "" {
+	r := runOf(t, e, runID)
+	e.mu.Lock()
+	pv := r.attemptState(r.task("build").attempts[0]).Previewing
+	e.mu.Unlock()
+	if pv == nil || pv.State != previewEnding || pv.Preview != "" {
 		t.Fatalf("Previewing of an ended preview: %+v", pv)
 	}
 	if !previewHeld(e, runID, "build", 1) {
@@ -84,34 +88,48 @@ func endedInMemory(t *testing.T, e *Engine, runID string, seq int) {
 	}
 }
 
+// brokenCandidate is attempt 1 of build whose result makes the crew's
+// directory, app, a file or a link to the folder outside (how), which
+// verify refused at its checkout; attempt 2 runs.
+func brokenCandidate(t *testing.T, how, outside string) (*Engine, *fakeLedger, Run, TaskState) {
+	t.Helper()
+	dir := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "app", "app.txt"), "app\n")
+	commitAll(t, dir, "app")
+	e, _, l := managedEngine(t)
+	c := repoManifestCrew(dir, previewManifest(), work("build", "lead"))
+	c.Cwd = filepath.Join(dir, "app")
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	app := filepath.Join(a.Attempt.Worktree, "app")
+	if err := os.RemoveAll(app); err != nil {
+		t.Fatal(err)
+	}
+	if how == "file" {
+		writeFile(t, app, "a file\n")
+	} else if err := os.Symlink(outside, app); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, a.Attempt.Worktree, "app is a "+how+" now")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "broken"})
+	waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	t.Cleanup(func() { stopRun(t, e, run.ID) })
+	return e, l, run, a
+}
+
 // A preview whose checkout cannot be made, with its ending writes
 // refused, is ended in the engine's memory at once and stays counted (a
 // second open is refused as open); once the ledger takes writes its owed
 // row is written on the next try, it is no longer counted, and a second
-// open of the candidate works.
+// open of the candidate is judged again.
 func TestAPreviewWhoseCheckoutFailsEndsWhateverTheLedgerAnswers(t *testing.T) {
-	dir := newRepo(t)
-	if err := os.MkdirAll(filepath.Join(dir, "sub", "app"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(dir, "sub", "app", "app.txt"), "app\n")
-	commitAll(t, dir, "app")
-	e, _, l := managedEngine(t)
+	e, l, run, _ := brokenCandidate(t, "file", "")
 	waits := previewWaits(e)
-	c := repoManifestCrew(dir, previewManifest(), work("build", "lead"))
-	c.Cwd = filepath.Join(dir, "sub", "app")
-	run, ts := candidateOf(t, e, l, c)
-	checkout := ts.Attempt.Worktree + ".preview"
-	e.memberDirChecked = func(part string) {
-		if part == "sub" {
-			if err := os.Rename(filepath.Join(checkout, "sub"), filepath.Join(t.TempDir(), "sub")); err != nil {
-				t.Error(err)
-			}
-			if err := os.Symlink(t.TempDir(), filepath.Join(checkout, "sub")); err != nil {
-				t.Error(err)
-			}
-		}
-	}
 	refuseEnds(l)
 	if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err == nil {
 		t.Fatal("the open whose checkout could not be made went on")
@@ -130,14 +148,11 @@ func TestAPreviewWhoseCheckoutFailsEndsWhateverTheLedgerAnswers(t *testing.T) {
 		t.Fatalf("the ended row: %+v", row)
 	}
 	waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
-	e.memberDirChecked = nil
-	runGit(t, dir, "worktree", "remove", "--force", checkout)
-	openPreview(t, e, run.ID)
-	l.previewWhen(t, run.ID, "build", 1, 2, "ready", previewReadyRow)
-	if err := e.ClosePreview(run.ID, "build", 1, 2); err != nil {
-		t.Fatal(err)
+	if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err == nil || errors.Is(err, ErrPreviewOpen) {
+		t.Fatalf("a second open once the first's row is written: %v", err)
 	}
 	l.previewWhen(t, run.ID, "build", 1, 2, "ended", previewEndedRow)
+	waitFake(t, "the second preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
 }
 
 // A preview whose service is lost after it is ready, with its ending
@@ -306,23 +321,25 @@ func TestAStopWhileAPreviewsServiceStartsRecordsTheStop(t *testing.T) {
 	}
 }
 
-// A run's worktrees folder replaced by a link before the open is refused
-// before any add, nothing made where the link leads and nothing written.
+// A run whose worktrees folder is replaced by a link before the open is
+// refused before any add, in the words an attempt's dispatch gets
+// (checkWorktreesDir), nothing made where the link leads and nothing
+// written.
 func TestAPreviewOfARunWhoseWorktreesFolderIsALinkIsRefused(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
-	run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
-	runDir, elsewhere := filepath.Dir(ts.Attempt.Worktree), t.TempDir()
-	if err := os.Rename(runDir, filepath.Join(t.TempDir(), "aside")); err != nil {
+	run, _ := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
+	worktrees, elsewhere := filepath.Join(dir, worktreesDir), t.TempDir()
+	if err := os.Rename(worktrees, filepath.Join(t.TempDir(), "aside")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(elsewhere, runDir); err != nil {
+	if err := os.Symlink(elsewhere, worktrees); err != nil {
 		t.Fatal(err)
 	}
 	log := wrapGit(t)
 	_, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
-	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), "is not the run's own folders") {
-		t.Fatalf("a preview through a linked worktrees folder: %v", err)
+	if want := checkWorktreesDir(dir); want == nil || !errors.Is(err, ErrInvalid) || err.Error() != want.Error() {
+		t.Fatalf("a preview through a linked worktrees folder: %v, want %v", err, want)
 	}
 	if b, _ := os.ReadFile(log); strings.Contains(string(b), "worktree\x00add") {
 		t.Fatal("a worktree was added")

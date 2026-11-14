@@ -764,11 +764,6 @@ func makeStateDir(cwd string, checkout bool) error {
 		return err
 	}
 	defer root.Close()
-	return makeStateDirIn(root, checkout)
-}
-
-// makeStateDirIn is makeStateDir in the working directory root, opened.
-func makeStateDirIn(root *os.Root, checkout bool) error {
 	if err := mkdirIn(root, taskDir); err != nil {
 		return err
 	}
