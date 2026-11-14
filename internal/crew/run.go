@@ -1171,7 +1171,7 @@ func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, 
 			cwd = filepath.Join(k.worktree, r.prefix)
 		}
 		local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-			Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+			Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
 			Resume: k.agentSession, ResumedFrom: k.sessionID, Account: m.def.boundAccount(), Model: m.def.Model})
 		if err != nil {
 			r.starts.Done()
@@ -1560,7 +1560,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		}
 	}
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
 		Class: r.class, Request: r.request, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		return nil, err
@@ -2835,7 +2835,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	defer cancel()
 	defer context.AfterFunc(r.ctx, cancel)()
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: name, Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
+		Env: map[string]string{"GOAL": r.goal}, Ref: r.crewRef(m, "", 0), Yolo: r.yolo,
 		Resume: resume, ResumedFrom: old, Account: m.def.boundAccount(), Model: m.def.Model})
 	if err != nil {
 		e.mu.Lock()

@@ -153,6 +153,10 @@ var guideRules = []string{
 	"A question goes to a person with ask; in a managed run, one whose answer the work must wait for goes with decision_request.",
 }
 
+// laneGuideRules are the guide's lines for a session of a comparison's
+// lane, which asks every question with ask.
+var laneGuideRules = []string{guideRules[0], guideRules[1], "A question goes to a person with ask."}
+
 // mcpObject and mcpString build the MCP tools' schemas, as tools/list
 // has always given them.
 func mcpObject(props map[string]any, required ...string) map[string]any {
@@ -957,6 +961,9 @@ type guideCaller struct {
 	// local says the session is a server session (not hosted); managed
 	// that its run is a managed one; brakeman that it is a Brakeman turn's.
 	local, managed, brakeman bool
+	// lane is what the session is to a comparison's doors (laneOf): a
+	// lane's session is listed only the operations compareDoors serves it.
+	lane laneFact
 	// acts is a Brakeman turn's operations granted, the snapshot its turn
 	// began under and the configuration now together (grantedActs): the
 	// act scope lists the act tool and these alone.
@@ -984,6 +991,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	id := d.Info().ID
 	c := guideCaller{Kind: "session", Session: id, Scopes: []string{"session"}}
 	_, c.local = d.(*session.Local)
+	_, c.lane = s.laneOf(d)
 	run, member, inRun := s.runs.MemberOf(id)
 	if !inRun {
 		c.Kinds = append(c.Kinds, "plain")
@@ -1008,7 +1016,14 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 		return c
 	}
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
-		if _, found, err := linkedTicket(ctx, s.dispatch, run); err == nil && found {
+		// A comparison's lane reads the ticket its run was launched from
+		// (laneTicket), and no other: a link is not asked about.
+		listed := c.lane == inLane && s.runPackage(run) != nil
+		if c.lane == noLane {
+			_, found, err := linkedTicket(ctx, s.dispatch, run)
+			listed = err == nil && found
+		}
+		if listed {
 			c.Kinds = append(c.Kinds, "ticket_member")
 			c.Scopes = append(c.Scopes, "ticket")
 		}
@@ -1051,7 +1066,7 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 // operation a caller would be refused is never listed to it, and one it
 // may call never left out.
 func (s *Server) admits(c guideCaller, op Operation) bool {
-	if !s.reaches(c, op) {
+	if !s.reaches(c, op) || !laneGuided(c.lane, op.Method+" "+op.Path) {
 		return false
 	}
 	if c.Kind == "admin" && opAgentOnly(op.Name) {
@@ -1426,15 +1441,33 @@ var overviewLimitNames = []struct {
 	{"observe", []string{"brief", "brief_items", "brief_refs", "brief_summary"}},
 }
 
+// limitRoutes is the route each of the overview's limits of an agent's
+// scopes bounds: the overview names one to a caller only when the guide
+// names its route to it (laneGuided), and to a comparison's lane only a
+// limit named here.
+var limitRoutes = map[string]string{
+	"report_message": "POST /api/sessions/{id}/attention",
+	"self_crews":     "POST /api/sessions/{id}/crew",
+	"self_links":     "POST /api/sessions/{id}/links/agent",
+	"message":        "POST /api/sessions/{id}/messages",
+	"inbox":          "GET /api/sessions/{id}/inbox",
+	"result_summary": "POST /api/sessions/{id}/task/result",
+	"result_issues":  "POST /api/sessions/{id}/task/result",
+	"comment":        laneCommentPattern,
+}
+
 // overviewLimits is the headline bounds that bind c, in words: its
-// scopes' entries of the limits section, a Brakeman turn's reads and
-// minutes from the snapshot its turn began under, its acts a request
-// with the act scope, and a JSON body's bound for everyone.
+// scopes' entries of the limits section whose route the guide names to c,
+// a Brakeman turn's reads and minutes from the snapshot its turn began
+// under, its acts a request with the act scope, and a JSON body's bound
+// for every caller but a comparison's lane, which is named only the
+// limits of the routes it is served.
 func overviewLimits(c guideCaller) []string {
 	all := guideLimits()
 	var out, seen []string
 	add := func(name string) {
-		if slices.Contains(seen, name) {
+		route, ok := limitRoutes[name]
+		if slices.Contains(seen, name) || ok && !laneGuided(c.lane, route) || !ok && c.lane != noLane {
 			return
 		}
 		if i := slices.IndexFunc(all, func(l guideLimit) bool { return l.Name == name }); i >= 0 {
@@ -1499,6 +1532,9 @@ func (s *Server) guideContent(ctx context.Context, c guideCaller, ops []Operatio
 			op.Description = ""
 			if op.guideInput != nil {
 				op.Input = op.guideInput
+			}
+			if words, ok := laneSummaries[op.Name]; ok && c.lane != noLane {
+				op.Summary = words
 			}
 			reached = append(reached, op)
 		}
@@ -1581,6 +1617,9 @@ func briefSubmitSchema() map[string]any {
 func encodeGuide(c guideCaller, content map[string]any) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(content)+1)
 	ov := guideOverview{Caller: c, Report: guideReport, May: []string{}, Limits: overviewLimits(c), Rules: guideRules}
+	if c.lane != noLane {
+		ov.Rules = laneGuideRules
+	}
 	if ops, ok := content["operations"].([]Operation); ok {
 		for _, op := range ops {
 			ov.May = append(ov.May, op.Name)

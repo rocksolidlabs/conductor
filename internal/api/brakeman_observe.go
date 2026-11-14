@@ -106,17 +106,29 @@ type turnPrincipal struct {
 
 // turnPrincipalOf authenticates r as a Brakeman turn: nil for a request
 // that names no session in X-Conductor-Session (or a server with no
-// desk), an error for one that names a session whose turn it is not.
+// desk), an error for one that names a session whose turn it is not. The
+// named session's own token is put to the guard (agentTokenOK) before the
+// desk is looked at: a comparison's lane is answered 409 lane, desk or
+// none.
 func (s *Server) turnPrincipalOf(r *http.Request) (*turnPrincipal, *apiError) {
 	id := r.Header.Get(brakemanSessionHeader)
-	if id == "" || s.brakeman == nil {
+	if id == "" {
 		return nil, nil
 	}
-	d := s.brakeman
 	drv, ok := s.registry.Get(id)
-	if !ok || !agentTokenOK(drv, presentedToken(r, false)) {
+	if !ok {
+		return nil, nil
+	}
+	switch s.agentTokenOK(r, drv) {
+	case notAgentToken:
 		// Not the named session's own token: the request is any other's,
 		// the workbench token's or none.
+		return nil, nil
+	case agentTokenLaneClosed:
+		return nil, laneClosed()
+	}
+	d := s.brakeman
+	if d == nil {
 		return nil, nil
 	}
 	ref := drv.Info().Crew

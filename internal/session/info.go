@@ -96,6 +96,18 @@ type CrewRef struct {
 	// the session's creation, from the launch, so every snapshot that can
 	// need input carries it.
 	Brakeman *BrakemanMark `json:"brakeman,omitempty"`
+	// Lane is set when the session is a member of a comparison's run
+	// (docs/plans/compare-crew.md): the lane its member works in, which
+	// the engine decides as it launches the session, so that every
+	// snapshot carries it from the session's creation. The server's doors
+	// for a comparison read it. Never on the API.
+	Lane *LaneMark `json:"-"`
+}
+
+// LaneMark is a comparison's session's lane (CrewRef.Lane): the candidate
+// task its member's tasks belong to, "" for a member of no lane.
+type LaneMark struct {
+	Candidate string
 }
 
 // BrakemanMark is a Brakeman turn's mark on its session (CrewRef.Brakeman).
