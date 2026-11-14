@@ -665,8 +665,8 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   passing unchanged; a preview (`*preview`, `preview.go`) is the other:
   closed once its end is committed, listed in the engine's previews
   (never `a.trees`) and counted on its run (`r.previews`, beside
-  `r.trees.n`, from the open's first transaction until its end's last,
-  its teardown done), which the engine's `idle` reads (`run.go`), so
+  `r.trees.n`, from its reservation until its end's last, its teardown
+  done, or until its owed write is no longer tried), which the engine's `idle` reads (`run.go`), so
   `evict` never forgets a run whose preview is opening, serving or
   ending and `forget` never cancels the `r.teardown` its services run
   under (at most 2 previews a server, so at most two runs are held past
@@ -686,23 +686,26 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   the run (below): the run's project manifest is resolved
   for that commit (`resolveTree` with the preview as its owner, a `file`
   manifest read at the commit as EN1 reads it); the checkout is
-  `<worktree>.preview`. A preview's checkout is made, judged and used by
-  the rule of the checks' checkout (`verify`): by its path under the
-  run's worktrees folder, with git finding its repository from the
+  `<worktree>.preview`, used by its path under the run's worktrees
   folder; the server makes no further promise about a folder that
   another process of the same user replaces while it works. Before
   anything is made or read, the run's worktrees folder is judged as an
   attempt's dispatch judges it (`checkWorktreesDir`, in the same words).
-  The checkout is added detached at the commit
+  A checkout not there is made as the checks' checkout is (`verify`,
+  which makes its checkout new each time): added detached at the commit
   (`AddDetachedWorktree`, under the repository's lock and a bound of
   its own that no end cuts: an end that comes meanwhile waits for the
   add, and an add that outlives the bound ends the open with the
-  bound's words) and its HEAD read and compared with the preview's
-  commit; or, when it is there already, reused only if
-  `checkoutIntact` finds it at the commit with no tracked change
-  (untracked files, a dev server's caches, are left as they are);
-  refused otherwise with the path and what is wrong named: Conductor
-  removes nothing it made (EN1's R7). Then the crew's directory is
+  bound's words), its HEAD read and compared with the preview's
+  commit. One there already is reused only when, in this order, it is a
+  directory (looked at before any git runs in it, never a link), the
+  top of its own git work tree, a worktree of the run's repository (its
+  common git directory the repository's; each folder compared by
+  identity, not by its spelling), and at the commit with no tracked
+  change (`checkoutIntact`; untracked files, a dev server's caches, are
+  left as they are); anything else is refused with the path and what is
+  wrong named, before anything is written or made and before any step:
+  Conductor removes nothing it made (EN1's R7). Then the crew's directory is
   judged as `verify` judges it (`checkMemberDir`: a link or a file
   there is refused in its words) and made, with the state directory. A
   reused checkout is served as it was judged when the preview opened;
@@ -746,7 +749,9 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   then, and then is let go, the row left to the next start's recovery,
   which ends a row it finds open. While a write is owed the ledger's row
   can still read ready, and neither reader shows it: the label refuses
-  the preview and `Previewing` says it is ending, with no address. The reason recorded is the one of
+  the preview, and `Previewing` says it is ending, with no address, or,
+  once its run is stopping, is absent. No next try is armed once the
+  engine has ended. The reason recorded is the one of
   the end that began first: the run's stop begins its previews' ends
   before anything of the stop can fail a step of theirs, so a preview
   still starting its services when its run stopped records the stop. A
@@ -1525,8 +1530,7 @@ and the ticket attachments they made stay).
   longer tried. The result checkout's
   `trees` row and the attempt's `a.trees` are never written by a
   preview. At most one open per candidate; `seq` only grows. Its run is
-  held against eviction (`r.previews`) from the open's first
-  transaction until its row is ended or its owed write is no longer
+  held against eviction (`r.previews`) from its reservation until its row is ended or its owed write is no longer
   tried, so nothing but its own end stops its services.
 - **The bridge's messages.** The bridge answers only `window.parent` at
   an origin the server wrote into it (or the shell, for the desktop),

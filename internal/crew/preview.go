@@ -31,8 +31,9 @@ import (
 // that the result is that commit and the run neither continued nor
 // stopping, and leases the tree's ports before the checkout is added or
 // any step runs; the checkout is made under a bound of its own, which no
-// end cuts, and made, judged and used as the checks' checkout is, by its
-// path (makePreviewCheckout); each step is a receipt before its process
+// end cuts, and made as the checks' checkout is, by its path
+// (makePreviewCheckout), a found one reused only as a worktree of the
+// run's repository (previewReusable); each step is a receipt before its process
 // starts; ready is committed to the row of its seq (preview.ready) before
 // the preview is offered, its URL shown from that commit on. A Close while
 // the open is under way is answered busy (ErrPreviewOpening). An end is of
@@ -301,12 +302,11 @@ func (p *preview) stateOf() PreviewState {
 // bounds (one per candidate, ErrPreviewOpen; maxPreviews on the server, a
 // PreviewsBusyError naming the open ones; ledger.MaxPreviews opens of it,
 // ErrPreviewLimit), the result's commit copied into the preview, the one
-// commit every later step uses. Its checkout, <worktree>.preview, is made,
-// judged and used as the checks' checkout is (verify), by its path under
-// the run's worktrees folder, git finding its repository from the folder:
-// the worktrees folder judged as an attempt's dispatch judges it
-// (checkWorktreesDir); a checkout there already taken only when
-// checkoutIntact finds it at the commit with no tracked change
+// commit every later step uses. Its checkout, <worktree>.preview, is used
+// by its path under the run's worktrees folder: the worktrees folder
+// judged as an attempt's dispatch judges it (checkWorktreesDir); a
+// checkout there already taken only as a worktree of the run's
+// repository, at its own top, at the commit with no tracked change
 // (previewReusable), and refused otherwise with its path and what is
 // wrong (ErrPreviewRefused), nothing of it removed; the run's manifest
 // resolved for the commit with the preview as the tree's owner

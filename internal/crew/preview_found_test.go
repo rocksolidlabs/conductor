@@ -95,11 +95,17 @@ func TestAFoundPreviewCheckoutIsAWorktreeOfTheRunsRepository(t *testing.T) {
 			before, steps := listing(t, look), len(l.stepRows(run.ID, "build", 1))
 			_, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
 			if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), checkout+" is there and "+c.words) {
-				t.Fatalf("the open: %v, want %q", err, c.words)
+				t.Errorf("the open: %v, want %q", err, c.words)
+			}
+			if err == nil {
+				// Opened over it: what the preview makes there shows once
+				// it is ready.
+				l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
 			}
 			if after := listing(t, look); !slices.Equal(before, after) {
 				t.Fatalf("%s changed by the open:\nbefore %q\nafter  %q", look, before, after)
 			}
+			t.Logf("%v; %s before and after the open: %q", err, look, before)
 			if rows := l.stepRows(run.ID, "build", 1); len(rows) != steps {
 				t.Fatalf("a step of the preview ran: %s", rowWords(rows[steps:]))
 			}
