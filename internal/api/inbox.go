@@ -164,11 +164,14 @@ type deliveryStep struct {
 }
 
 // inboxBlocking is what waits for an item: words, at most 20 refs, and how
-// many more.
+// many more. runs counts the run refs among them, kept or past the bound:
+// a run's end is said by the words, and the list's count (summary's
+// Blocks) leaves it out, as the run is not one of its tasks.
 type inboxBlocking struct {
 	Words string   `json:"words"` // 500
 	Refs  []string `json:"refs"`
 	More  int      `json:"more,omitempty"`
+	runs  int
 }
 
 // inboxRef is an evidence entry: a ref and its label; on a decision
@@ -250,6 +253,9 @@ func (it *inboxItem) block(ref string) {
 	if slices.Contains(it.Blocking.Refs, ref) {
 		return
 	}
+	if strings.HasPrefix(ref, "run:") {
+		it.Blocking.runs++
+	}
 	if !refFits(ref) || len(it.Blocking.Refs) >= inboxRefs {
 		it.Blocking.More++
 		return
@@ -270,7 +276,7 @@ func (it *inboxItem) addAction(a inboxAction) {
 func (it *inboxItem) summary() inboxSummary {
 	s := inboxSummary{Ref: it.Ref, Kind: it.Kind, Since: it.Since, Title: fitText(it.Title, 200), Brief: fitText(it.Brief, 280),
 		Question: fitText(it.Question, 280), Answerer: fitText(it.Answerer, 120), Routed: len(it.RoutedTo),
-		Blocks: len(it.Blocking.Refs) + it.Blocking.More, Actions: []string{}, Card: it.Card != "", State: it.State, Tracking: it.State == ledger.DecisionAnswered}
+		Blocks: len(it.Blocking.Refs) + it.Blocking.More - it.Blocking.runs, Actions: []string{}, Card: it.Card != "", State: it.State, Tracking: it.State == ledger.DecisionAnswered}
 	for _, a := range it.Actions {
 		s.Actions = append(s.Actions, fitText(a.Label, 80))
 	}

@@ -881,3 +881,20 @@ func TestAnAppliedGateOutlivesNewerDecisions(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// An approval gate's words fit what it holds: Reject cancels "it" for one
+// task and "them" for more.
+func TestAGatesWordsFitOneTaskAndSeveral(t *testing.T) {
+	for _, c := range []struct {
+		before []string
+		want   string
+	}{
+		{[]string{"deploy"}, "Approve lets deploy start; Reject cancels it."},
+		{[]string{"build", "deploy"}, "Approve lets build, deploy start; Reject cancels them."},
+	} {
+		_, body := gateRequest(Package{}, PackageDecision{ID: "ship", Question: "May it go out?", Kind: ledger.DecisionApproval, Before: c.before})
+		if body.Authorizes != c.want {
+			t.Errorf("%q: %q, want %q", c.before, body.Authorizes, c.want)
+		}
+	}
+}
