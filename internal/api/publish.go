@@ -133,8 +133,8 @@ func (s *Server) remoteLinksOf(id string) []remoteLink {
 }
 
 // forgetRemoteLink drops the record of a remote link, unsettled
-// (forgetRemote): a decision link's still owed its revoke at the
-// rendezvous is kept.
+// (forgetRemote): a decision link's that still stands here or is owed its
+// revoke at the rendezvous is kept (decisionLinkLocked).
 func (s *Server) forgetRemoteLink(id, linkID string) {
 	s.forgetRemote(id, "", linkID, false)
 }

@@ -153,8 +153,8 @@ func (s *Server) remoteRunLinksOf(runID string) []remoteLink {
 }
 
 // forgetRemoteRunLinks drops one record of a run's, or all of them (""),
-// unsettled (forgetRemote): a decision link's still owed its revoke at the
-// rendezvous is kept.
+// unsettled (forgetRemote): a decision link's that still stands here or is
+// owed its revoke at the rendezvous is kept (decisionLinkLocked).
 func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	s.forgetRemote("", runID, linkID, false)
 }
@@ -317,7 +317,8 @@ func (s *Server) lockRunSync(runID string) func() {
 
 // syncRunLinks sends the run's members to the switchyard when they changed
 // since the last time; a switchyard that holds no link for the run any more
-// (not_found) has the records dropped here too. Syncs of one run take turns
+// (not_found) has the records dropped here too, but for those still owed
+// something (forgetRemoteRunLinks). Syncs of one run take turns
 // (lockRunSync), each reading the members as they are when its turn comes
 // and giving them the next revision (nextRunRevision).
 //
