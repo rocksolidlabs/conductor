@@ -787,12 +787,14 @@ pass is held:
   own code starts with such a fragment is sent on by the guard, and the
   router's record of where it was sent from holds that fragment until
   the next navigation; no code of the app makes one. The workbench
-  token the page holds is part of the page's state that a reload Nuxt
-  itself makes (after a chunk that failed to load, or a new build)
-  writes into the tab's storage (`nuxt:reload:state`); the next load of
-  the app in that tab removes it, first in this plugin, and when that
-  load does not come (the server stopped), it stays there until the app
-  loads in that tab again. Where the browser refuses the tab's storage,
+  token the page holds is kept outside the page's state that a reload
+  Nuxt itself makes (after a chunk that failed to load, or a new build)
+  writes into the tab's storage (`nuxt:reload:state`), as are the
+  tokens of the links joined from the workbench and a run's link shown
+  once (#894); the next load of the app in that tab still removes that
+  state, first in this plugin, and when that load does not come (the
+  server stopped), it stays there until the app loads in that tab
+  again. Where the browser refuses the tab's storage,
   the pass of a link opened in a tab that already shows the page is not
   taken: load it in a new tab. That is the pass alone: a later link's
   workbench token does not go through the tab's storage.
