@@ -898,7 +898,7 @@ export function useSessions() {
     /** A crew's runs, newest first: the live ones, then the records of those that ended (`live` counts the first). */
     crewRuns: (id: string) => request<{ runs: RunInfo[]; live: number }>(`/api/crews/${encodeURIComponent(id)}/runs`),
     /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */
-    catalogInfo: () => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
+    catalogInfo: (signal?: AbortSignal) => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog', { signal }).then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
     /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */
     catalogWithHidden: () =>
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
@@ -922,7 +922,7 @@ export function useSessions() {
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
-    getCrew: (id: string) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`).then(crewOfReply),
+    getCrew: (id: string, signal?: AbortSignal) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { signal }).then(crewOfReply),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
      * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a CrewInfo read with getCrew can be passed as it is.

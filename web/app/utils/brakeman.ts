@@ -3,7 +3,7 @@
 // and what it is called, the order a brief's items are shown in, and the configuration form's checks, which mirror the server's
 // (internal/brakeman/config.go, Validate) so the form says what is wrong before a save is refused for it. Pure: no Nuxt, no fetch.
 
-import { capacityStateWords, clockWords, countsWords, creditWords, limitsWords, planWords, windowWords, type CapacityCounts, type CapacityCredit, type CapacityLimits, type CapacityWindow } from './capacity'
+import { capacityStateWords, clockWords, countsWords, creditWords, limitsWords, planWords, warningOf, windowWords, type CapacityCounts, type CapacityCredit, type CapacityLimits, type CapacityWindow } from './capacity'
 
 /** What Brakeman may see, a switch a class. */
 export interface BrakemanVisibility {
@@ -280,12 +280,19 @@ export interface CapacitySnapshot {
   fresh?: string
 }
 
+/** How fresh a reading was when the brief cited it, in words; nothing for a fresh one. */
+const CITED_FRESH: Record<string, string> = {
+  stale: 'Stale when the brief cited it',
+  reset_passed: 'A reset had passed since this reading when the brief cited it',
+}
+
 /**
  * A capacity: ref's chip in words, from the reading kept with the brief (PR-7): the agent and the account by their names, a short
  * summary (each window the provider reported with its share used, or the state's title), and its title, every fact the reading
- * holds: the plan as the tool reported it, each window with its reset, the provider's figures, Conductor's estimate apart, and when it
- * was read and by what, one fact a line (`lines`, the chip's details); `read`, when the reading was made, for the chip's own text. A
- * window the provider did not report is in none of them. Null without a reading.
+ * holds: the plan as the tool reported it, the server's words, each window with its reset, the warning (a window at warning, critical
+ * or 90%, a limit the provider reports), the provider's figures, Conductor's estimate apart with when it was counted, when it was read
+ * and by what, and whether it was stale or a reset had passed when it was cited, one fact a line (`lines`, the chip's details); `read`,
+ * for the chip's own text, when the reading was made, whether it was stale or a reset had passed when cited, and "may stop" when it warns. A window the provider did not report is in none of them. Null without a reading.
  */
 export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, timeZone?: string): { label: string; summary: string; read: string; lines: string[]; title: string } | null {
   if (!c) return null
@@ -294,16 +301,21 @@ export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, t
   const state = capacityStateWords({ state: c.state, words: c.words })
   const summary = c.state === 'ok' ? c.windows.map((w) => `${w.name} ${w.percent}%`).join(' · ') || 'no windows reported' : state.title
   const at = Date.parse(c.readAt ?? '')
+  const counted = Date.parse(c.countedAt ?? '')
+  const by = c.readBy ? ` by ${c.readBy.program} ${c.readBy.version}${c.readBy.qualified && c.readBy.qualified !== c.readBy.version ? `, checked on ${c.readBy.qualified}` : ''}` : ''
   const lines = [
     planWords(c.account.plan, c.agent.adapter),
-    c.state === 'ok' ? '' : `${state.title}: ${state.words}`,
+    c.state === 'ok' ? (c.words ?? '') : `${state.title}: ${state.words}`,
     ...c.windows.map((w) => windowWords(w, now, timeZone)),
+    warningOf(c)?.words ?? '',
     [...c.credits.map(creditWords), ...limitsWords(c.limits)].map((x) => `The provider's: ${x}`).join(' · '),
-    c.counts ? `Conductor's estimate: ${countsWords(c.counts)}` : '',
-    Number.isNaN(at) ? '' : `Read ${clockWords(at, timeZone)}${c.readBy ? ` by ${c.readBy.program} ${c.readBy.version}` : ''}`,
+    c.counts ? `Conductor's estimate: ${countsWords(c.counts)}${Number.isNaN(counted) ? '' : `, as of ${clockWords(counted, timeZone)}`}` : '',
+    Number.isNaN(at) ? '' : `Read ${clockWords(at, timeZone)}${by}`,
+    CITED_FRESH[c.fresh ?? ''] ?? '',
   ]
   const shown = lines.filter(Boolean)
-  return { label, summary, read: Number.isNaN(at) ? '' : `read ${clockWords(at, timeZone)}`, lines: shown, title: shown.join('\n') }
+  const marks = [Number.isNaN(at) ? '' : `read ${clockWords(at, timeZone)}`, c.fresh === 'stale' ? 'stale when cited' : c.fresh === 'reset_passed' ? 'a reset had passed when cited' : '', warningOf(c) ? 'may stop' : '']
+  return { label, summary, read: marks.filter(Boolean).join(' · '), lines: shown, title: shown.join('\n') }
 }
 
 /** The kinds a request may have, in the order the composer offers them, with what the page calls each. */

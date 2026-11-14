@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { AT_LAUNCH, OWN_LOGIN, accountName, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, withAgent } from '../utils/crewLaunch'
-import { capacityKey, type CapacityView } from '../utils/capacity'
+import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
+import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
 // The crew launch sheet's lines and the crew's members on their accounts (docs/plans/capacity.md, PR-7). The app's vitest runs in node
@@ -77,6 +77,68 @@ describe('the launch sheet', () => {
     expect([l!.agent, l!.account]).toEqual(['gone', 'a-aaaaaaaaaaaa'])
   })
 
+  /** A clock of the test's own: a deadline passes when the test says so. */
+  function clock() {
+    const due = new Set<() => void>()
+    const after: After = (_ms, fn) => (due.add(fn), () => due.delete(fn))
+    return { after, pass: () => [...due].forEach((f) => (due.delete(f), f())) }
+  }
+  const saved = { id: 'c', name: 'C', members: [], yolo: undefined as boolean | undefined }
+
+  it("reads the saved crew and, for one that inherits its yolo, the server's default; a crew that sets its own asks none", async () => {
+    const asked: string[] = []
+    const reads = { crew: async (id: string) => (asked.push(`crew ${id}`), saved), yoloDefault: async () => (asked.push('default'), true) }
+    expect(await readSheet({ id: 'c' }, reads, new AbortController().signal)).toEqual({ crew: saved, yolo: true })
+    expect(await readSheet({ draft: { ...saved, yolo: false } }, reads, new AbortController().signal)).toEqual({ crew: { ...saved, yolo: false }, yolo: false })
+    expect(asked).toEqual(['crew c', 'default'])
+  })
+
+  it("refuses a read that never answers at its deadline, in words, the crew's or the default's, and aborts it", async () => {
+    const signals: AbortSignal[] = []
+    const never = (s: AbortSignal) => (signals.push(s), new Promise<never>(() => {}))
+    const c = clock()
+    const crew = readSheet({ id: 'c' }, { crew: (_id, s) => never(s), yoloDefault: never }, new AbortController().signal, 5, c.after)
+    c.pass()
+    expect(await crew).toEqual({ error: 'The server did not answer within 0.005 s', what: 'crew', gone: false })
+    const d = clock()
+    const def = readSheet({ draft: saved }, { crew: (_id, s) => never(s), yoloDefault: never }, new AbortController().signal, SHEET_DEADLINE_MS, d.after)
+    await Promise.resolve()
+    d.pass()
+    expect(await def).toEqual({ error: 'The server did not answer within 30 s', what: 'default', gone: false })
+    expect(signals.map((s) => s.aborted)).toEqual([true, true])
+  })
+
+  it('draws nothing of a read the sheet ended (closed, or opened for another target), whatever comes after, and ends its request', async () => {
+    let answer!: (c: typeof saved) => void
+    let sent!: AbortSignal
+    const ended = new AbortController()
+    const got = readSheet({ id: 'c' }, { crew: (_id, s) => ((sent = s), new Promise<typeof saved>((r) => (answer = r))), yoloDefault: async () => true }, ended.signal, SHEET_DEADLINE_MS, clock().after)
+    ended.abort()
+    expect(sent.aborted).toBe(true)
+    answer(saved)
+    expect(await got).toBeNull()
+  })
+
+  it('says a crew the server no longer has is gone', async () => {
+    const gone = Object.assign(new Error('no crew c'), { status: 404 })
+    expect(await readSheet({ id: 'c' }, { crew: async () => Promise.reject(gone), yoloDefault: async () => true }, new AbortController().signal)).toEqual({ error: 'no crew c', what: 'crew', gone: true })
+  })
+
+  it('takes one confirmation per opening: never twice, never while a launch is under way, never from a sheet closed or closing', () => {
+    const c = new SheetConfirmation()
+    expect(c.take(true), 'before any opening').toBe(false)
+    c.opened()
+    expect(c.take(false), 'from a sheet closed or closing').toBe(false)
+    expect(c.take(true), 'the opening').toBe(true)
+    expect(c.take(true), 'the same confirmation again, its launch under way').toBe(false)
+    c.done()
+    expect(c.take(true), 'the same confirmation after its launch').toBe(false)
+    c.opened()
+    expect(c.take(true), 'the next opening').toBe(true)
+    c.opened()
+    expect(c.take(true), 'an opening while a launch is under way').toBe(false)
+  })
+
   it("source: the sheet's lines draw compact panels that read on open, the ticket dialog's compact panels do not", () => {
     // The read itself, on an account never read before, is capacity-crew.spec.ts's (the sheet's panels reach `ok`).
     const src = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
@@ -88,18 +150,28 @@ describe('the launch sheet', () => {
 })
 
 describe("the crew editor's Account choice", () => {
-  it('offers the default at launch, the default login and the accounts of the tool not retired, the default marked', () => {
-    expect(memberAccountItems(doc, 'claude')).toEqual([
-      { value: AT_LAUNCH, label: 'The default at launch (now Work)' },
+  it("offers the default at launch as the server's view names it, the default login and the accounts of the tool not retired, the default marked", () => {
+    // The view resolves another default than the accounts' Work: the item says the server's.
+    expect(memberAccountItems(doc, 'claude', '', view({ account: { id: 'default' } }))).toEqual([
+      { value: AT_LAUNCH, label: 'The default at launch (now Default login)' },
       { value: 'default', label: 'Default login' },
       { value: 'a-aaaaaaaaaaaa', label: 'Work (default)' },
     ])
-    expect(memberAccountItems(doc, 'codex').map((i) => i.label)).toEqual(['The default at launch (now Default login)', 'Default login (default)', 'Team'])
+    expect(memberAccountItems(doc, 'codex', '', view({ account: { id: 'a-cccccccccccc', label: 'Team' } })).map((i) => i.label)).toEqual(['The default at launch (now Team)', 'Default login (default)', 'Team'])
+  })
+
+  it('names no default and offers no account before the view has answered, or when it failed', () => {
+    expect(memberAccountItems(doc, 'claude')).toEqual([{ value: AT_LAUNCH, label: 'The default at launch' }])
+    expect(memberAccountItems(doc, 'claude', 'a-aaaaaaaaaaaa', null)).toEqual([
+      { value: AT_LAUNCH, label: 'The default at launch' },
+      { value: 'a-aaaaaaaaaaaa', label: 'Work' },
+    ])
   })
 
   it('keeps the account a member names when it is no choice: retired, or not in Accounts', () => {
-    expect(memberAccountItems(doc, 'claude', 'a-bbbbbbbbbbbb').at(-1)).toEqual({ value: 'a-bbbbbbbbbbbb', label: 'Old (retired)' })
-    expect(memberAccountItems(doc, 'claude', 'a-zzzzzzzzzzzz').at(-1)).toEqual({ value: 'a-zzzzzzzzzzzz', label: 'a-zzzzzzzzzzzz (not in Accounts)' })
+    const v = view({ account: { id: 'a-aaaaaaaaaaaa', label: 'Work' } })
+    expect(memberAccountItems(doc, 'claude', 'a-bbbbbbbbbbbb', v).at(-1)).toEqual({ value: 'a-bbbbbbbbbbbb', label: 'Old (retired)' })
+    expect(memberAccountItems(doc, 'claude', 'a-zzzzzzzzzzzz', v).at(-1)).toEqual({ value: 'a-zzzzzzzzzzzz', label: 'a-zzzzzzzzzzzz (not in Accounts)' })
   })
 
   it('has no choice for a tool whose login is not moved, or before the accounts are read', () => {
@@ -114,21 +186,27 @@ describe("the crew editor's Account choice", () => {
     expect(accountName(null, 'a-aaaaaaaaaaaa')).toBe('a-aaaaaaaaaaaa')
   })
 
-  it("offers an agent whose entry sets its login that login alone, and says the server's refusal of another account", () => {
-    expect(memberAccountItems(doc, 'claude', '', 'ANTHROPIC_BASE_URL')).toEqual([{ value: AT_LAUNCH, label: 'The login its entry sets (ANTHROPIC_BASE_URL)' }])
-    expect(memberAccountItems(doc, 'claude', 'a-aaaaaaaaaaaa', 'ANTHROPIC_BASE_URL').at(-1)).toEqual({ value: 'a-aaaaaaaaaaaa', label: 'Work' })
-    expect(memberAccountProblem('a-aaaaaaaaaaaa', 'ANTHROPIC_BASE_URL')).toBe("This agent's entry sets ANTHROPIC_BASE_URL: it uses that login, its default account only")
-    // The server takes none and the default login for it, and any account for an agent whose entry sets none.
-    expect([memberAccountProblem(undefined, 'ANTHROPIC_BASE_URL'), memberAccountProblem('default', 'ANTHROPIC_BASE_URL'), memberAccountProblem('a-aaaaaaaaaaaa', '')]).toEqual(['', '', ''])
+  it("offers a launch whose entry or yolo recipe sets its login that login alone, and marks another account with the server's refusal", () => {
+    const entry = view({ entryLogin: 'ANTHROPIC_BASE_URL' })
+    expect(memberAccountItems(doc, 'claude', '', entry)).toEqual([{ value: AT_LAUNCH, label: 'The login its entry sets (ANTHROPIC_BASE_URL)' }])
+    expect(memberAccountItems(doc, 'claude', 'a-aaaaaaaaaaaa', entry).at(-1)).toEqual({ value: 'a-aaaaaaaaaaaa', label: 'Work' })
+    expect(memberAccountProblem('a-aaaaaaaaaaaa', entry)).toBe("this agent's entry sets ANTHROPIC_BASE_URL: it uses that login, its default account only")
+    // Asked with yolo, as the crew launches: its recipe sets the login.
+    const yolo = view({ state: 'env_set' })
+    expect(memberAccountItems(doc, 'claude', '', yolo)).toEqual([{ value: AT_LAUNCH, label: 'The login its launch sets' }])
+    expect(memberAccountProblem('a-aaaaaaaaaaaa', yolo)).toBe('this launch sets its login: it uses that login, its default account only')
+    // The server takes none and the default login for it, any account for a launch whose login nothing sets, and nothing is marked before the view.
+    expect([memberAccountProblem(undefined, entry), memberAccountProblem('default', yolo), memberAccountProblem('a-aaaaaaaaaaaa', view({})), memberAccountProblem('a-aaaaaaaaaaaa', null)]).toEqual(['', '', '', ''])
   })
 
-  it("clears a member's account and model when its agent moves to another tool, and keeps both within one", () => {
+  it("clears a member's account and model when its agent moves to another tool, or between two agents of no tool, and keeps both within one", () => {
     const adapterOf = (id: string) => agents.find((a) => a.id === id)?.adapter
     const m = { name: 'builder', agentId: 'claude', account: 'a-aaaaaaaaaaaa', model: 'opus' }
     expect(withAgent(m, 'codex', adapterOf)).toEqual({ name: 'builder', agentId: 'codex', account: undefined, model: undefined })
     expect(withAgent(m, 'plain', adapterOf)).toMatchObject({ account: undefined, model: undefined })
-    const twin = [...agents, { id: 'claude-2', name: 'Claude Code 2', adapter: 'claude' }]
+    const twin = [...agents, { id: 'claude-2', name: 'Claude Code 2', adapter: 'claude' }, { id: 'plain-2', name: 'Plain 2' }]
     expect(withAgent(m, 'claude-2', (id) => twin.find((a) => a.id === id)?.adapter)).toEqual({ ...m, agentId: 'claude-2' })
+    expect(withAgent({ ...m, agentId: 'plain' }, 'plain-2', (id) => twin.find((a) => a.id === id)?.adapter)).toEqual({ name: 'builder', agentId: 'plain-2', account: undefined, model: undefined })
   })
 
   it("saves the account and model a member names, and a member naming neither is the body it was", () => {
@@ -144,7 +222,7 @@ describe("the run page's logins", () => {
   it('names a bound account by its label, any other login by where it comes from, and the agent own login for none', () => {
     expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' }, model: 'opus' }, doc)).toEqual({ account: 'Work', model: 'opus', atLaunch: false })
     expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, null).account).toBe('a-aaaaaaaaaaaa')
-    expect(boundWords({}, doc)).toEqual({ account: "the agent's own login", model: "the agent's default", atLaunch: false })
+    expect(boundWords({}, doc)).toEqual({ account: "the agent's own login", model: 'no model named: the agent chooses, or its arguments do', atLaunch: false })
     expect(boundWords({ account: { id: 'default', source: 'pinned' } }, doc).account).toBe('the login its entry sets')
     expect(boundWords({ account: { id: 'default', source: 'launch_env' } }, doc).account).toBe('the login its launch sets')
     expect(boundWords({ account: { id: 'unlisted', source: 'unlisted' } }, doc).account).toBe('a folder not in Accounts')
@@ -162,9 +240,11 @@ describe("the run page's logins", () => {
 })
 
 describe("the run page's Logins: a member's model", () => {
-  it("says a model the run records, the agent's default for an ordinary member with none, and not shown for a Brakeman turn's", () => {
+  it("says a model the run records, never the agent's default for one it does not (the member's arguments may choose it), and not shown for a Brakeman turn's", () => {
     expect(boundWords({ model: 'opus' }, doc).model).toBe('opus')
-    expect(boundWords({}, doc).model).toBe("the agent's default")
+    // A member whose arguments chose its model (--model=opus) has none in the run's record: the line does not say the agent's default.
+    expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, doc).model).toBe('no model named: the agent chooses, or its arguments do')
+    expect(boundWords({}, doc).model).not.toContain("the agent's default")
     // A Brakeman turn's model is in its arguments: its run records none, so none is said.
     expect(boundWords({}, doc, undefined, true).model).toBe("its model is not shown: a Brakeman turn's run does not record it")
     expect(boundWords({ model: 'opus' }, doc, undefined, true).model).toBe('opus')
@@ -182,6 +262,10 @@ describe("the run's Add member dialog", () => {
     expect(addMemberProblem({ ...m, name: 'builder' }, ['builder'], [])).not.toBe('')
     expect(addMemberProblem({ ...m, agentId: '' }, [], [])).toBe('Pick an agent')
     expect(addMemberProblem(undefined, [], [])).toBe('Pick an agent')
+    // An account the field marks refused holds Add with the field's own words.
+    const refused = memberAccountProblem('a-aaaaaaaaaaaa', view({ entryLogin: 'ANTHROPIC_BASE_URL' }))
+    expect(addMemberProblem(m, [], [], refused)).toBe(refused)
+    expect(refused).not.toBe('')
   })
 })
 
@@ -198,9 +282,9 @@ describe("Brakeman's Account choice", () => {
     })
   })
 
-  it('shows a folder no account holds as a folder not in Accounts, and a retired account by its label, said refused', () => {
+  it('shows a folder no account holds by that path as not in Accounts by this path, and a retired account by its label, said refused', () => {
     expect(brakemanAccount(doc, 'claude', '/home/me/elsewhere')).toMatchObject({ value: '/home/me/elsewhere', unlisted: true, retired: '' })
-    expect(brakemanAccount(doc, 'claude', '/home/me/elsewhere').items.at(-1)).toEqual({ value: '/home/me/elsewhere', label: '/home/me/elsewhere (a folder not in Accounts)' })
+    expect(brakemanAccount(doc, 'claude', '/home/me/elsewhere').items.at(-1)).toEqual({ value: '/home/me/elsewhere', label: '/home/me/elsewhere (not in Accounts by this path)' })
     expect(brakemanAccount(doc, 'claude', '/home/me/.claude-old')).toMatchObject({ value: '/home/me/.claude-old', unlisted: false, retired: 'Old' })
     expect(brakemanAccount(doc, 'claude', '/home/me/.claude-old').items.at(-1)).toEqual({ value: '/home/me/.claude-old', label: 'Old (retired)' })
     expect(brakemanAccount(doc, 'claude', '/home/me/.claude-work')).toMatchObject({ value: '/home/me/.claude-work', unlisted: false })

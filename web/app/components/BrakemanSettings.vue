@@ -235,7 +235,7 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>
       <UFormField v-if="accountItems.length" label="Account" description="Its default login on this machine, or an account added in Accounts." :error="fieldError('account')" :ui="fieldUi">
         <USelect v-model="accountChoice" :items="accountItems" class="w-full" aria-label="Account" data-brakeman-account-select />
-        <p v-if="login.unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>A folder not in Accounts: add it there to read its usage.</p>
+        <p v-if="login.unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>Not in Accounts by this path: add it there to read its usage.</p>
         <p v-if="login.retired" class="mt-1 text-xs text-warning [overflow-wrap:anywhere]" data-brakeman-account-retired>{{ login.retired }} is retired: Brakeman's turns are refused until another account is chosen.</p>
       </UFormField>
       <UFormField v-else label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">

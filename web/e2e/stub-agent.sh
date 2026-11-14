@@ -159,7 +159,7 @@ wait_s=${STUB_MERGE_WAIT_S:-60}
 # codex), one line "<state> [<version>]", so one spec holds several states at
 # once over the suite's one server: ok, warning (ok's figures with the weekly
 # window at 92% and the provider's severity warning, Claude Code's only),
-# signed_out, key_paid, turn (/usage answered with a model turn), slow
+# limit (ok's figures with the rate limit reached, Codex's only), signed_out, key_paid, turn (/usage answered with a model turn), slow
 # (/usage answered once the file
 # stub-usage-gate is in the same folder, a spec's gate, waited for at most
 # 80 s, under the reader's 90 s) and error (a result line that says the run
@@ -239,7 +239,14 @@ codex_app_server() {
 			*) result=$(usage_fill codex-account.json) ;;
 			esac
 			;;
-		*'"method":"account/rateLimits/read"'*) [[ $usage_state == error ]] || result=$(usage_fill codex-limits.json) ;;
+		*'"method":"account/rateLimits/read"'*)
+			# limit: ok's figures, with the provider's rate limit reached.
+			[[ $usage_state == error ]] || result=$(usage_fill codex-limits.json)
+			if [[ $usage_state == limit ]]; then
+				local unreached='"rateLimitReachedType":null' reached='"rateLimitReachedType":"rate_limit_reached"'
+				result=${result//$unreached/$reached}
+			fi
+			;;
 		esac
 		if [[ -n $result ]]; then
 			printf '{"id":%s,"result":%s}\n' "$id" "$result"
@@ -821,15 +828,23 @@ task_attempt() {
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
 	# A spec's hold on a first attempt: with the file stub-attempt-hold in the
 	# login folder the attempt runs on (CLAUDE_CONFIG_DIR), attempt 1 waits
-	# for stub-attempt-gate there, at most 120 s, before it does anything; the
-	# spec makes the gate once what it orders before the retry is done.
+	# for stub-attempt-gate there, at most the seconds the hold file names
+	# (the spec's own cap; 120 when it names none), before it does anything;
+	# the spec makes the gate once what it orders before the retry is done.
+	# The transcript says which ended the wait: the gate, or the cap.
 	if [[ $n == 1 && -n ${CLAUDE_CONFIG_DIR:-} && -e $CLAUDE_CONFIG_DIR/stub-attempt-hold ]]; then
-		local i
-		for ((i = 0; i < 1200; i++)); do
+		local i hold_cap=
+		read -r hold_cap _ <"$CLAUDE_CONFIG_DIR/stub-attempt-hold" || true
+		[[ $hold_cap =~ ^[0-9]+$ ]] || hold_cap=120
+		for ((i = 0; i < hold_cap * 10; i++)); do
 			[[ -e $CLAUDE_CONFIG_DIR/stub-attempt-gate ]] && break
 			sleep 0.1
 		done
-		printf 'hold: attempt 1 went on\n' >>"$transcript"
+		if [[ -e $CLAUDE_CONFIG_DIR/stub-attempt-gate ]]; then
+			printf 'hold: attempt 1 went on when the gate opened\n' >>"$transcript"
+		else
+			printf 'hold: attempt 1 went on when its cap of %s s ran out\n' "$hold_cap" >>"$transcript"
+		fi
 	fi
 	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided && $n -ge ${STUB_DECISION_FROM:-1} ]]; then
 		local applied

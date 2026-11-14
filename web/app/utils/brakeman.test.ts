@@ -758,6 +758,25 @@ describe("a capacity: ref's chip (docs/plans/capacity.md, PR-7)", () => {
     ])
   })
 
+  it('says how sure the reading was when cited: stale or a reset passed, the warning, when it was counted and what read it', () => {
+    const warned = { ...reading, windows: [{ ...reading.windows[0]!, percent: 95, severity: 'critical' as const }], countedAt: '2026-11-10T23:58:00Z', fresh: 'stale', readBy: { program: 'Codex', version: '0.164.0', qualified: '0.163.0' } }
+    const w = capacityRefWords(warned, now, 'UTC')!
+    expect(w.read).toBe('read Tue 10 Nov 23:57 · stale when cited · may stop')
+    expect(w.lines).toEqual([
+      'Claude Max',
+      'Weekly, all models: 95% used, resets Mon 16 Nov 03:00, in 5 days',
+      'The agent may stop before the reset: a window is near its limit. Launching is still yours to decide.',
+      "The provider's: Extra usage: off",
+      "Conductor's estimate: 1 session running on this account here, 2 started in the last 5 hours, 3 in the last 7 days, counted by this server since it started, as of Tue 10 Nov 23:58",
+      'Read Tue 10 Nov 23:57 by Codex 0.164.0, checked on 0.163.0',
+      'Stale when the brief cited it',
+    ])
+    const reset = capacityRefWords({ ...reading, fresh: 'reset_passed', limits: { source: 'provider', reached: 'rate_limit_reached' } }, now, 'UTC')!
+    expect(reset.read).toBe('read Tue 10 Nov 23:57 · a reset had passed when cited · may stop')
+    expect(reset.lines).toContain('A reset had passed since this reading when the brief cited it')
+    expect(reset.lines).toContain('The agent may stop: the provider says a limit is reached. Launching is still yours to decide.')
+  })
+
   it('says a state that is no reading in its words, a default login as such, and nothing without a reading', () => {
     const w = capacityRefWords({ ...reading, account: { id: 'default' }, state: 'signed_out', windows: [], credits: [], counts: undefined, readAt: undefined }, now, 'UTC')!
     expect(w.label).toBe('capacity of Claude Code on its default login')

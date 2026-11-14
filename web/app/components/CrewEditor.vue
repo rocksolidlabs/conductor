@@ -238,7 +238,7 @@ function refused(message: string) {
         <span class="min-w-0 text-[12.5px] text-muted" data-start-sentence>{{ startSentence(crew.members) }}</span>
         <UTabs v-if="!managed" v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="ml-auto" data-members-view />
       </div>
-      <CrewMembersTable v-if="managed || membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" :managed="managed" :accounts="accounts.doc.value" @update:model-value="setMembers" @add="addMember" @add-from-session="pickOpen = true" />
+      <CrewMembersTable v-if="managed || membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" :managed="managed" :accounts="accounts.doc.value" :yolo="crew.yolo ?? yoloDefault" @update:model-value="setMembers" @add="addMember" @add-from-session="pickOpen = true" />
       <template v-else>
         <CrewGraph :members="crew.members" :agent-names="agentNames" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
         <div class="flex flex-wrap gap-x-4 gap-y-1">

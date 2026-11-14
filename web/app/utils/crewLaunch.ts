@@ -1,6 +1,6 @@
 import type { DraftCrew } from './crews'
 import { memberNameError } from './crews'
-import { accountChoices, accountWords, launchLogin, modelProblem, modelWords, type AccountChoice, type AccountsLike, type CapacityQuery, type CapacityView } from './capacity'
+import { accountChoices, accountWords, launchLogin, modelProblem, modelWords, realAfter, withDeadline, type After, type AccountChoice, type AccountsLike, type CapacityQuery, type CapacityView } from './capacity'
 
 /**
  * A crew's members on their accounts and models (docs/plans/capacity.md, PR-7): the crew editor's Account choice, the lines the launch
@@ -25,41 +25,61 @@ export function accountName(doc: AccountsDocLike | null | undefined, id: string)
   return a.retired ? `${a.label} (retired)` : a.label
 }
 
-/** What a member that names no account launches on now: its adapter's default, by name; "" when the accounts are not read. */
-function defaultNow(doc: AccountsDocLike | null | undefined, adapter: string | undefined): string {
-  const ad = doc?.adapters.find((a) => a.adapter === adapter)
-  return ad ? accountName(doc, ad.default) : ''
-}
-
 /**
- * The crew editor's Account choice for a member of `adapter`: the default at launch first (what a member that names none takes), then
- * the choices a session's launch offers, and the account the member names when it is none of them (retired, or not in Accounts), so the
- * select shows what is saved. [] for an adapter the accounts do not list: such a member has no account to choose. An agent whose entry
- * sets its login (`entryLogin`, the server's view of it) launches on that login whatever is chosen, and the server takes no other
- * account for it: the entry's login alone is offered.
+ * The crew editor's Account choice for a member of `adapter`, from the server's view of its launch with no account named (`view`, asked
+ * as the launch will be: with the crew's yolo): the default at launch first (what a member that names none takes, named as the view
+ * resolves it), then the choices a session's launch offers, and the account the member names when it is none of them (retired, or not
+ * in Accounts), so the select shows what is saved. A launch whose login its entry or its launch sets takes that login whatever is
+ * chosen: that login alone is offered. Before the view has answered, or when it failed, the default at launch alone, named by nothing
+ * the page worked out. [] for an adapter the accounts do not list: such a member has no account to choose.
  */
-export function memberAccountItems(doc: AccountsDocLike | null | undefined, adapter: string | undefined, current = '', entryLogin = ''): AccountChoice[] {
+export function memberAccountItems(doc: AccountsDocLike | null | undefined, adapter: string | undefined, current = '', view: Pick<CapacityView, 'state' | 'host' | 'account' | 'entryLogin'> | null = null): AccountChoice[] {
   const choices = accountChoices(doc, adapter)
   if (!choices.length) return []
-  const items = entryLogin ? [{ value: AT_LAUNCH, label: `The login its entry sets (${entryLogin})` }] : [{ value: AT_LAUNCH, label: `The default at launch (now ${defaultNow(doc, adapter)})` }, ...choices]
+  const login = view ? launchLogin(view) : null
+  const items: AccountChoice[] = !login
+    ? [{ value: AT_LAUNCH, label: 'The default at launch' }]
+    : login.kind === 'entry'
+      ? [{ value: AT_LAUNCH, label: `The login its entry sets (${login.variable})` }]
+      : login.kind === 'own'
+        ? [{ value: AT_LAUNCH, label: 'The login its launch sets' }]
+        : [{ value: AT_LAUNCH, label: `The default at launch (now ${accountWords(view!.account)})` }, ...choices]
   if (current && !items.some((i) => i.value === current)) items.push({ value: current, label: accountName(doc, current) })
   return items
 }
 
-/** Why the server refuses the account a member names for an agent whose entry sets its login (bindLogin's words); '' when it takes it. */
-export function memberAccountProblem(account: string | undefined, entryLogin: string): string {
-  return entryLogin && account && account !== 'default' ? `This agent's entry sets ${entryLogin}: it uses that login, its default account only` : ''
+/** The server's refusal of an account named beside a login the entry sets (bindLogin), the page's copy: a spec compares it with the route's. */
+export const ENTRY_REFUSAL = (variable: string) => `this agent's entry sets ${variable}: it uses that login, its default account only`
+/** The page's words for an account named beside a login the launch sets, whose variable the server's view does not name. */
+export const LAUNCH_REFUSAL = 'this launch sets its login: it uses that login, its default account only'
+
+/**
+ * Why the launch refuses the account a member names (`view`, the view of its launch with no account named): beside a login its entry
+ * sets, or one its launch sets (its yolo recipe), the server takes its default account only; '' when it takes it, or before the view.
+ */
+export function memberAccountProblem(account: string | undefined, view: Pick<CapacityView, 'state' | 'host' | 'entryLogin'> | null): string {
+  if (!account || account === 'default' || !view) return ''
+  const login = launchLogin(view)
+  if (login.kind === 'entry') return ENTRY_REFUSAL(login.variable)
+  return login.kind === 'own' && view.state === 'env_set' ? LAUNCH_REFUSAL : ''
 }
 
-/** A member moved to another agent: an account and a model are their tool's, so another tool's agent names neither (its own defaults). */
+/**
+ * A member moved to another agent: an account and a model are their tool's, so another tool's agent names neither (its own defaults),
+ * and neither does an agent of no tool Conductor knows (two such agents are not one tool).
+ */
 export function withAgent<M extends { agentId: string; account?: string; model?: string }>(m: M, agentId: string, adapterOf: (id: string) => string | undefined): M {
-  return adapterOf(m.agentId) === adapterOf(agentId) ? { ...m, agentId } : { ...m, agentId, account: undefined, model: undefined }
+  const tool = adapterOf(agentId)
+  return tool && adapterOf(m.agentId) === tool ? { ...m, agentId } : { ...m, agentId, account: undefined, model: undefined }
 }
 
-/** Why the run's Add member dialog holds Add, in words, '' when it may add: an agent, a name no member or person of the run has, a model the server takes. */
-export function addMemberProblem(m: { name: string; agentId: string; model?: string } | undefined, members: readonly string[], people: readonly string[]): string {
+/**
+ * Why the run's Add member dialog holds Add, in words, '' when it may add: an agent, a name no member or person of the run has, a model
+ * the server takes, and no account the field marks refused (`accountProblem`, the field's own check).
+ */
+export function addMemberProblem(m: { name: string; agentId: string; model?: string } | undefined, members: readonly string[], people: readonly string[], accountProblem = ''): string {
   if (!m?.agentId) return 'Pick an agent'
-  return memberNameError(m.name, members, people) || modelProblem(m.model ?? '')
+  return memberNameError(m.name, members, people) || modelProblem(m.model ?? '') || accountProblem
 }
 
 /**
@@ -114,6 +134,62 @@ export function launchLines(members: readonly LaunchMember[], o: { agents: Reado
  */
 export type SheetTarget = { label: string } & ({ id: string } | { key: string; draft: DraftCrew })
 
+/** A sheet's reads end: each is aborted and refused in words at its deadline, a bound on a hang. */
+export const SHEET_DEADLINE_MS = 30_000
+
+/** What a launch sheet reads before its Launch: the saved crew, and the server's yolo default. */
+export interface SheetReads<C> {
+  crew: (id: string, signal: AbortSignal) => Promise<C>
+  yoloDefault: (signal: AbortSignal) => Promise<boolean>
+}
+
+/** What a sheet read: the crew it draws and the yolo its launch uses; or why a read failed (`what` it read), `gone` for a crew not there. */
+export type SheetRead<C> = { crew: C; yolo: boolean } | { error: string; what: 'crew' | 'default'; gone: boolean }
+
+/**
+ * Reads what a launch sheet draws, for what it was opened for: the saved crew as the server holds it (a target by id; a draft is drawn
+ * as it is), then, for a crew that inherits its yolo setting, the server's default, read and never assumed. Each read is refused in
+ * words at its deadline (`ms`, `after`) and ended when `signal` aborts (the sheet closed, or opened for another target): null then,
+ * whatever came, so nothing of it is drawn.
+ */
+export async function readSheet<C extends { yolo?: boolean | null }>(t: { id: string } | { draft: C }, reads: SheetReads<C>, signal: AbortSignal, ms = SHEET_DEADLINE_MS, after: After = realAfter): Promise<SheetRead<C> | null> {
+  const ask = <T>(f: (s: AbortSignal) => Promise<T>) => withDeadline((s) => f(AbortSignal.any([s, signal])), ms, `The server did not answer within ${ms / 1000} s`, after)
+  let what: 'crew' | 'default' = 'crew'
+  try {
+    const crew = 'id' in t ? await ask((s) => reads.crew(t.id, s)) : t.draft
+    what = 'default'
+    const yolo = typeof crew.yolo === 'boolean' ? crew.yolo : await ask((s) => reads.yoloDefault(s))
+    return signal.aborted ? null : { crew, yolo }
+  } catch (e) {
+    return signal.aborted ? null : { error: (e as Error).message, what, gone: what === 'crew' && (e as { status?: unknown }).status === 404 }
+  }
+}
+
+/**
+ * A sheet's Launch, one run for one confirmation: each opening of the sheet is one confirmation, taken before anything is awaited. A
+ * second take of it, a take while a launch is under way, and one from a sheet that is closed or closing are refused.
+ */
+export class SheetConfirmation {
+  private opening = 0
+  private taken = 0
+  private busy = false
+  /** The sheet opened: a new confirmation. */
+  opened() {
+    this.opening++
+  }
+  /** Takes the opening's confirmation for a launch; false when it may not start one. */
+  take(open: boolean): boolean {
+    if (!open || this.busy || this.taken === this.opening) return false
+    this.taken = this.opening
+    this.busy = true
+    return true
+  }
+  /** The launch it started has ended. */
+  done() {
+    this.busy = false
+  }
+}
+
 /** Where a run member's login comes from (MemberAccount.source), in words, for a source that is not a registered account. */
 const SOURCE_WORDS: Record<string, string> = {
   own: "the agent's own login",
@@ -127,13 +203,15 @@ const SOURCE_WORDS: Record<string, string> = {
  * otherwise), any other source by where the login comes from, none for the agent's own login. `named` is the account the ticket's
  * revision named for the member, when the run was launched from one: "" (named none) says the launch took the default at that launch.
  * `brakeman` for a Brakeman turn's run, whose model is in the turn's arguments, which the run does not record: it is said as not shown.
+ * A model the run does not record is never said to be the agent's default: a member's arguments may choose one, and the run records
+ * neither them nor what they chose.
  */
 export function boundWords(m: { account?: { id: string; source: string }; model?: string }, doc: AccountsDocLike | null | undefined, named?: string, brakeman = false): { account: string; model: string; atLaunch: boolean } {
   const a = m.account
   // A Brakeman turn's member names no account in its run: its login is the folder Brakeman's settings name (its session's launch).
   const none = brakeman ? "the login Brakeman's settings name" : SOURCE_WORDS.own!
   const account = !a ? none : a.source === 'account' ? accountName(doc, a.id) : (SOURCE_WORDS[a.source] ?? a.source)
-  const model = !m.model && brakeman ? "its model is not shown: a Brakeman turn's run does not record it" : modelWords({ chosen: m.model ?? '' })
+  const model = m.model ? m.model : brakeman ? "its model is not shown: a Brakeman turn's run does not record it" : 'no model named: the agent chooses, or its arguments do'
   return { account, model, atLaunch: named === '' }
 }
 
@@ -161,8 +239,8 @@ export function cleanFolder(p: string): string {
 /**
  * Brakeman's Account choice (docs/plans/capacity.md, PR-7): its configuration keeps a folder, so each item's value is one: the agent's
  * own login (saved as no folder), then each account of its adapter not retired, by its label. The saved folder is matched to an account
- * as the server matches it, as far as a page can (cleanFolder). One no listed account holds is shown as it is, "a folder not in Accounts"
- * (the server binds it `unlisted`), and a retired account's by its label, retired, with `retired` its label: the server refuses a turn on
+ * as the server matches it, as far as a page can (cleanFolder). One no listed account holds by that path is shown as it is, "not in
+ * Accounts by this path" (a page cannot follow a link: the server binds it `unlisted` unless a link leads to an account's folder), and a retired account's by its label, retired, with `retired` its label: the server refuses a turn on
  * it. No items for an adapter the accounts do not list.
  */
 export function brakemanAccount(doc: AccountsDocLike | null | undefined, adapter: string | undefined, folder: string): { items: AccountChoice[]; value: string; unlisted: boolean; retired: string } {
@@ -171,6 +249,6 @@ export function brakemanAccount(doc: AccountsDocLike | null | undefined, adapter
   const held = folder ? mine.find((a) => cleanFolder(a.folder!) === cleanFolder(folder)) : undefined
   const value = held?.folder ?? (folder || OWN_LOGIN)
   const items: AccountChoice[] = !ad ? [] : [{ value: OWN_LOGIN, label: 'Default login' }, ...mine.filter((a) => !a.retired).map((a) => ({ value: a.folder!, label: a.label }))]
-  if (ad && folder && !items.some((i) => i.value === value)) items.push({ value, label: held ? `${held.label} (retired)` : `${folder} (a folder not in Accounts)` })
+  if (ad && folder && !items.some((i) => i.value === value)) items.push({ value, label: held ? `${held.label} (retired)` : `${folder} (not in Accounts by this path)` })
   return { items, value, unlisted: !!doc && !!folder && !held, retired: held?.retired ? held.label : '' }
 }

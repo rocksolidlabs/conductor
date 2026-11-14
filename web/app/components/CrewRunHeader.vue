@@ -83,6 +83,8 @@ const named = ref<{ plan: string; members?: Record<string, string>; error?: stri
 async function readNamed() {
   const plan = props.run?.ticket?.plan
   if (!plan || (named.value?.plan === plan && named.value.members)) return
+  // Under way: the Logins say so, and no line passes for complete until it answers.
+  named.value = { plan }
   try {
     const p = await dispatchApi.plan(plan)
     if (props.run?.ticket?.plan === plan) named.value = { plan, members: namedAccounts(p.body.crew.members) }
@@ -92,6 +94,8 @@ async function readNamed() {
 }
 watch(() => props.run?.ticket?.plan, readNamed, { immediate: true })
 const namedNow = computed(() => (named.value && named.value.plan === props.run?.ticket?.plan ? named.value : null))
+/** The revision's read is under way: the run was launched from a ticket's, and it has neither answered nor failed. */
+const namedReading = computed(() => !!props.run?.ticket?.plan && !namedNow.value?.members && !namedNow.value?.error)
 const logins = computed(() => (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, namedNow.value?.members?.[m.name], props.run?.class === 'brakeman') })))
 
 const stopped = computed(() => !!props.run?.stoppedAt)
@@ -114,7 +118,9 @@ const addError = ref('')
 const runNames = computed(() => props.run?.members.map((m) => m.name) ?? [])
 // The run's people's names, which the server refuses for a member added to the run (a person is never a member).
 const peopleNames = computed(() => props.run?.people?.map((p) => p.name) ?? [])
-const addInvalid = computed(() => !!addMemberProblem(member.value[0], runNames.value, peopleNames.value))
+// The table's own check of the account it marks refused holds Add too.
+const addTable = ref<{ accountProblem: string } | null>(null)
+const addInvalid = computed(() => !!addMemberProblem(member.value[0], runNames.value, peopleNames.value, addTable.value?.accountProblem))
 
 async function openAdd() {
   addError.value = ''
@@ -262,7 +268,8 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <template #content>
             <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
               <li v-if="namedNow?.error" class="text-warning [overflow-wrap:anywhere]" data-run-logins-unread>Plan revision {{ run?.ticket?.planN }} could not be read, so which member took the default at the launch is not said: {{ namedNow.error }}</li>
-              <li v-for="l in logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
+              <li v-if="namedReading" class="flex items-center gap-1.5 text-muted" data-run-logins-reading><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Reading plan revision {{ run?.ticket?.planN }}: each member's login is said once it is read.</li>
+              <li v-for="l in namedReading ? [] : logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
                 <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
                 <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>
                 <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
@@ -338,7 +345,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" single />
+        <CrewMembersTable v-if="member.length" ref="addTable" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>

@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
+  LIMIT_WORDS,
   WARN_PERCENT,
   WARN_WORDS,
   accountChoices,
+  capacityStatements,
   compactWords,
+  statementWords,
   accountOfLaunch,
   asCapacityEvent,
   capacityHostWords,
@@ -287,7 +291,62 @@ describe("the compact panel's words (the crew's sheet, a ticket's launch, Settin
   const ok = (windows: CapacityWindow[], over: Partial<CapacityView> = {}) => view({ windows, readAt: read, account: { id: 'default', plan: 'max' }, ...over })
 
   it('says the plan, the windows and how fresh, with no warning below it all', () => {
-    expect(compactWords(ok([weekly(40)]), NOW)).toEqual({ line: 'Claude Max · Weekly, all models 40%', fresh: 'Read 3 minutes ago', warning: null, host: '' })
+    expect(compactWords(ok([weekly(40)]), NOW)).toMatchObject({ line: 'Claude Max · Weekly, all models 40%', fresh: 'Read 3 minutes ago', warning: null, host: '' })
+  })
+
+  it("says every statement of the full panel, in its line or its details, for every state and every field the view can hold", () => {
+    // The view's fields as docs/protocol.md (Capacity) and CapacityView hold them, each in each of its forms.
+    const reset = new Date(NOW + 5 * 86_400_000).toISOString()
+    const states = ['ok', 'reading', 'never_read', 'signed_out', 'key_paid', 'unqualified', 'error', 'unsupported', 'not_installed', 'remote', 'env_set', 'unlisted', 'not_owner', 'a_state_to_come'] as const
+    const fields: Array<Partial<CapacityView>> = [
+      {},
+      { words: "the agent's environment changed since this reading", fresh: 'stale' },
+      { windows: [{ ...weekly(92, 'warning'), resetsAt: reset }, { ...weekly(30), kind: 'session', name: 'Five hours', limit: 'x' }] },
+      { windows: [{ ...weekly(95, 'critical'), resetsAt: reset }] },
+      { windows: [weekly(10)], limits: { source: 'provider', reached: 'rate_limit_reached' } },
+      { limits: { source: 'provider', spendControl: true, ordinaryAllowed: false } },
+      { limits: { source: 'provider', spendControl: false, ordinaryAllowed: true } },
+      { credits: [{ source: 'provider', kind: 'extra_usage', enabled: true, used: '12', limit: '50', currency: 'USD' }, { source: 'provider', kind: 'credits', balance: '1250' }] },
+      { counts: { source: 'conductor', estimate: true, running: 2, started5h: 5, started7d: 9, since: read } },
+      { counts: undefined },
+      { readBy: { program: 'Codex', version: '0.164.0', qualified: '0.163.0' } },
+      { fresh: 'reset_passed' },
+      { fresh: 'none', readAt: undefined },
+      { host: { kind: 'undetermined', words: "this server's login: if boxcar takes the run, its usage there is unknown" } },
+      { host: { kind: 'remote' } },
+      { entryLogin: 'ANTHROPIC_BASE_URL' },
+      { account: { id: 'a-aaaaaaaaaaaa', label: 'Work', retired: true, plan: 'max' } },
+      { model: { chosen: 'opus', words: 'opus' } },
+      { agent: { id: 'codex', adapter: 'codex' }, account: { id: 'default', plan: 'pro' } },
+    ]
+    for (const state of states) {
+      for (const f of fields) {
+        const v = ok([], { state, ...f })
+        const c = compactWords(v, NOW)
+        const compact = [c.line, c.fresh, c.warning?.words ?? '', c.host, ...c.details].join('\n')
+        for (const s of capacityStatements(v, NOW)) expect(compact, `${state} ${JSON.stringify(f)}: ${s.kind}`).toContain(statementWords(s))
+      }
+    }
+  })
+
+  it("puts the server's words beside a reading's figures, each reset in the details, and a limit's warning under 90%", () => {
+    const words = "the agent's environment changed since this reading"
+    const reset = new Date(NOW + 5 * 86_400_000 + 3_600_000).toISOString()
+    const stale = compactWords(ok([{ ...weekly(92, 'warning'), resetsAt: reset }], { words, fresh: 'stale' }), NOW)
+    expect(stale.line).toBe(`Claude Max · Weekly, all models 92% · ${words}`)
+    expect(stale.details).toContain(windowWords({ ...weekly(92, 'warning'), resetsAt: reset }, NOW))
+    expect(stale.details.join('\n')).toContain(', in 5 days')
+    const limit = compactWords(ok([weekly(10)], { limits: { source: 'provider', reached: 'rate_limit_reached' } }), NOW)
+    expect(limit.warning).toEqual({ words: LIMIT_WORDS, color: 'error' })
+    expect(limit.details).toContain("The provider's figures: Limit reached: rate limit reached")
+    expect(warns(view({ windows: [weekly(10)], limits: { source: 'provider', ordinaryAllowed: false } }))).toBe(true)
+  })
+
+  it('draws the full panel only from the statements: no window, figure or warning words of its own', () => {
+    const src = readFileSync(new URL('../components/CapacityPanel.vue', import.meta.url), 'utf8')
+    for (const own of ['windowWords', 'creditWords', 'limitsWords', 'countsWords', 'WARN_WORDS', 'freshnessWords', 'capacityHostWords', 'planWords']) expect(src, own).not.toContain(own)
+    expect(src).toContain('capacityStatements(')
+    expect(src).toContain('<details v-if="brief.details.length"')
   })
 
   it("warns as the full panel does, at the provider's warning or critical severity or at 90% used, coloured by the worst severity", () => {

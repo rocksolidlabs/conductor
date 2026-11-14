@@ -5,7 +5,7 @@ import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAf
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
-import type { SheetTarget } from '~/utils/crewLaunch'
+import { SheetConfirmation, type SheetTarget } from '~/utils/crewLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -443,15 +443,24 @@ function launchNamed() {
  * A launch asks first (docs/plans/capacity.md, PR-7): every launch of a crew, from this page or the app's palette, is asked through
  * useCrewLaunch and opens the sheet, which lists each member with its agent, model, account and a line of its usage; only its Launch
  * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
- * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it.
+ * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
+ * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most.
  */
 const crewLaunch = useCrewLaunch()
 const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string }>({ open: false, target: null })
+const confirmation = new SheetConfirmation()
 function openSheet(id: string, label: string) {
   const key = selectedKey.value
   if (!id && (key === undefined || !draft.value)) return
   const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
+  confirmation.opened()
   Object.assign(sheet, { open: true, target, at: key })
+}
+/** The crew the sheet read is gone: the sheet closes, and the page says so. */
+function sheetGone() {
+  const t = sheet.target
+  sheet.open = false
+  toast.add({ title: 'The crew is gone', description: `${t && 'id' in t ? t.id : 'It'} is no longer saved on the server: nothing was launched.`, icon: 'i-lucide-circle-x', color: 'warning' })
 }
 watch(selectedKey, (k) => {
   if (k !== sheet.at) sheet.open = false
@@ -465,11 +474,16 @@ watch(
   },
   { immediate: true },
 )
+/** The sheet's Launch: its confirmation is taken before anything is awaited, so a second click, or one while it closes, starts nothing. */
 async function launchFromSheet(read: CrewInfo | null) {
   const t = sheet.target
-  if (!t || sheet.at !== selectedKey.value) return
-  await launch(t, read)
-  sheet.open = false
+  if (!t || sheet.at !== selectedKey.value || !confirmation.take(sheet.open)) return
+  try {
+    await launch(t, read)
+  } finally {
+    sheet.open = false
+    confirmation.done()
+  }
 }
 
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (deleteOpen.value = true) }]])
@@ -558,7 +572,10 @@ watch(
   () => admin.token.value,
   () => {
     // Another token may be another server: nothing typed or read under the
-    // old one stays, and neither does a view link held from it.
+    // old one stays, and neither does a view link held from it, a launch
+    // asked or a sheet drawn from a copy read under it.
+    sheet.open = false
+    crewLaunch.asked.value = null
     drafts.value = {}
     crews.value = []
     full.value = {}
@@ -787,7 +804,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
-      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :agents="agents" :yolo-default="yoloDefault" :launching="launchingKey !== undefined" @launch="launchFromSheet" />
+      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">
