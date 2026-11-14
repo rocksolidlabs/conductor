@@ -502,13 +502,13 @@ func rawPNG(w, h int, colourType byte, interlaced bool, px func(x, y int) []byte
 
 // screenshotKinds are a 5 by 3 screenshot of each kind of pixel: 8 bits
 // and 16 bits a channel, a palette and grey, each with and without
-// transparency (grey's tRNS chunk put in by hand), grey with an alpha
-// channel, and a 9 by 9 interlaced grey one.
+// transparency (grey's tRNS chunk put in by hand), 16-bit grey, grey
+// with an alpha channel, and a 9 by 9 interlaced grey one.
 func screenshotKinds(t *testing.T) map[string][]byte {
 	t.Helper()
 	r := image.Rect(0, 0, 5, 3)
 	rgba, nrgba, rgba64, nrgba64 := image.NewRGBA(r), image.NewNRGBA(r), image.NewRGBA64(r), image.NewNRGBA64(r)
-	gray := image.NewGray(r)
+	gray, gray16 := image.NewGray(r), image.NewGray16(r)
 	pal := color.Palette{color.NRGBA{10, 20, 30, 255}, color.NRGBA{200, 10, 10, 255}, color.NRGBA{0, 90, 0, 255}}
 	paletted, palettedAlpha := image.NewPaletted(r, pal), image.NewPaletted(r, append(slices.Clone(pal), color.NRGBA{0, 0, 0, 0}))
 	for x := range 5 {
@@ -519,6 +519,7 @@ func screenshotKinds(t *testing.T) map[string][]byte {
 			rgba64.Set(x, y, color.RGBA64{uint16(v) * 257, 1000 * uint16(x), 3000 * uint16(y), 0xffff})
 			nrgba64.Set(x, y, color.NRGBA64{uint16(v)*257 + 1, 1000 * uint16(x), 3000 * uint16(y), 12000 * uint16(x+y)})
 			gray.SetGray(x, y, color.Gray{v})
+			gray16.SetGray16(x, y, color.Gray16{uint16(v)*257 + uint16(13*x+7*y)})
 			paletted.SetColorIndex(x, y, uint8((x+y)%3))
 			palettedAlpha.SetColorIndex(x, y, uint8((x+y)%4))
 		}
@@ -527,7 +528,7 @@ func screenshotKinds(t *testing.T) map[string][]byte {
 	return map[string][]byte{"8-bit": encodedPNG(t, rgba), "8-bit, transparent": encodedPNG(t, nrgba),
 		"16-bit": encodedPNG(t, rgba64), "16-bit, transparent": encodedPNG(t, nrgba64),
 		"paletted": encodedPNG(t, paletted), "paletted, transparent": encodedPNG(t, palettedAlpha),
-		"grey": encodedPNG(t, gray), "grey, transparent": grayAlpha,
+		"grey": encodedPNG(t, gray), "grey, transparent": grayAlpha, "16-bit grey": encodedPNG(t, gray16),
 		"grey with alpha": rawPNG(5, 3, 4, false, func(x, y int) []byte { return []byte{uint8(40*x + 60*y + 1), uint8(50*x + 10*y)} }),
 		"interlaced":      rawPNG(9, 9, 0, true, func(x, y int) []byte { return []byte{uint8(25*x + 3*y)} })}
 }
@@ -592,9 +593,9 @@ func keptAsRGBA8(t *testing.T, name string, b []byte) {
 // and no chunk but the pixels' own, decoding to the upload's pixels at its
 // size; the same upload sent again is answered by the first's receipt.
 // Every kind of pixel (8 and 16 bits, a palette, grey, each with and
-// without transparency, grey with alpha, an interlaced one) is kept as
-// 8-bit RGBA, pixel for pixel at 8 bits, and the image's route and its
-// hash are the kept file's.
+// without transparency, 16-bit grey, grey with alpha, an interlaced one)
+// is kept as 8-bit RGBA, pixel for pixel at 8 bits, and the image's route
+// and its hash are the kept file's.
 func TestWhatIsKeptOfAScreenshotIsTheServersEncoding(t *testing.T) {
 	p := previewEnv(t, nil)
 	l := p.label(t)
@@ -1409,27 +1410,28 @@ func (h *madeLater) Read(b []byte) (int, error) {
 	return h.rest.Read(b)
 }
 
-// A create, an edit and a delete whose bodies are held open while a tree
-// starts, then finished with an operation's id that holds 8 characters of
-// that tree's secret: each is refused 400 in fixed words, and no file of
-// the store, the write-ahead file among them, holds 8 characters in a row
-// of the secret. Each request is sent with Expect: 100-continue, so its
-// body is first read once the server's handler reads it.
-func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
-	p := previewEnv(t, nil)
-	l := p.label(t)
-	id := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+// heldWrite is a capture's write sent with its body held (madeLater):
+// build makes its body for an operation's id, and done is its answer.
+type heldWrite struct {
+	name  string
+	body  *madeLater
+	build func(opID string) []byte
+	done  chan labelAnswer
+}
+
+// holdCaptureWrites sends, as the admin, a create of b, an edit of the
+// capture id (edit) and its delete (del), in that order, each with Expect:
+// 100-continue, so that its body is first read once the server's handler
+// reads it, and returns once the handler of each is reading it. b, edit
+// and del are read when a write's build is called, so a test can change
+// them in between. hung only bounds a hang.
+func holdCaptureWrites(t *testing.T, p *previewed, hung context.Context, id string, b *captureCreateBody, edit, del map[string]any) []heldWrite {
+	t.Helper()
 	client := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: 10 * time.Minute}}
 	t.Cleanup(client.CloseIdleConnections)
 	const boundary = "a-held-capture"
-	b := p.body(t, l, button())
-	type held struct {
-		body  *madeLater
-		build func(opID string) []byte
-		done  chan labelAnswer
-	}
-	send := func(path, ct string, build func(opID string) []byte) held {
-		h := held{&madeLater{reading: make(chan struct{}), made: make(chan []byte, 1)}, build, make(chan labelAnswer, 1)}
+	send := func(name, path, ct string, build func(opID string) []byte) heldWrite {
+		h := heldWrite{name, &madeLater{reading: make(chan struct{}), made: make(chan []byte, 1)}, build, make(chan labelAnswer, 1)}
 		t.Cleanup(func() {
 			select {
 			case h.body.made <- nil:
@@ -1437,7 +1439,7 @@ func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
 			}
 		})
 		go func() {
-			req, err := http.NewRequest("POST", p.e.http.URL+path, h.body)
+			req, err := http.NewRequestWithContext(hung, "POST", p.e.http.URL+path, h.body)
 			if err != nil {
 				h.done <- labelAnswer{err: err}
 				return
@@ -1462,8 +1464,8 @@ func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
 			return encodeNoHTML(t, v)
 		}
 	}
-	requests := map[string]held{
-		"the create": send("/api/captures", "multipart/form-data; boundary="+boundary, func(opID string) []byte {
+	writes := []heldWrite{
+		send("the create", "/api/captures", "multipart/form-data; boundary="+boundary, func(opID string) []byte {
 			b.OpID = opID
 			var buf bytes.Buffer
 			mw := multipart.NewWriter(&buf)
@@ -1475,24 +1477,77 @@ func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
 			mw.Close()
 			return buf.Bytes()
 		}),
-		"the edit": send("/api/captures/"+id+"/edit", "application/json",
-			jsonOf(map[string]any{"expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}})),
-		"the delete": send("/api/captures/"+id+"/delete", "application/json", jsonOf(map[string]any{})),
+		send("the edit", "/api/captures/"+id+"/edit", "application/json", jsonOf(edit)),
+		send("the delete", "/api/captures/"+id+"/delete", "application/json", jsonOf(del)),
 	}
-	for _, h := range requests {
-		<-h.body.reading
+	for _, h := range writes {
+		within(t, hung, h.name+"'s body read", h.body.reading)
 	}
+	return writes
+}
+
+// A create, an edit and a delete whose bodies are held open while a tree
+// starts, then finished with an operation's id that holds 8 characters of
+// that tree's secret: each is refused 400 in fixed words, and no file of
+// the store, the write-ahead file among them, holds 8 characters in a row
+// of the secret.
+func TestAnIDIsJudgedWithTheSecretsHeldOnceItsBodyIsRead(t *testing.T) {
+	p := previewEnv(t, nil)
+	l := p.label(t)
+	id := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+	hung, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer stop()
+	b := p.body(t, l, button())
+	writes := holdCaptureWrites(t, p, hung, id, &b,
+		map[string]any{"expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}}, map[string]any{})
 	q := p.another(t)
 	if !slices.Contains(p.e.srv.runs.TreeSecrets(), q.secret) {
 		t.Fatal("the new tree's secret is not held")
 	}
-	for name, h := range requests {
-		h.body.made <- h.build("op-" + strings.ToUpper(q.secret[8:16]) + "-" + name[4:])
-		a := <-h.done
+	for _, h := range writes {
+		h.body.made <- h.build("op-" + strings.ToUpper(q.secret[8:16]) + "-" + h.name[4:])
+		a := within(t, hung, h.name+"'s answer", h.done)
 		var out map[string]any
 		_ = json.Unmarshal(a.body, &out)
 		if got := fmt.Sprintf("%d %s %s", a.status, codeOf(out), apiMessage(out)); a.err != nil || got != "400 invalid_request opId holds a tree's secret" {
-			t.Errorf("%s: %s %v", name, got, a.err)
+			t.Errorf("%s: %s %v", h.name, got, a.err)
+		}
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), q.secret)
+}
+
+// The same reading serves the scrub: a create, an edit and a delete whose
+// bodies are held open while a tree starts, then finished with an
+// ordinary operation's id and a display name and notes that each hold 12
+// characters of that tree's secret, are each taken (201, 200, 200), and
+// no file of the store, the write-ahead file among them, and no answer
+// holds 8 characters in a row of the secret.
+func TestABodyIsScrubbedWithTheSecretsHeldOnceItIsRead(t *testing.T) {
+	p := previewEnv(t, nil)
+	l := p.label(t)
+	id := created(t, p.e, p.body(t, l, button()), nil)["id"].(string)
+	hung, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer stop()
+	b := p.body(t, l, button())
+	edit, del := map[string]any{"expectedRev": 1}, map[string]any{}
+	writes := holdCaptureWrites(t, p, hung, id, &b, edit, del)
+	q := p.another(t)
+	if !slices.Contains(p.e.srv.runs.TreeSecrets(), q.secret) {
+		t.Fatal("the new tree's secret is not held")
+	}
+	part := q.secret[8:20]
+	b.ByName, b.Annotations[0].Note = "Nate "+part, "Broken by "+part
+	edit["byName"], edit["annotations"] = "Nate "+part, []map[string]any{{"k": 1, "kind": "element", "note": "Seen by " + part}}
+	del["byName"] = "Nate " + part
+	want := map[string]int{"the create": http.StatusCreated, "the edit": http.StatusOK, "the delete": http.StatusOK}
+	for _, h := range writes {
+		h.body.made <- h.build(fmt.Sprintf("held-%d", captureOps.Add(1)))
+		a := within(t, hung, h.name+"'s answer", h.done)
+		if a.err != nil || a.status != want[h.name] {
+			t.Errorf("%s: %d %s %v", h.name, a.status, a.body, a.err)
+		}
+		if run := sharedRun(a.body, q.secret); run != "" {
+			t.Errorf("%s: the answer holds %q of the tree's secret", h.name, run)
 		}
 	}
 	keptNoPart(t, p.e.srv.store.Dir(), q.secret)
@@ -1645,10 +1700,12 @@ func TestAKeptFilePastItsBoundIsRefused(t *testing.T) {
 // (inScreenshotGate), the second is seen waiting at the gate, its decode
 // not begun; both are kept once the first goes on, the decode, the
 // conversion and the encoding of each between its "decoding" and its
-// "kept".
+// "kept". A bound of the test's own only bounds a hang.
 func TestScreenshotsAreKeptOneAtATime(t *testing.T) {
 	p := previewEnv(t, nil)
 	l := p.label(t)
+	hung, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer stop()
 	var mu sync.Mutex
 	var steps []string
 	held, goOn := make(chan struct{}), make(chan struct{})
@@ -1683,12 +1740,14 @@ func TestScreenshotsAreKeptOneAtATime(t *testing.T) {
 		return done
 	}
 	one := post(pngOf(t, 3, 3))
-	<-held
+	within(t, hung, "the first's hold", held)
 	two := post(screenshotKinds(t)["paletted"])
 	for !goroutineIn("(*Server).keptScreenshot") {
 		select {
 		case a := <-two:
 			t.Fatalf("the second was answered while the first was held: %d %s", a.status, a.body)
+		case <-hung.Done():
+			t.Fatal("the second is not seen waiting at the gate: hung")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1697,7 +1756,7 @@ func TestScreenshotsAreKeptOneAtATime(t *testing.T) {
 	}
 	release()
 	for name, done := range map[string]<-chan labelAnswer{"the first": one, "the second": two} {
-		if a := <-done; a.err != nil || a.status != http.StatusCreated {
+		if a := within(t, hung, name+"'s answer", done); a.err != nil || a.status != http.StatusCreated {
 			t.Errorf("%s: %d %s %v", name, a.status, a.body, a.err)
 		}
 	}
