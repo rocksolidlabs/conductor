@@ -33,10 +33,12 @@ func newRepo(t *testing.T) string {
 	return dir
 }
 
-// runGit runs git -C dir args and returns its output; a failure fails the test.
+// runGit runs git -C dir args and returns its output; a failure fails the
+// test. Its automatic maintenance is off, so that no git of it (from Git
+// 2.5x on, a commit's detached maintenance run) outlives the call.
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
