@@ -604,7 +604,8 @@ const relativeWords = "this agent's command is a path relative to the folder a s
 // identity probe does: a program it finds installed, never a command given
 // as a relative path, which is not looked up (relativePath). A view of any
 // other is not_installed, the listing leaves it out, and no read runs it.
-// held (a turn's read) takes what the look-ups hold (lookupCache.held).
+// held (a turn's read of capacity) takes what the look-ups hold
+// (lookupCache.held).
 func (s *Server) capacityReadable(ctx context.Context, agent catalog.Agent, held bool) bool {
 	switch {
 	case len(agent.Command) == 0 || relativePath(agent.Command[0]):
@@ -636,8 +637,9 @@ func notOwnerWords(agent catalog.Agent, why string) string {
 type capacityQuery struct {
 	account, model, launch string
 	yolo                   bool
-	// held is a turn's read: the program's look-ups are asked only what
-	// they hold (lookupCache.held), none started and none waited for.
+	// held is a turn's read of capacity: the program's look-ups are asked
+	// only what they hold (lookupCache.held), none started and none waited
+	// for.
 	held bool
 }
 

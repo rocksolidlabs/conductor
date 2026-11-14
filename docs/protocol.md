@@ -5319,8 +5319,9 @@ read starts none (`POST /api/capacity/read` refuses a turn's token `401`),
 and it looks the readings up without asking them, so a turn's read, of one
 view or of the listing, moves no key's place among the readings (which
 key the next read drops past the readings' bound); the admin's read asks
-as before. A turn's read starts no look-up of a program and waits for
-none: whether an agent's program is installed, and a version taken from
+as before. A turn's read of capacity starts no look-up of a program and
+waits for none (its other reads look programs up as before: the guide's
+host section within its own wait of at most 0.5 s): whether an agent's program is installed, and a version taken from
 its identity, are what the server's look-ups already hold, whatever
 their age; with nothing held the agent counts as installed and its view
 carries no version that only a look-up would give. A view that shows a reading carries its ref, `capacity:<agent>/<account>@<readAt>`,

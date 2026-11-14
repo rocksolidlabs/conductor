@@ -241,8 +241,9 @@ func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[stri
 	return answers
 }
 
-// held is what the cache holds of program, whatever the answer's age, as
-// warmPaths answers it: it starts no lookup and waits for none. A program
+// held is what the cache holds of program, whatever the answer's age, in
+// the shape warmPaths answers: it starts no lookup and waits for none (a
+// turn's read of capacity asks it; warmPaths itself looks programs up). A program
 // it holds nothing of counts as installed, as for a lookup that did not
 // answer in time, with no path.
 func (c *lookupCache) held(program string) lookupAnswer {

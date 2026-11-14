@@ -129,7 +129,10 @@ func TestCountsApartFromProvider(t *testing.T) {
 
 // declaredStates is every State constant of a string the package declares,
 // in any of its files, read from their source: the name of each by its
-// value.
+// value. A State variable, and a State constant given anything but a
+// string literal (another expression, or no value, repeating the line
+// above it), fails: this reading of the source does not see its value, so
+// no state is declared that way.
 func declaredStates(t *testing.T) map[string]string {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -147,22 +150,28 @@ func declaredStates(t *testing.T) map[string]string {
 		}
 		for _, d := range f.Decls {
 			g, ok := d.(*ast.GenDecl)
-			if !ok || g.Tok != token.CONST {
+			if !ok || (g.Tok != token.CONST && g.Tok != token.VAR) {
 				continue
 			}
 			for _, sp := range g.Specs {
 				vs := sp.(*ast.ValueSpec)
 				for i, name := range vs.Names {
-					if i >= len(vs.Values) || !strings.HasPrefix(name.Name, "State") {
+					if !strings.HasPrefix(name.Name, "State") {
 						continue
 					}
-					if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-						s, err := strconv.Unquote(lit.Value)
-						if err != nil {
-							t.Fatal(err)
-						}
-						states[s] = file + ": " + name.Name
+					var lit *ast.BasicLit
+					if i < len(vs.Values) && g.Tok == token.CONST {
+						lit, _ = vs.Values[i].(*ast.BasicLit)
 					}
+					if lit == nil || lit.Kind != token.STRING {
+						t.Errorf("%s: %s %s is not a constant given a string literal: a state is declared so", file, g.Tok, name.Name)
+						continue
+					}
+					s, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					states[s] = file + ": " + name.Name
 				}
 			}
 		}
@@ -172,7 +181,8 @@ func declaredStates(t *testing.T) map[string]string {
 
 // TestEveryStateHasWords: the states are their one list, States, each with
 // its words; a State constant the package declares anywhere that is not in
-// the list fails.
+// the list fails, and so does a State constant or variable given anything
+// but a string literal (declaredStates).
 func TestEveryStateHasWords(t *testing.T) {
 	states := States()
 	if len(states) < 13 {
