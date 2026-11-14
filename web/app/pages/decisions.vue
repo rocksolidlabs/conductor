@@ -3,6 +3,7 @@ import { refRoute } from '~/utils/brakeman'
 import { relativeTime } from '~/utils/sessions'
 import { qrSvg } from '~/utils/qr'
 import {
+  INBOX_ROW_CLASS,
   decisionIdOf,
   decisionLinkTargets,
   inboxEmpty,
@@ -42,8 +43,12 @@ const acts = useInboxActs()
 /** The run page's question for Accept anyway and Cancel. */
 const commands = useTaskCommands(() => '')
 
+/** The workbench token: the page asks for it as the workbench's other pages do (a pass held without one never reaches it: decide.global.ts). */
+const admin = useWorkbenchToken()
+
 let stopTracking: (() => void) | undefined
 onMounted(() => {
+  if (!admin.hasToken.value) admin.needsToken.value = true
   live.start()
   inbox.start()
   stopTracking = inbox.live.track()
@@ -314,15 +319,14 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             <li v-for="s in sections.open" :key="s.ref">
               <button
                 type="button"
-                class="flex min-h-11 w-full flex-col gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50"
-                :class="openRef === s.ref ? 'border-primary bg-elevated/50' : 'border-default'"
+                :class="[INBOX_ROW_CLASS, openRef === s.ref ? 'border-primary bg-elevated/50' : 'border-default']"
                 :aria-current="openRef === s.ref ? 'true' : undefined"
                 :data-inbox-row="s.ref"
                 @click="open(s.ref)"
               >
                 <span class="flex items-baseline justify-between gap-2">
                   <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
-                  <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
+                  <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                 </span>
                 <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
                 <span class="flex flex-wrap gap-1">
@@ -341,8 +345,7 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
               <li v-for="s in sections.tracking" :key="s.ref">
                 <button
                   type="button"
-                  class="flex min-h-11 w-full flex-col gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50"
-                  :class="openRef === s.ref ? 'border-primary bg-elevated/50' : 'border-default'"
+                  :class="[INBOX_ROW_CLASS, openRef === s.ref ? 'border-primary bg-elevated/50' : 'border-default']"
                   :aria-current="openRef === s.ref ? 'true' : undefined"
                   :data-inbox-row="s.ref"
                   data-inbox-tracking
@@ -350,7 +353,7 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
                 >
                   <span class="flex items-baseline justify-between gap-2">
                     <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
-                    <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
+                    <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                   </span>
                   <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
                   <span class="flex flex-wrap gap-1"><UBadge label="Recorded" color="neutral" variant="subtle" size="sm" /></span>

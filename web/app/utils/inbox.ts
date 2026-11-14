@@ -411,6 +411,12 @@ export function decisionIdOf(ref: string): string {
 }
 
 /**
+ * A row of a decision list (the page's open and answered rows, a decision link's): a column whose lines take the row's width
+ * (`items-stretch`: a button starts its items at the start), so a long title is cut with an ellipsis and its waiting time stays in view.
+ */
+export const INBOX_ROW_CLASS = 'flex min-h-11 w-full flex-col items-stretch gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50'
+
+/**
  * The list's two parts, in the list's order: what needs a person now, and the DR1 records answered and not yet applied ("Answered, not
  * yet applied", from the server's list: they stay there until DR1 gives them a final state, whatever any browser keeps).
  */

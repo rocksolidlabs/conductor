@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
 import { provide } from 'vue'
-import { recentBadge, trackKey } from '~/utils/inbox'
+import { INBOX_ROW_CLASS, recentBadge, trackKey } from '~/utils/inbox'
 import { linkRefAccess, REF_ACCESS } from '~/utils/refAccess'
 import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
 
@@ -57,7 +57,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
       <div v-else-if="!loaded && !error" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading what waits…</div>
       <ul v-if="items.length" class="flex flex-col gap-2">
         <li v-for="s in items" :key="s.ref">
-          <button type="button" class="flex min-h-11 w-full flex-col gap-1 rounded-md border border-default px-3 py-2 text-left transition-colors hover:bg-elevated/50" :data-inbox-row="s.ref" @click="open(s.ref)">
+          <button type="button" :class="[INBOX_ROW_CLASS, 'border-default']" :data-inbox-row="s.ref" @click="open(s.ref)">
             <span class="flex items-baseline justify-between gap-2">
               <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
               <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
