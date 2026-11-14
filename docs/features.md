@@ -5055,6 +5055,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
     plan revision and time) and the builder's session by its name
     (source, host, project, worktree and time).
 
+  The maintainers accepted this run on 2026-11-14 as the observation of
+  R1's workflow, with the batched review as it was made.
+
   Not observed, open: the desktop notification (no desktop app in the
   run); the rest of the decision page's by-hand list (a retry and a
   permission question answered from the phone, the refusal of a response
