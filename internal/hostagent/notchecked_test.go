@@ -59,11 +59,16 @@ func TestRegistrationNotCheckedIsTriedAgain(t *testing.T) {
 	if again, _ := refused.Retryable(); again {
 		t.Fatal("a 401 is tried again")
 	}
-	// Owed for a withheld credential: a 401's alone.
-	if (&RefusedError{Status: http.StatusServiceUnavailable, Withheld: true}).CredentialWithheld() {
-		t.Fatal("a 503 is owed as a withheld credential")
-	}
-	if !(&RefusedError{Status: http.StatusUnauthorized, Withheld: true}).CredentialWithheld() {
-		t.Fatal("a withheld credential's 401 is not owed")
+	// A credential withheld is the registration's having presented none,
+	// whatever the refusal's status; the first registration waits on a
+	// withheld 401's alone (withheldRefusal).
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		r := &RefusedError{Status: status, Withheld: true}
+		if !r.CredentialWithheld() || (&RefusedError{Status: status}).CredentialWithheld() {
+			t.Errorf("%d: a credential withheld is not the registration's having presented none", status)
+		}
+		if withheldRefusal(r) != (status == http.StatusUnauthorized) {
+			t.Errorf("%d: the first registration's wait for a withheld credential", status)
+		}
 	}
 }

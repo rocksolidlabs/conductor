@@ -93,6 +93,26 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
+// ownToken says tok is a live token of the server's own past the chain's
+// (tokenPrincipal): the agent token of a session that has not ended, a
+// Brakeman turn's among them, and on a switchyard a hosted session's,
+// compared as agentTokenOK compares it, noting nothing. Every session is
+// looked at: one comparison each.
+func (s *Server) ownToken(tok string) bool {
+	own := false
+	s.registry.Each(func(d session.Driver) {
+		var held bool
+		switch drv := d.(type) {
+		case *session.Local:
+			held = drv.HoldsAgentToken(tok)
+		case *signal.HostedSession:
+			held = drv.AgentTokenOK(tok)
+		}
+		own = own || held && !d.Info().Status.Ended()
+	})
+	return own
+}
+
 // reportTarget finds the session a report is about. A session whose launch
 // is under way, its process running but the registry not holding it yet,
 // is waited for (awaitLaunch): an agent's first report comes as its

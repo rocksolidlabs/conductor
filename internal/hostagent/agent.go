@@ -2094,12 +2094,12 @@ type RefusedError struct {
 	Withheld bool
 }
 
-// CredentialWithheld is Withheld on a 401: a server's publication refused
-// so is owed, and the next Share publishes it. A 503 is no refusal of a
-// credential (Retryable).
-func (e *RefusedError) CredentialWithheld() bool {
-	return e.Withheld && e.Status == http.StatusUnauthorized
-}
+// CredentialWithheld is Withheld, whatever the refusal's status: a
+// server's publication refused so is owed once it ends without a
+// publication (at once on a 401, once its tries end on a 429 or a 503),
+// and the next Share publishes it. conductor host's first registration
+// waits on a withheld 401 alone (withheldRefusal).
+func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
 
 func (e *RefusedError) Error() string {
 	if e.Withheld && e.Status == http.StatusUnauthorized {
@@ -2119,9 +2119,12 @@ func (e *RefusedError) Error() string {
 // limit of live sessions per address (round 14: a crew launched from a home
 // running other sessions met the switchyard's limits and was never
 // published), and 503, a registration the rendezvous could not serve for
-// now (its credential not checked yet among them), which is a dial that
-// failed, never a refused credential; and how long to wait first, when the
-// rendezvous said.
+// now (its credential not checked yet among them); and how long to wait
+// first, when the rendezvous said. A server's publication tries a 503
+// again as it tries a 429 (its bounded tries, its backoff, a Retry-After
+// within its cap); conductor host's first registration fails at once on
+// one, as on a dial that failed, and a re-registration tries it again
+// with its backoff, as it tries a dial that failed.
 func (e *RefusedError) Retryable() (bool, time.Duration) {
 	return e.Status == http.StatusTooManyRequests || e.Status == http.StatusServiceUnavailable, e.RetryAfter
 }
