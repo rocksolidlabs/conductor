@@ -277,7 +277,7 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 			element(n).Ancestors = slices.Repeat([]Ancestor{{Tag: "div"}}, k)
 		}},
 		{"an ancestor, as encoded", MaxAncestor, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
-			element(n).Ancestors = []Ancestor{{Tag: rep("a", k-len(`{"tag":""}`))}}
+			element(n).Ancestors = []Ancestor{{Tag: rep("a", k-len(`{"tag":"","id":"","classes":"","role":""}`))}}
 		}},
 		{"the styles", MaxStyles, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			element(n).Styles = slices.Repeat([][2]string{{"color", "red"}}, k)
@@ -285,7 +285,10 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 		{"a style's value", MaxStyleValue, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			element(n).Styles = [][2]string{{"color", rep("a", k)}}
 		}},
-		{"a word of the report", MaxElementWord, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).State.PointerEvents = rep("a", k) }},
+		{"a word of the report", MaxElementWord, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
+			element(n).Styles = [][2]string{{rep("a", k), "red"}}
+		}},
+		{"a state's word", MaxElementName, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).State.PointerEvents = rep("a", k) }},
 		{"the hints", MaxHints, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			element(n).Hints = slices.Repeat([]Hint{{How: "vue", File: "a.vue"}}, k)
 		}},
@@ -301,23 +304,23 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 		{"a source's path", MaxHintFile, RefusalBound, false, func(_ *NewCapture, f *CaptureFacts, k int) {
 			f.Sources[0] = []Source{{Path: rep("a", k), How: "vue", Class: "tracked"}}
 		}},
-		{"a hint's line", MaxFindingLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
+		{"a hint's line", MaxHintLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			element(n).Hints = []Hint{{How: "vue", File: "a.vue", Line: k}}
 		}},
-		{"a hint's column", MaxFindingLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
+		{"a hint's column", MaxHintLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) {
 			element(n).Hints = []Hint{{How: "vue", File: "a.vue", Column: k}}
 		}},
-		{"a source's line", MaxFindingLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
+		{"a source's line", MaxHintLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
 			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Line: k}}
 		}},
-		{"a source's column", MaxFindingLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
+		{"a source's column", MaxHintLine, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) {
 			f.Sources[0] = []Source{{Path: "a.vue", How: "vue", Class: "tracked", Column: k}}
 		}},
 		{"the viewport's width", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Width = k }},
 		{"the viewport's height", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Height = k }},
 		{"the viewport's scale", 64, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.Scale = float64(k) }},
 		{"the viewport's pixel ratio", 64, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Viewport.DPR = float64(k) }},
-		{"the element's motion", MaxRectCoord, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).State.Motion = k }},
+		{"the element's motion", MaxHintLine, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).State.Motion = k }},
 		{"the cut steps", 10, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).Cut = slices.Repeat([]string{"html"}, k) }},
 		{"the selection's changed count", MaxChangedCount, RefusalInvalid, false, func(n *NewCapture, _ *CaptureFacts, k int) { n.Label.Changed = k }},
 		{"the tree's changed count", MaxChangedCount, RefusalInvalid, false, func(_ *NewCapture, f *CaptureFacts, k int) { f.Changed = k }},
@@ -325,8 +328,9 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 			e := element(n)
 			e.HTML = rep("h", MaxElementHTML)
 			e.Neighbourhood = ""
-			e.Neighbourhood = rep("n", k-measure(e)-len(`,"neighbourhood":""`))
+			e.Neighbourhood = rep("n", k-measure(bridgeReportOf(e)))
 		}},
+		{"the report as the bridge measured it", MaxElementReport, RefusalBound, false, func(n *NewCapture, _ *CaptureFacts, k int) { element(n).Measured = k }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -334,8 +338,8 @@ func TestCaptureBoundsAtTheirEdges(t *testing.T) {
 				n, f := testCapture(!c.noImage)
 				c.set(&n, &f, k)
 				moment(&n)
-				if c.name == "the element's report, as measured" && measure(element(&n)) != k {
-					t.Fatalf("the report measures %d, not %d", measure(element(&n)), k)
+				if c.name == "the element's report, as measured" && measure(bridgeReportOf(element(&n))) != k {
+					t.Fatalf("the report measures %d, not %d", measure(bridgeReportOf(element(&n))), k)
 				}
 				_, _, err := checkCapture(n, f, !c.noImage)
 				var ref *Refusal
@@ -563,9 +567,9 @@ func fullestCapture(t *testing.T) (NewCapture, CaptureFacts) {
 	el := *element(&n)
 	el.Hints = slices.Repeat([]Hint{{How: "vue", File: rep("f", MaxHintFile), Component: rep("c", MaxHintComponent)}}, MaxHints)
 	el.HTML = rep("h", MaxElementHTML)
-	el.Neighbourhood = rep("n", MaxElementReport-measure(&el)-len(`,"neighbourhood":""`))
-	if measure(&el) != MaxElementReport {
-		t.Fatalf("the report measures %d", measure(&el))
+	el.Neighbourhood = rep("n", MaxElementReport-measure(bridgeReportOf(&el)))
+	if measure(bridgeReportOf(&el)) != MaxElementReport {
+		t.Fatalf("the report measures %d", measure(bridgeReportOf(&el)))
 	}
 	sources := slices.Repeat([]Source{{Path: rep("p", MaxHintFile), Component: rep("c", MaxHintComponent), How: "vue", Class: "tracked"}}, MaxHints)
 	note := rep("\u2028", MaxAnnotationNote)
