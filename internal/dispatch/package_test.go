@@ -65,6 +65,19 @@ func TestPackageAtItsWorst(t *testing.T) {
 		rc, err := relate(s, opID("rel", i), b, RelationBlocks, key)
 		want(t, rc, err, StatusDone, "")
 	}
+	// Version 2's parts at their bounds (Program item IN1a): the ticket
+	// linked, GitHub owning its title and description, its snapshot at its
+	// worst, the steps to reproduce among it handed over; eight evidence
+	// links, each a page at its bound and a note at its worst.
+	sn := worstSnapshot(t, worst)
+	linkWorst(t, s, key, sn, worstChars(MaxTicketTitle))
+	var evidence []string
+	for i := range MaxPackageEvidence {
+		page := fmt.Sprintf("https://example.invalid/%02d/", i)
+		rc, err := addLink(s, opID("ev", i), key, NewLink{Kind: LinkExternal, URL: page + strings.Repeat("a", MaxLinkURL-len(page)), Note: worstChars(MaxLinkNote)})
+		want(t, rc, err, StatusDone, "")
+		evidence = append(evidence, rc.ID)
+	}
 	var attachments []string
 	for i := range MaxPlanAttachments {
 		rc, a, err := s.AddAttachment(ctx, worstOp(opID("up", i)), key, padded(worstBytes, MaxAttachmentName, i), worstBytes(MaxContentType), bytes.NewReader([]byte{byte(i)}))
@@ -102,8 +115,10 @@ func TestPackageAtItsWorst(t *testing.T) {
 	body := PlanBody{
 		Base: strings.Repeat("e", 64), Crew: crew, Agents: agents, References: refs, Attachments: attachments, Comments: planComments,
 		Constraints: worstBytes(MaxPlanConstraints), Decisions: decisions, Note: worstBytes(MaxPlanNote),
+		Source: &PlanSource{Repro: &PlanRepro{}, Evidence: evidence},
 	}
-	plan := propose(t, s, "p1", key, PlanRequest{Crew: crewID, Attachments: attachments, Comments: comments}, body)
+	plan := propose(t, s, "p1", key, PlanRequest{Crew: crewID, Attachments: attachments, Comments: comments,
+		Source: &PlanSourceRequest{Repro: true, Evidence: evidence}}, body)
 	rc, err = s.ApprovePlan(ctx, Op{Actor: ActorAdmin, ID: "a1", By: worstChars(MaxByName)}, plan, 0, worstChars(MaxApprovedNote))
 	want(t, rc, err, StatusDone, "")
 
@@ -117,6 +132,20 @@ func TestPackageAtItsWorst(t *testing.T) {
 		len(p.Attachments) != MaxPlanAttachments, len(p.Comments) != MaxPlanComments, len(p.Decisions) != MaxPlanDecisions:
 		t.Fatalf("a part is short of its bound: %+v", p.Ticket)
 	}
+	if p.Source == nil || p.Source.Repro != sn.Repro || len(p.Evidence) != MaxPackageEvidence || !p.Source.TitleFromGitHub {
+		t.Fatalf("version 2's parts are short of their bounds: %+v", p.Source)
+	}
+	for _, part := range []struct {
+		name  string
+		v     any
+		bound int
+	}{{"source", p.Source, MaxPackageSource}, {"evidence", p.Evidence, MaxPackageEvidenceJSON}} {
+		b, err := encodeValue(part.v)
+		if err != nil || len(b) > part.bound {
+			t.Fatalf("the package's %s at its worst is %d bytes, more than %d (%v)", part.name, len(b), part.bound, err)
+		}
+		t.Logf("the package's %s at its worst: %d bytes of %d", part.name, len(b), part.bound)
+	}
 	if len(v.Package) > MaxPackage {
 		t.Fatalf("the package at its worst is %d bytes, more than %d", len(v.Package), MaxPackage)
 	}
@@ -129,13 +158,30 @@ func TestPackageAtItsWorst(t *testing.T) {
 	}
 }
 
+// linkWorst links the ticket with the key to the snapshot's item as an
+// import leaves it, GitHub owning its title and description, its title
+// set to title: written as the columns hold them, past the store's own
+// operations.
+func linkWorst(t *testing.T, s *Store, key string, sn ExternalSnapshot, title string) {
+	t.Helper()
+	snapshot, err := encodeSnapshot(sn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := sn.Identity()
+	if _, err := s.db.Exec("UPDATE tickets SET title = ?, external_id = ?, authority = ?, source = ?, external_url = ?, external_snapshot = ? WHERE key = ?",
+		title, identity, Authority{Of: authorityKey(identity), Title: sn.System, Description: sn.System}.encode(), sn.System, sn.URL, snapshot, key); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A package past MaxPackage, which no part at its bound makes but a merge
 // could (a set past its bound), is refused bound naming its largest part.
 func TestAPackagePastItsBoundNamesItsLargestPart(t *testing.T) {
 	pkg := Package{Comments: []PackageComment{{Body: strings.Repeat("x", MaxPackage)}}, Constraints: "small"}
 	err := packageBound(pkg, MaxPackage+100)
 	var ref *Refusal
-	if !errors.As(err, &ref) || ref.Code != RefusalBound || !strings.HasPrefix(ref.Words, "the comments are 512.") || !strings.Contains(ref.Words, "of the package's 512.1 KiB") {
+	if !errors.As(err, &ref) || ref.Code != RefusalBound || !strings.HasPrefix(ref.Words, "the comments are 640.") || !strings.Contains(ref.Words, "of the package's 640.1 KiB") {
 		t.Fatalf("the refusal: %v", err)
 	}
 }
@@ -208,10 +254,11 @@ func TestPackageFileNames(t *testing.T) {
 	}
 }
 
-// v1Decision and v1Package are the package's shape as every build before
-// HM1 reads it (PackageVersion 1: a decision's id, question, kind and
-// before, no for), the rest of it unchanged since; read strictly, as such
-// a build's engine reads a package (crew's readPackage, DecodeStrict).
+// v1Decision and v2Package are the package's shape as the engine reads
+// it (a decision's id, question, kind and before, no for, as every build
+// since HM1 reads it; version 2's source and evidence beside the rest);
+// read strictly, as the engine reads a package (crew's readPackage,
+// DecodeStrict).
 type v1Decision struct {
 	ID       string   `json:"id"`
 	Question string   `json:"question"`
@@ -219,7 +266,7 @@ type v1Decision struct {
 	Before   []string `json:"before"`
 }
 
-type v1Package struct {
+type v2Package struct {
 	Version     int                 `json:"version"`
 	Ticket      PackageTicket       `json:"ticket"`
 	Plan        PackagePlan         `json:"plan"`
@@ -229,13 +276,15 @@ type v1Package struct {
 	Constraints string              `json:"constraints"`
 	Decisions   []v1Decision        `json:"decisions"`
 	Launch      PackageLaunch       `json:"launch"`
+	Source      *PackageSource      `json:"source"`
+	Evidence    []PackageEvidence   `json:"evidence"`
 }
 
 // Whom a decision is for never travels in the launch's package (HM1): the
 // revision's body keeps it and the engine is handed it from there, so the
-// package of a revision whose decisions name for is version 1 and is read
-// by an older build's strict reader whole, every decision's id, question,
-// kind and before as the body has them, with no field it does not know.
+// package of a revision whose decisions name for is read by the engine's
+// strict reader whole, every decision's id, question, kind and before as
+// the body has them, with no field it does not know.
 func TestThePackageCarriesNoFor(t *testing.T) {
 	s, _, key := planTicket(t)
 	ds := []PlanDecision{
@@ -252,13 +301,13 @@ func TestThePackageCarriesNoFor(t *testing.T) {
 	if strings.Contains(string(v.Package), `"for"`) {
 		t.Fatalf("the package carries for: %s", v.Package)
 	}
-	var old v1Package
+	var old v2Package
 	dec := json.NewDecoder(bytes.NewReader(v.Package))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&old); err != nil {
-		t.Fatalf("an older build's reader refuses the package: %v", err)
+		t.Fatalf("the engine's reader refuses the package: %v", err)
 	}
-	if old.Version != 1 || PackageVersion != 1 {
+	if old.Version != 2 || PackageVersion != 2 {
 		t.Fatalf("the package is version %d (this build's %d)", old.Version, PackageVersion)
 	}
 	want := []v1Decision{{ID: "ship", Question: "Ship it?", Kind: DecisionApproval, Before: []string{"build"}}, {ID: "migrate", Question: "Run the migration on staging", Kind: DecisionAssignment, Before: []string{"build"}}}

@@ -280,7 +280,7 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	unusable := &TaskUnusable{Attempt: 3, Stage: "setup " + strings.Repeat("s", 40), Error: strings.Repeat("u", 500)}
 	f := TaskFile{Task: "build", Attempt: 4, MaxAttempts: 4, Member: "lead", Kind: TaskWork,
 		Goal: strings.Repeat("<", maxGoal), Role: strings.Repeat("<", maxPrompt), Instructions: strings.Repeat("<", maxInstructions),
-		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks, Manifest: manifest, Unusable: unusable, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle),
+		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks, Manifest: manifest, Unusable: unusable, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle), ticketQuoted: worstQuotedTitle(), packageQuoted: true,
 		Previous:   &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10), Checkpoint: strings.Repeat("c", 64), Branch: "crew/run/build.1"},
 		Repair:     &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("c", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Checkpoint: &Checkpoint{Done: strings.Repeat("d", maxCheckpointField), Remaining: strings.Repeat("m", maxCheckpointField), Commit: strings.Repeat("e", 40)}}
@@ -410,7 +410,7 @@ func TestAFailedCheckHandoffAtItsWorst(t *testing.T) {
 		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: maxCheckTimeout})
 	}
 	f := TaskFile{Task: c.Task, Attempt: maxAttemptsPerTask + 1, MaxAttempts: maxAttemptsPerTask + 1, Member: "lead", Kind: TaskWork, Goal: goal, Role: role, Instructions: instructions,
-		Start: c.Subject, Inputs: inputs, Checks: checks, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle),
+		Start: c.Subject, Inputs: inputs, Checks: checks, Ticket: worstTicket(), ticketTitle: strings.Repeat("<", maxTicketTitle), ticketQuoted: worstQuotedTitle(), packageQuoted: true,
 		Repair:   &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("r", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Previous: &TaskPrevious{Attempt: c.Attempt, State: ledger.AttemptFailed, Stage: "verify " + c.ID, Error: strings.Repeat("e", 40<<10), Check: c}}
 	md, js, more, err := fitTaskFile(f)

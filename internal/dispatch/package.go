@@ -1,11 +1,13 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // A launch's package (Program item DS2, docs/plans/dispatch-evidence.md,
@@ -19,16 +21,18 @@ import (
 // the revision's body has it.
 
 // PackageVersion is the version of the package's shape this binary
-// builds.
-const PackageVersion = 1
+// builds. Version 2 (Program item IN1a) adds the source and the evidence;
+// a package version 1 built keeps its version, and the engine reads both.
+const PackageVersion = 2
 
 // Package is a launch's package, version PackageVersion: the ticket as it
 // stood, the approved revision that launched it, the source references,
 // the attachments (each with the file name it is written under in an
 // attempt) and the comments the revision hands over, read at the launch,
-// the constraints and decisions as the revision names them, and the
-// launch itself. Encoded as the store encodes values (HTML escaping off),
-// at most MaxPackage bytes.
+// the constraints and decisions as the revision names them, the launch
+// itself, the ticket's linked item (Source, null for none) and the links
+// the revision names as evidence. Encoded as the store encodes values
+// (HTML escaping off), at most MaxPackage bytes.
 type Package struct {
 	Version     int                 `json:"version"`
 	Ticket      PackageTicket       `json:"ticket"`
@@ -39,6 +43,39 @@ type Package struct {
 	Constraints string              `json:"constraints"`
 	Decisions   []PackageDecision   `json:"decisions"`
 	Launch      PackageLaunch       `json:"launch"`
+	Source      *PackageSource      `json:"source"`
+	Evidence    []PackageEvidence   `json:"evidence"`
+}
+
+// PackageSource is the ticket's linked item at the launch: its system,
+// host, page, reference (owner/repo#n) and node id, its state then, when
+// the ticket last read it (zero for never), the SHA-256 of the snapshot
+// the package was built from, the account that wrote it, which of the
+// ticket's title and description its system owns (the text ticket.md
+// quotes as written there), and its steps to reproduce when the revision
+// hands them over. At most MaxPackageSource as encoded.
+type PackageSource struct {
+	System                string    `json:"system"`
+	Host                  string    `json:"host"`
+	URL                   string    `json:"url"`
+	Ref                   string    `json:"ref"`
+	NodeID                string    `json:"nodeId"`
+	State                 string    `json:"state"`
+	StateReason           string    `json:"stateReason,omitempty"`
+	ReadAt                time.Time `json:"readAt,omitzero"`
+	SnapshotSha256        string    `json:"snapshotSha256"`
+	Author                string    `json:"author,omitempty"`
+	TitleFromGitHub       bool      `json:"titleFromGitHub"`
+	DescriptionFromGitHub bool      `json:"descriptionFromGitHub"`
+	Repro                 string    `json:"repro,omitempty"`
+}
+
+// PackageEvidence is a link the revision names as evidence, read at the
+// launch: its page, and its note cut to MaxEvidenceNote characters with
+// "…".
+type PackageEvidence struct {
+	URL  string `json:"url"`
+	Note string `json:"note"`
 }
 
 // PackageDecision is a decision of the revision as its package names it:
@@ -252,6 +289,12 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 	for _, c := range comments {
 		pkg.Comments = append(pkg.Comments, PackageComment{ID: c.ID, N: c.N, Author: c.Author, By: c.By, At: c.CreatedAt, Body: c.Body, SHA256: sha256Hex(c.Body)})
 	}
+	if pkg.Source, err = packageSource(t.ctx, t.tx, tk, body.Source); err != nil {
+		return "", err
+	}
+	if pkg.Evidence, err = packageEvidence(t.ctx, t.tx, tk, body.Source); err != nil {
+		return "", err
+	}
 	encoded, err := encodeValue(pkg)
 	if err != nil {
 		return "", err
@@ -260,6 +303,57 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 		return "", packageBound(pkg, len(encoded))
 	}
 	return encoded, nil
+}
+
+// packageSource is the package's source: nil for a ticket with no linked
+// item (or a snapshot that cannot be read), else the item as the ticket's
+// snapshot, owners and read hold it, with the steps to reproduce when the
+// revision hands them over (src.Repro, which the caller has checked are
+// the snapshot's: sourceStale).
+func packageSource(ctx context.Context, q queryer, tk Ticket, src *PlanSource) (*PackageSource, error) {
+	sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
+	if tk.ExternalID == "" || !ok {
+		return nil, nil
+	}
+	a := ParseAuthority(string(tk.Authority))
+	ps := &PackageSource{
+		System: sn.System, Host: sn.Host, URL: tk.ExternalURL, Ref: sn.Space + "#" + sn.ID, NodeID: sn.NodeID, State: sn.State, StateReason: sn.StateReason,
+		SnapshotSha256: sha256Hex(string(tk.ExternalSnapshot)), Author: sn.Author,
+		TitleFromGitHub: a.Title != "" && a.Title == sn.System, DescriptionFromGitHub: a.Description != "" && a.Description == sn.System,
+	}
+	if src != nil && src.Repro != nil {
+		ps.Repro = sn.Repro
+	}
+	read, err := ticketReadOf(ctx, q, tk.ID)
+	if err != nil {
+		return nil, err
+	}
+	if read != nil && read.ExternalID == tk.ExternalID {
+		ps.ReadAt = read.ReadAt
+	}
+	return ps, nil
+}
+
+// packageEvidence is the links the revision names as evidence, in its
+// order, each live (the caller has checked: sourceStale), whatever the
+// ticket's linked item: each link's page (its ref when it has none) and
+// its note cut to MaxEvidenceNote characters.
+func packageEvidence(ctx context.Context, q queryer, tk Ticket, src *PlanSource) ([]PackageEvidence, error) {
+	out := []PackageEvidence{}
+	if src == nil {
+		return out, nil
+	}
+	for _, id := range src.Evidence {
+		var ref, page, note string
+		if err := q.QueryRowContext(ctx, "SELECT ref, url, note FROM links WHERE id = ? AND ticket_id = ?", id, tk.ID).Scan(&ref, &page, &note); err != nil {
+			return nil, err
+		}
+		if utf8.RuneCountInString(note) > MaxEvidenceNote {
+			note = cutChars(note, MaxEvidenceNote-1) + "…"
+		}
+		out = append(out, PackageEvidence{URL: cmp.Or(page, ref), Note: note})
+	}
+	return out, nil
 }
 
 // packageTicket reads the package's part of the ticket tk inside the
@@ -332,7 +426,7 @@ func packageBound(pkg Package, total int) error {
 	}{
 		{"the ticket is", pkg.Ticket}, {"the plan revision is", pkg.Plan}, {"the references are", pkg.References},
 		{"the attachments are", pkg.Attachments}, {"the comments are", pkg.Comments}, {"the constraints are", pkg.Constraints},
-		{"the decisions are", pkg.Decisions}, {"the launch is", pkg.Launch},
+		{"the decisions are", pkg.Decisions}, {"the launch is", pkg.Launch}, {"the source is", pkg.Source}, {"the evidence is", pkg.Evidence},
 	}
 	largest, size := "", -1
 	for _, p := range parts {

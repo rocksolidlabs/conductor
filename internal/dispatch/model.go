@@ -233,8 +233,23 @@ const (
 	// MaxPackage bounds a launch's package as stored, in bytes: every part
 	// at its bound with every text at its escaped worst is under it
 	// (package_test.go measures it). The ledger's runs.package has the
-	// same bound.
-	MaxPackage = 512 << 10
+	// same bound. Version 2's source and evidence (Program item IN1a)
+	// raised it from 512 KiB.
+	MaxPackage = 640 << 10
+	// MaxPackageEvidence bounds the links a revision names as evidence,
+	// the package's bound on attachments; MaxEvidenceNote one's note as
+	// the package holds it, in characters, cut with "…" as a reference's
+	// is.
+	MaxPackageEvidence = 8
+	MaxEvidenceNote    = 200
+	// MaxPackageSource bounds a package's source as encoded, in bytes:
+	// the steps to reproduce at their escaped worst (16 KiB) and the rest
+	// under 4 KiB (package_test.go measures it).
+	MaxPackageSource = 24 << 10
+	// MaxPackageEvidenceJSON bounds a package's evidence as encoded, in
+	// bytes: eight links, each a page of MaxLinkURL and a note of
+	// MaxEvidenceNote, at their escaped worst.
+	MaxPackageEvidenceJSON = 48 << 10
 	// MaxLaunchLabel bounds a launch's label, the run's own name, in
 	// characters: a managed run's label's bound.
 	MaxLaunchLabel = 60
@@ -931,6 +946,33 @@ type PlanRequest struct {
 	Constraints string                 `json:"constraints,omitempty"`
 	Decisions   []PlanDecision         `json:"decisions,omitempty"`
 	Note        string                 `json:"note,omitempty"`
+	Source      *PlanSourceRequest     `json:"source,omitempty"`
+}
+
+// PlanSourceRequest is what a proposal hands over of the ticket's source
+// (Program item IN1a): Repro, the linked item's steps to reproduce; and
+// Evidence, the ticket's links (external or delivery, by id, at most
+// MaxPackageEvidence) named in the package as evidence.
+type PlanSourceRequest struct {
+	Repro    bool     `json:"repro,omitempty"`
+	Evidence []string `json:"evidence,omitempty"`
+}
+
+// PlanSource is a revision's choice of the ticket's source, in its body:
+// Repro, when the steps to reproduce are handed over, pins the linked
+// item's identity and the steps' SHA-256 (the snapshot's reproSha256) at
+// the proposal, so the approval covers the very text handed over;
+// Evidence the links' ids. A body that hands over neither has none.
+type PlanSource struct {
+	Repro    *PlanRepro `json:"repro"`
+	Evidence []string   `json:"evidence"`
+}
+
+// PlanRepro is the steps to reproduce a revision hands over: the linked
+// item's identity and the steps' SHA-256 when it was proposed.
+type PlanRepro struct {
+	Identity string `json:"identity"`
+	SHA256   string `json:"sha256"`
 }
 
 // PlanReferenceRequest is a source reference as a proposal names it: a
@@ -953,7 +995,8 @@ type PlanReferenceRequest struct {
 // manifest's blob and manifest; the references resolved at the base; the
 // attachments and comments handed over, each comment with the SHA-256 of
 // its body, which the store sets from the comment's row; the
-// constraints; the decisions a person will make; a note. The API builds
+// constraints; the decisions a person will make; a note; what it hands
+// over of the ticket's source (Source, none when nothing). The API builds
 // it from the request; the store checks every part's shape and bound,
 // then the whole (MaxPlanBody).
 type PlanBody struct {
@@ -967,6 +1010,7 @@ type PlanBody struct {
 	Constraints  string            `json:"constraints"`
 	Decisions    []PlanDecision    `json:"decisions"`
 	Note         string            `json:"note"`
+	Source       *PlanSource       `json:"source,omitempty"`
 }
 
 // PlanAgent is an agent a revision's crew names, as the catalog resolved

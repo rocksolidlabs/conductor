@@ -149,7 +149,8 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // approval holding, its intent the ticket's now (stale_plan, naming what
 // changed, the remedy an approval again or a new revision); every
 // attachment and comment it hands over still live and each comment's body
-// the one recorded (stale_plan, naming the first gone or edited, the
+// the one recorded, the steps to reproduce it pins the snapshot's now and
+// each evidence link live (stale_plan, naming the first gone or edited, the
 // remedy a new revision, since the recorded digest is the immutable
 // body's); at most MaxLaunches launches (bound). Then the package is built
 // from the rows (buildPackage, bound past MaxPackage), the run id minted
@@ -222,7 +223,7 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 		if err != nil {
 			return err
 		}
-		if words, stale, err := commentsStale(t.ctx, t.tx, tk, p, body.Comments); err != nil {
+		if words, stale, err := handedStale(t.ctx, t.tx, tk, p, planHanded{Comments: body.Comments, Source: body.Source}); err != nil {
 			return err
 		} else if stale {
 			return refuse(RefusalStalePlan, "%s: revise it", words)
