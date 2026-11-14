@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { accountWords, capacityKey, clockWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, launchLogin, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
+import { WARN_WORDS, accountWords, capacityKey, clockWords, compactWords, countsWords, creditWords, freshnessWords, capacityHostWords, limitsWords, modelWords, offersCheck, offersRead, launchLogin, planWords, readWait, severityColor, capacityStateWords, warns, windowWords, type CapacityQuery } from '~/utils/capacity'
 
 /**
  * The capacity panel (docs/plans/capacity.md, PR-5): what the server's capacity view says of an agent on an account before a launch.
@@ -63,24 +63,22 @@ function readNow(check = false) {
 const provider = computed(() => [...(view.value?.credits ?? []).map(creditWords), ...limitsWords(view.value?.limits)])
 const plan = computed(() => planWords(view.value?.account.plan, view.value?.agent.adapter))
 const model = computed(() => modelWords(props.model?.trim() ? { chosen: props.model.trim() } : view.value?.model))
-const compactLine = computed(() => {
-  const v = view.value
-  if (!v) return ''
-  if (v.state !== 'ok') return `${state.value!.title}: ${state.value!.words}`
-  const shown = v.windows.map((w) => `${w.name} ${w.percent}%`).join(' · ')
-  return shown || 'no windows reported'
-})
+const brief = computed(() => (view.value ? compactWords(view.value, now.value) : null))
 </script>
 
 <template>
   <div v-if="query" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" :class="compact ? 'gap-1 p-2' : ''" data-capacity-panel :data-capacity-agent="query.agent" :data-capacity-state="view?.state">
     <p v-if="!view && !entry?.error" class="flex items-center gap-2 text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading what the server knows of this agent's usage…</p>
-    <div v-else-if="view && compact" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <p class="min-w-0 flex-[1_1_16rem] text-xs [overflow-wrap:anywhere]" data-capacity-line>
-        <template v-if="plan">{{ plan }} · </template>{{ compactLine }}<span class="text-muted"> · {{ freshnessWords(view, now) || 'not read yet' }}</span>
+    <div v-else-if="view && compact && brief" class="flex min-w-0 flex-col gap-1">
+      <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <p class="min-w-0 flex-[1_1_16rem] text-xs [overflow-wrap:anywhere]" data-capacity-line>{{ brief.line }}<span class="text-muted"> · {{ brief.fresh }}</span></p>
+        <span v-if="wait" class="flex-none text-xs text-muted" data-capacity-wait>again after {{ clockWords(wait) }}</span>
+        <UButton v-else-if="offersRead(view) || reading" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="reading" data-capacity-read @click="readNow()" />
+      </div>
+      <p v-if="brief.warning" class="flex items-start gap-1.5 text-xs [overflow-wrap:anywhere]" :class="brief.warning.color === 'error' ? 'text-error' : 'text-warning'" data-capacity-warning :data-capacity-warning-color="brief.warning.color">
+        <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-3.5 flex-none" />{{ brief.warning.words }}
       </p>
-      <span v-if="wait" class="flex-none text-xs text-muted" data-capacity-wait>again after {{ clockWords(wait) }}</span>
-      <UButton v-else-if="offersRead(view) || reading" label="Read now" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="reading" :disabled="reading" data-capacity-read @click="readNow()" />
+      <p v-if="brief.host" class="text-xs text-muted [overflow-wrap:anywhere]" data-capacity-host-words>{{ brief.host }}</p>
     </div>
     <template v-else-if="view">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
@@ -114,7 +112,7 @@ const compactLine = computed(() => {
       <p v-else-if="view.state === 'ok'" class="text-xs text-muted" data-capacity-no-windows>The provider reported no usage window.</p>
 
       <p v-if="warns(view)" class="flex items-center gap-1.5 text-xs text-warning" data-capacity-warning>
-        <UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none" />The agent may stop before the reset: a window is near its limit. Launching is still yours to decide.
+        <UIcon name="i-lucide-triangle-alert" class="size-3.5 flex-none" />{{ WARN_WORDS }}
       </p>
 
       <p v-if="provider.length" class="text-xs" data-capacity-provider><span class="text-muted">The provider's figures: </span>{{ provider.join(' · ') }}</p>

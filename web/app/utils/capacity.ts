@@ -314,6 +314,22 @@ export function planWords(plan: string | undefined, adapter: string | undefined)
   return shown
 }
 
+/** What the panel says at the provider's warning or critical severity, or at 90% used: the agent may stop; the launch stays enabled. */
+export const WARN_WORDS = 'The agent may stop before the reset: a window is near its limit. Launching is still yours to decide.'
+
+/**
+ * The compact panel's words (the crew's launch sheet, a ticket's launch, Settings' Accounts): the plan with the windows or the state, how
+ * fresh, and in text a phone shows what the full panel says besides: the warning, in its severity's colour (critical brick, else signal),
+ * and the server's words when it cannot say the figures describe where the run executes (`host.kind` undetermined).
+ */
+export function compactWords(v: CapacityView, now: number): { line: string; fresh: string; warning: { words: string; color: 'warning' | 'error' } | null; host: string } {
+  const s = capacityStateWords(v)
+  const shown = v.state === 'ok' ? v.windows.map((w) => `${w.name} ${w.percent}%`).join(' · ') || 'no windows reported' : `${s.title}: ${s.words}`
+  const plan = planWords(v.account.plan, v.agent.adapter)
+  const color = v.windows.some((w) => w.severity === 'critical') ? ('error' as const) : ('warning' as const)
+  return { line: plan ? `${plan} · ${shown}` : shown, fresh: freshnessWords(v, now) || 'not read yet', warning: warns(v) ? { words: WARN_WORDS, color } : null, host: v.host.kind === 'undetermined' ? (v.host.words ?? '') : '' }
+}
+
 /** The account in words: its label, or the agent's default login. */
 export function accountWords(a: CapacityView['account']): string {
   if (a.id === 'default') return 'Default login'

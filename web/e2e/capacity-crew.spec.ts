@@ -126,6 +126,8 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
   // The run's two attempts are the stub's work, each bounded by the server's own waits: the run's step, two minutes, on top of the rest.
   test.setTimeout(240_000)
   const { crew, work, workDir, workId, team, teamId, build } = await crewOnAccounts(api, state.home)
+  // The builder's first attempt waits at the stub's gate in Work's folder until the pause and the default's change are done.
+  writeFileSync(join(workDir, 'stub-attempt-hold'), '')
 
   await page.goto(`/crews/${encodeURIComponent(crew.id)}`)
   await expect(page.locator('[data-crew-kind]')).toHaveText('Saved crew', { timeout: 30_000 })
@@ -142,7 +144,7 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
   const reviewer = page.locator('[data-crew-launch-line="reviewer"]')
   await expect(builder.locator('[data-crew-launch-agent]')).toHaveText('Worker (e2e stub)')
   await expect(builder.locator('[data-crew-launch-model]')).toHaveText("the agent's default")
-  await expect(builder.locator('[data-crew-launch-account]')).toHaveText(`the default at launch (now ${work})`)
+  await expect(builder.locator('[data-crew-launch-account]')).toHaveText(`the default at the launch (now ${work})`)
   await expect(reviewer.locator('[data-crew-launch-agent]')).toHaveText('Codex CLI (e2e stub)')
   await expect(reviewer.locator('[data-crew-launch-model]')).toHaveText('gpt-e2e')
   await expect(reviewer.locator('[data-crew-launch-account]')).toHaveText(team)
@@ -169,10 +171,11 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
   // Paused, so no attempt starts past this point; the default then moves to the agent's own login, and the run goes on.
   await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/pause`, command())
   expect((await api.run(run.id)).paused).toBe(true)
-  // The pause came before the retry: an attempt takes the stub's whole turn after a quiet screen, the pause one request.
+  // The pause came before the retry: attempt 1, if it started, is held at the gate, so no second attempt can have begun.
   expect(task(await api.run(run.id), build).attempts).toBeLessThanOrEqual(1)
   await setDefault(api, 'claude', 'default')
   await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/unpause`, command())
+  writeFileSync(join(workDir, 'stub-attempt-gate'), '')
 
   // The retry: attempt 1 failed its check, attempt 2 ran, both on Work's folder, whatever the default says now.
   let last: Run = run
@@ -188,6 +191,7 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
     [2, 'succeeded'],
   ])
   for (const a of attempts) expect(attemptTranscript(state.home, build, a.n), `attempt ${a.n} ran on Work's folder`).toContain(`env: CLAUDE_CONFIG_DIR=${workDir}\n`)
+  expect(attemptTranscript(state.home, build, 1), 'attempt 1 waited at the gate').toContain('hold: attempt 1 went on\n')
 
   // The run page names each member's login and model as the launch bound them.
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
@@ -216,7 +220,7 @@ test("a ticket's approved revision shows each member's account before its launch
   await featured.locator('[data-plan-launch]').click()
   const dialog = page.locator('[data-launch-dialog]')
   // The revision's members, read only: what the operator approved, the default said with what it is at this launch.
-  await expect(dialog.locator('[data-launch-member="builder"] [data-launch-member-account]')).toHaveText(`the default at launch (now ${work})`)
+  await expect(dialog.locator('[data-launch-member="builder"] [data-launch-member-account]')).toHaveText(`the default at the launch (now ${work})`)
   await expect(dialog.locator('[data-launch-member="reviewer"] [data-launch-member-account]')).toHaveText(team)
   await expect(dialog.locator('[data-launch-member="reviewer"] [data-launch-member-model]')).toHaveText('gpt-e2e')
   await expect(dialog.locator('[data-launch-member] [data-capacity-panel]')).toHaveCount(2)
@@ -226,13 +230,144 @@ test("a ticket's approved revision shows each member's account before its launch
   const runId = (await dialog.locator('[data-launch-run-link]').getAttribute('data-launch-run-link')) ?? ''
   made.runs.push(runId)
 
+  // The revision read refused (this test's own route) until the test lets it through: the Logins say so, and read it again as they open.
+  let refuse = true
+  await page.route(
+    (u) => u.pathname === `/api/dispatch/plans/${plan.id}`,
+    (route) => (refuse && route.request().method() === 'GET' ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'e2e: the revision is held back' } }) }) : route.fallback()),
+  )
   await page.goto(`/runs/${encodeURIComponent(runId)}`)
-  await page.locator('[data-crew-run-header] [data-run-logins-button]').click({ timeout: 30_000 })
+  const button = page.locator('[data-crew-run-header] [data-run-logins-button]')
+  await button.click({ timeout: 30_000 })
   const logins = page.locator('[data-run-logins]')
+  await expect(logins.locator('[data-run-logins-unread]')).toContainText('could not be read, so which member took the default at the launch is not said: e2e: the revision is held back')
+  await expect(logins.locator('[data-run-login-at-launch]')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(logins).toHaveCount(0)
+  refuse = false
+  await button.click()
   await expect(logins.locator('[data-run-login="builder"] [data-run-login-account]')).toHaveText(work)
   await expect(logins.locator('[data-run-login="builder"] [data-run-login-at-launch]')).toHaveText('(the default at the launch)')
+  await expect(logins.locator('[data-run-logins-unread]')).toHaveCount(0)
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-account]')).toHaveText(team)
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-at-launch]')).toHaveCount(0)
+})
+
+/** An error the server could answer, for this spec's own routes. */
+const refused = (message: string) => ({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message } }) })
+
+test("the launch sheet draws the crew as the server holds it, for the crew it was opened for, with each line's warning and the login an entry sets", async ({ page, api, state }) => {
+  test.setTimeout(120_000)
+  const warnDir = folder(state.home)
+  writeFileSync(join(warnDir, 'stub-usage'), 'warning\n')
+  const near = label('near')
+  const nearId = await addAccount(api, 'claude', near, warnDir)
+  // Two crews of a Claude Code member and one of the agent whose entry sets its login; nothing here is launched.
+  const body = (name: string, account?: string) => ({
+    name,
+    goal: '',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    yolo: false,
+    members: [
+      { name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' }, ...(account ? { account } : {}) },
+      { name: 'pinned', agentId: 'own-login', prompt: '', start: { when: 'manual' } },
+    ],
+  })
+  const [aName, bName] = [label('sheet a'), label('sheet b')]
+  const a = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', body(aName))).crew
+  made.crews.push(a.id)
+  const b = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', body(bName))).crew
+  made.crews.push(b.id)
+  const launches: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /^\/api\/crews\/[^/]+\/launch$/.test(new URL(r.url()).pathname)) launches.push(r.url())
+  })
+
+  await page.goto(`/crews/${encodeURIComponent(a.id)}`)
+  await expect(page.getByLabel('Crew name')).toHaveValue(aName, { timeout: 30_000 })
+  // The editor offers the agent whose entry sets its login that login alone, once the server's view of it says so.
+  await expect(page.locator('[data-crew-member]').nth(1).locator('[data-member-account]')).toContainText('The login its entry sets (ANTHROPIC_BASE_URL)')
+  // Changed through the API after the page read it: the lead now names Near.
+  await api.ok('PUT', `/api/crews/${encodeURIComponent(a.id)}`, body(aName, nearId))
+
+  // The sheet's read held at this test's route: the sheet says it is reading and Launch is held; let through, the server's copy is drawn.
+  let release!: () => void
+  const held = new Promise<void>((r) => (release = r))
+  const aCrew = (u: URL) => u.pathname === `/api/crews/${a.id}`
+  await page.route(aCrew, async (route) => {
+    if (route.request().method() === 'GET') await held
+    await route.fallback()
+  })
+  const confirm = page.locator('[data-crew-launch-confirm]')
+  await page.locator('[data-launch]').click()
+  await expect(page.locator('[data-crew-launch-reading]')).toBeVisible()
+  await expect(confirm).toBeDisabled()
+  release()
+  const lead = page.locator('[data-crew-launch-line="lead"]')
+  await expect(lead.locator('[data-crew-launch-account]')).toHaveText(near)
+  await page.unroute(aCrew)
+  // Near's usage at the provider's warning: said in words, in the warning's colour, and Launch stays enabled.
+  await expect(lead.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
+  await expect(lead.locator('[data-capacity-line]')).toContainText('Weekly, all models 92%')
+  await expect(lead.locator('[data-capacity-warning]')).toHaveText('The agent may stop before the reset: a window is near its limit. Launching is still yours to decide.')
+  await expect(lead.locator('[data-capacity-warning]')).toHaveAttribute('data-capacity-warning-color', 'warning')
+  await expect(confirm).toBeEnabled()
+  // The member that names no account, of an agent whose entry sets its login: named by that login, as the server's view resolves it.
+  await expect(page.locator('[data-crew-launch-line="pinned"] [data-crew-launch-account]')).toHaveText('the login its entry sets (ANTHROPIC_BASE_URL)')
+
+  // The page moves to crew B while the sheet is open for A: the sheet closes, and nothing was launched.
+  await page.evaluate(
+    (u) => (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { push: (u: string) => Promise<unknown> } } } } }).__vue_app__.config.globalProperties.$router.push(u),
+    `/crews/${encodeURIComponent(b.id)}`,
+  )
+  await expect(page.getByLabel('Crew name')).toHaveValue(bName, { timeout: 30_000 })
+  await expect(confirm).toHaveCount(0)
+
+  // B's read refused: the sheet says so in words and offers to read again, Launch held; read again once it answers, B is drawn.
+  let refuse = true
+  await page.route(
+    (u) => u.pathname === `/api/crews/${b.id}`,
+    (route) => (refuse && route.request().method() === 'GET' ? route.fulfill(refused('e2e: the crew is held back')) : route.fallback()),
+  )
+  await page.locator('[data-launch]').click()
+  await expect(page.locator('[data-crew-launch-read-error]')).toContainText('The crew could not be read, so nothing is launched: e2e: the crew is held back')
+  await expect(confirm).toBeDisabled()
+  refuse = false
+  await page.locator('[data-crew-launch-read-again]').click()
+  await expect(lead.locator('[data-crew-launch-account]')).toHaveText('the default at the launch (now Default login)')
+  await expect(confirm).toBeEnabled()
+  await page.locator('[data-crew-launch-cancel]').click()
+  await expect(confirm).toHaveCount(0)
+  expect(launches, 'no launch was sent').toEqual([])
+})
+
+test("the crew editor shows a member's account and model as saved while the accounts cannot be read, and a save keeps them", async ({ page, api }) => {
+  const name = label('unread crew')
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name,
+    goal: '',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    yolo: false,
+    members: [{ name: 'lead', agentId: 'claude', prompt: '', start: { when: 'manual' }, account: 'default', model: 'opus' }],
+  })
+  made.crews.push(crew.id)
+  await page.route((u) => u.pathname === '/api/accounts', (route) => route.fulfill(refused('e2e: the accounts are held back')))
+  await page.goto(`/crews/${encodeURIComponent(crew.id)}`)
+  const row = page.locator('[data-crew-member]').nth(0)
+  await expect(row.locator('[data-member-login-unread]')).toContainText('Account: Default login · Model: opus', { timeout: 30_000 })
+  await expect(row.locator('[data-member-login-unread]')).toContainText('the accounts could not be read (e2e: the accounts are held back)')
+  await expect(row.locator('[data-member-account]')).toHaveCount(0)
+  // A save of another change sends them as saved.
+  await page.getByLabel('Crew name').fill(`${name} 2`)
+  const saved = page.waitForRequest((r) => r.method() === 'PUT' && new URL(r.url()).pathname === `/api/crews/${crew.id}`)
+  await page.locator('[data-unsaved-bar]').getByRole('button', { name: 'Save', exact: true }).click()
+  expect(((await saved).postDataJSON() as { members: Array<Record<string, unknown>> }).members[0]).toMatchObject({ account: 'default', model: 'opus' })
 })
 
 test("Brakeman's account is chosen from the accounts of its agent's tool, saved as that account's folder, with the Capacity switch", async ({ page, api, state }) => {

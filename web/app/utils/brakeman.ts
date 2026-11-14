@@ -284,9 +284,10 @@ export interface CapacitySnapshot {
  * A capacity: ref's chip in words, from the reading kept with the brief (PR-7): the agent and the account by their names, a short
  * summary (each window the provider reported with its share used, or the state's title), and its title, every fact the reading
  * holds: the plan as the tool reported it, each window with its reset, the provider's figures, Conductor's estimate apart, and when it
- * was read and by what. A window the provider did not report is in none of them. Null without a reading.
+ * was read and by what, one fact a line (`lines`, the chip's details); `read`, when the reading was made, for the chip's own text. A
+ * window the provider did not report is in none of them. Null without a reading.
  */
-export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, timeZone?: string): { label: string; summary: string; title: string } | null {
+export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, timeZone?: string): { label: string; summary: string; read: string; lines: string[]; title: string } | null {
   if (!c) return null
   const account = c.account.id === 'default' ? 'its default login' : (c.account.label || c.account.id) + (c.account.retired ? ' (retired)' : '')
   const label = `capacity of ${c.agent.name || c.agent.id} on ${account}`
@@ -301,7 +302,8 @@ export function capacityRefWords(c: CapacitySnapshot | undefined, now: number, t
     c.counts ? `Conductor's estimate: ${countsWords(c.counts)}` : '',
     Number.isNaN(at) ? '' : `Read ${clockWords(at, timeZone)}${c.readBy ? ` by ${c.readBy.program} ${c.readBy.version}` : ''}`,
   ]
-  return { label, summary, title: lines.filter(Boolean).join('\n') }
+  const shown = lines.filter(Boolean)
+  return { label, summary, read: Number.isNaN(at) ? '' : `read ${clockWords(at, timeZone)}`, lines: shown, title: shown.join('\n') }
 }
 
 /** The kinds a request may have, in the order the composer offers them, with what the page calls each. */

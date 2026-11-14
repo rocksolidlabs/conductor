@@ -5,8 +5,8 @@ import { agentItem } from '~/utils/agents'
 import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } from '~/utils/crews'
 import { startWords } from '~/utils/crewWords'
 import type { AccountsDoc } from '~/composables/useAccounts'
-import { modelProblem } from '~/utils/capacity'
-import { AT_LAUNCH, memberAccountItems } from '~/utils/crewLaunch'
+import { accountChoices, modelProblem } from '~/utils/capacity'
+import { AT_LAUNCH, accountName, memberAccountItems, memberAccountProblem, withAgent } from '~/utils/crewLaunch'
 
 /**
  * The members of a crew, one row each: name, agent, first prompt and when it
@@ -111,16 +111,33 @@ function rename(key: number, name: string) {
 function setAgent(key: number, agentId: string) {
   // An agent that takes no extra arguments is refused at launch with some: they go with the switch.
   const takesArgs = agentOf(agentId)?.allowArgs ?? true
-  // An account is its tool's: another tool's agent starts from the default at launch, and one whose login is not moved names no model.
-  const was = members.value.find((m) => m.key === key)
-  const login = was && agentOf(was.agentId)?.adapter === agentOf(agentId)?.adapter ? {} : { account: undefined, model: memberAccountItems(props.accounts, agentOf(agentId)?.adapter).length ? was?.model : undefined }
-  update(key, takesArgs ? { agentId, ...login } : { agentId, args: undefined, argsText: '', ...login })
+  // An account and a model are their tool's: another tool's agent names neither (withAgent).
+  members.value = members.value.map((m) => (m.key === key ? { ...withAgent(m, agentId, (id) => agentOf(id)?.adapter), ...(takesArgs ? {} : { args: undefined, argsText: '' }) } : m))
 }
+
+// The server's view of each member's agent with no account named, for an agent whose tool's login Conductor moves: whether its entry
+// sets its login (entryLogin), which no account chosen here moves.
+const cap = useCapacity()
+const viewed = computed(() => [...new Set(members.value.map((m) => m.agentId).filter((id) => accountChoices(props.accounts, agentOf(id)?.adapter).length))].join('\n'))
+watch(
+  viewed,
+  (ids, _, onCleanup) => {
+    const qs = ids ? ids.split('\n').map((agent) => ({ agent })) : []
+    for (const q of qs) void cap.store.watch(q)
+    onCleanup(() => qs.forEach((q) => cap.store.unwatch(q)))
+  },
+  { immediate: true },
+)
+const entryLogin = (m: DraftMember) => cap.entry({ agent: m.agentId }).view?.entryLogin ?? ''
 
 /** A member's Account choice, [] for an agent whose login is not one Conductor moves: such a member names none. */
 function accountItems(m: DraftMember) {
-  return memberAccountItems(props.accounts, agentOf(m.agentId)?.adapter, m.account)
+  return memberAccountItems(props.accounts, agentOf(m.agentId)?.adapter, m.account, entryLogin(m))
 }
+
+// The accounts could not be read: a member's saved account and model are shown, read only, and kept as they are.
+const accountsRead = useAccounts()
+const unread = computed(() => (!props.accounts && accountsRead.problem.value) || '')
 
 function setAccount(key: number, value: string) {
   update(key, { account: value === AT_LAUNCH ? undefined : value })
@@ -256,17 +273,25 @@ const focusedPrompt = ref<number | null>(null)
         </div>
       </div>
 
-      <div v-if="accountItems(m).length" class="flex flex-wrap items-start gap-2 pl-0 @min-[52rem]:pl-[18.5rem]" data-member-login>
-        <USelect
-          :model-value="m.account || AT_LAUNCH"
-          :items="accountItems(m)"
-          icon="i-lucide-key-round"
-          size="sm"
-          :aria-label="`Account for ${who(m, i)}`"
-          class="w-full max-w-64"
-          data-member-account
-          @update:model-value="setAccount(m.key, String($event))"
-        />
+      <p v-if="unread && (m.account || m.model)" class="pl-0 text-xs text-muted [overflow-wrap:anywhere] @min-[52rem]:pl-[18.5rem]" data-member-login-unread>
+        Account: {{ m.account ? accountName(null, m.account) : 'the default at launch' }} · Model: {{ m.model || "the agent's default" }}. Kept as saved, with no Account or Model to choose: the accounts could not be read ({{ unread }}).
+      </p>
+      <div v-else-if="accountItems(m).length" class="flex flex-wrap items-start gap-2 pl-0 @min-[52rem]:pl-[18.5rem]" data-member-login>
+        <div class="flex w-full max-w-64 flex-col gap-1">
+          <USelect
+            :model-value="m.account || AT_LAUNCH"
+            :items="accountItems(m)"
+            icon="i-lucide-key-round"
+            size="sm"
+            :color="memberAccountProblem(m.account, entryLogin(m)) ? 'error' : undefined"
+            :highlight="!!memberAccountProblem(m.account, entryLogin(m))"
+            :aria-label="`Account for ${who(m, i)}`"
+            class="w-full"
+            data-member-account
+            @update:model-value="setAccount(m.key, String($event))"
+          />
+          <span v-if="memberAccountProblem(m.account, entryLogin(m))" class="text-xs leading-snug text-error" data-member-account-error>{{ memberAccountProblem(m.account, entryLogin(m)) }}</span>
+        </div>
         <div class="flex w-full max-w-64 flex-col gap-1">
           <UInput
             :model-value="m.model ?? ''"

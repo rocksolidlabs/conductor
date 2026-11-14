@@ -16,7 +16,8 @@ import { launchLines } from '~/utils/crewLaunch'
  * stands (still being sent, pending, or no answer) and sends it again under its id. Nothing is launched before the revision's body is
  * read: the yolo choice is said from it, never assumed. Under it, each of the revision's members, read only, with its agent, its model and
  * its account as the revision names them (docs/plans/capacity.md, PR-7): they are what the operator approved; a member that names no
- * account takes its adapter's default at this launch, said with what that is now. Each line has its usage as the server last read it.
+ * account takes the login the server resolves at this launch, said as its view of the line names it now (launchAccountWords). Each line
+ * has its usage as the server last read it.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -65,7 +66,8 @@ watch(
   },
   { immediate: true },
 )
-const lines = computed(() => (props.body ? launchLines(props.body.crew.members ?? [], { agents: agents.value, doc: accounts.doc.value, managed: true, yolo: !!props.body.crew.yolo }) : []))
+const cap = useCapacity()
+const lines = computed(() => (props.body ? launchLines(props.body.crew.members ?? [], { agents: agents.value, doc: accounts.doc.value, managed: true, yolo: !!props.body.crew.yolo, view: (q) => cap.entry(q).view }) : []))
 const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
 function readBodyAgain() {
   if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})

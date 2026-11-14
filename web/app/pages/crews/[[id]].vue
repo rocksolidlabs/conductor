@@ -5,6 +5,7 @@ import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAf
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
+import type { SheetTarget } from '~/utils/crewLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -435,31 +436,39 @@ function launchNamed() {
   const label = runName.value
   nameOpen.value = false
   runName.value = ''
-  askLaunch('', label)
+  crewLaunch.ask('', label)
 }
 
 /**
- * A launch asks first (docs/plans/capacity.md, PR-7): the sheet lists each member with its agent, model, account and a line of its
- * usage, and its Launch launches. The crew shown is what launches: the draft on the crew's page (saved first when it changed), the
- * crew as saved from a row of the home or the palette.
+ * A launch asks first (docs/plans/capacity.md, PR-7): every launch of a crew, from this page or the app's palette, is asked through
+ * useCrewLaunch and opens the sheet, which lists each member with its agent, model, account and a line of its usage; only its Launch
+ * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
+ * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it.
  */
-const sheet = reactive<{ open: boolean; id: string; label: string; crew: { name: string; members: CrewInfo['members']; managed: boolean; yolo: boolean } | null }>({ open: false, id: '', label: '', crew: null })
-async function askLaunch(id = '', label = '') {
-  let c: Pick<CrewInfo, 'name' | 'members' | 'tasks' | 'yolo'> | undefined
-  if (id) {
-    try {
-      c = full.value[id] ?? (await api.getCrew(id))
-    } catch (e) {
-      fail('Launch failed', e)
-      return
-    }
-  } else c = draft.value
-  if (!c) return
-  Object.assign(sheet, { open: true, id, label, crew: { name: c.name, members: c.members, managed: !!c.tasks, yolo: c.yolo ?? yoloDefault.value } })
+const crewLaunch = useCrewLaunch()
+const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string }>({ open: false, target: null })
+function openSheet(id: string, label: string) {
+  const key = selectedKey.value
+  if (!id && (key === undefined || !draft.value)) return
+  const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
+  Object.assign(sheet, { open: true, target, at: key })
 }
-async function launchFromSheet() {
-  const { id, label } = sheet
-  await launch(id, label)
+watch(selectedKey, (k) => {
+  if (k !== sheet.at) sheet.open = false
+})
+watch(
+  crewLaunch.asked,
+  (a) => {
+    if (!a) return
+    crewLaunch.asked.value = null
+    openSheet(a.id, a.label)
+  },
+  { immediate: true },
+)
+async function launchFromSheet(read: CrewInfo | null) {
+  const t = sheet.target
+  if (!t || sheet.at !== selectedKey.value) return
+  await launch(t, read)
   sheet.open = false
 }
 
@@ -484,29 +493,18 @@ function hours(ttlSeconds: number): number {
 }
 
 /**
- * Launches a run. From the crew page (`id` empty) what changed is saved
- * first; from a row of the home the crew runs as saved. The server makes
- * the crew's view link, if it asks for one, and returns it this once: the
- * run page shows it when the launch opens that, else a dialog here does.
+ * Launches what the sheet was opened for: the draft is saved first (unless it changed since the sheet drew it: then nothing is sent),
+ * a saved crew by its id, as the sheet read it (`read`). The server makes the crew's view link, if it asks for one, and returns it this
+ * once: the run page shows it when the launch opens that, else a dialog here does.
  */
-async function launch(id = '', label = '') {
-  const key = id ? id : selectedKey.value
-  if (key === undefined) return
-  launchingKey.value = key
+async function launch(t: SheetTarget, read: CrewInfo | null) {
+  launchingKey.value = 'id' in t ? t.id : t.key
   try {
-    let c: CrewInfo | undefined
-    if (id) {
-      try {
-        c = full.value[id] ?? (await api.getCrew(id))
-      } catch (e) {
-        fail('Launch failed', e)
-        return
-      }
-    } else c = isDirty(key) ? await save() : saved.value
+    const c = 'id' in t ? read : drafts.value[t.key] === t.draft ? await save() : undefined
     if (!c) return
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      launched = await api.launchCrew(c.id, label.trim() ? { label: label.trim() } : undefined)
+      launched = await api.launchCrew(c.id, t.label.trim() ? { label: t.label.trim() } : undefined)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
@@ -584,8 +582,8 @@ usePalette().registerPage(() => ({
       icon: 'i-lucide-play',
       note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : undefined,
       disabled: c.where === 'host',
-      run: () => askLaunch(c.id),
-      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => askLaunch(c.id, label.trim()) },
+      run: () => crewLaunch.ask(c.id),
+      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => crewLaunch.ask(c.id, label.trim()) },
       actions: c.where === 'host' ? undefined : [{ id: 'field', kind: 'page' as const, target: c.id, label: 'Launch named…', icon: 'i-lucide-tag', kbds: ['L'], run: () => {} }],
     })),
   ],
@@ -630,7 +628,7 @@ usePalette().registerPage(() => ({
           </UDropdownMenu>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
             <UFieldGroup>
-              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="askLaunch()"><span class="hidden sm:inline">Launch run</span></UButton>
+              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="crewLaunch.ask()"><span class="hidden sm:inline">Launch run</span></UButton>
               <UPopover v-model:open="nameOpen" :content="{ align: 'end' }">
                 <UButton icon="i-lucide-chevron-down" :disabled="!!launchBlocked || saving" aria-label="Name this run" class="border-l border-inverted/20" data-launch-menu />
                 <template #content>
@@ -670,7 +668,7 @@ usePalette().registerPage(() => ({
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
             <span class="text-xs text-muted">plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
-          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="askLaunch($event)" />
+          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="crewLaunch.ask($event)" />
           <UEmpty
             v-else-if="loaded"
             icon="i-lucide-users"
@@ -788,7 +786,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
-      <CrewLaunchSheet v-model:open="sheet.open" :crew="sheet.crew" :agents="agents" :label="sheet.label" :launching="launchingKey !== undefined && launchingKey === (sheet.id || selectedKey)" @launch="launchFromSheet" />
+      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :agents="agents" :yolo-default="yoloDefault" :launching="launchingKey !== undefined" @launch="launchFromSheet" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">

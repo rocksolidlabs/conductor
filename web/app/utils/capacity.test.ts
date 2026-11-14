@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   WARN_PERCENT,
+  WARN_WORDS,
   accountChoices,
+  compactWords,
   accountOfLaunch,
   asCapacityEvent,
   capacityHostWords,
@@ -29,6 +31,7 @@ import {
   windowWords,
   type CapacityState,
   type CapacityView,
+  type CapacityWindow,
 } from './capacity'
 
 // Capacity's words (docs/plans/capacity.md, PR-5): the panel says what the server's view holds, in a fixed zone here so the resets
@@ -275,5 +278,35 @@ describe('the questions and the account choice', () => {
     expect(modelProblem('-m')).not.toBe('')
     expect(modelProblem('a b')).not.toBe('')
     expect(modelProblem('x'.repeat(101))).not.toBe('')
+  })
+})
+
+describe("the compact panel's words (the crew's sheet, a ticket's launch, Settings' Accounts)", () => {
+  const read = new Date(NOW - 3 * 60_000).toISOString()
+  const weekly = (percent: number, severity: CapacityWindow['severity'] = 'normal'): CapacityWindow => ({ source: 'provider', kind: 'weekly_all', name: 'Weekly, all models', percent, severity })
+  const ok = (windows: CapacityWindow[], over: Partial<CapacityView> = {}) => view({ windows, readAt: read, account: { id: 'default', plan: 'max' }, ...over })
+
+  it('says the plan, the windows and how fresh, with no warning below it all', () => {
+    expect(compactWords(ok([weekly(40)]), NOW)).toEqual({ line: 'Claude Max · Weekly, all models 40%', fresh: 'Read 3 minutes ago', warning: null, host: '' })
+  })
+
+  it("warns as the full panel does, at the provider's warning or critical severity or at 90% used, coloured by the worst severity", () => {
+    expect(compactWords(ok([weekly(60, 'warning')]), NOW).warning).toEqual({ words: WARN_WORDS, color: 'warning' })
+    expect(compactWords(ok([weekly(60, 'critical'), { ...weekly(10, 'warning'), kind: 'session', name: 'Five hours' }]), NOW).warning).toEqual({ words: WARN_WORDS, color: 'error' })
+    expect(compactWords(ok([weekly(WARN_PERCENT)]), NOW).warning).toEqual({ words: WARN_WORDS, color: 'warning' })
+    expect(compactWords(ok([weekly(WARN_PERCENT - 1)]), NOW).warning).toBeNull()
+  })
+
+  it('says where the figures come from when the server cannot say it is where the run executes', () => {
+    const words = "this server's login: if boxcar takes the run, its usage there is unknown"
+    expect(compactWords(ok([weekly(40)], { host: { kind: 'undetermined', words } }), NOW).host).toBe(words)
+    expect(compactWords(ok([weekly(40)], { host: { kind: 'native', name: 'box', words: 'never shown for a native host' } }), NOW).host).toBe('')
+  })
+
+  it('says a reading that is missing, old or failed in its own words, never as figures', () => {
+    expect(compactWords(view({ state: 'never_read', fresh: 'none' }), NOW)).toMatchObject({ line: 'Not read yet: not read since the server started', fresh: 'not read yet', warning: null })
+    expect(compactWords(ok([weekly(40)], { fresh: 'stale', readAt: new Date(NOW - 40 * 60_000).toISOString() }), NOW).fresh).toBe('Stale: read 40 minutes ago')
+    expect(compactWords(view({ state: 'error', words: 'the read failed: exit 1', readAt: read }), NOW)).toMatchObject({ line: 'Could not read: the read failed: exit 1', warning: null })
+    expect(compactWords(ok([]), NOW).line).toBe('Claude Max · no windows reported')
   })
 })

@@ -5,7 +5,7 @@ import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems a
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
-import { OWN_LOGIN, brakemanAccountItems, unlistedFolder } from '~/utils/crewLaunch'
+import { OWN_LOGIN, brakemanAccount } from '~/utils/crewLaunch'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -131,14 +131,14 @@ const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : 
 const accounts = useAccounts()
 onMounted(() => void accounts.store.load())
 const accountFolder = computed(() => form.value?.account?.trim() ?? '')
-const accountItems = computed(() => brakemanAccountItems(accounts.doc.value, adapter.value, accountFolder.value))
+const login = computed(() => brakemanAccount(accounts.doc.value, adapter.value, accountFolder.value))
+const accountItems = computed(() => login.value.items)
 const accountChoice = computed({
-  get: () => accountFolder.value || OWN_LOGIN,
+  get: () => login.value.value,
   set: (v: string) => {
     if (form.value) form.value.account = v === OWN_LOGIN ? '' : v
   },
 })
-const unlisted = computed(() => unlistedFolder(accounts.doc.value, adapter.value, accountFolder.value))
 // Until the catalog is read the agent's adapter is not known: the server checks it on the save.
 const problems = computed(() => (body.value ? configProblems(body.value, agents.value.length ? (adapter.value ?? '') : null) : {}))
 /** The server's words for the agent saved (Codex's read-only mode leaves its own MCP servers and exec-policy allow rules). */
@@ -235,7 +235,8 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>
       <UFormField v-if="accountItems.length" label="Account" description="Its default login on this machine, or an account added in Accounts." :error="fieldError('account')" :ui="fieldUi">
         <USelect v-model="accountChoice" :items="accountItems" class="w-full" aria-label="Account" data-brakeman-account-select />
-        <p v-if="unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>A folder not in Accounts: add it there to read its usage.</p>
+        <p v-if="login.unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>A folder not in Accounts: add it there to read its usage.</p>
+        <p v-if="login.retired" class="mt-1 text-xs text-warning [overflow-wrap:anywhere]" data-brakeman-account-retired>{{ login.retired }} is retired: Brakeman's turns are refused until another account is chosen.</p>
       </UFormField>
       <UFormField v-else label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">
         <DirInput v-model="form.account" placeholder="/home/me/.claude-work" picker-title="The agent's login folder" data-brakeman-account />

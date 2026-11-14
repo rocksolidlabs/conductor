@@ -8,7 +8,8 @@ import { capacityRefWords, changedFromBaseline, changedSince, parseRef, refDecis
  * differs from what it was as the brief was kept. A check receipt's chip carries its log's SHA-256, as kept. A record no page shows
  * by itself (a check's log, a command receipt, a Dispatch receipt, a comment) is read from the chip (BrakemanReceipt), with the token.
  * A capacity: ref's chip (AC1's reading, docs/plans/capacity.md, PR-7) names the agent and the account and says the reading's windows, from
- * the reading the server kept with the brief; its title holds every fact of it. It opens no page: the reading was a moment's.
+ * the reading the server kept with the brief, and when it was read; every fact of it opens from the chip (a popover). It opens no page:
+ * the reading was a moment's.
  * A decision record's chip (decision:<dr-n>) opens the record in the app's decision card (DecisionModal, GET /api/decisions/{did}),
  * whether a fact cites it or a proposal names it, done, refused or never run.
  *
@@ -94,10 +95,19 @@ const title = computed(() => {
       <NuxtLink v-if="to && !deleted" :to="to" class="truncate hover:underline" data-ref-link>{{ label }}</NuxtLink>
       <button v-else-if="opens && !deleted" type="button" class="truncate hover:underline" data-ref-link data-ref-open @click.prevent="opens()">{{ label }}</button>
       <button v-else-if="decision && !deleted" type="button" class="truncate hover:underline" data-ref-link :data-ref-decision="decision" @click="decisionModal.open(decision)">{{ label }}</button>
+      <!-- A capacity: ref's details open from the chip, by the keyboard and by touch as by a pointer. -->
+      <UPopover v-else-if="capacity && !deleted">
+        <button type="button" class="truncate hover:underline" data-ref-link data-ref-capacity-open>{{ label }}</button>
+        <template #content>
+          <ul class="flex max-w-[min(28rem,calc(100vw-2rem))] flex-col gap-1 p-3 text-xs [overflow-wrap:anywhere]" data-ref-capacity-details>
+            <li v-for="l in capacity.lines" :key="l">{{ l }}</li>
+          </ul>
+        </template>
+      </UPopover>
       <span v-else class="truncate" :data-ref-elsewhere="elsewhere || undefined">{{ label }}<template v-if="deleted"> (deleted)</template></span>
       <!-- Where a chip that opens nothing here is opened, in words a phone shows (a title is never seen on a touch screen). -->
       <span v-if="elsewhere && !deleted" class="whitespace-normal text-[10px] text-muted" data-ref-elsewhere-words>· {{ elsewhere }}</span>
-      <span v-if="capacity" class="text-[10px] text-muted" data-ref-capacity>· {{ capacity.summary }}</span>
+      <span v-if="capacity" class="text-[10px] text-muted" data-ref-capacity>· {{ capacity.summary }}<template v-if="capacity.read"> · {{ capacity.read }}</template></span>
       <span v-if="resolution?.now.sha256" class="font-mono text-[10px] text-muted">{{ resolution.now.sha256.slice(0, 12) }}</span>
       <BrakemanReceipt v-if="receipt && !deleted" :ref-name="refName" :resolution="resolution" :label="label" :kept-sha256="resolution?.now.sha256" />
     </UBadge>

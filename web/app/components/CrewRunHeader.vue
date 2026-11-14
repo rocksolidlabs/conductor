@@ -10,7 +10,7 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
-import { boundWords, namedAccounts } from '~/utils/crewLaunch'
+import { addMemberProblem, boundWords, namedAccounts } from '~/utils/crewLaunch'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -78,23 +78,21 @@ watch(
 // The accounts the members are bound to, by their labels; and what the ticket's revision named for each (its body never changes).
 const accounts = useAccounts()
 onMounted(() => void accounts.store.load())
-const named = ref<{ plan: string; members: Record<string, string> } | null>(null)
-watch(
-  () => props.run?.ticket?.plan,
-  async (plan) => {
-    if (!plan || named.value?.plan === plan) return
-    try {
-      const p = await dispatchApi.plan(plan)
-      if (props.run?.ticket?.plan === plan) named.value = { plan, members: namedAccounts(p.body.crew.members) }
-    } catch {
-      /* the lines say the bound login without what the revision named */
-    }
-  },
-  { immediate: true },
-)
-const logins = computed(() =>
-  (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, named.value?.plan === props.run?.ticket?.plan ? named.value?.members[m.name] : undefined, props.run?.class === 'brakeman') })),
-)
+// A failed read is said in the Logins, and read again as they open: the lines never pass for complete without it.
+const named = ref<{ plan: string; members?: Record<string, string>; error?: string } | null>(null)
+async function readNamed() {
+  const plan = props.run?.ticket?.plan
+  if (!plan || (named.value?.plan === plan && named.value.members)) return
+  try {
+    const p = await dispatchApi.plan(plan)
+    if (props.run?.ticket?.plan === plan) named.value = { plan, members: namedAccounts(p.body.crew.members) }
+  } catch (e) {
+    if (props.run?.ticket?.plan === plan) named.value = { plan, error: (e as Error).message }
+  }
+}
+watch(() => props.run?.ticket?.plan, readNamed, { immediate: true })
+const namedNow = computed(() => (named.value && named.value.plan === props.run?.ticket?.plan ? named.value : null))
+const logins = computed(() => (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, namedNow.value?.members?.[m.name], props.run?.class === 'brakeman') })))
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
@@ -116,10 +114,7 @@ const addError = ref('')
 const runNames = computed(() => props.run?.members.map((m) => m.name) ?? [])
 // The run's people's names, which the server refuses for a member added to the run (a person is never a member).
 const peopleNames = computed(() => props.run?.people?.map((p) => p.name) ?? [])
-const addInvalid = computed(() => {
-  const m = member.value[0]
-  return !m || !m.agentId || !!memberNameError(m.name, runNames.value, peopleNames.value)
-})
+const addInvalid = computed(() => !!addMemberProblem(member.value[0], runNames.value, peopleNames.value))
 
 async function openAdd() {
   addError.value = ''
@@ -262,10 +257,11 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
         </span>
         <!-- Each member's login and model as the launch bound them, behind a button: the bar keeps its height, the tiles theirs. -->
-        <UPopover v-if="logins.length" :content="{ align: 'start' }">
+        <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && namedNow?.error && readNamed()">
           <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none self-center" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button><span class="hidden sm:inline">Logins</span></UButton>
           <template #content>
             <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
+              <li v-if="namedNow?.error" class="text-warning [overflow-wrap:anywhere]" data-run-logins-unread>Plan revision {{ run?.ticket?.planN }} could not be read, so which member took the default at the launch is not said: {{ namedNow.error }}</li>
               <li v-for="l in logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
                 <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
                 <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>

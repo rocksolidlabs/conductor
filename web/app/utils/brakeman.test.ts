@@ -746,6 +746,9 @@ describe("a capacity: ref's chip (docs/plans/capacity.md, PR-7)", () => {
     const w = capacityRefWords(reading, now, 'UTC')!
     expect(w.label).toBe('capacity of Claude Code on Work')
     expect(w.summary).toBe('Weekly, all models 40%')
+    // When the reading was made is in the chip's own text; every fact opens from the chip, one a line, as its title holds them.
+    expect(w.read).toBe('read Tue 10 Nov 23:57')
+    expect(w.lines).toEqual(w.title.split('\n'))
     expect(w.title.split('\n')).toEqual([
       'Claude Max',
       'Weekly, all models: 40% used, resets Mon 16 Nov 03:00, in 5 days',
@@ -760,6 +763,7 @@ describe("a capacity: ref's chip (docs/plans/capacity.md, PR-7)", () => {
     expect(w.label).toBe('capacity of Claude Code on its default login')
     expect(w.summary).toBe('Signed out')
     expect(w.title).toBe('Signed out: the agent is signed out on this account')
+    expect(w.read).toBe('')
     expect(capacityRefWords({ ...reading, windows: [] }, now)!.summary).toBe('no windows reported')
     expect(capacityRefWords(undefined, now)).toBeNull()
   })
@@ -769,5 +773,9 @@ describe("a capacity: ref's chip (docs/plans/capacity.md, PR-7)", () => {
     const chip = readFileSync(new URL('../components/BrakemanRefChip.vue', import.meta.url), 'utf8')
     expect(chip).toContain('capacityRefWords(props.resolution?.capacity, Date.now())')
     expect(chip).toContain('data-ref-capacity')
+    // Its text carries when the reading was made, and its details open from a button in a popover, not from a title alone.
+    expect(chip).toContain('<template v-if="capacity.read"> · {{ capacity.read }}</template>')
+    expect(chip).toMatch(/<UPopover v-else-if="capacity && !deleted">\s*<button type="button"[^>]*data-ref-capacity-open/)
+    expect(chip).toContain('<li v-for="l in capacity.lines" :key="l">{{ l }}</li>')
   })
 })
