@@ -519,6 +519,10 @@ test("a reload Nuxt makes itself, while the page holds a link joined from the wo
     await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
     // The joined link is still listed (the browser keeps the list), and the view link is not kept.
     await expect(shared).toHaveCount(1)
+    // The state of the page that loaded, walked again: it holds neither link, nor the workbench token.
+    const after = await payloadState(page)
+    expect(after, 'the state is read after the reload').toContain('$s')
+    for (const t of [state.token, joined, viewToken, url]) expect(after, 'after the reload').not.toContain(t)
     expect(await page.evaluate(() => sessionStorage.getItem('nuxt:reload:state'))).toBeNull()
     for (const t of [joined, viewToken]) expect(tabLines()).not.toContain(t)
   } finally {
@@ -580,8 +584,26 @@ test('the gate open after a refusal, a page of another layout, back to the workb
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       () => (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt._conductorWorkbenchToken.needsToken.value as boolean,
     )
+  // The navigation is started and not handed back: a wait inside the page ends with the page's context; the test waits on what is shown.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const push = (to: string) => page.evaluate((to) => (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push(to), to)
+  const push = (to: string) => page.evaluate((to) => void (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push(to), to)
+  // Each time the gate is shown or stops being shown, recorded as the page draws it (`gate open`, `gate closed`).
+  const rec = await recorder(page)
+  await page.addInitScript(() => {
+    const isOpen = () =>
+      Array.from(document.querySelectorAll('[role="dialog"]')).some(
+        (d) => d.getAttribute('data-state') !== 'closed' && document.getElementById(d.getAttribute('aria-labelledby') ?? '')?.textContent?.trim() === 'Workbench token',
+      )
+    let was = false
+    new MutationObserver(() => {
+      const now = isOpen()
+      if (now === was) return
+      was = now
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      void (window as any).__conductorRecord(now ? 'gate open' : 'gate closed')
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state', 'aria-labelledby'] })
+  })
+  const gateSince = (from: number) => rec.lines.slice(from).filter((l) => l.startsWith('gate '))
   await page.goto('/')
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   await expect(gate).toHaveCount(0)
@@ -596,21 +618,30 @@ test('the gate open after a refusal, a page of another layout, back to the workb
   await expect(gate).toHaveCount(0)
   expect(await asked()).toBe(true)
   // Back in the workbench: the gate is shown again, with no new refusal.
+  const back = rec.lines.length
   await push('/')
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   await expect(gate).toBeVisible()
   await expect(gate.locator('input')).toHaveValue(state.token)
   expect(refusals).toBe(1)
+  // It opened once and stays open: still shown after a read the page sends and the server answers, and it never closed meanwhile.
+  const answered = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 200)
+  await shown(page)
+  await answered
+  await expect(gate).toBeVisible()
+  await expect.poll(() => gateSince(back)).toEqual(['gate open'])
   // Cancelled there, the ask ends; the next refusal opens the gate again.
   await gate.getByRole('button', { name: 'Cancel' }).click()
   await expect(gate).toHaveCount(0)
   expect(await asked()).toBe(false)
+  await expect.poll(() => gateSince(back)).toEqual(['gate open', 'gate closed'])
   refuse = 1
   refused = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 401)
   await shown(page)
   await refused
   await expect(gate).toBeVisible()
   expect(refusals).toBe(2)
+  await expect.poll(() => gateSince(back)).toEqual(['gate open', 'gate closed', 'gate open'])
   await ctx.close()
 })
 
