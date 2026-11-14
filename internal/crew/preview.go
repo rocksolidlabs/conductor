@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -352,7 +353,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 	if err := checkWorktreesDir(r.cwd); err != nil {
 		return unreserve(err)
 	}
-	reused, err := previewReusable(ctx, p.dir, p.commit)
+	reused, err := previewReusable(ctx, r.cwd, p.dir, p.commit)
 	if err != nil {
 		return unreserve(err)
 	}
@@ -480,13 +481,31 @@ func (e *Engine) dropPreview(p *preview) {
 }
 
 // previewReusable reports whether a checkout at dir is there to be taken
-// as it is: false for none; true for one checkoutIntact finds at commit
-// with no tracked change. Any other is refused with its path and what is
-// wrong, and nothing of it is removed. Untracked files, a dev server's
-// caches, are left as they are.
-func previewReusable(ctx context.Context, dir, commit string) (bool, error) {
-	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+// as it is: false for none; true for one that is, in this order, a
+// directory (looked at before any git runs in it, never a link), the top
+// of its own work tree, a worktree of the repository at repo (its common
+// git directory that repository's, each folder compared by identity), and
+// at commit with no tracked change (checkoutIntact). Any other is refused
+// with its path and what is wrong, and nothing of it is removed.
+// Untracked files, a dev server's caches, are left as they are.
+func previewReusable(ctx context.Context, repo, dir, commit string) (bool, error) {
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
+	}
+	refuse := func(what string) (bool, error) {
+		return false, fmt.Errorf("%w: %s %s; nothing of it is removed", ErrPreviewRefused, dir, what)
+	}
+	if err != nil || !fi.IsDir() {
+		return refuse("is there and is not a directory")
+	}
+	top, common, err := gitcli.RepoOf(ctx, dir)
+	_, own, oerr := gitcli.RepoOf(ctx, repo)
+	switch {
+	case err != nil || !sameFolder(top, dir):
+		return refuse("is there and is not the top of a git work tree")
+	case oerr != nil || !sameFolder(common, own):
+		return refuse("is there and is not a worktree of the run's repository")
 	}
 	moved, changed, _, err := checkoutIntact(ctx, dir, commit)
 	switch {
@@ -498,6 +517,14 @@ func previewReusable(ctx context.Context, dir, commit string) (bool, error) {
 		return false, fmt.Errorf("%w: %s has changes to tracked files: %s; nothing of it is removed", ErrPreviewRefused, dir, changedList(changed))
 	}
 	return true, nil
+}
+
+// sameFolder reports whether the paths a and b name one folder, by its
+// identity, whatever links their spellings go through.
+func sameFolder(a, b string) bool {
+	x, err := os.Stat(a)
+	y, err2 := os.Stat(b)
+	return err == nil && err2 == nil && os.SameFile(x, y)
 }
 
 // previewCheckoutTimeout bounds the making of a preview's checkout, under
@@ -707,14 +734,14 @@ func (e *Engine) finishPreview(p *preview, tried <-chan struct{}) {
 	h := treeEnd{t: p.t, why: p.why}
 	e.mu.Unlock()
 	again := e.endTree(p.r, h)
-	for again != nil {
+	// No next try is armed once the engine has ended.
+	for again != nil && e.life.Err() == nil {
 		select {
 		case <-e.previewTimer(previewRetry):
 			if err := again(); err == nil || errors.Is(err, ledger.ErrClosed) {
 				again = nil
 			}
 		case <-e.life.Done():
-			again = nil
 		}
 	}
 	e.mu.Lock()

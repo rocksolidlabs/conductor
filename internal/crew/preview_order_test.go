@@ -470,7 +470,7 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 			if end == "stop" {
 				// A stopped run opens no preview: the checkout is judged as
 				// an open would judge it.
-				if reused, err := previewReusable(t.Context(), checkout, ts.Attempt.Result); err != nil || !reused {
+				if reused, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result); err != nil || !reused {
 					t.Fatalf("the checkout after the stop: %v, %v", reused, err)
 				}
 				return

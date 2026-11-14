@@ -551,15 +551,15 @@ func TestAPreviewCheckoutWithChangesIsRefused(t *testing.T) {
 	if n := adds(t, log, checkout); n != 1 {
 		t.Fatalf("%d adds of the checkout", n)
 	}
-	// A directory there whose .git names no repository: refused, as git
-	// cannot compare it, and left as it is.
+	// A directory there whose .git names no repository: refused, as no
+	// work tree of git's, and left as it is.
 	runGit(t, dir, "worktree", "remove", "--force", checkout)
 	if err := os.MkdirAll(checkout, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(checkout, ".git"), "gitdir: "+filepath.Join(t.TempDir(), "elsewhere")+"\n")
 	_, err = e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
-	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), checkout+" could not be compared with") {
+	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), checkout+" is there and is not the top of a git work tree") {
 		t.Fatalf("a directory whose .git names no repository: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(checkout, ".git")); err != nil {
