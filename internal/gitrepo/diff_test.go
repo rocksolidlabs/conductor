@@ -205,6 +205,21 @@ func pairs(commits []string) [][2]string {
 	return out
 }
 
+// onTrees is listed, withRenames' answer, each side's entry taken from
+// plain by its path, so that go-git's patch reads it from the repository
+// (withRenames' search reads its files from memory).
+func onTrees(plain, listed object.Changes) object.Changes {
+	from, to := map[string]object.ChangeEntry{}, map[string]object.ChangeEntry{}
+	for _, ch := range plain {
+		from[ch.From.Name], to[ch.To.Name] = ch.From, ch.To
+	}
+	out := make(object.Changes, len(listed))
+	for i, ch := range listed {
+		out[i] = &object.Change{From: from[ch.From.Name], To: to[ch.To.Name]}
+	}
+	return out
+}
+
 // patchDetail is the files of changes as diffTrees lists them, counted by
 // go-git's patch (patchCounts): what Compare and CommitDetail answer.
 func patchDetail(t *testing.T, changes object.Changes) Detail {
@@ -338,8 +353,11 @@ func TestALineDiffCountsAsGoGitsPatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, looked, dropped := withRenames(r.Storer, plain)
-		want := patchDetail(t, listed)
+		listed, looked, dropped, err := withRenames(ctx, r.Storer, dir, plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := patchDetail(t, onTrees(plain, listed))
 		want.RenamesCut = renamesCut(plain, listed, looked, dropped)
 		if all := patchDetail(t, changes); !want.RenamesCut && !slices.Equal(all.Changes, want.Changes) {
 			t.Errorf("%s..%s: renames not cut, %+v; go-git's defaults list %+v", short(p[0]), short(p[1]), want.Changes, all.Changes)

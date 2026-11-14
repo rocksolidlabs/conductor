@@ -30,6 +30,13 @@ const hangWait = time.Minute
 // words that name what was read (what), back by then or not.
 func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) error {
 	t.Helper()
+	return withinFor(t, hangWait, pipe, what, f)
+}
+
+// withinFor is within with wait in hangWait's place before f's context is
+// cancelled.
+func withinFor(t *testing.T, wait time.Duration, pipe, what string, f func(ctx context.Context) error) error {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -37,7 +44,7 @@ func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) 
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(hangWait):
+	case <-time.After(wait):
 	}
 	cancel()
 	letGo := time.After(hangWait)
@@ -47,9 +54,9 @@ func within(t *testing.T, pipe, what string, f func(ctx context.Context) error) 
 		}
 		select {
 		case err := <-done:
-			t.Fatalf("%s: not back after %v; back once let go, with %v", what, hangWait, err)
+			t.Fatalf("%s: not back after %v; back once let go, with %v", what, wait, err)
 		case <-letGo:
-			t.Fatalf("%s: not back after %v, nor %v after it was let go", what, hangWait, hangWait)
+			t.Fatalf("%s: not back after %v, nor %v after it was let go", what, wait, hangWait)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -205,11 +212,12 @@ func TestARepositorysOwnFilesAreRefusedUnlessRegularWithinTheirBound(t *testing.
 // The git binary that reads FileAt's and a comparison's files opens the
 // repository's files itself, and its batch reads look an object up by its
 // id alone, never as a ref's name: with packed-refs a named pipe with no
-// writer, FileAt and Compare read (FileAt's cap, shortened, would end a
-// git that waited in its open: TestFileAtAnswersItsCapOrTheCallersOwnError)
-// and no git is left holding the pipe; Commits and CommitDetail refuse the
-// pipe at once. A repository as git wrote it is read with the product's
-// cap.
+// writer, FileAt and Compare read and no git is left holding the pipe;
+// Commits and CommitDetail refuse the pipe at once. The reads run under
+// the product's caps (maxGitRead, maxCompareRead), and each is waited for
+// as long as both together, the test's timeout above that: a git that
+// waited in its open would be ended at its cap and the read answer the
+// cap's error. A repository as git wrote it is read too.
 func TestGitReadsAnObjectByItsIDWithoutOpeningARef(t *testing.T) {
 	r := linked(t)
 	pipe := r.files["packed-refs"]
@@ -219,11 +227,9 @@ func TestGitReadsAnObjectByItsIDWithoutOpeningARef(t *testing.T) {
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	gitCap = time.Second
-	defer func() { gitCap = maxGitRead }()
 	want := map[string]error{"FileAt": nil, "Commits": ErrUnreadable, "CommitDetail": ErrUnreadable, "Compare": nil}
 	for _, rd := range readers {
-		err := within(t, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
+		err := withinFor(t, maxGitRead+maxCompareRead, pipe, "packed-refs is a named pipe with no writer, "+rd.name, func(ctx context.Context) error { return rd.read(ctx, r) })
 		if !errors.Is(err, want[rd.name]) || (err == nil) != (want[rd.name] == nil) {
 			t.Errorf("%s: %v, want %v", rd.name, err, want[rd.name])
 		}
@@ -240,7 +246,6 @@ func TestGitReadsAnObjectByItsIDWithoutOpeningARef(t *testing.T) {
 			t.Errorf("open packed-refs for writing: %v, want ENXIO (no reader)", err)
 		}
 	}
-	gitCap = maxGitRead
 	ordinary := linked(t)
 	if err := readers[len(readers)-1].read(context.Background(), ordinary); err != nil {
 		t.Errorf("FileAt with the product's cap: %v", err)
@@ -529,6 +534,107 @@ func TestFileAtAnswersItsCapOrTheCallersOwnError(t *testing.T) {
 			if !errors.Is(err, c.want) || (c.want != ErrGitCap && errors.Is(err, ErrGitCap)) || !made || openings != 1 {
 				t.Errorf("FileAt: %v after %d openings (config made a pipe: %v), want %v after one", err, openings, made, c.want)
 			}
+			noReader(t, config, "FileAt")
+		})
+	}
+}
+
+// noReader fails the test when a process has the named pipe at path open
+// for reading, or waits in its open of it: a non-blocking open of it for
+// writing succeeds only then. what is the read that has returned.
+func noReader(t *testing.T, path, what string) {
+	t.Helper()
+	if fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		syscall.Close(fd)
+		t.Errorf("a process still has %s open for reading after %s returned", filepath.Base(path), what)
+	} else if err != syscall.ENXIO {
+		t.Errorf("open %s for writing: %v, want ENXIO (no reader)", filepath.Base(path), err)
+	}
+}
+
+// A comparison's git runs end at the comparison's cap (compareCap), which
+// takes the caller's context's place in none of its errors: with a named
+// pipe the repository's configuration includes (include.path, which only
+// git reads), the first git a comparison starts waits in its open of the
+// pipe. The cap shortened, Compare and CommitDetail answer the cap's
+// error; the cap far above the test's waits and the caller's context
+// ended once git has the pipe open (writeEnd), they answer the caller's
+// own error. After each returns no process has the pipe open.
+func TestAComparisonAnswersItsCapOrTheCallersOwnError(t *testing.T) {
+	r := ordinary(t)
+	pipe := fifo(t, filepath.Join(t.TempDir(), "included"))
+	config, err := os.OpenFile(filepath.Join(r.wt, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(config, "[include]\n\tpath = %s\n", pipe); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reads := map[string]func(ctx context.Context) error{
+		"Compare": func(ctx context.Context) error {
+			_, err := Compare(ctx, r.wt, r.c1, r.c2)
+			return err
+		},
+		"CommitDetail": func(ctx context.Context) error {
+			_, err := CommitDetail(ctx, r.wt, r.c2)
+			return err
+		},
+	}
+	for name, read := range reads {
+		t.Run(name+", the cap ends git", func(t *testing.T) {
+			compareCap = time.Second
+			defer func() { compareCap = maxCompareRead }()
+			err := within(t, pipe, "a pipe the configuration includes, "+name, read)
+			if !errors.Is(err, ErrGitCap) || err.Error() != "the git binary reading the file was ended at its cap of 1s" {
+				t.Errorf("%s: %v, want the cap's error with the shortened cap", name, err)
+			}
+			noReader(t, pipe, name)
+		})
+		t.Run(name+", the caller's context ends first", func(t *testing.T) {
+			compareCap = 10 * hangWait
+			back := make(chan struct{})
+			defer func() {
+				select {
+				case <-back:
+					compareCap = maxCompareRead
+				case <-time.After(hangWait):
+					t.Errorf("%s is still not back %v after the helper let it go; the cap is left as the call reads it", name, hangWait)
+				}
+			}()
+			held := false
+			err := within(t, pipe, "a pipe the configuration includes, git has it open, "+name, func(helper context.Context) error {
+				defer close(back)
+				ctx, cancel := context.WithCancel(helper)
+				defer cancel()
+				returned, polled, made := make(chan struct{}), make(chan bool, 1), make(chan struct{})
+				close(made)
+				go func() {
+					fd := writeEnd(ctx, pipe, made)
+					if fd < 0 {
+						polled <- false
+						return
+					}
+					cancel()
+					select {
+					case <-returned:
+					case <-helper.Done():
+					}
+					syscall.Close(fd)
+					polled <- true
+				}()
+				err := read(ctx)
+				close(returned)
+				cancel()
+				held = <-polled
+				return err
+			})
+			if !held || !errors.Is(err, context.Canceled) || errors.Is(err, ErrGitCap) {
+				t.Errorf("%s: %v (git had the pipe open: %v), want the caller's own error (%v)", name, err, held, context.Canceled)
+			}
+			noReader(t, pipe, name)
 		})
 	}
 }
