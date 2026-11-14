@@ -216,14 +216,15 @@ export function useCapacity() {
     read: (q, check, signal) => request<CapacityView>('/api/capacity/read', { method: 'POST', body: { agent: q.agent, ...(q.account ? { account: q.account } : {}), ...(check ? { check: true } : {}) }, signal }),
   })
   store.changed = () => version.value++
-  // The token is watched while a page shows capacity: another one empties the store, so nothing asked with the old one is shown.
-  const held = useState<string | null>('capacityToken', () => null)
+  // The token is watched while a page shows capacity, by its count of changes (no copy of it is kept): another one empties the store,
+  // so nothing asked with the old one is shown.
+  const seen = useState<number | null>('capacityTokenChanges', () => null)
   const judge = () => {
-    if (held.value !== null && held.value !== admin.token.value) store.forget()
-    held.value = admin.token.value
+    if (seen.value !== null && seen.value !== admin.changes.value) store.forget()
+    seen.value = admin.changes.value
   }
   judge()
-  watch(admin.token, judge)
+  watch(admin.changes, judge)
 
   /** What is known of q, followed by a computed. */
   function entry(q: CapacityQuery) {
