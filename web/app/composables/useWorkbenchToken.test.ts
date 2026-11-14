@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { computed, ref, type Ref } from 'vue'
+import { computed, reactive, toRef } from 'vue'
 import { useWorkbenchToken } from './useWorkbenchToken'
 
 // The workbench token's store in a browser (the desktop app's bridge is the browser e2e's, token-fragment.spec.ts): the token this
 // page sends, the one the browser keeps (localStorage), and what the page knows of its token (a link's being tried, or one the server
-// refused). Each `load` is a new page of the tab: a new useState, the page reading what the storage keeps, as the store does at a load.
-// The tab's own storage is watched too: the store writes nothing there, in any case. Tokens are invented strings.
+// refused). Each `load` is a new page of the tab: a new Nuxt app, the page reading what the storage keeps, as the store does at a load.
+// The tab's own storage is watched too: the store writes nothing there, in any case; nor, after any of its events, does the state
+// Nuxt writes there at a reload it makes itself hold a token. Tokens are invented strings.
 
 const KEY = 'conductor.workbenchToken'
 const KEPT = 'kept-token-0123456789'
@@ -33,17 +34,40 @@ class FakeStorage {
 let local: FakeStorage
 let session: FakeStorage
 const reload = vi.fn()
+/** Every token a test uses, none of which the page's serialised state may hold. */
+const TOKENS = [KEPT, LINKED, LATER]
 
-/** A load of the page: a new useState, with what the storage keeps as the token sent; then the plugin's `fromLink`. */
+/**
+ * A load of the page: a new Nuxt app, its payload's state written by useState as Nuxt's is (what Nuxt writes into the tab's storage
+ * at a reload it makes itself); then the plugin's `fromLink`. Every member of the store is called through a check that, after it, no
+ * key of that state holds a token.
+ */
 function load(link = '') {
-  const state = new Map<string, Ref<unknown>>()
+  const app = { payload: { state: reactive({}) as Record<string, unknown> } }
+  vi.stubGlobal('useNuxtApp', () => app)
   vi.stubGlobal('useState', (key: string, init: () => unknown) => {
-    if (!state.has(key)) state.set(key, ref(key === 'workbenchToken' ? (local.getItem(KEY) ?? '') : init()))
-    return state.get(key)
+    const r = toRef(app.payload.state, `$s${key}`)
+    if (r.value === undefined) r.value = init()
+    return r
   })
+  const noToken = (after: string) => {
+    for (const [key, value] of Object.entries(app.payload.state))
+      for (const t of TOKENS) expect(JSON.stringify(value), `${key} after ${after}`).not.toContain(t)
+  }
   const s = useWorkbenchToken()
-  s.fromLink(link)
-  return s
+  const checked = new Proxy(s, {
+    get(target, k: string) {
+      const v = target[k as keyof typeof target]
+      if (typeof v !== 'function') return v
+      return (...args: unknown[]) => {
+        const out = (v as (...a: unknown[]) => unknown)(...args)
+        noToken(`${k}(${args.join(', ')})`)
+        return out
+      }
+    },
+  })
+  checked.fromLink(link)
+  return checked
 }
 
 beforeEach(() => {
@@ -238,6 +262,37 @@ describe('a token the browser keeps', () => {
     expect(s.operator()).toBe(false)
     expect(reload).not.toHaveBeenCalled()
     expect(local.getItem(KEY)).toBe(LATER)
+  })
+
+  it('refused, then the gate cancelled: the ask ends, the refusal stands, and the next refusal asks again', () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    s.answered(KEPT, false)
+    expect(s.needsToken.value).toBe(true)
+    s.cancel()
+    expect(s.needsToken.value).toBe(false)
+    expect(s.operator()).toBe(false)
+    expect(s.token.value).toBe(KEPT)
+    expect(local.getItem(KEY)).toBe(KEPT)
+    s.answered(KEPT, false)
+    expect(s.needsToken.value).toBe(true)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it("is one store for the page, read by every caller, outside the page's state; its changes are counted, and a save of the same token is none", () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    const other = useWorkbenchToken()
+    expect(other.token.value).toBe(KEPT)
+    const at = s.changes.value
+    s.set(KEPT)
+    expect(other.changes.value).toBe(at)
+    s.set(LATER)
+    expect(other.token.value).toBe(LATER)
+    expect(other.changes.value).toBe(at + 1)
+    other.clear()
+    expect(s.token.value).toBe('')
+    expect(s.changes.value).toBe(at + 2)
   })
 
   it('is forgotten by "Forget token": nothing sent, nothing kept, and a later link is then taken', () => {
