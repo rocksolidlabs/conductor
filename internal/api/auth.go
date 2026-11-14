@@ -24,7 +24,11 @@ type principal struct {
 	// empty for every token of the server's own chain.
 	subject string
 	name    string
-	link    *share.Link
+	// unchecked is a token the identity provider did not judge
+	// (providerPrincipal): tokenPrincipal answers its request (notChecked)
+	// and hands no caller such a principal.
+	unchecked bool
+	link      *share.Link
 	// runOf answers the run a session is a member of, for a run link
 	// (Server.runOf).
 	runOf func(sessionID string) (runID string, ok bool)
@@ -132,20 +136,29 @@ func presentedToken(r *http.Request, allowQuery bool) string {
 // authenticate resolves a presented token to a principal: the workbench
 // token, each host token, the share links, and only then, for a token none
 // of them knows, the identity provider (providerPrincipal). Unknown tokens
-// yield an empty principal; callers decide the response.
-func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
-	return s.tokenPrincipal(r, presentedToken(r, allowQuery))
+// yield an empty principal; callers decide the response. ok false: r was
+// answered already (tokenPrincipal), and the caller writes nothing more.
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, allowQuery bool) (principal, bool) {
+	return s.tokenPrincipal(w, r, presentedToken(r, allowQuery))
 }
 
-// tokenPrincipal is authenticate's principal for tok, presented with r.
-func (s *Server) tokenPrincipal(r *http.Request, tok string) principal {
+// tokenPrincipal is authenticate's principal for tok, presented with r:
+// the one place a request's principal is made. A token the identity
+// provider did not judge is answered here, before any answer that depends
+// on who the caller is (notChecked), and ok is false.
+func (s *Server) tokenPrincipal(w http.ResponseWriter, r *http.Request, tok string) (principal, bool) {
 	if tok == "" {
-		return principal{}
+		return principal{}, true
 	}
 	if p, known := s.chainPrincipal(tok); known {
-		return p
+		return p, true
 	}
-	return s.providerPrincipal(r, tok)
+	p := s.providerPrincipal(r, tok)
+	if p.unchecked {
+		s.notChecked(w, r)
+		return principal{}, false
+	}
+	return p, true
 }
 
 // chainPrincipal is the principal of tok in the server's own chain (the
@@ -178,7 +191,10 @@ func (s *Server) chainPrincipal(tok string) (principal, bool) {
 // handler finds the principal in the request's context (actorOf).
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p := s.authenticate(r, false)
+		p, ok := s.authenticate(w, r, false)
+		if !ok {
+			return
+		}
 		if !p.admin {
 			s.unauthorized(w, r)
 			return
@@ -196,4 +212,16 @@ func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="conductor"`)
 	writeError(w, http.StatusUnauthorized, "unauthorized", "workbench token required")
+}
+
+// notChecked answers a request whose token the identity provider did not
+// judge (tokenPrincipal): 429 past the rate limit, as a refused token is
+// answered, else 503 not_checked in the server's own words, with no
+// WWW-Authenticate, since the credential was not refused.
+func (s *Server) notChecked(w http.ResponseWriter, r *http.Request) {
+	if !s.limiter.allow(clientKey(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
+		return
+	}
+	writeError(w, http.StatusServiceUnavailable, "not_checked", "the credential could not be checked for now; try again")
 }

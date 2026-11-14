@@ -21,9 +21,10 @@ import (
 // expired or revoked is refused as a link, so a token of this server's own
 // never reaches a provider and the free path never waits on one. Its
 // answer goes through the guard (guardIdentity, extensions.go), which
-// bounds it by ext.IdentityWait and answers the free default's (no
-// principal) for a late, failing, panicking or invalid answer and for one
-// with no grant; the guard's log names the failure's kind and count, never
+// bounds it by ext.IdentityWait: a principal with no grant is no
+// principal, and a token the provider did not judge (judge: not started,
+// busy, late, failing, panicking or invalid) is answered 503
+// (tokenPrincipal); the guard's log names the failure's kind and count, never
 // the provider's words, which may quote the token. A provider's principal
 // is what its grants make it here (grantPrincipal), and the receipts of
 // what it does are kept under its subject (actorOf), never "admin".
@@ -36,13 +37,22 @@ import (
 
 // providerPrincipal is the identity provider's principal for tok, a token
 // the chain does not know (tokenPrincipal), presented with r: the empty
-// principal unless the provider recognises tok with a grant.
+// principal unless the provider recognises tok with a grant, and an
+// unchecked one when a registered provider did not judge it. A build with
+// no provider registered judges every such token: no principal.
 func (s *Server) providerPrincipal(r *http.Request, tok string) principal {
-	pr, ok, err := s.exts.identity.Authenticate(r.Context(), tok)
-	if err != nil || !ok {
+	g, ok := s.exts.identity.(guardIdentity)
+	if !ok {
 		return principal{}
 	}
-	return s.grantPrincipal(pr)
+	pr, admitted, judged := g.judge(r.Context(), tok)
+	switch {
+	case admitted:
+		return s.grantPrincipal(pr)
+	case !judged && s.identityName() != "":
+		return principal{unchecked: true}
+	}
+	return principal{}
 }
 
 // grantPrincipal is what pr's grants make it here: ext.GrantAdmin what the
@@ -63,19 +73,6 @@ func (s *Server) grantPrincipal(pr ext.Principal) principal {
 		}
 	}
 	return p
-}
-
-// hostPrincipal is the principal of tok, presented with r, and whether it
-// authorizes a host registration: the workbench token, a host token, or
-// an identity provider's principal with either grant, whose subject the
-// connection keeps. A share link is no host's, and a link's token never
-// reaches the provider (tokenPrincipal).
-func (s *Server) hostPrincipal(r *http.Request, tok string) (principal, bool) {
-	if tok == "" {
-		return principal{}, false
-	}
-	p := s.tokenPrincipal(r, tok)
-	return p, p.host
 }
 
 // watchedToken is the credential of a long-lived connection an identity

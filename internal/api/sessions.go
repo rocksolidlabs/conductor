@@ -703,7 +703,10 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	p := s.authenticate(r, true)
+	p, ok := s.authenticate(w, r, true)
+	if !ok {
+		return
+	}
 	// A switchyard's workbench token reads what its listing says, with no role.
 	if p.role(id) == "" && !p.admin {
 		if !s.limiter.allow(clientKey(r)) {

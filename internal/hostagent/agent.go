@@ -2094,9 +2094,12 @@ type RefusedError struct {
 	Withheld bool
 }
 
-// CredentialWithheld is Withheld: a server's publication refused so is
-// owed, and the next Share publishes it.
-func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
+// CredentialWithheld is Withheld on a 401: a server's publication refused
+// so is owed, and the next Share publishes it. A 503 is no refusal of a
+// credential (Retryable).
+func (e *RefusedError) CredentialWithheld() bool {
+	return e.Withheld && e.Status == http.StatusUnauthorized
+}
 
 func (e *RefusedError) Error() string {
 	if e.Withheld && e.Status == http.StatusUnauthorized {
@@ -2115,9 +2118,12 @@ func (e *RefusedError) Error() string {
 // Retryable says whether the refusal passes with time: 429, a rate or a
 // limit of live sessions per address (round 14: a crew launched from a home
 // running other sessions met the switchyard's limits and was never
-// published), and how long to wait first, when the rendezvous said.
+// published), and 503, a registration the rendezvous could not serve for
+// now (its credential not checked yet among them), which is a dial that
+// failed, never a refused credential; and how long to wait first, when the
+// rendezvous said.
 func (e *RefusedError) Retryable() (bool, time.Duration) {
-	return e.Status == http.StatusTooManyRequests, e.RetryAfter
+	return e.Status == http.StatusTooManyRequests || e.Status == http.StatusServiceUnavailable, e.RetryAfter
 }
 
 // refusal reads a refused handshake's response (the WebSocket library keeps

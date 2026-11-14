@@ -445,7 +445,8 @@ provider's principal with either grant, HTTP API; on a switchyard with
 often it registers, how many live sessions it holds and what it relays). A
 refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 `429 rate_limited` (registrations), `429 open_host_limit` (live sessions),
-`401 unauthorized`. A server publishing its sessions tries a 429 again after
+`401 unauthorized`, `503 not_checked` (a provider's credential not checked
+for now). A server publishing its sessions tries a 429 or a 503 again after
 15 s, 30 s, 1 min, 2 min and 2 min, or after the `Retry-After` it is given
 when longer, and stops when the session ends. Text frames are JSON; binary
 frames are RELAY envelopes.
@@ -2813,9 +2814,16 @@ link is refused as a link and never asked of a provider, nor is a session's
 agent token. A provider's principal with the `admin` grant is admin wherever
 the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
-host token's, at `GET /ws/host` too; a principal without a grant, an answer
-late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. One with the `decide` grant and not the `admin` grant (a
+host token's, at `GET /ws/host` too; a principal without a grant is an
+unknown token, `401` under the same rate limit. A token the provider did not
+judge (it has not started, every call slot is taken, or its answer is late
+past 1 s, an error, a panic or out of bounds) is answered `503 not_checked`
+("the credential could not be checked for now; try again", no
+`WWW-Authenticate`) wherever it would be answered as no credential, before
+any answer that depends on who the caller is, under the same rate limit
+(`429` first); at `GET /ws/host`, `GET /ws/sessions/{id}` and the run desk
+before the upgrade. A build with no provider registered answers every
+unknown token `401`. One with the `decide` grant and not the `admin` grant (a
 decide principal, `docs/plans/decide-grant.md`) is admitted to four routes
 alone, `GET /api/me`, `GET /api/me/decisions`, and the read and the respond
 route of a decision given to the decide grant (Decisions, below), and every

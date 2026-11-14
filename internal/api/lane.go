@@ -1617,7 +1617,10 @@ func (s *Server) closeDesks(why error, linkIDs ...string) {
 // viewer's is, by close code.
 func (s *Server) handleRunDesk(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("run")
-	p := s.authenticate(r, true)
+	p, in := s.authenticate(w, r, true)
+	if !in {
+		return
+	}
 	ok := p.link != nil && p.link.RunID == runID && p.link.Decide && p.link.Group == nil && !s.cfg.Switchyard.Enabled
 	if !ok && !s.limiter.allow(clientKey(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")

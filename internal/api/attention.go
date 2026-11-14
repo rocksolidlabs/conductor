@@ -134,7 +134,11 @@ func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d se
 		writeLaneClosed(w)
 		return "", false
 	}
-	if p := s.authenticate(r, false); p.admin && !p.yard {
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return "", false
+	}
+	if p.admin && !p.yard {
 		return session.SourceAdmin, true
 	}
 	if !s.limiter.allow(clientKey(r)) {

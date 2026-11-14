@@ -189,7 +189,7 @@ func (s *Server) publish(local *session.Local) {
 			s.pubMu.Unlock()
 		}
 		// A refusal that passes with time (the switchyard's 429: a rate, or
-		// its limit of live sessions per address) is tried again a few times
+		// its limit of live sessions per address; its 503) is tried again a few times
 		// over some minutes. Not publishing is never the agent's error: the
 		// session's activity says so as a status line, not an "error", which
 		// put a red badge on a crew member that had done nothing (round 14).

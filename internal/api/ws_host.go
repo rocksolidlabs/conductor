@@ -35,8 +35,14 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	tok := presentedToken(r, true)
 	open := tok == "" && s.cfg.Switchyard.Enabled && s.cfg.Switchyard.OpenHosts
-	hp, allowed := s.hostPrincipal(r, tok)
-	if !open && !allowed {
+	// A registration is the workbench token's, a host token's, or an
+	// identity provider's principal's with either grant, whose subject the
+	// connection keeps; a share link is no host's.
+	hp, ok := s.tokenPrincipal(w, r, tok)
+	if !ok {
+		return
+	}
+	if !open && !hp.host {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 			return
