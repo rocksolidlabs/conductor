@@ -243,8 +243,9 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437).** The full sidebar opens at its minimum, 12.5 rem
-  (200 px) on every screen, and a drag on its edge widens it up to 26 % of the
+- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
+  16.25 rem (260 px) on every screen, the narrowest that shows its header's
+  every part whole, the name too (12.5 rem before #706), and a drag on its edge widens it up to 26 % of the
   window, never below the minimum; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the

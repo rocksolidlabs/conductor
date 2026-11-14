@@ -493,11 +493,11 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })
 
-// The full sidebar's width (#437): it opens at its minimum, 12.5 rem (200 px), on every screen; a drag widens it up to 26 % of
-// the window and no narrower than the minimum, and on toward the window's edge gives the rail. Each case has its own page, so
-// its own browser context and storage.
+// The full sidebar's width (#437): it opens at its minimum, 16.25 rem (260 px; 12.5 rem before #706), on every screen; a drag
+// widens it up to 26 % of the window and no narrower than the minimum, and on toward the window's edge gives the rail. Each case
+// has its own page, so its own browser context and storage.
 test.describe('the full sidebar\'s width', () => {
-  const MIN = 200
+  const MIN = 260
   const handle = (page: Page) => page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]')
   const width = (page: Page) => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)
   const saved = (page: Page, key = 'conductor.sidebar.width') => page.evaluate((k) => localStorage.getItem(k), key)
@@ -524,7 +524,7 @@ test.describe('the full sidebar\'s width', () => {
     [1440, 900],
     [2560, 1440],
   ] as const) {
-    test(`with no saved width it opens at its minimum, 200 px, at ${w}×${h}`, async ({ page }) => {
+    test(`with no saved width it opens at its minimum, 260 px, at ${w}×${h}`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h })
       await open(page)
       await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
@@ -565,7 +565,7 @@ test.describe('the full sidebar\'s width', () => {
     const at = await grip(page)
     await page.mouse.dblclick(at.x, at.y)
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    await expect.poll(() => saved(page)).toBe('12.5')
+    await expect.poll(() => saved(page)).toBe('16.25')
   })
 
   test('the rail and back keeps the width', async ({ page }) => {
@@ -586,11 +586,11 @@ test.describe('the full sidebar\'s width', () => {
     await expect(handle(page)).toBeAttached()
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
     expect(await saved(page, 'conductor.sidebar.size')).toBeNull()
-    await drag(page, [260])
-    await expect.poll(() => saved(page)).toBe('16.25')
+    await drag(page, [288])
+    await expect.poll(() => saved(page)).toBe('18')
     await page.reload()
     await expect(handle(page)).toBeAttached()
-    await expect.poll(() => width(page)).toBeCloseTo(260, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(288, 0)
   })
 
   test('resizing the window keeps the width within the new bounds', async ({ page }) => {
@@ -637,6 +637,92 @@ test.describe('the full sidebar\'s width', () => {
     await page.reload()
     await expect(handle(page)).toBeAttached()
     await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
+  })
+
+  /** Whether `el`'s text shows whole: nothing of it cut off by an ellipsis or its box. */
+  const whole = (el: Locator) => el.evaluate((e) => e.scrollWidth <= e.clientWidth)
+
+  test('every part of the header shows, the name whole, at the width it opens with and at the minimum (#706)', async ({ page }) => {
+    await open(page)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    const root = page.locator('#dashboard-sidebar-main')
+    const header = root.locator('[data-slot="header"]')
+    const name = header.locator('[data-sidebar-name]')
+    const launch = root.getByRole('button', { name: /Launch agent/ }).first()
+    async function shownWhole(at: string) {
+      for (const part of ['[data-sidebar-mark]', '[data-sidebar-name]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) {
+        await expect(header.locator(part), `${part} ${at}`).toBeVisible()
+        await fitsSidebar(page, header.locator(part))
+      }
+      // "Conductor", not "C…"; "Launch agent", not "Launch ag…" (#906, row 4).
+      await expect(name).toHaveText('Conductor')
+      expect(await whole(name), `the name ${at}`).toBe(true)
+      expect(await whole(launch.locator('[data-slot="label"]')), `Launch agent ${at}`).toBe(true)
+      expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+    }
+    await shownWhole('as it opens')
+    // Dragged wider and back past the minimum: it stops there, drawn again, and still shows it all.
+    await drag(page, [340])
+    await expect.poll(() => width(page)).toBeCloseTo(340, 0)
+    await drag(page, [150])
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    await shownWhole('at the minimum')
+  })
+
+  test('the filter lines up with Launch agent, at the width it opens with, dragged wider, and on the phone\'s list (#702)', async ({ page }) => {
+    await open(page)
+    const root = page.locator('#dashboard-sidebar-main')
+    /** The left and right edges of the filter and of Launch agent, which agree within a pixel. */
+    async function linedUp(scope: Locator, at: string) {
+      const field = (await scope.getByPlaceholder('Filter sessions, runs, people').boundingBox())!
+      const button = (await scope.getByRole('button', { name: /Launch agent/ }).first().boundingBox())!
+      expect(Math.abs(field.x - button.x), `left edges ${at}`).toBeLessThanOrEqual(1)
+      expect(Math.abs(field.x + field.width - (button.x + button.width)), `right edges ${at}`).toBeLessThanOrEqual(1)
+    }
+    await linedUp(root, 'as it opens')
+    await drag(page, [420])
+    await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+    await linedUp(root, 'dragged wider')
+    // The phone's home screen is the same list, at the window's width.
+    await page.setViewportSize({ width: 400, height: 800 })
+    await page.goto('/sessions')
+    const list = page.locator('[data-session-list="page"]')
+    await expect(list).toBeVisible()
+    await linedUp(list.locator('xpath=..'), 'on the phone')
+  })
+
+  test('Shared with you: its heading whole, its count on one line, and a joined session\'s name whole, as the sidebar opens (#906)', async ({ page, api }) => {
+    await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'e2e sharer'))
+    const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e shared row' })
+    sessions.push(s.id)
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view' })
+    try {
+      await page.goto(`/join/${token}`)
+      await page.getByRole('button', { name: 'Join session' }).click()
+      const section = page.locator('[data-sidebar-section="shared"]')
+      const row = section.locator('[data-shared-entry]').filter({ hasText: 'e2e shared row' })
+      await expect(row).toHaveCount(1)
+      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      const title = section.locator('[data-section-title]')
+      await expect(title).toHaveText('Shared with you')
+      expect(await whole(title), 'the heading').toBe(true)
+      // One line: the count is no taller than the heading's one line beside it.
+      const count = section.locator('[data-section-count]')
+      await expect(count).toHaveText('· 1')
+      expect((await count.boundingBox())!.height).toBeLessThanOrEqual((await title.boundingBox())!.height + 1)
+      const name = row.locator('[data-shared-name]')
+      await expect(name).toHaveText('e2e shared row')
+      expect(await whole(name), "the row's name").toBe(true)
+      // A longer name than fits is shortened, and its whole text is the row's title.
+      await expect(row.getByRole('link')).toHaveAttribute('title', 'e2e shared row · view only')
+      // Forget shows over the row's corner on hover, inside the sidebar, as a session row's actions do.
+      await row.hover()
+      const forget = row.locator('[data-shared-forget]')
+      await expect(forget.locator('xpath=ancestor::span[1]')).toHaveCSS('opacity', '1')
+      await fitsSidebar(page, forget)
+    } finally {
+      await page.locator('[data-shared-forget]').first().click().catch(() => {})
+    }
   })
 
   /**
