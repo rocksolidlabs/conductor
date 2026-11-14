@@ -3,9 +3,12 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
@@ -93,6 +96,47 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
+// liveTokens is the index of the server's own live agent tokens
+// (session.TokenIndex): the hash of each, counted by its holders, from
+// the moment it is minted (createLocalSession) or registered (a hosted
+// session's) to its session's end. tokenPrincipal reads it.
+type liveTokens struct {
+	mu   sync.Mutex
+	held map[[32]byte]int
+	// hashed counts the presented tokens holds hashed.
+	hashed atomic.Int64
+}
+
+func (l *liveTokens) Put(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held == nil {
+		l.held = map[[32]byte]int{}
+	}
+	l.held[h]++
+}
+
+func (l *liveTokens) Drop(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held[h]--; l.held[h] <= 0 {
+		delete(l.held, h)
+	}
+}
+
+// holds says tok is one of the live tokens: one hash and one lookup, for a
+// token of the length the server mints (share.TokenLen) alone.
+func (l *liveTokens) holds(tok string) bool {
+	if len(tok) != share.TokenLen {
+		return false
+	}
+	l.hashed.Add(1)
+	h := share.HashToken(tok)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held[h] > 0
+}
+
 // reportTarget finds the session a report is about. A session whose launch
 // is under way, its process running but the registry not holding it yet,
 // is waited for (awaitLaunch): an agent's first report comes as its
@@ -134,7 +178,11 @@ func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d se
 		writeLaneClosed(w)
 		return "", false
 	}
-	if p := s.authenticate(r, false); p.admin && !p.yard {
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return "", false
+	}
+	if p.admin && !p.yard {
 		return session.SourceAdmin, true
 	}
 	if !s.limiter.allow(clientKey(r)) {

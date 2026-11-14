@@ -378,7 +378,10 @@ func (h *eventHub) broadcast(msg []byte) {
 // token must arrive in the Authorization header (the browser reads the
 // stream with fetch, not EventSource) so it never appears in a URL.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	p := s.authenticate(r, false)
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return
+	}
 	if !p.admin {
 		if !s.limiter.allow(clientKey(r)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")

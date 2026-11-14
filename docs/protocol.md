@@ -445,10 +445,18 @@ provider's principal with either grant, HTTP API; on a switchyard with
 often it registers, how many live sessions it holds and what it relays). A
 refusal is an HTTP error before the upgrade, `{"error": {code, message}}`:
 `429 rate_limited` (registrations), `429 open_host_limit` (live sessions),
-`401 unauthorized`. A server publishing its sessions tries a 429 again after
+`401 unauthorized`, `503 not_checked` (a provider's credential not checked
+for now). A server publishing its sessions tries a 429 or a 503 again after
 15 s, 30 s, 1 min, 2 min and 2 min, or after the `Retry-After` it is given
-when longer, and stops when the session ends. Text frames are JSON; binary
-frames are RELAY envelopes.
+when longer (at most 5 min), and stops when the session ends; a
+publication whose registration withheld its credential (its provider had
+none to present) is owed when its tries end, whatever the refusal was,
+judged on its last try (a 401 ends them at once), and the next Share
+publishes it once.
+`conductor host`'s first registration fails at once on a 503, as on a dial
+that failed; a re-registration tries it again with its backoff, as it tries
+a dial that failed. Text frames are JSON; binary frames are RELAY
+envelopes.
 
 Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
@@ -2806,16 +2814,36 @@ frames no preview: `GET /preview-bridge.js` answers it `404 no_bridge`.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. A token is read in this order: the workbench token, each host
-token, the share links, and only then, for a token none of them knows, the
-identity provider when the build has one registered (package `ext`; a plain
-build has none, so there the order ends at the links). An expired or revoked
-link is refused as a link and never asked of a provider, nor is a session's
-agent token. A provider's principal with the `admin` grant is admin wherever
+token, the share links, then, only when the build has an identity provider
+registered, the server's own live agent tokens, and only then, for a token
+none of them knows, that provider (package `ext`; a plain build has none, so
+there the order ends at the links). A live agent token is one the server
+holds from the moment it is minted (a session's on this server, before its
+process starts) or registered (a hosted session's) to the end of its
+session; it is found by its hash in one index, and a token of another
+length than the 43 characters the server and `conductor host` mint is never
+one. An expired or revoked link is refused as a link and never asked of a
+provider, nor is a live agent token (a Brakeman turn's among them): at a
+route that does not take it, it is an unknown token answered without a
+provider, in every state of one. A token of a session that has ended, or
+whose launch failed, and a link forgotten with its session, are unknown
+tokens. A provider's principal with the `admin` grant is admin wherever
 the workbench token is (on a switchyard, with the workbench token's lack of a
 role on the sessions published there), and one with the `host` grant is a
-host token's, at `GET /ws/host` too; a principal without a grant, an answer
-late past 1 s, an error or one out of bounds is an unknown token, `401` under
-the same rate limit. One with the `decide` grant and not the `admin` grant (a
+host token's, at `GET /ws/host` too; a principal without a grant is an
+unknown token, `401` under the same rate limit. A token the provider did not
+judge (it has not started, every call slot is taken, or its answer is late
+past 1 s, an error, a panic or out of bounds) is answered `503 not_checked`
+("the credential could not be checked for now; try again", no
+`WWW-Authenticate`) wherever it would be answered as no credential, before
+any answer that depends on who the caller is, under the same rate limit
+(`429` first); at `GET /ws/host`, `GET /ws/sessions/{id}` and the run desk
+before the upgrade. While a registered provider cannot judge (it has not
+started, has no free call slot, is late or fails), a token the chain does
+not know, a mistyped workbench token among them, is answered `503
+not_checked` and not refused; it is refused once the provider judges it. A
+build with no provider registered answers every unknown token `401`. One
+with the `decide` grant and not the `admin` grant (a
 decide principal, `docs/plans/decide-grant.md`) is admitted to four routes
 alone, `GET /api/me`, `GET /api/me/decisions`, and the read and the respond
 route of a decision given to the decide grant (Decisions, below), and every

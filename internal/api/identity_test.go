@@ -91,6 +91,20 @@ func tokenRequest(tok string, byQuery bool) *http.Request {
 	return r
 }
 
+// authOf is the principal authenticate makes of r; an answer it writes
+// itself is dropped.
+func authOf(srv *Server, r *http.Request, allowQuery bool) principal {
+	p, _ := srv.authenticate(httptest.NewRecorder(), r, allowQuery)
+	return p
+}
+
+// principalFor is the principal tokenPrincipal makes of tok presented
+// with r; an answer it writes itself is dropped.
+func principalFor(srv *Server, r *http.Request, tok string) principal {
+	p, _ := srv.tokenPrincipal(httptest.NewRecorder(), r, tok)
+	return p
+}
+
 // expiredLink is the token of a view link on the session that expired an
 // hour ago, put in the server's store through Restore, as a link kept on
 // disk comes back: expired by its own time, with no clock to wait on.
@@ -161,14 +175,14 @@ func TestTokenChainUnchanged(t *testing.T) {
 					} else if tok == expiredTok {
 						what = "an expired link"
 					}
-					samePrincipal(t, what+" by header", e.srv.authenticate(tokenRequest(tok, false), false), w)
-					samePrincipal(t, what+" by query", e.srv.authenticate(tokenRequest(tok, true), true), w)
+					samePrincipal(t, what+" by header", authOf(e.srv, tokenRequest(tok, false), false), w)
+					samePrincipal(t, what+" by query", authOf(e.srv, tokenRequest(tok, true), true), w)
 					// A route that takes no query token reads none.
-					samePrincipal(t, what+" by query where none is read", e.srv.authenticate(tokenRequest(tok, true), false), principal{})
-					if got := e.srv.authenticate(tokenRequest(tok, false), false).actor(); got != adminActor {
+					samePrincipal(t, what+" by query where none is read", authOf(e.srv, tokenRequest(tok, true), false), principal{})
+					if got := authOf(e.srv, tokenRequest(tok, false), false).actor(); got != adminActor {
 						t.Fatalf("%s: actor %q", what, got)
 					}
-					if _, got := e.srv.hostPrincipal(tokenRequest(tok, false), tok); got != w.host {
+					if got := principalFor(e.srv, tokenRequest(tok, false), tok).host; got != w.host {
 						t.Fatalf("%s: a host registration allowed %v", what, got)
 					}
 				}
@@ -258,14 +272,14 @@ func TestProviderPrincipal(t *testing.T) {
 	for _, yard := range []bool{false, true} {
 		t.Run(fmt.Sprintf("switchyard %v", yard), func(t *testing.T) {
 			e := providerEnv(t, func(c *config.Config) { c.Switchyard.Enabled = yard }, id)
-			samePrincipal(t, "admin", e.srv.authenticate(tokenRequest("cloud-admin", false), false), principal{admin: true, yard: yard, host: true, subject: "u1", name: "Cloud u1"})
-			samePrincipal(t, "host", e.srv.authenticate(tokenRequest("cloud-host", true), true), principal{host: true, subject: "u2", name: "Host"})
-			samePrincipal(t, "both", e.srv.authenticate(tokenRequest("cloud-both", false), false), principal{admin: true, yard: yard, host: true, subject: "u3", name: "Both"})
+			samePrincipal(t, "admin", authOf(e.srv, tokenRequest("cloud-admin", false), false), principal{admin: true, yard: yard, host: true, subject: "u1", name: "Cloud u1"})
+			samePrincipal(t, "host", authOf(e.srv, tokenRequest("cloud-host", true), true), principal{host: true, subject: "u2", name: "Host"})
+			samePrincipal(t, "both", authOf(e.srv, tokenRequest("cloud-both", false), false), principal{admin: true, yard: yard, host: true, subject: "u3", name: "Both"})
 			wantRole := session.RoleControl
 			if yard {
 				wantRole = ""
 			}
-			if got := e.srv.authenticate(tokenRequest("cloud-admin", false), false).role("any"); got != wantRole {
+			if got := authOf(e.srv, tokenRequest("cloud-admin", false), false).role("any"); got != wantRole {
 				t.Fatalf("the admin's role: %q", got)
 			}
 			if resp, _ := e.do("GET", "/api/sessions", "cloud-admin", nil); resp.StatusCode != http.StatusOK {
@@ -304,8 +318,9 @@ func TestProviderHostRegistration(t *testing.T) {
 }
 
 // A provider that is late, fails, panics, or answers a subject past 48
-// bytes, a grant it may not give or no grant is no principal: 401 within
-// IdentityWait, the token refused at the host route too. The warn line
+// bytes or a grant it may not give has not judged the token: 503
+// not_checked within IdentityWait; one that answers no grant has, and the
+// token is no principal: 401. Neither registers a host. The warn line
 // names the failure's kind and count and never the provider's words, which
 // quote the token.
 func TestProviderRefused(t *testing.T) {
@@ -344,20 +359,23 @@ func TestProviderRefused(t *testing.T) {
 	var minutes atomic.Int64
 	srv.extClock = func() time.Time { return time.Unix(0, 0).Add(time.Duration(minutes.Add(1)) * time.Minute) }
 	h := srv.Handler()
-	for _, c := range []struct{ prefix, failure string }{
-		{"late-", "late"},
-		{"fail-", "error"},
-		{"panic-", "panic"},
-		{"long-", "invalid"},
-		{"badgrant-", "invalid"},
-		{"nogrant-", "invalid"},
+	for _, c := range []struct {
+		prefix, failure string
+		status          int
+	}{
+		{"late-", "late", http.StatusServiceUnavailable},
+		{"fail-", "error", http.StatusServiceUnavailable},
+		{"panic-", "panic", http.StatusServiceUnavailable},
+		{"long-", "invalid", http.StatusServiceUnavailable},
+		{"badgrant-", "invalid", http.StatusServiceUnavailable},
+		{"nogrant-", "invalid", http.StatusUnauthorized},
 	} {
 		tok := c.prefix + secret
 		before := strings.Count(logs.String(), "failure="+c.failure)
 		req := tokenRequest(tok, false)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
+		if rec.Code != c.status {
 			t.Fatalf("%s: %d", c.prefix, rec.Code)
 		}
 		if c.prefix == "late-" {
@@ -370,7 +388,7 @@ func TestProviderRefused(t *testing.T) {
 		if got := strings.Count(logs.String(), "failure="+c.failure); got != before+1 {
 			t.Fatalf("%s: %d warn lines of failure=%s, want %d:\n%s", c.prefix, got, c.failure, before+1, logs.String())
 		}
-		if _, allowed := srv.hostPrincipal(tokenRequest(tok, false), tok); c.prefix != "late-" && allowed {
+		if c.prefix != "late-" && principalFor(srv, tokenRequest(tok, false), tok).host {
 			t.Fatalf("%s: a host registration allowed", c.prefix)
 		}
 	}

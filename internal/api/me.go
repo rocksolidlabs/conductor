@@ -18,7 +18,10 @@ import (
 // say. A decide principal's is worked in its subject's place
 // (decideWorked).
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	p := s.authenticate(r, false)
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return
+	}
 	if !p.admin && !p.host && !p.decide && p.link == nil {
 		s.unauthorized(w, r)
 		return

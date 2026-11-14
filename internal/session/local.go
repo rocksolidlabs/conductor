@@ -59,6 +59,9 @@ type Options struct {
 	Log       *slog.Logger
 	// StopGrace is the SIGTERM grace period before SIGKILL.
 	StopGrace time.Duration
+	// Tokens, when set, holds the hash of the session's agent token from
+	// SetAgentToken to the session's end (IndexedToken).
+	Tokens TokenIndex
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
 	OnChange func(Info)
@@ -459,6 +462,8 @@ type Local struct {
 	afterAsked     atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
+	// indexed is the token's entry in opts.Tokens while the session lives.
+	indexed IndexedToken
 	// agentCalled says the session's agent token has been presented and
 	// taken (AgentTokenOK) at least once: its agent, or a tool it runs
 	// (its MCP server, its hooks), has called the server as itself.
@@ -705,6 +710,7 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	s.indexed.Drop()
 	// A claim whose claimant may still resolve it stays, its question kept
 	// as it stands (endedQs): its keys may have been written, and the
 	// question leaves only as the claim settles. Every other claim goes.
@@ -2406,6 +2412,10 @@ func (s *Local) SetAgentToken(tok string) {
 	defer s.mu.Unlock()
 	s.agentTokenHash = sha256.Sum256([]byte(tok))
 	s.hasAgentToken = tok != ""
+	s.indexed.Drop()
+	if s.hasAgentToken && !s.info.Status.Ended() {
+		s.indexed.Set(s.opts.Tokens, s.agentTokenHash)
+	}
 }
 
 // AgentTokenOK compares a presented agent token in constant time. It is
@@ -2423,6 +2433,36 @@ func (s *Local) AgentTokenOK(tok string) bool {
 	}
 	s.agentCalled.Store(true)
 	return true
+}
+
+// TokenIndex is an index of the hashes of live agent tokens, each put in
+// once per holder and dropped once.
+type TokenIndex interface {
+	Put(h [32]byte)
+	Drop(h [32]byte)
+}
+
+// IndexedToken is a session's entry in a TokenIndex, guarded by its
+// session's lock: in from Set to Drop, which the session calls at its end.
+type IndexedToken struct {
+	idx TokenIndex
+	h   [32]byte
+}
+
+// Set puts h in idx (nothing when idx is nil), any earlier entry dropped.
+func (e *IndexedToken) Set(idx TokenIndex, h [32]byte) {
+	if idx != nil {
+		idx.Put(h)
+		e.idx, e.h = idx, h
+	}
+}
+
+// Drop takes the entry out of its index, if it is in one.
+func (e *IndexedToken) Drop() {
+	if e.idx != nil {
+		e.idx.Drop(e.h)
+		e.idx = nil
+	}
 }
 
 // AgentCalled reports whether the session's agent token has been taken

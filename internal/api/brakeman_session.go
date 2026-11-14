@@ -48,7 +48,11 @@ func (s *Server) turnSession(w http.ResponseWriter, r *http.Request, agentOnly b
 		if _, ok := s.taskSession(w, r, agentOnly); !ok {
 			return nil, "", false, false
 		}
-		if p := s.authenticate(r, false); !p.admin {
+		p, ok := s.authenticate(w, r, false)
+		if !ok {
+			return nil, "", false, false
+		}
+		if !p.admin {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "the session's own token or the workbench token is required")
 			return nil, "", false, false
 		}

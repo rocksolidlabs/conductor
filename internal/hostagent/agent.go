@@ -2094,8 +2094,10 @@ type RefusedError struct {
 	Withheld bool
 }
 
-// CredentialWithheld is Withheld: a server's publication refused so is
-// owed, and the next Share publishes it.
+// CredentialWithheld is Withheld, whatever the refusal's status: a
+// server's publication refused so is owed when its tries end, judged on
+// its last try (a 401 ends them at once), and the next Share publishes it. conductor host's first registration
+// waits on a withheld 401 alone (withheldRefusal).
 func (e *RefusedError) CredentialWithheld() bool { return e.Withheld }
 
 func (e *RefusedError) Error() string {
@@ -2115,9 +2117,15 @@ func (e *RefusedError) Error() string {
 // Retryable says whether the refusal passes with time: 429, a rate or a
 // limit of live sessions per address (round 14: a crew launched from a home
 // running other sessions met the switchyard's limits and was never
-// published), and how long to wait first, when the rendezvous said.
+// published), and 503, a registration the rendezvous could not serve for
+// now (its credential not checked yet among them); and how long to wait
+// first, when the rendezvous said. A server's publication tries a 503
+// again as it tries a 429 (its bounded tries, its backoff, a Retry-After
+// within its cap); conductor host's first registration fails at once on
+// one, as on a dial that failed, and a re-registration tries it again
+// with its backoff, as it tries a dial that failed.
 func (e *RefusedError) Retryable() (bool, time.Duration) {
-	return e.Status == http.StatusTooManyRequests, e.RetryAfter
+	return e.Status == http.StatusTooManyRequests || e.Status == http.StatusServiceUnavailable, e.RetryAfter
 }
 
 // refusal reads a refused handshake's response (the WebSocket library keeps

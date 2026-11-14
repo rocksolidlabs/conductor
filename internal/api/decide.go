@@ -197,8 +197,9 @@ func decideAdmission(rec ledger.DecisionRecord, p principal) crew.Admission {
 // launching passes it and a decide principal to the handler.
 func (s *Server) deciding(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p := s.authenticate(r, false)
+		p, ok := s.authenticate(w, r, false)
 		switch {
+		case !ok:
 		case !p.admin && !p.decide:
 			s.unauthorized(w, r)
 		case s.cfg.Switchyard.Enabled:
@@ -369,7 +370,11 @@ func (s *Server) decideRespond(w http.ResponseWriter, r *http.Request, p princip
 // same subject with the decide grant is answered as the gate answers it,
 // the decision not read and nothing recorded.
 func (s *Server) decideAnswer(w http.ResponseWriter, r *http.Request, p principal, resp crew.Response) {
-	if again := s.authenticate(r, false); !again.decide || again.subject != p.subject {
+	again, ok := s.authenticate(w, r, false)
+	if !ok {
+		return
+	}
+	if !again.decide || again.subject != p.subject {
 		s.unauthorized(w, r)
 		return
 	}

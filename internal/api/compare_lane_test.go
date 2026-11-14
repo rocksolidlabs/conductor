@@ -47,8 +47,8 @@ var laneDoors = []struct {
 // Every door a lane must have is served to its own session's token, each
 // called with a body it takes and answered 2xx, and the identity provider
 // is asked about no token on the way: neither on these nor on a door the
-// table refuses. The table opens these doors and the ticket's comment and
-// no other.
+// table refuses (a token nobody minted is: providerAsked). The table
+// opens these doors and the ticket's comment and no other.
 func TestALaneIsServedEveryDoorItMustHave(t *testing.T) {
 	idp := &tokenIdentity{}
 	ce := newCompareEnv(t, compareOpts{identity: idp})
@@ -70,6 +70,7 @@ func TestALaneIsServedEveryDoorItMustHave(t *testing.T) {
 	if got := idp.askedTokens()[asked:]; len(got) != 0 {
 		t.Fatalf("the provider was asked %d times", len(got))
 	}
+	providerAsked(t, ce, idp)
 	var served []string
 	for p, rule := range compareDoors {
 		if rule != doorRefused {
@@ -238,7 +239,9 @@ func TestALaneIsNotAdoptedWhileItsLaunchIsHeld(t *testing.T) {
 // On a server whose Brakeman desk is not there, a lane's own token naming
 // its session on Brakeman's shared reads and acts is answered 409 lane and
 // never put to the identity provider; an ordinary run's member's token is
-// answered as on main, a bearer the server does not know.
+// answered as on main, 401, and as a live token of the server's own is
+// never put to the provider either (liveTokens); a token nobody minted is
+// (providerAsked).
 func TestALaneIsRefusedWhereBrakemansDeskIsNotThere(t *testing.T) {
 	idp := &tokenIdentity{}
 	ce := newCompareEnv(t, compareOpts{identity: idp, noDesk: true})
@@ -258,9 +261,10 @@ func TestALaneIsRefusedWhereBrakemansDeskIsNotThere(t *testing.T) {
 	if status, raw, _ := ce.callAsTurn(t, ce.plainTok, ce.member, method, path, body); status != http.StatusUnauthorized {
 		t.Fatalf("an ordinary member's token on a shared read: %d %.300s", status, raw)
 	}
-	if got := idp.askedTokens()[asked:]; !slices.Contains(got, ce.plainTok) {
-		t.Fatalf("the provider was not asked about an ordinary member's token: %d", len(got))
+	if got := idp.askedTokens()[asked:]; len(got) != 0 {
+		t.Fatalf("the provider was asked %d times about an ordinary member's token", len(got))
 	}
+	providerAsked(t, ce, idp)
 }
 
 // A lane's view of its run, read after the whole run has ended, holds no
