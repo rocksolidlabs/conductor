@@ -1358,8 +1358,12 @@ func TestATurnsGuideListsItsGrantedOperations(t *testing.T) {
 // of a class it may not see (403 not_visible). A turn granted only
 // request_repair, which needs both Dispatch and the runs, is listed it and
 // the act tool with both visible, neither with either hidden, and its route
-// refuses it not_visible then. The routes are called, not the list
-// compared with itself.
+// refuses it not_visible then. A run's member is listed the ticket's two
+// exactly when its ticket's routes answer it a ticket: a run launched
+// from a ticket, a run linked to one, neither for a run with none or one
+// whose launching ticket is deleted (a comparison's lane is
+// TestALaneIsListedTicketReadForItsLaunchAlone's). The routes are called,
+// not the list compared with itself.
 func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 	fill := strings.NewReplacer("{run}", "run-none", "{task}", "t", "{n}", "1", "{id}", "1", "{k}", "1", "{command}", "c", "{key}", "CND-1")
 	mayOf := func(t *testing.T, e *testEnv, token, path string) []string {
@@ -1415,6 +1419,47 @@ func TestTheOverviewListsWhatTheRoutesAdmit(t *testing.T) {
 		}) {
 			t.Fatalf("a session's may: %v", may)
 		}
+	})
+
+	t.Run("a run's member's ticket", func(t *testing.T) {
+		l := newLaunchTest(t, nil, nil)
+		e := l.testEnv
+		launched := entityOf(t, l.launch(t, e, nil, http.StatusCreated, ""), "launch")["runId"].(string)
+		lsid := runningAttempt(t, e, launched, "build", 1)["sessionId"].(string)
+		e.newDispatchTicket(t, "CND", "Linked", nil)
+		linked, ksid := legacyRun(t, e, l.repo)
+		linkRun(t, e, "CND-2", linked, http.StatusCreated, "")
+		_, nsid, _ := e.memberSession(t, "Unticketed")
+		// key is the ticket the routes answer, "" for 404 no_ticket.
+		check := func(t *testing.T, what, sid, key string) {
+			t.Helper()
+			tok := e.agentToken(sid)
+			may := mayOf(t, e, tok, "/api/sessions/"+sid+"/guide")
+			_, _, out := guideOf(t, e, tok, "/api/sessions/"+sid+"/guide")
+			kinds := fmt.Sprint(out["overview"].(map[string]any)["caller"].(map[string]any)["kinds"])
+			status, raw, read := e.callAs(t, tok, http.MethodGet, "/api/sessions/"+sid+"/ticket", nil)
+			body, _ := json.Marshal(map[string]any{"opId": opID(), "body": "Seen."})
+			cstatus, craw, cout := e.callAs(t, tok, http.MethodPost, "/api/sessions/"+sid+"/ticket/comments", body)
+			listed := key != ""
+			t.Logf("%s: ticket_read listed %v, ticket_comment listed %v, kinds %s; its read %d, its comment %d",
+				what, slices.Contains(may, "ticket_read"), slices.Contains(may, "ticket_comment"), kinds, status, cstatus)
+			if slices.Contains(may, "ticket_read") != listed || slices.Contains(may, "ticket_comment") != listed || strings.Contains(kinds, "ticket_member") != listed {
+				t.Errorf("%s: listed %v, want %v: may %v, kinds %s", what, !listed, listed, may, kinds)
+			}
+			switch {
+			case listed && (status != http.StatusOK || entityOf(t, read, "ticket")["key"] != key):
+				t.Errorf("%s's read: %d %s, want %s", what, status, raw, key)
+			case listed && cstatus != http.StatusCreated:
+				t.Errorf("%s's comment: %d %s", what, cstatus, craw)
+			case !listed && (status != http.StatusNotFound || errCodeOf(read) != "no_ticket" || cstatus != http.StatusNotFound || errCodeOf(cout) != "no_ticket"):
+				t.Errorf("%s's routes: %d %s, %d %s, want 404 no_ticket", what, status, raw, cstatus, craw)
+			}
+		}
+		check(t, "a run launched from a ticket", lsid, "CND-1")
+		check(t, "a run linked to a ticket", ksid, "CND-2")
+		check(t, "a run with neither", nsid, "")
+		l.expect(t, "POST", "/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+		check(t, "a run whose launching ticket is deleted", lsid, "")
 	})
 
 	for _, c := range []struct {

@@ -52,8 +52,8 @@ type Operation struct {
 	// carries it.
 	Description string `json:"description,omitempty"`
 	// Scope is who reaches it: admin, session (any session), task (an
-	// attempt of a managed run) or ticket (a member of a run linked to a
-	// ticket) or observe (a Brakeman turn's session: its request and its
+	// attempt of a managed run) or ticket (a member of a run launched
+	// from or linked to a ticket) or observe (a Brakeman turn's session: its request and its
 	// brief; PR-4's reads join it) or act (a Brakeman turn's session
 	// granted the operation by the person, PR-13: the act tool and the
 	// operations granted, each its own route's).
@@ -333,14 +333,14 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Input:       obj(map[string]any{"id": str("the decision's id, dr-N")}, "id"),
 			Bounds:      map[string]int{"body": maxDecisionAnswerBody}},
 		{Name: "ticket_read", MCP: "ticket_read", Scope: "ticket", Method: http.MethodGet, Path: sessions + "/ticket", needs: needLauncher,
-			Summary:     "The Dispatch ticket your run is linked to: what was asked and how it is accepted, with its last comments.",
-			Description: "The Dispatch ticket your run is linked to, when a person linked it to one: its key and title, status, priority, owner, labels, description, acceptance criteria, close policy, links and last comments. Read it for what was asked and how it is accepted. A run belongs to one ticket at most; with none, the tool says so.",
+			Summary:     "The Dispatch ticket your run was launched from or is linked to: what was asked and how it is accepted, with its last comments.",
+			Description: "The Dispatch ticket your run was launched from or a person linked it to: its key and title, status, priority, owner, labels, description, acceptance criteria, close policy, links and last comments. Read it for what was asked and how it is accepted. A run belongs to one ticket at most; with none, the tool says so.",
 			CLI:         []string{"conductor", "task", "ticket"},
 			Input:       obj(map[string]any{}),
 			Bounds:      map[string]int{"reply": MaxTicketReply}},
 		{Name: "ticket_comment", MCP: "ticket_comment", Scope: "ticket", Method: http.MethodPost, Path: sessions + "/ticket/comments", needs: needLauncher, Receipt: "dispatch",
-			Summary:     "Comment on the Dispatch ticket your run is linked to, as your run's member; you read the ticket and comment, nothing more.",
-			Description: "Comment on the Dispatch ticket your run is linked to, for the people who own it: what you found, what you did, what is left, as Markdown of at most 16 KiB. The comment is your run member's. You read the ticket and comment on it; you cannot change it.",
+			Summary:     "Comment on the Dispatch ticket your run was launched from or is linked to, as your run's member; you read the ticket and comment, nothing more.",
+			Description: "Comment on the Dispatch ticket your run was launched from or is linked to, for the people who own it: what you found, what you did, what is left, as Markdown of at most 16 KiB. The comment is your run member's. You read the ticket and comment on it; you cannot change it.",
 			CLI:         []string{"conductor", "task", "ticket", "comment", "TEXT"},
 			Input:       obj(map[string]any{"body": str("the comment, Markdown of at most 16 KiB")}, "body"),
 			Bounds:      map[string]int{"body": maxBody, "comment": dispatch.MaxCommentBody}},
@@ -971,7 +971,8 @@ type guideCaller struct {
 	Kind    string `json:"kind"`
 	Session string `json:"session,omitempty"`
 	// Kinds are a session's: plain (in no run), run_member, attempt (of a
-	// managed run), ticket_member (of a run linked to a ticket).
+	// managed run), ticket_member (of a run launched from or linked to a
+	// ticket the session's ticket route answers: memberTicket).
 	Kinds  []string `json:"kinds,omitempty"`
 	Run    string   `json:"run,omitempty"`
 	Member string   `json:"member,omitempty"`
@@ -1037,9 +1038,11 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	if inRun && s.dispatch != nil && !s.cfg.Switchyard.Enabled {
 		// A comparison's lane reads the ticket its run was launched from
 		// (laneTicket), and no other: a link is not asked about.
+		// Another run's member: the ticket its route answers it
+		// (memberTicket), launched from or linked to.
 		listed := c.lane == inLane && s.runPackage(run) != nil
 		if c.lane == noLane {
-			_, found, err := linkedTicket(ctx, s.dispatch, run)
+			_, _, found, err := s.memberTicket(ctx, s.dispatch, run)
 			listed = err == nil && found
 		}
 		if listed {
