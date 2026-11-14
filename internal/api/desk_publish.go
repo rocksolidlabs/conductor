@@ -447,33 +447,67 @@ func (s *Server) revokeOwedLocked(runID string) bool {
 }
 
 // decisionLinksLocked judges each of the run's decision links minted at
-// the rendezvous: whether one still stands here (standing), and whether a
-// revoke of one is still owed there (owed): its record marked so
-// (revokePending), or its link already revoked in the store. The store
-// marks a link revoked under its lock and tells its hook, which marks the
-// record (remoteRevoked), after it: a judgement between the two that took
-// the record's mark alone would find the link ended and owed nothing, and
-// end the desk its revoke needs. Each link is read from the store once
-// (Live says both whether it stands and whether it was revoked): two reads
-// of it, one before the store's mark and one after, would see it neither
-// standing nor revoked (#281). The caller holds pubMu.
+// the rendezvous (decisionLinkLocked): whether one still stands here
+// (standing), and whether a revoke of one is still owed there (owed). The
+// caller holds pubMu.
 func (s *Server) decisionLinksLocked(runID string) (standing, owed bool) {
 	for id, rl := range s.remoteRunLinks[runID] {
-		if !rl.Decide {
-			continue
-		}
-		if rl.revokePending {
-			owed = true
-			continue
-		}
-		switch _, err := s.links.Live(id); {
-		case err == nil:
-			standing = true
-		case errors.Is(err, share.ErrRevoked):
-			owed = true
-		}
+		st, ow := s.decisionLinkLocked(id, rl)
+		standing, owed = standing || st, owed || ow
 	}
 	return standing, owed
+}
+
+// decisionLinkLocked is the one judgement of what can still be owed for
+// rl, the record of a link minted at the rendezvous (id), that the desk's
+// judgement, every forgetting of a record (forgetRemote) and the revoke
+// route ask: a decision link that still stands here (standing), or whose
+// revoke is still owed there (owed): its record marked so (revokePending),
+// or its link already revoked in the store. The store marks a link revoked
+// under its lock and tells its hook, which marks the record
+// (remoteRevoked), after it: between the two, the store's mark alone says
+// the revoke is owed. Each link is read from the store once (Live says
+// both whether it stands and whether it was revoked): two reads of it, one
+// before the store's mark and one after, would see it neither standing nor
+// revoked (#281). A record judged neither (its link gone here or past its
+// expiry, or not a decision link) may be forgotten; one judged either is
+// forgotten only settled.
+//
+// The link store and these records are kept in memory only: a server that
+// stops between the store's mark and its hook keeps nothing of the link on
+// disk, and the next start has no record of it, so no revoke of it is owed
+// there by this judgement; the switchyard keeps the link until its expiry
+// there or its sweep, as a forgotten run's links (revokeRemoteRunLinks).
+// An owed revoke keeps its record, and the run's desk, until the
+// switchyard confirms the revoke or answers not_found, or the run is
+// forgotten: a revoked link reads revoked here past its expiry too, and the
+// switchyard takes the first try that reaches it after its expiry as
+// before, so a link with no expiry is kept until confirmed, its retries a
+// minute apart at most. The caller holds pubMu.
+func (s *Server) decisionLinkLocked(id string, rl remoteLink) (standing, owed bool) {
+	if !rl.Decide {
+		return false, false
+	}
+	if rl.revokePending {
+		return false, true
+	}
+	switch _, err := s.links.Live(id); {
+	case err == nil:
+		return true, false
+	case errors.Is(err, share.ErrRevoked):
+		return false, true
+	}
+	return false, false
+}
+
+// runRevokeOwed says whether the run's decision link linkID has its
+// record kept here, owed its revoke at the rendezvous (decisionLinkLocked).
+func (s *Server) runRevokeOwed(runID, linkID string) bool {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	rl, ok := s.remoteRunLinks[runID][linkID]
+	_, owed := s.decisionLinkLocked(linkID, rl)
+	return ok && owed
 }
 
 // remoteRevoked is a remote decision link's end here (revoked, expired),
@@ -828,8 +862,8 @@ func (s *Server) endedNow(sessionID, runID, linkID string) bool {
 // forgetRemote is the one place a record of a link minted at the
 // rendezvous is forgotten: a session's (sessionID) or a run's (runID), one
 // (linkID) or every one of the run's (""). One rule holds in every path:
-// the record of a decision link revoked here and still owed its revoke
-// there (revokePending) is forgotten only when settled, that is once the
+// the record of a decision link that still stands here or is owed its
+// revoke there (decisionLinkLocked) is forgotten only when settled, that is once the
 // rendezvous has confirmed the revoke or answered not_found
 // (revokeConfirmed), whatever else happened to the link, its viewers
 // (link_gone) or its desk, or once what holds the record is itself gone
@@ -850,7 +884,10 @@ func (s *Server) forgetRemoteLocked(sessionID, runID, linkID string, settled boo
 		m = s.remoteRunLinks[runID]
 	}
 	for lid, rl := range m {
-		if (linkID == "" || lid == linkID) && (settled || !rl.revokePending) {
+		if linkID != "" && lid != linkID {
+			continue
+		}
+		if standing, owed := s.decisionLinkLocked(lid, rl); settled || !standing && !owed {
 			delete(m, lid)
 		}
 	}

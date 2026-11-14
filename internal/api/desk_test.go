@@ -1410,6 +1410,189 @@ func TestADeskCheckBeforeTheRevokeIsOwedKeepsTheDesk(t *testing.T) {
 	}
 }
 
+// dropThere has the switchyard hold the link linkID no more, telling no
+// one: the tests' stand-in for a switchyard that holds no live link of the
+// run, which answers a sync of the run's links not_found.
+func dropThere(t *testing.T, yard *testEnv, linkID string) {
+	t.Helper()
+	if _, ok := yard.srv.links.Drop(linkID); !ok {
+		t.Fatal("the switchyard holds no such link")
+	}
+}
+
+// syncNotFound sends the run's members to the switchyard now over its
+// desk, held meanwhile (holdDesk), whatever was sent before, and checks
+// that it answered not_found: neither the members sent nor a failure is
+// kept after it.
+func syncNotFound(t *testing.T, local *testEnv, runID string) {
+	t.Helper()
+	defer local.srv.holdDesk(runID)()
+	if local.srv.liveDesk(runID) == nil {
+		t.Errorf("no desk carries the sync")
+		return
+	}
+	local.srv.pubMu.Lock()
+	delete(local.srv.runSent, runID)
+	local.srv.pubMu.Unlock()
+	local.srv.syncRunLinks(runID)
+	local.srv.pubMu.Lock()
+	_, sent := local.srv.runSent[runID]
+	_, failed := local.srv.runSyncFails[runID]
+	local.srv.pubMu.Unlock()
+	if sent || failed {
+		t.Errorf("the sync was not answered not_found (sent %v, failed %v)", sent, failed)
+	}
+}
+
+// countingDesk is a run's desk that counts the revokes it carries.
+type countingDesk struct {
+	Desk
+	revokes atomic.Int32
+}
+
+func (d *countingDesk) Revoke(ctx context.Context, linkID string) error {
+	d.revokes.Add(1)
+	return d.Desk.Revoke(ctx, linkID)
+}
+
+// A run decision link's record is forgotten here only when nothing can
+// still be owed for it (decisionLinkLocked). A sync of the run's links
+// that the switchyard answers not_found keeps the record of a link that
+// still stands here, and that of one the store has revoked whose hook has
+// not yet marked it owed (the sync answered inside the hook): the revoke
+// is owed, its retry armed, the desk kept, and the switchyard's answer to
+// the retry ends the desk. A revoke again from here in that state carries
+// the revoke, and once more answers done. A record whose link is gone
+// here, or past its expiry, goes with the sync.
+func TestASyncNotFoundForgetsOnlyARecordOwedNothing(t *testing.T) {
+	type minted struct {
+		yard, local    *testEnv
+		run            crew.Run
+		linkID, deskID string
+		next           chan func()
+	}
+	mint := func(t *testing.T) minted {
+		yard, local := deskPair(t, true)
+		next := retries(local)
+		run, _ := heldRun(t, local)
+		linkID, token := remoteDecisionLink(t, local, "/api/runs/"+run.ID+"/links", "phone")
+		m := minted{yard, local, run, linkID, deskOf(t, yard, token), next}
+		dropThere(t, yard, linkID)
+		return m
+	}
+	// The sync is answered inside the store's hook of the link's revoke:
+	// after the store's mark, before the record's.
+	syncInHook := func(t *testing.T, m minted) {
+		told := m.local.srv.links.OnRevokeRun
+		var once sync.Once
+		m.local.srv.links.OnRevokeRun = func(runID, lid string) {
+			if lid == m.linkID {
+				once.Do(func() { syncNotFound(t, m.local, runID) })
+			}
+			told(runID, lid)
+		}
+	}
+	owedThenEnded := func(t *testing.T, m minted) {
+		t.Helper()
+		path := "/api/runs/" + m.run.ID + "/links"
+		if l := linksOf(t, m.local, path); len(l) != 1 || l[0]["id"] != m.linkID || l[0]["revokePending"] != true {
+			t.Fatalf("the run's links after the sync and the revoke here: %v", l)
+		}
+		if m.local.srv.liveDesk(m.run.ID) == nil {
+			t.Fatal("the desk ended with a revoke owed")
+		}
+		select {
+		case try := <-m.next:
+			try()
+		case <-time.After(testWait):
+			t.Fatal("no revoke there was armed")
+		}
+		until(t, "the switchyard answered the revoke", func() bool { return len(linksOf(t, m.local, path)) == 0 })
+		deskGone(t, m.yard, m.local, m.run.ID, m.deskID)
+	}
+	t.Run("inside the hook", func(t *testing.T) {
+		m := mint(t)
+		syncInHook(t, m)
+		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
+		owedThenEnded(t, m)
+	})
+	t.Run("before the mark", func(t *testing.T) {
+		m := mint(t)
+		syncNotFound(t, m.local, m.run.ID)
+		if l := linksOf(t, m.local, "/api/runs/"+m.run.ID+"/links"); len(l) != 1 || l[0]["id"] != m.linkID || l[0]["revokePending"] == true {
+			t.Fatalf("the run's links after the sync, the link standing here: %v", l)
+		}
+		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
+		owedThenEnded(t, m)
+	})
+	t.Run("the revoke route", func(t *testing.T) {
+		m := mint(t)
+		m.local.srv.pubMu.Lock()
+		rd := m.local.srv.desks[m.run.ID]
+		counting := &countingDesk{Desk: rd.desk}
+		rd.desk = counting
+		m.local.srv.pubMu.Unlock()
+		syncInHook(t, m)
+		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
+		path := "/api/runs/" + m.run.ID + "/links"
+		for range 2 {
+			if resp, out := m.local.do("DELETE", path+"/"+m.linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("a revoke again: %d %v", resp.StatusCode, out)
+			}
+		}
+		if n := counting.revokes.Load(); n != 1 {
+			t.Fatalf("revokes carried to the switchyard: %d", n)
+		}
+		if l := linksOf(t, m.local, path); len(l) != 0 {
+			t.Fatalf("the run's links after the revoke there: %v", l)
+		}
+		deskGone(t, m.yard, m.local, m.run.ID, m.deskID)
+		// The retry armed meanwhile finds nothing owed and ends.
+		select {
+		case try := <-m.next:
+			try()
+		case <-time.After(testWait):
+			t.Fatal("no revoke there was armed")
+		}
+	})
+	t.Run("gone here", func(t *testing.T) {
+		m := mint(t)
+		// The desk, which carries the sync, is held across the link's end
+		// here.
+		release := m.local.srv.holdDesk(m.run.ID)
+		if _, ok := m.local.srv.links.Drop(m.linkID); !ok {
+			t.Fatal("the store holds no such link")
+		}
+		syncNotFound(t, m.local, m.run.ID)
+		release()
+		if m.local.srv.hasRemoteRunLink(m.run.ID, m.linkID) {
+			t.Fatal("a sync kept the record of a link gone here")
+		}
+	})
+	t.Run("past its expiry", func(t *testing.T) {
+		yard, local := deskPair(t, true)
+		var cmu sync.Mutex
+		now := time.Now()
+		local.srv.links.SetNowForTest(func() time.Time { cmu.Lock(); defer cmu.Unlock(); return now })
+		run, _ := heldRun(t, local)
+		resp, out := local.do("POST", "/api/runs/"+run.ID+"/links", adminToken, map[string]any{"role": "control", "decide": true, "label": "phone", "ttlSeconds": 3600})
+		if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+			t.Fatalf("a decision link: %d %v", resp.StatusCode, out)
+		}
+		linkID := out["link"].(map[string]any)["id"].(string)
+		dropThere(t, yard, linkID)
+		release := local.srv.holdDesk(run.ID)
+		cmu.Lock()
+		now = now.Add(2 * time.Hour)
+		cmu.Unlock()
+		syncNotFound(t, local, run.ID)
+		release()
+		if local.srv.hasRemoteRunLink(run.ID, linkID) {
+			t.Fatal("a sync kept the record of a link past its expiry")
+		}
+	})
+}
+
 // A member whose publication has ended (its session's end; it stays in the
 // published map until its session leaves the server) carries nothing and
 // is named in no group: the run's group names no session of it, and the
