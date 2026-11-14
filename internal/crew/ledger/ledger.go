@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 10
+const Version = 11
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -115,6 +116,11 @@ var migrations = map[int][]string{
 	// version 10 ledger read-only. Every row a version 9 database holds
 	// has none of these members and reads as it did.
 	9: {},
+	// Version 11 (PV1, a candidate's preview checkout, #795): the previews
+	// a person opens of an attempt's result, a table of their own
+	// (previews.go). No preview existed before this version, so a version
+	// 10 database's rows are all true as they are: nothing is derived.
+	10: {previewsTable},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -863,7 +869,8 @@ func (l *Ledger) release() {
 // older one is brought to it by migrations). Times are RFC 3339 text in
 // UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
 // owner prunes it. The decision tables (version 8) are decisionTables,
-// their request index as version 9 keys it decisionsRequestV9.
+// their request index as version 9 keys it decisionsRequestV9, and the
+// previews (version 11) previewsTable, last.
 var schema = append(append([]string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
@@ -982,4 +989,4 @@ var schema = append(append([]string{
 	messagesTable,
 	prerequisitesTable,
 	treesTable,
-}, decisionTables...), decisionsRequestV9...)
+}, decisionTables...), append(slices.Clone(decisionsRequestV9), previewsTable)...)
