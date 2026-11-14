@@ -305,7 +305,8 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	if kept.Goal != f.Goal || kept.Role != f.Role || kept.Instructions != f.Instructions || !strings.Contains(string(md), f.Instructions) {
 		t.Fatal("the crew's own text was cut")
 	}
-	if !reflect.DeepEqual(kept.Ticket, f.Ticket) || !strings.Contains(string(md), "## Your ticket\n\nThis run works for the ticket "+f.Ticket.Key) {
+	if !reflect.DeepEqual(kept.Ticket, f.Ticket) || !strings.Contains(string(md), "## Your ticket\n\n"+f.ticketQuoted+"\n\nThis run works for the ticket "+f.Ticket.Key) ||
+		!strings.Contains(string(md), packageQuotedWords) {
 		t.Fatalf("the ticket was cut: %+v", kept.Ticket)
 	}
 	if kept.Manifest == nil || !reflect.DeepEqual(*kept.Manifest, *manifest) || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||

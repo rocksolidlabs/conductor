@@ -117,8 +117,7 @@ func TestPackageAtItsWorst(t *testing.T) {
 		Constraints: worstBytes(MaxPlanConstraints), Decisions: decisions, Note: worstBytes(MaxPlanNote),
 		Source: &PlanSource{Repro: &PlanRepro{}, Evidence: evidence},
 	}
-	plan := propose(t, s, "p1", key, PlanRequest{Crew: crewID, Attachments: attachments, Comments: comments,
-		Source: &PlanSourceRequest{Repro: true, Evidence: evidence}}, body)
+	plan := propose(t, s, "p1", key, PlanRequest{Crew: crewID, Attachments: attachments, Comments: comments}, body)
 	rc, err = s.ApprovePlan(ctx, Op{Actor: ActorAdmin, ID: "a1", By: worstChars(MaxByName)}, plan, 0, worstChars(MaxApprovedNote))
 	want(t, rc, err, StatusDone, "")
 

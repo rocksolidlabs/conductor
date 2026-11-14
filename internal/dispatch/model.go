@@ -946,16 +946,6 @@ type PlanRequest struct {
 	Constraints string                 `json:"constraints,omitempty"`
 	Decisions   []PlanDecision         `json:"decisions,omitempty"`
 	Note        string                 `json:"note,omitempty"`
-	Source      *PlanSourceRequest     `json:"source,omitempty"`
-}
-
-// PlanSourceRequest is what a proposal hands over of the ticket's source
-// (Program item IN1a): Repro, the linked item's steps to reproduce; and
-// Evidence, the ticket's links (external or delivery, by id, at most
-// MaxPackageEvidence) named in the package as evidence.
-type PlanSourceRequest struct {
-	Repro    bool     `json:"repro,omitempty"`
-	Evidence []string `json:"evidence,omitempty"`
 }
 
 // PlanSource is a revision's choice of the ticket's source, in its body:

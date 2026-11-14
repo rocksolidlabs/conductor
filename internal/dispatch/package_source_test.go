@@ -53,7 +53,7 @@ func TestPackageVersionTwo(t *testing.T) {
 	s, key, link := sourceTicket(t)
 	tk := ticketOf(t, s, key)
 	sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
-	req := PlanRequest{Crew: "crew", Source: &PlanSourceRequest{Repro: true, Evidence: []string{link}}}
+	req := PlanRequest{Crew: "crew"}
 	body := testPlanBody("crew")
 	body.Source = &PlanSource{Repro: &PlanRepro{}, Evidence: []string{link}}
 	plan := approvedPlan(t, s, key, req, body, "go")
@@ -170,7 +170,7 @@ func TestRefreshReproMakesApprovalStale(t *testing.T) {
 	withRepro := func(id string) string {
 		body := testPlanBody("crew")
 		body.Source = &PlanSource{Repro: &PlanRepro{}}
-		return approvedPlan(t, s, key, PlanRequest{Crew: "crew", Source: &PlanSourceRequest{Repro: true}}, body, "go")
+		return approvedPlan(t, s, key, PlanRequest{Crew: "crew"}, body, "go")
 	}
 	plan := withRepro("p1")
 	read := ghRead("I_1", 5, "T", "B")
@@ -224,7 +224,7 @@ func TestEvidenceWithoutCounterpart(t *testing.T) {
 	evidence := func(link string) string {
 		body := testPlanBody("crew")
 		body.Source = &PlanSource{Evidence: []string{link}}
-		return approvedPlan(t, s, key, PlanRequest{Crew: "crew", Source: &PlanSourceRequest{Evidence: []string{link}}}, body, "go")
+		return approvedPlan(t, s, key, PlanRequest{Crew: "crew"}, body, "go")
 	}
 	p := packageOf(t, mustLaunch(t, s, "l1", key, evidence(rc.ID), ""))
 	if p.Source != nil || len(p.Evidence) != 1 || p.Evidence[0] != (PackageEvidence{URL: "http://example.invalid/log", Note: "the log"}) {
