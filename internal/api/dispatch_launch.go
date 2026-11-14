@@ -72,12 +72,14 @@ type launchGate struct {
 	// asked for its run; beforeStore with a ticket's key just before a new
 	// launch of it is given to the store; beforeReconcile before the
 	// reconcile at the ledger's recovery; attempt with each session spec
-	// Launch is given, before it takes the catalog entry. Tests hold them;
-	// under mu.
+	// Launch is given, before it takes the catalog entry; launched with
+	// each session Launch made, by its id, before Launch returns it to the
+	// engine. Tests hold them; under mu.
 	beforePlanned   func(launchID string)
 	beforeStore     func(key string)
 	beforeReconcile func()
 	attempt         func(crew.LaunchSpec)
+	launched        func(crew.LaunchSpec, string)
 	// afterRecordRead runs with a run's id once resumeRecord has read its
 	// record, before the continuation's admission; a test holds it. Under
 	// mu.
@@ -158,6 +160,13 @@ func (g *launchGate) setSeams(set func(g *launchGate)) {
 func (g *launchGate) beforeAttempt(spec crew.LaunchSpec) {
 	if f := gateSeam(g, &g.attempt); f != nil {
 		f(spec)
+	}
+}
+
+// afterAttempt runs the launched seam, when a test set one.
+func (g *launchGate) afterAttempt(spec crew.LaunchSpec, id string) {
+	if f := gateSeam(g, &g.launched); f != nil {
+		f(spec, id)
 	}
 }
 

@@ -344,6 +344,31 @@ func TestACompareCrewNeedsATicket(t *testing.T) {
 	}
 }
 
+// The task.md of a comparison's attempt, launched from its ticket, tells
+// it to say what matters with task_blocked or in its result's summary,
+// and names no comment anywhere; an ordinary run launched from the same
+// ticket offers a comment on the ticket. (The test's name, which its
+// temporary folders and so the worktree's path carry, says no "comment".)
+func TestAComparisonsTaskFileSaysBlockedOrTheSummary(t *testing.T) {
+	dir := newRepo(t)
+	base := head(t, dir)
+	e, _ := sqlEngine(t)
+	e.compareOpen = true
+	run := launchPlanned(t, e, compareCrew(t, dir, 2, true), planned(t, "api-sweep-0000000a", base))
+	defer stopRun(t, e, run.ID)
+	md, f := taskFileOf(t, waitAttempt(t, e, run.ID, "approach-a", ledger.AttemptRunning))
+	if f.Ticket == nil || !strings.Contains(md, "If one matters to your task, say so: `task_blocked` with why, or in your result's summary.\n\n") || strings.Contains(strings.ToLower(md), "comment") {
+		t.Fatalf("a comparison's task.md:\n%s", md)
+	}
+	other, _ := sqlEngine(t)
+	plain := launchPlanned(t, other, repoCrew(dir, work("build", "lead")), planned(t, "api-sweep-0000000b", base))
+	defer stopRun(t, other, plain.ID)
+	md, f = taskFileOf(t, waitAttempt(t, other, plain.ID, "build", ledger.AttemptRunning))
+	if f.Ticket == nil || !strings.Contains(md, "If one matters to your task, say so: `task_blocked` with why, or a comment on the ticket.\n\n") {
+		t.Fatalf("an ordinary run's task.md:\n%s", md)
+	}
+}
+
 // I1, door 1: every candidate's first attempt starts at the planned base,
 // in a worktree and on a branch of its own, while HEAD has moved; a
 // candidate needs nothing, so none waits for another.
