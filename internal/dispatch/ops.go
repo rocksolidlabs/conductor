@@ -348,9 +348,14 @@ func (t *tx) Now() time.Time { return t.now }
 // expect compares the entity's rev, read inside the transaction, with
 // the one the operation expects: stale_revision when they differ and one
 // was given. A change calls it before it writes anything.
-func (t *tx) expect(rev int64) error {
-	if t.op.ExpectedRev > 0 && rev != t.op.ExpectedRev {
-		return refuse(RefusalStaleRevision, "the revision expected is %d; it is %d", t.op.ExpectedRev, rev)
+func (t *tx) expect(rev int64) error { return expected(t.op.ExpectedRev, rev) }
+
+// expected is expect's judgement of a revision rev against the one want an
+// operation expects (none when 0), for a read that judges as the operation
+// will.
+func expected(want, rev int64) error {
+	if want > 0 && rev != want {
+		return refuse(RefusalStaleRevision, "the revision expected is %d; it is %d", want, rev)
 	}
 	return nil
 }
@@ -624,7 +629,11 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if found {
 		return rc, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
+	now := time.Now()
+	if s.clock != nil {
+		now = s.clock()
+	}
+	t := &tx{ctx: ctx, tx: dbtx, now: now.UTC(), op: op, intent: intent, fp: fp, runExists: s.runExists, sight: s.sight, runSuffix: s.runSuffix, systems: s.systems}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between

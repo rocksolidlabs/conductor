@@ -355,6 +355,9 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// turn's session calls back on.
 	srv.SetBrakemanHost(srv.BrakemanHost())
 	srv.StartBrakeman()
+	// A publication a stop or a crash left being sent is looked for on
+	// GitHub, in the background; nothing is posted.
+	srv.SettlePublications()
 	// The agents' lookups and probes, so the first Launch dialog lists them at once.
 	go srv.WarmCatalog(mctx)
 
