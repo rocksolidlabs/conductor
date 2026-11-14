@@ -1673,7 +1673,9 @@ func TestABrakemanQuestionIsLabelledAndNotifiesOnlyForAPerson(t *testing.T) {
 	// Quiet: the mark a background turn's session carries.
 	ref := *l.Info().Crew
 	ref.Brakeman = &session.BrakemanMark{Request: id, Quiet: true}
-	l.SetCrew(ref)
+	if !l.SetCrew(ref) {
+		t.Fatal("the quiet mark was not set")
+	}
 	b.callAs(t, tok, "POST", "/api/sessions/"+sid+"/attention", map[string]any{"state": "clear"})
 	ask("quiet question")
 	// A person's session after it: its webhook arrives first, the quiet
