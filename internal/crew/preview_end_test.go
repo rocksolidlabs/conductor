@@ -3,7 +3,6 @@ package crew
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -330,114 +329,6 @@ func TestAPreviewOfARunWhoseWorktreesFolderIsALinkIsRefused(t *testing.T) {
 	}
 	if made, _ := os.ReadDir(elsewhere); len(made) != 0 {
 		t.Fatalf("made where the link leads: %v", made)
-	}
-	if w := l.writers(run.ID, "build", 1, 1); len(w) != 0 || previewHeld(e, run.ID, "build", 1) {
-		t.Fatalf("the refused open wrote %v or is held", w)
-	}
-}
-
-// reusable makes and ends a first preview of the candidate, so its
-// checkout is there to be judged again, and returns it with the
-// repository's entry for it.
-func reusable(t *testing.T, e *Engine, l *fakeLedger, runID string, ts TaskState) (checkout, admin string) {
-	t.Helper()
-	openPreview(t, e, runID)
-	l.previewWhen(t, runID, "build", 1, 1, "ready", previewReadyRow)
-	if err := e.ClosePreview(runID, "build", 1, 1); err != nil {
-		t.Fatal(err)
-	}
-	l.previewWhen(t, runID, "build", 1, 1, "ended", previewEndedRow)
-	waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, runID, "build", 1) })
-	checkout = ts.Attempt.Worktree + ".preview"
-	b, err := os.ReadFile(filepath.Join(checkout, ".git"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return checkout, strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir: "))
-}
-
-// The repository's entry for a found checkout is read by its name, once,
-// whatever else the repository holds: an entry whose gitdir is a named
-// pipe is refused at once; twenty thousand entries beside the right one
-// leave one entry read.
-func TestAFoundPreviewCheckoutsEntryIsReadByName(t *testing.T) {
-	t.Run("a named pipe", func(t *testing.T) {
-		dir := newRepo(t)
-		e, _, l := managedEngine(t)
-		run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
-		_, admin := reusable(t, e, l, run.ID, ts)
-		pipe := filepath.Join(admin, "gitdir")
-		if err := os.Remove(pipe); err != nil {
-			t.Fatal(err)
-		}
-		if err := syscall.Mkfifo(pipe, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			// A reader blocked on the pipe is let go.
-			if f, err := os.OpenFile(pipe, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-				f.Close()
-			}
-		})
-		opened := make(chan error, 1)
-		go func() {
-			_, err := e.OpenPreview(context.Background(), run.ID, "build", 1, "admin")
-			opened <- err
-		}()
-		if err := await(t, "the open", opened); !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), "is not a worktree of the repository") {
-			t.Fatalf("an entry whose gitdir is a named pipe: %v", err)
-		}
-	})
-	t.Run("twenty thousand entries", func(t *testing.T) {
-		dir := newRepo(t)
-		e, _, l := managedEngine(t)
-		run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
-		_, admin := reusable(t, e, l, run.ID, ts)
-		for i := range 20000 {
-			if err := os.Mkdir(filepath.Join(filepath.Dir(admin), fmt.Sprintf("x%05d", i)), 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}
-		var mu sync.Mutex
-		var read []string
-		previewEntryRead = func(name string) {
-			mu.Lock()
-			read = append(read, name)
-			mu.Unlock()
-		}
-		t.Cleanup(func() { previewEntryRead = nil })
-		openPreview(t, e, run.ID)
-		l.previewWhen(t, run.ID, "build", 1, 2, "ready", previewReadyRow)
-		mu.Lock()
-		got := slices.Clone(read)
-		mu.Unlock()
-		if !slices.Equal(got, []string{filepath.Base(admin)}) {
-			t.Fatalf("%d entries read, the first %q", len(got), got[:min(len(got), 3)])
-		}
-		if err := e.ClosePreview(run.ID, "build", 1, 2); err != nil {
-			t.Fatal(err)
-		}
-		l.previewWhen(t, run.ID, "build", 1, 2, "ended", previewEndedRow)
-	})
-}
-
-// A plain folder at the checkout's path whose .git is a hard link to the
-// attempt's own worktree's .git is no worktree of the repository: the
-// entry it names is the worktree's, whose folder is not this one.
-func TestAPreviewFolderWhoseGitIsAnotherWorktreesIsRefused(t *testing.T) {
-	dir := newRepo(t)
-	e, _, l := managedEngine(t)
-	run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
-	checkout := ts.Attempt.Worktree + ".preview"
-	if err := os.Mkdir(checkout, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(filepath.Join(ts.Attempt.Worktree, ".git"), filepath.Join(checkout, ".git")); err != nil {
-		t.Fatal(err)
-	}
-	_, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin")
-	if !errors.Is(err, ErrPreviewRefused) || !strings.Contains(err.Error(), "is not a worktree of the repository") {
-		t.Fatalf("a folder whose .git is another worktree's: %v", err)
 	}
 	if w := l.writers(run.ID, "build", 1, 1); len(w) != 0 || previewHeld(e, run.ID, "build", 1) {
 		t.Fatalf("the refused open wrote %v or is held", w)

@@ -4,18 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
-	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -486,12 +483,10 @@ func (e *Engine) dropPreview(p *preview) {
 // the path: the run's worktrees folder (parent), reached from the run's
 // working directory with no link on the way (openUnder), as the
 // attempts' dispatch judges it; the checkout's folder in it (folder, nil
-// until a fresh add has made it) with its git directory, the repository's
-// entry for it (admin); and the crew's directory in the checkout
+// until a fresh add has made it); and the crew's directory in the checkout
 // (member), where its steps run.
 type previewFolder struct {
 	parent, folder, member *os.Root
-	admin                  string
 }
 
 // Close lets go of the folders.
@@ -504,46 +499,35 @@ func (f *previewFolder) Close() {
 }
 
 // open opens the checkout dir in the parent (openIn: a name not there is
-// the look's error) and judges it from that opened folder
-// (previewGitDir), its git directory kept.
-func (f *previewFolder) open(ctx context.Context, repo, dir string) error {
+// the look's error).
+func (f *previewFolder) open(dir string) error {
 	folder, err := openIn(f.parent, filepath.Base(dir))
 	if err != nil {
 		return err
 	}
 	f.folder = folder
-	f.admin, err = previewGitDir(ctx, repo, dir, folder)
-	return err
+	return nil
 }
 
 // previewReusable opens the folders of a checkout at dir and reports
-// whether one is there to be taken as it is: none (f.folder nil), or the
-// repository's own worktree by the repository's word (previewGitDir), at
-// commit with no tracked change, compared with its git directory and the
-// folder as its work tree named outright (checkoutIntactBy,
-// gitcli.RunAt), so nothing the folder's .git names and no work tree a
-// configuration names takes part; any other is refused with its path and
-// what is wrong, and nothing of it is removed, as is a way to it that is
-// not the run's own folders. Untracked files, a dev server's caches, are
-// left as they are. What is judged is the checkout as it is now: the
-// preview serves its files as they are, and natively the same user may
-// change them later.
+// whether one is there to be taken as it is: none (f.folder nil), or one
+// checkoutIntact finds at commit with no tracked change; any other is
+// refused with its path and what is wrong, and nothing of it is removed,
+// as is a way to it that is not the run's own folders. Untracked files, a
+// dev server's caches, are left as they are.
 func previewReusable(ctx context.Context, repo, dir, commit string) (*previewFolder, error) {
 	parent, err := openUnder(repo, filepath.Dir(dir))
 	if err != nil {
 		return nil, fmt.Errorf("%w: the way to %s from the run's working directory is not the run's own folders (a link, a file or nothing on it); nothing of it is removed", ErrPreviewRefused, dir)
 	}
 	f := &previewFolder{parent: parent}
-	switch err = f.open(ctx, repo, dir); {
+	switch err = f.open(dir); {
 	case errors.Is(err, fs.ErrNotExist):
 		return f, nil
 	case errors.Is(err, ErrTreeMoved):
 		err = fmt.Errorf("%w: %s is there and is not a directory; nothing of it is removed", ErrPreviewRefused, dir)
 	case err == nil:
-		told := func(env map[string]string, args ...string) (string, error) {
-			return gitcli.RunAt(ctx, f.admin, dir, env, args...)
-		}
-		moved, changed, _, cerr := checkoutIntactBy(dir, told, commit)
+		moved, changed, _, cerr := checkoutIntact(ctx, dir, commit)
 		switch {
 		case cerr != nil:
 			err = fmt.Errorf("%w: %s could not be compared with %s: %s; nothing of it is removed", ErrPreviewRefused, dir, short(commit), session.CleanMessage(cerr.Error()))
@@ -558,85 +542,6 @@ func previewReusable(ctx context.Context, repo, dir, commit string) (*previewFol
 		return nil, err
 	}
 	return f, nil
-}
-
-// previewEntryRead, when a test sets it, is called with each entry of the
-// repository's worktrees folder that previewGitDir reads.
-var previewEntryRead func(name string)
-
-// previewGitDir is the git directory of the checkout folder opened at dir
-// when the repository at repo says it is one of its worktrees, judged from
-// that opened folder before any git runs in or about it, in one read
-// whatever the repository holds: the folder's .git, a regular file in it
-// (readSmall), names an entry, taken by its name alone in the repository's
-// worktrees folder, opened without following a link (openIn); that entry's
-// gitdir, a regular file (readSmall), names the .git inside the opened
-// folder, the folder it is in compared with the opened folder as the
-// directory it is. Anything else is refused in fixed words that name dir.
-func previewGitDir(ctx context.Context, repo, dir string, folder *os.Root) (string, error) {
-	notOurs := fmt.Errorf("%w: %s is there and is not a worktree of the repository; nothing of it is removed", ErrPreviewRefused, dir)
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	_, common, err := gitcli.RepoOf(ctx, repo)
-	if err != nil {
-		return "", fmt.Errorf("%w: the repository could not be read: %s", ErrPreviewRefused, session.CleanMessage(err.Error()))
-	}
-	named, ok := strings.CutPrefix(readSmall(folder, ".git"), "gitdir: ")
-	name := filepath.Base(named)
-	if !ok || !filepath.IsLocal(name) {
-		return "", notOurs
-	}
-	top, err := os.OpenRoot(common)
-	if err != nil {
-		return "", notOurs
-	}
-	defer top.Close()
-	worktrees, err := openIn(top, "worktrees")
-	if err != nil {
-		return "", notOurs
-	}
-	defer worktrees.Close()
-	entry, err := openIn(worktrees, name)
-	if err != nil {
-		return "", notOurs
-	}
-	defer entry.Close()
-	if previewEntryRead != nil {
-		previewEntryRead(name)
-	}
-	admin := filepath.Join(common, "worktrees", name)
-	back := readSmall(entry, "gitdir")
-	if !filepath.IsAbs(back) {
-		back = filepath.Join(admin, back)
-	}
-	in, err := os.Stat(filepath.Dir(back))
-	self, serr := folder.Stat(".")
-	if filepath.Base(back) != ".git" || err != nil || serr != nil || !os.SameFile(in, self) {
-		return "", notOurs
-	}
-	return admin, nil
-}
-
-// readSmall is the first line of the file name in dir when it is a regular
-// file of at most 4 KiB, looked at without following a link, opened
-// without blocking and the very file looked at; "" otherwise.
-func readSmall(dir *os.Root, name string) string {
-	fi, err := dir.Lstat(name)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > 4<<10 {
-		return ""
-	}
-	f, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	if got, err := f.Stat(); err != nil || !os.SameFile(fi, got) {
-		return ""
-	}
-	b, _ := io.ReadAll(io.LimitReader(f, 4<<10))
-	line, _, _ := strings.Cut(string(b), "\n")
-	return strings.TrimSuffix(line, "\r")
 }
 
 // previewCheckoutTimeout bounds the making of a preview's checkout, under
@@ -663,11 +568,10 @@ func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, f 
 		if err != nil {
 			return err
 		}
-		if err := f.open(ctx, r.cwd, p.dir); err != nil {
+		if err := f.open(p.dir); err != nil {
 			return fmt.Errorf("the checkout just added could not be opened: %w", err)
 		}
-		head, err := gitcli.RunAt(ctx, f.admin, p.dir, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-		if head = strings.TrimSpace(head); err != nil || head != p.commit {
+		if head, err := headCommit(ctx, p.dir); err != nil || head != p.commit {
 			return fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(p.commit))
 		}
 	}
