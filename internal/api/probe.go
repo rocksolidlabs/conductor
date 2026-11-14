@@ -178,6 +178,13 @@ func toIdentity(res agents.ProbeResult, name string, p agents.Probe) Identity {
 // probe, the probe off, a relative program, a lookup not done, nothing
 // cached).
 func (s *Server) cachedIdentity(a catalog.Agent) (Identity, bool) {
+	return s.cachedIdentityOf(a, false)
+}
+
+// cachedIdentityOf is cachedIdentity; held (a turn's read of capacity), the
+// program's path is the one the look-ups hold (lookupCache.held), none
+// started and none waited for.
+func (s *Server) cachedIdentityOf(a catalog.Agent, held bool) (Identity, bool) {
 	if !a.Probed() || len(a.Command) == 0 || relativePath(a.Command[0]) {
 		return Identity{}, false
 	}
@@ -185,10 +192,17 @@ func (s *Server) cachedIdentity(a catalog.Agent) (Identity, bool) {
 	if p == nil {
 		return Identity{}, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	path, ok, known := s.lookups.found(ctx, a.Command[0])
-	if !ok || !known {
+	path := ""
+	if held {
+		path = s.lookups.held(a.Command[0]).path
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		if found, ok, known := s.lookups.found(ctx, a.Command[0]); ok && known {
+			path = found
+		}
+	}
+	if path == "" {
 		return Identity{}, false
 	}
 	name := a.Adapter

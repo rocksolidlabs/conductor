@@ -25,8 +25,10 @@ import (
 // and kept until the process has ended (#856). The binding stays what #845
 // made it; the ids held and the account counted on are kept beside it, in
 // memory, and no folder is asked about again for a session after its
-// reservation (a kept run's member between attempts is judged at the
-// remove by its binding, as #845 keeps it).
+// reservation (a run is judged at the remove by its members' bindings, as
+// #845 keeps them: every run an engine holds that has not ended, and every
+// run the ledger keeps as running or interrupted, also while an attempt's
+// session runs).
 
 // addFolderEntries adds stubs of bindAgents' kind to e's catalog (Codex's
 // for an id that starts codex-, else Claude Code's), each with its entry's
@@ -925,5 +927,176 @@ func TestABindingComparesAWantedFolderAsMainDoes(t *testing.T) {
 	}
 	e.inUse(t, "its session registered", "session ", a)
 	e.stopAndWait(sid)
+	e.removed(t, "its process ended", a)
+}
+
+// heldAndCounted fails unless session sid's launch holds every one of held
+// and none of not, and is counted on on.
+func (e *bindEnv) heldAndCounted(t *testing.T, sid, on string, held, not []string) {
+	t.Helper()
+	l := e.local(sid).Launched()
+	for _, id := range held {
+		if !slices.Contains(l.Holds, id) {
+			t.Fatalf("the accounts held %v, want %s among them", l.Holds, id)
+		}
+	}
+	for _, id := range not {
+		if slices.Contains(l.Holds, id) {
+			t.Fatalf("the accounts held %v, want no %s", l.Holds, id)
+		}
+	}
+	if l.Counted != on {
+		t.Fatalf("counted on %q, want %q", l.Counted, on)
+	}
+}
+
+// folderAndLink is a folder of the test's own and a link to it.
+func folderAndLink(t *testing.T) (string, string) {
+	t.Helper()
+	folder := realRoot(t, t.TempDir())
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	return folder, link
+}
+
+// Two Claude Code accounts on the folder a Claude Code entry pins, one
+// registered on the folder and one through a link to it, in both orders of
+// the accounts document: the launch holds both from before its process
+// starts until it has ended, and its session is counted on the first of
+// them in the document's order, running and in both start counts, and on
+// the other not at all.
+func TestTwoAccountsOfItsAdapterOnTheFolder(t *testing.T) {
+	e := newBindEnv(t, nil)
+	for i, order := range []string{"the folder's account first", "the link's account first"} {
+		t.Run(order, func(t *testing.T) {
+			folder, link := folderAndLink(t)
+			at := []string{folder, link}
+			if i == 1 {
+				at = []string{link, folder}
+			}
+			first, second := e.accountAt(t, "claude", "First", at[0]), e.accountAt(t, "claude", "Second", at[1])
+			agent := "claude-two-" + strconv.Itoa(i)
+			e.addFolderEntries(t, map[string][2]map[string]string{agent: {{"CLAUDE_CONFIG_DIR": folder}, nil}})
+			sid := e.launchHeld(t, map[string]any{"agentId": agent, "name": order}, func() {
+				e.inUse(t, "before its process starts", "launch", first, second)
+			})
+			e.heldAndCounted(t, sid, first, []string{first, second}, nil)
+			e.inUse(t, "its session registered", "session "+order, first, second)
+			e.counted(t, agent, first, 1, 1)
+			e.counted(t, agent, second, 0, 0)
+			e.stopAndWait(sid)
+			e.counted(t, agent, first, 0, 1)
+			e.counted(t, agent, second, 0, 0)
+			e.removed(t, "its process ended", first, second)
+		})
+	}
+}
+
+// A launch that names an account while another account of its adapter is
+// on the same folder, before it or after it in the accounts document: the
+// launch holds both from before its process starts until it has ended, and
+// its session is counted on the account it names, and on the other not at
+// all.
+func TestANamedAccountIsCountedOnBesideAnother(t *testing.T) {
+	e := newBindEnv(t, nil)
+	for _, named := range []string{"the first", "the second"} {
+		t.Run(named, func(t *testing.T) {
+			folder, link := folderAndLink(t)
+			ids := []string{e.accountAt(t, "claude", "First", folder), e.accountAt(t, "claude", "Second", link)}
+			on, other := ids[0], ids[1]
+			if named == "the second" {
+				on, other = other, on
+			}
+			sid := e.launchHeld(t, map[string]any{"agentId": "claude-p", "name": named, "account": on}, func() {
+				e.inUse(t, "before its process starts", "launch", on, other)
+			})
+			e.heldAndCounted(t, sid, on, []string{on, other}, nil)
+			e.inUse(t, "its session registered", "session "+named, on, other)
+			e.counted(t, "claude-p", on, 1, 1)
+			e.counted(t, "claude-p", other, 0, 0)
+			e.stopAndWait(sid)
+			e.counted(t, "claude-p", on, 0, 1)
+			e.counted(t, "claude-p", other, 0, 0)
+			e.removed(t, "its process ended", on, other)
+		})
+	}
+}
+
+// Where the accounts cannot be read at the reservation, and on a server
+// that does not own them, a launch of an entry that pins a registered
+// account's folder holds nothing by folder, and its session is counted on
+// its binding's own id, the default login, running and in both start
+// counts, and on the account not at all.
+func TestNothingHeldByFolderWhereTheAccountsAreNotKnown(t *testing.T) {
+	t.Run("the accounts unreadable", func(t *testing.T) {
+		e := newBindEnv(t, nil)
+		folder := realRoot(t, t.TempDir())
+		a := e.accountAt(t, "claude", "Pinned", folder)
+		e.addFolderEntries(t, map[string][2]map[string]string{"claude-on-f": {{"CLAUDE_CONFIG_DIR": folder}, nil}})
+		file := filepath.Join(e.srv.store.Dir(), capacity.Dir, capacity.AccountsFile)
+		kept, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, file, []byte("not json"))
+		sid := e.launch(t, "claude-on-f", map[string]any{"name": "unread"})
+		writeFile(t, file, kept)
+		e.heldAndCounted(t, sid, capacity.DefaultID, nil, []string{a})
+		e.counted(t, "claude-on-f", capacity.DefaultID, 1, 1)
+		e.counted(t, "claude-on-f", a, 0, 0)
+		e.removed(t, "its session running", a)
+		e.stopAndWait(sid)
+		e.counted(t, "claude-on-f", capacity.DefaultID, 0, 1)
+	})
+	t.Run("a server that does not own them", func(t *testing.T) {
+		e := newBindEnv(t, nil)
+		folder := realRoot(t, t.TempDir())
+		a := e.accountAt(t, "claude", "Pinned", folder)
+		second := &bindEnv{testEnv: serveSecond(t, e.testEnv, newFakeUsage("claude"), newFakeUsage("codex")), probes: e.probes, pin: e.pin}
+		second.addFolderEntries(t, map[string][2]map[string]string{"claude-on-f": {{"CLAUDE_CONFIG_DIR": folder}, nil}})
+		sid := second.launch(t, "claude-on-f", map[string]any{"name": "not owned"})
+		second.heldAndCounted(t, sid, capacity.DefaultID, nil, []string{a})
+		second.counted(t, "claude-on-f", capacity.DefaultID, 1, 1)
+		second.counted(t, "claude-on-f", a, 0, 0)
+		second.stopAndWait(sid)
+		second.counted(t, "claude-on-f", capacity.DefaultID, 0, 1)
+	})
+}
+
+// A resume of a listed session, held at the seam before its process
+// starts, holds and is counted as its own reservation decides: the account
+// on the folder its entry pins, held from before its process starts until
+// it has ended, its session counted on it (running, and in both start
+// counts beside the first launch's start); an account registered on the
+// folder, through a link to it, while the resume is held is neither held
+// nor counted on, and its remove is taken while the resumed session runs.
+func TestAResumeHoldsWhatItsReservationDecided(t *testing.T) {
+	e := newBindEnv(t, nil)
+	folder, link := folderAndLink(t)
+	a := e.accountAt(t, "claude", "Pinned", folder)
+	e.addFolderEntries(t, map[string][2]map[string]string{"claude-on-f": {{"CLAUDE_CONFIG_DIR": folder}, nil}})
+	sid := e.launch(t, "claude-on-f", map[string]any{"name": "first"})
+	e.stopAndWait(sid)
+	var late string
+	resumed := heldAt(t, func() string {
+		_, out := e.do("POST", "/api/sessions/"+sid+"/resume", adminToken, nil)
+		s, _ := out["session"].(map[string]any)
+		id, _ := s["id"].(string)
+		return id
+	}, func() {
+		late = e.accountAt(t, "claude", "Late", link)
+		e.inUse(t, "the resume before its process starts", "launch", a)
+	}, e.stopAndWait)
+	if resumed == "" {
+		t.Fatal("the resume did not start")
+	}
+	e.heldAndCounted(t, resumed, a, []string{a}, []string{late})
+	e.inUse(t, "the resumed session running", "session ", a)
+	e.removed(t, "the resumed session running", late)
+	e.counted(t, "claude-on-f", a, 1, 2)
+	e.stopAndWait(resumed)
+	e.counted(t, "claude-on-f", a, 0, 2)
 	e.removed(t, "its process ended", a)
 }

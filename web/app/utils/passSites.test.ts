@@ -35,8 +35,9 @@ describe('the pass store', () => {
     })
     expect(mentions(/\bpassHeld\b/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'middleware/decide.global.ts': 2 })
   })
-  it("is the one new reader of the tab's session storage: the sources that held a key there before it are the only others", () => {
-    expect(mentions(/sessionStorage/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'pages/index.vue': 1 })
+  it("is the one new reader of the tab's session storage: the sources that held a key there before it are the only others, beside the fragment plugin's removal of the framework's reload state", () => {
+    expect(mentions(/sessionStorage/)).toEqual({ 'composables/useIdentityPass.ts': 2, 'pages/index.vue': 1, 'plugins/token-fragment.client.ts': 1 })
+    expect(sources['../plugins/token-fragment.client.ts']).toMatch(/sessionStorage\.removeItem\('nuxt:reload:state'\)/)
   })
   it('is asked only whether it holds a pass, by the decide middleware', () => {
     expect(using(/\bpassHeld\b/)).toEqual(['composables/useIdentityPass.ts', 'middleware/decide.global.ts'])

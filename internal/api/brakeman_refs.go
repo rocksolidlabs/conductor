@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -164,6 +165,8 @@ func refClass(kind string) string {
 		return brakeman.ClassDispatch
 	case brakeman.RefFile:
 		return brakeman.ClassTouched
+	case brakeman.RefCapacity:
+		return brakeman.ClassCapacity
 	case brakeman.RefBrief:
 		return ""
 	}
@@ -323,6 +326,13 @@ type refResolver struct {
 	// between a candidate's task row and its attempt rows (candidate), so
 	// a test commits a transition between the two.
 	taskRead func()
+	// accounts is the accounts list the brief's capacity: refs name their
+	// accounts by, read once, as the first reading held is resolved
+	// (lookupCapacity); doc nil when it could not be read.
+	accounts struct {
+		read bool
+		doc  *capacity.Accounts
+	}
 }
 
 // errRefStore is a store a ref's record is in that this server could not
@@ -364,6 +374,9 @@ type refFound struct {
 	found, deleted, unavailable bool
 	now                         brakeman.RefState
 	item                        brakeman.ScopeItem
+	// capacity is a capacity: ref's snapshot (capacityDesk.snapshot), in
+	// the shape a turn reads, kept with the brief (Resolution.Capacity).
+	capacity *brakeman.Capacity
 }
 
 // resolve resolves one ref: its resolution, or why it is refused.
@@ -392,7 +405,9 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 			f.deleted = true
 		}
 	}
-	if !rr.grant.admits(f.item) {
+	// A capacity view is no project's, repository's, crew's, run's or
+	// session's: its class alone admits it, as its read does.
+	if ref.Kind != brakeman.RefCapacity && !rr.grant.admits(f.item) {
 		return brakeman.Resolution{}, "outside the request's scope", nil
 	}
 	now, u := rr.stateNow(ref, f)
@@ -400,7 +415,7 @@ func (rr *refResolver) resolve(ctx context.Context, ref brakeman.Ref) (brakeman.
 	if observed {
 		seen = brakeman.RefState{URL: u, State: read.State, Rev: read.Rev, SHA256: read.SHA256, At: read.At}
 	}
-	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now)}, "", nil
+	return brakeman.Resolution{Ref: ref, Seen: fitState(seen), Now: fitState(now), Capacity: f.capacity}, "", nil
 }
 
 // stateNow is what f, the lookup of ref, says of it now: its record's
@@ -430,9 +445,10 @@ func (rr *refResolver) stateNow(ref brakeman.Ref, f refFound) (brakeman.RefState
 }
 
 // liveWindow reports a ref kind the server holds only while it is live:
-// a session, its question and its touched file.
+// a session's question and its touched file, and a capacity reading, kept
+// in memory while its key keeps it.
 func liveWindow(kind string) bool {
-	return kind == brakeman.RefQuestion || kind == brakeman.RefFile
+	return kind == brakeman.RefQuestion || kind == brakeman.RefFile || kind == brakeman.RefCapacity
 }
 
 // resolveBrief resolves a brief: ref: the earlier request's kept brief,
@@ -538,8 +554,36 @@ func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, 
 		return rr.lookupEvidence(ctx, ref)
 	case brakeman.RefDecision:
 		return rr.lookupDecision(ctx, ref)
+	case brakeman.RefCapacity:
+		return rr.lookupCapacity(ref), nil
 	}
 	return refFound{}, nil
+}
+
+// lookupCapacity finds a capacity: ref's reading in the readings the
+// server holds, first and at once: not found once it has left them, and
+// nothing else looked up for it. One they hold is found at its own state,
+// its snapshot made from that reading (capacityDesk.snapshot), the
+// accounts list read once for the resolver (each check of a brief), as
+// the first such ref is resolved.
+func (rr *refResolver) lookupCapacity(ref brakeman.Ref) refFound {
+	d := rr.s.capacity
+	at, err := time.Parse(time.RFC3339Nano, ref.ReadAt)
+	if d == nil || d.st == nil || err != nil {
+		return refFound{}
+	}
+	kept, held := d.cache.Kept(capacity.Key{Agent: ref.Agent, Account: ref.Account}, at)
+	if !held {
+		return refFound{}
+	}
+	if !rr.accounts.read {
+		rr.accounts.read = true
+		if doc, err := d.accounts(); err == nil {
+			rr.accounts.doc = &doc
+		}
+	}
+	c := d.snapshot(kept, rr.accounts.doc, rr.at)
+	return refFound{found: true, now: brakeman.RefState{State: c.State}, capacity: &c}
 }
 
 // lookupDecision reads a decision record from the ledger (DR1): its state
@@ -1559,6 +1603,10 @@ func refURL(ref brakeman.Ref) string {
 	case brakeman.RefDecision:
 		// Served by DR1's route; the app opens it in its card.
 		return "/api/decisions/" + esc(ref.Decision)
+	case brakeman.RefCapacity:
+		// The admin's view of the key now; the reading cited is the
+		// resolution's own snapshot.
+		return "/api/capacity?agent=" + url.QueryEscape(ref.Agent) + "&account=" + url.QueryEscape(ref.Account)
 	}
 	return ""
 }
