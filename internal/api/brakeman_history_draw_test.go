@@ -276,7 +276,9 @@ func TestASearchIsReadInTheClassesOfWhatItDraws(t *testing.T) {
 	if refs := historyRefs(f.expectRead(t, searchPath("quokka"), http.StatusOK, "")); len(refs) != 0 {
 		t.Fatalf("the search served %v", refs)
 	}
-	seen := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched}
+	// A brief's items, drawn too, are read in every class the turn sees:
+	// the capacity view's among them.
+	seen := []string{brakeman.ClassRuns, brakeman.ClassLogs, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassTouched, brakeman.ClassCapacity}
 	if got, _ := footprintOf(t, f); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(seen))) {
 		t.Errorf("a search of every kind that served nothing: footprint %v, want %v", got, seen)
 	}

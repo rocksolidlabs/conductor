@@ -52,6 +52,10 @@ type Request struct {
 	Batch    string    `json:"batch,omitempty"`
 	Coverage *Coverage `json:"coverage,omitempty"` // the server's watermarks of what the turn read
 	ClosedAt time.Time `json:"closedAt,omitzero"`
+	// Capacity is the view of the agent and account its turn would run on
+	// as it was queued (CapacityOf), at most MaxCapacity bytes; absent on a
+	// server that keeps no capacity.
+	Capacity *Capacity `json:"capacity,omitempty"`
 }
 
 // Stamp is the agent a turn ran: its id, its adapter, the probed version,
@@ -342,8 +346,8 @@ const (
 	// MaxRequestDoc, so a request's later updates always fit. 104 KiB
 	// since the stamp's folder (#705): a path of MaxPath bytes that each
 	// encode as two took a request with every other field at its largest
-	// past 96.
-	MaxRequestRest = 104 << 10
+	// past 96; and MaxCapacity more for the view kept as it was queued.
+	MaxRequestRest = 104<<10 + MaxCapacity
 	MaxRequestDoc  = 256 << 10
 )
 

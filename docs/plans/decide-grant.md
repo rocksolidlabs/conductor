@@ -749,7 +749,8 @@ pass is held:
 - `plugins/token-fragment.client.ts`: `takeCredentials(location.href)`,
   then `history.replaceState` with the URL it answers, before the app's
   router reads the address; then, at a load, the token into the
-  workbench store as today, and the pass into the pass store (in
+  workbench store as a link's (kept once the server accepts it, #882),
+  and the pass into the pass store (in
   memory too, where the browser refuses storage). A refused value is
   dropped from the address bar and stored nowhere. A navigation the browser
   starts (a load, a fragment change, back or forward) never lets the
@@ -760,14 +761,20 @@ pass is held:
   before the router exists, takes the event first, rewrites the address
   without the fragment, ends the event there
   (`stopImmediatePropagation`: the router's listener does not run for
-  it), and writes what the fragment carried to the browser's storage
-  for it alone (`stored`: the tab's for a pass, the workbench's for the
-  token), never to what the running page holds and sends; it loads the
-  page again at the clean address (`location.reload()`) only when that
-  write was taken and changed what the storage held. In the desktop
+  it). A pass is written to the tab's storage for it alone (`stored`),
+  never to what the running page holds and sends, and the page loads
+  again at the clean address (`location.reload()`) only when that write
+  was taken and changed what the storage held. A workbench token is
+  taken as a load's link by a page that holds none, or one it has seen
+  refused (the gate asks), with no load while it is tried or once it is
+  accepted, and changes nothing in a page that holds a token it has
+  not seen refused, when it is the page's own token, refused or not,
+  or on a decide address (`decideAddress`, the guard's own test of
+  one, in any case of its letters as the router matches the decide
+  page's route; `fromLaterLink`, #882). In the desktop
   app, which keeps the workbench token in memory from its bridge and
-  not in the browser's storage, a later link's token is written nowhere
-  and changes nothing. A fragment that
+  not in the browser's storage, a link's token is written nowhere
+  and changes nothing, at a load or later. A fragment that
   takes nothing, one that carries the credential the storage already
   holds, and a write the browser refuses leave the page as it is,
   drafts and an answer held with it; a load drops what the page held
@@ -779,16 +786,24 @@ pass is held:
   rule to every navigation. What is not closed: a navigation the app's
   own code starts with such a fragment is sent on by the guard, and the
   router's record of where it was sent from holds that fragment until
-  the next navigation; no code of the app makes one. Where the browser
-  refuses the tab's storage, a link opened in a tab that already shows
-  the page is not taken: load it in a new tab.
+  the next navigation; no code of the app makes one. The workbench
+  token the page holds is part of the page's state that a reload Nuxt
+  itself makes (after a chunk that failed to load, or a new build)
+  writes into the tab's storage (`nuxt:reload:state`); the next load of
+  the app in that tab removes it, first in this plugin, and when that
+  load does not come (the server stopped), it stays there until the app
+  loads in that tab again. Where the browser refuses the tab's storage,
+  the pass of a link opened in a tab that already shows the page is not
+  taken: load it in a new tab. That is the pass alone: a later link's
+  workbench token does not go through the tab's storage.
 - `middleware/decide.global.ts` (new), synchronous over the stores and
   over each navigation's own fragment (`decideRedirect`: a key the
   fragment carries counts as held, and a fragment that carries a key
   is dropped whole), so it judges right whether it runs before or after
   the plugin; it stores nothing: the plugin, not the guard, takes a
   fragment at a load and at a later link. A workbench
-  token held, `/decide/<did>` goes to the operator's
+  token the page holds and has not seen refused, a link's being tried
+  among them (#882), `/decide/<did>` goes to the operator's
   `/decisions?item=decision:<did>` and `/decide` to `/decisions`; no
   workbench token and a pass held, the operator page's own address of
   one decision, `/decisions?item=decision:<did>`, goes to `/decide/<did>`

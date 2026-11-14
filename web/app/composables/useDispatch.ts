@@ -855,7 +855,7 @@ function useUpload() {
           return
         }
         const err = (data as ApiErrorBody | undefined)?.error
-        if (xhr.status === 401) admin.refused(token)
+        if (xhr.status === 401) admin.answered(token, false)
         reject(new ApiError(xhr.status, err?.code ?? 'http_error', err?.message ?? `HTTP ${xhr.status}`, err ?? {}, data))
       }
       xhr.send(form)

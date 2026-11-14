@@ -213,7 +213,8 @@ func rowBodies(t *testing.T, id string, rev int64) map[string]struct{ path, body
 // Brakeman turn's on its own session and none, each asking with a body
 // that would pass and a real account in the path, are refused 401, start no
 // read and leave the accounts document byte for byte; a switchyard answers
-// 403 switchyard.
+// 403 switchyard. The one exception is a Brakeman turn's GET /api/capacity,
+// read under its Capacity class (PR-6), which also starts no read.
 func TestAccountsRoutesAdminOnly(t *testing.T) {
 	claude, codex := newFakeUsage("claude"), newFakeUsage("codex")
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), append(bkAgents(), capAgents...), capReaders(claude, codex))
@@ -242,7 +243,13 @@ func TestAccountsRoutesAdminOnly(t *testing.T) {
 			} else {
 				status, data, _ = e.callAs(t, tok, r.method, r.path, []byte(r.body))
 			}
-			if status != http.StatusUnauthorized {
+			// A turn reads the capacity view under its Capacity class, on by
+			// default (TestBrakemanReadsCapacity); it is refused every other.
+			want := http.StatusUnauthorized
+			if tok == btok && r.method == http.MethodGet && strings.HasPrefix(r.path, "/api/capacity") {
+				want = http.StatusOK
+			}
+			if status != want {
 				t.Errorf("%s on %s %s: %d %.200s", name, r.method, r.path, status, data)
 			}
 		}
@@ -896,7 +903,9 @@ func TestCapacityCheckNotOwner(t *testing.T) {
 // and figure reach no route a session's token, a link's or a host's
 // reaches with the cat session's id, nor one a Brakeman turn reaches with
 // its own session's id (its read tools' routes among them), whatever the
-// method; no such call starts a read, a session or a write of the
+// method, but the turn's GET /api/capacity under its Capacity class, which
+// carries the label and figures and never a folder or a fingerprint
+// (PR-6); no such call starts a read, a session or a write of the
 // accounts; and no line of the server's log carries them, an add the
 // folder check refuses and a read that ends in an error included.
 func TestCapacityStaysWithTheAdmin(t *testing.T) {
@@ -1023,8 +1032,23 @@ func TestCapacityStaysWithTheAdmin(t *testing.T) {
 			} else {
 				status, data, _ = e.callAs(t, p.tok, op.Method, path, body)
 			}
-			if ours && status != http.StatusUnauthorized {
+			// A turn reads the capacity view under its Capacity class:
+			// labels and figures, never a folder or a fingerprint
+			// (TestBrakemanReadsCapacity).
+			turnView := p.sid == bsid && op.Method == http.MethodGet && op.Path == "/api/capacity"
+			if ours && !turnView && status != http.StatusUnauthorized {
 				t.Errorf("%s's %s %s: %d %.200s", p.who, op.Method, path, status, data)
+			}
+			if turnView {
+				if status != http.StatusOK {
+					t.Errorf("%s's %s %s: %d %.200s", p.who, op.Method, path, status, data)
+				}
+				for _, s := range []string{folder, pinnedFolder, bkFolder, homeFolder, fingerprint} {
+					if bytes.Contains(data, []byte(s)) {
+						t.Errorf("%s's %s carries %q", p.who, path, s)
+					}
+				}
+				continue
 			}
 			leaked(p.who, op.Method+" "+path, data)
 		}

@@ -67,9 +67,11 @@ export function useApi() {
   const admin = useWorkbenchToken()
 
   /**
-   * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 asks for the
-   * workbench token only when the request carried it, as `sent` (admin.refused judges it by that token, not by the one held when the
-   * reply lands); a token of the caller's own (`explicitToken`) asks for nothing.
+   * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 is told to the
+   * workbench token's store only when the request carried that token, as `sent` (admin.answered judges it by that token, not by the
+   * one held when the reply lands); a token of the caller's own (`explicitToken`) is told nothing. A success here accepts no token:
+   * routes beside the workbench's admit other credentials too; the events stream itself answering, which the server does for an
+   * operator's credential alone, does (openEvents).
    */
   function normalise(e: unknown, explicitToken: boolean, sent: string): ApiError {
     const fe = e as FetchError<unknown>
@@ -77,7 +79,7 @@ export function useApi() {
     const data = errorBody(fe.data)
     const code = data?.error?.code ?? (status === 0 ? 'network' : 'http_error')
     const message = data?.error?.message ?? (status === 0 ? 'Cannot reach the server' : fe.message)
-    if (status === 401 && !explicitToken) admin.refused(sent)
+    if (status === 401 && !explicitToken) admin.answered(sent, false)
     return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
