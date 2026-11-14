@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { liveAttention } from '~/utils/attention'
 import { FitAddon } from '@xterm/addon-fit'
-import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
+import { scaledFont, showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -400,10 +400,11 @@ function scheduleTileScale() {
   })
 }
 
-// Scale mode: pick a font size that roughly fills the pane, then apply the
-// exact remaining factor as a CSS transform so the whole screen stays visible.
-const MIN_FONT = 5
-const MAX_FONT = 28
+// Scale mode: pick a font size that roughly fills the pane (a full view: up to
+// its own size, scaledFont), then apply the remaining factor, when it shrinks,
+// as a CSS transform so the whole screen stays visible. The font it settled on
+// is on the host as data-scaled-font, for a test to read once it has settled.
+const scaledAt = ref<number>()
 let scaleFrame: number | undefined
 let fontAdjustments = 0
 
@@ -418,12 +419,13 @@ function applyScale() {
   if (!natW || !natH || !hw || !hh) return
   const k = Math.min(hw / natW, hh / natH)
   const font = term.options.fontSize ?? props.fontSize
-  const want = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.round(font * k)))
+  const want = scaledFont(font, k, props.fit, props.fontSize)
   if (want !== font && fontAdjustments < 6) {
     fontAdjustments++
     term.options.fontSize = want // the element resizes; the observer calls applyScale again
     return
   }
+  scaledAt.value = font
   const s = Math.min(k, 1)
   const tx = Math.round((hw - natW * s) / 2)
   const ty = Math.round((hh - natH * s) / 2)
@@ -451,6 +453,7 @@ function applyFitMode() {
       observer?.unobserve(el)
       el.style.transform = ''
     }
+    scaledAt.value = undefined
     if (term) term.options.fontSize = props.fontSize
     scheduleResize()
   }
@@ -849,7 +852,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
     <UContextMenu :items="terminalMenu" :disabled="compact">
-      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :data-scaled-font="scaledAt" :data-fit-passes="fitPasses" :data-fit-resizes="fitResizes" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">

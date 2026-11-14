@@ -43,3 +43,17 @@ export function sizerChip(v: SizerView): { who: string; cols: number; rows: numb
   const who = v.sizedBy ? v.roster.find((r) => r.id === v.sizedBy)?.name || 'another window' : 'a window that left'
   return { who, cols: v.cols, rows: v.rows }
 }
+
+/** The font sizes a scaled pane may draw the session's grid at. */
+export const SCALE_FONT = { min: 5, max: 28 } as const
+
+/**
+ * The font size a scaled pane draws the session's grid at: `font` (the size drawn now) times `k` (how much larger the pane is than
+ * the grid drawn at it), rounded, within SCALE_FONT. A full view that follows another window's size never draws it larger than its
+ * own `own` font size (#906): a grid smaller than the pane (a Yard tile's) is shown at the size text has everywhere else, not blown
+ * up to fill the pane; a larger one is still drawn smaller to show it whole. A scale view (a view-only tile) fills its pane.
+ */
+export function scaledFont(font: number, k: number, fit: SizerView['fit'], own: number): number {
+  const max = fit === 'fill' ? Math.min(own, SCALE_FONT.max) : SCALE_FONT.max
+  return Math.max(SCALE_FONT.min, Math.min(max, Math.round(font * k)))
+}

@@ -98,3 +98,55 @@ test("a control link follows the owner's size, scaled, until Fit to my window; t
     await api.stopSession(s.id)
   }
 })
+
+// A guest's view of a session another window sized small (a Yard tile's few rows, #906): the grid is drawn at the guest's own
+// text size, not scaled up to fill a 1440 px window with a few lines of very large text; a grid larger than the pane is still
+// drawn smaller (the test above).
+test("a view-only link at 1440 wide shows a small grid at its own text size, not blown up to fill the pane", async ({ page, api, browser }) => {
+  // The owner's window, a small one as a Yard tile is, sizes the session to a few rows and columns.
+  await page.setViewportSize({ width: 520, height: 360 })
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e small grid' })
+  const contexts: Array<{ close: () => Promise<void> }> = []
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await expect(page.locator('.xterm-screen')).toBeVisible({ timeout: 30_000 })
+    await page.evaluate(() => document.fonts.ready.then(() => undefined))
+    const owner = page.locator('.terminal-host')
+    // Sized by the window: attached, the session at the window's drawn grid, and still so a second later (the test above says why).
+    let seen = ''
+    await expect
+      .poll(
+        async () => {
+          const { session } = await api.ok<{ session: { cols: number; rows: number; viewers: number } }>('GET', `/api/sessions/${s.id}`)
+          const grid = await owner.evaluate((h) => `${h.dataset.cols} × ${h.dataset.rows}`)
+          const now = `${session.viewers} ${session.cols} × ${session.rows} ${grid}`
+          const held = session.viewers > 0 && grid === `${session.cols} × ${session.rows}` && now === seen
+          seen = now
+          return held
+        },
+        { timeout: 15_000, intervals: [1000], message: "the owner's window sizes the session" },
+      )
+      .toBe(true)
+    const view = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view' })
+    const guestCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    contexts.push(guestCtx)
+    await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Priya'))
+    const guest = await guestCtx.newPage()
+    await guest.goto(`/join/${view.token}`)
+    await guest.getByRole('button', { name: 'Join session' }).click()
+    const host = guest.locator('.terminal-host.terminal-scale')
+    await expect(host).toHaveCount(1, { timeout: 30_000 })
+    // The font the scaled view settled on (data-scaled-font, set as it places the grid): the view's own 13 px, where before #906 a
+    // pane this much larger than the grid drew it at 22 px and more.
+    await expect(host).toHaveAttribute('data-scaled-font', /^\d+$/, { timeout: 15_000 })
+    expect(await host.getAttribute('data-scaled-font')).toBe('13')
+    // The whole grid inside the pane.
+    const pane = (await host.boundingBox())!
+    const screen = (await host.locator('.xterm-screen').boundingBox())!
+    expect(screen.y + screen.height).toBeLessThanOrEqual(pane.y + pane.height + 1)
+    expect(screen.x + screen.width).toBeLessThanOrEqual(pane.x + pane.width + 1)
+  } finally {
+    for (const c of contexts) await c.close()
+    await api.stopSession(s.id)
+  }
+})
