@@ -191,8 +191,9 @@ test("a crew's launch sheet shows each member's account, and a retry after the d
 
   // The run page names each member's login and model as the launch bound them.
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+  await page.locator('[data-crew-run-header] [data-run-logins-button]').click({ timeout: 30_000 })
   const logins = page.locator('[data-run-logins]')
-  await expect(logins.locator('[data-run-login="builder"] [data-run-login-account]')).toHaveText(work, { timeout: 30_000 })
+  await expect(logins.locator('[data-run-login="builder"] [data-run-login-account]')).toHaveText(work)
   await expect(logins.locator('[data-run-login="builder"] [data-run-login-model]')).toHaveText("· the agent's default")
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-account]')).toHaveText(team)
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-model]')).toHaveText('· gpt-e2e')
@@ -226,8 +227,9 @@ test("a ticket's approved revision shows each member's account before its launch
   made.runs.push(runId)
 
   await page.goto(`/runs/${encodeURIComponent(runId)}`)
+  await page.locator('[data-crew-run-header] [data-run-logins-button]').click({ timeout: 30_000 })
   const logins = page.locator('[data-run-logins]')
-  await expect(logins.locator('[data-run-login="builder"] [data-run-login-account]')).toHaveText(work, { timeout: 30_000 })
+  await expect(logins.locator('[data-run-login="builder"] [data-run-login-account]')).toHaveText(work)
   await expect(logins.locator('[data-run-login="builder"] [data-run-login-at-launch]')).toHaveText('(the default at the launch)')
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-account]')).toHaveText(team)
   await expect(logins.locator('[data-run-login="reviewer"] [data-run-login-at-launch]')).toHaveCount(0)

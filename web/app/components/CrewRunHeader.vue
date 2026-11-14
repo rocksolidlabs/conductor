@@ -261,6 +261,20 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <template v-if="launchBy">by {{ launchBy }}</template>
           <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
         </span>
+        <!-- Each member's login and model as the launch bound them, behind a button: the bar keeps its height, the tiles theirs. -->
+        <UPopover v-if="logins.length" :content="{ align: 'start' }">
+          <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none self-center" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button><span class="hidden sm:inline">Logins</span></UButton>
+          <template #content>
+            <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
+              <li v-for="l in logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
+                <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
+                <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>
+                <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
+                <span class="text-muted [overflow-wrap:anywhere]" data-run-login-model>· {{ l.model }}</span>
+              </li>
+            </ul>
+          </template>
+        </UPopover>
       </span>
     </template>
     <template #trailing>
@@ -322,17 +336,6 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
       <span class="min-w-0 truncate font-medium text-highlighted">{{ p.name }}</span>
       <span v-if="p.responsibilities?.length" class="truncate text-muted" data-run-person-words>{{ responsibilityWords(p.responsibilities) }}</span>
     </NuxtLink>
-  </div>
-
-  <!-- Each member's login and model as the launch bound them: what every attempt, retry and resume of it uses. -->
-  <div v-if="logins.length" class="flex flex-wrap items-center gap-1.5 border-b border-default px-4 py-1.5" data-run-logins>
-    <span class="text-xs text-muted">Logins</span>
-    <span v-for="l in logins" :key="l.name" class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs ring ring-default" :data-run-login="l.name">
-      <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
-      <span class="truncate" data-run-login-account>{{ l.account }}</span>
-      <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
-      <span class="truncate text-muted" data-run-login-model>· {{ l.model }}</span>
-    </span>
   </div>
 
   <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
