@@ -473,11 +473,13 @@ func (s *Server) decisionLinksLocked(runID string) (standing, owed bool) {
 // expiry, or not a decision link) may be forgotten; one judged either is
 // forgotten only settled.
 //
-// The link store and these records are kept in memory only: a server that
-// stops between the store's mark and its hook keeps nothing of the link on
-// disk, and the next start has no record of it, so no revoke of it is owed
-// there by this judgement; the switchyard keeps the link until its expiry
-// there or its sweep, as a forgotten run's links (revokeRemoteRunLinks).
+// The link store and these records are kept in memory only, so the next
+// start of a server owes no revoke of its links by this judgement. After a
+// server stops between the store's mark and its hook, the switchyard lists
+// the link until the earlier of the link's own expiry there and its sweep
+// of links whose server has been away about seven days (linkOrphanAfter),
+// counted anew when the switchyard starts; the link opens nothing, because
+// nothing can register again under that server's instance.
 // An owed revoke keeps its record, and the run's desk, until the
 // switchyard confirms the revoke or answers not_found, or the run is
 // forgotten: a revoked link reads revoked here past its expiry too, and the

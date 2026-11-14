@@ -1422,26 +1422,54 @@ func dropThere(t *testing.T, yard *testEnv, linkID string) {
 
 // syncNotFound sends the run's members to the switchyard now over its
 // desk, held meanwhile (holdDesk), whatever was sent before, and checks
-// that it answered not_found: neither the members sent nor a failure is
-// kept after it.
+// that it answered not_found: the desk, wrapped for the sync (answersDesk),
+// carried one update and the switchyard answered it not_found, and neither
+// the members sent nor a failure is kept after it. A sync that sends
+// nothing leaves the last two as an answered one does; the count does not.
 func syncNotFound(t *testing.T, local *testEnv, runID string) {
 	t.Helper()
 	defer local.srv.holdDesk(runID)()
-	if local.srv.liveDesk(runID) == nil {
+	local.srv.pubMu.Lock()
+	rd := local.srv.desks[runID]
+	if rd == nil || ended(rd.desk.Done()) {
+		local.srv.pubMu.Unlock()
 		t.Errorf("no desk carries the sync")
 		return
 	}
-	local.srv.pubMu.Lock()
+	desk := &answersDesk{Desk: rd.desk}
+	rd.desk = desk
 	delete(local.srv.runSent, runID)
 	local.srv.pubMu.Unlock()
 	local.srv.syncRunLinks(runID)
 	local.srv.pubMu.Lock()
+	if rd.desk == desk {
+		rd.desk = desk.Desk
+	}
 	_, sent := local.srv.runSent[runID]
 	_, failed := local.srv.runSyncFails[runID]
 	local.srv.pubMu.Unlock()
+	if n, nf := desk.updates.Load(), desk.notFound.Load(); n != 1 || nf != 1 {
+		t.Errorf("the sync was not answered not_found: %d updates carried, %d answered not_found (want 1 and 1)", n, nf)
+	}
 	if sent || failed {
 		t.Errorf("the sync was not answered not_found (sent %v, failed %v)", sent, failed)
 	}
+}
+
+// answersDesk is a run's desk that counts the updates of the run's members
+// it carries and those the switchyard answers not_found.
+type answersDesk struct {
+	Desk
+	updates, notFound atomic.Int32
+}
+
+func (d *answersDesk) RunLinkUpdate(ctx context.Context, run proto.RunGroup) error {
+	d.updates.Add(1)
+	err := d.Desk.RunLinkUpdate(ctx, run)
+	if refusedAs(err, "not_found") {
+		d.notFound.Add(1)
+	}
+	return err
 }
 
 // countingDesk is a run's desk that counts the revokes it carries.
@@ -1481,15 +1509,30 @@ func TestASyncNotFoundForgetsOnlyARecordOwedNothing(t *testing.T) {
 		return m
 	}
 	// The sync is answered inside the store's hook of the link's revoke:
-	// after the store's mark, before the record's.
-	syncInHook := func(t *testing.T, m minted) {
+	// after the store's mark, before the record's. The channel closes once
+	// the sync has run there.
+	syncInHook := func(t *testing.T, m minted) <-chan struct{} {
 		told := m.local.srv.links.OnRevokeRun
 		var once sync.Once
+		ran := make(chan struct{})
 		m.local.srv.links.OnRevokeRun = func(runID, lid string) {
 			if lid == m.linkID {
-				once.Do(func() { syncNotFound(t, m.local, runID) })
+				once.Do(func() {
+					syncNotFound(t, m.local, runID)
+					close(ran)
+				})
 			}
 			told(runID, lid)
+		}
+		return ran
+	}
+	// synced fails the test unless the sync inside the hook ran.
+	synced := func(t *testing.T, ran <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ran:
+		case <-time.After(testWait):
+			t.Fatal("the sync inside the store's hook never ran")
 		}
 	}
 	owedThenEnded := func(t *testing.T, m minted) {
@@ -1512,8 +1555,9 @@ func TestASyncNotFoundForgetsOnlyARecordOwedNothing(t *testing.T) {
 	}
 	t.Run("inside the hook", func(t *testing.T) {
 		m := mint(t)
-		syncInHook(t, m)
+		ran := syncInHook(t, m)
 		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
+		synced(t, ran)
 		owedThenEnded(t, m)
 	})
 	t.Run("before the mark", func(t *testing.T) {
@@ -1525,6 +1569,11 @@ func TestASyncNotFoundForgetsOnlyARecordOwedNothing(t *testing.T) {
 		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
 		owedThenEnded(t, m)
 	})
+	// With the record kept and owed (the sync answered inside the hook),
+	// the route's first request carries the revoke once and the second
+	// answers without carrying; the route's question (runRevokeOwed) and
+	// the record's lookup (hasRemoteRunLink) give the same answer here,
+	// because the store's hook has run by the time the route asks.
 	t.Run("the revoke route", func(t *testing.T) {
 		m := mint(t)
 		m.local.srv.pubMu.Lock()
@@ -1532,8 +1581,9 @@ func TestASyncNotFoundForgetsOnlyARecordOwedNothing(t *testing.T) {
 		counting := &countingDesk{Desk: rd.desk}
 		rd.desk = counting
 		m.local.srv.pubMu.Unlock()
-		syncInHook(t, m)
+		ran := syncInHook(t, m)
 		m.local.srv.RemoteLinkGone(m.linkID, "", m.run.ID, false)
+		synced(t, ran)
 		path := "/api/runs/" + m.run.ID + "/links"
 		for range 2 {
 			if resp, out := m.local.do("DELETE", path+"/"+m.linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
