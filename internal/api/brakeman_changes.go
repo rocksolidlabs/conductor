@@ -762,6 +762,12 @@ func (s *Server) dispatchChanges(ctx context.Context, o *observer, start changes
 			p.Truncated = true
 			p.Why = fmt.Sprintf("more than Dispatch's newest %d changes since then", changesWindow)
 		}
+		if c.Entity == dispatch.EntityCapture || c.Entity == dispatch.EntityCaptureSend {
+			// A turn has no read of captures yet (docs/plans/browser-
+			// evidence.md, PR-6): a capture's and a send's rows are passed
+			// over whatever the grant, and the watermark moves past them.
+			continue
+		}
 		ok := true
 		switch {
 		case c.Ticket != "":

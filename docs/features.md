@@ -4571,6 +4571,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+  The run of 2026-11-14 for `main` at 93afee23 (R1's workflow in one run,
+  its entry below, #904) observed part of it on the LAN: a server on the
+  Mac, Claude Code in a managed run from a Dispatch ticket's approved
+  revision with a gate before a task, the gate approved from a
+  maintainer's own phone and held applied and resumed as the task file
+  reached the builder's first attempt, and the server restarted with the
+  decision the same; still open are the three items on the Decide tab,
+  the failed task retried and a permission question answered from the
+  phone, a response at a stale revision refused, iOS Safari and Android
+  Chrome each, and every step through a self-hosted switchyard, so #653
+  stays open.
 - **Searchable history: what was said, decided and checked, found from the
   palette with its source (HS1, #613 to #617, #619, #621 and #624,
   2026-11-06 to 2026-11-08).** Program item HS1, planned in
@@ -4983,6 +4994,92 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   from `conductor host` on the Mac recorded with the agent's version, its
   own session and its launch commit as the Mac reports them. Its checks
   are in its body.
+- **R1's workflow in one run on `main`, with a real agent and a decision
+  answered from a phone (#904, 2026-11-14).** What one run observed of
+  R1 as a whole: a real ticket in Dispatch becomes a checked candidate,
+  gets a batched human review, one repair round and a delivery link, with
+  one durable decision answered from a phone on the LAN, on the
+  open-source build with no cloud account. The build: `main` at 93afee23
+  (`conductor version` printed `v0.7.0-rc.23-368-g93afee23`), on a Mac,
+  started with no switchyard and no account; `GET /api/capabilities`
+  answered no provider. The agent: Claude Code (2.1.318 at the launch,
+  2.1.325 for the later attempts) with the smallest model the catalog
+  offers for a member; six short agent sessions in all. Everything below
+  was observed by the run's check, driving the server's API and the real
+  app in a headless browser, except what is named as a maintainer's.
+  - The ticket (DS2, below): a Dispatch project and a ticket with a
+    description and acceptance criteria; plan revision 1 with a crew of a
+    builder and a reviewing member (Claude Code both) and a person as a
+    member, the architecture owner (HM1, above), and that person's
+    decision required before the builder's task; the revision approved
+    and the run launched from the ticket.
+  - The decision (DR1 and MB0, above): from the launch the builder's task
+    was held with no session started, the same decision on the task, in
+    the inbox, under Needs you in the sidebar, under the ticket's
+    Decisions and on the person's page. A maintainer opened the Decide
+    page on their own phone on the LAN and approved. The API then held
+    the decision applied at its third revision with the answer Approve,
+    answered by the operator for that person, its steps recorded,
+    validated, applied (the task released) and resumed (the task file
+    delivered to the builder's first attempt), all within the same
+    second. The page's steps as the phone drew them are the maintainer's
+    word; the check then opened the record at a phone-sized viewport and
+    read Response recorded, Validated by Yardmaster, Applied. The server
+    was stopped and started once on the same data directory: the
+    decision's state, revision, answer, responses, times and its five
+    history rows were the same before and after; the restart stopped the
+    run, and Continue on the run's page made a continuation in which the
+    decision was applied at once.
+  - The checked candidate: the builder's first attempt was lost because
+    the agent's sign-in had lapsed on that machine (a maintainer signed
+    in again; #902 is what they met doing that from a phone); the second
+    failed one of the plan's two checks on the engine's first run of it;
+    the third passed both.
+  - The review and the repair (RV1, above): the reviewing member's
+    verdict; then three notes (on a line of a file, on a file, and a
+    general one) written in one draft in the app's Review view and sent
+    as one review with Request changes, by the check acting as the
+    reviewer through the real app (no person typed them); the page
+    answered that three notes were recorded in Dispatch. A fourth attempt
+    started at the reviewed commit, addressed the three findings and
+    passed both checks; the reviewing member approved; the three findings
+    were marked Resolved and an Approve review was sent.
+  - The delivery: a delivery link naming the builder's fourth attempt,
+    verified as that attempt having passed its two checks; nothing was
+    merged, pushed or closed by itself, and the ticket stayed open for its
+    owner's acceptance. The ticket's page showed the approved plan and the
+    launch, the runs with the continuation finished, each candidate with
+    its checks, the review verdicts with their findings, the repairs, the
+    decisions, the close policy and the verified delivery.
+  - History (HS1, above): the palette found the decision by words of its
+    title (its response and its request, each with source, host, project,
+    plan revision and time) and the builder's session by its name
+    (source, host, project, worktree and time).
+
+  The maintainers accepted this run on 2026-11-14 as the observation of
+  R1's workflow, with the batched review as it was made.
+
+  Not observed, open: the desktop notification (no desktop app in the
+  run); the rest of the decision page's by-hand list (a retry and a
+  permission question answered from the phone, the refusal of a response
+  at an old revision, iOS Safari and Android Chrome each, the path
+  through a self-hosted switchyard); the agent's addressed notes beside
+  the findings; Prepare a repair and Check again; Codex as a member;
+  closing the ticket. The defects the run found, one line each; all but
+  the last are being fixed in one pull request that is part of #653, and
+  the last is its own issue:
+  - the decisions page opened without a pass shows an empty page instead
+    of asking for one;
+  - a long title overflows a row of the decision list;
+  - Start now is offered on a waiting member of a managed run, and
+    Relaunch on an ended one, where the engine refuses both;
+  - the plan's member line leaves out the model;
+  - the gate's card's words on Reject cancelling its tasks read wrongly,
+    and so do the inbox count's;
+  - a continued run's repair line in the log names the wrong attempt
+    number;
+  - a closed decision's card still says waiting;
+  - a sign-in code cannot be given to an agent from a phone (#902).
 - **Project manifests: a fresh attempt worktree made usable, predictably
   (EN1, #393 to #399, 2026-10-31).** Program item EN1, planned in
   `docs/plans/project-manifests.md` (PR #385) and shipped as seven PRs: the
