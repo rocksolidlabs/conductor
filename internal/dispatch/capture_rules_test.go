@@ -50,12 +50,12 @@ func candidateCapture() (NewCapture, CaptureFacts) {
 	return n, f
 }
 
-// The privacy rule compares names in one form: an element's tag and an
-// attribute's name are refused unless they are of the forms the rule
-// allows (TestANameIsWhatTheListOfNamesAllows walks their alphabet), and
-// an input's (its local name, without regard to case, with a prefix or
-// none) value, or a password field's, is never kept; legal names of every
-// case are kept as given.
+// The privacy rule compares names in one form: an element whose tag or an
+// attribute's name is not of the forms the rule allows keeps no value
+// (TestANameIsWhatTheListOfNamesAllows walks their alphabet), a name with
+// a control character is refused, and an input's (its local name, without
+// regard to case, with a prefix or none) value, or a password field's, is
+// never kept; legal names of every case are kept as given.
 func TestThePrivacyRuleComparesNamesInOneForm(t *testing.T) {
 	type attr = [2]string
 	value := attr{"value", "hunter2"}
@@ -73,23 +73,28 @@ func TestThePrivacyRuleComparesNamesInOneForm(t *testing.T) {
 	}
 	// Not names: white space of each kind before, inside and after.
 	for _, ws := range []string{" ", "\t", "\n", "\r", " ", " ", "　", "\x00", "\x1b"} {
+		// A control character is refused wherever it is; a name of another
+		// form is kept, and its element keeps no value.
+		control := strings.ContainsFunc(ws, unicode.IsControl)
 		add(false, ws+"input", value)
 		add(false, "input"+ws, value)
 		add(false, "in"+ws+"put", value)
-		add(false, "div", attr{ws + "value", "v"})
-		add(false, "div", attr{"value" + ws, "v"})
-		add(false, "div", attr{"va" + ws + "lue", "v"})
+		add(!control, "in"+ws+"put", attr{"title", "x"})
+		add(false, "div", attr{ws + "value", "v"}, value)
+		add(!control, "div", attr{"value" + ws, "v"})
+		add(!control, "div", attr{"va" + ws + "lue", "v"})
 	}
 	add(false, "", value)
-	// Not names: a delimiter, a trailing colon, two prefixes, a start that
-	// no name has; refused for the name itself, whatever it holds.
+	// Names of no form: a delimiter, a trailing colon, two prefixes, a
+	// start that no name has: kept, and their element keeps no value.
 	for _, tag := range []string{"input/", "input:", "input>", `input"`, "input=", "a:b:Input", ":input", "-input", "1input", "a:b:div", "svg:", "div/"} {
 		add(false, tag, value)
-		add(false, tag, attr{"title", "x"})
+		add(true, tag, attr{"title", "x"})
 	}
 	for _, name := range []string{"value/", "value:", "value=", `value"`, "value'", "value>", "x:", ":", "-value", "1value"} {
 		add(false, "input", attr{name, "hunter2"})
-		add(false, "div", attr{name, "v"})
+		add(false, "div", attr{name, "v"}, value)
+		add(true, "div", attr{name, "v"})
 	}
 	// An input in any case and with any prefix keeps no value, whatever
 	// its type says (missing, misspelt, a password in any case), the value
@@ -197,11 +202,125 @@ func firstBeyondASCII(tab *unicode.RangeTable) (rune, bool) {
 	return 0, false
 }
 
+// A report's text made storable is never longer as encoded, and what it
+// gives a report is taken by the store: a carriage return is a line feed,
+// each other control character but a tab and a line feed a space, a run
+// of bytes that is not UTF-8 one space.
+func TestAReportTextIsMadeStorable(t *testing.T) {
+	for _, c := range []struct{ in, out string }{
+		{"a\r\nb", "a\n\nb"}, {"tab\tline\n", "tab\tline\n"}, {"\x00\x01\x1b\x7f", "    "}, {"\u0085x", " x"},
+		{"bad\xff\xfebytes", "bad bytes"}, {"plain   kept", "plain   kept"},
+	} {
+		got := ReportText(c.in)
+		if got != c.out || measure(got) > measure(c.in) {
+			t.Errorf("%q: %q (%d bytes as encoded, from %d), want %q", c.in, got, measure(got), measure(c.in), c.out)
+		}
+	}
+	n, f := testCapture(false)
+	e := element(&n)
+	e.HTML, e.Neighbourhood, e.Text = ReportText("<p>\r\n\x01</p>"), ReportText("a\rb"), ReportText("x\x02y")
+	e.Attributes = [][2]string{{"title", ReportText("one\r\ntwo")}}
+	moment(&n)
+	if got := refusedAs(t, n, f, false); got != "" {
+		t.Fatalf("a report's texts made storable: refused %s", got)
+	}
+}
+
+// Every rule of the store's table of text fields (fieldRules), handed a
+// value that holds a marker and breaks the rule each way it can be broken
+// (past its bound, not UTF-8, a control character, not a URL, not a
+// file's name, not JSON): no refusal holds the marker.
+func TestNoFieldRuleQuotesTheValueItRefuses(t *testing.T) {
+	const marker = "Marker-q7z"
+	for key, r := range fieldRules {
+		values := []string{marker + strings.Repeat("x", r.max), marker + "\xff", marker + "\x01", marker + "\x00", marker + "/..", "{" + marker}
+		refusals := 0
+		for _, v := range values {
+			err := checkField(key, "the field", v)
+			var ref *Refusal
+			if err != nil && !errors.As(err, &ref) {
+				t.Fatalf("%s: %v", key, err)
+			}
+			if err != nil {
+				refusals++
+				if strings.Contains(ref.Words, "Marker") || strings.Contains(ref.Key, "Marker") || strings.Contains(strings.Join(ref.Missing, " "), "Marker") {
+					t.Errorf("%s refuses %q in words that hold it: %v", key, v, err)
+				}
+			}
+		}
+		if refusals == 0 {
+			t.Errorf("%s refused none of the values", key)
+		}
+	}
+}
+
+// The look before a tree is read (CheckCaptureCreate) and the create's
+// transaction judge the capture retaken by one rule (captureRoom): a
+// retake of no capture, of a deleted one and of a link's by an attempt's
+// is refused by the look with the words the create refuses it with, and
+// its receipt kept; a create the look lets in writes nothing.
+func TestTheLookBeforeTheTreeIsTheCreatesRule(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	n, f := testCapture(false)
+	link, _ := testCapture(false)
+	link.Label, link.Annotations = TreeRead{}, nil
+	linked := mustCreate(t, s, "linked", link, CaptureFacts{Origin: OriginURL}, nil)
+	gone := mustCreate(t, s, "gone", n, f, nil)
+	if rc, err := s.DeleteCapture(ctx, testOp("gone-del"), gone); err != nil || rc.Status != StatusDone {
+		t.Fatalf("the delete: %+v %v", rc, err)
+	}
+	for i, retake := range []string{"0123456789abcdef", gone, linked} {
+		r := n
+		r.RetakeOf = retake
+		looked, refused, err := s.CheckCaptureCreate(ctx, testOp(fmt.Sprintf("look-%d", i)), strings.Repeat("a", 64), r, nil, false)
+		made, cerr := s.CreateCapture(ctx, testOp(fmt.Sprintf("make-%d", i)), strings.Repeat("b", 64), r, f, nil)
+		if err != nil || cerr != nil || !refused || looked.Status != StatusFailed || made.Status != StatusFailed || looked.Error != made.Error {
+			t.Errorf("retake %d: the look %+v %v %v, the create %+v %v", i, looked, refused, err, made, cerr)
+		}
+		again, found, err := s.Replay(ctx, testOp(fmt.Sprintf("look-%d", i)), IntentCaptureCreate, captureArgs{Received: strings.Repeat("a", 64)})
+		if err != nil || !found || again.Error != looked.Error {
+			t.Errorf("retake %d: the look's receipt: %+v %v %v", i, again, found, err)
+		}
+	}
+	before := count(t, s, "SELECT COUNT(*) FROM ops")
+	if rc, refused, err := s.CheckCaptureCreate(ctx, testOp("look-ok"), strings.Repeat("c", 64), n, nil, false); err != nil || refused || rc.Status != "" {
+		t.Fatalf("a create the look lets in: %+v %v %v", rc, refused, err)
+	}
+	if after := count(t, s, "SELECT COUNT(*) FROM ops"); after != before {
+		t.Fatalf("the look wrote %d rows", after-before)
+	}
+}
+
+// The pure checks are the store's own: what CheckNewCapture refuses,
+// checkCapture refuses with the same words whatever the facts, and an
+// edit CheckCaptureEdit refuses is refused by EditCapture with its words.
+func TestThePureChecksAreTheStores(t *testing.T) {
+	n, f := testCapture(false)
+	element(&n).Measured = MaxElementReport + 1
+	moment(&n)
+	pure := CheckNewCapture(n, nil)
+	_, _, withFacts := checkCapture(n, f, false)
+	_, _, noFacts := checkCapture(n, CaptureFacts{}, false)
+	if pure == nil || withFacts == nil || noFacts == nil || pure.Error() != withFacts.Error() || pure.Error() != noFacts.Error() {
+		t.Fatalf("the pure check %v, with the facts %v, with none %v", pure, withFacts, noFacts)
+	}
+	edits := []AnnotationEdit{{K: 1, Kind: AnnotationElement, Note: strings.Repeat("a", MaxAnnotationNote+1)}}
+	var editErr *Refusal
+	errors.As(CheckCaptureEdit(edits), &editErr)
+	s := openStore(t, storeDir(t))
+	rc, err := s.EditCapture(t.Context(), Op{Actor: "admin", ID: "edit-1"}, strings.Repeat("a", 64), strings.Repeat("b", 16), 1, edits)
+	if editErr == nil || err != nil || rc.Status != StatusFailed || rc.Error != editErr.Words || rc.Refusal != editErr.Code {
+		t.Fatalf("the edit's pure check %v; the store's %+v %v", editErr, rc, err)
+	}
+}
+
 // A name is what the list of names allows and nothing else, walked
 // through the alphabet: each rune at the start, in the middle and at the
 // end of an input's tag, of the value attribute's name, of the type
 // attribute's name, and of a type's password. A rune outside the form's
-// alphabet refuses the report; a spelling of the form whose local name
+// alphabet keeps the value out (the report is refused for it); a spelling
+// of the form whose local name
 // is still the one the rule compares (without regard to ASCII case) keeps
 // no value; any other spelling of the form is plainly another name, kept.
 // A type's value is judged by its ASCII letters alone: any rune but a

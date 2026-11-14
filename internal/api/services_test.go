@@ -26,6 +26,10 @@ func TestHelperServesHTTP(t *testing.T) {
 		t.Skip("a helper")
 	}
 	srv := &http.Server{Addr: "127.0.0.1:" + os.Getenv("CONDUCTOR_PORT_WEB"), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/exit" {
+			// The service ends on its own, as a dev server that crashed.
+			os.Exit(3)
+		}
 		io.WriteString(w, "served "+r.URL.Path+"\n")
 	})}
 	srv.ListenAndServe()
