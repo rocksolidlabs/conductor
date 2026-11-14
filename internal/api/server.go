@@ -1375,7 +1375,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// The trees still being ended, a run's stopped before the shutdown
 	// among them, end in the ledger they end in.
 	s.runs.Drain(ctx)
-	s.trees.close()
+	s.trees.close(s.log)
 	if f := gateSeam(&s.launches, &s.launches.afterStops); f != nil {
 		f()
 	}
