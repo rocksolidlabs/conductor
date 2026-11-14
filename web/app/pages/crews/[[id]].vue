@@ -438,10 +438,11 @@ function launchNamed() {
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (deleteOpen.value = true) }]])
 
 /**
- * The view link a launch returned, until this page has shown it: in app state, so a launch that resolves after the page was left keeps it
- * for the next visit, and a toast offers it meanwhile. Its token is in no other state.
+ * The view link a launch returned, until this page has shown it: in the page's memory (usePageMemory), so a launch that resolves after
+ * the page was left keeps it for the next visit, and a toast offers it meanwhile. Its token is in no other state, and in none Nuxt
+ * writes at a reload.
  */
-const shownLink = useState<{ url: string; runId: string; name: string; hours: number } | null>('crewShownLink', () => null)
+const shownLink = usePageMemory<{ url: string; runId: string; name: string; hours: number } | null>('crewShownLink', () => null)
 let mounted = false
 const shownOpen = computed({
   get: () => !!shownLink.value,

@@ -394,4 +394,80 @@ describe('another workbench token while a page shows capacity and the accounts',
     scope.stop()
     cap.store.unwatch(q)
   })
+
+  // Judged by the token's count of changes, not by its value: a token changed and back to the one read with is a change too, within
+  // one flush while a page shows the lists and while none does (settings left, the token forgotten and the same one saved, settings
+  // again). Both lists are read again then; a save of the very token the page holds is no change.
+  it('reads both again when the token changed since they were read, also when it came back to the same one', async () => {
+    const [first, second] = ['the-first-token-0123', 'the-second-token-0123']
+    const app = { payload: { state: reactive({}) as Record<string, unknown> } }
+    const held: Array<{ path: string; answer: (v: unknown) => void }> = []
+    vi.stubGlobal('useNuxtApp', () => app)
+    vi.stubGlobal('useState', (key: string, init: () => unknown) => {
+      const r = toRef(app.payload.state, `$s${key}`)
+      if (r.value === undefined) r.value = init()
+      return r
+    })
+    vi.stubGlobal('computed', computed)
+    vi.stubGlobal('watch', watch)
+    vi.stubGlobal('useWorkbenchToken', useWorkbenchToken)
+    vi.stubGlobal('useApi', () => ({ request: (path: string) => new Promise((answer) => held.push({ path, answer })) }))
+    const doc = { owner: true, rev: 3, accounts: [], adapters: [] }
+    const q = { agent: 'claude', account: 'a-home' }
+    const admin = useWorkbenchToken()
+    admin.set(first)
+    const shown = () => {
+      const scope = effectScope()
+      return { scope, ...scope.run(() => ({ cap: useCapacity(), acc: useAccounts() }))! }
+    }
+    /** Both lists read and answered with the token held now. */
+    async function read(page: ReturnType<typeof shown>) {
+      const from = held.length
+      void page.cap.store.watch(q)
+      const loading = page.acc.store.load()
+      expect(held.slice(from).map((h) => h.path)).toEqual(['/api/capacity', '/api/accounts'])
+      held[from]!.answer(view('claude', 'a-home', { state: 'ok', account: { id: 'a-home', label: 'Home' } }))
+      held[from + 1]!.answer(doc)
+      await loading
+      await settle()
+      expect(page.acc.doc.value).not.toBeNull()
+      expect(page.cap.entry(q).view).not.toBeNull()
+    }
+    let page = shown()
+    await read(page)
+    // Within one flush, while the page shows them: forgotten, and the accounts read again.
+    let from = held.length
+    admin.set(second)
+    admin.set(first)
+    await nextTick()
+    expect(page.acc.doc.value).toBeNull()
+    expect(page.cap.entry(q).view).toBeNull()
+    expect(held.slice(from).map((h) => h.path)).toEqual(['/api/accounts'])
+    held[from]!.answer(doc)
+    await settle()
+    page.cap.store.unwatch(q)
+    await read(page)
+    // While no page shows them: forgotten as the next page shows them, and the accounts read again.
+    page.scope.stop()
+    page.cap.store.unwatch(q)
+    admin.clear()
+    admin.set(first)
+    from = held.length
+    page = shown()
+    expect(page.acc.doc.value).toBeNull()
+    expect(page.cap.entry(q).view).toBeNull()
+    expect(held.slice(from).map((h) => h.path)).toEqual(['/api/accounts'])
+    held[from]!.answer(doc)
+    await settle()
+    // The token the page holds saved again: kept, nothing read again.
+    await read(page)
+    from = held.length
+    admin.set(first)
+    await nextTick()
+    expect(page.acc.doc.value).not.toBeNull()
+    expect(page.cap.entry(q).view).not.toBeNull()
+    expect(held.length).toBe(from)
+    page.scope.stop()
+    page.cap.store.unwatch(q)
+  })
 })

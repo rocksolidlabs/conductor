@@ -1,21 +1,12 @@
 <script setup lang="ts">
+import { followAsk } from '~/utils/workbenchGate'
+
 const open = defineModel<boolean>('open', { default: false })
 const admin = useWorkbenchToken()
 const draft = ref('')
 
-// The draft starts from the token this browser keeps, never from one only this page holds. Closed (Cancel, Escape, outside it), the
-// ask ends, so the next refusal opens the gate again.
-watch(open, (v) => {
-  if (v) draft.value = admin.kept()
-  else admin.cancel()
-})
-// A 401 anywhere opens the gate; a token the server has since accepted (a link's) closes it.
-watch(
-  () => admin.needsToken.value,
-  (v) => {
-    open.value = v
-  },
-)
+// A 401 anywhere opens the gate, also one met while a page of another layout was shown; every close ends the ask (followAsk).
+followAsk(open, draft, admin)
 
 function save() {
   admin.set(draft.value)
