@@ -52,12 +52,23 @@ export function runBadge(state: RunState, needs: number): { label: string; color
 }
 
 /**
- * Whether a member's controls offer Start now (the run page's tile, the graph's node and its list): a member waiting to start in a run
- * not stopped, as the server takes it (POST /api/runs/{id}/members/{name}/start); never in a managed run, whose tasks start its members
- * (409 managed_run).
+ * What a member's controls offer by hand (the run page's tile, the graph's node and its list, the page's palette row), as the engine
+ * takes it: Start now for a member waiting in a run not stopped (POST /api/runs/{id}/members/{name}/start), Resume or Relaunch for an
+ * ended one (…/resume, which reopens a stopped run); neither in a managed run, whose tasks start and continue its members (409
+ * managed_run).
  */
-export function offersStart(status: MemberStatus | undefined, run: { stopped: boolean; managed: boolean }): boolean {
-  return status === 'pending' && !run.stopped && !run.managed
+export function memberOffer(status: MemberStatus | undefined, run: { stopped: boolean; managed: boolean }): 'start' | 'resume' | null {
+  if (run.managed) return null
+  if (status === 'pending') return run.stopped ? null : 'start'
+  return status === 'ended' ? 'resume' : null
+}
+
+/**
+ * Whether an ended session offers Resume or Relaunch, by memberOffer's rule: a crew member's session resumes as its member, so a
+ * managed run's attempt (409 managed_run) and a Brakeman turn's session (409 brakeman_run) never do.
+ */
+export function sessionResumeOffered(s: Pick<SessionInfo, 'crew'>): boolean {
+  return !s.crew?.task && !s.crew?.brakeman
 }
 
 /** A member's status as a dot beside its avatar, and in words. */

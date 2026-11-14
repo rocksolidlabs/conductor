@@ -30,7 +30,7 @@ const props = withDefaults(
     editable?: boolean
     runId?: string
     stopped?: boolean
-    /** A managed run: its tasks start its members, and no member offers Start now (offersStart). */
+    /** A managed run: its tasks start and continue its members, and no member offers a hand's start or resume (memberOffer). */
     managed?: boolean
     selected?: string
     now?: number

@@ -2,6 +2,7 @@
 import { relativeTime, sessionMeta } from '~/utils/sessions'
 import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
+import { sessionResumeOffered } from '~/utils/runs'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
@@ -46,7 +47,7 @@ const target = computed(() => sessionTarget(s.value, live.value))
 const renameModal = useRenameModal()
 const cloneModal = useCloneModal()
 // An exited server session's row ends with Resume, outside the link; the hover actions stop short of it (#257).
-const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server')
+const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server' && sessionResumeOffered(s.value))
 // The Share tooltip, shown on hover or focus, would stay up once the share dialog closed and gave the focus back to the button:
 // a click mutes it until the pointer leaves the button (#137).
 const shareTip = ref(false)

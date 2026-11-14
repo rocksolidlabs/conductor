@@ -2,7 +2,7 @@
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection, GraphNode } from '~/utils/crewGraph'
 import { memberDotClass, memberWords, startWords } from '~/utils/crewWords'
-import { offersStart } from '~/utils/runs'
+import { memberOffer } from '~/utils/runs'
 
 /**
  * One member on the crew graph: its agent, name, status dot and needs-input
@@ -20,7 +20,7 @@ export interface MemberNodeData {
   /** The run the member is in; empty for a saved crew. */
   runId: string
   stopped: boolean
-  /** A managed run, whose tasks start its members (offersStart). */
+  /** A managed run, whose tasks start and continue its members (memberOffer). */
   managed?: boolean
   /** The agent's name from the catalog; its id when unknown. */
   agentName: string
@@ -37,6 +37,8 @@ const manual = computed(() => n.value.member.start.when === 'manual')
 const start = computed(() => startWords(n.value.member.start))
 /** The run's words for the member; the start rule's in the editor and for a crew not running. */
 const words = computed(() => (state.value ? memberWords({ stoppedAt: props.data.stopped ? 'stopped' : undefined }, n.value.member, state.value) : null))
+/** What the node offers by hand: Start now, Resume or Relaunch, or nothing (memberOffer). */
+const offer = computed(() => memberOffer(state.value, { stopped: props.data.stopped, managed: !!props.data.managed }))
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
 
 const menu = computed(() => [
@@ -86,11 +88,11 @@ const menu = computed(() => [
       </template>
       <template v-else-if="state === 'pending'">
         <span class="truncate" :class="tone[words.tone]">{{ words.text }}</span>
-        <UButton v-if="offersStart(state, { stopped: data.stopped, managed: !!data.managed })" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" class="nodrag ml-auto" @click.stop="emit('start', n.id)" />
+        <UButton v-if="offer === 'start'" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" class="nodrag ml-auto" @click.stop="emit('start', n.id)" />
       </template>
       <template v-else-if="state === 'ended'">
         <span class="truncate" :class="tone[words.tone]" :title="words.text">{{ words.text }}</span>
-        <ResumeButton v-if="data.runId" :run-id="data.runId" :member="n.id" stay size="xs" class="nodrag ml-auto" @click.stop />
+        <ResumeButton v-if="data.runId && offer === 'resume'" :run-id="data.runId" :member="n.id" stay size="xs" class="nodrag ml-auto" @click.stop />
       </template>
       <template v-else>
         <span class="truncate" :class="tone[words.tone]">{{ words.text }}</span>

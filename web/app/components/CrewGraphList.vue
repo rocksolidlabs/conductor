@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { listRows, type CrewGraphData, type GraphNode } from '~/utils/crewGraph'
 import { startWords } from '~/utils/crewWords'
-import { memberDot, offersStart } from '~/utils/runs'
+import { memberDot, memberOffer } from '~/utils/runs'
 
 /**
  * The graph on a phone: the members as a list, parents before children,
@@ -16,6 +16,9 @@ const rows = computed(() => listRows(props.graph))
 function handoffsFrom(n: GraphNode) {
   return props.graph.edges.filter((e) => e.kind === 'handoff' && e.from === n.id)
 }
+
+/** What a row offers by hand (memberOffer). */
+const offerOf = (n: GraphNode) => memberOffer(n.state, { stopped: !!props.stopped, managed: !!props.managed })
 
 function startLabel(n: GraphNode): string {
   return n.warning ?? startWords(n.member.start).text
@@ -51,8 +54,8 @@ function startLabel(n: GraphNode): string {
           </li>
         </ul>
         <div v-if="!editable && (n.state === 'pending' || n.state === 'ended')" class="flex gap-1.5" @click.stop>
-          <UButton v-if="offersStart(n.state, { stopped: !!stopped, managed: !!managed })" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" @click="emit('start', n.id)" />
-          <ResumeButton v-else-if="n.state === 'ended' && runId" :run-id="runId" :member="n.id" stay size="xs" />
+          <UButton v-if="offerOf(n) === 'start'" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" @click="emit('start', n.id)" />
+          <ResumeButton v-else-if="offerOf(n) === 'resume' && runId" :run-id="runId" :member="n.id" stay size="xs" />
         </div>
       </div>
     </li>

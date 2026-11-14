@@ -1,10 +1,11 @@
 import type { Page } from '@playwright/test'
 import { expect, member, test, type Api, type Run } from './fixtures'
 
-// The run page offers Start now where the server takes it (offersStart): on a waiting member of a run without tasks, on its tile and
-// its node of the graph; never on a managed run's waiting member, whose tasks start it (the start route answers 409 managed_run).
-// The managed run's builder is the stub as a plain agent, which never submits, so its deployer waits on build for as long as the
-// test looks. Every wait is on the run's own record or on what the page draws.
+// The run page offers a hand's start or resume where the server takes it (memberOffer): Start now on a waiting member of a run
+// without tasks, on its tile and its node of the graph; never on a managed run's waiting member, whose tasks start it (the start
+// route answers 409 managed_run), nor Resume or Relaunch on its ended member once the run is stopped (the resume route answers the
+// same). The managed run's builder is the stub as a plain agent, which never submits, so its deployer waits on build for as long as
+// the test looks. Every wait is on the run's own record or on what the page draws.
 test.describe.configure({ mode: 'serial' })
 
 const crews: string[] = []
@@ -52,7 +53,7 @@ test("a run without tasks offers Start now on its waiting member's tile and node
   await startOffered(page, run.id, 'later', false, true)
 })
 
-test("a managed run's waiting member offers no Start now on its tile or its node", async ({ page, api }) => {
+test("a managed run's waiting member offers no Start now on its tile or its node, and once stopped its ended member no Resume or Relaunch", async ({ page, api }) => {
   const run = await launch(api, {
     name: 'e2e start now managed',
     isolation: 'worktree',
@@ -74,4 +75,22 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   // The server takes no start of it.
   expect((await api.call('POST', `/api/runs/${encodeURIComponent(run.id)}/members/deployer/start`)).status).toBe(409)
   await startOffered(page, run.id, 'deployer', true, false)
+
+  // Stopped, its builder's session ended: the server takes no resume of it, and its tile offers neither Resume nor Relaunch.
+  await api.stopRun(run.id)
+  let builder = ''
+  await expect
+    .poll(async () => {
+      const r = await api.run(run.id)
+      const b = member(r, 'builder')
+      builder = b.sessionId ?? ''
+      return [!!r.stoppedAt, b.status, builder ? (await api.session(builder)).status : '']
+    }, { timeout: 60_000, message: "the run stopped, builder's session ended" })
+    .toEqual([true, 'ended', expect.stringMatching(/^(exited|stopped)$/)])
+  expect((await api.call('POST', `/api/runs/${encodeURIComponent(run.id)}/members/builder/resume`)).status).toBe(409)
+  expect((await api.call('POST', `/api/sessions/${encodeURIComponent(builder)}/resume`)).status).toBe(409)
+  await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
+  const header = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-header]`)
+  await expect(header).toContainText(/exited|stopped/)
+  await expect(header.locator('[data-resume]')).toHaveCount(0)
 })

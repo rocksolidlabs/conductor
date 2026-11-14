@@ -19,6 +19,7 @@ import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type 
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
+import { sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
@@ -351,7 +352,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => openView(s, 'people', 'people') },
       { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },
     ]
-    if (isEnded(s.status)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
+    if (isEnded(s.status) && sessionResumeOffered(s)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
     const state = rowState(s)
     return {
       key: `session:${s.id}`,
@@ -876,7 +877,7 @@ export function usePaletteRows(ctx: PaletteContext) {
           return r ? { key: `verb:resume:${r.id}`, label: `Resume ${v.target.name} as a new run`, icon: 'i-lucide-history', disabled: !r.stoppedAt, detail: r.stoppedAt ? 'A new run of the same crew' : 'It is still running', run: () => resumeRun(r) } : null
         }
         const s = session(v.target.id)
-        return s ? { key: `verb:resume:${s.id}`, label: `${s.agentSession?.resumable ? 'Resume' : 'Relaunch'} ${s.name}`, detail: isEnded(s.status) ? (s.agentSession?.resumable ? 'The conversation comes back from Exited' : 'Nothing to resume: it starts anew') : 'It is still running', icon: 'i-lucide-history', agentId: s.agentId, disabled: !isEnded(s.status), run: () => resumeSession(s) } : null
+        return s && sessionResumeOffered(s) ? { key: `verb:resume:${s.id}`, label: `${s.agentSession?.resumable ? 'Resume' : 'Relaunch'} ${s.name}`, detail: isEnded(s.status) ? (s.agentSession?.resumable ? 'The conversation comes back from Exited' : 'Nothing to resume: it starts anew') : 'It is still running', icon: 'i-lucide-history', agentId: s.agentId, disabled: !isEnded(s.status), run: () => resumeSession(s) } : null
       }
       case 'open':
         return { key: `verb:open:${v.path}`, label: `Open ${v.path}${v.line ? ` at line ${v.line}` : ''}`, detail: palette.page.value?.openFile ? 'In this page’s editor' : 'Open a session page first', icon: 'i-lucide-file', disabled: !palette.page.value?.openFile, run: () => openFile(v.path, v.line) }
