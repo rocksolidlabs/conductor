@@ -7,6 +7,8 @@ import { expect, logged, test } from './fixtures'
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
+/** The crew's name, of this repetition's own: a run of an earlier one, kept as a record, is not this crew's. */
+let crewName = ''
 const runs: string[] = []
 const made: string[] = []
 
@@ -25,7 +27,8 @@ test('a new crew is drafted at /crews/new, saved from its bar, and listed with i
   // The bar is drawn on the app's own elevated surface, never the inverted one (#376).
   await expect(bar).toHaveClass(/\bbg-elevated\b/)
   await expect(bar).not.toHaveClass(/\bbg-inverted\b/)
-  await page.getByLabel('Crew name').fill('e2e crews page')
+  crewName = `e2e crews page ${Array.from({ length: 6 }, () => 'abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 26)]).join('')}`
+  await page.getByLabel('Crew name').fill(crewName)
   await page.getByLabel('Goal').fill('show the crews pages')
   // The default draft has one member; a second one starts after it.
   await page.locator('[data-add-member]').click()
@@ -37,14 +40,14 @@ test('a new crew is drafted at /crews/new, saved from its bar, and listed with i
   await page.getByRole('option', { name: 'When you press Start' }).click()
   await expect(page.locator('[data-start-sentence]')).toHaveText('docs waits for you; lead starts at once')
   await bar.getByRole('button', { name: 'Save' }).click()
-  await expect(page).toHaveURL(/\/crews\/e2e-crews-page$/)
-  crewId = 'e2e-crews-page'
+  crewId = crewName.replaceAll(' ', '-')
+  await expect(page).toHaveURL(new RegExp(`/crews/${crewId}$`))
   await expect(page.locator('[data-crew-kind]')).toHaveText('Saved crew')
   await expect(bar).toHaveCount(0)
   // The home's table: the plan, its shape, where it runs, and that it never ran.
   await page.goto('/crews')
   const entry = page.locator(`[data-crew-entry][data-crew-id="${crewId}"]`)
-  await expect(entry.locator('[data-crew-item]')).toHaveText('e2e crews page')
+  await expect(entry.locator('[data-crew-item]')).toHaveText(crewName)
   await expect(entry).toContainText('show the crews pages')
   await expect(entry.locator('[data-crew-shape]')).toHaveText('2 · 1 by hand, 1 alone')
   await expect(entry.locator('[data-crew-meta]')).toContainText('worktrees')
@@ -75,7 +78,10 @@ test('an edit to the saved crew gets its own bar, which names what changed and d
 test('Launch run from the home opens the run page; the crew then says a run is live, and its Runs tab lists it', async ({ page, api }) => {
   await page.goto('/crews')
   await page.locator(`[data-launch-crew="${crewId}"]`).click()
-  await page.waitForURL(/\/runs\/e2e-crews-page-[0-9a-f]{8}$/)
+  // A launch asks first, each member on its line (docs/plans/capacity.md, PR-7); its Launch launches.
+  await expect(page.locator('[data-crew-launch-line="lead"]')).toBeVisible()
+  await page.locator('[data-crew-launch-confirm]').click()
+  await page.waitForURL(new RegExp(`/runs/${crewId}-[0-9a-f]{8}$`))
   const runId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   runs.push(runId)
   // The run page names the run by its crew and its start.
@@ -125,7 +131,9 @@ test('a run named at launch is called by its name on its page, the home card and
   await page.locator('[data-launch-menu]').click()
   await page.locator('[data-launch-name]').fill('e2e named run')
   await page.locator('[data-launch-named]').click()
-  await page.waitForURL(/\/runs\/e2e-crews-page-[0-9a-f]{8}$/)
+  await expect(page.getByRole('dialog')).toContainText('As the run e2e named run')
+  await page.locator('[data-crew-launch-confirm]').click()
+  await page.waitForURL(new RegExp(`/runs/${crewId}-[0-9a-f]{8}$`))
   const runId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   runs.push(runId)
   await expect(page.locator('[data-crew-run-header] [data-run-subtitle]')).toHaveText('e2e named run')

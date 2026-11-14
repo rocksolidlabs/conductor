@@ -10,6 +10,7 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
+import { boundWords, namedAccounts } from '~/utils/crewLaunch'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -28,7 +29,10 @@ import { revisionTag } from '~/utils/dispatchPlans'
  * Brakeman, for a launch it ran under a grant) and the launch's receipt,
  * read from its chip. Under the bar, the run's people as the crew was
  * launched (HM1), each a chip with the responsibilities they hold, opening
- * their page: never started, they own its decisions and its tasks' outcomes.
+ * their page: never started, they own its decisions and its tasks' outcomes. Under them, each member's
+ * login and model as the launch bound them (docs/plans/capacity.md, PR-7): an account by its label (the
+ * accounts are the admin's), any other login by where it comes from; for a run launched from a ticket's
+ * revision that named no account for a member, that it took the default at the launch.
  */
 const props = withDefaults(
   defineProps<{
@@ -69,6 +73,27 @@ watch(
     }
   },
   { immediate: true },
+)
+
+// The accounts the members are bound to, by their labels; and what the ticket's revision named for each (its body never changes).
+const accounts = useAccounts()
+onMounted(() => void accounts.store.load())
+const named = ref<{ plan: string; members: Record<string, string> } | null>(null)
+watch(
+  () => props.run?.ticket?.plan,
+  async (plan) => {
+    if (!plan || named.value?.plan === plan) return
+    try {
+      const p = await dispatchApi.plan(plan)
+      if (props.run?.ticket?.plan === plan) named.value = { plan, members: namedAccounts(p.body.crew.members) }
+    } catch {
+      /* the lines say the bound login without what the revision named */
+    }
+  },
+  { immediate: true },
+)
+const logins = computed(() =>
+  (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, named.value?.plan === props.run?.ticket?.plan ? named.value?.members[m.name] : undefined, props.run?.class === 'brakeman') })),
 )
 
 const stopped = computed(() => !!props.run?.stoppedAt)
@@ -299,11 +324,22 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     </NuxtLink>
   </div>
 
+  <!-- Each member's login and model as the launch bound them: what every attempt, retry and resume of it uses. -->
+  <div v-if="logins.length" class="flex flex-wrap items-center gap-1.5 border-b border-default px-4 py-1.5" data-run-logins>
+    <span class="text-xs text-muted">Logins</span>
+    <span v-for="l in logins" :key="l.name" class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs ring ring-default" :data-run-login="l.name">
+      <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
+      <span class="truncate" data-run-login-account>{{ l.account }}</span>
+      <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
+      <span class="truncate text-muted" data-run-login-model>· {{ l.model }}</span>
+    </span>
+  </div>
+
   <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" single />
+        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>

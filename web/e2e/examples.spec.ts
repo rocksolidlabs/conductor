@@ -46,6 +46,8 @@ test('the todo app with tasks opens in the editor coordinated by tasks, its five
 test('the todo app launches and opens its run page, a tile per member', async ({ page }) => {
   await page.goto('/crews/example-todo-app')
   await page.locator('[data-launch]').click()
+  // A launch asks first, each member on its line (docs/plans/capacity.md, PR-7); its Launch launches.
+  await page.locator('[data-crew-launch-confirm]').click()
   await page.waitForURL(/\/runs\/example-todo-app-[0-9a-f]{8}$/)
   runId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')
   runs.push(runId)

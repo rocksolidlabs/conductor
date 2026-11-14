@@ -16,6 +16,9 @@ export interface RunMember {
   startedAt?: string
   needsInput?: boolean
   error?: string
+  /** The login it was bound to at the launch, by its id and source (docs/protocol.md, Capacity), and its model. */
+  account?: { id: string; source: string }
+  model?: string
 }
 
 export interface Run {

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import type { RefResolution } from '~/utils/brakeman'
-import { changedFromBaseline, changedSince, parseRef, refDecision, refLabel } from '~/utils/brakeman'
+import { capacityRefWords, changedFromBaseline, changedSince, parseRef, refDecision, refLabel } from '~/utils/brakeman'
 
 /**
  * One piece of evidence a brief cites (docs/plans/brakeman.md, PR-6): a chip labelled by what the ref names, a link to where the person
  * follows it, and "changed since" when the record the page has live (a run's state and revision, a task's state, a session's status)
  * differs from what it was as the brief was kept. A check receipt's chip carries its log's SHA-256, as kept. A record no page shows
  * by itself (a check's log, a command receipt, a Dispatch receipt, a comment) is read from the chip (BrakemanReceipt), with the token.
+ * A capacity: ref's chip (AC1's reading, docs/plans/capacity.md, PR-7) names the agent and the account and says the reading's windows, from
+ * the reading the server kept with the brief; its title holds every fact of it. It opens no page: the reading was a moment's.
  * A decision record's chip (decision:<dr-n>) opens the record in the app's decision card (DecisionModal, GET /api/decisions/{did}),
  * whether a fact cites it or a proposal names it, done, refused or never run.
  *
@@ -21,7 +23,9 @@ import { changedFromBaseline, changedSince, parseRef, refDecision, refLabel } fr
 const props = defineProps<{ refName: string; resolution?: RefResolution; baseline?: boolean }>()
 
 const live = useAttention()
+const capacity = computed(() => capacityRefWords(props.resolution?.capacity, Date.now()))
 const label = computed(() =>
+  capacity.value?.label ??
   refLabel(props.refName, {
     session: (id) => live.sessions.value.find((s) => s.id === id)?.name,
     run: (id) => live.runNames.value[id],
@@ -75,7 +79,8 @@ const title = computed(() => {
     if (elsewhere.value) parts.push(elsewhere.value)
     return parts.join(' · ')
   }
-  if (now?.state) parts.push(`was ${now.state} when the brief was kept`)
+  if (capacity.value) parts.push(capacity.value.title)
+  else if (now?.state) parts.push(`was ${now.state} when the brief was kept`)
   if (now?.sha256) parts.push(`log SHA-256 ${now.sha256}`)
   if (changed.value && liveState.value?.state) parts.push(`${liveState.value.state} now`)
   if (elsewhere.value) parts.push(elsewhere.value)
@@ -92,6 +97,7 @@ const title = computed(() => {
       <span v-else class="truncate" :data-ref-elsewhere="elsewhere || undefined">{{ label }}<template v-if="deleted"> (deleted)</template></span>
       <!-- Where a chip that opens nothing here is opened, in words a phone shows (a title is never seen on a touch screen). -->
       <span v-if="elsewhere && !deleted" class="whitespace-normal text-[10px] text-muted" data-ref-elsewhere-words>· {{ elsewhere }}</span>
+      <span v-if="capacity" class="text-[10px] text-muted" data-ref-capacity>· {{ capacity.summary }}</span>
       <span v-if="resolution?.now.sha256" class="font-mono text-[10px] text-muted">{{ resolution.now.sha256.slice(0, 12) }}</span>
       <BrakemanReceipt v-if="receipt && !deleted" :ref-name="refName" :resolution="resolution" :label="label" :kept-sha256="resolution?.now.sha256" />
     </UBadge>

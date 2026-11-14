@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { DispatchTicket, PlanBody, PlanSummary } from '~/composables/useDispatch'
 import type { TicketPlans } from '~/composables/useTicketPlans'
+import type { AgentInfo } from '~/composables/useSessions'
 import { PLAN_BOUNDS, defaultLabel, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
+import { launchLines } from '~/utils/crewLaunch'
 
 /**
  * Launching a managed run from a ticket's approved plan revision (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"). It asks
@@ -12,7 +14,9 @@ import { PLAN_BOUNDS, defaultLabel, revisionTag, shortCommit, yoloWords, type La
  * a pending launch sent again, is the same launch, sent unchanged (the label is not edited meanwhile; another would be a conflict, not the
  * launch). Closing the dialog does not settle it: opened again on the same revision while it is unsettled, it shows that launch as it
  * stands (still being sent, pending, or no answer) and sends it again under its id. Nothing is launched before the revision's body is
- * read: the yolo choice is said from it, never assumed.
+ * read: the yolo choice is said from it, never assumed. Under it, each of the revision's members, read only, with its agent, its model and
+ * its account as the revision names them (docs/plans/capacity.md, PR-7): they are what the operator approved; a member that names no
+ * account takes its adapter's default at this launch, said with what that is now. Each line has its usage as the server last read it.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -44,6 +48,24 @@ watch(open, (o) => {
 })
 
 const yolo = computed(() => (props.body ? yoloWords(props.body.crew.yolo) : null))
+
+// The revision's members' lines: the catalog names their agents, the accounts their labels; both read as the dialog opens.
+const accounts = useAccounts()
+const sessions = useSessions()
+const agents = ref<AgentInfo[]>([])
+watch(
+  open,
+  (o) => {
+    if (!o) return
+    void accounts.store.load()
+    sessions.catalog().then(
+      (a) => (agents.value = a),
+      () => {},
+    )
+  },
+  { immediate: true },
+)
+const lines = computed(() => (props.body ? launchLines(props.body.crew.members ?? [], { agents: agents.value, doc: accounts.doc.value, managed: true, yolo: !!props.body.crew.yolo }) : []))
 const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
 function readBodyAgain() {
   if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
@@ -93,6 +115,17 @@ async function send() {
             <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-body-retry @click="readBodyAgain" />
           </p>
           <p v-else class="text-dimmed" data-launch-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before anything launches…</p>
+          <ul v-if="lines.length" class="flex flex-col gap-2" data-launch-members>
+            <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1" :data-launch-member="l.name">
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
+                <span class="text-muted">{{ l.agent }}</span>
+                <span class="text-xs text-muted">Model: <span class="text-default" data-launch-member-model>{{ l.model }}</span></span>
+                <span class="text-xs text-muted">Account: <span class="text-default" data-launch-member-account>{{ l.account }}</span></span>
+              </div>
+              <CapacityPanel :query="open ? l.query : null" compact />
+            </li>
+          </ul>
           <UFormField label="The run's label" :hint="op ? 'kept as it was sent, until this launch is settled' : `at most ${PLAN_BOUNDS.label} characters`" size="sm">
             <UInput :model-value="op ? op.label : label" :maxlength="PLAN_BOUNDS.label" :placeholder="placeholder" :disabled="!!op" class="w-full" data-launch-label @update:model-value="(v) => (label = String(v ?? ''))" />
           </UFormField>

@@ -5,6 +5,7 @@ import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems a
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
+import { OWN_LOGIN, brakemanAccountItems, unlistedFolder } from '~/utils/crewLaunch'
 
 /**
  * Brakeman's card in Settings (docs/plans/brakeman.md, PR-6): its configuration, saved on the server (PUT /api/brakeman/config, at
@@ -125,6 +126,19 @@ const agentModel = computed({
 })
 const adapter = computed(() => agents.value.find((a) => a.id === form.value?.agentId)?.adapter)
 const caps = computed(() => (adapter.value ? BRAKEMAN_ADAPTERS[adapter.value] : undefined))
+// The account, picked from the accounts of the agent's tool (docs/plans/capacity.md, PR-7): the configuration keeps a folder, so its
+// default login saves none and an account its folder. Without the accounts (not read, or a tool they do not list) the folder is typed.
+const accounts = useAccounts()
+onMounted(() => void accounts.store.load())
+const accountFolder = computed(() => form.value?.account?.trim() ?? '')
+const accountItems = computed(() => brakemanAccountItems(accounts.doc.value, adapter.value, accountFolder.value))
+const accountChoice = computed({
+  get: () => accountFolder.value || OWN_LOGIN,
+  set: (v: string) => {
+    if (form.value) form.value.account = v === OWN_LOGIN ? '' : v
+  },
+})
+const unlisted = computed(() => unlistedFolder(accounts.doc.value, adapter.value, accountFolder.value))
 // Until the catalog is read the agent's adapter is not known: the server checks it on the save.
 const problems = computed(() => (body.value ? configProblems(body.value, agents.value.length ? (adapter.value ?? '') : null) : {}))
 /** The server's words for the agent saved (Codex's read-only mode leaves its own MCP servers and exec-policy allow rules). */
@@ -160,6 +174,7 @@ const visibility: Array<{ key: keyof BrakemanVisibility; label: string; descript
   { key: 'dispatch', label: 'Dispatch', description: 'Projects, tickets, comments and their history.' },
   { key: 'sessions', label: 'Sessions', description: 'The sessions list: names, states, questions and quiet time.' },
   { key: 'touched', label: 'Touched files', description: 'The files agents touched.' },
+  { key: 'capacity', label: 'Capacity', description: "Each agent's usage on its accounts, by their labels and the provider's figures, never a folder: what it waits for a reset or holds work by." },
   { key: 'terminals', label: 'Terminal screens', description: "Lets Brakeman read what a session's screen shows, which can hold what no record does. Off until you turn it on." },
 ]
 const scopeFields: Array<{ key: keyof BrakemanScope; label: string; placeholder: string }> = [
@@ -218,7 +233,11 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
       </UFormField>
       <UAlert v-for="w in warnings" :key="w" color="warning" variant="subtle" icon="i-lucide-shield-alert" :title="w" data-brakeman-warning />
       <p v-if="form.agentId && form.agentId !== saved?.agentId" class="text-xs text-muted" data-brakeman-warning-later>Once saved, Conductor says what this agent's read-only mode does not hold, if anything.</p>
-      <UFormField label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">
+      <UFormField v-if="accountItems.length" label="Account" description="Its default login on this machine, or an account added in Accounts." :error="fieldError('account')" :ui="fieldUi">
+        <USelect v-model="accountChoice" :items="accountItems" class="w-full" aria-label="Account" data-brakeman-account-select />
+        <p v-if="unlisted" class="mt-1 text-xs text-muted [overflow-wrap:anywhere]" data-brakeman-account-unlisted>A folder not in Accounts: add it there to read its usage.</p>
+      </UFormField>
+      <UFormField v-else label="Account" description="The folder the agent's login lives in (its configuration folder); empty for its default login on this machine." :error="fieldError('account')" :ui="fieldUi">
         <DirInput v-model="form.account" placeholder="/home/me/.claude-work" picker-title="The agent's login folder" data-brakeman-account />
       </UFormField>
       <UFormField v-if="caps?.model" label="Model" description="Empty for the agent's default." :error="fieldError('model')" :ui="fieldUi">
