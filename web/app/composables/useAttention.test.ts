@@ -139,6 +139,31 @@ describe('openEvents', () => {
     }
   })
 
+  it("with a link's token tried, a 201 or a 206 of the stream's type decides nothing; a 200 of that type with a parameter, or in another case of its letters, keeps it", async () => {
+    const kept = new Map<string, string>()
+    const reload = vi.fn()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v), removeItem: (k: string) => void kept.delete(k) })
+    vi.stubGlobal('location', { reload })
+    for (const [link, type] of [['link-token-0123456789', 'text/event-stream; charset=utf-8'], ['link-token-9876543210', 'Text/Event-Stream']] as const) {
+      kept.clear()
+      admin.fromLink(link)
+      for (const status of [201, 206]) {
+        const answer = held()
+        const out = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+        answer(status, STREAM)
+        expect((await out)?.status, `${status}`).toBe(status)
+        expect(kept.size, `${status}`).toBe(0)
+      }
+      expect(admin.needsToken.value).toBe(false)
+      const accept = held()
+      const accepted = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)
+      accept(200, type)
+      expect((await accepted)?.status).toBe(200)
+      expect([...kept], type).toEqual([['conductor.workbenchToken', link]])
+    }
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   it('hands back a reply that is no refusal, asking for nothing', async () => {
     const answer = held()
     const out = openEvents('http://api.test/api/events', admin, false, new AbortController().signal)

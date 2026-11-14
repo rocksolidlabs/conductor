@@ -83,9 +83,9 @@ interface AttentionStore {
  * The events stream's request, sent with the workbench token held as it is made; null when it is refused (401). The server answers it
  * with the stream for an operator's credential alone (the workbench token, and, where an identity provider is registered, a credential
  * the provider admits with the admin grant), so the stream itself answering (200, not reached through a redirect, `text/event-stream`)
- * is the acceptance that keeps a link's token. Acceptance and refusal are that token's, judged by `admin.answered` when they land, so a
- * reply for a token since replaced does not ask for the token again (#281); any other reply (another status or type, a redirect, or
- * none) decides nothing. A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
+ * is the acceptance that keeps a link's token. A `401` is the refusal, however it was reached. Acceptance and refusal are that token's,
+ * judged by `admin.answered` when they land, so a reply for a token since replaced does not ask for the token again (#281); every other
+ * reply that is not a plain success of the stream (another status or type, one reached through a redirect, or none) decides nothing. A page in a desktop app that opens agents' links says so (#436): while it streams, an agent's link waits for
  * its claim.
  */
 export async function openEvents(url: string, admin: { token: Ref<string>; answered: (sent: string, accepted: boolean) => void }, desktop: boolean, signal: AbortSignal): Promise<Response | null> {

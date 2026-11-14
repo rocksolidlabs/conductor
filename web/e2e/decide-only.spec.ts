@@ -159,7 +159,7 @@ test('a fragment that holds both keys, at a load and later: neither is taken, an
   await ctx.close()
 })
 
-test("a later workbench link on a decide address, in a tab with a pass and in one with none: the address rewritten, no load, the decide page as it was, and the link's token neither held nor sent", async ({ browser, state }) => {
+test("a later workbench link on a decide address in any case of its letters, in a tab with a pass and in one with none: the address rewritten, no load, the decide page as it was, and the link's token neither held nor sent", async ({ browser, state }) => {
   const stores = (page: Page) => page.evaluate(() => [sessionStorage.getItem('conductor.identityPass'), localStorage.getItem('conductor.workbenchToken')])
   /** The token the page sends and what its store knows of it, read off the page's state: ['', ''] holds none, so the guard's `operator()` is false. */
   const workbench = (page: Page) =>
@@ -168,18 +168,19 @@ test("a later workbench link on a decide address, in a tab with a pass and in on
       const s = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state
       return [s.$sworkbenchToken, s.$sworkbenchTokenStanding] as string[]
     })
-  for (const pass of [true, false]) {
+  for (const [pass, at] of [[true, '/decide/dr-7'], [false, '/decide/dr-7'], [false, '/DECIDE/dr-7'], [true, '/DeCiDe/dr-7']] as const) {
     const { ctx, page, sent } = await tab(browser)
     const rec = await recorder(page)
     if (pass) await stub(page)
-    await page.goto(pass ? `/decide/dr-7#pass=${PASS}` : '/decide/dr-7')
+    await page.goto(pass ? `${at}#pass=${PASS}` : at)
     await expect(page.locator('[data-decide-page]')).toBeVisible()
     if (pass) await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    expect(new URL(page.url()).pathname, at).toBe(at)
     const before = await stores(page)
     expect(before).toEqual([pass ? PASS : null, null])
     await fragmentChanged(page, rec, `token=${state.token}`, 'kept')
-    expect(await workbench(page), `pass: ${pass}`).toEqual(['', ''])
-    expect(new URL(page.url()).pathname).toBe('/decide/dr-7')
+    expect(await workbench(page), `${at}, pass: ${pass}`).toEqual(['', ''])
+    expect(new URL(page.url()).pathname).toBe(at)
     await expect(page.locator('[data-decide-page]')).toBeVisible()
     if (pass) await expect(signedIn(page)).toHaveText('Signed in as Ana')
     expect(await stores(page)).toEqual(before)

@@ -11,13 +11,16 @@ let href: string
 let tab: Map<string, string>
 let popstate: ((e: { stopImmediatePropagation: () => void }) => void) | undefined
 const fromLaterLink = vi.fn()
-/** The plugin, imported once (its definition stubbed to itself); each load runs its setup again. */
-let plugin: { setup: () => void } | undefined
+
+// The plugin, imported once as this file is loaded, with the framework's `defineNuxtPlugin` stubbed to give back the definition
+// before the import: no test's own time holds the import, and each load runs its setup again.
+vi.stubGlobal('defineNuxtPlugin', (p: unknown) => p)
+const plugin = (await import('./token-fragment.client')).default as unknown as { setup: () => void }
+vi.unstubAllGlobals()
 
 /** A load of the page at `at`: the plugin's setup, run as Nuxt runs it. */
-async function load(at: string) {
+function load(at: string) {
   href = at
-  vi.stubGlobal('defineNuxtPlugin', (p: unknown) => p)
   vi.stubGlobal('location', {
     get href() {
       return href
@@ -43,7 +46,6 @@ async function load(at: string) {
     order.push('pass store')
     return { set: vi.fn(), stored: () => false }
   })
-  plugin ??= (await import('./token-fragment.client')).default as unknown as { setup: () => void }
   plugin.setup()
 }
 
@@ -67,24 +69,24 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('the fragment plugin', () => {
-  it("removes, at every load and before anything else, the page's state that the framework's own reload leaves in the tab's storage", async () => {
-    await load('http://app.test/sessions')
+  it("removes, at every load and first in this plugin, the page's state that the framework's own reload leaves in the tab's storage", () => {
+    load('http://app.test/sessions')
     expect(order[0]).toBe('tab: remove nuxt:reload:state')
     expect([...tab.keys()]).toEqual(['conductor.identityPass'])
     expect(order).toEqual(['tab: remove nuxt:reload:state', 'workbench token store', 'pass store', 'fromLink '])
   })
 
-  it("drops a later link's token on a decide address, with the address cleaned, and hands it to the store on any other", async () => {
-    for (const path of ['/decide', '/decide/', '/decide/dr-7']) {
-      await load(`http://app.test${path}`)
+  it("drops a later link's token on a decide address in any case of its letters, with the address cleaned, and hands it to the store on any other", () => {
+    for (const path of ['/decide', '/decide/', '/decide/dr-7', '/DECIDE', '/Decide/', '/DeCiDe/dr-7']) {
+      load(`http://app.test${path}`)
       const stop = later(`#token=${LATER}`)
       expect(stop, path).toHaveBeenCalledTimes(1)
       expect(href, path).toBe(`http://app.test${path}`)
       expect(fromLaterLink, path).not.toHaveBeenCalled()
     }
-    for (const path of ['/', '/decisions', '/decided', '/decide/dr-7/x']) {
+    for (const path of ['/', '/decisions', '/decided', '/DECIDED', '/decide/dr-7/x']) {
       fromLaterLink.mockReset()
-      await load(`http://app.test${path}`)
+      load(`http://app.test${path}`)
       later(`#token=${LATER}`)
       expect(href, path).toBe(`http://app.test${path}`)
       expect(fromLaterLink.mock.calls, path).toEqual([[LATER]])

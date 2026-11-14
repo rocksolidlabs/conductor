@@ -68,6 +68,16 @@ describe('decideRedirect', () => {
   it('sends nowhere with neither', () => {
     for (const p of ['/', '/decide', '/decide/dr-7', '/decisions?item=decision:dr-7']) expect(decideRedirect(p, false, false)).toBeNull()
   })
+  it('judges a decide address in any case of its letters as it judges `/decide`, as the router draws the decide page there, the id as written', () => {
+    for (const p of ['/DECIDE', '/Decide/', '/DeCiDe/dr-7']) {
+      const operator = p.endsWith('dr-7') ? '/decisions?item=decision:dr-7' : '/decisions'
+      for (const hasPass of [false, true]) expect(decideRedirect(p, true, hasPass), p).toBe(operator)
+      expect(decideRedirect(p, false, true), p).toBeNull()
+      expect(decideRedirect(p, false, false), p).toBeNull()
+    }
+    expect(decideRedirect('/DECIDE/DR-7', true, false)).toBe('/decisions')
+    expect(decideRedirect('/DECIDED', false, true)).toBe('/decide')
+  })
   it("judges the first navigation's fragment as held, and takes the whole fragment off the address", () => {
     expect(decideRedirect('/decide/dr-7#pass=p.1', false, false)).toBe('/decide/dr-7')
     expect(decideRedirect('/decisions?item=decision:dr-7#pass=p.1&x=1', false, false)).toBe('/decide/dr-7')

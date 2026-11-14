@@ -468,21 +468,28 @@ test("a decide address opened with a workbench link, nothing kept: the operator'
   await refused.close()
 })
 
-test("in the desktop app the bridge's token is the workbench's: a load's link and a later one change nothing, and every request carries the bridge's token or none", async ({ browser, state }) => {
-  const token = state.token
-  const ctx = await browser.newContext()
-  const page = await ctx.newPage()
-  await page.addInitScript(
-    ({ token, url }) => {
-      // The bridge answers with its token once the test releases it, so the page runs a while with the link's token in its address.
-      const w = window as unknown as { conductorDesktop: unknown; __releaseBridge: () => void }
+/**
+ * The desktop app's bridge in `page`, answering its token as `answer` says: `released`, with `token` once the test releases it (so the
+ * page runs a while with a link's token in its address); `none`, with no token; `fails`, with a failure. `__bridgeAsked` counts the
+ * page's asks.
+ */
+function desktopBridge(page: Page, answer: 'released' | 'none' | 'fails', token: string, url: string) {
+  return page.addInitScript(
+    ({ answer, token, url }) => {
+      const w = window as unknown as { conductorDesktop: unknown; __releaseBridge: () => void; __bridgeAsked: number }
       let release = () => {}
       const answered = new Promise<string>((r) => (release = () => r(token)))
       w.__releaseBridge = () => release()
+      w.__bridgeAsked = 0
       w.conductorDesktop = {
         version: 'e2e',
         platform: 'linux',
-        token: () => answered,
+        token: () => {
+          w.__bridgeAsked++
+          if (answer === 'none') return Promise.resolve('')
+          if (answer === 'fails') return Promise.reject(new Error('the bridge failed'))
+          return answered
+        },
         openExternal: async () => {},
         openUrl: async () => ({ outcome: 'browser' }),
         browsers: async () => [],
@@ -498,14 +505,22 @@ test("in the desktop app the bridge's token is the workbench's: a load's link an
         onServerState: () => () => {},
       }
     },
-    { token, url: state.baseURL },
+    { answer, token, url },
   )
+}
+
+test("in the desktop app the bridge's token is the workbench's: a load's link and a later one change nothing, every request carries the bridge's token or none, and the gate, opened, starts empty", async ({ browser, state }) => {
+  const token = state.token
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  await desktopBridge(page, 'released', token, state.baseURL)
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
   const rec = await recorder(page)
   await page.goto(`/#token=${UNKNOWN}`)
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   // Drawn while the bridge has not answered: the page holds no token, the link's dropped.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __bridgeAsked: number }).__bridgeAsked)).toBeGreaterThan(0)
   expect(await held(page)).toBe('')
   await page.evaluate(() => (window as unknown as { __releaseBridge: () => void }).__releaseBridge())
   await expect.poll(() => held(page)).toBe(token)
@@ -520,5 +535,73 @@ test("in the desktop app the bridge's token is the workbench's: a load's link an
   expect(await stored(page)).toBeNull()
   await tabHoldsNoToken(page, token, UNKNOWN)
   expect(await addressHeld(page)).not.toContain(UNKNOWN)
+  // The gate's draft starts from what the browser keeps, and the desktop app keeps nothing there: empty, though the page sends the bridge's.
+  await expect(await gateOpened(page)).toHaveValue('')
+  expect(await held(page)).toBe(token)
   await ctx.close()
+})
+
+test("in the desktop app with a bridge that answers no token, and with one that fails: the page holds none and sends none, a load's link and a later one change nothing, and the gate starts empty though the browser's storage holds a token", async ({ browser, state }) => {
+  const token = state.token
+  for (const answer of ['none', 'fails'] as const) {
+    // The browser's storage of the server's origin holds a good token: the desktop app neither sends nor shows it.
+    const ctx = await keeping(browser, token)
+    const page = await ctx.newPage()
+    await desktopBridge(page, answer, token, state.baseURL)
+    const sent: Request[] = []
+    page.on('request', (r) => sent.push(r))
+    const rec = await recorder(page)
+    const gate = page.getByRole('dialog', { name: 'Workbench token' })
+    await page.goto(`/#token=${UNKNOWN}`)
+    await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+    // The bridge asked and its answer settled: a read made after it, in a task of its own, sees what the store did with it.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __bridgeAsked: number }).__bridgeAsked), answer).toBeGreaterThan(0)
+    expect(await held(page), answer).toBe('')
+    // The page holds no token: it asks at the gate, whose draft starts empty.
+    await expect(gate, answer).toBeVisible()
+    await expect(gate.locator('input'), answer).toHaveValue('')
+    await fragmentChanged(page, rec, `token=${UNKNOWN}`, 'kept')
+    expect(await held(page), answer).toBe('')
+    await expect(gate, answer).toBeVisible()
+    await expect(gate.locator('input'), answer).toHaveValue('')
+    for (const r of await apiSent(sent, 0)) expect(r.auth, `${answer} ${r.path}`).toBe('')
+    expect(await stored(page), answer).toBe(token)
+    expect(await addressHeld(page)).not.toContain(UNKNOWN)
+    await ctx.close()
+  }
+})
+
+test("the gate's draft when a 401 opens it, and when a page asks for it: the token the browser keeps, as when the person opens it, not the link's token the page sends", async ({ browser, state }) => {
+  const token = state.token
+  for (const how of ['401', 'page'] as const) {
+    const ctx = await keeping(browser, UNKNOWN)
+    const page = await ctx.newPage()
+    const gate = page.getByRole('dialog', { name: 'Workbench token' })
+    if (how === 'page') {
+      // The stream and the sessions' read fail with no refusal, so the page shows its error and its "Set token", which asks for the gate.
+      await page.route(
+        (u) => u.pathname === '/api/events' || u.pathname === '/api/sessions',
+        (r) => r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'unavailable' } }) }),
+      )
+    }
+    await page.goto(`/#token=${token}`)
+    await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
+    if (how === '401') {
+      // The link's token accepted and sent while the browser keeps the other; then the server refuses it.
+      await expect.poll(() => standing(page)).toBe('')
+      await page.route(
+        (u) => u.pathname.startsWith('/api/'),
+        (r) => (r.request().headers()['authorization'] === `Bearer ${token}` ? r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unauthorized', message: 'unauthorized' } }) }) : r.fallback()),
+      )
+      await shown(page)
+    } else {
+      await expect(gate).toHaveCount(0)
+      await page.getByRole('button', { name: 'Set token' }).click()
+    }
+    await expect(gate, how).toBeVisible()
+    await expect(gate.locator('input'), how).toHaveValue(UNKNOWN)
+    expect(await held(page), how).toBe(token)
+    expect(await stored(page), how).toBe(UNKNOWN)
+    await ctx.close()
+  }
 })

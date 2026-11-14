@@ -73,16 +73,26 @@ describe("a load with a link's token", () => {
     expect(load().token.value).toBe(LINKED)
   })
 
-  it('the same token kept: taken as the kept one, and an accepted answer changes nothing', () => {
+  it('the same token kept: taken as the kept one, not tried, so a refusal asks at the gate with no load', () => {
+    local.setItem(KEY, KEPT)
+    const s = load(KEPT)
+    s.answered(KEPT, false)
+    expect(reload).not.toHaveBeenCalled()
+    expect(s.needsToken.value).toBe(true)
+    expect(s.operator()).toBe(false)
+    expect(s.token.value).toBe(KEPT)
+    expect(local.getItem(KEY)).toBe(KEPT)
+  })
+
+  it('the same token kept: an accepted answer changes nothing', () => {
     local.setItem(KEY, KEPT)
     const s = load(KEPT)
     s.answered(KEPT, true)
     expect(local.getItem(KEY)).toBe(KEPT)
     expect(s.token.value).toBe(KEPT)
-    // Taken as the kept one, not tried: a refusal asks for a token, and the page does not load again.
-    s.answered(KEPT, false)
+    expect(s.needsToken.value).toBe(false)
+    expect(s.operator()).toBe(true)
     expect(reload).not.toHaveBeenCalled()
-    expect(s.needsToken.value).toBe(true)
   })
 
   it("another token kept: once the link's is accepted the page sends it, the browser keeps the other, and a load without the link sends the other", () => {
@@ -178,6 +188,18 @@ describe('a token the browser keeps', () => {
     const next = load()
     expect(next.token.value).toBe(KEPT)
     expect(next.operator()).toBe(true)
+  })
+
+  it("refused, then accepted: the refusal stands, the gate still asks, and the decide page's rule does not count it", () => {
+    local.setItem(KEY, KEPT)
+    const s = load()
+    s.answered(KEPT, false)
+    s.answered(KEPT, true)
+    expect(s.needsToken.value).toBe(true)
+    expect(s.operator()).toBe(false)
+    expect(s.token.value).toBe(KEPT)
+    expect(local.getItem(KEY)).toBe(KEPT)
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it("refused late, for the token before the one the operator saved and the browser refused to keep: the page's token and the storage stay, and nothing is asked", () => {

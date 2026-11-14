@@ -8,7 +8,8 @@ import { decideAddress, takeCredentials } from '~/utils/identityPass'
  * listener of the window's `popstate`, registered before the router's, takes the event first and ends it there. Either way the address
  * is rewritten without the fragment, whether or not its values were taken (a fragment that holds both keys gives neither). At a load the
  * token goes to the workbench token store as a link's (sent by the page, kept once the server accepts it) and the pass into the tab's
- * pass store. A fragment that arrives after the load: its token changes nothing on a decide address, in a page that holds a token it
+ * pass store. A fragment that arrives after the load: its token changes nothing on a decide address (in any case of its letters, as
+ * the router matches it), in a page that holds a token it
  * has not seen refused, or when it is the page's own; otherwise it is taken as a load's, with no load while it is tried or once it is
  * accepted, and its refusal loads the page once, as a load's refused link does. Its pass is written to the tab's storage alone, never
  * to what the running page holds and sends, and the page is loaded again only when that write was taken and changed what the storage
@@ -20,8 +21,9 @@ export default defineNuxtPlugin({
   name: 'conductor:fragment-credentials',
   order: -25,
   setup() {
-    // Nuxt's own reload (a failed chunk load, a new build) leaves the page's state under this key; nothing in this app reads it back
-    // (no `experimental.restoreState`), so every load removes it before anything else.
+    // A reload Nuxt itself makes (after a chunk that failed to load, or a new build) writes the page's state, the workbench token the
+    // page holds among it, under this key; nothing in this app reads it back (no `experimental.restoreState`), so every load of the
+    // app removes it, first in this plugin.
     try {
       sessionStorage.removeItem('nuxt:reload:state')
     } catch {
