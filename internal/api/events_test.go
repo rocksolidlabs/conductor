@@ -347,7 +347,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	longest := 0
 	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
 		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch, dispatch.EntityReview,
-		dispatch.EntityFinding} {
+		dispatch.EntityFinding, dispatch.EntityPublication} {
 		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		if entity == dispatch.EntityPerson {
@@ -377,10 +377,10 @@ func TestEventHubDispatchEvent(t *testing.T) {
 			t.Fatalf("a %s's event %s reads as %+v (%v), want %+v", entity, data, got, err, want)
 		}
 	}
-	// The bound is the longest payload's, with room: a milestone's is 119
-	// bytes, as events.go derives it.
-	if longest != 119 {
-		t.Fatalf("the longest event is %d bytes, not the 119 events.go derives", longest)
+	// The bound is the longest payload's, with room: a publication's is
+	// 121 bytes, as events.go derives it.
+	if longest != 121 {
+		t.Fatalf("the longest event is %d bytes, not the 121 events.go derives", longest)
 	}
 	// Every field is there when it is empty: a person's event names no
 	// ticket and no project.
