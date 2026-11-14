@@ -90,8 +90,8 @@ func (s *Server) identityNow(ctx context.Context) func(a catalog.Agent) *Identit
 }
 
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
-// builds it or as GET /api/catalog lists it. source, replaces and available,
-// which the listing adds, are taken and ignored, so an agent read there can be
+// builds it or as GET /api/catalog lists it. source, replaces, available and
+// checking, which the listing adds, are taken and ignored, so an agent read there can be
 // sent back as it is; any other field the agent does not have is refused.
 type saveAgentRequest struct {
 	catalog.Agent

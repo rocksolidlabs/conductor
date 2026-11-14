@@ -230,4 +230,11 @@ func TestTheCatalogReadsRefuseWhatTheyDoNotKnow(t *testing.T) {
 	if resp, _ := e.do("GET", "/api/catalog/cat", "", nil); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", resp.StatusCode)
 	}
+	// An agent read from the listing saves as it is: its checking is taken
+	// and ignored, as its available is.
+	_, sh, _ := e.getAgent("sh")
+	sh["checking"] = true
+	if resp, out := e.do("POST", "/api/catalog", adminToken, sh); resp.StatusCode != http.StatusOK {
+		t.Fatalf("save with checking: %d %v", resp.StatusCode, out)
+	}
 }
