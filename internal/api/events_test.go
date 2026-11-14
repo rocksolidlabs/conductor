@@ -347,7 +347,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	longest := 0
 	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
 		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson, dispatch.EntityPlan, dispatch.EntityLaunch, dispatch.EntityReview,
-		dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend} {
+		dispatch.EntityFinding, dispatch.EntityCapture, dispatch.EntityCaptureSend, dispatch.EntityPublication} {
 		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
 		if entity == dispatch.EntityPerson {
@@ -378,7 +378,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 		}
 	}
 	// The bound is the longest payload's, with room: a capture send's is
-	// 122 bytes, as events.go derives it.
+	// 122 bytes, as events.go derives it (a publication's is 121).
 	if longest != 122 {
 		t.Fatalf("the longest event is %d bytes, not the 122 events.go derives", longest)
 	}

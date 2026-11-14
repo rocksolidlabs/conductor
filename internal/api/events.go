@@ -246,10 +246,11 @@ func (h *eventHub) run(id string, removed bool) {
 // changed (dispatch.Change), for a page to read again. seq is the commit's
 // last change in the store's log; entity what changed (project, ticket,
 // comment, label, milestone, view, person, plan, launch, review,
-// finding, capture or capture_send: a ticket's plan revision, launch, a
-// person's review of a candidate or one of its findings, whose marks are
-// the finding's changes, a person's capture of a preview or one of its
-// sends, which name no ticket or project) and id its id, "" for a
+// finding, capture, capture_send or publication: a ticket's plan
+// revision, launch, a person's review of a candidate or one of its
+// findings, whose marks are the finding's changes, a person's capture of
+// a preview or one of its sends, which name no ticket or project, or a
+// ticket's publication) and id its id, "" for a
 // person, whose id is its name: the directory is small and its pickers
 // read it again whole, so the event says only that it changed; ticket the
 // id of the ticket the change belongs to and project its project's key,
@@ -265,7 +266,8 @@ type dispatchEvent struct {
 
 // maxDispatchEvent bounds a dispatch event's data. The longest is 122
 // bytes: seq at most 19 digits, entity at most 12 (capture_send; a
-// plan's, a launch's, a review's, a finding's and a capture's are
+// publication's, a plan's, a launch's, a review's, a finding's and a
+// capture's are
 // shorter), id and ticket 16 hex characters each,
 // project a key of at most 6, and the envelope's 53; every value is
 // digits, a word of the code's, hex or a key, never escaped. A person's
