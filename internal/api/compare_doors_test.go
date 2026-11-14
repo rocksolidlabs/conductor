@@ -787,7 +787,8 @@ func TestALaneWhoseRunIsGoneIsRefusedEveryDoor(t *testing.T) {
 // A lane's own token on a door closed to its lane is answered 409 lane at
 // once: through a walk of every such door, the identity provider is asked
 // about no token. The same token on another session is answered as on
-// main: 401, after the provider is asked.
+// main, 401, and as a live token of the server's own it is never asked of
+// the provider (ownToken).
 func TestALaneRefusalAsksNoIdentityProvider(t *testing.T) {
 	idp := &tokenIdentity{}
 	ce := newCompareEnv(t, compareOpts{identity: idp})
@@ -804,8 +805,8 @@ func TestALaneRefusalAsksNoIdentityProvider(t *testing.T) {
 	}
 	ce.expectAs(t, ce.bTok, "POST", "/api/sessions/"+ce.member+"/decisions", map[string]any{}, http.StatusUnauthorized, "unauthorized")
 	ce.expectAs(t, ce.bTok, "POST", "/api/sessions/"+ce.member+"/crew", map[string]any{}, http.StatusUnauthorized, "unauthorized")
-	if got := idp.askedTokens()[asked:]; !slices.Contains(got, ce.bTok) {
-		t.Fatalf("the provider was not asked about a token another session's route does not take: %d", len(got))
+	if got := idp.askedTokens()[asked:]; len(got) != 0 {
+		t.Fatalf("the provider was asked %d times about a token of the server's own", len(got))
 	}
 }
 
@@ -919,16 +920,19 @@ func TestALanesViewStaysWhileAnotherLaneEnds(t *testing.T) {
 }
 
 // tokenReaders are the methods that read a session's agent token: each
-// is called only by agentTokenOK, in internal/api/attention.go.
-var tokenReaders = []string{"AgentTokenOK"}
+// is called only by agentTokenOK and ownToken, in
+// internal/api/attention.go.
+var tokenReaders = []string{"AgentTokenOK", "HoldsAgentToken"}
 
 // No file under internal/ reads a session's agent token but agentTokenOK,
-// where a comparison's lanes are held to compareDoors: no call, method
-// value or other selector of a token method elsewhere, in this package or
-// any other; and the token methods of a server session and a hosted one
-// are the ones named here, so a new reader is a new name this test knows.
+// where a comparison's lanes are held to compareDoors, and ownToken, which
+// says a token is the server's own and admits nothing with it: no call,
+// method value or other selector of a token method elsewhere, in this
+// package or any other; and the token methods of a server session and a
+// hosted one are the ones named here, so a new reader is a new name this
+// test knows.
 func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
-	inGuard := 0
+	inGuard, inOwn := 0, 0
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -952,9 +956,12 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 				if !ok || !slices.Contains(tokenReaders, sel.Sel.Name) {
 					return true
 				}
-				if guard && fn != nil && fn.Name.Name == "agentTokenOK" && fn.Recv != nil {
+				switch {
+				case guard && fn != nil && fn.Name.Name == "agentTokenOK" && fn.Recv != nil && sel.Sel.Name == "AgentTokenOK":
 					inGuard++
-				} else {
+				case guard && fn != nil && fn.Name.Name == "ownToken" && fn.Recv != nil:
+					inOwn++
+				default:
 					t.Errorf("%s: an agent token is read outside agentTokenOK", fset.Position(sel.Pos()))
 				}
 				return true
@@ -965,14 +972,14 @@ func TestEveryAgentTokenPathIsGuarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inGuard != 2 {
-		t.Fatalf("agentTokenOK reads the token %d times, not 2 (a server session's, a hosted one's)", inGuard)
+	if inGuard != 2 || inOwn != 2 {
+		t.Fatalf("agentTokenOK reads the token %d times and ownToken %d, not 2 each (a server session's, a hosted one's)", inGuard, inOwn)
 	}
 	token := regexp.MustCompile(`(?i)agenttoken`)
 	for _, c := range []struct {
 		typ  reflect.Type
 		want []string
-	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
+	}{{reflect.TypeFor[*session.Local](), []string{"AgentTokenOK", "HoldsAgentToken", "SetAgentToken"}}, {reflect.TypeFor[*signal.HostedSession](), []string{"AgentTokenOK"}}} {
 		var got []string
 		for i := range c.typ.NumMethod() {
 			if name := c.typ.Method(i).Name; token.MatchString(name) {

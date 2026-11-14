@@ -2412,7 +2412,7 @@ func (s *Local) SetAgentToken(tok string) {
 // the one check every route makes of the token, so a token taken here is
 // noted (AgentCalled): whichever route the agent called first.
 func (s *Local) AgentTokenOK(tok string) bool {
-	if !s.HoldsAgentToken(tok) {
+	if !s.holdsAgentToken(tok) {
 		return false
 	}
 	s.agentCalled.Store(true)
@@ -2421,7 +2421,9 @@ func (s *Local) AgentTokenOK(tok string) bool {
 
 // HoldsAgentToken is AgentTokenOK's comparison, noting nothing: tok is the
 // session's agent token.
-func (s *Local) HoldsAgentToken(tok string) bool {
+func (s *Local) HoldsAgentToken(tok string) bool { return s.holdsAgentToken(tok) }
+
+func (s *Local) holdsAgentToken(tok string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.hasAgentToken || tok == "" {
