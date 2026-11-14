@@ -6076,12 +6076,18 @@ refused stays kept, and the page asks for another. A workbench token that
 arrives after the load is taken by a page that holds none, or one it has
 seen refused, with no load while it is tried or once it is accepted (its
 refusal loads the page once, as a load's does), and changes nothing in a
-page that holds another, when it is the page's own, or on a decide address.
+page that holds a token it has not seen refused, when it is the page's own
+token, refused or not, or on a decide address (`/decide`, `/decide/<did>`,
+in any case of its letters, as the router draws the decide page there).
 In the desktop app the workbench token is the app's bridge's, kept in
 memory, not in the browser's storage, and a link's token changes nothing
 there, at a load or later; a fragment that holds both keys gives neither.
-Every load removes `nuxt:reload:state`, the page's state Nuxt's own reload
-leaves in the tab's storage, which nothing in the app reads back. The pass is kept for the tab
+A reload Nuxt itself makes (after a chunk that failed to load, or a new
+build) writes the page's state, the workbench token the page holds among
+it, into the tab's storage (`nuxt:reload:state`); the next load of the app
+in that tab removes it, and nothing in the app reads it back. When that
+load does not come (the server stopped), it stays there until the app
+loads in that tab again. The pass is kept for the tab
 (`sessionStorage`) until a `401` to a request sent with it, or until a
 later link stores another, and sent only in
 the `Authorization` header of the four routes, never in a URL. The decide

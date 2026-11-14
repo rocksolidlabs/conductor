@@ -767,9 +767,11 @@ pass is held:
   was taken and changed what the storage held. A workbench token is
   taken as a load's link by a page that holds none, or one it has seen
   refused (the gate asks), with no load while it is tried or once it is
-  accepted, and changes nothing in a page that holds another, when it
-  is the page's own, or on a decide address (`decideAddress`, the
-  guard's own test of one; `fromLaterLink`, #882). In the desktop
+  accepted, and changes nothing in a page that holds a token it has
+  not seen refused, when it is the page's own token, refused or not,
+  or on a decide address (`decideAddress`, the guard's own test of
+  one, in any case of its letters as the router matches the decide
+  page's route; `fromLaterLink`, #882). In the desktop
   app, which keeps the workbench token in memory from its bridge and
   not in the browser's storage, a link's token is written nowhere
   and changes nothing, at a load or later. A fragment that
@@ -784,9 +786,16 @@ pass is held:
   rule to every navigation. What is not closed: a navigation the app's
   own code starts with such a fragment is sent on by the guard, and the
   router's record of where it was sent from holds that fragment until
-  the next navigation; no code of the app makes one. Where the browser
-  refuses the tab's storage, a link opened in a tab that already shows
-  the page is not taken: load it in a new tab.
+  the next navigation; no code of the app makes one. The workbench
+  token the page holds is part of the page's state that a reload Nuxt
+  itself makes (after a chunk that failed to load, or a new build)
+  writes into the tab's storage (`nuxt:reload:state`); the next load of
+  the app in that tab removes it, first in this plugin, and when that
+  load does not come (the server stopped), it stays there until the app
+  loads in that tab again. Where the browser refuses the tab's storage,
+  the pass of a link opened in a tab that already shows the page is not
+  taken: load it in a new tab. That is the pass alone: a later link's
+  workbench token does not go through the tab's storage.
 - `middleware/decide.global.ts` (new), synchronous over the stores and
   over each navigation's own fragment (`decideRedirect`: a key the
   fragment carries counts as held, and a fragment that carries a key
