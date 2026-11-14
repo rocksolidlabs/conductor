@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page, Request, Route } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, setFragment } from './fragment-helpers'
+import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, setFragment, workbenchHeld } from './fragment-helpers'
 
 // The decide page and a pass taken from the fragment (docs/plans/decide-grant.md, "web/app", Tests per surface): on the shipped
 // build, which registers no identity provider, so the real server refuses every pass (`401`); the page's own behaviour is proved
@@ -161,13 +161,8 @@ test('a fragment that holds both keys, at a load and later: neither is taken, an
 
 test("a later workbench link on a decide address in any case of its letters, in a tab with a pass and in one with none: the address rewritten, no load, the decide page as it was, and the link's token neither held nor sent", async ({ browser, state }) => {
   const stores = (page: Page) => page.evaluate(() => [sessionStorage.getItem('conductor.identityPass'), localStorage.getItem('conductor.workbenchToken')])
-  /** The token the page sends and what its store knows of it, read off the page's state: ['', ''] holds none, so the guard's `operator()` is false. */
-  const workbench = (page: Page) =>
-    page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const s = (document.querySelector('#__nuxt') as any).__vue_app__.config.globalProperties.$nuxt.payload.state
-      return [s.$sworkbenchToken, s.$sworkbenchTokenStanding] as string[]
-    })
+  /** The token the page sends and what its store knows of it: ['', ''] holds none, so the guard's `operator()` is false. */
+  const workbench = (page: Page) => workbenchHeld(page).then((h) => [h.token, h.standing])
   for (const [pass, at] of [[true, '/decide/dr-7'], [false, '/decide/dr-7'], [false, '/DECIDE/dr-7'], [true, '/DeCiDe/dr-7']] as const) {
     const { ctx, page, sent } = await tab(browser)
     const rec = await recorder(page)
@@ -519,6 +514,31 @@ test("an answer: an assignment's Not done, a send with no reply sent again uncha
   expect(await page.evaluate(() => sessionStorage.getItem('conductor.identityPass'))).toBeNull()
   await checkSent(sent)
   await ctx.close()
+})
+
+test("the operator's address of a decision in any case of its letters: with a pass and no workbench token it opens on the decide page, as `/decisions` does; with a workbench token it is the operator's page", async ({ browser, state }) => {
+  for (const at of ['/decisions', '/DECISIONS', '/Decisions/']) {
+    const { ctx, page, sent } = await tab(browser)
+    const stubbed = await stub(page)
+    stubbed.s.list = { decisions: [{ id: 'dr-7', rev: 1 }] }
+    stubbed.s.views.set('dr-7', { status: 200, body: approval('dr-7') })
+    await page.goto(`${at}?item=decision:dr-7#pass=${PASS}`)
+    await expect(page.locator('[data-decide-page]'), at).toBeVisible()
+    await expect(page, at).toHaveURL(/\/decide\/dr-7$/)
+    await expect(signedIn(page)).toHaveText('Signed in as Ana')
+    await expect(card(page, 'dr-7'), at).toBeVisible()
+    expect(await addressHeld(page)).not.toContain(PASS)
+    await checkSent(sent)
+    await ctx.close()
+  }
+  for (const at of ['/DECISIONS', '/Decisions/']) {
+    const { ctx, page } = await tab(browser, state.token)
+    await page.goto(`${at}?item=decision:dr-7#pass=${PASS}`)
+    await expect(page.locator('[data-sidebar-brand]').first(), at).toBeVisible()
+    expect(new URL(page.url()).pathname, at).toBe(at)
+    await expect(page.locator('[data-decide-page]'), at).toHaveCount(0)
+    await ctx.close()
+  }
 })
 
 test("a workbench token held: the pass is sent nowhere, the token is kept, and the operator's page opens", async ({ browser, state }) => {

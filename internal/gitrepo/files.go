@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/helper/chroot"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // ErrUnreadable says a file of the repository was not read; the error
@@ -463,7 +464,9 @@ type refusal struct {
 	mu    sync.Mutex
 	err   error
 	roots []*os.Root
-	ctx   context.Context // the read's; nil for an opening of a test's, which never ends
+	ctx   context.Context        // the read's; nil for an opening of a test's, which never ends
+	again bool                   // the read's second opening (read): an object its store does not list is not there (holds)
+	held  map[plumbing.Hash]bool // whether the read's first opening's store lists each object it asked about (ask)
 }
 
 // ended is the read's context's error once the context has ended, noted as

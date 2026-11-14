@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { MAX_PASS, decideRedirect, passFromFragment, shownName, takeCredentials } from './identityPass'
+import { MAX_PASS, decideRedirect, decisionsAddress, passFromFragment, shownName, takeCredentials } from './identityPass'
 
 // The pass in the fragment (docs/plans/decide-grant.md, "web/app"): what is taken, what is left in the address, and where the
 // decide middleware sends a navigation.
@@ -77,6 +77,21 @@ describe('decideRedirect', () => {
     }
     expect(decideRedirect('/DECIDE/DR-7', true, false)).toBe('/decisions')
     expect(decideRedirect('/DECIDED', false, true)).toBe('/decide')
+  })
+  it("judges the operator's decisions address in any case of its letters as it judges `/decisions`, as the router draws that page there", async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/decisions', name: 'decisions', component: { render: () => null } }, { path: '/:any(.*)*', component: { render: () => null } }] })
+    for (const p of ['/DECISIONS', '/Decisions/', '/decisions/', '/DeCiSiOnS']) {
+      expect(router.resolve(p).name, p).toBe('decisions')
+      expect(decisionsAddress(p), p).toBe(true)
+      expect(decideRedirect(`${p}?item=decision:dr-7`, false, true), p).toBe('/decide/dr-7')
+      expect(decideRedirect(`${p}?item=decision:dr-7`, true, false), p).toBeNull()
+      expect(decideRedirect(`${p}?item=decision:dr-7`, true, true), p).toBeNull()
+      expect(decideRedirect(`${p}?item=decision:dr-7`, false, false), p).toBeNull()
+    }
+    for (const p of ['/DECISIONSX', '/decisions/dr-7', '/x/decisions']) {
+      expect(decisionsAddress(p), p).toBe(false)
+      expect(decideRedirect(`${p}?item=decision:dr-7`, false, true), p).toBe('/decide')
+    }
   })
   it("judges the first navigation's fragment as held, and takes the whole fragment off the address", () => {
     expect(decideRedirect('/decide/dr-7#pass=p.1', false, false)).toBe('/decide/dr-7')
