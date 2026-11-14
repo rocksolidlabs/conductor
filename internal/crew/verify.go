@@ -140,7 +140,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 	if r.hasManifest() {
 		// Held from its resolution (resolveTree) through the checks: a
 		// close that comes meanwhile ends it once they have returned.
-		tr, err = e.resolveTree(ctx, r, a, ledger.TreeCheckout, dir, cwd, a.result)
+		tr, err = e.resolveTree(ctx, r, a, a, ledger.TreeCheckout, dir, cwd, a.result)
 		if err != nil && tr != nil {
 			tr.busy.Done()
 		}
@@ -697,6 +697,11 @@ func (e *Engine) TreeSecrets() []string {
 					}
 				}
 			}
+		}
+	}
+	for _, p := range e.previews {
+		if p.t != nil && p.t.secret != "" {
+			out = append(out, p.t.secret)
 		}
 	}
 	return out

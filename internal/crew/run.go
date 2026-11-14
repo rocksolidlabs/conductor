@@ -365,6 +365,11 @@ type Engine struct {
 	// by number (steps.go: a number is one tree's at a time). Both under mu.
 	envPassthrough []string
 	ports          map[int]*tree
+	// previews are the candidates' preview checkouts open now, at most
+	// maxPreviews (preview.go), and idleTimer, when a test sets it, their
+	// idle end's timer in place of time.After. previews is under mu.
+	previews  map[previewKey]*preview
+	idleTimer func(time.Duration) <-chan time.Time
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string
@@ -666,9 +671,13 @@ type run struct {
 	// that does, the change's own or, after a refusal, the run's next,
 	// which carries it (transact: releaseEnded). endTree, the one change
 	// that adds to it, passes no undo, so a refusal keeps it with its events.
-	teardown        context.Context
-	teardownCancel  context.CancelFunc
-	trees           flight
+	teardown       context.Context
+	teardownCancel context.CancelFunc
+	trees          flight
+	// previews counts the preview checkouts of the run's candidates the
+	// engine holds (preview.go), from their reservation until their end's
+	// last commit: the run is not idle meanwhile. Under e.mu.
+	previews        int
 	pendingTrees    []treeEnd
 	pendingReleases []*tree
 	// messages are the members' messages to one another (messages.go), in
@@ -2135,6 +2144,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	r.stopping = true
 	e.mu.Unlock()
 	r.cancel()
+	// Its previews end first, each end's first transaction in before their
+	// services are signalled; their ends are waited for with the trees'.
+	e.endPreviews(r, whyRunStopped)
 	waitFor(ctx, &r.starts)
 	e.mu.Lock()
 	var ids []string
@@ -2303,14 +2315,16 @@ func (e *Engine) evict(class string) {
 // idle reports whether nothing runs in r. The caller holds e.mu; it reads the
 // sessions, which never call into the engine while they hold their locks.
 func (e *Engine) idle(r *run) bool {
-	if r.managed && (r.stoppedAt == nil && r.outcome == "" || r.endPending || r.dirty() || r.prereqs > 0 || r.trees.n > 0) {
+	if r.managed && (r.stoppedAt == nil && r.outcome == "" || r.endPending || r.dirty() || r.prereqs > 0 || r.trees.n > 0 || r.previews > 0) {
 		// A managed run goes on between sessions: an attempt in its
 		// setup, a result being verified. Nothing runs in it once it is
 		// stopped or every task is terminal, and that is committed: a
 		// change the ledger has not taken yet is kept for the commit
 		// that carries it. A generation of its prerequisites in flight,
 		// or a tree being ended, holds it too: forgotten, their last
-		// commits would race the ledger with nobody to wait for them.
+		// commits would race the ledger with nobody to wait for them. A
+		// preview of a candidate of it holds it from its open to its end
+		// (preview.go): forgotten, its teardown would end its services.
 		return false
 	}
 	for _, m := range r.members {
