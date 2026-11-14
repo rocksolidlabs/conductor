@@ -555,7 +555,8 @@ func eachString(v reflect.Value, f func(set func(string))) {
 // number, and a class list of 100 KiB of spaces, which the store refuses
 // for the report's measure as the bridge cut it; a region past the
 // screenshot's size (its header read); and what the store refuses of its
-// own rows: a retake of no capture, of a deleted one and of a link's, and
+// own rows: a retake of no capture, of a deleted one and of a link's, a
+// selection that names no label or a commit alone and no read's time, and
 // a capture past the live captures' bound.
 func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 	p := previewEnv(t, nil)
@@ -639,6 +640,13 @@ func TestARequestTheStoreRefusesReadsNoTree(t *testing.T) {
 		refusal{"a retake of no capture", func(b *captureCreateBody) { b.RetakeOf = "0123456789abcdef" }, nil},
 		refusal{"a retake of a deleted capture", func(b *captureCreateBody) { b.RetakeOf = gone }, nil},
 		refusal{"a retake of a link's capture", func(b *captureCreateBody) { b.RetakeOf = linked }, nil},
+		// A selection that names no content is never the tree's: its
+		// read's time is required whatever the tree holds.
+		refusal{"a selection of no label and no time", func(b *captureCreateBody) { b.Label = dispatch.TreeRead{}; moment(b) }, nil},
+		refusal{"a selection of a commit alone and no time", func(b *captureCreateBody) {
+			b.Label = dispatch.TreeRead{Commit: b.Label.Commit}
+			moment(b)
+		}, nil},
 		// Last: every create after it is refused by the bound.
 		refusal{"a capture past the live captures' bound", func(b *captureCreateBody) { fillCaptures(t, p.e, linked) }, nil},
 	)
@@ -834,9 +842,11 @@ func TestAnEditAfterThePreviewWasWithdrawnHoldsNoSecret(t *testing.T) {
 	p.keptNowhere(t, p.secret)
 }
 
-// A screenshot that carries a text chunk is refused, the secret
-// compressed in it among them.
-func TestAnImageWithATextChunkIsRefused(t *testing.T) {
+// A screenshot's text chunks are not kept: one holding the tree's secret
+// as it is, one holding it compressed and one holding it in an
+// international text are each taken (201), and no file of the store holds
+// 8 characters in a row of the secret.
+func TestAScreenshotsTextChunksAreNotKept(t *testing.T) {
 	p := previewEnv(t, nil)
 	var z bytes.Buffer
 	zw := zlib.NewWriter(&z)
@@ -844,15 +854,12 @@ func TestAnImageWithATextChunkIsRefused(t *testing.T) {
 	zw.Close()
 	for typ, data := range map[string][]byte{
 		"zTXt": append([]byte("Comment\x00\x00"), z.Bytes()...),
-		"tEXt": []byte("Comment\x00a plain word"),
-		"iTXt": []byte("Comment\x00\x00\x00\x00\x00a word"),
+		"tEXt": []byte("Comment\x00" + p.secret),
+		"iTXt": []byte("Comment\x00\x00\x00\x00\x00" + strings.ToUpper(p.secret)),
 	} {
-		out := captureRefused(t, p.e, withImage(p.body(t, p.label(t))), withChunk(pngOf(t, 4, 4), typ, data), http.StatusBadRequest, "invalid")
-		if !strings.Contains(apiMessage(out), "not a plain screenshot") {
-			t.Errorf("%s: %v", typ, out)
-		}
+		created(t, p.e, withImage(p.body(t, p.label(t))), withChunk(pngOf(t, 4, 4), typ, data))
 	}
-	p.keptNowhere(t, p.secret)
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
 }
 
 // 200 changed paths of 700 bytes: all counted, the list cut within its
@@ -942,16 +949,26 @@ func TestAnImagePastItsSideIsRefused(t *testing.T) {
 	created(t, p.e, withImage(p.body(t, p.label(t))), pngOf(t, dispatch.MaxCaptureImageSide, 1))
 }
 
-// The screenshot is served as an image and nothing else.
+// The screenshot is served as an image and nothing else, whole: a request
+// that names one range or two is answered 200 with the whole file and the
+// same headers. (The kept file of a PNG Go's encoder made at its default
+// level is that PNG byte for byte.)
 func TestTheImageIsServedSandboxed(t *testing.T) {
 	p := previewEnv(t, nil)
 	shot := pngOf(t, 3, 2)
 	c := created(t, p.e, withImage(p.body(t, p.label(t))), shot)
-	resp, body := p.e.raw("/api/captures/"+c["id"].(string)+"/image", adminToken, nil)
-	h := resp.Header
-	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, shot) || h.Get("Content-Type") != "image/png" || h.Get("X-Content-Type-Options") != "nosniff" ||
-		h.Get("Content-Security-Policy") != "sandbox" || h.Get("X-Conductor-SHA256") != c["image"].(map[string]any)["sha256"] {
-		t.Fatalf("the image: %d %v", resp.StatusCode, h)
+	for _, ranges := range []string{"", "bytes=0-3", "bytes=0-1,4-5"} {
+		header := map[string]string{}
+		if ranges != "" {
+			header["Range"] = ranges
+		}
+		resp, body := p.e.raw("/api/captures/"+c["id"].(string)+"/image", adminToken, header)
+		h := resp.Header
+		if resp.StatusCode != http.StatusOK || !bytes.Equal(body, shot) || h.Get("Content-Type") != "image/png" || h.Get("X-Content-Type-Options") != "nosniff" ||
+			h.Get("Content-Security-Policy") != "sandbox" || h.Get("Content-Disposition") != "inline" || h.Get("Content-Range") != "" ||
+			h.Get("Content-Length") != fmt.Sprint(len(shot)) || h.Get("X-Conductor-SHA256") != c["image"].(map[string]any)["sha256"] {
+			t.Fatalf("the image, range %q: %d %v, %d bytes of %d", ranges, resp.StatusCode, h, len(body), len(shot))
+		}
 	}
 	none := created(t, p.e, p.body(t, p.label(t)), nil)
 	if resp, _ := p.e.raw("/api/captures/"+none["id"].(string)+"/image", adminToken, nil); resp.StatusCode != http.StatusNotFound {

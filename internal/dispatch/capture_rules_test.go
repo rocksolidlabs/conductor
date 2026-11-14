@@ -226,6 +226,34 @@ func TestAReportTextIsMadeStorable(t *testing.T) {
 	}
 }
 
+// Every rule of the store's table of text fields (fieldRules), handed a
+// value that holds a marker and breaks the rule each way it can be broken
+// (past its bound, not UTF-8, a control character, not a URL, not a
+// file's name, not JSON): no refusal holds the marker.
+func TestNoFieldRuleQuotesTheValueItRefuses(t *testing.T) {
+	const marker = "Marker-q7z"
+	for key, r := range fieldRules {
+		values := []string{marker + strings.Repeat("x", r.max), marker + "\xff", marker + "\x01", marker + "\x00", marker + "/..", "{" + marker}
+		refusals := 0
+		for _, v := range values {
+			err := checkField(key, "the field", v)
+			var ref *Refusal
+			if err != nil && !errors.As(err, &ref) {
+				t.Fatalf("%s: %v", key, err)
+			}
+			if err != nil {
+				refusals++
+				if strings.Contains(ref.Words, "Marker") || strings.Contains(ref.Key, "Marker") || strings.Contains(strings.Join(ref.Missing, " "), "Marker") {
+					t.Errorf("%s refuses %q in words that hold it: %v", key, v, err)
+				}
+			}
+		}
+		if refusals == 0 {
+			t.Errorf("%s refused none of the values", key)
+		}
+	}
+}
+
 // The look before a tree is read (CheckCaptureCreate) and the create's
 // transaction judge the capture retaken by one rule (captureRoom): a
 // retake of no capture, of a deleted one and of a link's by an attempt's

@@ -222,13 +222,19 @@ func (s *Store) CheckCaptureCreate(ctx context.Context, op Op, digest string, n 
 }
 
 // captureRoom judges what a create asks of the store that no tree's facts
-// decide: room for one more live capture (MaxCaptures, bound), and, when n
-// retakes one, the capture retaken there, live and of the same kind (link
-// is whether n is a link's): a link's retakes a link's of the same page
+// decide: an attempt's or a candidate's capture whose selection names no
+// commit or no content says when its read was made (such a selection is
+// never the tree's, so it is kept as the drift, whatever the tree holds);
+// room for one more live capture (MaxCaptures, bound); and, when n retakes
+// one, the capture retaken there, live and of the same kind (link is
+// whether n is a link's): a link's retakes a link's of the same page
 // origin (pageOrigin), an attempt's an attempt's. It gives the capture
 // retaken. The look before a tree is read (CheckCaptureCreate) and the
 // create's transaction both judge by it.
 func captureRoom(ctx context.Context, q queryer, n NewCapture, link bool) (Capture, error) {
+	if !link && (n.Label.Commit == "" || n.Label.Content == "") && n.Label.ReadAt.IsZero() {
+		return Capture{}, refuse(RefusalInvalid, "the selection's read, kept as the drift, names no time")
+	}
 	var live int
 	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM captures WHERE deleted_at = ''").Scan(&live); err != nil {
 		return Capture{}, err

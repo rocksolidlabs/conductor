@@ -35,6 +35,9 @@ const (
 	maxTreeIndexes = 8
 	// treeSecretName is what a preview names its tree's secret by.
 	treeSecretName = "${CONDUCTOR_TREE_SECRET}"
+	// treeSecretPart is what the scrub makes a part of a secret: no
+	// longer than the shortest part it replaces (scrubRun).
+	treeSecretPart = "[secret]"
 )
 
 // routePreviewLabel adds the label's route, the admin's and a
@@ -280,7 +283,11 @@ func (tr *treeReads) stopping() bool {
 // read recorded). A read that ends past labelReadWait, fails after naming
 // HEAD (step's error among it), or ends once the stop has begun
 // (errReadsStopped, whatever else ended it) gives the commit alone and the
-// error.
+// error. A capture's step whose time runs out inside it (its look for the
+// repository's top, the classes' git) does not fail the read: the content
+// and the changed paths that were read are kept, the hints' classes are
+// not known (and the repository's top not named, when the time ran out in
+// its look), and the capture's log says so (captureFacts).
 func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) error) (crew.TreeRead, error) {
 	limit := func(ctx context.Context) (context.Context, context.CancelFunc) {
 		return context.WithTimeout(ctx, labelReadWait)
@@ -378,7 +385,13 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	read, err := s.trees.read(r.Context(), wp, nil)
-	cut := labelPaths(storedPaths(read.Paths))
+	// The tree's secret is in the URL alone: the changed paths, the only
+	// names the label carries beside git's ids and its own words, are
+	// scrubbed of the secret of every tree the engine holds one for, and
+	// then cut to their bound.
+	paths := storedPaths(read.Paths)
+	scrubSecrets(&paths, s.runs.TreeSecrets())
+	cut := labelPaths(paths)
 	l := previewLabel{Tree: dispatch.TreeWorktree, Commit: read.Commit, Content: read.Content, Changed: read.Changed, ChangedPaths: cut,
 		ChangedCut: len(cut) < read.Changed, Mutable: true, State: "ready", Where: cmpOr(wp.Where, "native"), ReadAt: time.Now().UTC()}
 	if err != nil {
@@ -388,10 +401,6 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 			l.Unread = "the tree was not read in time"
 		}
 	}
-	// The tree's secret is in the URL alone: the changed paths, the only
-	// names the label carries beside git's ids and its own words, are
-	// scrubbed of the secret of every tree the engine holds one for.
-	scrubSecrets(&l.ChangedPaths, s.runs.TreeSecrets())
 	l.URL = labelURL(wp.URL, wp.Secret, principalAdmin(r))
 	writeDispatch(w, http.StatusOK, l)
 }
@@ -413,28 +422,52 @@ func readFailure(err error) string {
 
 // scrubSecrets replaces, in every string v (a pointer) holds however
 // deep, each stretch of hexadecimal characters made of runs of scrubRun
-// that are parts of one of secrets, in any case, with the secrets' name
-// (treeSecretName): a whole secret, and any part of one at least scrubRun
-// long, wherever a bound cut it. A secret is hex, so its URL-encoded form
-// is itself, and the name holds no run of hex that could make one again.
-// Each string is read once (secretStretches).
+// that are parts of one of secrets, in any case: a stretch that holds a
+// whole secret with the secrets' name (treeSecretName), any other (a part
+// of one at least scrubRun long, wherever a bound cut it) with
+// treeSecretPart. Neither is longer than what it replaces, so no text and
+// no list of texts is longer, as sent or as encoded, once scrubbed. A
+// secret is hex, so its URL-encoded form is itself, and neither word holds
+// a run of hex that could make one again. Each string is read once
+// (secretStretches).
 func scrubSecrets(v any, secrets []string) {
-	if parts := secretParts(secrets); len(parts) > 0 {
-		eachText(reflect.ValueOf(v), func(s string) string { return scrubText(s, parts) })
+	if set := secretsOf(secrets); len(set.parts) > 0 {
+		eachText(reflect.ValueOf(v), func(s string) string { return scrubText(s, set) })
 	}
 }
 
 // scrubRun is the shortest part of a secret the scrub replaces.
 const scrubRun = 8
 
-// secretParts is every run of scrubRun hexadecimal characters of each of
-// secrets, each the number its digits make.
-func secretParts(secrets []string) map[uint32]bool {
-	parts := map[uint32]bool{}
+// secretSet is what the scrub looks for: every run of scrubRun
+// hexadecimal characters of each secret, each the number its digits make,
+// and each secret whole, in lower case.
+type secretSet struct {
+	parts map[uint32]bool
+	whole []string
+}
+
+// secretsOf is the scrub's set of secrets.
+func secretsOf(secrets []string) secretSet {
+	set := secretSet{parts: map[uint32]bool{}}
 	for _, s := range secrets {
-		secretStretches(s, nil, func(n uint32, _, _ int) { parts[n] = true })
+		secretStretches(s, nil, func(n uint32, _, _ int) { set.parts[n] = true })
+		set.whole = append(set.whole, strings.ToLower(s))
 	}
-	return parts
+	return set
+}
+
+// wordFor is what the stretch of parts of a secret is made: the secrets'
+// name when it holds a whole one and is no shorter than the name, else
+// treeSecretPart.
+func (set secretSet) wordFor(stretch string) string {
+	if len(stretch) >= len(treeSecretName) {
+		low := strings.ToLower(stretch)
+		if slices.ContainsFunc(set.whole, func(w string) bool { return w != "" && strings.Contains(low, w) }) {
+			return treeSecretName
+		}
+	}
+	return treeSecretPart
 }
 
 // secretStretches reads s once, keeping the number the last scrubRun
@@ -479,13 +512,13 @@ func secretStretches(s string, parts map[uint32]bool, f func(n uint32, start, en
 }
 
 // scrubText is s with each stretch of parts of a secret (secretStretches)
-// made treeSecretName.
-func scrubText(s string, parts map[uint32]bool) string {
+// made its word (wordFor), the one place the scrub replaces a stretch.
+func scrubText(s string, set secretSet) string {
 	var b strings.Builder
 	from := 0
-	secretStretches(s, parts, func(_ uint32, start, end int) {
+	secretStretches(s, set.parts, func(_ uint32, start, end int) {
 		b.WriteString(s[from:start])
-		b.WriteString(treeSecretName)
+		b.WriteString(set.wordFor(s[start:end]))
 		from = end
 	})
 	if from == 0 && b.Len() == 0 {
@@ -499,14 +532,15 @@ func scrubText(s string, parts map[uint32]bool) string {
 // finds one.
 func holdsSecret(s string, secrets []string) bool {
 	held := false
-	if parts := secretParts(secrets); len(parts) > 0 {
-		secretStretches(s, parts, func(uint32, int, int) { held = true })
+	if set := secretsOf(secrets); len(set.parts) > 0 {
+		secretStretches(s, set.parts, func(uint32, int, int) { held = true })
 	}
 	return held
 }
 
 // labelPaths is the first of paths within dispatch.MaxChangedPaths and
-// dispatch.MaxChangedPathsBytes as encoded, as a capture keeps them.
+// dispatch.MaxChangedPathsBytes as encoded, as a capture keeps them; the
+// label cuts its paths once they are scrubbed.
 func labelPaths(paths []string) []string {
 	out, size := []string{}, len("[]")
 	for _, p := range paths {

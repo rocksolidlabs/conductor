@@ -238,6 +238,9 @@ type Server struct {
 	// tree read has returned, before what it read is scrubbed
 	// (captures.go).
 	afterCaptureRead func()
+	// repoTop, when a test sets it, stands in for gitcli.TopOf in a
+	// capture's look for its run's repository (topOf, captures.go).
+	repoTop func(ctx context.Context, dir string) (string, error)
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)

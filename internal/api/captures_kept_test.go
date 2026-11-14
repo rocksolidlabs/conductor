@@ -2,9 +2,11 @@ package api
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +24,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -445,61 +448,166 @@ func chunkOf(typ string, data []byte) []byte {
 
 func binary32(n uint32) []byte { return []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} }
 
-// palettedPNG is a 4 by 4 PNG with a palette and its transparency (PLTE
-// and tRNS).
-func palettedPNG(t *testing.T) []byte {
+// beforeEnd is the PNG b with the chunks put just before its end (IEND).
+func beforeEnd(b []byte, chunks ...[]byte) []byte {
+	return slices.Concat(b[:len(b)-12], slices.Concat(chunks...), b[len(b)-12:])
+}
+
+// zlibOf is data compressed as a PNG compresses its chunks.
+func zlibOf(data []byte) []byte {
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	zw.Write(data)
+	zw.Close()
+	return z.Bytes()
+}
+
+// encodedPNG is img encoded as Go's encoder makes it.
+func encodedPNG(t *testing.T, img image.Image) []byte {
 	t.Helper()
-	img := image.NewPaletted(image.Rect(0, 0, 4, 4), color.Palette{color.NRGBA{0, 0, 0, 0}, color.NRGBA{200, 10, 10, 255}})
-	img.SetColorIndex(1, 1, 1)
 	var b bytes.Buffer
 	if err := png.Encode(&b, img); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(b.Bytes(), []byte("PLTE")) || !bytes.Contains(b.Bytes(), []byte("tRNS")) {
-		t.Fatal("the paletted PNG has no PLTE or no tRNS")
-	}
 	return b.Bytes()
 }
 
-// A screenshot is a plain image, whole: bytes after its end (a text
-// chunk, or anything), a private chunk before its end and an animated
-// image's chunks are refused in fixed words; each chunk a screenshot
-// carries is taken and the image served byte for byte.
-func TestAScreenshotIsAPlainImageWhole(t *testing.T) {
+// screenshotKinds are a 5 by 3 screenshot of each kind of pixel: 8 bits
+// and 16 bits a channel, a palette and grey, each with and without
+// transparency (grey's tRNS chunk put in by hand).
+func screenshotKinds(t *testing.T) map[string][]byte {
+	t.Helper()
+	r := image.Rect(0, 0, 5, 3)
+	rgba, nrgba, rgba64, nrgba64 := image.NewRGBA(r), image.NewNRGBA(r), image.NewRGBA64(r), image.NewNRGBA64(r)
+	gray := image.NewGray(r)
+	pal := color.Palette{color.NRGBA{10, 20, 30, 255}, color.NRGBA{200, 10, 10, 255}, color.NRGBA{0, 90, 0, 255}}
+	paletted, palettedAlpha := image.NewPaletted(r, pal), image.NewPaletted(r, append(slices.Clone(pal), color.NRGBA{0, 0, 0, 0}))
+	for x := range 5 {
+		for y := range 3 {
+			v := uint8(40*x + 60*y + 1)
+			rgba.Set(x, y, color.RGBA{v, 255 - v, v / 2, 255})
+			nrgba.Set(x, y, color.NRGBA{v, 255 - v, v / 2, uint8(50 * x)})
+			rgba64.Set(x, y, color.RGBA64{uint16(v) * 257, 1000 * uint16(x), 3000 * uint16(y), 0xffff})
+			nrgba64.Set(x, y, color.NRGBA64{uint16(v)*257 + 1, 1000 * uint16(x), 3000 * uint16(y), 12000 * uint16(x+y)})
+			gray.SetGray(x, y, color.Gray{v})
+			paletted.SetColorIndex(x, y, uint8((x+y)%3))
+			palettedAlpha.SetColorIndex(x, y, uint8((x+y)%4))
+		}
+	}
+	grayAlpha := withChunk(encodedPNG(t, gray), "tRNS", []byte{0, 41})
+	return map[string][]byte{"8-bit": encodedPNG(t, rgba), "8-bit, transparent": encodedPNG(t, nrgba),
+		"16-bit": encodedPNG(t, rgba64), "16-bit, transparent": encodedPNG(t, nrgba64),
+		"paletted": encodedPNG(t, paletted), "paletted, transparent": encodedPNG(t, palettedAlpha),
+		"grey": encodedPNG(t, gray), "grey, transparent": grayAlpha}
+}
+
+// samePixels fails t unless the PNGs a and b decode to the same size and,
+// pixel by pixel, the same colours.
+func samePixels(t *testing.T, name string, a, b []byte) {
+	t.Helper()
+	ia, err := png.Decode(bytes.NewReader(a))
+	if err != nil {
+		t.Fatalf("%s: the upload: %v", name, err)
+	}
+	ib, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("%s: the kept file: %v", name, err)
+	}
+	if ia.Bounds() != ib.Bounds() {
+		t.Fatalf("%s: the kept file is %v, the upload %v", name, ib.Bounds(), ia.Bounds())
+	}
+	for x := ia.Bounds().Min.X; x < ia.Bounds().Max.X; x++ {
+		for y := ia.Bounds().Min.Y; y < ia.Bounds().Max.Y; y++ {
+			if ca, cb := color.NRGBA64Model.Convert(ia.At(x, y)), color.NRGBA64Model.Convert(ib.At(x, y)); ca != cb {
+				t.Fatalf("%s: pixel %d,%d is %v, the upload's %v", name, x, y, cb, ca)
+			}
+		}
+	}
+}
+
+// chunkTypes is the types of the PNG b's chunks, in order.
+func chunkTypes(b []byte) []string {
+	var types []string
+	for i := 8; i+8 <= len(b); i += 12 + int(binary.BigEndian.Uint32(b[i:])) {
+		types = append(types, string(b[i+4:i+8]))
+	}
+	return types
+}
+
+// What is kept of a screenshot is the server's own encoding of its pixels
+// (pngKept): an upload with image data after its pixels' end, a text
+// chunk, a colour profile, each small colour chunk holding a marker, bytes
+// after its end, and an animated image's chunks are each kept (201) as
+// that encoding, holding none of the marker's bytes and no chunk but the
+// pixels' own, decoding to the upload's pixels at its size; the same upload
+// sent again is answered by the first's receipt. Every kind of pixel (8
+// and 16 bits, a palette, grey, each with and without transparency) is
+// kept pixel for pixel, and the image's route and its hash are the kept
+// file's.
+func TestWhatIsKeptOfAScreenshotIsTheServersEncoding(t *testing.T) {
 	p := previewEnv(t, nil)
-	good := pngOf(t, 4, 4)
-	for name, img := range map[string][]byte{
-		"a text chunk after its end": slices.Concat(good, chunkOf("tEXt", []byte("Comment\x00a word"))),
-		"anything after its end":     slices.Concat(good, []byte("anything")),
-		"a private chunk":            withChunk(good, "prVt", []byte("x")),
-		"an animation's control":     withChunk(good, "acTL", slices.Concat(binary32(1), binary32(0))),
-		"an animation's frame":       withChunk(good, "fcTL", make([]byte, 26)),
+	l := p.label(t)
+	marker := []byte("Mk7qZw9xR2")
+	kept := func(name string, upload []byte) (captureCreateBody, map[string]any, []byte) {
+		t.Helper()
+		b := withImage(p.body(t, l))
+		c := created(t, p.e, b, upload)
+		resp, served := p.e.raw("/api/captures/"+c["id"].(string)+"/image", adminToken, nil)
+		sum := sha256.Sum256(served)
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Conductor-SHA256") != hex.EncodeToString(sum[:]) ||
+			c["image"].(map[string]any)["sha256"] != hex.EncodeToString(sum[:]) {
+			t.Fatalf("%s: served %d, its hash %s, the capture's %v", name, resp.StatusCode, resp.Header.Get("X-Conductor-SHA256"), c["image"])
+		}
+		img, err := png.Decode(bytes.NewReader(upload))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var own bytes.Buffer
+		if err := pngKept.Encode(&own, img); err != nil || !bytes.Equal(served, own.Bytes()) {
+			t.Fatalf("%s: the kept file is not the server's encoding of the upload's pixels (%v)", name, err)
+		}
+		samePixels(t, name, upload, served)
+		return b, c, served
+	}
+	for name, upload := range screenshotKinds(t) {
+		kept(name, upload)
+	}
+	base := pngOf(t, 6, 4)
+	// An animation's frame: its number, its size, its place, its delay
+	// (1/1 s) and how it is disposed of and blended.
+	frame := func(seq uint32) []byte {
+		return slices.Concat(binary32(seq), binary32(6), binary32(4), make([]byte, 8), []byte{0, 1, 0, 1, 0, 0})
+	}
+	// padded is n bytes, b's first.
+	padded := func(n int, b []byte) []byte {
+		out := make([]byte, n)
+		copy(out, b)
+		return out
+	}
+	for name, upload := range map[string][]byte{
+		"image data after its pixels' end": beforeEnd(base, chunkOf("IDAT", zlibOf(marker))),
+		"a text chunk":                     withChunk(base, "tEXt", append([]byte("Comment\x00"), marker...)),
+		"a colour profile":                 withChunk(base, "iCCP", append([]byte("profile\x00\x00"), zlibOf(marker)...)),
+		"a gamma":                          withChunk(base, "gAMA", marker[:4]),
+		"chromaticities":                   withChunk(base, "cHRM", padded(32, marker)),
+		"a colour space":                   withChunk(base, "sRGB", marker[:1]),
+		"a physical size":                  withChunk(base, "pHYs", padded(9, marker)),
+		"significant bits":                 withChunk(base, "sBIT", marker[:4]),
+		"a background":                     withChunk(base, "bKGD", padded(6, marker)),
+		"bytes after its end":              slices.Concat(base, marker),
+		"an animated image": beforeEnd(withChunk(withChunk(base, "fcTL", frame(0)), "acTL", slices.Concat(binary32(2), binary32(0))),
+			chunkOf("fcTL", frame(1)), chunkOf("fdAT", slices.Concat(binary32(2), zlibOf(marker)))),
 	} {
-		out := captureRefused(t, p.e, withImage(p.body(t, p.label(t))), img, http.StatusBadRequest, "invalid")
-		if !strings.Contains(apiMessage(out), "not a plain screenshot") {
-			t.Errorf("%s: %v", name, out)
+		b, c, served := kept(name, upload)
+		if bytes.Contains(served, marker[:4]) || fmt.Sprint(chunkTypes(served)) != "[IHDR IDAT IEND]" {
+			t.Errorf("%s: the kept file's chunks %v, the marker kept %v", name, chunkTypes(served), bytes.Contains(served, marker[:4]))
+		}
+		again, out := postCapture(t, p.e, b, upload)
+		if again != http.StatusOK || receiptOf(t, out)["repeat"] != true || receiptOf(t, out)["id"] != c["id"] {
+			t.Errorf("%s sent again: %d %v", name, again, out)
 		}
 	}
-	pal := palettedPNG(t)
-	for typ, data := range map[string][]byte{
-		"PLTE and tRNS": nil,
-		"gAMA":          binary32(45455),
-		"cHRM":          make([]byte, 32),
-		"sRGB":          {0},
-		"iCCP":          append([]byte("profile\x00\x00"), 0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01),
-		"pHYs":          append(append(binary32(2835), binary32(2835)...), 1),
-		"sBIT":          {8},
-		"bKGD":          {0},
-	} {
-		img := pal
-		if data != nil {
-			img = withChunk(pal, typ, data)
-		}
-		c := created(t, p.e, withImage(p.body(t, p.label(t))), img)
-		if resp, body := p.e.raw("/api/captures/"+c["id"].(string)+"/image", adminToken, nil); resp.StatusCode != http.StatusOK || !bytes.Equal(body, img) {
-			t.Errorf("%s: served %d, %d bytes of %d", typ, resp.StatusCode, len(body), len(img))
-		}
-	}
+	p.keptNowhere(t, strings.ToLower(string(marker)))
 }
 
 // A hint's base is the opened tree: once the tree has been opened, its
@@ -548,20 +656,24 @@ func TestAHintUnderAFolderPutInTheTreesPlaceIsOutside(t *testing.T) {
 	}
 }
 
-// The display name is judged as the request carried it: one within its
-// bound that holds a part of a tree's secret is kept scrubbed, and the
-// same request once the tree has ended and the server has restarted is
-// answered by the first's receipt; one past its bound as carried is
-// refused the same both times.
+// The display name is judged as the request carried it: one at its bound
+// made of parts of a tree's secret is kept scrubbed, no longer than it
+// came, and the same request once the tree has ended and the server has
+// restarted is answered by the first's receipt; one past its bound as
+// carried is refused the same both times.
 func TestADisplayNameIsJudgedAsTheRequestCarriedIt(t *testing.T) {
 	p := previewEnv(t, nil)
 	b := p.body(t, p.label(t), button())
-	b.ByName = "Nate " + p.secret[:55]
+	b.ByName = "Nate " + p.secret[:8] + " " + p.secret[10:18] + " " + p.secret[20:30] + " " + p.secret[30:56]
+	if n := len([]rune(b.ByName)); n != dispatch.MaxByName {
+		t.Fatalf("the display name is %d characters", n)
+	}
 	long := p.body(t, p.label(t), button())
 	long.ByName = strings.Repeat("n", dispatch.MaxByName+1)
 	c := created(t, p.e, b, nil)
-	if by, _ := c["createdBy"].(string); !strings.Contains(by, treeSecretName) || sharedRun([]byte(by), p.secret) != "" {
-		t.Fatalf("the display name kept: %q", by)
+	want := "Nate " + strings.Repeat(treeSecretPart+" ", 3) + treeSecretPart
+	if by, _ := c["createdBy"].(string); by != want || sharedRun([]byte(by), p.secret) != "" {
+		t.Fatalf("the display name kept: %q, want %q", by, want)
 	}
 	refusedLong := func(e *testEnv, when string) {
 		t.Helper()
@@ -591,8 +703,9 @@ func TestADisplayNameIsJudgedAsTheRequestCarriedIt(t *testing.T) {
 
 // The list and the single read as the admin: captures on two tasks and
 // two attempts, one sent to a ticket and one deleted; the list by each
-// filter, paged by after with limit=1; limit=0, limit=101, attempt=0 and a
-// task without its run refused; the deleted one's tombstone, and its
+// filter, paged by after with limit=1; limit=0, limit=101, attempt=0, a
+// task without its run, and an attempt or a limit given twice, empty or
+// in anything but digits refused; the deleted one's tombstone, and its
 // screenshot not found.
 func TestTheCaptureListAndReadAsTheAdmin(t *testing.T) {
 	p := previewEnv(t, nil)
@@ -674,7 +787,12 @@ func TestTheCaptureListAndReadAsTheAdmin(t *testing.T) {
 	if set(all...) != set(a, b, c) || len(all) != 3 {
 		t.Fatalf("the pages: %v", all)
 	}
-	for _, query := range []string{"?limit=0", "?limit=101", "?run=" + p.run + "&task=build&attempt=0", "?task=build"} {
+	attempt := "?run=" + p.run + "&task=build&attempt="
+	for _, query := range []string{"?limit=0", "?limit=101", attempt + "0", "?task=build",
+		// The numbers are read once and whole: given twice, given empty,
+		// or with a sign, a space or anything but digits.
+		attempt + "1&attempt=2", attempt, attempt + "%2B1", attempt + "-1", attempt + "+1", attempt + "1x", attempt + "99999999999999999999",
+		"?limit=1&limit=101", "?limit=", "?limit=%2B5", "?limit=-5", "?limit=1e2", "?limit=0x10"} {
 		if status, data, out := p.e.callAs(t, adminToken, "GET", "/api/captures"+query, nil); status != http.StatusBadRequest || codeOf(out) != "invalid_request" {
 			t.Errorf("%s: %d %s", query, status, data)
 		}
@@ -688,10 +806,10 @@ func TestTheCaptureListAndReadAsTheAdmin(t *testing.T) {
 	}
 }
 
-// Each body at its bound and one byte past it: at it the body is taken,
-// or refused for its content (the screenshot padded past its end), never
-// 413; one past it is 413 bound in the gate's words. The capture part
-// (2 MiB), the screenshot part (4 MiB), the whole body (the capture part
+// Each body at its bound and one byte past it: at it the body is taken
+// (the screenshot padded past its end is kept as the server's encoding of
+// its pixels), never 413; one past it is 413 bound in the gate's words.
+// The capture part (2 MiB), the screenshot part (4 MiB), the whole body (the capture part
 // at its bound, a screenshot and bytes after the closing boundary), an
 // edit's body (2 MiB) and a delete's (64 KiB).
 func TestEachCaptureBodyAtItsBoundAndOnePast(t *testing.T) {
@@ -709,7 +827,7 @@ func TestEachCaptureBodyAtItsBoundAndOnePast(t *testing.T) {
 			ct, body := captureMultipart(padded(encodeNoHTML(t, p.body(t, l, button())), maxCaptureJSON+extra), nil, 0)
 			return bodyAnswer(t, p.e, "POST", "/api/captures", ct, body)
 		}},
-		{"the screenshot part", http.StatusBadRequest, http.StatusRequestEntityTooLarge, func(extra int) (int, map[string]any) {
+		{"the screenshot part", http.StatusCreated, http.StatusRequestEntityTooLarge, func(extra int) (int, map[string]any) {
 			img := append(slices.Clone(shot), make([]byte, dispatch.MaxCaptureImage+extra-len(shot))...)
 			ct, body := captureMultipart(encodeNoHTML(t, withImage(p.body(t, l))), img, 0)
 			return bodyAnswer(t, p.e, "POST", "/api/captures", ct, body)
@@ -783,5 +901,406 @@ func TestARetakeAcrossTheRepairLaunch(t *testing.T) {
 	q := launchPreview(t, l.testEnv, previewedCrew(l.repo))
 	if sc := created(t, l.testEnv, q.body(t, q.label(t), button()), nil)["scope"].(map[string]any); sc["project"] != nil || sc["repo"] != top {
 		t.Fatalf("the scope of a run launched from no ticket: %v", sc)
+	}
+}
+
+// atBound is n characters of fill ending in tail.
+func atBound(n int, tail string) string { return strings.Repeat("v", n-len(tail)) + tail }
+
+// The scrub makes no text longer: an attribute's value, an element's text
+// and a note each at its bound and ending in the first 10 characters of
+// the tree's secret are taken (201), kept scrubbed, each no longer than it
+// was sent; an edit's note at its bound likewise (200).
+func TestNoScrubbedTextIsLongerThanItCame(t *testing.T) {
+	p := previewEnv(t, nil)
+	part := p.secret[:10]
+	value, text, note := atBound(dispatch.MaxAttributeValue, part), atBound(dispatch.MaxElementText, part), atBound(dispatch.MaxAnnotationNote, part)
+	r := button()
+	r.Attributes = append(r.Attributes, [2]string{"data-key", value})
+	r.Text = text
+	b := p.body(t, p.label(t), r)
+	b.Annotations[0].Note = note
+	c := created(t, p.e, b, nil)
+	a := c["annotations"].([]any)[0].(map[string]any)
+	el := a["element"].(map[string]any)
+	attrs := el["attributes"].([]any)
+	got := map[string]string{"the attribute's value": attrs[len(attrs)-1].([]any)[1].(string), "the element's text": el["text"].(string), "the note": a["note"].(string)}
+	sent := map[string]string{"the attribute's value": value, "the element's text": text, "the note": note}
+	for name, kept := range got {
+		if want := strings.TrimSuffix(sent[name], part) + treeSecretPart; kept != want || len(kept) > len(sent[name]) {
+			t.Errorf("%s: kept %d bytes ending %q, sent %d", name, len(kept), kept[max(0, len(kept)-12):], len(sent[name]))
+		}
+	}
+	edit := map[string]any{"opId": opID(), "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": note}}}
+	status, data, out := p.e.callAs(t, adminToken, "POST", "/api/captures/"+c["id"].(string)+"/edit", edit)
+	if status != http.StatusOK {
+		t.Fatalf("the edit: %d %s", status, data)
+	}
+	if kept := out["capture"].(map[string]any)["annotations"].([]any)[0].(map[string]any)["note"].(string); kept != strings.TrimSuffix(note, part)+treeSecretPart {
+		t.Errorf("the edit's note: %d bytes ending %q", len(kept), kept[max(0, len(kept)-12):])
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
+}
+
+// A hundred changed paths made of parts of the tree's secret, the list
+// within its byte limit as the tree names them: the label and the capture
+// each keep all of them, scrubbed, within the limit and not cut.
+func TestChangedPathsOfPartsOfASecretStayWithinTheirLimit(t *testing.T) {
+	p := previewEnv(t, nil)
+	s := p.secret
+	size := len("[]") + 99
+	for i := range 100 {
+		name := fmt.Sprintf("%03d", i)
+		for j := 0; len(name) < 150; j += 3 {
+			name += "-" + s[j%56:j%56+8]
+		}
+		writeIn(t, p.dir, name, "x\n")
+		size += len(name) + 2
+	}
+	if size > dispatch.MaxChangedPathsBytes || size < dispatch.MaxChangedPathsBytes-1024 {
+		t.Fatalf("the paths are %d bytes as encoded", size)
+	}
+	l := p.label(t)
+	o := originOf(created(t, p.e, p.body(t, l, button()), nil))
+	for name, read := range map[string]map[string]any{"the label": l, "the capture": o} {
+		paths, _ := json.Marshal(read["changedPaths"])
+		if read["changed"] != float64(100) || len(read["changedPaths"].([]any)) != 100 || read["changedCut"] != false ||
+			len(paths) > dispatch.MaxChangedPathsBytes || sharedRun(paths, s) != "" {
+			t.Errorf("%s: changed %v, %d paths kept, cut %v, %d bytes", name, read["changed"], len(read["changedPaths"].([]any)), read["changedCut"], len(paths))
+		}
+	}
+}
+
+// A text that is hexadecimal throughout, 2 MiB of parts and wholes of a
+// secret and of other runs, is no longer once scrubbed; a whole secret is
+// its name, a part the part's word.
+func TestAScrubbedTextIsNoLonger(t *testing.T) {
+	sum := sha256.Sum256([]byte("a secret"))
+	secret := hex.EncodeToString(sum[:])
+	var b strings.Builder
+	for i := 0; b.Len() < 2<<20; i++ {
+		other := sha256.Sum256(binary32(uint32(i)))
+		start := i % 57
+		b.WriteString(secret[start : start+8+i%(57-start)])
+		b.WriteString(hex.EncodeToString(other[:3]))
+		if i%7 == 0 {
+			b.WriteString(strings.ToUpper(secret))
+		}
+	}
+	in := b.String()
+	if strings.Trim(in, "0123456789abcdefABCDEF") != "" {
+		t.Fatal("the text is not hexadecimal throughout")
+	}
+	out := in
+	scrubSecrets(&out, []string{secret})
+	if len(out) > len(in) || out == in || sharedRun([]byte(out), secret) != "" {
+		t.Fatalf("scrubbed: %d bytes of %d", len(out), len(in))
+	}
+	for text, want := range map[string]string{"k=" + secret + ".": "k=" + treeSecretName + ".", "k=" + secret[3:40] + ".": "k=" + treeSecretPart + ".",
+		secret[:7]: secret[:7]} {
+		got := text
+		scrubSecrets(&got, []string{secret})
+		if got != want {
+			t.Errorf("%q scrubbed is %q, want %q", text, got, want)
+		}
+	}
+}
+
+// An operation's id that holds a part of a tree's secret is refused 400
+// on a create, an edit and a delete, before any call to the store: no
+// file of the store, the write-ahead file among them, holds 8 characters
+// in a row of the secret.
+func TestAnOperationsIDHoldingASecretIsRefused(t *testing.T) {
+	p := previewEnv(t, nil)
+	id := created(t, p.e, p.body(t, p.label(t), button()), nil)["id"].(string)
+	marked := "op-" + strings.ToUpper(p.secret[20:32])
+	b := p.body(t, p.label(t), button())
+	b.OpID = marked
+	status, out := postCapture(t, p.e, b, nil)
+	answers := map[string]string{"the create": fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out))}
+	for name, w := range map[string]struct {
+		path string
+		body map[string]any
+	}{
+		"the edit":   {"/edit", map[string]any{"opId": marked, "expectedRev": 1, "annotations": []map[string]any{{"k": 1, "kind": "element", "note": "x"}}}},
+		"the delete": {"/delete", map[string]any{"opId": marked}},
+	} {
+		status, _, out := p.e.callAs(t, adminToken, "POST", "/api/captures/"+id+w.path, w.body)
+		answers[name] = fmt.Sprintf("%d %s %s", status, codeOf(out), apiMessage(out))
+	}
+	for name, got := range answers {
+		if got != "400 invalid_request opId holds a tree's secret" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	keptNoPart(t, p.e.srv.store.Dir(), p.secret)
+}
+
+// The look for the run's repository is inside the capture's read: the
+// server stopped while it is held (the read's time limit the test's, so
+// only the stop ends it) cancels it, waits for it and keeps nothing; and a
+// capture starts no git once its read has returned, by the count of the
+// trees' runner and of the look.
+func TestACapturesLookForItsRepositoryIsInItsRead(t *testing.T) {
+	p := previewEnv(t, nil)
+	var after atomic.Bool
+	var late atomic.Int64
+	count := func() {
+		if after.Load() {
+			late.Add(1)
+		}
+	}
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		count()
+		return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
+	}))
+	looks := atomic.Int64{}
+	p.e.srv.repoTop = func(ctx context.Context, dir string) (string, error) {
+		count()
+		looks.Add(1)
+		return gitcli.TopOf(ctx, dir)
+	}
+	p.e.srv.afterCaptureRead = func() { after.Store(true) }
+	c := created(t, p.e, p.body(t, p.label(t), withHints(filepath.Join(p.dir, "README"))), nil)
+	if top := gitIn(t, p.e.root, "rev-parse", "--show-toplevel"); c["scope"].(map[string]any)["repo"] != top || looks.Load() != 1 || late.Load() != 0 {
+		t.Fatalf("the scope %v (the top %s), %d looks, %d git commands after the read", c["scope"], top, looks.Load(), late.Load())
+	}
+	p.e.srv.afterCaptureRead = nil
+	held, ended, goOn := make(chan struct{}), make(chan error, 1), make(chan struct{})
+	var returned atomic.Bool
+	p.e.srv.trees.limit = context.WithCancel
+	p.e.srv.repoTop = func(ctx context.Context, dir string) (string, error) {
+		close(held)
+		<-ctx.Done()
+		ended <- ctx.Err()
+		<-goOn
+		returned.Store(true)
+		return "", ctx.Err()
+	}
+	b := p.body(t, p.label(t), button())
+	b.Annotations[0].Note = "held-in-the-look"
+	done := p.postAsync(t, b)
+	select {
+	case <-held:
+	case a := <-done:
+		t.Fatalf("answered before its look was held: %d %s %v", a.status, a.body, a.err)
+	}
+	tr := &p.e.srv.trees
+	waits := make(chan struct{})
+	var waiting sync.Once
+	tr.after = func(time.Duration) <-chan time.Time {
+		waiting.Do(func() { close(waits) })
+		return nil
+	}
+	var atRemoval []string
+	tr.seam = func(at, _ string) {
+		if at != "removing" {
+			return
+		}
+		if len(tr.reads) != 0 {
+			atRemoval = append(atRemoval, fmt.Sprintf("%d reads registered", len(tr.reads)))
+		}
+		if !returned.Load() {
+			atRemoval = append(atRemoval, "the held look had not returned")
+		}
+	}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		// The budget only bounds a hang: the held look holds the stop.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		p.e.srv.Shutdown(ctx)
+	}()
+	<-waits
+	close(goOn)
+	<-stopped
+	if err := <-ended; !errors.Is(err, context.Canceled) {
+		t.Errorf("the held look's context ended with %v, want a cancellation", err)
+	}
+	if atRemoval != nil {
+		t.Errorf("at the removal: %v", atRemoval)
+	}
+	a := <-done
+	var out map[string]any
+	_ = json.Unmarshal(a.body, &out)
+	if a.err != nil || a.status != http.StatusServiceUnavailable || codeOf(out) != "tree_unread" {
+		t.Fatalf("the capture: %d %s %v", a.status, a.body, a.err)
+	}
+	if found := hasSecret(t, filepath.Join(p.e.srv.store.Dir(), "dispatch"), "held-in-the-look"); len(found) > 0 {
+		t.Fatalf("the capture is kept in %v", found)
+	}
+}
+
+// A hint whose path begins with a colon is not handed to git: its class is
+// unknown, the tracked file beside it classed, and no git command of the
+// read names it.
+func TestAHintFromAColonIsNotHandedToGit(t *testing.T) {
+	p := previewEnv(t, nil)
+	var named atomic.Bool
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		if slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, ":") }) {
+			named.Store(true)
+		}
+		return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
+	}))
+	c := created(t, p.e, p.body(t, p.label(t), withHints(filepath.Join(p.dir, "README"), ":README")), nil)
+	if got := fmt.Sprint(classesOf(c)); got != "[README:tracked :README:unknown]" || named.Load() {
+		t.Fatalf("the sources: %s; a git command named the colon's path: %v", got, named.Load())
+	}
+}
+
+// goroutineIn reports whether a goroutine is blocked in a select inside
+// the function named fn, as the runtime's stacks show it.
+func goroutineIn(fn string) bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if head, _, _ := strings.Cut(g, "\n"); strings.Contains(head, "[select") && strings.Contains(g, fn) {
+			return true
+		}
+	}
+	return false
+}
+
+// A capture and a label of one tree at once: the tree's entry counts both
+// (reserved), and while the capture's git is held at the runner's seam the
+// label waits at the entry's gate, its own git not started, and is
+// answered once the capture's read is over.
+func TestACaptureAndALabelOfOneTreeShareItsGate(t *testing.T) {
+	p := previewEnv(t, nil)
+	b := p.body(t, p.label(t), button())
+	held, goOn := make(chan struct{}), make(chan struct{})
+	var holding, during atomic.Bool
+	var first sync.Once
+	t.Cleanup(crew.SetTreeGitForTest(func(ctx context.Context, workTree, objects string, env map[string]string, in io.Reader, w io.Writer, args ...string) error {
+		mine := false
+		first.Do(func() { mine = true })
+		if !mine && holding.Load() {
+			during.Store(true)
+		}
+		if mine {
+			holding.Store(true)
+			close(held)
+			<-goOn
+			holding.Store(false)
+		}
+		return gitcli.RunTree(ctx, workTree, objects, env, in, w, args...)
+	}))
+	tr := &p.e.srv.trees
+	handed := make(chan int, 2)
+	tr.seam = func(at, dir string) {
+		if at == "handed" {
+			tr.mu.Lock()
+			handed <- tr.entries[dir].reserved
+			tr.mu.Unlock()
+		}
+	}
+	captured := p.postAsync(t, b)
+	<-handed
+	<-held
+	labelled := p.labelAsync()
+	if n := <-handed; n != 2 {
+		t.Errorf("the entry counted %d reads, want the capture's and the label's", n)
+	}
+	// The label waits at the gate, seen in the runtime's stacks: polled,
+	// and answered meanwhile only when the gate let it through.
+	for !goroutineIn("(*treeReads).take") {
+		select {
+		case a := <-labelled:
+			t.Fatalf("the label was answered while the capture's git was held: %d %s", a.status, a.body)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if during.Load() {
+		t.Error("the label started git while the capture's was held")
+	}
+	close(goOn)
+	if a := <-captured; a.status != http.StatusCreated {
+		t.Fatalf("the capture: %d %s %v", a.status, a.body, a.err)
+	}
+	if a := <-labelled; a.status != http.StatusOK || during.Load() {
+		t.Fatalf("the label: %d %s; git started while held %v", a.status, a.body, during.Load())
+	}
+}
+
+// A capture's step that fails, that panics and that outlives the read's
+// time limit: the read answers the commit alone and the step's error, the
+// panic goes on to the read's caller, the limit's end answers the commit
+// alone and the context's error; after each no read is registered, the
+// tree's entry is free (no reservation, its gate open) and the next read
+// reads the tree whole.
+func TestACapturesStepThatFailsPanicsOrRunsPastItsLimit(t *testing.T) {
+	p := previewEnv(t, nil)
+	wp, ok := p.e.srv.runs.WorktreePreview(p.run, "build", 1)
+	if !ok {
+		t.Fatal("no preview")
+	}
+	tr := &p.e.srv.trees
+	failed := errors.New("the step failed")
+	var ended context.CancelFunc
+	tr.limit = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(ctx)
+		ended = cancel
+		return ctx, cancel
+	}
+	for name, step := range map[string]func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string) error{
+		"fails":  func(context.Context, *crew.Tree, *crew.TreeIndex, string) error { return failed },
+		"panics": func(context.Context, *crew.Tree, *crew.TreeIndex, string) error { panic(failed) },
+		"outlives its limit": func(ctx context.Context, _ *crew.Tree, _ *crew.TreeIndex, _ string) error {
+			ended()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	} {
+		var read crew.TreeRead
+		var err error
+		var panicked any
+		func() {
+			defer func() { panicked = recover() }()
+			read, err = tr.read(t.Context(), wp, step)
+		}()
+		switch name {
+		case "fails":
+			if read.Commit == "" || read.Content != "" || !errors.Is(err, failed) {
+				t.Errorf("%s: %+v %v", name, read, err)
+			}
+		case "panics":
+			if panicked != failed {
+				t.Errorf("%s: recovered %v", name, panicked)
+			}
+		default:
+			if read.Commit == "" || read.Content != "" || !errors.Is(err, context.Canceled) || readFailure(err) != "late" {
+				t.Errorf("%s: %+v %v", name, read, err)
+			}
+		}
+		tr.mu.Lock()
+		e := tr.entries[wp.Dir]
+		if len(tr.reads) != 0 || e.reserved != 0 || len(e.gate) != 0 {
+			t.Errorf("%s: %d reads registered, the entry reserved %d, its gate held %d", name, len(tr.reads), e.reserved, len(e.gate))
+		}
+		tr.mu.Unlock()
+		if whole, err := tr.read(t.Context(), wp, nil); err != nil || whole.Content == "" {
+			t.Errorf("%s: the next read: %+v %v", name, whole, err)
+		}
+	}
+}
+
+// A capture of a tree whose committed attributes file is gone is kept
+// with its commit alone (201): no content and no changed paths, and the
+// log says so.
+func TestACaptureOfATreeWithoutItsAttributesFileKeepsTheCommit(t *testing.T) {
+	logs := &logBuffer{}
+	p := previewEnvLogging(t, map[string]string{".gitattributes": "*.txt text\n"}, logs)
+	l := p.label(t)
+	if err := os.Remove(filepath.Join(p.dir, ".gitattributes")); err != nil {
+		t.Fatal(err)
+	}
+	o := originOf(created(t, p.e, p.body(t, l, button()), nil))
+	if o["commit"] != l["commit"] || o["content"] != nil || len(o["changedPaths"].([]any)) != 0 {
+		t.Fatalf("the origin: %v", o)
+	}
+	if !strings.Contains(logs.String(), "a capture's tree was read to its commit alone") {
+		t.Fatalf("the log: %s", logs.String())
 	}
 }
