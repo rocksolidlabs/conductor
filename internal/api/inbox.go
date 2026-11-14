@@ -511,7 +511,11 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 			it.addAction(inboxAction{Name: "answer", Label: o.Label, Input: o.Input, Expect: a.ID, Route: route,
 				Scope: fmt.Sprintf("Types %s into the terminal of %s: the choice '%s'%s", keysWords(o.Input), info.Name, o.Label, plan)})
 		}
-		if a.Kind == session.KindPrompt || len(a.Options) == 0 {
+		// A startup question takes no line here (#902): its Enter would pick
+		// what the screen highlights, and the one that takes a line (a
+		// sign-in screen's code) is answered in the session's question bar,
+		// which keeps the line nowhere.
+		if (a.Kind == session.KindPrompt || len(a.Options) == 0) && a.Source != session.SourceTrust {
 			it.addAction(inboxAction{Name: "answer", Label: "Reply with a line", Text: true, Expect: a.ID, Route: route,
 				Scope: fmt.Sprintf("Types the line you write into the terminal of %s and enters it%s", info.Name, plan)})
 		}
