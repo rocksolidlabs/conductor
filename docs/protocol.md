@@ -5158,8 +5158,11 @@ cap. It is not trusted too soon: a try whose earlier try began less than
 no receipt kept, so the same `opId` may be sent again. The quiet time is
 the store's own rule, judged in the transaction that would begin the try,
 on the clock the store stamps a try with, whichever request of whichever
-server asks; a clock behind the earlier try's start waits the more. The
-route asks the same rule of the row it read before any token is read. A
+server asks. A server whose clock is behind the earlier try's start
+waits until its clock has passed that start by the quiet time, with no
+upper bound, and the person can discard the publication and prepare a
+new one, which is sent at once. The route asks the same rule of the row
+it read before any token is read. A
 send stopped in the middle of its
 look leaves the publication `sending` with nothing posted, and a settle of
 it past the quiet time makes it `unconfirmed`, which is never sent again
@@ -5170,7 +5173,9 @@ the send's own resolve of the target gave it, or for a comment a listing
 found as that listing's resolve gave it, with `#issuecomment-` and the
 comment's id; that page alone for an id that makes no anchor; never the
 page kept at the prepare and never an address in GitHub's answer for the
-comment, and none for a page on another host than the target's); an
+comment; no address is kept for a sent comment when the resolve gave no
+page or one the store does not admit, as for a page on another host than
+the target's); an
 answer that proves nothing was posted (GitHub's `401`, `403` or
 `429`, or a refusal of the mutation with no data), `failed`, which Send
 may post again; anything else (a timeout, a reset, a `5xx`, the server
@@ -5242,10 +5247,11 @@ send's, a Check's and a Close now's, or the route's time) answers
 whichever call met it (a replay, a begin, a read of the row, a step at
 GitHub, the lock) with `503 tracker_busy` (`Retry-After`) in words of its
 own, `the server is stopping or the request ran out of time: what was
-done is kept; send it again`; a route whose context is still live while
-the server stops answers what it answers otherwise (a publication that
-is not there, `404 not_found`); once the store itself has closed, the
-answer is the store's, `503 dispatch_unavailable`.
+done is kept; send it again`; a route whose context the stop does not
+end (a publication's read, a ticket's publications, Discard) answers
+while the server stops what it answers otherwise (a publication that is
+there, `200`; one that is not, `404 not_found`); once the store itself
+has closed, the answer is the store's, `503 dispatch_unavailable`.
 
 | Route | Body | Answer |
 |---|---|---|

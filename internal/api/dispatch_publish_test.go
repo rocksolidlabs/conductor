@@ -1746,7 +1746,12 @@ func TestCloseNowLooksFirst(t *testing.T) {
 // posted, failed with their words, to be sent again. Within the quiet time
 // after the earlier try began, the send is not begun: 503 tracker_busy with
 // the seconds left, the row as it was, and the same operation id after the
-// quiet time posts once. A first send lists nothing before its post.
+// quiet time posts once; so too for a try another server's store began
+// while the send read its account, judged at a moment the test sets on
+// one clock for both stores; and with the route's clock past the quiet
+// time and the store's within it, the store's begin refuses: the seconds
+// the store's clock leaves, nothing posted, no receipt kept. A first send
+// lists nothing before its post.
 func TestSendLooksBeforeAgain(t *testing.T) {
 	failedOnce := func(t *testing.T, mode string) (*testEnv, *pubGH, map[string]any) {
 		e, p := pubEnv(t)
@@ -1886,6 +1891,14 @@ func TestSendLooksBeforeAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer ds2.Close()
+		// One clock the test sets for both stores and the publications:
+		// the second store begins its try at began, and the route's begin
+		// is judged 10.5 s after it, inside the quiet time, however long
+		// the machine takes between the two.
+		began := time.Now()
+		ds2.SetClockForTest(func() time.Time { return began })
+		at := began.Add(10*time.Second + 500*time.Millisecond)
+		bothClocks(e, func() time.Time { return at })
 		// The send has read the publication as a draft and reads its
 		// account; meanwhile the second server begins a try and settles it
 		// failed, as one whose post GitHub refused.
@@ -1915,18 +1928,41 @@ func TestSendLooksBeforeAgain(t *testing.T) {
 		default:
 			t.Fatal("the account was not read")
 		}
-		retry, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
-		if resp.StatusCode != http.StatusServiceUnavailable || errorCode(got) != "tracker_busy" || apiMessage(got) != errTryTooSoon.Message || retry < 1 || retry > 30 {
+		// 10.5 s after the second store's try began: 20 s left, rounded up.
+		if resp.StatusCode != http.StatusServiceUnavailable || errorCode(got) != "tracker_busy" || apiMessage(got) != errTryTooSoon.Message || resp.Header.Get("Retry-After") != "20" {
 			t.Fatalf("the send after another server's try: %d %v, Retry-After %q", resp.StatusCode, got, resp.Header.Get("Retry-After"))
 		}
 		before := e.stored(t, id)
-		if _, found, err := e.srv.dispatch.Receipt(t.Context(), adminActor, op); before.State != dispatch.PublicationFailed || before.Tries != 1 || p.adds() != adds || found || err != nil {
+		if _, found, err := e.srv.dispatch.Receipt(t.Context(), adminActor, op); before.State != dispatch.PublicationFailed || before.Tries != 1 || !before.SendingAt.Equal(began) || p.adds() != adds || found || err != nil {
 			t.Fatalf("the send after another server's try: %+v, %d posts, a receipt %v %v", before, p.adds()-adds, found, err)
 		}
-		ahead := time.Until(before.SendingAt.Add(dispatch.PublicationQuiet + time.Second))
-		bothClocks(e, func() time.Time { return time.Now().Add(ahead) })
+		// At exactly the quiet time after that try began, the same
+		// operation id posts once.
+		quietEnd := began.Add(dispatch.PublicationQuiet)
+		bothClocks(e, func() time.Time { return quietEnd })
 		if got := pubOf(t, e.sendPub(t, id, op, digest, http.StatusOK, "")); got["state"] != "sent" || got["tries"] != float64(2) || p.adds() != adds+1 {
 			t.Fatalf("the same operation after the quiet time: %v, %d posts", got, p.adds()-adds)
+		}
+	})
+	t.Run("the route's clock past the quiet time, the store's within it", func(t *testing.T) {
+		e, p, out := failedOnce(t, postRefused)
+		id, op := pubOf(t, out)["id"].(string), opID()
+		before, adds := e.stored(t, id), p.adds()
+		// The route's early answer passes; the store's begin, on its own
+		// clock 10.5 s after the earlier try began, refuses: 20 s left.
+		route, store := before.SendingAt.Add(dispatch.PublicationQuiet+time.Second), before.SendingAt.Add(10*time.Second+500*time.Millisecond)
+		e.srv.external.now = func() time.Time { return route }
+		e.srv.dispatch.SetClockForTest(func() time.Time { return store })
+		resp, got := e.do("POST", "/api/dispatch/publications/"+id+"/send", adminToken, map[string]any{"opId": op, "postSha256": out["postSha256"]})
+		if resp.StatusCode != http.StatusServiceUnavailable || errorCode(got) != "tracker_busy" || apiMessage(got) != errTryTooSoon.Message || resp.Header.Get("Retry-After") != "20" {
+			t.Fatalf("the store within the quiet time: %d %v, Retry-After %q", resp.StatusCode, got, resp.Header.Get("Retry-After"))
+		}
+		after := e.stored(t, id)
+		if after.Rev != before.Rev || after.Tries != before.Tries || after.State != dispatch.PublicationFailed || p.adds() != adds {
+			t.Fatalf("the store within the quiet time: %+v, %d posts", after, p.adds()-adds)
+		}
+		if _, found, err := e.srv.dispatch.Receipt(t.Context(), adminActor, op); found || err != nil {
+			t.Fatalf("the store within the quiet time: a receipt %v %v", found, err)
 		}
 	})
 	t.Run("a first send", func(t *testing.T) {
@@ -2461,17 +2497,22 @@ func TestRestoredCloseRefusedBeforeGitHub(t *testing.T) {
 // tracker_busy with Retry-After in its own words, through publicationFail,
 // the reply's read and the lock; the store closed is the store's 503
 // dispatch_unavailable; a refusal, kept or returned, is its answer. With
-// the context live the same errors answer as before, whatever the server's
-// stop. Once the stop has begun, the store still open, a route whose
-// context the stop ended (a send's operation id sent again, a prepare's
-// replay) answers the busy answer in its own words, and a read with a live
-// context of a publication that is not there is 404.
+// the context live the same errors answer as otherwise: before the stop,
+// GitHub's failure 502 tracker_unavailable; once the stop has begun, the
+// answer the GitHub item's routes give then (503 tracker_busy in their
+// words) and the store's 503 dispatch_unavailable. Once the stop has
+// begun, the store still open, a route whose context the stop ended (a
+// send's operation id sent again, a prepare's replay) answers the busy
+// answer in its own words, and a read with a live context of a
+// publication that is not there is 404 not_found, of one that is there
+// 200 with it.
 func TestPublicationRouteEnded(t *testing.T) {
 	e, _ := pubEnv(t)
 	prep := map[string]any{"opId": opID(), "target": "linked", "body": "Fixed in v2."}
 	out := e.expect(t, "POST", "/api/dispatch/tickets/PUB-1/publications", prep, http.StatusCreated, "")
 	send := map[string]any{"opId": opID(), "postSha256": out["postSha256"]}
-	sendPath := "/api/dispatch/publications/" + pubOf(t, out)["id"].(string) + "/send"
+	id := pubOf(t, out)["id"].(string)
+	sendPath := "/api/dispatch/publications/" + id + "/send"
 	e.expect(t, "POST", sendPath, send, http.StatusOK, "")
 	ended, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -2509,7 +2550,7 @@ func TestPublicationRouteEnded(t *testing.T) {
 	if status, code, _ := answer(fail(ended, kept, nil)); status != http.StatusConflict || code != dispatch.RefusalBound {
 		t.Errorf("a refusal kept: %d %s", status, code)
 	}
-	if status, code, _ := answer(fail(t.Context(), dispatch.Receipt{}, context.Canceled)); status == http.StatusServiceUnavailable || code == "tracker_busy" {
+	if status, code, _ := answer(fail(t.Context(), dispatch.Receipt{}, context.Canceled)); status != http.StatusBadGateway || code != "tracker_unavailable" {
 		t.Errorf("a live route's failure: %d %s", status, code)
 	}
 	// The reply's read, and the lock held past the route's end.
@@ -2528,10 +2569,34 @@ func TestPublicationRouteEnded(t *testing.T) {
 	busy("the lock", w)
 	// Once the server has begun to stop, the store still open.
 	e.srv.external.end()
+	// The route's context live: GitHub's failure is the answer the GitHub
+	// item's routes give while the server stops; the store's, the store's.
+	itemBusy := struct {
+		status      int
+		code, words string
+	}{http.StatusServiceUnavailable, "tracker_busy", errItemBusy.Message}
+	stopping := map[string]struct {
+		status      int
+		code, words string
+	}{"a replay's": itemBusy, "a read's": itemBusy, "a step at GitHub's": itemBusy, "the stop's door": itemBusy,
+		"a begin's": {http.StatusServiceUnavailable, "dispatch_unavailable", strings.TrimPrefix(dispatch.ErrUnavailable.Error(), "dispatch: ")}}
 	for name, err := range met {
-		if _, _, words := answer(fail(t.Context(), dispatch.Receipt{}, err)); words == errRouteEnded.Message {
-			t.Errorf("stopping, %s, the route's context live: the busy answer", name)
+		want := stopping[name]
+		if status, code, words := answer(fail(t.Context(), dispatch.Receipt{}, err)); status != want.status || code != want.code || words != want.words {
+			t.Errorf("stopping, %s, the route's context live: %d %s %q, want %d %s %q", name, status, code, words, want.status, want.code, want.words)
 		}
+	}
+	// The reply's read with a live context: a publication that is not
+	// there, 404 not_found; one that is there, 200 with it.
+	w = httptest.NewRecorder()
+	e.srv.publicationReply(t.Context(), w, e.srv.dispatch, "0123456789abcdef", http.StatusOK, nil)
+	if status, code, _ := answer(w); status != http.StatusNotFound || code != "not_found" {
+		t.Errorf("stopping, the reply's read of a publication not there: %d %s", status, code)
+	}
+	w = httptest.NewRecorder()
+	e.srv.publicationReply(t.Context(), w, e.srv.dispatch, id, http.StatusOK, nil)
+	if status, _, _ := answer(w); status != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"`+id+`"`) {
+		t.Errorf("stopping, the reply's read of a publication there: %d %.300s", status, w.Body.String())
 	}
 	for name, c := range map[string]struct {
 		path string
@@ -2542,5 +2607,8 @@ func TestPublicationRouteEnded(t *testing.T) {
 			t.Errorf("stopping, %s: %d %v", name, resp.StatusCode, got)
 		}
 	}
-	e.expect(t, "GET", "/api/dispatch/publications/0123456789abcdef", nil, http.StatusNotFound, "")
+	e.expect(t, "GET", "/api/dispatch/publications/0123456789abcdef", nil, http.StatusNotFound, "not_found")
+	if got := pubOf(t, e.expect(t, "GET", "/api/dispatch/publications/"+id, nil, http.StatusOK, "")); got["id"] != id {
+		t.Errorf("stopping, the read of a publication there: %v", got)
+	}
 }
