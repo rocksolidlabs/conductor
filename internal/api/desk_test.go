@@ -741,9 +741,16 @@ func TestADeskIsItsPublishers(t *testing.T) {
 	// A desk sends no session's messages.
 	bDesk.send(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input"})
 	<-bDesk.done
-	// Its connection drops: it resumes with its secret.
+	// Its connection drops: it resumes with its secret, once the switchyard
+	// has seen the drop (the fake's own end is not the switchyard's: a
+	// resume while the switchyard still holds the old connection is
+	// refused, cannot resume session).
 	a.c.Close(websocket.StatusNormalClosure, "")
 	<-a.done
+	until(t, "the switchyard saw the desk's connection drop", func() bool {
+		hs, ok := yard.srv.hosts.Desk(a.sessionID)
+		return ok && !hs.Connected()
+	})
 	resume := deskReg("instance-a-0123456789", "run-1")
 	resume.Resume = &proto.HostResume{SessionID: a.sessionID, Secret: regA["secret"].(string)}
 	back, reg := dialFakeDesk(t, yard, resume)
