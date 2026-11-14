@@ -2,7 +2,6 @@ package crew
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -198,14 +197,10 @@ type tree struct {
 	// recorded by (treeOwner): the attempt itself, or a preview of its
 	// result (preview.go). unmade, under e.mu, says the tree's directory
 	// is not made yet (a preview's checkout, added after its open is
-	// committed): its end runs no cleanup step in it. at, set with unmade
-	// cleared, is the working directory as the server opened it for a
-	// tree whose folders it holds (a preview's): no step starts where cwd
-	// no longer names it (moved).
+	// committed): its end runs no cleanup step in it.
 	a      *attempt
 	owner  treeOwner
 	unmade bool
-	at     os.FileInfo
 	busy   sync.WaitGroup
 	// handed, ending, ended, session, starting, services, ready, dead:
 	// see above.
@@ -955,7 +950,7 @@ func stepPayload(a *attempt, t *tree, phase, id string, k int, more map[string]a
 // tree's end records. A command that cannot start is the service's
 // failure, its row finished with why. The error is the failure's words.
 func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, ch Check) error {
-	if err := cmp.Or(ctx.Err(), t.moved()); err != nil {
+	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%s was not started: %w", ch.ID, err)
 	}
 	e.mu.Lock()
@@ -1119,21 +1114,6 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 	}
 }
 
-// moved refuses a step of t, before it starts, when t's working directory
-// is held (at) and its path no longer names that directory: the step is
-// not started and fails in fixed words. The check comes just before the
-// start, and the same user can replace the folder between it and the
-// start; natively nothing closes that gap.
-func (t *tree) moved() error {
-	if t == nil || t.at == nil {
-		return nil
-	}
-	if fi, err := os.Stat(t.cwd); err == nil && os.SameFile(fi, t.at) {
-		return nil
-	}
-	return fmt.Errorf("%s is no longer the folder the server opened for the %s: the step is not started", t.cwd, t.kind)
-}
-
 // whose is the tree in the run log's words, before what of it they name:
 // "" for a worktree, "the checkout's ", "the preview's ".
 func (t *tree) whose() string {
@@ -1246,7 +1226,7 @@ var errServiceExited = errors.New("a service of the tree exited")
 // no try and no exit (tries 0, exit -1). It returns the stage and words of
 // a failure.
 func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Probe) (string, error) {
-	if err := cmp.Or(ctx.Err(), t.moved()); err != nil {
+	if err := ctx.Err(); err != nil {
 		return "ready " + p.ID, fmt.Errorf("%s was not run: %w", p.ID, err)
 	}
 	e.mu.Lock()
@@ -1516,9 +1496,6 @@ func (t *tree) row(runID, state string) ledger.TreeRow {
 func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase string, ch Check, gen int) (proc.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return proc.Result{Exit: -1, Canceled: true}, fmt.Errorf("%s was not run: %w", ch.ID, err)
-	}
-	if err := t.moved(); err != nil {
-		return proc.Result{Exit: -1}, fmt.Errorf("%s was not run: %w", ch.ID, err)
 	}
 	man, dir, subject := r.baseMan, r.cwd, r.base
 	env := t.env(r.id)

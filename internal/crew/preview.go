@@ -373,7 +373,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		}
 	}
 	mk, cancel := bound()
-	at, err := e.makePreviewCheckout(mk, r, p, held)
+	err = e.makePreviewCheckout(mk, r, p, held)
 	if cause := context.Cause(mk); err != nil && cause != nil {
 		err = cause // the bound's own words, not those of the git it cut
 	}
@@ -382,7 +382,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 	if err != nil {
 		e.endNow(p, "the checkout could not be made: "+session.CleanMessage(err.Error()))
 	} else {
-		tr.unmade, tr.at = false, at
+		tr.unmade = false
 	}
 	p.opening = false
 	if p.handoff != nil {
@@ -654,23 +654,21 @@ var errCheckoutBound = fmt.Errorf("the checkout was not made within %s", preview
 // (previewFolder.open), and its HEAD read with that git directory named
 // outright; then, inside the checkout's folder as opened, the crew's
 // directory walked and made (memberDirIn) and held, and its state
-// directory with .conductor's .gitignore (makeStateDirIn). It returns the
-// crew's directory as opened, which every step of the preview's path must
-// still name (tree.moved).
-func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, f *previewFolder) (os.FileInfo, error) {
+// directory with .conductor's .gitignore (makeStateDirIn).
+func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, f *previewFolder) error {
 	if f.folder == nil {
 		e.gitMu.Lock()
 		err := AddDetachedWorktree(ctx, r.cwd, p.dir, p.commit)
 		e.gitMu.Unlock()
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := f.open(ctx, r.cwd, p.dir); err != nil {
-			return nil, fmt.Errorf("the checkout just added could not be opened: %w", err)
+			return fmt.Errorf("the checkout just added could not be opened: %w", err)
 		}
 		head, err := gitcli.RunAt(ctx, f.admin, p.dir, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 		if head = strings.TrimSpace(head); err != nil || head != p.commit {
-			return nil, fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(p.commit))
+			return fmt.Errorf("the checkout is at %s, not the result %s", short(head), short(p.commit))
 		}
 	}
 	if e.checkoutJudged != nil {
@@ -678,13 +676,10 @@ func (e *Engine) makePreviewCheckout(ctx context.Context, r *run, p *preview, f 
 	}
 	member, err := memberDirIn(f.folder, r.prefix, e.memberDirChecked)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	f.member = member
-	if err := makeStateDirIn(member, true); err != nil {
-		return nil, err
-	}
-	return member.Stat(".")
+	return makeStateDirIn(member, true)
 }
 
 // memberDirIn walks the crew's directory rel inside root, making each part

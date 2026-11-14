@@ -307,56 +307,6 @@ func TestAStopWhileAPreviewsServiceStartsRecordsTheStop(t *testing.T) {
 	}
 }
 
-// The checkout's folder is held from its judgement on: renamed aside and a
-// link to a folder outside put at its path between the judgement and the
-// making (the engine's seam), for a fresh checkout and a reused one,
-// nothing is made in the link's target, no step of the preview runs, and
-// the preview ends, in fixed words.
-func TestAPreviewCheckoutReplacedAfterItsJudgementRunsNothingThere(t *testing.T) {
-	for _, reused := range []bool{false, true} {
-		t.Run(map[bool]string{false: "fresh", true: "reused"}[reused], func(t *testing.T) {
-			dir := newRepo(t)
-			e, _, l := managedEngine(t)
-			run, ts := candidateOf(t, e, l, repoManifestCrew(dir, previewManifest(), work("build", "lead")))
-			checkout, seq := ts.Attempt.Worktree+".preview", 1
-			if reused {
-				openPreview(t, e, run.ID)
-				l.previewWhen(t, run.ID, "build", 1, 1, "ready", previewReadyRow)
-				if err := e.ClosePreview(run.ID, "build", 1, 1); err != nil {
-					t.Fatal(err)
-				}
-				l.previewWhen(t, run.ID, "build", 1, 1, "ended", previewEndedRow)
-				waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
-				seq = 2
-			}
-			before := len(l.stepRows(run.ID, "build", 1))
-			target := t.TempDir()
-			e.checkoutJudged = func(string) {
-				if err := os.Rename(checkout, filepath.Join(t.TempDir(), "aside")); err != nil {
-					t.Error(err)
-				}
-				if err := os.Symlink(target, checkout); err != nil {
-					t.Error(err)
-				}
-			}
-			if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err != nil {
-				t.Fatalf("the open: %v", err)
-			}
-			row := l.previewWhen(t, run.ID, "build", 1, seq, "ended", previewEndedRow)
-			if !strings.Contains(row.Why, "is no longer the folder the server opened for the preview") {
-				t.Fatalf("the ended row: %+v", row)
-			}
-			if made, _ := os.ReadDir(target); len(made) != 0 {
-				t.Fatalf("made in the link's target: %v", made)
-			}
-			if rows := l.stepRows(run.ID, "build", 1); len(rows) != before {
-				t.Fatalf("a step of the preview ran: %s", rowWords(rows[before:]))
-			}
-			waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
-		})
-	}
-}
-
 // A run's worktrees folder replaced by a link before the open is refused
 // before any add, nothing made where the link leads and nothing written.
 func TestAPreviewOfARunWhoseWorktreesFolderIsALinkIsRefused(t *testing.T) {
