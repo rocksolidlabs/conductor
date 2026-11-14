@@ -455,7 +455,7 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		"Dir":      "the store's own directory",
 		"ReadOnly": "whether the store takes writes, and the store's own words why",
 	}
-	for _, name := range []string{"Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
+	for _, name := range []string{"AtLaunch", "Attachment", "Blockers", "ChainHolders", "ChangedSince", "Children", "ClaimReview", "CloseState", "Comment",
 		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "LinkedTicket", "Links", "List", "Marks", "Milestone", "Milestones",
 		"OpenPlans", "PendingLaunches", "PendingReviews", "People", "Plan", "Plans", "Project", "Projects", "Relations", "Review", "Reviews",
 		"RunTicket", "Ticket", "View", "Views",

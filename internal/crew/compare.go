@@ -3,10 +3,13 @@ package crew
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A compare crew (docs/plans/compare-crew.md, Program item CP1): an
@@ -129,6 +132,78 @@ func (r *run) laneOf(m *member) string {
 	}
 	return ""
 }
+
+// crewRef is the crew reference of a session the run launches for its
+// member with the name, at the task's attempt n (none for a member's own
+// session): in a comparison's run, it carries the member's lane (laneOf),
+// decided here, once, as the session is launched, so the session holds it
+// from its creation (session.CrewRef.Lane). r.lanes and r.plan are set as
+// the run is made and never changed, so no lock is needed.
+func (r *run) crewRef(m *member, task string, n int) session.CrewRef {
+	ref := session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: task, Attempt: n}
+	if r.lanes != nil {
+		ref.Lane = &session.LaneMark{Candidate: r.laneOf(m)}
+	}
+	return ref
+}
+
+// Lane is a comparison's lane as one of its sessions works in it
+// (Engine.LaneOf): the run, the session's member and its lane (the lane's
+// candidate task), with the lane of every member and task of the run as
+// the run holds them (laneOf, run.lanes). The API's doors ask it and
+// nothing else which lane a member or a task is in.
+type Lane struct {
+	Run, Member, Candidate string
+	cmp                    Compare
+	members, tasks         map[string]string
+}
+
+// LaneOf is the lane of a comparison's session, from its crew reference
+// (the lane the engine gave it at its launch, crewRef): ok is false for a
+// reference that carries no lane, and for a run the engine no longer holds
+// or that holds no lanes, whose lanes cannot be told now.
+func (e *Engine) LaneOf(ref session.CrewRef) (Lane, bool) {
+	if ref.Lane == nil {
+		return Lane{}, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.runs[ref.RunID]
+	if !ok || r.lanes == nil {
+		return Lane{}, false
+	}
+	l := Lane{Run: r.id, Member: ref.Member, Candidate: ref.Lane.Candidate, cmp: r.compare.clone(), members: map[string]string{}, tasks: maps.Clone(r.lanes)}
+	for _, m := range r.members {
+		l.members[m.def.Name] = r.laneOf(m)
+	}
+	l.cmp.Candidates = slices.DeleteFunc(l.cmp.Candidates, func(cd Candidate) bool { return cd.Task != l.Candidate || l.Candidate == "" })
+	return l, true
+}
+
+// own reports whether lane is l's own: never for a lane of no name, which
+// the validation leaves to no member.
+func (l Lane) own(lane string) bool { return l.Candidate != "" && lane == l.Candidate }
+
+// OwnMember reports whether the run's member with the name is in l's lane.
+func (l Lane) OwnMember(name string) bool {
+	lane, ok := l.members[name]
+	return ok && l.own(lane)
+}
+
+// OwnTask reports whether the run's task with the id is in l's lane.
+func (l Lane) OwnTask(id string) bool {
+	lane, ok := l.tasks[id]
+	return ok && l.own(lane)
+}
+
+// Compare is the run's compare block with l's own candidate alone.
+func (l Lane) Compare() Compare { return l.cmp.clone() }
+
+// SetCompareOpenForTest lets the engine launch a crew with a compare block
+// (compareOpen), for the tests of another package of what a comparison's
+// run answers, before the plan's row that opens the launch. It is called
+// before the engine launches any run: prepare reads it without a lock.
+func (e *Engine) SetCompareOpenForTest(open bool) { e.compareOpen = open }
 
 // validate checks the compare block of c, a crew with tasks whose tasks
 // have passed their own rules (checkTasks): its bounds, its candidates

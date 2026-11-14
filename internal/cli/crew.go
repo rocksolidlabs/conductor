@@ -242,7 +242,7 @@ func runCrew(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return 1, err
 		}
 		run, _ := out["run"].(map[string]any)
-		fmt.Fprintf(stdout, "run %v (%v) %v\nyou are %v\n", run["id"], run["state"], run["name"], out["member"])
+		fmt.Fprintf(stdout, "%s %v\nyou are %v\n", runHead(run), run["name"], out["member"])
 		printMembers(stdout, run)
 		return 0, nil
 	case "link":

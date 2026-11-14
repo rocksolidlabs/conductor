@@ -113,6 +113,7 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 			s.runs.Note(ref.RunID, session.ActivityStatus, spec.Name+": "+noYoloRecipe(a))
 		}
 	}
+	s.launches.afterAttempt(spec, local.Info().ID)
 	return local, nil
 }
 

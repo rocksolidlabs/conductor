@@ -325,7 +325,9 @@ func TestOpenOfAnAttemptOrABrakemanTurnIsOffered(t *testing.T) {
 			id := e.createSession("edge-cat")
 			tok := agentOf(t, e, id)
 			d, _ := e.srv.Registry().Get(id)
-			d.(*session.Local).SetCrew(ref)
+			if !d.(*session.Local).SetCrew(ref) {
+				t.Fatal("the crew reference was not set")
+			}
 			resp, out := e.do("POST", "/api/sessions/"+id+"/open", tok, map[string]any{"url": "https://example.test/"})
 			if resp.StatusCode != http.StatusOK || out["outcome"] != OpenOffered {
 				t.Fatalf("%d %v", resp.StatusCode, out)

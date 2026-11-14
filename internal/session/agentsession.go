@@ -48,13 +48,20 @@ const (
 
 // SetCrew tags the session with the run it was adopted into (an agent that
 // formed a crew around its own session, docs/protocol.md): the listings
-// group it under the run from then on.
-func (s *Local) SetCrew(ref CrewRef) {
+// group it under the run from then on. It reports whether it did: a
+// session whose crew reference carries a comparison's lane (CrewRef.Lane,
+// given at its launch) keeps that reference, and SetCrew sets nothing.
+func (s *Local) SetCrew(ref CrewRef) bool {
 	s.mu.Lock()
+	if cur := s.info.Crew; cur != nil && cur.Lane != nil {
+		s.mu.Unlock()
+		return false
+	}
 	r := ref
 	s.info.Crew = &r
 	s.mu.Unlock()
 	s.notifyChange()
+	return true
 }
 
 // SetAgentSession records the agent session a launch chose or resumed.
