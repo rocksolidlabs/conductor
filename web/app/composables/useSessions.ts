@@ -779,7 +779,7 @@ export interface RunInfo {
   resumedBy?: string
   /** The ticket it was launched from, whose package it and its continuations follow; absent for a run with no package. */
   ticket?: RunTicket
-  /** `brakeman` for a Brakeman turn's run; absent for a person's. */
+  /** `brakeman` for a Brakeman turn's run; absent for a person's run. */
   class?: string
   /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
   managed?: { revision: number }

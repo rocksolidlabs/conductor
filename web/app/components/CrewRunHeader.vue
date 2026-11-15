@@ -11,6 +11,7 @@ import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
 import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
+import { runOffer } from '~/utils/runs'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -304,7 +305,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     </template>
     <template #right>
       <!-- Icons only on a phone: the labels would push the name off the bar. -->
-      <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped || record" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
+      <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!runOffer(run).add" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
       <!-- The run's chat (design 2e): the count while the drawer is closed. -->
       <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
