@@ -446,23 +446,24 @@ test("the launch sheet draws the crew as the server holds it, for the crew it wa
     el.click()
   })
   await expect.poll(() => launches.length, { message: 'the first click sent its launch' }).toBe(1)
-  const closingClick = page.evaluate(
-    () =>
-      new Promise<string>((resolve) => {
-        const dialog = document.querySelector('[data-crew-launch-confirm]')!.closest('[role="dialog"]')!
-        new MutationObserver((_, o) => {
-          if (dialog.getAttribute('data-state') !== 'closed') return
-          o.disconnect()
-          const button = document.querySelector<HTMLButtonElement>('[data-crew-launch-confirm]')!
-          button.click()
-          resolve(button.disabled ? 'disabled' : 'enabled')
-        }).observe(dialog, { attributes: true, attributeFilter: ['data-state'] })
-      }),
-  )
+  // The page's own click, the moment the sheet is marked closing: its observer is in place before the launch is let through.
+  type Closing = { e2eClosingClick: Promise<string> }
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-crew-launch-confirm]')!.closest('[role="dialog"]')!
+    ;(window as unknown as Closing).e2eClosingClick = new Promise<string>((resolve) => {
+      new MutationObserver((_, o) => {
+        if (dialog.getAttribute('data-state') !== 'closed') return
+        o.disconnect()
+        const button = document.querySelector<HTMLButtonElement>('[data-crew-launch-confirm]')!
+        button.click()
+        resolve(button.disabled ? 'disabled' : 'enabled')
+      }).observe(dialog, { attributes: true, attributeFilter: ['data-state'] })
+    })
+  })
   releaseLaunch()
   const launched = (await (await answered).json()) as { run: Run }
   made.runs.push(launched.run.id)
-  expect(await closingClick, "Launch is disabled while the sheet closes").toBe('disabled')
+  expect(await page.evaluate(() => (window as unknown as Closing).e2eClosingClick), 'Launch is disabled while the sheet closes').toBe('disabled')
   await expect(confirm).toHaveCount(0)
   await page.unroute(bLaunch)
   expect(launches, 'one launch for one confirmation').toHaveLength(1)
