@@ -35,6 +35,15 @@ type fakeLedger struct {
 	// trees each tree's row as last put, by run, task, attempt and kind.
 	prerequisites []ledger.PrerequisiteRow
 	trees         map[string]ledger.TreeRow
+	// previews are each preview's row as last written, by run, task,
+	// attempt and seq, and previewWrites every write in order (its
+	// writer's name and the row).
+	previews      map[string]ledger.PreviewRow
+	previewWrites []previewWrite
+	// failWriter names a preview writer whose next write fails, once;
+	// holdWriter one whose next write, once, tells blocked and waits for
+	// release to close, inside its transaction.
+	failWriter, holdWriter string
 	// commandCap, when set, is how many commands a run takes (the ledger's
 	// 4096), for a test of the cap.
 	commandCap int
@@ -102,6 +111,7 @@ type fakeTx struct {
 	messages []ledger.MessageRow
 	prereqs  []ledger.PrerequisiteRow
 	trees    []ledger.TreeRow
+	previews []previewWrite
 	// settles are the outcomes of commands taken before, applied at commit.
 	settles []ledger.CommandRow
 	// continued is the run this transaction's run continues, marked at commit.
@@ -109,7 +119,8 @@ type fakeTx struct {
 }
 
 func newFakeLedger() *fakeLedger {
-	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}, messages: map[string]ledger.MessageRow{}, trees: map[string]ledger.TreeRow{}}
+	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}, messages: map[string]ledger.MessageRow{}, trees: map[string]ledger.TreeRow{},
+		previews: map[string]ledger.PreviewRow{}}
 }
 
 func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
@@ -360,6 +371,10 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 	for _, tr := range tx.trees {
 		l.trees[fmt.Sprintf("%s/%s/%d/%s", tr.RunID, tr.TaskID, tr.N, tr.Kind)] = tr
 	}
+	for _, pw := range tx.previews {
+		l.previews[previewKeyOf(pw.row)] = pw.row
+	}
+	l.previewWrites = append(l.previewWrites, tx.previews...)
 	for _, c := range tx.commands {
 		l.commands[c.RunID+"/"+c.Actor+"/"+c.ID] = c
 	}
@@ -432,6 +447,102 @@ func (tx *fakeTx) PutPrerequisite(r ledger.PrerequisiteRow) error {
 	return nil
 }
 func (tx *fakeTx) PutTree(r ledger.TreeRow) error { tx.trees = append(tx.trees, r); return nil }
+
+// previewWrite is one write of a preview's row: its writer and the row as
+// the writer left it.
+type previewWrite struct {
+	writer string
+	row    ledger.PreviewRow
+}
+
+func previewKeyOf(r ledger.PreviewRow) string {
+	return fmt.Sprintf("%s/%s/%d/%d", r.RunID, r.TaskID, r.N, r.Seq)
+}
+
+// The previews' writers act as the ledger's do: OpenPreview refuses a
+// candidate with one open, past ledger.MaxPreviews, or a seq not after
+// the last; the others move a row that is there and not ended.
+func (tx *fakeTx) OpenPreview(r ledger.PreviewRow) error {
+	if r.Where == "" {
+		return fmt.Errorf("preview %s/%d/%d: %w", r.TaskID, r.N, r.Seq, ledger.ErrNoWhere)
+	}
+	tx.l.mu.Lock()
+	n, last, open := 0, 0, false
+	for _, p := range tx.l.previews {
+		if p.RunID == tx.runID && p.TaskID == r.TaskID && p.N == r.N {
+			n, last, open = n+1, max(last, p.Seq), open || p.State != ledger.PreviewEnded
+		}
+	}
+	tx.l.mu.Unlock()
+	switch {
+	case open:
+		return ledger.ErrPreviewOpen
+	case n >= ledger.MaxPreviews:
+		return ledger.ErrTooManyPreviews
+	case r.Seq <= last:
+		return fmt.Errorf("fake ledger: preview %d not after %d", r.Seq, last)
+	}
+	r.RunID, r.State = tx.runID, ledger.PreviewResolved
+	tx.previews = append(tx.previews, previewWrite{"OpenPreview", r})
+	return nil
+}
+
+func (tx *fakeTx) movePreview(writer string, r ledger.PreviewRow, f func(*ledger.PreviewRow)) error {
+	return tx.movePreviewFrom(writer, "", r, f)
+}
+
+// movePreviewFrom is movePreview for a row in the state from ("" for any
+// state but ended).
+func (tx *fakeTx) movePreviewFrom(writer, from string, r ledger.PreviewRow, f func(*ledger.PreviewRow)) error {
+	r.RunID = tx.runID
+	tx.l.mu.Lock()
+	fail, hold, blocked, release := tx.l.failWriter == writer, tx.l.holdWriter == writer, tx.l.blocked, tx.l.release
+	if fail {
+		tx.l.failWriter = ""
+	}
+	if hold {
+		tx.l.holdWriter = ""
+	}
+	tx.l.mu.Unlock()
+	if fail {
+		return errors.New("ledger: disk full (injected)")
+	}
+	if hold {
+		blocked <- struct{}{}
+		<-release
+	}
+	cur, ok := ledger.PreviewRow{}, false
+	for i := len(tx.previews) - 1; i >= 0 && !ok; i-- {
+		if previewKeyOf(tx.previews[i].row) == previewKeyOf(r) {
+			cur, ok = tx.previews[i].row, true
+		}
+	}
+	if !ok {
+		tx.l.mu.Lock()
+		cur, ok = tx.l.previews[previewKeyOf(r)]
+		tx.l.mu.Unlock()
+	}
+	if !ok || cur.State == ledger.PreviewEnded || from != "" && cur.State != from {
+		return ledger.ErrNoPreview
+	}
+	f(&cur)
+	tx.previews = append(tx.previews, previewWrite{writer, cur})
+	return nil
+}
+
+func (tx *fakeTx) PreviewReady(r ledger.PreviewRow) error {
+	return tx.movePreviewFrom("PreviewReady", ledger.PreviewResolved, r, func(c *ledger.PreviewRow) { c.State, c.Preview = ledger.PreviewReady, r.Preview })
+}
+
+func (tx *fakeTx) PreviewEnding(r ledger.PreviewRow) error {
+	return tx.movePreview("PreviewEnding", r, func(c *ledger.PreviewRow) { c.Preview, c.Why = "", r.Why })
+}
+
+func (tx *fakeTx) EndPreview(r ledger.PreviewRow) error {
+	return tx.movePreview("EndPreview", r, func(c *ledger.PreviewRow) {
+		c.State, c.Preview, c.Why, c.Interrupted, c.EndedAt = ledger.PreviewEnded, "", r.Why, r.Interrupted, r.EndedAt
+	})
+}
 
 // kinds is the kinds of the run's events, in order.
 func (l *fakeLedger) kinds(runID string) []string {

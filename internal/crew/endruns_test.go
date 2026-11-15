@@ -72,8 +72,8 @@ func cancelRuns(e *Engine) []*run {
 // and checks under way in runs, which cancelRuns ended: none is added after
 // it (each Add is made under e.mu by code that refuses a stopping run);
 // then the trees being ended, whose last commits follow their attempts';
-// then the watchers of every service a tree of theirs started, killed with
-// the teardown, each recording its end.
+// then the watchers of every service a tree of theirs started (a
+// preview's among them), killed with the teardown, each recording its end.
 func waitRuns(e *Engine, runs []*run) {
 	for _, r := range runs {
 		waitFor(context.Background(), &r.starts)
@@ -84,7 +84,11 @@ func waitRuns(e *Engine, runs []*run) {
 		var watched []chan struct{}
 		for _, t := range r.tasks {
 			for _, a := range t.attempts {
-				for _, tr := range a.trees {
+				trees := slices.Clone(a.trees)
+				if p := a.previewing; p != nil && p.t != nil {
+					trees = append(trees, p.t) // its preview's, never a.trees
+				}
+				for _, tr := range trees {
 					for _, ts := range tr.services {
 						watched = append(watched, ts.watched)
 					}

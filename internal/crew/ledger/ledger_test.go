@@ -67,7 +67,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempts checks commands decision_history decision_holds decision_refunds decision_responses decisions events messages prerequisites runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
+	if want := "attempts checks commands decision_history decision_holds decision_refunds decision_responses decisions events messages prerequisites previews runs schema_version sqlite_sequence tasks trees"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
