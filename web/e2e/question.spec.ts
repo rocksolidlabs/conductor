@@ -132,7 +132,7 @@ test("a question at the server's bound reads whole in the row, and the pointer o
   await expectWhole(prompt)
 
   // The pointer over the question and then onto a choice moves nothing: the choice is where it was, under the pointer.
-  // At the sidebar's 200 px (#437) the row is taller than the list shows: the choice is brought into view, and the pointer goes
+  // At the sidebar's opening width (#437) the row is taller than the list shows: the choice is brought into view, and the pointer goes
   // over the question where it shows above the choices, since a hover at the question's middle would scroll the list.
   const choice = row.locator('[data-row-choice="3"]')
   await choice.scrollIntoViewIfNeeded()

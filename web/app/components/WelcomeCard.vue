@@ -32,7 +32,9 @@ async function loadExamples() {
           <p class="text-sm text-muted">Nothing is running yet. Start with one of these.</p>
         </div>
       </div>
-      <div class="grid gap-2 sm:grid-cols-3">
+      <!-- The three choices one to a row, at the card's width: the card (32 rem) has no row wide enough for three equal choices
+           with "Load the example crews" whole, and two in a row with the third stretched under them reads as unbalanced (#374, #906). -->
+      <div class="flex flex-col gap-2" data-welcome-choices>
         <UButton label="Launch agent" icon="i-lucide-play" block @click="launch.show()" />
         <UButton label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" block :loading="loadingExamples" data-welcome-examples @click="loadExamples" />
         <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="outline" block to="/settings" />
