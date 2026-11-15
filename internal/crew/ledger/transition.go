@@ -1134,6 +1134,7 @@ type Recovered struct {
 	Checks        int            // checks interrupted, a tree's steps and services among them
 	Prerequisites int            // prerequisites interrupted
 	Trees         int            // trees ended: interrupted before their end was recorded
+	Previews      int            // previews ended: interrupted before their end was recorded
 	Commands      int            // commands left uncertain
 	Interrupted   bool           // the run itself was running
 	// Services describes each service row of the run the recovery
@@ -1188,7 +1189,8 @@ const treeLeftOpen = "the owner stopped before the tree was ended"
 // between its attempt's close and its end) is ended and interrupted, its
 // open step rows with it, each with a `tree.ended` event of its own;
 // nothing is run for it (its ports are nobody's now, its cleanup is not
-// run). A service row started or running is interrupted as a check is and
+// run); a preview resolved or ready is ended and interrupted the same way,
+// with a `preview.ended` event of its own. A service row started or running is interrupted as a check is and
 // described (Recovered.Services), with a `service.ended` event of its
 // own: a process this server started that outlived it is reported, never
 // signalled, a pid after a restart being nobody's to signal. Every payload
@@ -1204,9 +1206,10 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 		OR EXISTS (SELECT 1 FROM checks c WHERE c.run_id = runs.id AND c.state IN (?, ?))
 		OR EXISTS (SELECT 1 FROM prerequisites p WHERE p.run_id = runs.id AND p.state IN (?, ?))
 		OR EXISTS (SELECT 1 FROM trees tr WHERE tr.run_id = runs.id AND tr.state != ?)
+		OR EXISTS (SELECT 1 FROM previews pv WHERE pv.run_id = runs.id AND pv.state != ?)
 		OR EXISTS (SELECT 1 FROM commands m WHERE m.run_id = runs.id AND m.status = ?)
 		ORDER BY created_at, id`,
-		RunRunning, AttemptReserved, AttemptLaunched, AttemptRunning, AttemptSubmitting, AttemptVerifying, CheckStarted, CheckRunning, CheckStarted, CheckRunning, TreeEnded, CommandAccepted)
+		RunRunning, AttemptReserved, AttemptLaunched, AttemptRunning, AttemptSubmitting, AttemptVerifying, CheckStarted, CheckRunning, CheckStarted, CheckRunning, TreeEnded, PreviewEnded, CommandAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,6 +1261,9 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 			if rec.Trees, err = t.endTrees(now); err != nil {
 				return err
 			}
+			if rec.Previews, err = t.endPreviews(now); err != nil {
+				return err
+			}
 			res, err = t.tx.ExecContext(ctx, "UPDATE commands SET status = ? WHERE run_id = ? AND status = ?", CommandUncertain, run.ID, CommandAccepted)
 			if err != nil {
 				return err
@@ -1288,7 +1294,8 @@ func (t *Tx) openServices() ([]RecoveredService, error) {
 		task, kind, dir string
 		n               int
 	}
-	rows, err := t.tx.QueryContext(t.ctx, "SELECT task_id, n, kind, dir FROM trees WHERE run_id = ?", t.runID)
+	// A preview's checkout is a tree of its attempt too, of kind preview.
+	rows, err := t.tx.QueryContext(t.ctx, "SELECT task_id, n, kind, dir FROM trees WHERE run_id = ? UNION ALL SELECT task_id, n, ?, dir FROM previews WHERE run_id = ?", t.runID, TreePreview, t.runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1415,14 +1422,17 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if closed == "" || state == RunRunning {
 		return fmt.Errorf("%w: it is %s", ErrNotPrunable, state)
 	}
-	var trees, prerequisites int
-	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM trees WHERE run_id = ? AND state != ?), (SELECT COUNT(*) FROM prerequisites WHERE run_id = ? AND state IN (?, ?))`,
-		runID, TreeEnded, runID, CheckStarted, CheckRunning).Scan(&trees, &prerequisites); err != nil {
+	var trees, previews, prerequisites int
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM trees WHERE run_id = ? AND state != ?), (SELECT COUNT(*) FROM previews WHERE run_id = ? AND state != ?),
+		(SELECT COUNT(*) FROM prerequisites WHERE run_id = ? AND state IN (?, ?))`,
+		runID, TreeEnded, runID, PreviewEnded, runID, CheckStarted, CheckRunning).Scan(&trees, &previews, &prerequisites); err != nil {
 		return err
 	}
 	switch {
 	case trees > 0:
 		return fmt.Errorf("%w: a tree of it is still ending", ErrNotPrunable)
+	case previews > 0:
+		return fmt.Errorf("%w: a preview of it is open", ErrNotPrunable)
 	case prerequisites > 0:
 		return fmt.Errorf("%w: a prerequisite of it is still running", ErrNotPrunable)
 	}
