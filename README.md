@@ -138,11 +138,16 @@ it, a link minted at the switchyard too, and a link that expires disconnects
 them as it expires. A session that ends takes its links
 with it: they stop working and leave the dialog.
 
-One window sizes a session: your own window, never a guest's. A guest on a
-laptop sees your session's columns and rows scaled to their window, and the
-terminal's corner says who sizes it ("Sized by Nate · 212 × 54"); with a
-control link **Fit to my window** takes the size, and your window then shows
-the same corner to take it back. Neither window changing size moves it; only
+One window sizes a session: your own window, never a guest's. Every other
+window of it, a guest's or another of your own, shows the session's columns
+and rows inside its pane: drawn smaller where they do not fit, and never
+larger than that window's own text, so a session a small window sized (a
+Yard tile's few rows) shows at the usual text size with room around it.
+Where the window may take the size (your own, or a guest's with a control
+link), the terminal's corner says who sizes it ("Sized by Nate · 212 × 54")
+and **Fit to my window** takes it; the window that gave it up then shows
+the same corner to take it back. A view-only link cannot take it: one line
+under the grid says that another window sets this session's size. Neither window changing size moves it; only
 that button does. When the window that sizes it closes, the size goes to
 your other window of it, if one is open.
 
@@ -713,10 +718,13 @@ exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
 the header's two menus. The panel button at the bottom of the rail brings the
 full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 12.5 rem (200 px) on every screen; drag its right edge to widen
-it, up to 26 % of the window, and on to the window's left edge for the rail;
-a double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. The mode and the full sidebar's width are
+narrowest, 16.75 rem (268 px) on every screen, wide enough for its header
+whole with room to spare (a wider font shortens the name first); drag its
+right edge to widen it, up to 26 % of the window but never less than
+21.75 rem (348 px), and on to the window's left edge for the rail; a
+double-click on the edge returns it to 268 px, and a narrower window keeps
+it within that window's bounds. A width an earlier version saved below
+268 px opens at 268 px; the saved value stays until the next drag. The mode and the full sidebar's width are
 remembered per browser (localStorage keys `conductor.sidebar.mode` and
 `conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
 becomes the rail, and a width an earlier version saved, under

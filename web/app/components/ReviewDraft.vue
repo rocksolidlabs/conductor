@@ -2,6 +2,11 @@
 import { ContinuationNeeded } from '~/composables/useReview'
 import { MAX_REPAIR_PAYLOAD, MAX_REVIEW_SUMMARY, kib, noteWhere, requestWords, type DraftNote, type Verdict } from '~/utils/review'
 
+// The template has three roots (the draft and its two dialogs), so a class the page gives the draft (its width beside the diff) is
+// bound to the draft's own section: inherited, it was dropped, and the draft took its content's whole width, the diff squeezed to a
+// sliver beside it at 1440 wide (#706).
+defineOptions({ inheritAttrs: false })
+
 /**
  * The draft of a review (Program item RV1, PR-6): the notes gathered, each opened at its lines, edited or dropped; a general note; the
  * verdict and the summary; what stops it from being sent, the batch's size as the run would keep it among them; and Send review, which
@@ -90,7 +95,7 @@ async function go(continueRun: boolean) {
 </script>
 
 <template>
-  <section class="flex flex-col gap-3 rounded-lg p-3 ring ring-default" data-review-draft :data-review-draft-notes="notes.length">
+  <section v-bind="$attrs" class="flex flex-col gap-3 rounded-lg p-3 ring ring-default" data-review-draft :data-review-draft-notes="notes.length">
     <div class="flex items-center gap-2">
       <h3 class="text-sm font-semibold text-highlighted">Draft</h3>
       <UBadge :label="count" color="neutral" variant="subtle" size="sm" data-review-draft-count />

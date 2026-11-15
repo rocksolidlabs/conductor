@@ -116,9 +116,16 @@ func (s *Server) takeResume(id string) bool {
 // session of the conversation has a process that is not done
 // (conversationHolder). Whatever a route read before (its judgement, a
 // record's reservation) decides nothing here. releaseResume lets it go.
+//
+// A plain relaunch of from (conv "") takes up no conversation: it is
+// judged by from's own process alone (relaunchHolder), and reserves
+// nothing.
 func (s *Server) takeConversation(conv, from string) *apiError {
 	s.resumingMu.Lock()
 	defer s.resumingMu.Unlock()
+	if conv == "" {
+		return s.relaunchHolder(from)
+	}
 	if _, taken := s.resuming[conv]; taken || s.liveAgentSession(conv) {
 		return newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation, or one is being made for it")
 	}
@@ -163,17 +170,39 @@ func (s *Server) conversationHolder(conv, from string) *apiError {
 			(from != "" && (id == from || above[id] || s.chainAbove(id, holders)[from]))
 		switch {
 		case !held:
-		case info.Status.Ended() && id == from:
-			return newAPIError(http.StatusConflict, "still_running", "the session's process is still running: its stop did not end it; stop it again")
+		case id == from:
+			return ownHolder(info)
 		case info.Status.Ended():
 			return newAPIError(http.StatusConflict, "still_running", fmt.Sprintf("the process of %s, a session of this conversation, is still running: its stop did not end it; stop it again", id))
-		case id == from:
-			return newAPIError(http.StatusConflict, "still_running", "the session is still running")
 		default:
 			return newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation")
 		}
 	}
 	return nil
+}
+
+// relaunchHolder is conversationHolder's refusal for a resume of the
+// session from that takes up no conversation: of the holders read now
+// (Registry.Holders), from's own alone, whatever its status says (a stop
+// that failed marks it stopped with its process running). nil once from's
+// process has ended.
+func (s *Server) relaunchHolder(from string) *apiError {
+	for _, d := range s.registry.Holders() {
+		if info := d.Info(); info.ID == from {
+			return ownHolder(info)
+		}
+	}
+	return nil
+}
+
+// ownHolder is the refusal a resume of the session info meets while its
+// own process has not ended: 409 still_running, its stop failed when it
+// shows ended.
+func ownHolder(info session.Info) *apiError {
+	if info.Status.Ended() {
+		return newAPIError(http.StatusConflict, "still_running", "the session's process is still running: its stop did not end it; stop it again")
+	}
+	return newAPIError(http.StatusConflict, "still_running", "the session is still running")
 }
 
 // chainAbove is the sessions id resumed from, at any remove: each one's
@@ -303,6 +332,9 @@ func (s *Server) handleResumeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent, id := plan.agent, plan.id
+	// The test's seam: held after the route's own reads, the launch still
+	// judges the session's process as it is then (takeConversation).
+	s.resumeStops("judged", info.ID)
 	account, login := boundOf(launched)
 	next, aerr := s.resumeLaunch(context.WithoutCancel(r.Context()), resumeSpec{agentID: launched.AgentID, name: launched.Name, cwd: plan.cwd,
 		args: launched.Args, env: launched.Env, yolo: launched.Yolo, renamed: launched.Renamed, resume: id, from: info.ID,
