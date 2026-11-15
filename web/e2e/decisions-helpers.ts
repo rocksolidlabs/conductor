@@ -1,10 +1,7 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { Browser, Page } from '@playwright/test'
-import { Api, expect, test, type Run } from './fixtures'
-import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
+import { budget, expect, type Api, type Run } from './fixtures'
+import { ownServer, type AgentCopy, type OwnServer } from './own-server'
+import type { Started } from './server'
 
 // What the durable decisions' specs share (Program item DR1, docs/plans/decisions.md, web/e2e): a server of their own (as the Brakeman
 // specs have, brakeman-cards.spec.ts), so that its decisions are the spec's alone (dr-1 its first) and its stub agents can be given
@@ -25,81 +22,18 @@ export interface DecisionRecord {
   history?: Array<{ kind: string }>
 }
 
-/** Raises the running test's timeout by `ms`, as a step is about to make waits of those caps (AGENTS.md, Tests that do not flake). */
-export function budget(ms: number) {
-  const info = test.info()
-  info.setTimeout(info.timeout + ms)
-}
+/** Raises the running test's timeout by `ms`: the one budget() of fixtures.ts, kept under this name for the decisions' specs. */
+export { budget }
 
-export interface DecisionServer {
-  started: Started
-  api: Api
-  root: string
-  repo: string
-  /**
-   * Ends the server at once, as a crash or a kill does (nothing of its state written on the way out: tasks-resume.spec.ts's pattern),
-   * and starts another on the same configuration, HOME and data directory; `started` and `api` are the new server's from then on (a
-   * new port and workbench token).
-   */
-  restart: () => Promise<void>
-  stop: () => Promise<void>
-}
-
-/** Ends the process at once (SIGKILL) and waits for it to be gone (reaped: it is this worker's child). By pid, never by name. */
-async function crash(pid: number): Promise<void> {
-  const alive = () => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
-  process.kill(pid, 'SIGKILL')
-  while (alive()) await new Promise((r) => setTimeout(r, 50))
-}
+/** A server of the decisions' specs' own: ownServer's (own-server.ts). */
+export type DecisionServer = OwnServer
 
 /**
  * Starts a server of the spec's own, over a scratch repository, with the e2e catalog and `agents` added to it (each a copy of the
  * catalog's agent `from` under a new id, with `env` over its own). Its log is copied into test-results as `<name>-server.log` at stop.
  */
-export async function decisionServer(name: string, agents: Array<{ id: string; from: string; env: Record<string, string> }> = []): Promise<DecisionServer> {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const root = mkdtempSync(join(tmpdir(), `conductor-e2e-${name}-`))
-  const home = join(root, 'home')
-  const data = join(root, 'data')
-  const repo = join(root, 'repo')
-  for (const d of [home, data, repo]) mkdirSync(d, { recursive: true })
-  scratchRepo(repo)
-  const config = join(root, 'conductor.json')
-  renderConfig(join(here, 'conductor.e2e.json'), config)
-  const cfg = JSON.parse(readFileSync(config, 'utf8')) as { catalog: { agents: Array<{ id: string; name: string; env?: Record<string, string> }> } }
-  for (const a of agents) {
-    const base = cfg.catalog.agents.find((x) => x.id === a.from)!
-    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env } })
-  }
-  writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
-  const log = join(root, 'server.log')
-  const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log })
-  const started = await start()
-  const srv: DecisionServer = {
-    started,
-    api: new Api(started),
-    root,
-    repo,
-    restart: async () => {
-      await crash(srv.started.pid)
-      srv.started = await start()
-      srv.api = new Api(srv.started)
-    },
-    stop: async () => {
-      await stopServer(srv.started.pid)
-      mkdirSync('test-results', { recursive: true })
-      copyFileSync(log, `test-results/${name}-server.log`)
-      rmSync(root, { recursive: true, force: true })
-    },
-  }
-  return srv
+export function decisionServer(name: string, agents: AgentCopy[] = []): Promise<DecisionServer> {
+  return ownServer(name, { agents })
 }
 
 /** A page of the spec's server, as the operator: its workbench token where the workbench keeps it, and a display name. */

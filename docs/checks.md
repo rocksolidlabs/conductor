@@ -82,3 +82,24 @@ the full set for affected surfaces before finishing. Every harness that launches
 a server publishes its sessions to the public switchyard by default, and a
 test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
+
+The seeded day (`web/e2e/day.ts`, the plan `docs/plans/ux-review.md`) is a
+day of work on a server of its own, started at a worker's first test that
+asks for the `day` fixture and built in named parts on demand: `states` (a
+session in each state: asking, working, finished, running with no hooks,
+exited), `dispatch` (projects CND and OPS, fourteen tickets), `waiting`
+(an item of each kind the inbox holds), `runs` (Ledger migration's six
+tasks, Release notes succeeded), `long` (a name, a label and a title at
+their bounds) and `busy` (all of them, and eighteen live sessions). The stub
+holds its states with no timer (`STUB_TURN`, a question, a check that exits
+1). Two rules: the day is read-only, and the `day` fixture ends and fails
+the test that leaves a session, a run or an inbox item of its own on it or
+changes a part's item; a measure of how much fits is made on `busy`, so that
+it measures the same page whatever ran before it. The whole day builds in
+about 20 s on the 64-core Linux box. To look at it by hand,
+`CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
+`web/`, after `make web-build build-go`) prints its address and the path of
+a file only its owner reads that holds its token, and holds it until Ctrl+C.
+`dayPage` and `useTheme` (`web/e2e/fixtures.ts`) set the colour mode the way
+the app keeps it (`conductor-color-mode`): a `colorScheme` context does not
+switch this app, which opens dark whatever the system prefers.

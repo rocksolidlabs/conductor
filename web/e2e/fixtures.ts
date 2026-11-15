@@ -1,8 +1,9 @@
 import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { test as base, expect, type Page } from '@playwright/test'
-import { git } from './server'
+import { test as base, expect, type Browser, type BrowserContext, type Page } from '@playwright/test'
+import { startDay, type Day } from './day'
+import { git, START_WAIT_MS } from './server'
 import { readState, type E2EState } from './state'
 
 export { expect, git }
@@ -75,6 +76,8 @@ export interface RunTask {
   /** The person accountable for its outcome as launched, and how (`task`, or `acceptance` for the crew's acceptance owner); absent for no one. */
   owner?: string
   ownerFrom?: string
+  /** The decisions that hold it (a task waiting for a decision). */
+  holds?: Array<{ id: string; type: string; state: string; question: string }>
 }
 
 export interface Session {
@@ -84,6 +87,8 @@ export interface Session {
   command?: string[]
   cwd?: string
   cols?: number
+  /** How many viewers are attached. */
+  viewers?: number
   crew?: { runId: string; crewId: string; member: string }
   /** `id` names the question (a reply to it names it). */
   attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string; answered?: string; plan?: string; decision?: string }
@@ -359,13 +364,144 @@ export interface E2ECrew {
   manifestRevision?: number
 }
 
-export const test = base.extend<{ api: Api }, { state: E2EState }>({
+/** Raises the running test's timeout by `ms`, as a step is about to make waits of those caps (AGENTS.md, Tests that do not flake). */
+export function budget(ms: number) {
+  const info = test.info()
+  info.setTimeout(info.timeout + ms)
+}
+
+/** The day (day.ts) this worker holds once a test asked for it: dayPage's server when none is given. */
+let today: Day | undefined
+/** The contexts dayPage opened in the running test: closed at its end, before the day's guard reads the server. */
+const dayContexts = new Set<BrowserContext>()
+
+async function closeDayContexts(): Promise<void> {
+  for (const c of [...dayContexts]) {
+    dayContexts.delete(c)
+    await c.close().catch(() => undefined)
+  }
+}
+
+export interface DayPageOptions {
+  /** Where to go: '/' when not given. */
+  path?: string
+  /** The window: 1440 x 900 when not given. A phone is 390 x 844 with touch. */
+  width?: number
+  height?: number
+  /** The colour mode, written under the app's own key (conductor-color-mode) before the page loads: dark when not given. */
+  theme?: 'dark' | 'light'
+  /** A touch screen: hasTouch and isMobile, so that `(pointer: coarse)` matches. */
+  touch?: boolean
+  /** Another server than the day's (the shared one: the `state` fixture). */
+  server?: { baseURL: string; token: string }
+  /** false: no workbench token is set (a page that asks for it). */
+  token?: false
+  /** What to wait for in place of the layout's root (a page drawn without the layout). */
+  ready?: string
+}
+
+/**
+ * A page in a context of its own on the day's server (or `server`): the workbench token, the display name "Nate" and the colour mode
+ * set in the context's storage before the first load (so that a later write of the page's, or useTheme's, survives a reload), the
+ * window and touch as asked. It goes to `path` and returns once the layout's root is drawn (`#dashboard-sidebar-main`, or
+ * `[data-bottom-bar]` below 1024 px wide; `ready` in their place), `html` carries the theme's class, and `document.fonts.ready` has
+ * settled. The context is closed at the end of the test, before the day's guard.
+ */
+export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise<Page> {
+  const server = o.server ?? today?.server.started
+  if (!server) throw new Error("dayPage: no server: ask for the `day` fixture (the day's server), or give `server`")
+  const width = o.width ?? 1440
+  const theme = o.theme ?? 'dark'
+  const storage = [
+    { name: 'conductor-color-mode', value: theme },
+    { name: 'conductor.displayName', value: 'Nate' },
+    ...(o.token === false ? [] : [{ name: 'conductor.workbenchToken', value: server.token }]),
+  ]
+  const ctx = await browser.newContext({
+    baseURL: server.baseURL,
+    viewport: { width, height: o.height ?? 900 },
+    ...(o.touch ? { hasTouch: true, isMobile: true } : {}),
+    storageState: { cookies: [], origins: [{ origin: new URL(server.baseURL).origin, localStorage: storage }] },
+  })
+  dayContexts.add(ctx)
+  const page = await ctx.newPage()
+  await page.goto(o.path ?? '/')
+  await drawn(page, theme, o.ready ?? (width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main'))
+  return page
+}
+
+/** Waits for what says the page is drawn, the theme's class on `html`, and the fonts. */
+async function drawn(page: Page, theme: 'dark' | 'light', ready: string): Promise<void> {
+  await expect(page.locator(ready).first()).toBeVisible()
+  if (theme === 'dark') await expect(page.locator('html')).toHaveClass(/\bdark\b/)
+  else await expect(page.locator('html')).not.toHaveClass(/\bdark\b/)
+  await page.evaluate(() => document.fonts.ready.then(() => undefined))
+}
+
+/**
+ * Switches an open page to `theme` the way the app keeps it (localStorage conductor-color-mode), reloads it and waits for the layout's
+ * root (or `ready`), the class on `html` and the fonts. A `colorScheme` context does not switch this app: it prefers dark whatever the
+ * system says (nuxt.config.ts, theme.spec.ts).
+ */
+export async function useTheme(page: Page, theme: 'dark' | 'light', ready?: string): Promise<void> {
+  await page.evaluate((t) => localStorage.setItem('conductor-color-mode', t), theme)
+  await page.reload()
+  const width = page.viewportSize()?.width ?? 1440
+  await drawn(page, theme, ready ?? (width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main'))
+}
+
+/**
+ * The caps of the day's end (day.ts, end), each wait over every item at once: its runs stopped, its sessions ended, its server stopped.
+ * Kept here, with the worker fixture whose own bound they make (with the server's start, START_WAIT_MS), past any test's.
+ */
+export const DAY_RUNS_END_MS = 30_000
+export const DAY_SESSIONS_END_MS = 15_000
+export const DAY_SERVER_END_MS = 15_000
+const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_SERVER_END_MS
+
+export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { state: E2EState; dayServer: Day }>({
   state: [
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
       await use(readState())
     },
     { scope: 'worker' },
+  ],
+  // The day's server, started at the worker's first test that asks for the day and ended at the worker's end (day.ts, end).
+  dayServer: [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use) => {
+      const d = await startDay()
+      today = d
+      try {
+        await use(d)
+      } finally {
+        today = undefined
+        await d.end()
+      }
+    },
+    { scope: 'worker', timeout: DAY_WORKER_MS },
+  ],
+  // The day, read-only: after the test, the contexts dayPage opened are closed, anything on the server no part made is ended and
+  // fails the test by name, and so does any item of a built part no longer as that part promised it (day.ts, check).
+  day: async ({ dayServer }, use) => {
+    await use(dayServer)
+    await closeDayContexts()
+    const left = await dayServer.leftovers()
+    if (left.length) {
+      await dayServer.endLeftovers(left)
+      throw new Error(`the test left on the day's server what no part made (ended now): ${left.map((l) => l.words).join('; ')}`)
+    }
+    const changed = await dayServer.check()
+    if (changed.length) throw new Error(`the test changed the day: ${changed.join('; ')}`)
+  },
+  dayPagesClosed: [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use) => {
+      await use()
+      await closeDayContexts()
+    },
+    { auto: true },
   ],
   api: async ({ state }, use) => {
     await use(new Api(state))
