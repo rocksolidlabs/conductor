@@ -8,12 +8,16 @@ import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/util
  * line of what the server knows of that agent's usage on that account, then Launch. It keeps what it was opened for (`target`), and its
  * Launch hands the page exactly that: a saved crew is read from the server as the sheet opens and that copy is drawn, Launch held until
  * it is here (a failed read says why and offers to read again); the crew page's draft is drawn as it is and saved as it launches. A
- * change someone else saves between the sheet's read and the launch is not shown: the server launches the crew as it is stored at the
- * launch. A crew that inherits its yolo setting is drawn with the server's default once that is read (readSheet), never before. Each read
- * ends at its deadline in words with Read again, and closing the sheet or opening it for another target ends the reads under way. A crew
- * gone when it is read closes the sheet (`gone`). Opened, the compact panels ask the server to read each line's agent and account (at
- * most once in five minutes per agent and account, as the server holds it). What the lines say never stops the launch: a window near its
- * limit is said, and Launch stays the person's. Its buttons are disabled while it closes and while a launch is under way.
+ * copy the page knows was replaced since the sheet read it (the page's own save) launches nothing: the page says so and hands the sheet
+ * its target again, which reads it again. The server starts the crew as it holds it at the launch, so a change saved elsewhere after the
+ * sheet's read is not shown by the sheet. A crew that inherits its yolo setting is drawn with the server's default once that is read
+ * (readSheet), never before. Each read ends at its deadline in words with Read again, and closing the sheet or opening it for another
+ * target ends the reads under way. A crew gone when it is read closes the sheet (`gone`). A compact panel is read as the sheet opens once
+ * its first view has answered (at most once in five minutes per agent and account, as the server holds it); a view that failed first is
+ * read by Read again, then by Read now. What the lines say never stops the launch: a window near its limit is said, and Launch stays the
+ * person's. While a launch is under way Cancel and Launch are held; the close button and Escape still close the sheet, and the launch
+ * under way then goes on and says its result. For a crew that opens its run after a launch, the first launch's move to the run page
+ * takes a sheet opened again meanwhile with it.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean }>()

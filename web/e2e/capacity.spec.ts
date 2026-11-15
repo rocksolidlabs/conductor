@@ -147,6 +147,10 @@ test('an account added in Settings and made the default launches a session that 
   const dialog = await launchDialog(page, 'Claude Code (e2e stub)')
   await expect(dialog.locator('[data-account-select]')).toContainText(`${work} (default)`)
   await expect(dialog.locator('[data-launch-model-input]')).toHaveValue('')
+  // The empty Model field says what the panel says: no model named, never the agent's default (the Arguments field can name one).
+  await expect(dialog.locator('[data-launch-model-input]')).toHaveAttribute('placeholder', 'no model named')
+  await expect(dialog.locator('[data-launch-model]')).toContainText('empty: the agent chooses, or its arguments do')
+  await expect(dialog.locator('[data-launch-model]')).not.toContainText("the agent's default")
   const panel = dialog.locator('[data-capacity-panel]')
   await expect(panel).toHaveAttribute('data-capacity-state', 'ok', { timeout: 30_000 })
   await expect(panel.locator('[data-capacity-window]')).toHaveCount(2)

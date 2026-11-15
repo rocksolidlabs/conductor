@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { useDispatchApi } from '../composables/useDispatch'
 import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
@@ -285,6 +286,20 @@ describe("the run page's Logins: the revision's read", () => {
     const header = readFileSync(new URL('./CrewRunHeader.vue', import.meta.url), 'utf8')
     expect(header).toContain('readNamedAccounts((signal) => dispatchApi.plan(plan, signal))')
     expect(header).toContain('if (namedNow.value?.error) void readNamed()')
+  })
+
+  it('hands the read its signal all the way to the request, so the deadline ends the request itself', async () => {
+    const asked: Array<{ path: string; signal?: AbortSignal }> = []
+    vi.stubGlobal('useApi', () => ({ request: async (path: string, o?: { signal?: AbortSignal }) => (asked.push({ path, signal: o?.signal }), { plan: { id: 'p-1' } }) }))
+    vi.stubGlobal('useApiBase', () => ({ httpBase: 'http://api.test' }))
+    vi.stubGlobal('useWorkbenchToken', () => ({}))
+    try {
+      const ctl = new AbortController()
+      expect(await useDispatchApi().plan('p-1', ctl.signal)).toEqual({ id: 'p-1' })
+      expect(asked).toEqual([{ path: '/api/dispatch/plans/p-1', signal: ctl.signal }])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

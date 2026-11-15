@@ -146,8 +146,10 @@ describe('the command as resolved', () => {
   it("names the member's model as its launch runs it, in the capacity rows' words", () => {
     expect(planMemberModel({ model: 'claude-opus-4-1' })).toBe('claude-opus-4-1')
     expect(planMemberModel({ model: ' gpt-5 ' })).toBe('gpt-5')
-    expect(planMemberModel({})).toBe("the agent's default")
-    expect(planMemberModel({ model: '' })).toBe("the agent's default")
+    // No model named: the member's arguments may choose one, so the line says the one sentence, never the agent's default.
+    expect(planMemberModel({})).toBe('no model named: the agent chooses, or its arguments do')
+    expect(planMemberModel({ model: '' })).toBe('no model named: the agent chooses, or its arguments do')
+    expect(planMemberModel({ model: '  ' })).toBe('no model named: the agent chooses, or its arguments do')
   })
 
   it('says the yolo choice plainly', () => {
