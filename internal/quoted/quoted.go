@@ -12,14 +12,23 @@
 // line. Every line of the text is split at each character a reader may
 // take as a line's end (\n, \r, \v, \f, U+0085, U+2028, U+2029), so no
 // line of the text stands without the prefix, and the closing line, which
-// has none, is Conductor's alone. The characters that reorder a line
-// (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069), every other
-// control character but the tab, and bytes that are not UTF-8 are written
-// as U+FFFD, so nothing of the text can move the prefix or a line of
-// Conductor's on the screen. A line (Line) is Conductor's words and then
-// the text, written the same way with its lines joined by a space, to the
-// line's end: nothing of the text can end the line, and nothing is
-// written after it.
+// has none, is Conductor's alone. Every character that draws nothing
+// (hidden: one that is not graphic, the tab apart, among them every
+// control and format character and so the characters that reorder a
+// line; every default-ignorable code point; every variation selector) and
+// bytes that are not UTF-8 are written as U+FFFD, by Unicode's own
+// properties as Go's unicode tables hold them, so no control of the text
+// can reorder how the prefix or a line of Conductor's is shown, and what a
+// person reads of the text is what an agent reads. A line of letters
+// written right to left (Hebrew, Arabic) is shown right to left by a
+// reader that lays text out by direction, its prefix included; the order
+// of the bytes an agent reads is the text's, unchanged. Every "]:" of a
+// block's text is written "]\:", so no line of the quote is a Markdown
+// link reference definition (a label closed by a bracket and a colon),
+// which would define a link for the whole file. A line (Line) is
+// Conductor's words and then the text, written the same way with its
+// lines joined by a space, to the line's end: nothing of the text can end
+// the line, and nothing is written after it.
 package quoted
 
 import (
@@ -66,32 +75,41 @@ func FromSystem(system string) string {
 
 // Opening is a block's opening line for a text of what (Conductor's
 // words: "The description", "The steps to reproduce") written at src.
-func Opening(src Source, what string) string {
-	src = src.clean()
-	return words(what) + " quoted from " + src.Ref + ", " + src.written() + ": " + Untrusted + ". Each line of the quote begins with \"" +
-		Prefix + "\", and the quote ends at the line \"" + Closing(src) + "\"."
+func Opening(src Source, what string) string { return opening(src.Clean(), what) }
+
+// opening is the opening line of a source cleaned once, naming the
+// closing line made of that same cleaned source.
+func opening(c Source, what string) string {
+	return words(what) + " quoted from " + c.Ref + ", " + c.written() + ": " + Untrusted + ". Each line of the quote begins with \"" +
+		Prefix + "\", and the quote ends at the line \"" + closing(c) + "\"."
 }
 
 // Closing is a block's closing line for a text written at src.
-func Closing(src Source) string { return "End of the quote from " + src.clean().Ref + "." }
+func Closing(src Source) string { return closing(src.Clean()) }
+
+// closing is the closing line of a source cleaned once.
+func closing(c Source) string { return "End of the quote from " + c.Ref + "." }
 
 // Block is text, written at src, as a block (see the package's words):
 // the opening line, a blank line, every line of the text after Prefix
 // (an empty one as ">"), its leading and trailing blank lines and each
-// line's trailing spaces left out, a blank line and the closing line. It
-// ends without a line break.
+// line's trailing spaces left out, each "]:" written "]\:" (no line
+// defines a link reference), a blank line and the closing line. The
+// source is cleaned once, so the closing line is the one the opening line
+// names. It ends without a line break.
 func Block(src Source, what, text string) string {
+	c := src.Clean()
 	var b strings.Builder
-	b.WriteString(Opening(src, what))
+	b.WriteString(opening(c, what))
 	b.WriteString("\n\n")
 	for i, l := range Lines(text) {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(strings.TrimRight(Prefix+l, " \t"))
+		b.WriteString(strings.TrimRight(Prefix+strings.ReplaceAll(l, "]:", `]\:`), " \t"))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(Closing(src))
+	b.WriteString(closing(c))
 	return b.String()
 }
 
@@ -101,8 +119,8 @@ func Block(src Source, what, text string) string {
 // quote runs to the line's end; a caller writes nothing after it on the
 // line.
 func Line(src Source, what, text string) string {
-	src = src.clean()
-	return words(what) + " quoted from " + src.Ref + ", " + src.written() + " (" + Untrusted + ")" + LineHead + strings.Join(Lines(text), " ")
+	c := src.Clean()
+	return words(what) + " quoted from " + c.Ref + ", " + c.written() + " (" + Untrusted + ")" + LineHead + strings.Join(Lines(text), " ")
 }
 
 // LineHead ends a line's words: what follows it, to the line's end, is the
@@ -110,10 +128,9 @@ func Line(src Source, what, text string) string {
 const LineHead = ", to the end of this line: "
 
 // Lines is text as a block holds its lines, without Prefix: split at every
-// character a reader may take as a line's end, each that reorders a line,
-// other control character but the tab and byte that is not UTF-8 written
-// U+FFFD, its leading and trailing blank lines left out. A text of none is
-// one empty line.
+// character a reader may take as a line's end, each character that draws
+// nothing (hidden) and byte that is not UTF-8 written U+FFFD, its leading
+// and trailing blank lines left out. A text of none is one empty line.
 func Lines(text string) []string {
 	text = strings.ReplaceAll(strings.ToValidUTF8(text, "�"), "\r\n", "\n")
 	text = strings.Map(func(r rune) rune {
@@ -122,7 +139,7 @@ func Lines(text string) []string {
 			return r
 		case breaks(r):
 			return '\n'
-		case reorders(r) || unicode.IsControl(r):
+		case hidden(r):
 			return '�'
 		}
 		return r
@@ -146,11 +163,14 @@ func breaks(r rune) bool {
 	return false
 }
 
-// reorders reports whether r changes the order a line is shown in: the
-// Arabic letter mark, the left-to-right and right-to-left marks, the
-// embeddings, overrides and their pop, the isolates and their pop.
-func reorders(r rune) bool {
-	return r == 0x061c || r == 0x200e || r == 0x200f || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
+// hidden reports whether r draws nothing of its own on the screen, by
+// Unicode's properties: a character that is not graphic (a control, a
+// format character such as those that reorder a line, a private-use or
+// unassigned code point, a line or paragraph separator), a default-ignorable
+// code point (the Hangul fillers among them) or a variation selector. The
+// writer writes each as U+FFFD; the tab, which is not graphic, it keeps.
+func hidden(r rune) bool {
+	return !unicode.IsGraphic(r) || unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }
 
 // written is the source's author and system in words.
@@ -161,15 +181,23 @@ func (s Source) written() string {
 	return "written by @" + s.Author + " on " + s.On
 }
 
-// clean is the source with each of its words held to its set and bound.
-func (s Source) clean() Source {
+// noRef is the reference a source with none is named by.
+const noRef = "an item outside Conductor"
+
+// Clean is the source with each of its words held to its set and bound,
+// as the writer writes them (and as ticket.md's Source part names them):
+// an empty system's name "a tracker", an empty reference "an item outside
+// Conductor". Clean of a cleaned source is that source.
+func (s Source) Clean() Source {
 	s.On = keep(s.On, " ", maxOn)
 	if s.On == "" {
 		s.On = "a tracker"
 	}
-	s.Ref = keep(s.Ref, "._/#-", maxRef)
+	if s.Ref != noRef {
+		s.Ref = keep(s.Ref, "._/#-", maxRef)
+	}
 	if s.Ref == "" {
-		s.Ref = "an item outside Conductor"
+		s.Ref = noRef
 	}
 	s.Author = keep(s.Author, "._-", maxAuthor)
 	return s
