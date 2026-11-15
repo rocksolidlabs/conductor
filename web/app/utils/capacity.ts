@@ -315,9 +315,12 @@ export function capacityHostWords(h: CapacityView['host']): string {
   return h.words || 'Where it runs is not decided yet'
 }
 
-/** The model in words: the one chosen, or the agent's default, which Conductor does not read. */
+/**
+ * The model in words: the one chosen; for none, one sentence wherever a launch or a run's member is said (the panels, the launch lines,
+ * the run page): its arguments may choose a model, which Conductor does not read, so none is never said to be the agent's default.
+ */
 export function modelWords(m: CapacityView['model'] | undefined): string {
-  return m?.chosen ? m.chosen : "the agent's default"
+  return m?.chosen ? m.chosen : 'no model named: the agent chooses, or its arguments do'
 }
 
 /** The plan as the tool reported it, with its provider's name: "Claude Max", "ChatGPT Pro"; "" when none was reported. */

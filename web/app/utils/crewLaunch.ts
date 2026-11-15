@@ -113,8 +113,8 @@ export interface LaunchLine {
 }
 
 /**
- * Each member's line before a launch (the crew sheet's, a ticket's launch): its agent by name, its model ("the agent's default" for
- * none), its account (launchAccountWords, from `view`, the server's answer to the line's question) and the capacity view its launch would
+ * Each member's line before a launch (the crew sheet's, a ticket's launch): its agent by name, its model (modelWords: for none, the
+ * one sentence the run page says too, since its arguments may choose one), its account (launchAccountWords, from `view`, the server's answer to the line's question) and the capacity view its launch would
  * get, asked with the account it names (none: the route's default, which the view resolves), its model, the run's kind and its yolo choice.
  */
 export function launchLines(members: readonly LaunchMember[], o: { agents: ReadonlyArray<{ id: string; name: string }>; doc: AccountsDocLike | null | undefined; managed: boolean; yolo: boolean; view?: (q: CapacityQuery) => CapacityView | null }): LaunchLine[] {
@@ -177,12 +177,16 @@ export class SheetConfirmation {
   opened() {
     this.opening++
   }
-  /** Takes the opening's confirmation for a launch; false when it may not start one. */
-  take(open: boolean): boolean {
-    if (!open || this.busy || this.taken === this.opening) return false
+  /** Takes the opening's confirmation for a launch: the opening's number, 0 when it may not start one. */
+  take(open: boolean): number {
+    if (!open || this.busy || this.taken === this.opening) return 0
     this.taken = this.opening
     this.busy = true
-    return true
+    return this.opening
+  }
+  /** Whether opening `n` (a take's) is still the sheet's: it was not opened again since. */
+  holds(n: number): boolean {
+    return n === this.opening
   }
   /** The launch it started has ended. */
   done() {
@@ -203,16 +207,25 @@ const SOURCE_WORDS: Record<string, string> = {
  * otherwise), any other source by where the login comes from, none for the agent's own login. `named` is the account the ticket's
  * revision named for the member, when the run was launched from one: "" (named none) says the launch took the default at that launch.
  * `brakeman` for a Brakeman turn's run, whose model is in the turn's arguments, which the run does not record: it is said as not shown.
- * A model the run does not record is never said to be the agent's default: a member's arguments may choose one, and the run records
- * neither them nor what they chose.
+ * A model the run does not record is never said to be the agent's default (modelWords): a member's arguments may choose one, and the run
+ * records neither them nor what they chose. A registered account while the accounts are not read (`doc` none) is `unread`, never its id.
  */
-export function boundWords(m: { account?: { id: string; source: string }; model?: string }, doc: AccountsDocLike | null | undefined, named?: string, brakeman = false): { account: string; model: string; atLaunch: boolean } {
+export function boundWords(m: { account?: { id: string; source: string }; model?: string }, doc: AccountsDocLike | null | undefined, named?: string, brakeman = false, unread = ACCOUNT_UNREAD): { account: string; model: string; atLaunch: boolean } {
   const a = m.account
   // A Brakeman turn's member names no account in its run: its login is the folder Brakeman's settings name (its session's launch).
   const none = brakeman ? "the login Brakeman's settings name" : SOURCE_WORDS.own!
-  const account = !a ? none : a.source === 'account' ? accountName(doc, a.id) : (SOURCE_WORDS[a.source] ?? a.source)
-  const model = m.model ? m.model : brakeman ? "its model is not shown: a Brakeman turn's run does not record it" : 'no model named: the agent chooses, or its arguments do'
+  const account = !a ? none : a.source === 'account' ? (doc ? accountName(doc, a.id) : unread) : (SOURCE_WORDS[a.source] ?? a.source)
+  const model = !m.model && brakeman ? "its model is not shown: a Brakeman turn's run does not record it" : modelWords({ chosen: m.model ?? '' })
   return { account, model, atLaunch: named === '' }
+}
+
+/** A run member's registered account while the accounts are being read, and once their read failed (`why`): no id passes for a name. */
+export const ACCOUNT_UNREAD = 'a registered account, not read yet'
+export const accountUnreadable = (why: string) => `a registered account that could not be read: ${why}`
+
+/** Reads the accounts a ticket's plan revision named for each member (namedAccounts), refused in words at the sheet's reads' deadline. */
+export function readNamedAccounts(read: (signal: AbortSignal) => Promise<{ body: { crew: { members?: ReadonlyArray<{ name: string; account?: string }> } } }>, after: After = realAfter): Promise<Record<string, string>> {
+  return withDeadline(read, SHEET_DEADLINE_MS, `The server did not answer within ${SHEET_DEADLINE_MS / 1000} s`, after).then((p) => namedAccounts(p.body.crew.members))
 }
 
 /** The member names the revision's crew gives an account, by member: `''` for one that names none. */

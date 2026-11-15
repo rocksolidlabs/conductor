@@ -154,7 +154,7 @@ test('an account added in Settings and made the default launches a session that 
   await expect(panel.locator('[data-capacity-window="weekly_all"]')).toContainText(/^Weekly, all models: 40% used, resets \w{3} \d{1,2} \w{3} \d\d:\d\d, in 5 days$/)
   await expect(panel.locator('[data-capacity-plan]')).toHaveText('Claude Max')
   await expect(panel.locator('[data-capacity-account]')).toHaveText(work)
-  await expect(panel.locator('[data-capacity-model]')).toHaveText("the agent's default")
+  await expect(panel.locator('[data-capacity-model]')).toHaveText('no model named: the agent chooses, or its arguments do')
   await expect(panel.locator('[data-capacity-host]')).toContainText('Runs on this server')
   await expect(panel.locator('[data-capacity-provider]')).toContainText('Extra usage: off')
   await expect(panel.locator('[data-capacity-estimate]')).toContainText("Conductor's estimate: ")

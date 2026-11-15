@@ -18,7 +18,7 @@ import { AT_LAUNCH, accountName, memberAccountItems, memberAccountProblem, withA
  * the run's people, whose names a row may not take (a person is never a
  * member) and never starts after. A member of an agent whose tool's login Conductor can move (the
  * adapters `accounts` lists) has a second line: its account (the default at launch, its default login or
- * an account added in Settings) and its model (empty for the agent's default).
+ * an account added in Settings) and its model (empty for none named: the agent, or its arguments, choose).
  */
 const members = defineModel<DraftMember[]>({ required: true })
 const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean; accounts?: AccountsDoc | null; /** The crew's yolo as its launch takes it; undefined for the server's own. */ yolo?: boolean }>(), {
@@ -302,7 +302,7 @@ const focusedPrompt = ref<number | null>(null)
         <div class="flex w-full max-w-64 flex-col gap-1">
           <UInput
             :model-value="m.model ?? ''"
-            placeholder="the agent's default model"
+            placeholder="no model named"
             maxlength="100"
             autocapitalize="off"
             spellcheck="false"

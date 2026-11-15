@@ -10,7 +10,7 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
-import { addMemberProblem, boundWords, namedAccounts } from '~/utils/crewLaunch'
+import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -83,11 +83,11 @@ const named = ref<{ plan: string; members?: Record<string, string>; error?: stri
 async function readNamed() {
   const plan = props.run?.ticket?.plan
   if (!plan || (named.value?.plan === plan && named.value.members)) return
-  // Under way: the Logins say so, and no line passes for complete until it answers.
+  // Under way: the Logins say so, and no line passes for complete until it answers, or fails at its deadline.
   named.value = { plan }
   try {
-    const p = await dispatchApi.plan(plan)
-    if (props.run?.ticket?.plan === plan) named.value = { plan, members: namedAccounts(p.body.crew.members) }
+    const members = await readNamedAccounts((signal) => dispatchApi.plan(plan, signal))
+    if (props.run?.ticket?.plan === plan) named.value = { plan, members }
   } catch (e) {
     if (props.run?.ticket?.plan === plan) named.value = { plan, error: (e as Error).message }
   }
@@ -96,7 +96,14 @@ watch(() => props.run?.ticket?.plan, readNamed, { immediate: true })
 const namedNow = computed(() => (named.value && named.value.plan === props.run?.ticket?.plan ? named.value : null))
 /** The revision's read is under way: the run was launched from a ticket's, and it has neither answered nor failed. */
 const namedReading = computed(() => !!props.run?.ticket?.plan && !namedNow.value?.members && !namedNow.value?.error)
-const logins = computed(() => (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, namedNow.value?.members?.[m.name], props.run?.class === 'brakeman') })))
+// A registered account while the accounts are being read, or could not be: said in words, never by its id.
+const unread = computed(() => (accounts.problem.value || accounts.unavailable.value ? accountUnreadable(accounts.problem.value || accounts.unavailable.value) : ACCOUNT_UNREAD))
+const logins = computed(() => (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, namedNow.value?.members?.[m.name], props.run?.class === 'brakeman', unread.value) })))
+/** The Logins opened: a read that failed or ran out, the revision's or the accounts', is read again. */
+function loginsOpened() {
+  if (namedNow.value?.error) void readNamed()
+  if (accounts.problem.value) void accounts.store.load()
+}
 
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
@@ -263,7 +270,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
         </span>
         <!-- Each member's login and model as the launch bound them, behind a button: the bar keeps its height, the tiles theirs. -->
-        <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && namedNow?.error && readNamed()">
+        <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && loginsOpened()">
           <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none self-center" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button><span class="hidden sm:inline">Logins</span></UButton>
           <template #content>
             <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
@@ -345,7 +352,8 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" ref="addTable" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" single />
+        <!-- Asked as the server binds a member added to the run: under the run's yolo choice (a managed run takes none by hand). -->
+        <CrewMembersTable v-if="member.length" ref="addTable" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" :yolo="run?.yolo" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>

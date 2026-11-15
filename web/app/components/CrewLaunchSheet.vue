@@ -13,7 +13,7 @@ import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/util
  * ends at its deadline in words with Read again, and closing the sheet or opening it for another target ends the reads under way. A crew
  * gone when it is read closes the sheet (`gone`). Opened, the compact panels ask the server to read each line's agent and account (at
  * most once in five minutes per agent and account, as the server holds it). What the lines say never stops the launch: a window near its
- * limit is said, and Launch stays the person's. Its buttons are disabled while it closes.
+ * limit is said, and Launch stays the person's. Its buttons are disabled while it closes and while a launch is under way.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean }>()
@@ -78,7 +78,7 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
     </template>
     <template #footer>
       <div class="flex w-full items-center justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="!open" data-crew-launch-cancel @click="open = false" />
+        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="!open || launching" data-crew-launch-cancel @click="open = false" />
         <UButton label="Launch" icon="i-lucide-play" :loading="launching" :disabled="!open || !crew || launching" data-crew-launch-confirm @click="emit('launch', crew?.saved ?? null)" />
       </div>
     </template>

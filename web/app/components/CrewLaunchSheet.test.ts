@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
+import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -22,6 +22,8 @@ const doc = {
     { adapter: 'codex', default: 'default' },
   ],
 }
+/** The one sentence for a member that names no model (modelWords). */
+const NO_MODEL = 'no model named: the agent chooses, or its arguments do'
 const agents = [
   { id: 'claude', name: 'Claude Code', adapter: 'claude' },
   { id: 'codex', name: 'Codex CLI', adapter: 'codex' },
@@ -40,10 +42,23 @@ describe('the launch sheet', () => {
       { agents, doc, managed: true, yolo: false, view: (q) => views[q.agent] ?? null },
     )
     expect(lines.map((l) => [l.name, l.agent, l.model, l.account])).toEqual([
-      ['builder', 'Claude Code', "the agent's default", 'the default at the launch (now Work)'],
+      ['builder', 'Claude Code', NO_MODEL, 'the default at the launch (now Work)'],
       ['reviewer', 'Codex CLI', 'gpt-e2e', 'Team'],
-      ['shell', 'Plain shell', "the agent's default", 'the default at the launch'],
+      ['shell', 'Plain shell', NO_MODEL, 'the default at the launch'],
     ])
+  })
+
+  it("says a member that names no model in the one sentence the run page says, whether its arguments name one or not, never the agent's default", () => {
+    // Members as a crew holds them, with the arguments the launch passes; the model its arguments name is the launch's (launchModel).
+    const spaced = { name: 'spaced', agentId: 'claude', args: ['--model', 'x'] }
+    const joined = { name: 'joined', agentId: 'claude', args: ['--model=x'] }
+    const neither = { name: 'neither', agentId: 'claude', args: ['--verbose'] }
+    const lines = launchLines([spaced, joined, neither], { agents, doc, managed: false, yolo: false })
+    expect(lines.map((l) => l.model)).toEqual([NO_MODEL, NO_MODEL, NO_MODEL])
+    expect(lines.map((l) => l.query.model)).toEqual([undefined, undefined, undefined])
+    // The run page's Logins say the same sentence for a member whose run records no model.
+    expect(boundWords({}, doc).model).toBe(NO_MODEL)
+    expect(NO_MODEL).not.toContain("the agent's default")
   })
 
   it('names the login the server resolves for a member that names none: its entry, its launch, the default; nothing before the view', () => {
@@ -126,17 +141,28 @@ describe('the launch sheet', () => {
 
   it('takes one confirmation per opening: never twice, never while a launch is under way, never from a sheet closed or closing', () => {
     const c = new SheetConfirmation()
-    expect(c.take(true), 'before any opening').toBe(false)
+    expect(c.take(true), 'before any opening').toBe(0)
     c.opened()
-    expect(c.take(false), 'from a sheet closed or closing').toBe(false)
-    expect(c.take(true), 'the opening').toBe(true)
-    expect(c.take(true), 'the same confirmation again, its launch under way').toBe(false)
+    expect(c.take(false), 'from a sheet closed or closing').toBe(0)
+    expect(c.take(true), 'the opening').toBe(1)
+    expect(c.take(true), 'the same confirmation again, its launch under way').toBe(0)
     c.done()
-    expect(c.take(true), 'the same confirmation after its launch').toBe(false)
+    expect(c.take(true), 'the same confirmation after its launch').toBe(0)
     c.opened()
-    expect(c.take(true), 'the next opening').toBe(true)
+    expect(c.take(true), 'the next opening').toBe(2)
     c.opened()
-    expect(c.take(true), 'an opening while a launch is under way').toBe(false)
+    expect(c.take(true), 'an opening while a launch is under way').toBe(0)
+  })
+
+  it('says whether the opening a launch was confirmed in is still the sheet: not once the sheet was opened again', () => {
+    const c = new SheetConfirmation()
+    c.opened()
+    const n = c.take(true)
+    expect(c.holds(n), 'the same opening, its launch under way').toBe(true)
+    c.opened()
+    expect(c.holds(n), 'opened again while the launch was under way').toBe(false)
+    c.done()
+    expect(c.holds(c.take(true)), "the new opening's own launch").toBe(true)
   })
 
   it("source: the sheet's lines draw compact panels that read on open, the ticket dialog's compact panels do not", () => {
@@ -221,7 +247,10 @@ describe("the crew editor's Account choice", () => {
 describe("the run page's logins", () => {
   it('names a bound account by its label, any other login by where it comes from, and the agent own login for none', () => {
     expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' }, model: 'opus' }, doc)).toEqual({ account: 'Work', model: 'opus', atLaunch: false })
-    expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, null).account).toBe('a-aaaaaaaaaaaa')
+    // While the accounts are read, and once their read failed: said in words, never by the account's id.
+    expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, null).account).toBe('a registered account, not read yet')
+    expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, null, undefined, false, accountUnreadable('e2e: held back')).account).toBe('a registered account that could not be read: e2e: held back')
+    expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, null).account).not.toContain('a-aaaaaaaaaaaa')
     expect(boundWords({}, doc)).toEqual({ account: "the agent's own login", model: 'no model named: the agent chooses, or its arguments do', atLaunch: false })
     expect(boundWords({ account: { id: 'default', source: 'pinned' } }, doc).account).toBe('the login its entry sets')
     expect(boundWords({ account: { id: 'default', source: 'launch_env' } }, doc).account).toBe('the login its launch sets')
@@ -236,6 +265,26 @@ describe("the run page's logins", () => {
     expect(boundWords({ account: { id: 'a-cccccccccccc', source: 'account' } }, doc, named.reviewer).atLaunch).toBe(false)
     // A run from no ticket says nothing of it.
     expect(boundWords({ account: { id: 'a-aaaaaaaaaaaa', source: 'account' } }, doc).atLaunch).toBe(false)
+  })
+})
+
+describe("the run page's Logins: the revision's read", () => {
+  it("reads what the revision named for each member, and refuses a read that never answers at the sheet's reads' deadline, aborted", async () => {
+    const plan = { body: { crew: { members: [{ name: 'builder' }, { name: 'reviewer', account: 'a-cccccccccccc' }] } } }
+    expect(await readNamedAccounts(async () => plan)).toEqual({ builder: '', reviewer: 'a-cccccccccccc' })
+    let sent!: AbortSignal
+    let deadline = 0
+    let pass!: () => void
+    const after: After = (ms, fn) => ((deadline = ms), (pass = fn), () => {})
+    const never = readNamedAccounts((s) => ((sent = s), new Promise<never>(() => {})), after)
+    expect(deadline).toBe(SHEET_DEADLINE_MS)
+    pass()
+    await expect(never).rejects.toThrow('The server did not answer within 30 s')
+    expect(sent.aborted).toBe(true)
+    // The Logins say that failure and, opened again, read again: the handler the popover's opening calls.
+    const header = readFileSync(new URL('./CrewRunHeader.vue', import.meta.url), 'utf8')
+    expect(header).toContain('readNamedAccounts((signal) => dispatchApi.plan(plan, signal))')
+    expect(header).toContain('if (namedNow.value?.error) void readNamed()')
   })
 })
 
@@ -266,6 +315,15 @@ describe("the run's Add member dialog", () => {
     const refused = memberAccountProblem('a-aaaaaaaaaaaa', view({ entryLogin: 'ANTHROPIC_BASE_URL' }))
     expect(addMemberProblem(m, [], [], refused)).toBe(refused)
     expect(refused).not.toBe('')
+  })
+
+  it("asks as the server binds a member added to the run, under the run's yolo: a yolo recipe's login alone, and Add held for an account beside it", () => {
+    // The server binds an added member under run.Yolo (bindMember): the table is handed the run's yolo, and asks its view with it.
+    expect(readFileSync(new URL('./CrewRunHeader.vue', import.meta.url), 'utf8')).toContain(':accounts="accounts.doc.value" :yolo="run?.yolo" single')
+    const yoloView = view({ state: 'env_set' })
+    expect(memberAccountItems(doc, 'claude', '', yoloView)).toEqual([{ value: AT_LAUNCH, label: 'The login its launch sets' }])
+    const m = draftMember({ name: 'helper', agentId: 'yolo-login', prompt: '', start: { when: 'immediately' }, account: 'a-aaaaaaaaaaaa' })
+    expect(addMemberProblem(m, [], [], memberAccountProblem(m.account, yoloView))).toBe('this launch sets its login: it uses that login, its default account only')
   })
 })
 

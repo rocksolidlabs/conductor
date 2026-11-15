@@ -156,7 +156,9 @@ describe('freshness and the states', () => {
     expect(capacityHostWords({ kind: 'native', name: 'box' })).toBe('Runs on this server, box')
     expect(capacityHostWords({ kind: 'remote' })).toBe('On this computer: your own login there, usage unknown here')
     expect(capacityHostWords({ kind: 'undetermined', words: "this server's login: if boxcar takes the run, its usage there is unknown" })).toMatch(/^this server's login/)
-    expect(modelWords({ chosen: '' })).toBe("the agent's default")
+    // None chosen: the launch's arguments may choose one, so it is never said to be the agent's default.
+    expect(modelWords({ chosen: '' })).toBe('no model named: the agent chooses, or its arguments do')
+    expect(modelWords(undefined)).toBe('no model named: the agent chooses, or its arguments do')
     expect(modelWords({ chosen: 'opus' })).toBe('opus')
     expect(planWords('max', 'claude')).toBe('Claude Max')
     expect(planWords('pro', 'codex')).toBe('ChatGPT Pro')

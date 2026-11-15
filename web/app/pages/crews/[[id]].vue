@@ -474,14 +474,20 @@ watch(
   },
   { immediate: true },
 )
-/** The sheet's Launch: its confirmation is taken before anything is awaited, so a second click, or one while it closes, starts nothing. */
+/**
+ * The sheet's Launch: its confirmation is taken before anything is awaited, so a second click, or one while it closes, starts nothing.
+ * A draft's run starts after its save only while the sheet was not opened again and the token is the one it was confirmed under; the
+ * launch, once ended, closes only the opening it was confirmed in.
+ */
 async function launchFromSheet(read: CrewInfo | null) {
   const t = sheet.target
-  if (!t || sheet.at !== selectedKey.value || !confirmation.take(sheet.open)) return
+  const n = t && sheet.at === selectedKey.value ? confirmation.take(sheet.open) : 0
+  if (!t || !n) return
+  const token = admin.token.value
   try {
-    await launch(t, read)
+    await launch(t, read, () => confirmation.holds(n) && admin.token.value === token)
   } finally {
-    sheet.open = false
+    if (confirmation.holds(n)) sheet.open = false
     confirmation.done()
   }
 }
@@ -509,14 +515,19 @@ function hours(ttlSeconds: number): number {
 
 /**
  * Launches what the sheet was opened for: the draft is saved first (unless it changed since the sheet drew it: then nothing is sent),
- * a saved crew by its id, as the sheet read it (`read`). The server makes the crew's view link, if it asks for one, and returns it this
- * once: the run page shows it when the launch opens that, else a dialog here does.
+ * and its run started only while `confirmed` holds after the save (else the page says no run was started); a saved crew by its id, as
+ * the sheet read it (`read`). The server makes the crew's view link, if it asks for one, and returns it this once: the run page shows it
+ * when the launch opens that, else a dialog here does.
  */
-async function launch(t: SheetTarget, read: CrewInfo | null) {
+async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => boolean) {
   launchingKey.value = 'id' in t ? t.id : t.key
   try {
     const c = 'id' in t ? read : drafts.value[t.key] === t.draft ? await save() : undefined
     if (!c) return
+    if (!('id' in t) && !confirmed()) {
+      toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
+      return
+    }
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
       launched = await api.launchCrew(c.id, t.label.trim() ? { label: t.label.trim() } : undefined)
