@@ -175,7 +175,7 @@ version, as DS1 set the shape (`dispatch.go`, `prepare`):
 | Table | Columns (bounds in `model.go`) |
 |---|---|
 | `plans` | `id` PK (16 hex), `ticket_id` FK, `based_on` (a revision of the same ticket, or `''`), `crew_id` (the saved crew it was taken from), `crew_name`, `crew_updated_at` (that crew's `updatedAt` then), `base` (the input revision, a full commit id), `body` (JSON, at most 2 MiB as stored: below), `digest` (the body's SHA-256), `bytes`, `state` (`proposed`, `approved`, `superseded`, `withdrawn`), `approved_at`, `approved_by` (the operator's display name), `approved_note` (at most 1,000 characters of Markdown: the rationale), `approved_rev` (the ticket's `rev` the approval was made at), `approved_intent` (the ticket's intent digest then), `withdrawn_at`, `withdrawn_by`, `created_at`, `created_by`, `fingerprint` (the proposing operation's, as `ops` keeps it: the request's content, so a resend can be checked once its receipt is pruned), `rev`; at most 100 per ticket, whatever their state |
-| `launches` | `id` PK, `ticket_id`, `plan_id`, `run_id` (minted here: the crew's id, `-`, 8 hex characters from `crypto/rand`, the engine's shape, `crew.ValidRunID`), `label` (the run's own name, at most 60 characters), `ticket_rev`, `intent`, `criteria` (the acceptance criteria's SHA-256, as an acceptance records it), `package` (JSON, at most 512 KiB as stored), `package_sha256`, `state` (`pending`, `started`, `failed`), `why` (at most 2,000 characters), `agents` (JSON, at most 4 KiB: each member's agent and the version its identity probe reported at the start), `created_at`, `created_by`, `fingerprint` (the launching operation's, as for a revision), `started_at`, `rev`; at most 200 per ticket |
+| `launches` | `id` PK, `ticket_id`, `plan_id`, `run_id` (minted here: the crew's id, `-`, 8 hex characters from `crypto/rand`, the engine's shape, `crew.ValidRunID`), `label` (the run's own name, at most 60 characters), `ticket_rev`, `intent`, `criteria` (the acceptance criteria's SHA-256, as an acceptance records it), `package` (JSON, at most 640 KiB as stored; 512 KiB before the package's version 2, Program item IN1a), `package_sha256`, `state` (`pending`, `started`, `failed`), `why` (at most 2,000 characters), `agents` (JSON, at most 4 KiB: each member's agent and the version its identity probe reported at the start), `created_at`, `created_by`, `fingerprint` (the launching operation's, as for a revision), `started_at`, `rev`; at most 200 per ticket |
 | `launch_files` | `launch_id`, `sha256`; PK of the two: the attachments a launch's package names, which the sweep keeps |
 | `links` | three columns added, each `''` on every version 1 row: `fingerprint` (the adding operation's, as `ops` keeps it, written by every `link.add` from version 2 on: the request's content, so a resend can be checked once its receipt is pruned, as a revision's and a launch's are), `candidate` (a delivery link's alone: `<run>/<task>/<n>@<commit>`, at most 200 bytes, the ledger's own `<run>/<task>/<n>` reference with the commit) and `verified` (that candidate's verification receipt when the link was added, JSON, at most 8 KiB: 16 receipts with their `where` at its 32 bytes) |
 
@@ -333,7 +333,8 @@ added, `stale_plan`):
   since revision 3 was approved: revise it", the remedy a new revision,
   never an approval, since the recorded digest is the body's); at most
   200 launches (`bound`).
-  Then the package is built from the rows (below), at most 512 KiB
+  Then the package is built from the rows (below), at most 640 KiB
+  (512 KiB before the package's version 2, Program item IN1a)
   (`bound`, naming its largest part), hashed; the run id is minted; the
   `launches` row is written in state `pending`, one `launch_files` row
   per attachment, and one change row (`entity: launch`, `op: create`)
@@ -472,7 +473,8 @@ statements, `ALTER TABLE runs ADD COLUMN ticket TEXT NOT NULL DEFAULT ''`
 and `ALTER TABLE runs ADD COLUMN package TEXT NOT NULL DEFAULT ''`;
 `RunRow.Ticket` (the id of the ticket the run was launched from) and
 `RunRow.Package` (the package's JSON, byte for byte as Dispatch built
-it); `MaxPackage = 512 << 10`, which `PutRun` refuses past
+it); `MaxPackage = 640 << 10` (`512 << 10` before the package's
+version 2, Program item IN1a), which `PutRun` refuses past
 (`ErrTooLarge`), as it bounds the crew; the reads carry both. The
 migration is conservative (the owner's rule from the version 3 to 4
 migration): every row an earlier version holds is a run no ticket
@@ -834,7 +836,7 @@ worst (a launch's `why`, its `agents` and label, twenty blockers),
 measured whole as encoded under `MaxTicketRunsReply`, 1 MiB.
 
 **Two reads' bounds.** `GET /api/dispatch/launches/{id}` answers the
-summary and the package as the bytes it is kept as (at most 512 KiB):
+summary and the package as the bytes it is kept as (at most 640 KiB since the package's version 2, 512 KiB before):
 the largest, a package at its bound with the summary's texts (`why`,
 `agents`, the label) at their escaped worst, is measured whole under
 `MaxLaunchReply`, 1 MiB. `GET /api/dispatch/tickets/{key}/plans` answers
@@ -1882,7 +1884,8 @@ taken.
    server's default then) and said plainly on the plan and in the launch
    dialog: running agents without their permission prompts is what an
    approval most needs to show.
-8. **The package**: its parts and bounds (512 KiB; 8 attachments and 16
+8. **The package**: its parts and bounds (512 KiB, 640 KiB since the
+   package's version 2, Program item IN1a; 8 attachments and 16
    MiB; 20 references, 20 comments, 10 decisions, 20 blockers), kept in
    Dispatch, the ticket's record of what was launched, and in the ledger,
    the run's input that continuations carry, the two byte for byte by its

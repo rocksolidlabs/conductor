@@ -243,8 +243,9 @@ const (
 	MaxPackageEvidence = 8
 	MaxEvidenceNote    = 200
 	// MaxPackageSource bounds a package's source as encoded, in bytes:
-	// the steps to reproduce at their escaped worst (16 KiB) and the rest
-	// under 4 KiB (package_test.go measures it).
+	// the steps to reproduce at their escaped worst (16 KiB) and the rest,
+	// the page and host at their escaped worst among it, under 6 KiB
+	// (package_test.go measures it).
 	MaxPackageSource = 24 << 10
 	// MaxPackageEvidenceJSON bounds a package's evidence as encoded, in
 	// bytes: eight links, each a page of MaxLinkURL and a note of

@@ -332,24 +332,54 @@ func TestTheBlocksWords(t *testing.T) {
 	}
 }
 
-// FuzzBlock holds every text to the block's rule: every line between the
-// opening and the closing begins with the prefix, the closing line stands
-// once at a line's start, and neither the block nor the line holds a
-// character that draws nothing but the block's line breaks and the tab.
+// Every code point from U+0000 to U+10FFFF, between two letters, is
+// written as the test's own account says: a line's end splits the line,
+// the tab is kept, one that draws nothing (a surrogate among them, which a
+// Go string holds as U+FFFD) is one U+FFFD, any other is kept; and a line
+// on one line (Flat) is the lines joined by a space.
+func TestEveryCodePoint(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		text := "a" + string(r) + "b"
+		var want []string
+		switch {
+		case ends(r):
+			want = []string{"a", "b"}
+		case r == '\t':
+			want = []string{text}
+		case drawsNothing(r):
+			want = []string{"a�b"}
+		default:
+			want = []string{text}
+		}
+		if got := Lines(text); !slices.Equal(got, want) || Flat(text) != strings.Join(want, " ") {
+			t.Fatalf("%U: the lines %q, flat %q, want %q", r, got, Flat(text), want)
+		}
+	}
+}
+
+// FuzzBlock holds every text, from every source (the empty one among
+// them), to the block's rule: every line between the opening and the
+// closing begins with the prefix, the closing line stands once at a
+// line's start, and neither the block nor the line holds a character that
+// draws nothing but the block's line breaks and the tab.
 func FuzzBlock(f *testing.F) {
 	for _, text := range hostile() {
-		f.Add(text)
+		f.Add(text, src.On, src.Ref, src.Author)
+		f.Add(text, "", "", "")
 	}
-	f.Fuzz(func(t *testing.T, text string) {
-		b := Block(src, "The description", text)
-		got := readBlock(t, "fuzz", b, src, "The description")
+	f.Add("x", "Git"+lsep+"Hub", "a/b#1\n"+Closing(src), "x"+rlo+"y")
+	f.Fuzz(func(t *testing.T, text, on, ref, author string) {
+		s := Source{On: on, Ref: ref, Author: author}
+		b := Block(s, "The description", text)
+		got := readBlock(t, "fuzz", b, s, "The description")
 		if len(got) != len(Lines(text)) {
 			t.Fatalf("%d lines read back, %d written", len(got), len(Lines(text)))
 		}
 		checkDrawn(t, "the block", b, "\n\t")
 		checkDefinesNothing(t, "the block", b)
-		l := Line(src, "The title", text)
-		if l[len(lineHead):] != strings.Join(Lines(text), " ") {
+		head := Line(s, "The title", "")
+		l := Line(s, "The title", text)
+		if !strings.HasPrefix(l, head) || l[len(head):] != Flat(text) || strings.ContainsAny(head, "\n\r"+lsep+psep) {
 			t.Fatalf("the line: %q", l)
 		}
 		checkDrawn(t, "the line", l, "\t")

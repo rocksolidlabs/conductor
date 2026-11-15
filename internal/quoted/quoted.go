@@ -120,8 +120,13 @@ func Block(src Source, what, text string) string {
 // line.
 func Line(src Source, what, text string) string {
 	c := src.Clean()
-	return words(what) + " quoted from " + c.Ref + ", " + c.written() + " (" + Untrusted + ")" + LineHead + strings.Join(Lines(text), " ")
+	return words(what) + " quoted from " + c.Ref + ", " + c.written() + " (" + Untrusted + ")" + LineHead + Flat(text)
 }
+
+// Flat is text on one line as a line quotes it: its lines (Lines) joined
+// by a space, each character that draws nothing written U+FFFD. Conductor's
+// own lines write a page or a note given from outside through it.
+func Flat(text string) string { return strings.Join(Lines(text), " ") }
 
 // LineHead ends a line's words: what follows it, to the line's end, is the
 // text quoted.

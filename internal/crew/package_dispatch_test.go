@@ -73,6 +73,12 @@ func storeAgent(id string) dispatch.PlanAgent {
 // launches it: the package's bytes.
 func launchOf(t *testing.T, s *dispatch.Store, key string, evidence []string, between func()) []byte {
 	t.Helper()
+	return launchAs(t, s, key, key, evidence, between)
+}
+
+// launchAs is launchOf under operation ids of the tag's.
+func launchAs(t *testing.T, s *dispatch.Store, tag, key string, evidence []string, between func()) []byte {
+	t.Helper()
 	ctx := context.Background()
 	v, err := s.Ticket(ctx, key)
 	if err != nil {
@@ -83,12 +89,12 @@ func launchOf(t *testing.T, s *dispatch.Store, key string, evidence []string, be
 		sn, _ := dispatch.ParseSnapshot(string(v.ExternalSnapshot))
 		body.Source = &dispatch.PlanSource{Repro: &dispatch.PlanRepro{Identity: v.ExternalID, SHA256: sn.ReproSha256}, Evidence: evidence}
 	}
-	plan := taken(t, "propose")(s.ProposePlan(ctx, storeOp("p-"+key), key, dispatch.PlanRequest{Crew: "crew"}, body))
-	taken(t, "approve")(s.ApprovePlan(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: "a-" + key, By: "Operator"}, plan.ID, 0, "go"))
+	plan := taken(t, "propose")(s.ProposePlan(ctx, storeOp("p-"+tag), key, dispatch.PlanRequest{Crew: "crew"}, body))
+	taken(t, "approve")(s.ApprovePlan(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: "a-" + tag, By: "Operator"}, plan.ID, 0, "go"))
 	if between != nil {
 		between()
 	}
-	rc := taken(t, "launch")(s.Launch(ctx, storeOp("l-"+key), key, plan.ID, ""))
+	rc := taken(t, "launch")(s.Launch(ctx, storeOp("l-"+tag), key, plan.ID, ""))
 	lv, err := s.LaunchByID(ctx, rc.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +132,7 @@ func TestDispatchPackagesAreRead(t *testing.T) {
 			t.Fatalf("%s: the package read: %+v %+v", c.name, src, rp.p.Evidence)
 		}
 		md := ticketMarkdown(rp.p)
-		qs := src.quotedSource()
+		qs := src.quotedSource(true)
 		for _, part := range []string{"- Linked item: " + c.cleanRef + ", <", "- Written by: @" + c.cleanAuthor + " on GitHub\n",
 			quoted.Opening(qs, "The description"), "written by @" + c.cleanAuthor + " on GitHub: "} {
 			if !strings.Contains(md, part) {
@@ -152,10 +158,11 @@ func dispatchStore(t *testing.T) *dispatch.Store {
 
 // A title and a description a read of the linked issue wrote, adopted for
 // Dispatch or the ticket unlinked after the revision's approval, with no
-// edit, are still GitHub's in the files an agent is handed: the package
+// edit, are still quoted in the files an agent is handed: the package
 // flags both, ticket.md quotes the title as its line and the description
-// as its block under the item's own words, and task.md names the title by
-// its line, byte for byte the texts of before; the approval holds.
+// as its block, and task.md names the title by its line, byte for byte the
+// texts of before; the approval holds. Adopted, the item still holds them
+// and the quote names it; unlinked, the quote names a source not known.
 func TestAdoptedTextIsQuotedInTheFiles(t *testing.T) {
 	ctx := context.Background()
 	for _, unlink := range []bool{false, true} {
@@ -176,11 +183,15 @@ func TestAdoptedTextIsQuotedInTheFiles(t *testing.T) {
 			t.Fatalf("unlinked %v: %v", unlink, err)
 		}
 		p := rp.p
-		if p.Source == nil || p.Source.Unlinked != unlink || !p.Source.TitleFromGitHub || !p.Source.DescriptionFromGitHub || p.Source.Ref != "acme/widgets#7" ||
+		if p.Source == nil || p.Source.Unlinked != unlink || !p.Source.TitleFromGitHub || !p.Source.DescriptionFromGitHub || p.Source.TitleFromItem == unlink ||
+			p.Source.DescriptionFromItem == unlink || (p.Source.Ref == "acme/widgets#7") == unlink ||
 			p.Ticket.Title != "SCRATCH-TITLE-FROM-OUTSIDE" || p.Ticket.Description != "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED" {
 			t.Fatalf("the package, unlinked %v: %+v %q %q", unlink, p.Source, p.Ticket.Title, p.Ticket.Description)
 		}
-		qs := p.Source.quotedSource()
+		qs := p.Source.quotedSource(!unlink)
+		if unlink != (qs == quoted.Source{}) {
+			t.Fatalf("the quote's source, unlinked %v: %+v", unlink, qs)
+		}
 		md := ticketMarkdown(p)
 		if !strings.Contains(md, "\n"+quoted.Line(qs, "The title", "SCRATCH-TITLE-FROM-OUTSIDE")+"\n") ||
 			!strings.Contains(md, quoted.Block(qs, "The description", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED")) ||
@@ -199,6 +210,211 @@ func TestAdoptedTextIsQuotedInTheFiles(t *testing.T) {
 			t.Fatalf("task.md, unlinked %v:\n%s", unlink, task)
 		}
 	}
+}
+
+// quotedLines is md's lines that a quote holds: each line of a block
+// with its prefix (the approval's note among them), and a quoted line's
+// text after its words.
+func quotedLines(md string) []string {
+	var out []string
+	for _, l := range strings.Split(md, "\n") {
+		if l == ">" || strings.HasPrefix(l, quoted.Prefix) {
+			out = append(out, l)
+		} else if _, text, ok := strings.Cut(l, quoted.LineHead); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// Across an unlink the quoted texts and their marks are the same but for
+// the quote's source: imported open, a refresh that closes the item with
+// its title and description unchanged, approved, launched; then unlinked
+// and launched again on that approval. The second launch's quoted lines
+// are the first's byte for byte, its quotes name a source not known, and
+// neither its ticket.md nor its package.json states the item's state. A
+// text a read of one item wrote, the ticket then linked to another, is
+// quoted under a source not known, the Source part naming the item linked
+// now. The engine reads each package.
+func TestAnUnlinkKeepsTheQuotesAndStatesNoState(t *testing.T) {
+	ctx := context.Background()
+	s := dispatchStore(t)
+	key := taken(t, "import")(s.ImportTicket(ctx, storeOp("import"), dispatch.ImportArgs{Project: "CND", URL: "https://github.com/acme/widgets/issues/7"},
+		itemRead(7, "acme/widgets", "octo-cat", "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED"))).Key
+	closed := itemRead(7, "acme/widgets", "octo-cat", "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED")
+	closed.Snapshot.State, closed.Snapshot.StateReason, closed.Snapshot.UpdatedAt = "closed", "completed", closed.Snapshot.UpdatedAt.Add(time.Hour)
+	taken(t, "refresh")(s.RefreshExternal(ctx, storeOp("refresh"), key, closed))
+	body := dispatch.PlanBody{Base: strings.Repeat("ab", 20), Crew: storeCrew, Agents: []dispatch.PlanAgent{storeAgent("claude"), storeAgent("codex")}}
+	plan := taken(t, "propose")(s.ProposePlan(ctx, storeOp("propose"), key, dispatch.PlanRequest{Crew: "crew"}, body)).ID
+	taken(t, "approve")(s.ApprovePlan(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: "approve", By: "Operator"}, plan, 0, "go"))
+	launch := func(op string) (*runPackage, string) {
+		t.Helper()
+		rc := taken(t, op)(s.Launch(ctx, storeOp(op), key, plan, ""))
+		lv, err := s.LaunchByID(ctx, rc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rp, err := readPackage(lv.Package)
+		if err != nil {
+			t.Fatalf("%s: the engine refuses the package: %v", op, err)
+		}
+		return rp, string(lv.Package)
+	}
+	linked, _ := launch("linked")
+	taken(t, "unlink")(s.UnlinkExternal(ctx, storeOp("unlink"), key))
+	unlinked, raw := launch("unlinked")
+	before, after := ticketMarkdown(linked.p), ticketMarkdown(unlinked.p)
+	if !strings.Contains(before, "- State at the launch: closed (completed)") || !linked.p.Source.TitleFromItem {
+		t.Fatalf("the launch before the unlink:\n%s", before)
+	}
+	if got, want := quotedLines(after), quotedLines(before); strings.Join(got, "\n") != strings.Join(want, "\n") || len(got) != 4 {
+		t.Fatalf("the quoted lines after the unlink:\n%q\nbefore:\n%q", got, want)
+	}
+	unknown := quoted.Source{}
+	checkMarked(t, "unlinked", after, unknown, "The description")
+	if !strings.Contains(after, quoted.Block(unknown, "The description", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED")) ||
+		!strings.Contains(after, "\n"+quoted.Line(unknown, "The title", "SCRATCH-TITLE-FROM-OUTSIDE")+"\n") ||
+		strings.Contains(after, "State") || strings.Contains(after, "closed") || strings.Contains(after, "acme/widgets") || strings.Contains(after, "octo-cat") {
+		t.Fatalf("ticket.md after the unlink:\n%s", after)
+	}
+	for _, word := range []string{`"state"`, `"stateReason"`, `"closed"`, `"completed"`, `"snapshotSha256"`, `"readAt"`, `"author"`, `"ref"`} {
+		if strings.Contains(raw, word) {
+			t.Errorf("package.json after the unlink holds %s: %s", word, raw)
+		}
+	}
+
+	// Linked to another item: its read wrote neither text.
+	taken(t, "link")(s.LinkExternal(ctx, storeOp("link"), dispatch.LinkArgs{Key: key, URL: "https://github.com/acme/widgets/issues/8"},
+		itemRead(8, "acme/widgets", "someone-else", "Another title", "Another body")))
+	plan = taken(t, "propose again")(s.ProposePlan(ctx, storeOp("propose-again"), key, dispatch.PlanRequest{Crew: "crew"}, body)).ID
+	taken(t, "approve again")(s.ApprovePlan(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: "approve-again", By: "Operator"}, plan, 0, "go"))
+	other, _ := launch("other")
+	md := ticketMarkdown(other.p)
+	if src := other.p.Source; src == nil || src.Unlinked || src.Ref != "acme/widgets#8" || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.TitleFromItem || src.DescriptionFromItem {
+		t.Fatalf("the package linked to another item: %+v", other.p.Source)
+	}
+	checkMarked(t, "another item", md, unknown, "The description")
+	if !strings.Contains(md, "- Linked item: acme/widgets#8, <") || strings.Contains(md, "quoted from acme/widgets#8") || strings.Contains(md, "@someone-else on GitHub (") {
+		t.Fatalf("ticket.md linked to another item:\n%s", md)
+	}
+}
+
+// sourcePart is ticket.md's Source part, from its heading to the next.
+func sourcePart(md string) string {
+	_, rest, _ := strings.Cut(md, "## Source\n\n")
+	part, _, _ := strings.Cut(rest, "\n## ")
+	return part
+}
+
+// Whether a description is quoted is decided by its text alone, with the
+// store's clock at its seam. Adopted, edited by a person and then given
+// back to the linked item, the give-back stamped before the edit, or at
+// the edit's stamp with the operation ids in either order: quoted. Edited
+// by a person and edited back to the read's bytes, before the approval or
+// between the approval and the launch: quoted, the package's source, the
+// quoted lines and the Source part byte for byte the first launch's.
+// Edited to a new text: Dispatch's.
+func TestTheQuoteIsDecidedByTheText(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	const title, line = "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE"
+	start := func(t *testing.T) (*dispatch.Store, string, func(time.Duration)) {
+		s := dispatchStore(t)
+		at := func(d time.Duration) { s.SetClockForTest(func() time.Time { return t0.Add(d) }) }
+		at(0)
+		key := taken(t, "import")(s.ImportTicket(ctx, storeOp("import"), dispatch.ImportArgs{Project: "CND", URL: "https://github.com/acme/widgets/issues/7"},
+			itemRead(7, "acme/widgets", "octo-cat", title, line))).Key
+		return s, key, at
+	}
+	adopt := func(t *testing.T, s *dispatch.Store, key string) {
+		taken(t, "adopt")(s.SetAuthority(ctx, storeOp("adopt"), dispatch.AuthorityArgs{Key: key, Field: dispatch.FieldDescription, Owner: dispatch.OwnerDispatch}, nil))
+	}
+	edit := func(t *testing.T, s *dispatch.Store, op, key, text string) {
+		taken(t, op)(s.EditTicket(ctx, storeOp(op), key, dispatch.TicketEdit{Set: dispatch.TicketSet{Description: &text}}))
+	}
+	read := func(t *testing.T, name string, raw []byte) (*runPackage, string) {
+		t.Helper()
+		rp, err := readPackage(raw)
+		if err != nil {
+			t.Fatalf("%s: the engine refuses the package: %v", name, err)
+		}
+		return rp, ticketMarkdown(rp.p)
+	}
+	quotedAsRead := func(t *testing.T, name string, rp *runPackage, md string) {
+		t.Helper()
+		src := rp.p.Source
+		if src == nil || !src.DescriptionFromGitHub || !src.DescriptionFromItem || rp.p.Ticket.Description != line {
+			t.Fatalf("%s: the package: %+v %q", name, src, rp.p.Ticket.Description)
+		}
+		checkMarked(t, name, md, src.quotedSource(true), "The description")
+		if !strings.Contains(md, quoted.Block(src.quotedSource(true), "The description", line)) {
+			t.Fatalf("%s: ticket.md:\n%s", name, md)
+		}
+	}
+
+	for _, c := range []struct {
+		name           string
+		edit, give     time.Duration
+		editOp, giveOp string
+	}{
+		{"given back stamped before the edit", 5 * time.Minute, 2 * time.Minute, "edit", "give"},
+		{"given back at the edit's stamp, its id first", 5 * time.Minute, 5 * time.Minute, "z-edit", "a-give"},
+		{"given back at the edit's stamp, the edit's id first", 5 * time.Minute, 5 * time.Minute, "a-edit", "z-give"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, key, at := start(t)
+			at(time.Minute)
+			adopt(t, s, key)
+			at(c.edit)
+			edit(t, s, c.editOp, key, "Ours now.")
+			at(c.give)
+			r := itemRead(7, "acme/widgets", "octo-cat", title, line)
+			taken(t, "give back")(s.SetAuthority(ctx, storeOp(c.giveOp), dispatch.AuthorityArgs{Key: key, Field: dispatch.FieldDescription, Owner: "github"}, &r))
+			at(10 * time.Minute)
+			rp, md := read(t, c.name, launchOf(t, s, key, nil, nil))
+			quotedAsRead(t, c.name, rp, md)
+		})
+	}
+
+	for _, between := range []bool{false, true} {
+		name := "edited back before the approval"
+		if between {
+			name = "edited back between the approval and the launch"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, key, at := start(t)
+			first, was := read(t, "the first launch", launchAs(t, s, "first", key, nil, nil))
+			at(time.Minute)
+			back := func() {
+				adopt(t, s, key)
+				edit(t, s, "edit", key, "Ours now.")
+				edit(t, s, "edit-back", key, line)
+			}
+			if !between {
+				back()
+			}
+			rp, md := read(t, name, launchAs(t, s, "again", key, nil, func() {
+				if between {
+					back()
+				}
+			}))
+			quotedAsRead(t, name, rp, md)
+			if *rp.p.Source != *first.p.Source || strings.Join(quotedLines(md), "\n") != strings.Join(quotedLines(was), "\n") || sourcePart(md) != sourcePart(was) {
+				t.Fatalf("%s: the files are not the first launch's:\n%s\nfirst:\n%s", name, md, was)
+			}
+		})
+	}
+
+	t.Run("edited to a new text", func(t *testing.T) {
+		s, key, at := start(t)
+		at(time.Minute)
+		adopt(t, s, key)
+		edit(t, s, "edit", key, "Ours now.")
+		rp, md := read(t, "a new text", launchOf(t, s, key, nil, nil))
+		if src := rp.p.Source; src == nil || src.DescriptionFromGitHub || src.DescriptionFromItem || !strings.Contains(md, "## Description\n\nOurs now.\n") {
+			t.Fatalf("a new text: %+v\n%s", rp.p.Source, md)
+		}
+	})
 }
 
 // The engine's bounds are Dispatch's and their values, and each is the

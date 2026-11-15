@@ -141,6 +141,7 @@ func TestPackageVersionTwo(t *testing.T) {
 		{"a link twice", key, RefusalInvalid, &PlanSource{Evidence: []string{links[0], links[0]}}},
 		{"past the bound", key, RefusalBound, &PlanSource{Evidence: links}},
 		{"a pin not the snapshot's", key, RefusalStalePlan, &PlanSource{Repro: &PlanRepro{Identity: tk.ExternalID, SHA256: strings.Repeat("0", 64)}}},
+		{"the snapshot's hash with another item's identity", key, RefusalStalePlan, &PlanSource{Repro: &PlanRepro{Identity: "github:github.com:I_9", SHA256: sn.ReproSha256}}},
 	} {
 		b := testPlanBody("crew")
 		b.Source = c.src
@@ -282,14 +283,15 @@ func TestAdoptedTextStaysGitHubs(t *testing.T) {
 	}
 }
 
-// The quote follows who last wrote a field's text, not its owner: a ticket
+// A text a read wrote stays quoted whoever owns the field: a ticket
 // imported, its fields adopted for Dispatch or the ticket unlinked, each
 // with no change of the text, before the revision's approval or between
 // the approval and the launch: the launch is taken on that approval, and
-// its package flags the title and the description as GitHub's, their text
-// and the source's words (system, reference, account, page, snapshot) as
-// a launch before either made them; unlinked, the source says so.
-func TestTheQuoteFollowsWhoLastWrote(t *testing.T) {
+// its package flags the title and the description as quoted, their text
+// as a launch before either made them. Adopted, the source's words
+// (system, reference, account, page, snapshot) are that launch's;
+// unlinked, the source says so and holds nothing else.
+func TestAnAdoptionOrAnUnlinkKeepsTheQuote(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		name             string
@@ -321,10 +323,11 @@ func TestTheQuoteFollowsWhoLastWrote(t *testing.T) {
 			}
 			p := packageOf(t, mustLaunch(t, s, "l1", key, plan, ""))
 			src, before := p.Source, was.Source
-			if src == nil || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.Unlinked != c.unlink || p.Ticket.Title != was.Ticket.Title ||
-				p.Ticket.Description != was.Ticket.Description || src.System != before.System || src.Ref != before.Ref || src.Author != before.Author ||
-				src.URL != before.URL || src.SnapshotSha256 != before.SnapshotSha256 {
-				t.Fatalf("the package: %+v\nbefore: %+v", src, before)
+			if c.unlink {
+				before = &PackageSource{Unlinked: true, TitleFromGitHub: true, DescriptionFromGitHub: true}
+			}
+			if src == nil || *src != *before || p.Ticket.Title != was.Ticket.Title || p.Ticket.Description != was.Ticket.Description {
+				t.Fatalf("the package: %+v\nwant: %+v", src, before)
 			}
 		})
 	}
@@ -429,7 +432,7 @@ func TestThePartsAreCheckedAsTheEngineReadsThem(t *testing.T) {
 	}
 	evidence := func(note string) []PackageEvidence {
 		var out []PackageEvidence
-		for i := range MaxPackageEvidence + 2 {
+		for i := range MaxPackageEvidence {
 			out = append(out, PackageEvidence{URL: fmt.Sprintf("http://example.invalid/%02d/", i) + strings.Repeat("a", MaxLinkURL-26), Note: note})
 		}
 		return out
@@ -449,6 +452,80 @@ func TestThePartsAreCheckedAsTheEngineReadsThem(t *testing.T) {
 		if err := checkParts(p); !errors.As(err, &ref) || ref.Code != RefusalInvalid {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// The launch refuses a package the engine would refuse, before it is
+// committed: rows past what the store's own operations make (as a merged
+// replica's could hold them), each past one of the package's bounds (the
+// source as written, the evidence as written, the count of evidence
+// links), are refused bound in words naming it, and the store holds no
+// launch and so no run.
+func TestTheLaunchRefusesWhatTheEngineWould(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, words string
+		past        func(t *testing.T, s *Store, key string, body *PlanBody, links []string)
+	}{
+		{"the source", "the source (the linked item and its steps to reproduce) is 24.4 KiB as the package writes it, more than the 24.0 KiB a package holds", func(t *testing.T, s *Store, key string, body *PlanBody, _ []string) {
+			tk := ticketOf(t, s, key)
+			sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
+			sn.Repro = strings.Repeat("r", MaxPackageSource)
+			sn.ReproSha256 = sha256Hex(sn.Repro)
+			raw, err := json.Marshal(sn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Exec("UPDATE tickets SET external_snapshot = ? WHERE id = ?", string(raw), tk.ID); err != nil {
+				t.Fatal(err)
+			}
+			body.Source = &PlanSource{Repro: pinOf(t, s, key)}
+		}},
+		{"the evidence", "the evidence is 56.", func(t *testing.T, s *Store, _ string, body *PlanBody, links []string) {
+			for _, id := range links[:MaxPackageEvidence] {
+				if _, err := s.db.Exec("UPDATE links SET url = ? WHERE id = ?", "https://example.invalid/"+strings.Repeat("a", 7<<10), id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body.Source = &PlanSource{Evidence: links[:MaxPackageEvidence]}
+		}},
+		{"the count of evidence links", "the revision names 9 evidence links, more than the 8 a package holds", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, key, _ := sourceTicket(t)
+			var links []string
+			for i := range MaxPackageEvidence + 1 {
+				rc, err := addLink(s, opID("ev", i), key, NewLink{Kind: LinkExternal, URL: "https://example.invalid/" + opID("", i)})
+				want(t, rc, err, StatusDone, "")
+				links = append(links, rc.ID)
+			}
+			body := testPlanBody("crew")
+			if c.past != nil {
+				c.past(t, s, key, &body, links)
+			} else {
+				body.Source = &PlanSource{Evidence: links[:MaxPackageEvidence]}
+			}
+			plan := approvedPlan(t, s, key, PlanRequest{Crew: "crew"}, body, "go")
+			if c.past == nil {
+				// Nine links named in the revision's body as the store keeps it.
+				var kept PlanBody
+				decodeBody(t, planOf(t, s, plan).Body, &kept)
+				kept.Source.Evidence = links
+				raw, err := encodeValue(kept)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.db.Exec("UPDATE plans SET body = ? WHERE id = ?", raw, plan); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rc, err := s.Launch(ctx, testOp("launch"), key, plan, "")
+			refused(t, rc, err, RefusalBound, c.words)
+			var n int
+			if err := s.db.QueryRow("SELECT COUNT(*) FROM launches WHERE ticket_id = ?", ticketOf(t, s, key).ID).Scan(&n); err != nil || n != 0 || rc.ID != "" {
+				t.Fatalf("the store holds %d launches (%v), the receipt %+v", n, err, rc)
+			}
+		})
 	}
 }
 

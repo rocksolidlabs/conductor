@@ -67,10 +67,13 @@ func TestPackageAtItsWorst(t *testing.T) {
 	}
 	// Version 2's parts at their bounds (Program item IN1a): the ticket
 	// linked, GitHub owning its title and description, its snapshot at its
-	// worst, the steps to reproduce among it handed over; eight evidence
-	// links, each a page at its bound of '"' (two bytes each as written)
-	// and a note at its worst.
+	// worst, its host and its page at their bounds of '"' (two bytes each
+	// as written, a host url.Parse and the link's check admit), the steps
+	// to reproduce among it handed over; eight evidence links, each a page
+	// at its bound of '"' and a note at its worst.
 	sn := worstSnapshot(t, worst)
+	sn.Host = worstBytes(MaxExternalHost)
+	sn.URL = "https://" + sn.Host + "/" + worstBytes(MaxExternalURL-len("https://")-len(sn.Host)-1)
 	linkWorst(t, s, key, sn, worstChars(MaxTicketTitle))
 	var evidence []string
 	for i := range MaxPackageEvidence {

@@ -141,8 +141,8 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // Launch launches a run from the plan revision with the id of the live
 // ticket with the key (ticket.launch), label the run's own name (at most
 // MaxLaunchLabel characters; empty for the ticket's key and title, cut at
-// a word, or its key alone when a read of its linked item wrote its title
-// last). The expected revision is the ticket's, so what launches is what
+// a word, or its key alone when its title is quoted: readWrote). The
+// expected revision is the ticket's, so what launches is what
 // the person saw (stale_revision otherwise). In the transaction: the
 // ticket live (not_found) and open (invalid: "CND-12 is done: reopen it to
 // launch"), its project not archived (archived); the revision the
@@ -241,9 +241,9 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 			return err
 		}
 		if label == "" {
-			// A title a read of the linked item wrote last is not the run's
-			// name: the key alone is.
-			if w, err := titleReadWrote(t.ctx, t.tx, tk.Key); err != nil {
+			// A quoted title (readWrote) is not the run's name: the key
+			// alone is.
+			if w, _, err := readWrote(t.ctx, t.tx, tk, FieldTitle); err != nil {
 				return err
 			} else if w {
 				label = tk.Key

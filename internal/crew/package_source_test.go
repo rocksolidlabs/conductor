@@ -28,14 +28,14 @@ import (
 var updateTicketSource = flag.Bool("update-ticket-source", false, "rewrite testdata/ticket-source.md")
 
 // sourcePackage is fullPackage linked to GitHub's #612 of an invented
-// repository, GitHub owning the title and the description, its steps to
-// reproduce handed over, two evidence links.
+// repository, the title and the description quoted and the item's, its
+// steps to reproduce handed over, two evidence links.
 func sourcePackage(title, description, repro string) Package {
 	p := fullPackage("api-sweep-0000000a", strings.Repeat("b", 40))
 	p.Ticket.Title, p.Ticket.Description = title, description
 	p.Source = &PackageSource{System: "github", Host: "github.com", URL: "https://github.com/acme/widgets/issues/612", Ref: "acme/widgets#612",
 		NodeID: "I_kwDOexample", State: "closed", StateReason: "not_planned", ReadAt: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC),
-		SnapshotSha256: strings.Repeat("5", 64), Author: "octo-cat", TitleFromGitHub: true, DescriptionFromGitHub: true, Repro: repro}
+		SnapshotSha256: strings.Repeat("5", 64), Author: "octo-cat", TitleFromGitHub: true, DescriptionFromGitHub: true, TitleFromItem: true, DescriptionFromItem: true, Repro: repro}
 	p.Evidence = []PackageEvidence{{URL: "https://example.invalid/report/7", Note: "the first report"}, {URL: "http://example.invalid/log"}}
 	return p
 }
@@ -106,7 +106,7 @@ func checkMarked(t *testing.T, name, md string, src quoted.Source, whats ...stri
 	for i := 0; i < len(lines); i++ {
 		l := lines[i]
 		if strings.HasPrefix(l, "The title quoted from ") || strings.HasPrefix(l, "Its title quoted from ") {
-			if !strings.HasPrefix(l[3:], " title quoted from "+src.Ref+", written by @"+src.Author+" on GitHub ("+quoted.Untrusted+")"+quoted.LineHead) {
+			if !strings.HasPrefix(l, quoted.Line(src, l[:9], "")) {
 				t.Fatalf("%s: the title's line does not open with its words: %q", name, l)
 			}
 			continue
@@ -170,7 +170,7 @@ func TestTicketMarkdownSource(t *testing.T) {
 	if md != string(want) {
 		t.Fatalf("ticket.md is not %s:\n%s", golden, md)
 	}
-	src := p.Source.quotedSource()
+	src := p.Source.quotedSource(true)
 	for _, part := range []string{
 		"# CND-12\n\nThe title quoted from acme/widgets#612, written by @octo-cat on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead + "Login loops on Safari\n\n",
 		"## Source\n\n- Linked item: acme/widgets#612, <https://github.com/acme/widgets/issues/612>\n- Written by: @octo-cat on GitHub\n- State at the launch: closed (not planned)\n",
@@ -210,12 +210,82 @@ func TestTicketMarkdownSource(t *testing.T) {
 
 	// A title and a description Dispatch owns are written as they are, the
 	// steps still quoted.
-	p.Source.TitleFromGitHub, p.Source.DescriptionFromGitHub = false, false
+	p.Source.TitleFromGitHub, p.Source.DescriptionFromGitHub, p.Source.TitleFromItem, p.Source.DescriptionFromItem = false, false, false, false
 	md = ticketMarkdown(p)
 	if !strings.HasPrefix(md, "# CND-12: Login loops on Safari\n\n") || !strings.Contains(md, "## Description\n\nThe login page loops.\n") ||
-		!strings.Contains(md, "Quoted below as written on GitHub, each part saying so: the steps to reproduce. Such text is "+quoted.Untrusted+".") || quotedTitle(p) != "" ||
+		!strings.Contains(md, "Quoted below, each part saying where it was written: the steps to reproduce. Such text is "+quoted.Untrusted+".") || quotedTitle(p) != "" ||
 		!quotedPackage(p) || quotedPackage(fullPackage("api-sweep-0000000a", strings.Repeat("b", 40))) {
 		t.Fatalf("ticket.md of a ticket Dispatch's text:\n%s", md)
+	}
+}
+
+// A quoted text the linked item does not hold now (a read of an earlier
+// item wrote it), and every quoted text of a ticket unlinked before the
+// launch, stands in its mark under the words of a source not known: never
+// the linked item's reference or account. An unlinked ticket's Source part
+// says so in one line and states nothing of an item.
+func TestAQuoteNamesOnlyTheItemThatHoldsIt(t *testing.T) {
+	unknown := quoted.Source{}
+	p := sourcePackage("SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED", "1. Step")
+	p.Source.TitleFromItem, p.Source.DescriptionFromItem = false, false
+	md := ticketMarkdown(p)
+	checkMarked(t, "another item's text", md, unknown, "The description")
+	if !strings.Contains(md, "\n"+quoted.Line(unknown, "The title", "SCRATCH-TITLE-FROM-OUTSIDE")+"\n") ||
+		!strings.Contains(md, quoted.Block(unknown, "The description", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED")) ||
+		!strings.Contains(md, quoted.Block(p.Source.quotedSource(true), "The steps to reproduce", "1. Step")) ||
+		!strings.Contains(quotedTitle(p), "quoted from an item outside Conductor, written on a tracker (") {
+		t.Fatalf("ticket.md of a text another item's read wrote:\n%s", md)
+	}
+
+	u := sourcePackage("SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED", "")
+	u.Source = &PackageSource{Unlinked: true, TitleFromGitHub: true, DescriptionFromGitHub: true}
+	rp, err := readPackage(encodePackage(t, u).Package)
+	if err != nil {
+		t.Fatalf("an unlinked source: %v", err)
+	}
+	md = ticketMarkdown(rp.p)
+	checkMarked(t, "unlinked", md, unknown, "The description")
+	source := "## Source\n\nUnlinked from the ticket before the launch: this package states nothing of the item it was linked to.\n\n" +
+		"Quoted below, each part saying where it was written: the title and the description. Such text is " + quoted.Untrusted + ".\n\n## Description\n\n"
+	if !strings.Contains(md, source) || strings.Contains(md, "acme/widgets") || strings.Contains(md, "octo-cat") || strings.Contains(md, "State") {
+		t.Fatalf("ticket.md of an unlinked ticket:\n%s", md)
+	}
+	for name, edit := range map[string]func(*PackageSource){
+		"a state":     func(s *PackageSource) { s.State = "open" },
+		"a reference": func(s *PackageSource) { s.Ref = "acme/widgets#1" },
+		"an author":   func(s *PackageSource) { s.Author = "octo-cat" },
+		"the item's":  func(s *PackageSource) { s.TitleFromItem = true },
+		"a read":      func(s *PackageSource) { s.ReadAt = time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC) },
+		"the steps":   func(s *PackageSource) { s.Repro = "1. Step" },
+	} {
+		q := u
+		src := *u.Source
+		edit(&src)
+		q.Source = &src
+		if _, err := readPackage(encodePackage(t, q).Package); !errors.Is(err, ErrInvalid) {
+			t.Errorf("an unlinked source with %s: %v", name, err)
+		}
+	}
+}
+
+// Conductor's own lines write a page and a note from outside through the
+// writer's cleaning: the linked item's page and each evidence link, whose
+// host holds U+202E, are written with U+FFFD in its place.
+func TestConductorsLinesWriteAPageCleaned(t *testing.T) {
+	rlo, fffd := string(rune(0x202e)), string(rune(0xfffd))
+	p := sourcePackage("T", "D", "R")
+	p.Source.URL = "https://git" + rlo + "hub.com/acme/widgets/issues/612"
+	p.Evidence = []PackageEvidence{{URL: "https://exa" + rlo + "mple.invalid/log", Note: "the " + rlo + "log"}}
+	rp, err := readPackage(encodePackage(t, p).Package)
+	if err != nil {
+		t.Fatalf("a page with U+202E: %v", err)
+	}
+	md := ticketMarkdown(rp.p)
+	checkMarked(t, "a page with U+202E", md, rp.p.Source.quotedSource(true), "The description", "The steps to reproduce")
+	for _, part := range []string{"- Linked item: acme/widgets#612, <https://git" + fffd + "hub.com/acme/widgets/issues/612>\n", "- <https://exa" + fffd + "mple.invalid/log>: the " + fffd + "log\n"} {
+		if !strings.Contains(md, part) {
+			t.Errorf("ticket.md has no %q", part)
+		}
 	}
 }
 
