@@ -2427,13 +2427,22 @@ kept (the desk may carry the revoke; one the switchyard ended is opened
 again for it), the revoke is tried again (2 s, then twice as long after
 each failure, a minute at most) and a revoke again from the list tries at
 once; the route answers `502 rendezvous_unavailable` meanwhile, and a
-revoke again once the switchyard has confirmed it answers `204`. A link
-revoked (or expired) on the server opens none of its sessions from that
-moment, whatever the switchyard has taken yet: the publisher's host
-connection asks the server's own link store of every viewer that came
-with a link, at its attach (refused `revoked`) and at each act, and a run
-link's revoke ends its viewers on the run's members' sessions as a session
-link's ends its session's; the switchyard is told as before. A run's
+revoke again once the switchyard has confirmed it answers `204`. From the
+moment a link's revoke begins on the server, or its expiry passes on the
+server's clock, a viewer with that link is refused at its attach and at
+each act, a resize among them (`revoked` or `expired`, with the words
+above), whatever the switchyard has taken yet; an attached one is ended
+as the revoke is made, and a session's viewer at the expiry itself (a
+desk's at the expiry sweep). The publisher's host connection asks the
+server's own link store of every viewer that came with a link, and
+admits one until the link's expiry there; a run link's revoke (or its
+expiry sweep) ends its viewers on every session and run desk of the
+server at once; and a run forgotten while a link's revoke
+is owed keeps that link revoked there until the revoke is taken (at most
+256 such marks, the oldest leaving first, each gone at its link's
+expiry). A link the store does not hold is judged by the switchyard, and
+an attach refused for any other reason is answered as before
+(`attach_failed`). The switchyard is told as before. A run's
 concurrent first decision links open one desk: the others wait for its
 opening and are minted over it. A publication's or a desk's viewers'
 lanes live under that connection, which ends them with itself: from its

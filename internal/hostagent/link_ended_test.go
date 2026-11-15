@@ -186,7 +186,9 @@ func TestALinkThePublisherHoldsIsGrantedUntilItsExpiry(t *testing.T) {
 	h := newEndedHost(t, d, editOpts())
 	guest := h.join("0123456789abcdef", "l1")
 	refusedFor(t, guest.first(func(m map[string]any) bool { return m["t"] == proto.CtlError }), proto.ErrCodeExpired, session.ErrExpired.Error())
-	guest.key("g")
+	// Its data channel closed after the word, or about to: keys it sends
+	// now go nowhere, whether its channel takes them or not.
+	_ = guest.dc.Send(proto.Encode(proto.TypeInput, []byte("g")))
 	owner := h.viewer("fedcba9876543210", "")
 	owner.key("o")
 	if got := typedNext(t, h.proc); got != "o" {
