@@ -1,6 +1,7 @@
 import type { DispatchChange, DispatchReceipt, DispatchTicket, HistoryPage, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewPerson, Responsibility, RunInfo } from '~/composables/useSessions'
 import { RESPONSIBILITIES, RESPONSIBILITY_WORDS } from '~/utils/crews'
+import { modelWords } from '~/utils/capacity'
 
 // A ticket's Plan section in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a plan revision's state and why its
 // approval no longer holds, with the one remedy that cures it; the checks a revision expects; why Launch is not offered; the reference
@@ -129,11 +130,17 @@ export function argvLine(argv: readonly string[]): string {
 /**
  * What a member's agent runs as the revision resolved it, in the order the server's launch builds it (internal/api/sessions.go,
  * createLocalSession): the catalog's command, the session recipe's start arguments (`{id}` as the session's id, filled at the start), the
- * member's own arguments, then the yolo recipe's arguments when yolo is on.
+ * member's own arguments, then the yolo recipe's arguments when yolo is on. A model the member names goes in through its adapter's flag
+ * after the member's arguments, which the revision does not carry: the member's line names it in words (planMemberModel).
  */
 export function resolvedArgv(agent: Pick<PlanAgent, 'command' | 'startArgs' | 'yoloArgs'> | undefined, memberArgs: readonly string[] = []): string[] {
   if (!agent) return [...memberArgs]
   return [...agent.command, ...agent.startArgs, ...memberArgs, ...agent.yoloArgs]
+}
+
+/** A member's model as its launch runs it, in the capacity rows' words: the one the revision names, else the agent's default. */
+export function planMemberModel(m: { model?: string }): string {
+  return modelWords({ chosen: m.model?.trim() ?? '' })
 }
 
 /** The yolo choice said plainly (the plan's Owner decisions, 7): it is what an approval most needs to show. */

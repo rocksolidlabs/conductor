@@ -443,7 +443,7 @@ export interface PlanCrew {
   cwd?: string
   yolo?: boolean
   updatedAt?: string
-  members?: Array<{ name: string; agentId: string; args?: string[] }>
+  members?: Array<{ name: string; agentId: string; args?: string[]; account?: string; model?: string }>
   tasks?: Array<{ id: string; member: string; kind: 'work' | 'review'; needs?: string[]; checks?: CrewCheck[]; owner?: string }>
   manifest?: CrewManifest
   /** The crew's people as the revision keeps them (HM1): who owns its decisions and its tasks' outcomes. */
