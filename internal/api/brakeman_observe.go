@@ -384,7 +384,11 @@ func (s *Server) reader(spec readSpec, next http.HandlerFunc) http.HandlerFunc {
 			s.turnRead(w, r, tp, spec, next)
 			return
 		}
-		if p := s.authenticate(r, false); p.admin {
+		p, ok := s.authenticate(w, r, false)
+		if !ok {
+			return
+		}
+		if p.admin {
 			next(w, withPrincipal(r, p))
 			return
 		}
@@ -421,7 +425,11 @@ func (s *Server) observeRoute(h func(w http.ResponseWriter, r *http.Request, o *
 			s.turnRead(w, r, tp, readSpec{anyOf: ownReadClasses[r.URL.Path]}, nil, h)
 			return
 		}
-		if p := s.authenticate(r, false); p.admin {
+		p, ok := s.authenticate(w, r, false)
+		if !ok {
+			return
+		}
+		if p.admin {
 			h(w, withPrincipal(r, p), s.newObserver(nil))
 			return
 		}
