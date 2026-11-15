@@ -153,6 +153,8 @@ export interface AgentInfo {
   identity?: Identity
   /** The server is still finding out about the agent (#704): its program's lookup, or its probe, is under way. */
   checking?: boolean
+  /** The quick read showed the agent from an answer that has expired (#704): it is shown as it was, and read again. */
+  recheck?: boolean
   /** The browser its links open in (#436); absent (or without a name) is the computer's default browser. */
   browser?: AgentBrowser
 }
@@ -898,7 +900,7 @@ export function useSessions() {
     catalogNow: () =>
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog', { query: { wait: '0' } }).then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
     /** One agent as the catalog lists it, once the server's checks of it have answered (about 4 s at most; still `checking` past that). */
-    catalogAgent: (id: string) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}`).then((r) => r.agent),
+    catalogAgent: (id: string, signal?: AbortSignal) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(id)}`, { signal }).then((r) => r.agent),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
     /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */

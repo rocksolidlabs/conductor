@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { checkingBadge, identity, isAvailable, notInstalledBadge, settleChecks } from '~/utils/agents'
+import { checkBadge, identity, isAvailable, notInstalledBadge, settleChecks } from '~/utils/agents'
 
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
@@ -22,36 +22,40 @@ const launch = useLaunchModal()
 const serverHost = useServerHost()
 
 // Each read of the list is a generation: the checks a read started filling
-// in stop once a newer one (or leaving the page) supersedes it.
-let generation = 0
+// in are aborted once a newer one (or leaving the page) supersedes it.
+let generation = new AbortController()
+/** The agents whose check the page gave up reading (#704): their reads ran out or one failed. */
+const unanswered = ref<ReadonlySet<string>>(new Set())
+const check = (a: AgentInfo) => checkBadge(a, serverHost.host.value, unanswered.value.has(a.id))
 
 /**
  * Draws the list from the server's answer of the moment, which waits for
  * nothing (#704), then fills in each agent the server is still checking (its
- * program looked up, its version flag run) as its own read answers.
+ * program looked up, its version flag run), or showed from an answer that
+ * has expired, as its own read answers.
  */
 async function refresh() {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
-  const gen = ++generation
-  const stop = () => gen !== generation
+  generation.abort()
+  const gen = (generation = new AbortController())
+  const stop = () => gen.signal.aborted
   loading.value = true
   try {
     const r = await api.catalogNow()
     if (stop()) return
     agents.value = r.agents
     hidden.value = r.hidden
+    unanswered.value = new Set()
     error.value = ''
     serverHost.load()
-    const put = (id: string, f: (a: AgentInfo) => AgentInfo) => (agents.value = agents.value.map((x) => (x.id === id ? f(x) : x)))
     void settleChecks(
-      r.agents.filter((a) => a.checking).map((a) => a.id),
+      r.agents.filter((a) => a.checking || a.recheck).map((a) => a.id),
       api.catalogAgent,
-      (a) => put(a.id, () => a),
-      // A read that failed (the agent removed meanwhile) leaves what the list said, no longer spinning.
-      { stop, failed: (id) => put(id, (a) => ({ ...a, checking: false })) },
+      (a) => (agents.value = agents.value.map((x) => (x.id === a.id ? a : x))),
+      { signal: gen.signal, gaveUp: (id) => (unanswered.value = new Set([...unanswered.value, id])) },
     )
   } catch (e) {
     if (!stop()) error.value = (e as Error).message
@@ -61,7 +65,7 @@ async function refresh() {
 }
 
 onMounted(refresh)
-onBeforeUnmount(() => generation++)
+onBeforeUnmount(() => generation.abort())
 watch(() => admin.token.value, refresh)
 
 // Add, edit and clone share one slideover; `editing` is the agent being
@@ -194,14 +198,15 @@ usePalette().registerPage(() => ({
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
                 <UBadge
-                  v-if="a.checking"
-                  :label="checkingBadge(a, serverHost.host.value).label"
-                  :title="checkingBadge(a, serverHost.host.value).title"
-                  icon="i-lucide-loader-circle"
-                  color="neutral"
+                  v-if="check(a)"
+                  :label="check(a)?.label"
+                  :title="check(a)?.title"
+                  :icon="check(a)?.state === 'checking' ? 'i-lucide-loader-circle' : 'i-lucide-circle-help'"
+                  :color="check(a)?.state === 'checking' ? 'neutral' : 'warning'"
                   variant="subtle"
                   size="sm"
-                  data-checking
+                  :data-checking="check(a)?.state === 'checking' || undefined"
+                  :data-unanswered="check(a)?.state === 'unanswered' || undefined"
                 />
                 <UBadge
                   v-else-if="!isAvailable(a)"

@@ -1,5 +1,6 @@
 import type { AgentInfo, Identity } from '~/composables/useSessions'
 import { agentIcon } from './agentIcons'
+import { withDeadline, type After } from './capacity'
 
 export type IdentityState = 'ok' | 'impostor' | 'unidentified' | 'pending' | 'failed' | 'unprobed'
 
@@ -16,41 +17,53 @@ export function identity(a: Pick<AgentInfo, 'identity' | 'command'>, host: strin
   return { state: 'unidentified', label: 'Version unrecognised', title: `${program} on ${where(host)} printed ${quote(id.output)}, which Conductor does not know as ${id.name ?? 'the agent'}'s yet` }
 }
 
-/** The badge of an agent the server is still checking (#704): its program being looked up, or run with its version flag. */
-export function checkingBadge(a: Pick<AgentInfo, 'identity' | 'command'>, host: string): { label: string; title: string } {
-  if (a.identity?.pending) return identity(a, host)
-  return { label: 'Checking…', title: `Looking for ${a.command[0] ?? ''} on ${where(host)}` }
+/**
+ * The badge of an agent's check on the Agents page (#704), or null when the agent's own state is shown: `checking` while the server
+ * looks its program up or runs its version flag, `unanswered` once the page gave up reading it (`gaveUp`: its reads ran out or one
+ * failed), which hides any state half found.
+ */
+export function checkBadge(a: Pick<AgentInfo, 'identity' | 'command' | 'checking'>, host: string, gaveUp: boolean): { state: 'checking' | 'unanswered'; label: string; title: string } | null {
+  const program = a.command[0] ?? ''
+  if (gaveUp) return { state: 'unanswered', label: 'Check did not answer', title: `The server did not answer the check of ${program} on ${where(host)}; the page checks again when it is opened or refreshed` }
+  if (!a.checking) return null
+  if (a.identity?.pending) return { state: 'checking', label: identity(a, host).label, title: identity(a, host).title }
+  return { state: 'checking', label: 'Checking…', title: `Looking for ${program} on ${where(host)}` }
 }
 
+/** How long one read of an agent's check may take: the server waits about 4 s at most for its checks. */
+export const CHECK_READ_DEADLINE_MS = 10_000
+
 /**
- * Reads each agent the server is still checking until it has its answer (#704), `workers` at a time so the page's other requests are
- * not queued behind them, and hands each answer to `apply`. A read waits on the server for the agent's checks (about 4 s at most); an
- * agent still checking after it is read again, `reads` times in all. `stop` ends it (a newer read of the list, the page left); a read
- * that fails is handed to `failed`.
+ * Reads each agent the server is still checking, or shows from an answer that has expired, until it has its answer (#704), `workers`
+ * at a time so the page's other requests are not queued behind them, and hands each answer to `apply`. An agent still checking goes
+ * to the back of the line, behind the agents not yet read, and is read `reads` times at most. A read is aborted past
+ * `CHECK_READ_DEADLINE_MS` and when `signal` is (a newer read of the list, the page left), which ends it all; an agent whose read
+ * failed or whose reads ran out is handed to `gaveUp`.
  */
 export async function settleChecks<T extends { checking?: boolean }>(
   ids: readonly string[],
-  read: (id: string) => Promise<T>,
+  read: (id: string, signal: AbortSignal) => Promise<T>,
   apply: (a: T) => void,
-  opts: { stop: () => boolean; failed: (id: string) => void; workers?: number; reads?: number },
+  opts: { signal: AbortSignal; gaveUp: (id: string) => void; workers?: number; reads?: number; after?: After },
 ): Promise<void> {
-  const queue = [...ids]
+  const queue = ids.map((id) => ({ id, n: 0 }))
   const reads = opts.reads ?? 10
   async function work() {
-    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
-      for (let n = 0; n < reads; n++) {
-        let a: T
-        try {
-          a = await read(id)
-        } catch {
-          if (!opts.stop()) opts.failed(id)
-          break
-        }
-        if (opts.stop()) return
-        apply(a)
-        if (!a.checking) break
+    for (let q = queue.shift(); q; q = queue.shift()) {
+      const { id } = q
+      let a: T
+      try {
+        a = await withDeadline((s) => read(id, AbortSignal.any([s, opts.signal])), CHECK_READ_DEADLINE_MS, 'The check did not answer', opts.after)
+      } catch {
+        if (opts.signal.aborted) return
+        opts.gaveUp(id)
+        continue
       }
-      if (opts.stop()) return
+      if (opts.signal.aborted) return
+      apply(a)
+      if (!a.checking) continue
+      if (++q.n < reads) queue.push(q)
+      else opts.gaveUp(id)
     }
   }
   await Promise.all(Array.from({ length: Math.min(opts.workers ?? 2, queue.length) }, work))

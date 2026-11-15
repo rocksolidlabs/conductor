@@ -42,6 +42,10 @@ type catalogEntry struct {
 	// lookup of its program, or its probe, is under way (#704). The
 	// listing's routes set it; GET /api/catalog/{id} waits for the checks.
 	Checking bool `json:"checking,omitempty"`
+	// Recheck says the quick read showed an answer of the lookup that has
+	// expired and is being looked up again: the agent is shown as it was,
+	// and GET /api/catalog/{id} reads it again (#704).
+	Recheck bool `json:"recheck,omitempty"`
 }
 
 // entry is a as the routes show it, by the effective catalog cat, the
@@ -90,8 +94,8 @@ func (s *Server) identityNow(ctx context.Context) func(a catalog.Agent) *Identit
 }
 
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
-// builds it or as GET /api/catalog lists it. source, replaces, available and
-// checking, which the listing adds, are taken and ignored, so an agent read there can be
+// builds it or as GET /api/catalog lists it. source, replaces, available,
+// checking and recheck, which the listing adds, are taken and ignored, so an agent read there can be
 // sent back as it is; any other field the agent does not have is refused.
 type saveAgentRequest struct {
 	catalog.Agent
@@ -100,6 +104,7 @@ type saveAgentRequest struct {
 	Replaces  json.RawMessage `json:"replaces,omitempty"`
 	Available json.RawMessage `json:"available,omitempty"`
 	Checking  json.RawMessage `json:"checking,omitempty"`
+	Recheck   json.RawMessage `json:"recheck,omitempty"`
 }
 
 // handleCatalog lists the launchable agents, env values masked, and the IDs
@@ -153,9 +158,9 @@ func (s *Server) catalogEntries(ctx context.Context, now bool) ([]catalogEntry, 
 // entriesOf is list, agents of cat, with what this server knows of them,
 // waiting as catalogEntries says. now answers at once (#704): the lookups
 // and probes with no fresh answer are started and waited for by none, a
-// program whose answer has expired keeps it meanwhile (lookupTTL only
-// bounds how late a program installed since is seen), and an agent whose
-// check is under way with nothing to show is marked checking.
+// program whose answer has expired keeps it meanwhile, its agent marked
+// recheck so the page reads it again on the same opening, and an agent
+// whose check is under way with nothing to show is marked checking.
 func (s *Server) entriesOf(ctx context.Context, cat catalog.Catalog, list []catalog.Agent, now bool) []catalogEntry {
 	// The programs are asked about together: a request waits about one
 	// lookup's time for those not looked up lately, at most lookupWait.
@@ -179,9 +184,10 @@ func (s *Server) entriesOf(ctx context.Context, cat catalog.Catalog, list []cata
 		ctx = done
 	}
 	answers := s.lookups.warmPaths(ctx, programs)
+	stale := map[string]bool{}
 	for p, a := range answers {
 		if k := kept[p]; !a.known && k.known {
-			answers[p] = k
+			answers[p], stale[p] = k, true
 		}
 	}
 	installed := func(program string) bool { return answers[program].installed }
@@ -215,6 +221,7 @@ func (s *Server) entriesOf(ctx context.Context, cat catalog.Catalog, list []cata
 			ans := answers[a.Command[0]]
 			e.OnWindows = ans.onWindows
 			e.Checking = !ans.known || (e.Identity != nil && e.Identity.Pending)
+			e.Recheck = stale[a.Command[0]] && !e.Checking
 		}
 		out = append(out, e)
 	}

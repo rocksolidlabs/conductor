@@ -200,10 +200,57 @@ func TestTheQuickCatalogKeepsAnExpiredLookupWhileItIsLookedUpAgain(t *testing.T)
 	// The quick read started the lookup again, which the gate holds, and
 	// answered with the expired answer meanwhile.
 	<-started
-	if k := agentsByID(t, out)["kept"]; k["checking"] != nil || k["available"] != true || k["identity"].(map[string]any)["identified"] != true {
+	if k := agentsByID(t, out)["kept"]; k["checking"] != nil || k["recheck"] != true || k["available"] != true || k["identity"].(map[string]any)["identified"] != true {
 		t.Fatalf("kept, its answer expired: %v", k)
 	}
 	release.Do(func() { close(gate) })
+}
+
+// A program missing when it was last looked up and installed since, its
+// answer expired: the quick read shows it missing, as the kept answer says,
+// and marks it recheck; the agent's own read, which the page makes on that
+// same opening, finds it installed.
+func TestTheQuickCatalogMarksAnExpiredAnswerForARecheck(t *testing.T) {
+	prog := versionScript(t, "claude", "2.1.287 (Claude Code)")
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{
+		{ID: "late", Name: "Late", Command: []string{prog}, Adapter: "claude"},
+	})
+	gate, started := make(chan struct{}), make(chan struct{})
+	var release, startOnce sync.Once
+	t.Cleanup(func() { release.Do(func() { close(gate) }) })
+	var later atomic.Int64
+	var installed atomic.Bool
+	start := time.Now()
+	e.srv.lookups.now = func() time.Time { return start.Add(time.Duration(later.Load())) }
+	e.srv.lookups.wait = time.Hour
+	e.srv.probes.wait = time.Hour
+	e.srv.lookups.look = func(program string) (string, error) {
+		if program != prog {
+			return exec.LookPath(program)
+		}
+		if !installed.Load() {
+			return "", exec.ErrNotFound
+		}
+		startOnce.Do(func() { close(started) })
+		<-gate
+		return exec.LookPath(program)
+	}
+	_, out := e.do("GET", "/api/catalog", adminToken, nil)
+	if l := agentsByID(t, out)["late"]; l["available"] != false || l["checking"] != nil || l["recheck"] != nil {
+		t.Fatalf("late, missing: %v", l)
+	}
+	installed.Store(true)
+	later.Store(int64(lookupTTL + time.Second))
+	_, out = e.do("GET", "/api/catalog?wait=0", adminToken, nil)
+	<-started
+	if l := agentsByID(t, out)["late"]; l["available"] != false || l["checking"] != nil || l["recheck"] != true {
+		t.Fatalf("late, its answer expired: %v", l)
+	}
+	release.Do(func() { close(gate) })
+	code, a, err := e.getAgent("late")
+	if err != nil || code != http.StatusOK || a["available"] != true || a["checking"] != nil || a["recheck"] != nil || a["identity"].(map[string]any)["identified"] != true {
+		t.Fatalf("late, read again: %d %v %v", code, a, err)
+	}
 }
 
 // The reads refuse what they do not know: a wait other than 0, an agent the
@@ -233,8 +280,8 @@ func TestTheCatalogReadsRefuseWhatTheyDoNotKnow(t *testing.T) {
 	// An agent read from the listing saves as it is: its checking is taken
 	// and ignored, as its available is.
 	_, sh, _ := e.getAgent("sh")
-	sh["checking"] = true
+	sh["checking"], sh["recheck"] = true, true
 	if resp, out := e.do("POST", "/api/catalog", adminToken, sh); resp.StatusCode != http.StatusOK {
-		t.Fatalf("save with checking: %d %v", resp.StatusCode, out)
+		t.Fatalf("save with checking and recheck: %d %v", resp.StatusCode, out)
 	}
 }
