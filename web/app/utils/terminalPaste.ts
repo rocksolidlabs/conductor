@@ -1,8 +1,8 @@
 import type { Attention } from './protocol'
 
 /**
- * What the terminal's paste control types for text (#902): its characters with every control character taken out (a line break,
- * a tab, ESC and the C1 controls among them), never turned into a key. A program with bracketed paste off reads no Enter from it,
+ * What the terminal's paste control types for text (#902): its characters with every C0 control (every line break, the tab, ESC),
+ * DEL and every C1 control taken out, never turned into a key; every other character as it is. A program with bracketed paste off reads no Enter from it,
  * and with it on the text cannot end the paste early (ESC [ 2 0 1 ~ loses its ESC and stays inside the paste).
  */
 export function pasteKeys(text: string): string {
@@ -43,6 +43,9 @@ export const PASTE_HELD = 'The agent asks a startup question: answer it with the
 
 /** What it says when the startup question it opened on is no longer the one showing. */
 export const PASTE_MOVED = 'The screen changed since this opened: nothing was typed. Look at the terminal, then type it again.'
+
+/** What it says when Type it is pressed while the terminal has no connection: the text is kept in the field. */
+export const PASTE_OFFLINE = 'The terminal is not connected: nothing was typed. Your text stays here.'
 
 /** What it says of a text that holds a line break (holdsBreak). */
 export const PASTE_BREAKS = 'Its line breaks are taken out: nothing is entered.'

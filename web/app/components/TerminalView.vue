@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { liveAttention } from '~/utils/attention'
-import { holdsBreak, PASTE_BREAKS, PASTE_HELD, PASTE_MOVED, pasteHeld, pasteKeys, startupShown } from '~/utils/terminalPaste'
+import { holdsBreak, PASTE_BREAKS, PASTE_HELD, PASTE_MOVED, PASTE_OFFLINE, pasteHeld, pasteKeys, startupShown } from '~/utils/terminalPaste'
 import { FitAddon } from '@xterm/addon-fit'
 import { scaledFont, showsScaled, sizedElsewhere, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
@@ -155,7 +155,8 @@ async function pasteClipboard(): Promise<void> {
  * with every control character taken out (pasteKeys: no Enter, nothing that ends the paste); the person presses Enter. It is tied
  * to the screen as the page was last told of it: while a startup question with choices shows it is not offered and types nothing
  * (pasteHeld), and once the startup question it opened on is no longer the one showing it types nothing and says so. The text is
- * this component's state alone, emptied once typed or the field is closed.
+ * this component's state alone, emptied once handed to the terminal or the field is closed; with no connection it stays, and the
+ * field says why.
  */
 const touch = ref(false)
 const pasteOpen = ref(false)
@@ -180,6 +181,11 @@ function openPaste() {
   if (canPaste() && !props.compact) pasteOpen.value = true
 }
 function typePaste() {
+  // No connection: nothing can be typed, and the text stays in the field until it is typed or the person closes it.
+  if (transport?.state.value !== 'open') {
+    pasteNote.value = PASTE_OFFLINE
+    return
+  }
   const now = startupShown(shownAttention.value)
   if (now !== pasteOpenedOn) {
     pasteOpenedOn = now

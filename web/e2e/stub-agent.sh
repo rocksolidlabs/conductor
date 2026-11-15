@@ -311,9 +311,10 @@ handed_off=
 ring_at_end=
 
 # The arguments: the session, the trust override, the yolo flags, the
-# title and the notifications Codex is launched with. Anything else is
-# taken and ignored, as a flag of the real agent would be.
-session_id= resume_id= trusted= yolo= titles= still=${STUB_TITLE_STILL:-} async_bell=
+# title and the notifications Codex is launched with; --stub-paste-off, a
+# test's own, has the sign-in screen leave bracketed paste off. Anything
+# else is taken and ignored, as a flag of the real agent would be.
+session_id= resume_id= trusted= yolo= titles= still=${STUB_TITLE_STILL:-} async_bell= paste_off=
 [[ $still == 1 ]] || still=
 args=("$@")
 i=0
@@ -352,6 +353,7 @@ while ((i < ${#args[@]})); do
 		continue
 		;;
 	--dangerously-skip-permissions | --dangerously-bypass-approvals-and-sandbox | --yolo) yolo=1 ;;
+	--stub-paste-off) paste_off=1 ;;
 	esac
 	i=$((i + 1))
 done
@@ -1120,8 +1122,8 @@ mcp_ok() {
 }
 
 # claude_sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
-# browser's link, then "Paste code here if prompted >"), bracketed paste on,
-# and reads what is typed byte by byte, echoing nothing. Each byte read
+# browser's link, then "Paste code here if prompted >"), bracketed paste on
+# (off when launched with --stub-paste-off), and reads what is typed byte by byte, echoing nothing. Each byte read
 # appends a record to <id>.signin: the hex of every byte read since the
 # screen was drawn, a paste's marks and keys' sequences included; an Enter
 # appends "enter". At the Enter the code is the printable characters read
@@ -1129,17 +1131,16 @@ mcp_ok() {
 # ("Login successful."), any other is refused ("That code was not
 # accepted.") and the screen drawn again. A window resized has the screen
 # drawn again whole, as Claude Code's TUI does. The transcript says only
-# whether a code was taken; the stub signs in to nothing. Its pid is in
-# <id>.pid, for a test that stops it.
+# whether a code was taken; the stub signs in to nothing.
 claude_sign_in() {
 	local LC_ALL=C
-	local code hex seq note='' st resized='' saved h c
+	local code hex seq note='' st resized='' saved h c bp=h
 	signin_draw() {
-		printf '\e[2J\e[H\e[?2004h%sWelcome to Claude Code\r\n\r\n Browser didn'"'"'t open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > ' "$note"
+		printf '\e[2J\e[H\e[?2004%s%sWelcome to Claude Code\r\n\r\n Browser didn'"'"'t open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > ' "$bp" "$note"
 	}
+	[[ -n $paste_off ]] && bp=l
 	saved=$(stty -g)
 	stty -icanon -echo min 1 time 0
-	put "$transcripts/$id.pid" "$$"$'\n'
 	# Bash runs a trap only between reads: the read waits a moment at a time,
 	# and a resize noted meanwhile has the screen drawn again.
 	trap 'resized=1' WINCH
@@ -1670,6 +1671,8 @@ if [[ -n $resume_id ]]; then
 else
 	: >>"$transcript"
 fi
+# Its pid, for a test that stops it while a startup question is drawn.
+put "$transcripts/$id.pid" "$$"$'\n'
 if [[ -n ${STUB_SIGNIN:-} ]]; then
 	claude_sign_in
 fi

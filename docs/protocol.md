@@ -1563,19 +1563,27 @@ question's choices answers it with or without an Enter.
 
 The app's terminal on a touch device takes such a code through its paste
 control (#902; a page served over plain http is given no clipboard to
-read): its text, every control character taken out (line breaks, tabs,
-ESC and the C1 controls), goes to the terminal as one paste, bracketed
-while the program has that mode on, and the control sends no Enter. The
-page judges the control by the last attention it was sent, as sent
-(before it reads a question answered in the terminal as none): while a
-startup question with choices shows (a trust question, an update
-dialog), answered in the terminal or not, the control is not offered and
-types nothing; for one with no choices (the sign-in screen) it is, and on
-the session's page the question bar's words, which say to answer in the
-terminal, carry a button that opens it. Opened on one startup question,
-it types nothing once another shows. The judgement is the page's, from
-the last attention it was sent: for a moment after the program draws a
-screen, the page can still show the control.
+read). It takes out of the text every C0 control (U+0000 to U+001F: every
+line break, the tab, ESC), DEL (U+007F) and every C1 control (U+0080 to
+U+009F); every other character is sent as it is, as one paste: bracketed
+while the program has that mode on, as its characters otherwise. The
+control sends no Enter. With no connection it sends nothing, keeps the
+text and says the terminal is not connected; the text leaves it only once
+handed to the terminal or when the person closes it. The page judges the
+control by the last attention it was sent, as sent (before it reads a
+question answered in the terminal as none): while a startup question with
+choices shows (a trust question, an update dialog), answered in the
+terminal or not, the control is not offered and types nothing; for one
+with no choices (the sign-in screen) it is, and on the session's page the
+question bar's words, which say to answer in the terminal, carry a button
+that opens it. Opened on one startup question, it types nothing once the
+page has been told another shows. Being the page's, the judgement lags
+the screen: after the program draws another screen, the page learns of it
+only once the startup watch has seen the screen quiet and the attention
+frame has reached the page. A paste sent in that moment reaches the screen
+the program shows then, as one bracketed paste where the program has
+turned bracketed paste on and as its characters otherwise, the same as
+keys typed on a touch keyboard in that moment.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
