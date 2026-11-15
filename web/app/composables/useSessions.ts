@@ -32,6 +32,11 @@ export interface SessionInfo {
    */
   crew?: { runId: string; crewId: string; member: string; brakeman?: { request: string; quiet: boolean }; task?: string; attempt?: number }
   attention?: Attention
+  /**
+   * The session's agent reports its turns: it has reported a working or a done of its own (its hooks, its window title, its program
+   * status), never cleared. Missing when it has not, and from an older server.
+   */
+  turns?: boolean
   /** Who last answered a needs-input prompt (server-reported). */
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
   createdAt: string
@@ -323,7 +328,7 @@ export interface JoinRunMember {
 
 export interface JoinInfo {
   /** The session a session link opens; missing for a run link, whose reply has `run` in its place. */
-  session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'> & { cwd?: string }
+  session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser' | 'turns'> & { cwd?: string }
   /** The run a run link opens, with every member in the run's order; `desk`, at a switchyard, the run's desk a decision link's Decide joins. */
   run?: { id: string; name: string; members: JoinRunMember[]; desk?: string }
   role: Role

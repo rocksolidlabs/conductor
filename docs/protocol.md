@@ -467,7 +467,7 @@ agent's id or else the program's name, never an argument; `cwd` the folder's las
 no `branch` and none of what the host reports, below),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?,turns?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
@@ -488,7 +488,19 @@ else; a message whose `kept` holds more than 2 ids, or one that is not
 the server takes no `kept` from a host that did not say `answerAs` (one
 that resumes without it has the pair it last sent stand until its first
 `attention`, which then drops the `kept`), and an older server ignores the
-field),
+field; `turns: true`, host to server only, a switchyard too, the host's
+session's `Info.turns` from the same snapshot as the rest (its agent
+reports its turns, see Attention): sent with every `attention`, a change
+of it alone told as a change of `kept` is, and with the attention the
+host tells as each connection starts, so a server that restarted, or a
+copy made by a registration afresh, says what the host's session says;
+the server takes `true` as learned and never clears it on a message
+without it, so an older host, which sends none, leaves the copy learning
+from the reports it carries; an older server ignores the field; a bool,
+so the message's bound does not change, and a `turns` that is not one
+fails the message's decode as any malformed field does; a host's `done`
+keeps the `since` and words of the `done` the copy shows only when it
+carries that one's `id`, and with another `id` replaces it),
 `activity{sessionId,entry,state?}`,
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
@@ -1056,7 +1068,8 @@ it works, below), `status` (the agent's program status, an OSC 7501 sequence
 Codex 0.163 and later write: `working`, or `needs_input` with words naming
 what blocks it, below), `input` (the empty state after a reply resolved the
 question, or an Enter typed in the terminal withdrew a bell's, an OSC
-notification's, the pattern's or the status's wait), `screen` (the empty
+notification's, the pattern's or the status's wait, or ended the turn a
+`done` showed), `screen` (the empty
 state after the screen moved on from a question without an answer: a bell's
 or a status's wait whose screen changed past the snapshot's threshold, a
 startup question or a dialog gone from the screen, or a status's wait that a
@@ -1099,6 +1112,40 @@ routes) has none in the server's listings until the host reports it back with
 its own: the host tells its attention, with its id, after every report the
 server forwards, one its session takes as changing nothing included, so the
 listing never holds an older id or none for long.
+
+A turn's start and end. An Enter written to the program (typed in the
+terminal, or a submission's: a crew's next prompt, a reply box's line)
+while a `done` shows begins the agent's next turn: the `done` gives way
+to the empty state with source `input`, told to the viewers in an
+`attention` message and recorded nowhere (no activity entry, no webhook,
+no turn's end for a crew), so an agent that reports only its `done`
+(Amp, Pi) does not read `done` through its next turn. That Enter may
+begin no turn (an empty line, a command the agent answers itself): the
+session then reads the empty state until the agent's next report. A
+`done` of an ended session stays. A `done` reported while a `done`
+shows, no other state shown between, is the same turn's (Claude Code's
+`idle_prompt`, about a minute after its `Stop`): the one shown keeps its
+`id`, its `since` (the turn's end) and its words (the turn's last), and
+the second is still recorded as its own `attention` entry at its own
+time, so the activity log, the webhooks and a crew read the entries as
+before. A `done` after any other state is a new one, with its own `id`,
+`since` and words. `turns` in the session's `Info` (absent when false)
+says the session's agent reports its turns: it has reported a `working`
+or a `done` of its own, with source `api`, `title` or `status`; a bell,
+an OSC notification, the screen pattern and an operator's mark (`admin`)
+teach nothing, and it is never cleared. A client tells an empty state
+with `input` on a session with `turns` (the agent at work after its
+prompt or an answer) from one without (no signal). A hosted session's
+copy on the server learns `turns` as a session does, from the reports it
+forwards and the host's, and from the host's word (`turns` on the host's
+`attention`, Host control connection), also after the server restarted
+and the host registered afresh. On that copy, a host's `done` with the
+`id` of the `done` shown, and a `done` the server forwards (it has no
+`id`: the host applies it by its own rule and reports back what its
+session shows), keep the one shown, its `since` and its words; a host's
+`done` with another `id` is another turn's (one the host finished while
+it was away, told as its connection came back) and replaces it, stamped
+as it is received.
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -1423,7 +1470,9 @@ recipe included), `agentSession{id, resumable, source}` once Conductor knows
 the agent's own session (`source` `set` when Conductor chose the id at launch,
 `hook` when the agent reported it, `resumed` when this session resumed it;
 `resumable` once the agent has reported a turn, and always for a resumed one),
-and `resumedFrom`, the session it resumed or relaunched.
+and `resumedFrom`, the session it resumed or relaunched. `turns: true`
+says its agent reports its turns (see Attention, A turn's start and end;
+absent otherwise, and from an older server).
 `GET /api/sessions/{id}/links` adds `active` to every link: the number of
 viewers currently attached through it.
 
@@ -3036,7 +3085,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
-| `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
+| `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link, `session` carrying `turns: true` when its agent reports its turns (see Attention), absent otherwise; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
 directory (`dataDir`): `{"agents": [...], "hidden": [...]}`. At startup that
@@ -3510,7 +3559,9 @@ Conductor never deletes a worktree or a branch.
 
 A launch, a start or an added member answers once the member's session exists;
 the member is `starting` until its prompt is typed, then `running`. A member is
-ready for its prompt when its agent reports `needs_input` or `done`, or after
+ready for its prompt when its agent reports `needs_input` or `done` (a `done`
+an Enter has ended is the empty state by then, see Attention, and is not
+ready: the member waits for its output to go quiet), or after
 one second without output that follows its first output and at least two seconds
 after its start, checked every 250 ms. Output that only sets the window title
 (OSC 0 or 2: a spinner in the title) is not output for this. A program that
