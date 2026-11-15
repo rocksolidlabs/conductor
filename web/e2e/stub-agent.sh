@@ -159,8 +159,10 @@ wait_s=${STUB_MERGE_WAIT_S:-60}
 # shapes, invented values). The state is read from the file stub-usage in the
 # account's folder (CLAUDE_CONFIG_DIR for the claude identity, CODEX_HOME for
 # codex), one line "<state> [<version>]", so one spec holds several states at
-# once over the suite's one server: ok, signed_out, key_paid, turn (/usage
-# answered with a model turn), slow (/usage answered once the file
+# once over the suite's one server: ok, warning (ok's figures with the weekly
+# window at 92% and the provider's severity warning, Claude Code's only),
+# limit (ok's figures with the rate limit reached, Codex's only), signed_out, key_paid, turn (/usage answered with a model turn), slow
+# (/usage answered once the file
 # stub-usage-gate is in the same folder, a spec's gate, waited for at most
 # 80 s, under the reader's 90 s) and error (a result line that says the run
 # failed; Codex's limits refused). With that file the stub says it is the
@@ -209,6 +211,7 @@ claude_usage() {
 	auth/*) usage_fill claude-auth.json ;;
 	usage/turn) usage_fill claude-usage-turn.jsonl ;;
 	usage/error) usage_fill claude-usage-error.jsonl ;;
+	usage/warning) usage_fill claude-usage-warning.jsonl ;;
 	usage/slow)
 		local i
 		for ((i = 0; i < 800; i++)); do
@@ -238,7 +241,14 @@ codex_app_server() {
 			*) result=$(usage_fill codex-account.json) ;;
 			esac
 			;;
-		*'"method":"account/rateLimits/read"'*) [[ $usage_state == error ]] || result=$(usage_fill codex-limits.json) ;;
+		*'"method":"account/rateLimits/read"'*)
+			# limit: ok's figures, with the provider's rate limit reached.
+			[[ $usage_state == error ]] || result=$(usage_fill codex-limits.json)
+			if [[ $usage_state == limit ]]; then
+				local unreached='"rateLimitReachedType":null' reached='"rateLimitReachedType":"rate_limit_reached"'
+				result=${result//$unreached/$reached}
+			fi
+			;;
 		esac
 		if [[ -n $result ]]; then
 			printf '{"id":%s,"result":%s}\n' "$id" "$result"
@@ -820,6 +830,26 @@ task_attempt() {
 	local kind=$1 task=$2 n=$3 ctx
 	ctx=$(task_read)
 	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
+	# A spec's hold on a first attempt: with the file stub-attempt-hold in the
+	# login folder the attempt runs on (CLAUDE_CONFIG_DIR), attempt 1 waits
+	# for stub-attempt-gate there, at most the seconds the hold file names
+	# (the spec's own cap; 120 when it names none), before it does anything;
+	# the spec makes the gate once what it orders before the retry is done.
+	# The transcript says which ended the wait: the gate, or the cap.
+	if [[ $n == 1 && -n ${CLAUDE_CONFIG_DIR:-} && -e $CLAUDE_CONFIG_DIR/stub-attempt-hold ]]; then
+		local i hold_cap=
+		read -r hold_cap _ <"$CLAUDE_CONFIG_DIR/stub-attempt-hold" || true
+		[[ $hold_cap =~ ^[0-9]+$ ]] || hold_cap=120
+		for ((i = 0; i < hold_cap * 10; i++)); do
+			[[ -e $CLAUDE_CONFIG_DIR/stub-attempt-gate ]] && break
+			sleep 0.1
+		done
+		if [[ -e $CLAUDE_CONFIG_DIR/stub-attempt-gate ]]; then
+			printf 'hold: attempt 1 went on when the gate opened\n' >>"$transcript"
+		else
+			printf 'hold: attempt 1 went on when its cap of %s s ran out\n' "$hold_cap" >>"$transcript"
+		fi
+	fi
 	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided && $n -ge ${STUB_DECISION_FROM:-1} ]]; then
 		local applied
 		applied=$(decision_in_task "$task" "$ctx")

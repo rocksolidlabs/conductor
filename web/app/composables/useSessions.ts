@@ -363,6 +363,10 @@ export interface CrewMember {
   /** At most 32, of at most 4096 bytes each and 8 KiB in all. */
   args?: string[]
   start: CrewStart
+  /** The account it launches on (docs/protocol.md, Capacity): an account's id, `default` for the agent's own login; absent for its adapter's default at the launch. */
+  account?: string
+  /** Its model (1 to 100 of `A-Z a-z 0-9 . _ : / @ -`); absent for the agent's default. */
+  model?: string
 }
 
 /**
@@ -528,6 +532,10 @@ export interface RunMember {
   name: string
   agentId: string
   start: CrewStart
+  /** The login the launch bound it to, by its id and source alone (never its folder); absent for the agent's own login. */
+  account?: { id: string; source: string }
+  /** Its model as launched; absent for the agent's default. */
+  model?: string
   /** The member's session, once it has started. */
   sessionId?: string
   /** With worktree isolation, once it has started: its branch (`crew/<run>/<member>`) and worktree. */
@@ -771,6 +779,8 @@ export interface RunInfo {
   resumedBy?: string
   /** The ticket it was launched from, whose package it and its continuations follow; absent for a run with no package. */
   ticket?: RunTicket
+  /** `brakeman` for a Brakeman turn's run; absent for a person's run. */
+  class?: string
   /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
   managed?: { revision: number }
   /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */
@@ -888,7 +898,7 @@ export function useSessions() {
     /** A crew's runs, newest first: the live ones, then the records of those that ended (`live` counts the first). */
     crewRuns: (id: string) => request<{ runs: RunInfo[]; live: number }>(`/api/crews/${encodeURIComponent(id)}/runs`),
     /** The launchable agents and the server's yolo default (`yolo` in its config, CONDUCTOR_YOLO, serve --yolo). */
-    catalogInfo: () => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
+    catalogInfo: (signal?: AbortSignal) => request<{ agents: AgentInfo[]; yoloDefault?: boolean }>('/api/catalog', { signal }).then((r) => ({ agents: r.agents ?? [], yoloDefault: !!r.yoloDefault })),
     /** The launchable agents plus the ids hidden from the catalog, which `unhideAgent` brings back. */
     catalogWithHidden: () =>
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
@@ -912,7 +922,7 @@ export function useSessions() {
     listCrews: (offset = 0, limit = 100) =>
       request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
-    getCrew: (id: string) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`).then(crewOfReply),
+    getCrew: (id: string, signal?: AbortSignal) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { signal }).then(crewOfReply),
     /**
      * Without an id, creates a crew: the server derives its id from the name (then `-2`, `-3`… when taken). With an id, replaces that crew's
      * fields; its id and createdAt stay. Only CrewInput's fields are sent, so a CrewInfo read with getCrew can be passed as it is.

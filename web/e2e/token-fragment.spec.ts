@@ -487,7 +487,10 @@ test("a reload Nuxt makes itself, while the page holds a link joined from the wo
     // Another run launched from the crew's page, which shows its view link this once.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await page.evaluate((to) => (document.querySelector('#__nuxt') as any).__vue_app__.$nuxt.$router.push(to), `/crews/${encodeURIComponent(crew)}`)
+    // The launch asks first: its sheet's Launch starts the run.
     await page.locator('[data-launch]').click()
+    await expect(page.locator('[data-crew-launch-confirm]')).toBeEnabled()
+    await page.locator('[data-crew-launch-confirm]').click()
     const dialog = page.getByRole('dialog', { name: /: run started$/ })
     await expect(dialog).toBeVisible()
     const url = (await dialog.locator('[data-view-link-url]').textContent()) ?? ''

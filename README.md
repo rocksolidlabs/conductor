@@ -663,8 +663,9 @@ prompt (a digit typed into the box is a search), **R** opens a member's run,
 (Enter stops, Escape cancels), **→** reveals the row's actions and **←**
 folds them, **Ctrl+Enter** opens in a new tab, **Shift+Enter** shows it in
 the Yard, **Escape** goes back to the box and, from there, closes. A first
-character picks a kind: **>** actions, **#** runs and crews (Enter launches
-a saved crew, Launch named under → takes a name), **:** files (`path` or
+character picks a kind: **>** actions, **#** runs and crews (Enter opens a
+saved crew's launch sheet, and only its Launch starts a run; Launch named
+under → takes the run's name first), **:** files (`path` or
 `path:line` opens in the page's editor, then the open tabs, the changes,
 the commits, the files touched lately across sessions, the artifacts),
 **@** people, **!** events, **?** the shortcuts. A line that starts with a

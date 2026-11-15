@@ -121,12 +121,19 @@ export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | '
 
 export type Tone = 'warning' | 'error' | 'muted' | 'default' | 'success'
 
-/** What of its run a task's words read: stopped, paused and why, and the run's state (interrupted: what its continuation takes up). */
-export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused'> & { state?: string; pausedWhy?: string }
+/**
+ * What of its run a task's words read: stopped, paused and why, the run's state (interrupted: what its continuation takes up), and the
+ * run that continued it.
+ */
+export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused' | 'resumedBy'> & { state?: string; pausedWhy?: string }
 
-/** A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up. */
+/**
+ * A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up;
+ * on a run continued, a task it did not end is the continuation's.
+ */
 export function taskWords(t: RunTask, run: TaskRun): { text: string; tone: Tone } {
   const n = t.attempt?.n ?? t.attempts
+  if (run.resumedBy && t.state !== 'succeeded' && t.state !== 'cancelled') return { text: 'taken up by its continuation', tone: 'muted' }
   switch (t.state) {
     case 'blocked':
       return { text: t.reason || holdsWords(t) || (t.needs?.length ? `needs ${t.needs.join(', ')}` : 'waiting'), tone: t.reason?.includes('will not') ? 'error' : 'muted' }

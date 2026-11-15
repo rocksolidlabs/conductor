@@ -1152,3 +1152,26 @@ func TestASaveFromAStaleReadIsRefused(t *testing.T) {
 		t.Fatalf("after the refusals: %+v", people)
 	}
 }
+
+// A run a later run continued leaves the tasks a person owns to its
+// continuation: the person's page lists the continuation's task as it
+// stands, never the first run's, left ready when it stopped.
+func TestAPersonsTasksAreTheContinuations(t *testing.T) {
+	e := readyEnv(t, nil)
+	first, next := "kai-0000000c", "kai-0000000d"
+	task := func(state string) []crew.TaskState {
+		return []crew.TaskState{{ID: "t1", Member: "lead", State: state, Owner: "kai", OwnerFrom: crew.OwnerFromTask}}
+	}
+	for _, run := range []crew.Run{
+		{ID: first, CrewID: "kai", Name: "kai's", Cwd: e.root, State: crew.RunStopped, StartedAt: time.Now(), Managed: &crew.Managed{Revision: 1}, ResumedBy: next, Tasks: task(ledger.TaskReady)},
+		{ID: next, CrewID: "kai", Name: "kai's", Cwd: e.root, State: crew.RunFinished, StartedAt: time.Now().Add(time.Minute), Managed: &crew.Managed{Revision: 1}, ResumedFrom: first, Tasks: task(ledger.TaskSucceeded)},
+	} {
+		if err := e.srv.records.Save(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks := e.expect(t, "GET", "/api/people/kai", nil, http.StatusOK, "")["tasks"].([]any)
+	if len(tasks) != 1 || tasks[0].(map[string]any)["run"] != next || tasks[0].(map[string]any)["state"] != ledger.TaskSucceeded {
+		t.Fatalf("kai's tasks: %v", tasks)
+	}
+}
