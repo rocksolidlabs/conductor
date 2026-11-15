@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import type { DispatchTicket, PlanBody, PlanSummary } from '~/composables/useDispatch'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { PLAN_BOUNDS, defaultLabel, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
+import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
 
 /**
  * Launching a managed run from a ticket's approved plan revision (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"). It asks
- * first: the revision, the commit the run starts from, the yolo choice said plainly, and the run's label (the ticket's key and title when
- * none is given). Then it says what came of it: the run started, with its link; the launch failed, with why; still being started, sent
+ * first: the revision, the commit the run starts from, the yolo choice said plainly, and the run's label (a name the person may give; the
+ * server names a run left unnamed after the ticket, and the dialog shows no name it cannot know). Then it says what came of it: the run started, with its link; the launch failed, with why; still being started, sent
  * again under the same operation (never a second run); or refused before any run, in the server's words. The operation's id is minted
  * once per launch asked for, with the label it is first sent with, and both are kept until it is settled: a reply lost to the network, or
  * a pending launch sent again, is the same launch, sent unchanged (the label is not edited meanwhile; another would be a conflict, not the
@@ -48,7 +48,6 @@ const bodyError = computed(() => (props.revision && !props.body ? (props.plans.b
 function readBodyAgain() {
   if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
 }
-const placeholder = computed(() => defaultLabel(props.ticket.key, props.ticket.title))
 const runPath = computed(() => (outcome.value?.state === 'started' ? `/runs/${encodeURIComponent(outcome.value.launch.runId)}` : ''))
 
 async function send() {
@@ -93,8 +92,8 @@ async function send() {
             <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-body-retry @click="readBodyAgain" />
           </p>
           <p v-else class="text-dimmed" data-launch-body-reading>Reading revision {{ revision.n }}: its yolo choice is said before anything launches…</p>
-          <UFormField label="The run's label" :hint="op ? 'kept as it was sent, until this launch is settled' : `at most ${PLAN_BOUNDS.label} characters`" size="sm">
-            <UInput :model-value="op ? op.label : label" :maxlength="PLAN_BOUNDS.label" :placeholder="placeholder" :disabled="!!op" class="w-full" data-launch-label @update:model-value="(v) => (label = String(v ?? ''))" />
+          <UFormField label="The run's label" :hint="op ? 'kept as it was sent, until this launch is settled' : `at most ${PLAN_BOUNDS.label} characters`" help="A run left unnamed is named after the ticket." size="sm">
+            <UInput :model-value="op ? op.label : label" :maxlength="PLAN_BOUNDS.label" placeholder="A name for the run, if you want one" :disabled="!!op" class="w-full" data-launch-label @update:model-value="(v) => (label = String(v ?? ''))" />
           </UFormField>
         </template>
 
