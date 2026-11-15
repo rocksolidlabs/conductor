@@ -189,7 +189,7 @@ func (s *Server) publish(local *session.Local) {
 			s.pubMu.Unlock()
 		}
 		// A refusal that passes with time (the switchyard's 429: a rate, or
-		// its limit of live sessions per address) is tried again a few times
+		// its limit of live sessions per address; its 503) is tried again a few times
 		// over some minutes. Not publishing is never the agent's error: the
 		// session's activity says so as a status line, not an "error", which
 		// put a red badge on a crew member that had done nothing (round 14).
@@ -210,9 +210,10 @@ func (s *Server) publish(local *session.Local) {
 			if !again {
 				local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "not shared through the switchyard: " + err.Error()})
 				setWhy(err.Error())
-				// Refused because the identity provider had no credential to
-				// present for a token it owns: owed, as a stopped one is, so
-				// the next Share publishes it again (republish).
+				// Its tries ended (a 401 ends them at once): owed, as a
+				// stopped one is, when this last refusal says the identity
+				// provider had no credential to present for a token it owns,
+				// so the next Share publishes it again (republish).
 				var w interface{ CredentialWithheld() bool }
 				if errors.As(err, &w) && w.CredentialWithheld() {
 					s.pubMu.Lock()

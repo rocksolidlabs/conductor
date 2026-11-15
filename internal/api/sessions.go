@@ -358,7 +358,12 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if id == "" {
 		id = session.NewID()
 	}
-	agentToken, _ := share.NewToken()
+	agentToken, agentHash := share.NewToken()
+	// Live from its minting, before its process starts: the launch owns its
+	// entry until it hands it to the session (TakeAgentToken), which owns it
+	// to its end; a launch that fails first removes it as this returns.
+	entry := session.AddToken(&s.agentTokens, agentHash)
+	defer entry.Remove()
 	notifyURL := s.notifyBase() + "/api/sessions/" + id + "/attention"
 	// The binary the hooks run, for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -486,6 +491,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		FileDenyFunc:    s.fileDeny,
 		Transport:       proto.TransportWS,
 		Log:             s.log,
+		Tokens:          &s.agentTokens,
 		OnChange:        s.localChange,
 		OnActivity:      s.localActivity,
 		OnChat:          s.localChat,
@@ -511,7 +517,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}
 	local := session.NewLocal(info, session.RuntimeProcess(term), opts)
 	s.made(rc, local)
-	local.SetAgentToken(agentToken)
+	local.TakeAgentToken(agentToken, entry.Hand())
 	if req.spawned != nil {
 		req.spawned(local)
 	}
@@ -710,7 +716,10 @@ func (s *Server) resolveCwd(cwd string) (string, error) {
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	p := s.authenticate(r, true)
+	p, ok := s.authenticate(w, r, true)
+	if !ok {
+		return
+	}
 	// A switchyard's workbench token reads what its listing says, with no role.
 	if p.role(id) == "" && !p.admin {
 		if !s.limiter.allow(clientKey(r)) {
