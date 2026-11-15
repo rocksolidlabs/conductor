@@ -1142,7 +1142,7 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 7 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 8 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
 	}
 	// The background-server question picks on a digit, and the update question skips on Escape: no answer

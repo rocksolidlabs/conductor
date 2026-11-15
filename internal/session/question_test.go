@@ -83,7 +83,8 @@ func TestAQuestionsWordsAreItsHeading(t *testing.T) {
 var approvalChoices = []Option{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}}
 
 // approvalQuestions are the questions Codex's approvals are held by, as the
-// built-in catalog entry has them: asked at any time.
+// built-in catalog entry has them: asked at any time, the tool approval's
+// choices read off its form (#716).
 func approvalQuestions() []StartupQuestion {
 	codex, _ := catalog.Default().Get("codex")
 	var out []StartupQuestion
@@ -95,7 +96,7 @@ func approvalQuestions() []StartupQuestion {
 		for i, a := range q.Answers {
 			answers[i] = Option{Label: a.Label, Input: a.Input}
 		}
-		out = append(out, StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers})
+		out = append(out, StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers, FromScreen: q.AnswersFromScreen})
 	}
 	return out
 }

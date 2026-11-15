@@ -48,7 +48,8 @@ type dialogList struct {
 // work are matched against (Screen.Text): from the last row numbered N,
 // at most listTail rows from the end, up through the rows numbered N-1 to 1
 // whose numbers stand at its column, at most listGap rows apart. Each
-// choice is its row's label and its number, the key that picks it, with no
+// choice is its row's label (its name, without a description drawn beside
+// it: choiceName) and its number, the key that picks it, with no
 // Enter (a digit picks at once in Claude Code's dialogs), marked Mode when
 // mode matches it whole: its label with the rows that follow it up to the
 // next choice (the last one's up to a blank row), its description, or the
@@ -82,8 +83,8 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	var marks []bool
 	add := func(m []string) {
 		slices.Reverse(after)
-		label := strings.TrimSpace(m[4])
-		whole := label
+		whole := strings.TrimSpace(m[4])
+		label := choiceName(whole)
 		for _, row := range after {
 			if row = strings.TrimSpace(row); row != "" {
 				if rule, _ := ruleRow(row); rule {
@@ -136,6 +137,21 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	slices.Reverse(above)
 	l.words = strings.Join(above, "\n")
 	return l, true
+}
+
+// columnGap is the gap a TUI leaves between a choice's name and its
+// description on the same row: two spaces or more, or a tab (Codex's
+// "› 1. Allow   Run the tool and continue", #716).
+var columnGap = regexp.MustCompile(`[ ]{2,}|\t`)
+
+// choiceName is a choice's label as its row shows it (trimmed): its name,
+// without the description a TUI draws in a column of its own beside it.
+// The description stays in the choice whole (dialogList.whole).
+func choiceName(row string) string {
+	if loc := columnGap.FindStringIndex(row); loc != nil && loc[0] > 0 {
+		return row[:loc[0]]
+	}
+	return row
 }
 
 // ruleRow reports whether row (trimmed) is a rule, three or more of the

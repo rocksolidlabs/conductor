@@ -44,6 +44,35 @@ const claudeAnswersReview = `(?m)^[ \t]*Ready to submit your answers\?\n(?:[ \t]
 // screen are not taken for one.
 const codexApprovalFooter = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+to\s+cancel[^\n]*(?:\n[^\n]*){0,3}\z`
 
+// Codex's form asking to allow a tool of an MCP server (#716), as its TUI
+// draws an MCP tool call's approval in 0.163.0, 0.167.2 and 0.169.0 alike
+// (tui/src/bottom_pane/mcp_server_elicitation.rs and its snapshots
+// mcp_server_elicitation_approval_form_*.snap; the message is core's
+// "Allow the <server> MCP server to run tool "<tool>"?" or a connector's
+// template, src/mcp_tool_call.rs): the progress row "Field 1/1", the
+// message and up to three of the call's arguments, then the choices, each
+// its name and, two spaces or more after it, its description (wrapped onto
+// the rows below on a narrow screen): "› 1. Allow" (highlighted at first),
+// "Allow for this session" and "Always allow" when the server's approval
+// mode lets the choice be remembered, and "Cancel" last; then, the last
+// row Codex draws, "enter to submit | esc to cancel" (on two rows when
+// narrow). A digit picks its choice and submits the form at once
+// (option_index_for_digit, then go_next_or_submit: the form has one field).
+// It is found by the whole of that shape, a pattern of at most 200 bytes as
+// every pattern of the catalog: the form's one field ("Field 1/1", a count
+// of fields unanswered after it once Backspace cleared the choice), Allow
+// first, nothing but Codex's choices that remember it (each an A's) and
+// their wrapped descriptions until Cancel, then nothing numbered until the
+// footer, on the screen's last row. So the form's words in a file, a log
+// or a quote on the screen are not taken for it (Codex's composer is below
+// them), nor another server's form (Deny among its choices, a field to
+// fill, more than one field). The choices themselves, each its label and
+// digit, are read off the form (the session's readList).
+const (
+	codexToolApproval      = `(?m)^ *Field 1/1\b.*\n(?:.*\n){1,16}? *›? *1\. Allow.*\n(?: *›? *[23]\. A.*\n| +[^\s\d›].*\n){0,8} *›? *[2-4]\. Cancel.*\n(?: *(?:[^\s\d›].*)?\n){0,16} *enter to submit\W*esc to cancel\z`
+	codexToolApprovalWords = `(?m)^ *Field 1/1\b.*\n((?:.*\n){1,16}?) *›? *1\. Allow.*$`
+)
+
 // defaults lists the built-in agents: one for each agent Conductor has a hook
 // adapter for (internal/agents), with the signal its adapter reports
 // through and its website as best known (to be checked in a browser: the
@@ -254,6 +283,18 @@ func defaults() []Agent {
 				Words:   codexApprovalWords,
 				Anytime: true,
 				Answers: []Answer{{Label: "Yes", Input: "y"}, {Label: "Cancel", Input: "\x1b"}},
+			}, {
+				// Its form asking to allow a tool of an MCP server (#716):
+				// Conductor's own server in a session (only a Brakeman turn
+				// lets its tools run without asking) and the person's own
+				// servers. Its choices are read off the form, as Claude
+				// Code's are, since they change with the server's approval
+				// mode (two or four); each is its digit, which picks it at
+				// once. Its words are the message and the arguments shown.
+				Prompt:            codexToolApproval,
+				Words:             codexToolApprovalWords,
+				Anytime:           true,
+				AnswersFromScreen: true,
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

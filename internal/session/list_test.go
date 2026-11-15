@@ -380,6 +380,44 @@ func TestReadListReadsClaudeCodesDialogs(t *testing.T) {
 	}
 }
 
+// Codex's form asking to allow a tool (#716) draws each choice's
+// description in a column of its own, two spaces or more after its name:
+// a choice's label is its name, its whole has the description (and the
+// rows of it wrapped below), and its key is its digit. The highlight moved
+// to another choice is read where it stands.
+func TestReadListReadsCodexsToolApprovalForm(t *testing.T) {
+	l, ok := readList(codexToolForm, nil)
+	if !ok || strings.Join(labels(l.choices), "|") != "1 Allow|2 Allow for this session|3 Always allow|4 Cancel" || l.at != 0 {
+		t.Fatalf("choices %q at %d, %v", labels(l.choices), l.at, ok)
+	}
+	if want := "1. Allow                   Run the tool and continue|2. Allow for this session  Run the tool and remember this choice for this session|3. Always allow            Run the tool and remember this choice for future tool calls|4. Cancel                  Cancel this tool call"; strings.Join(l.whole, "|") != want {
+		t.Fatalf("whole %q", l.whole)
+	}
+	narrow := screenRows(
+		"  Field 1/1",
+		`  Allow the conductor MCP server to run tool "guide"?`,
+		"    1. Allow                   Run the tool and continue",
+		"    2. Allow for this session  Run the tool and remember this choice for this",
+		"                               session",
+		"  › 3. Cancel                  Cancel this tool call",
+		"",
+		"  enter to submit | esc to cancel",
+	)
+	l, ok = readList(narrow, nil)
+	if !ok || strings.Join(labels(l.choices), "|") != "1 Allow|2 Allow for this session|3 Cancel" || l.at != 2 {
+		t.Fatalf("narrow: choices %q at %d, %v", labels(l.choices), l.at, ok)
+	}
+	if l.whole[1] != "2. Allow for this session  Run the tool and remember this choice for this session" {
+		t.Fatalf("narrow: whole %q", l.whole)
+	}
+	// One space is part of a label; a tab is a column's gap.
+	for row, want := range map[string]string{"Yes, and don't ask again": "Yes, and don't ask again", "Allow\tRun it": "Allow", "  Allow": "  Allow"} {
+		if got := choiceName(row); got != want {
+			t.Errorf("choiceName(%q) = %q", row, got)
+		}
+	}
+}
+
 // A list is the dialog's when its rows are numbered 1 to N in turn at one
 // column, close together, at the bottom of the screen: a numbered list
 // above the dialog is not read into it, a label wrapped at a narrow width
