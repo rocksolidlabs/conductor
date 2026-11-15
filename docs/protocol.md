@@ -778,8 +778,8 @@ typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields
 (`internal/agents`' `Recipe`, which the server's own sessions are started
 with too). With it the host holds the trust question and the startup
 questions at start, raises the questions asked during the work with their
-choices (Codex's command approval, Claude Code's dialogs read off the
-screen), refuses a line typed into the session while one shows (a crew's
+choices (Codex's command approval and its MCP tool approval form, Claude
+Code's dialogs read off the screen), refuses a line typed into the session while one shows (a crew's
 handoff, a broadcast, a reply: `error{not_sent}`) and reads the working
 title. `confirmSubmit` (the agent reports taking a prompt) is carried and
 set on the hosted session as on a server one, where only a submission that
@@ -1628,7 +1628,15 @@ highlighted Yes); the same dialog with "No, continue without running it
 (d)" is offered `y`, `d` and Escape (Cancel), the one without the "don't ask
 again" choice Yes and No alone, and any other of Codex's approvals with the
 same footer (network access: "Do you want to approve network access to
-…?", "Yes, just this once (y)") its `y` and Escape.
+…?", "Yes, just this once (y)") its `y` and Escape. Its form asking to
+allow a tool of an MCP server (Codex 0.163.0 to 0.169.0, #716: "Field
+1/1", "Allow the <server> MCP server to run tool "<tool>"?" and up to
+three of the call's arguments, "› 1. Allow", "Allow for this session" and
+"Always allow" when the server's approval mode remembers a choice,
+"Cancel", then "enter to submit | esc to cancel" on the last row) is found
+by that whole shape, its words the message and the arguments, its answers
+read off the form (`answersFromScreen`): each its digit, which picks it
+and submits the form at once.
 
 A question with `answersFromScreen: true` (only with `anytime`, and no
 `answers` of its own) has its answers read off the screen each time it is

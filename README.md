@@ -1170,6 +1170,12 @@ watches: the member is in Needs you with the question, the command and the
 three choices, each of which types its own key (`y`, `p`, Esc); typed text
 is refused while it shows, since its letters are the dialog's keys and its
 Enter would approve. A catalog question marked `anytime` is held this way.
+Its form asking to allow a tool of an MCP server ("Allow the conductor MCP
+server to run tool "guide"?", Conductor's own tools in a session as much as
+your own servers') is held the same way: the session needs you with the
+form's message and its own choices (**Allow**, **Allow for this session**,
+**Always allow** and **Cancel**, or Allow and Cancel alone), each of which
+types its number.
 Claude Code's dialogs during the work are held the same way, their choices
 read off the dialog each time it shows (the catalog's `answersFromScreen`),
 since they change with the tool, the permission mode and the release.
