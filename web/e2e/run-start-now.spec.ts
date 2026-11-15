@@ -69,9 +69,10 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   await expect
     .poll(async () => {
       const r = await api.run(run.id)
-      return [!!r.managed, member(r, 'builder').status !== 'pending', member(r, 'deployer').status]
-    }, { timeout: 60_000, message: 'build started, deployer waits' })
-    .toEqual([true, true, 'pending'])
+      // builder running, past its start: a stop during its start leaves it starting, its session ended.
+      return [!!r.managed, member(r, 'builder').status, member(r, 'deployer').status]
+    }, { timeout: 60_000, message: 'builder runs build, deployer waits' })
+    .toEqual([true, 'running', 'pending'])
   // The server takes no start of it.
   expect((await api.call('POST', `/api/runs/${encodeURIComponent(run.id)}/members/deployer/start`)).status).toBe(409)
   await startOffered(page, run.id, 'deployer', true, false)
