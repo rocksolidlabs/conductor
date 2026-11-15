@@ -963,7 +963,7 @@ func TestDecideWayInIsTheAuthoritys(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/me/decisions?subject=eve&via=identity", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)
 		req.Header.Set("X-Conductor-Subject", "eve")
-		p := f.srv.authenticate(req, false)
+		p := authOf(f.srv, req, false)
 		who, auth := admittee(p), f.srv.authorityOf(withPrincipal(req, p))
 		if who.Via != auth.Via || who.Subject != auth.Subject || who.Subject == "eve" {
 			t.Errorf("%.12s: admitted as %s %q, its authority %s %q", tok, who.Via, who.Subject, auth.Via, auth.Subject)
@@ -1157,9 +1157,9 @@ func TestAdmitsIsTheOneCheck(t *testing.T) {
 	rows = append(rows, row{did: cancelled, given: true})
 	principals := map[string]principal{}
 	for _, pass := range []string{passAna, passHostAna, passHostOnly, passAdmin, passAdminDecide, passUnknown} {
-		principals[pass] = f.srv.tokenPrincipal(&http.Request{Header: http.Header{}, URL: &url.URL{}}, pass)
+		principals[pass] = principalFor(f.srv, &http.Request{Header: http.Header{}, URL: &url.URL{}}, pass)
 	}
-	principals["workbench"] = f.srv.tokenPrincipal(&http.Request{Header: http.Header{}, URL: &url.URL{}}, adminToken)
+	principals["workbench"] = principalFor(f.srv, &http.Request{Header: http.Header{}, URL: &url.URL{}}, adminToken)
 	principals["no credential"] = principal{}
 	lists := map[string][]string{}
 	for _, pass := range []string{passAna, passHostAna} {
@@ -1234,7 +1234,7 @@ func TestAdmitsIsTheOneCheck(t *testing.T) {
 		}
 		rec := f.record(t, r.did)
 		entries := crew.EntriesOf(rec)
-		by := f.srv.tokenPrincipal(&http.Request{Header: http.Header{}, URL: &url.URL{}}, r.by)
+		by := principalFor(f.srv, &http.Request{Header: http.Header{}, URL: &url.URL{}}, r.by)
 		if got := crew.Admits(entries, decideOf(by)); !by.decider() || got != (rec.State == ledger.DecisionApplied) {
 			t.Errorf("%s answered by %.12s: Admits %v, state %s", r.did, r.by, got, rec.State)
 		}

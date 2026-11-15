@@ -37,7 +37,11 @@ func (s *Server) taskSession(w http.ResponseWriter, r *http.Request, agentOnly b
 			writeLaneClosed(w)
 			return nil, false
 		}
-		if p := s.authenticate(r, false); p.admin {
+		p, ok := s.authenticate(w, r, false)
+		if !ok {
+			return nil, false
+		}
+		if p.admin {
 			writeError(w, http.StatusForbidden, "agent_only", "a result is submitted by the attempt's own session, with its token")
 			return nil, false
 		}

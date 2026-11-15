@@ -34,7 +34,10 @@ func (s *Server) acceptOptions() *websocket.AcceptOptions {
 // HTTP status of a failed upgrade.
 func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	p := s.authenticate(r, true)
+	p, ok := s.authenticate(w, r, true)
+	if !ok {
+		return
+	}
 	role := p.role(id)
 	if role == "" && !s.limiter.allow(clientKey(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
