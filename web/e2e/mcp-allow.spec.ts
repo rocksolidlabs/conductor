@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, test, type Api, type Session } from './fixtures'
 
 // Codex's form asking to allow a tool of an MCP server (#716; drawn by the
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
@@ -37,10 +37,27 @@ async function typeLine(page: Page, line: string) {
   await page.keyboard.press('Enter')
 }
 
-test("Codex's tool approval asks with the form's own choices, and a choice types its digit alone", async ({ page, api, state }) => {
+// At the suite's 1440 by 900 (the terminal wider than the session's 80 columns) and at 1280 by 800 with touch (narrower: 72
+// columns, where Codex wraps the choices' descriptions under their column, as the stub does).
+for (const size of [
+  { name: '1440 by 900', use: {}, narrower: false },
+  { name: '1280 by 800 with touch', use: { viewport: { width: 1280, height: 800 }, hasTouch: true }, narrower: true },
+]) {
+  test.describe(`a page ${size.name}`, () => {
+    test.use(size.use)
+    test("Codex's tool approval asks with the form's own choices, and a choice types its digit alone", async ({ page, api, state }) => {
+      await toolApproval(page, api, state, size.narrower)
+    })
+  })
+}
+
+async function toolApproval(page: Page, api: Api, state: { home: string }, narrower: boolean) {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e tool approval' })
   sessions.push(s.id)
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+  await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
+  // The page's window sizes the session before the form is drawn: the stub lays it out for that width.
+  await expect.poll(async () => { const c = (await api.session(s.id)).cols ?? 80; return narrower ? c < 80 : c > 80 }, { timeout: 15_000, message: 'the page sized the session' }).toBe(true)
   await typeLine(page, 'stub mcp-allow')
 
   // The session asks: a question of the dialog's, a permission, with the form's words and its choices, each its digit.
@@ -86,4 +103,4 @@ test("Codex's tool approval asks with the form's own choices, and a choice types
   await typeLine(page, 'after the form')
   await expect.poll(async () => transcript(state.home, await api.session(s.id)), { timeout: 15_000, message: 'the stub read the next line' }).toContain('mcp-allow next line: after the form\n')
   expect(transcript(state.home, await api.session(s.id)).match(/^mcp-allow: /gm)).toHaveLength(1)
-})
+}

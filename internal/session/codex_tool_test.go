@@ -239,3 +239,54 @@ func TestCodexsToolApprovalQuotedInTheTranscriptIsNotAsked(t *testing.T) {
 		t.Fatalf("read as a question: %q", words)
 	}
 }
+
+// codexToolForm72 is the form 72 columns wide (a page of 1280 by 800 with
+// touch), laid out by the rules of selection_popup_common.rs: the
+// description column two past the longest name, each description wrapped
+// under it.
+var codexToolForm72 = []string{
+	"› Look up how sessions work",
+	"",
+	"  Field 1/1",
+	`  Allow the conductor MCP server to run tool "guide"?`,
+	"  › 1. Allow                   Run the tool and continue",
+	"    2. Allow for this session  Run the tool and remember this choice",
+	"                               for this session",
+	"    3. Always allow            Run the tool and remember this choice",
+	"                               for future tool calls",
+	"    4. Cancel                  Cancel this tool call",
+	"",
+	"  enter to submit | esc to cancel",
+}
+
+// The form shown 80 columns wide, then the window made 72 columns wide:
+// Codex draws its view again, erased from its first cell (Tui::draw's
+// clear_for_viewport_change), the descriptions wrapped. The question is
+// asked again with the same choices, a key typed in the terminal answers
+// it, and it goes once Codex has moved on, at 72 columns.
+func TestCodexsToolApprovalAt72ColumnsIsAskedAndGoes(t *testing.T) {
+	s, p, sub := newCodexToolSession(t, 80, 24)
+	p.outW.Write([]byte("\x1b[?1049h" + codexFrame(strings.Split(codexToolForm, "\n"))))
+	waitAttention(t, s, asked)
+	if err := s.Resize(sub, 72, 24); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(codexFrame(codexToolForm72)))
+	if a := startupLooked(t, s, "for future tool calls"); !asked(a) || !sameOptions(a.Options, codexToolChoices) || a.Message != codexToolWords {
+		t.Fatalf("the form at 72 columns: %+v", a)
+	}
+	att := s.Info().Attention
+	if err := s.Input(sub, []byte("4")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "4" {
+		t.Fatalf("written %q", got)
+	}
+	if a := s.Info().Attention; a.ID != att.ID || a.Answered != AnsweredTerminal {
+		t.Fatalf("the key typed in the terminal: %+v", a)
+	}
+	p.outW.Write([]byte(statusWorking + codexFrame([]string{"› Look up how sessions work", "", "• Cancelled conductor.guide", "", "• Working (3s • esc to interrupt)"})))
+	if a := startupLooked(t, s, "Cancelled conductor.guide"); a.State == AttentionNeedsInput {
+		t.Fatalf("once the form went at 72 columns: %+v", a)
+	}
+}
