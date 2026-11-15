@@ -358,9 +358,10 @@ onBeforeUnmount(() => window.clearInterval(tick))
       <UButton label="Launch agent" icon="i-lucide-plus" block @click="launch.show()">
         <template #trailing><UKbd value="N" size="sm" class="ml-auto opacity-70" /></template>
       </UButton>
-      <!-- ↓ in the filter moves into the list (the key bubbles from the field to here). -->
+      <!-- ↓ in the filter moves into the list (the key bubbles from the field to here). The field spans the list's width, as
+           Launch agent does (#702): Nuxt UI's input is inline and otherwise keeps the width of its 20 characters. -->
       <div @keydown.down.prevent="focusList()">
-        <UInput ref="filterInput" v-model="query" placeholder="Filter sessions, runs, people" size="sm" icon="i-lucide-slash" :ui="{ base: 'font-normal' }" />
+        <UInput ref="filterInput" v-model="query" placeholder="Filter sessions, runs, people" size="sm" icon="i-lucide-slash" class="w-full" :ui="{ base: 'font-normal' }" />
       </div>
     </div>
 

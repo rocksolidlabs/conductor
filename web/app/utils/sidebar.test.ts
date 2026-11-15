@@ -122,52 +122,59 @@ describe('the sidebars share', () => {
 describe('the full sidebar\'s width (#437)', () => {
   const at1440 = sidebarBounds(1440)
 
-  it('opens at 12.5 rem (200 px) on every screen, and a drag goes up to 26 % of the window, never below the minimum', () => {
-    expect(SIDEBAR_SIZE).toEqual({ min: 12.5, maxShare: 0.26 })
-    // In px at 16 px to the rem: the minimum 200 everywhere, the maximum 266, 374, 499, 665 and 894.
+  it('opens at 16.75 rem (268 px) on every screen, and a drag goes up to 26 % of the window, never below the minimum plus 5 rem', () => {
+    // 16.75 rem: the header whole, its name too, with 10 px to spare (#706); 12.5 rem before it.
+    expect(SIDEBAR_SIZE).toEqual({ min: 16.75, maxShare: 0.26, range: 5 })
+    // In px at 16 px to the rem: the minimum 268 everywhere, the maximum 348 (the minimum plus 80) at 1024, then 374, 499, 665 and 894.
     const px = (w: number) => {
       const b = sidebarBounds(w)
       return { min: b.min * 16, max: Math.round(b.max * 16) }
     }
-    expect(px(1024)).toEqual({ min: 200, max: 266 })
-    expect(px(1440)).toEqual({ min: 200, max: 374 })
-    expect(px(1920)).toEqual({ min: 200, max: 499 })
-    expect(px(2560)).toEqual({ min: 200, max: 666 })
-    expect(px(3440)).toEqual({ min: 200, max: 894 })
+    expect(px(1024)).toEqual({ min: 268, max: 348 })
+    expect(px(1280)).toEqual({ min: 268, max: 348 })
+    expect(px(1440)).toEqual({ min: 268, max: 374 })
+    expect(px(1920)).toEqual({ min: 268, max: 499 })
+    expect(px(2560)).toEqual({ min: 268, max: 666 })
+    expect(px(3440)).toEqual({ min: 268, max: 894 })
     for (const w of [0, 320, 640, 768, 1024, 1440, 1920, 2560, 3440, 7680]) {
       const b = sidebarBounds(w)
-      expect(b.min).toBe(12.5)
-      expect(b.min).toBeLessThanOrEqual(b.max)
+      expect(b.min).toBe(16.75)
+      expect(b.max - b.min).toBeGreaterThanOrEqual(5)
     }
-    // A window too narrow for 26 % to reach the minimum (below lg, where no sidebar shows), or one not measured: both bounds the minimum.
-    expect(sidebarBounds(640)).toEqual({ min: 12.5, max: 12.5 })
-    expect(sidebarBounds(Number.NaN)).toEqual({ min: 12.5, max: 12.5 })
-    // Bigger text, bigger rem: the minimum stays 12.5 rem, the maximum is the same 26 % of the window.
-    expect(sidebarBounds(1440, 20).max * 20).toBeCloseTo(374.4, 0)
-    expect(sidebarBounds(1440, 0)).toEqual({ min: 12.5, max: 12.5 })
+    // A window too narrow for 26 % to reach that (below lg, where no sidebar shows), or one not measured: the minimum plus 5 rem.
+    expect(sidebarBounds(640)).toEqual({ min: 16.75, max: 21.75 })
+    expect(sidebarBounds(Number.NaN)).toEqual({ min: 16.75, max: 21.75 })
+    // Bigger text, bigger rem: the minimum stays 16.75 rem, the maximum is the same 26 % of the window.
+    expect(sidebarBounds(2560, 20).max * 20).toBeCloseTo(665.6, 0)
+    expect(sidebarBounds(1440, 0)).toEqual({ min: 16.75, max: 21.75 })
   })
 
   it('draws the held width within the window\'s bounds, from the same numbers', () => {
-    expect(SIDEBAR_WIDTH).toBe('clamp(12.5rem, var(--width), max(12.5rem, 26vw))')
+    expect(SIDEBAR_WIDTH).toBe('clamp(16.75rem, var(--width), max(21.75rem, 26vw))')
   })
 
   it('reads no saved width as the minimum, and a saved one within the bounds of the window it opens in', () => {
     expect(SIDEBAR_SIZE_KEY).toBe('conductor.sidebar.width')
-    expect(readSidebarSize(memory(), at1440)).toBe(12.5)
+    expect(readSidebarSize(memory(), at1440)).toBe(16.75)
     expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '18.5' }), at1440)).toBe(18.5)
     expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), at1440)).toBe(23.4)
     // A width dragged in a 2560 px window, opened in a 1024 px one: its maximum.
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), sidebarBounds(1024))).toBe(16.64)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '3' }), at1440)).toBe(12.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'wide' }), at1440)).toBe(12.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '' }), at1440)).toBe(12.5)
-    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'Infinity' }), at1440)).toBe(12.5)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '40' }), sidebarBounds(1024))).toBe(21.75)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '3' }), at1440)).toBe(16.75)
+    // A width dragged below today's minimum by an earlier version: the minimum, so that the header shows whole (#706); the stored
+    // value stays until the next drag writes one.
+    const earlier = memory({ [SIDEBAR_SIZE_KEY]: '16.25' })
+    expect(readSidebarSize(earlier, at1440)).toBe(16.75)
+    expect(earlier.data.get(SIDEBAR_SIZE_KEY)).toBe('16.25')
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'wide' }), at1440)).toBe(16.75)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: '' }), at1440)).toBe(16.75)
+    expect(readSidebarSize(memory({ [SIDEBAR_SIZE_KEY]: 'Infinity' }), at1440)).toBe(16.75)
   })
 
   it('drops a width saved before #437 once: the minimum, the old key gone, and a drag after that kept', () => {
     const s = memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22' })
     expect(LEGACY_SIDEBAR_SIZE_KEY).toBe('conductor.sidebar.size')
-    expect(readSidebarSize(s, at1440)).toBe(12.5)
+    expect(readSidebarSize(s, at1440)).toBe(16.75)
     expect(s.data.has(LEGACY_SIDEBAR_SIZE_KEY)).toBe(false)
     writeSidebarSize(s, 20, at1440)
     expect(readSidebarSize(s, at1440)).toBe(20)
@@ -180,23 +187,23 @@ describe('the full sidebar\'s width (#437)', () => {
 
   it('writes the width within the bounds, two decimals at most, and skips what is not a number', () => {
     const s = memory()
-    writeSidebarSize(s, 15.123456, at1440)
-    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('15.12')
-    expect(readSidebarSize(s, at1440)).toBe(15.12)
+    writeSidebarSize(s, 17.123456, at1440)
+    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('17.12')
+    expect(readSidebarSize(s, at1440)).toBe(17.12)
     writeSidebarSize(s, 99, at1440)
     expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('23.4')
     writeSidebarSize(s, 2, at1440)
-    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('12.5')
+    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('16.75')
     writeSidebarSize(s, Number.NaN, at1440)
-    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('12.5')
+    expect(s.data.get(SIDEBAR_SIZE_KEY)).toBe('16.75')
   })
 
   it('is the minimum when storage throws, and writing never throws', () => {
-    expect(readSidebarSize(broken, at1440)).toBe(12.5)
+    expect(readSidebarSize(broken, at1440)).toBe(16.75)
     expect(() => writeSidebarSize(broken, 20, at1440)).not.toThrow()
     // Removing the old key throws alone: the saved width still reads.
-    const stubborn = { ...memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22', [SIDEBAR_SIZE_KEY]: '16' }), removeItem: () => { throw new Error('denied') } }
-    expect(readSidebarSize(stubborn, at1440)).toBe(16)
+    const stubborn = { ...memory({ [LEGACY_SIDEBAR_SIZE_KEY]: '22', [SIDEBAR_SIZE_KEY]: '18' }), removeItem: () => { throw new Error('denied') } }
+    expect(readSidebarSize(stubborn, at1440)).toBe(18)
   })
 })
 

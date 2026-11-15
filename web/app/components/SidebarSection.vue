@@ -24,9 +24,10 @@ const bodyId = computed(() => `sidebar-section-${props.id}`)
       @click="folded = !folded"
     >
       <UIcon :name="folded ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3 flex-none" />
-      <span class="truncate">{{ title }}</span>
-      <span v-if="tone === 'warning'" class="rounded-full bg-warning/20 px-1.5 text-warning tracking-normal" data-section-count>{{ count }}</span>
-      <span v-else class="tracking-normal" data-section-count>· {{ count }}</span>
+      <!-- The title gives way first, shortened with its whole text on hover; the count keeps one line (#906). -->
+      <span class="truncate" :title="title" data-section-title>{{ title }}</span>
+      <span v-if="tone === 'warning'" class="flex-none whitespace-nowrap rounded-full bg-warning/20 px-1.5 text-warning tracking-normal" data-section-count>{{ count }}</span>
+      <span v-else class="flex-none whitespace-nowrap tracking-normal" data-section-count>· {{ count }}</span>
       <span v-if="folded && preview.length" class="ml-auto flex items-center gap-0.5" data-section-preview aria-hidden="true">
         <span v-for="(p, i) in preview" :key="i" class="size-1.5 rounded-[2px]" :class="square[p]" :data-state="p" />
       </span>

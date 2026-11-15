@@ -257,6 +257,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// command, as Codex resumes with a subcommand.
 	argv := append([]string{}, agent.Command...)
 	var agentSession *session.AgentSession
+	if req.resume == "" && req.resumedFrom != "" {
+		// A relaunch takes up no conversation, but starts nothing beside
+		// the process of the session it relaunches (takeConversation).
+		if aerr := s.takeConversation("", req.resumedFrom); aerr != nil {
+			return nil, aerr
+		}
+	}
 	switch r := agent.Session; {
 	case req.resume != "":
 		// One live session per agent conversation: the conversation is
