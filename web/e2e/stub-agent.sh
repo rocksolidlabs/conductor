@@ -510,12 +510,24 @@ approval() {
 # answer goes into the transcript as "mcp-allow: <answer>", and the tool is
 # never run.
 mcp_allow() {
-	local key seq answer= pasted
+	local key seq answer= pasted text size cols
 	title_stop
-	printf '\a\e[2J\e[H  Field 1/1\n  Allow the conductor MCP server to run tool "guide"?\n  › 1. Allow                   Run the tool and continue\n    2. Allow for this session  Run the tool and remember this choice for this session\n    3. Always allow            Run the tool and remember this choice for future tool calls\n    4. Cancel                  Cancel this tool call\n\n  enter to submit | esc to cancel\n'
+	# Laid out for the window as Codex lays it out
+	# (bottom_pane/selection_popup_common.rs): each description beside its
+	# choice's name, wrapped under its column when the window is narrower
+	# than the longest row (72 columns here, a page of 1280 by 800).
+	size=$(stty size 2>/dev/null) || size='24 80'
+	cols=${size#* }
+	if ((cols >= 92)); then
+		printf -v text '  Field 1/1\n  Allow the conductor MCP server to run tool "guide"?\n  › 1. Allow                   Run the tool and continue\n    2. Allow for this session  Run the tool and remember this choice for this session\n    3. Always allow            Run the tool and remember this choice for future tool calls\n    4. Cancel                  Cancel this tool call\n\n  enter to submit | esc to cancel\n'
+	else
+		printf -v text '  Field 1/1\n  Allow the conductor MCP server to run tool "guide"?\n  › 1. Allow                   Run the tool and continue\n    2. Allow for this session  Run the tool and remember this choice\n                               for this session\n    3. Always allow            Run the tool and remember this choice\n                               for future tool calls\n    4. Cancel                  Cancel this tool call\n\n  enter to submit | esc to cancel\n'
+	fi
+	printf '\a'
+	dialog_draw "$text"
 	title_action
 	status_set blocked permission
-	while IFS= read -rsn1 key; do
+	while dialog_key "$text"; do
 		case $key in
 		1 | '' | $'\r') answer=allow ;;
 		2) answer=allow-session ;;
@@ -1179,6 +1191,45 @@ mcp_ok() {
 	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
 }
 
+# dialog_draw draws a startup dialog, $1 its text, as Codex draws one on
+# its alternate screen: the screen erased from its first cell and the
+# dialog at its top, in one synchronized update (tui/src/tui.rs,
+# 0.163 to 0.169). dialog_key reads its key, and draws it again the same
+# way when the window is resized meanwhile, as Codex draws its view after
+# a resize (Tui::draw's clear_for_viewport_change): a window made narrower
+# that lost a character of what the old width showed leaves Conductor's
+# screen unreadable until it is erased whole, and an answered dialog would
+# never read as gone (#716's neighbour: the update question skipped at 72
+# columns stayed).
+dialog_draw() {
+	printf '\e[?2026h\e[1;1H\e[J%s\e[?2026l' "$1"
+}
+
+# dialog_key reads one key of the startup dialog $1 into key (the
+# caller's), drawing the dialog again if the window is resized meanwhile
+# (SIGWINCH, trapped only while it waits); 1 at the end of the input.
+dialog_resized=
+dialog_key() {
+	local rc
+	trap 'dialog_resized=1' WINCH
+	while :; do
+		if [[ -n $dialog_resized ]]; then
+			dialog_resized=
+			dialog_draw "$1"
+		fi
+		if IFS= read -rsn1 -t 0.2 key; then
+			trap - WINCH
+			return 0
+		else
+			rc=$?
+		fi
+		if ((rc <= 128)); then
+			trap - WINCH
+			return 1
+		fi
+	done
+}
+
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
 # and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
@@ -1191,8 +1242,10 @@ trust_dialog() {
 		if ((sel == 0)); then y='›' n=' '; else y=' ' n='›'; fi
 		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
 	}
-	printf 'Trust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n'
-	while IFS= read -rsn1 key; do
+	local text
+	printf -v text 'Trust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n'
+	dialog_draw "$text"
+	while dialog_key "$text"; do
 		if [[ -z $key || $key == $'\r' ]]; then
 			break
 		fi
@@ -1231,8 +1284,10 @@ erase_dialog() {
 # digit moves the highlight.
 hooks_review() {
 	local sel=1 key
-	printf 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n> 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won'"'"'t run)\n'
-	while IFS= read -rsn1 key; do
+	local text
+	printf -v text 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n> 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won'"'"'t run)\n'
+	dialog_draw "$text"
+	while dialog_key "$text"; do
 		if [[ -z $key || $key == $'\r' ]]; then
 			break
 		fi
@@ -1252,8 +1307,10 @@ hooks_review() {
 # background_question draws Codex's background-server question; a digit picks at once.
 background_question() {
 	local key
-	printf 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
-	while IFS= read -rsn1 key; do
+	local text
+	printf -v text 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
+	dialog_draw "$text"
+	while dialog_key "$text"; do
 		case $key in
 		1 | 2 | 3) break ;;
 		esac
@@ -1271,8 +1328,10 @@ background_question() {
 # verified in a PTY on 2026-10-11).
 update_question() {
 	local key answer=
-	printf 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
-	while IFS= read -rsn1 key; do
+	local text
+	printf -v text 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
+	dialog_draw "$text"
+	while dialog_key "$text"; do
 		case $key in
 		'' | $'\r' | 1) answer=update ;;
 		$'\e')
