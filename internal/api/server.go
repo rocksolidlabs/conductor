@@ -220,6 +220,8 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
+	// agentTokens is the set of the live agent tokens (liveTokens).
+	agentTokens liveTokens
 	// captureWait, when a test sets it, bounds a hosted hook's wait for its
 	// recorder in place of launchWait (captureHostedAgentSession).
 	captureWait atomic.Int64

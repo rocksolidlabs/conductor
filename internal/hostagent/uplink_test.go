@@ -136,7 +136,7 @@ func TestPublishSaysWhyTheRendezvousRefused(t *testing.T) {
 	if !strings.Contains(err.Error(), "open_host_limit") {
 		t.Fatalf("words: %v", err)
 	}
-	// Anything but a 429 does not pass with time.
+	// A 401 does not pass with time.
 	if again, _ := (&RefusedError{Status: 401}).Retryable(); again {
 		t.Fatal("a 401 retried")
 	}

@@ -573,16 +573,16 @@ func TestChainConnectionsUnwatched(t *testing.T) {
 	free := newTestEnvAgents(t, nil, e.srv.log, nil, WithExtensions(local.Fill(ext.Providers{})))
 	for _, srv := range []*Server{e.srv, free.srv} {
 		for _, p := range []principal{
-			srv.tokenPrincipal(tokenRequest(adminToken, false), adminToken),
-			srv.tokenPrincipal(tokenRequest("test-host-token", false), "test-host-token"),
-			srv.tokenPrincipal(tokenRequest(linkTok, false), linkTok),
+			principalFor(srv, tokenRequest(adminToken, false), adminToken),
+			principalFor(srv, tokenRequest("test-host-token", false), "test-host-token"),
+			principalFor(srv, tokenRequest(linkTok, false), linkTok),
 		} {
 			if srv.principalWatch(p, newWatchedToken("a-token"), ext.GrantAdmin) != nil {
 				t.Fatalf("a watch for %+v", p)
 			}
 		}
 	}
-	if free.srv.principalWatch(free.srv.tokenPrincipal(tokenRequest(watchToken, false), watchToken), newWatchedToken(watchToken), ext.GrantAdmin) != nil {
+	if free.srv.principalWatch(principalFor(free.srv, tokenRequest(watchToken, false), watchToken), newWatchedToken(watchToken), ext.GrantAdmin) != nil {
 		t.Fatal("the free default's server watches an unknown token")
 	}
 }
