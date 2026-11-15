@@ -371,6 +371,20 @@ func (t guardTerminal) Resize(cols, rows uint16) (err error) {
 
 func (t guardTerminal) Done() <-chan struct{} { return t.done }
 
+// Unread is the terminal's output not read yet, when the Runtime's
+// terminal can tell (session's unreadOutput); an error when it cannot,
+// and the session then types no line into its sign-in screen.
+func (t guardTerminal) Unread() (n int, err error) {
+	u, ok := t.t.(interface{ Unread() (int, error) })
+	if !ok {
+		return 0, errors.New("the runtime's terminal cannot tell its output not read yet")
+	}
+	if t.broken() || !t.guard("Unread", func() { n, err = u.Unread() }) {
+		return 0, t.err()
+	}
+	return n, t.g.quiet(err)
+}
+
 func (t guardTerminal) Exit() (st ext.ExitStatus) {
 	if t.broken() || !t.guard("Exit", func() { st = t.t.Exit() }) {
 		return ext.ExitStatus{Code: -1, Err: t.words}

@@ -77,6 +77,10 @@ func (f *FakeProc) end(code int, stopped bool) {
 // Read is the process's output, for the session's pump.
 func (f *FakeProc) Read(b []byte) (int, error) { return f.out.Read(b) }
 
+// Unread is the output waiting to be read: none, for Print returns only
+// once the session has read what it printed.
+func (f *FakeProc) Unread() (int, error) { return 0, nil }
+
 // Write sends a copy of b to Input.
 func (f *FakeProc) Write(b []byte) (int, error) {
 	select {

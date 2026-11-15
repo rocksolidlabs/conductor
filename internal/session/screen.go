@@ -765,6 +765,12 @@ func (s *Screen) Settled() bool { return !s.syncing && !s.lay.clipped }
 // baseline.
 func (s *Screen) Drawn() bool { return !s.syncing }
 
+// Ground reports whether the parser is between sequences: no control
+// sequence and no character half received (a read that cut one leaves the
+// rest to the next; a frame's opener cut before its final byte has not
+// begun the update yet, and the screen still reads as the frame before).
+func (s *Screen) Ground() bool { return s.st == scrGround && s.utfWant == 0 }
+
 // DrawnAt reports whether the screen shows everything the program drew,
 // as it drew it (no synchronized update under way, nothing cut by a
 // resize since the program last erased the screen whole), and the size it

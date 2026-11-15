@@ -269,6 +269,12 @@ func TestALineWaitsForTheSignInScreenDrawnAgainAfterAResize(t *testing.T) {
 	if uncut, _, _ := s.asked.DrawnAt(); uncut {
 		t.Fatal("the screen is not cut by the window made smaller")
 	}
+	// The redraw is let go once the line waits for it (inLineWait), not
+	// after a while without a write.
+	waiting := make(chan struct{})
+	var once sync.Once
+	hook := func() { once.Do(func() { close(waiting) }) }
+	s.inLineWait.Store(&hook)
 	done := make(chan error, 1)
 	go func() {
 		res, err := s.Submit(t.Context(), Submission{Text: signInCode, By: nater, Question: q.ID})
@@ -277,10 +283,16 @@ func TestALineWaitsForTheSignInScreenDrawnAgainAfterAResize(t *testing.T) {
 		}
 		done <- err
 	}()
-	noWrite(t, p, 100*time.Millisecond)
 	select {
+	case <-waiting:
 	case err := <-done:
 		t.Fatalf("the line did not wait for the screen drawn again: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the line never waited for the screen drawn again")
+	}
+	select {
+	case b := <-p.input:
+		t.Fatalf("written while it waits: %q", b)
 	default:
 	}
 	// Drawn again at the new size.

@@ -163,6 +163,9 @@ func (t *nativeTerminal) Write(b []byte) (int, error)    { return t.p.Write(b) }
 func (t *nativeTerminal) Resize(cols, rows uint16) error { return t.p.Resize(cols, rows) }
 func (t *nativeTerminal) Done() <-chan struct{}          { return t.p.Done() }
 
+// Unread is the terminal's output not read yet (pty.Process.Unread).
+func (t *nativeTerminal) Unread() (int, error) { return t.p.Unread() }
+
 // Exit is the process's exit status, its error as words.
 func (t *nativeTerminal) Exit() ext.ExitStatus {
 	st := t.p.Exit()

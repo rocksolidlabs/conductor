@@ -15,6 +15,7 @@ import (
 	"time"
 
 	creack "github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // Spec describes the process to start.
@@ -210,6 +211,23 @@ func (p *Process) Read(b []byte) (int, error) { return p.f.Read(b) }
 
 // Write sends input to the process.
 func (p *Process) Write(b []byte) (int, error) { return p.f.Write(b) }
+
+// Unread is how many bytes of the process's output wait in the terminal,
+// not read yet: the kernel's count (FIONREAD on the terminal's master
+// side, fionread), asked without taking the descriptor out of the
+// runtime's poller.
+func (p *Process) Unread() (int, error) {
+	rc, err := p.f.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	var ierr error
+	if err := rc.Control(func(fd uintptr) { n, ierr = unix.IoctlGetInt(int(fd), fionread) }); err != nil {
+		return 0, err
+	}
+	return n, ierr
+}
 
 // Resize changes the terminal window size and signals the process group.
 func (p *Process) Resize(cols, rows uint16) error {
