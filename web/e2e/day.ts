@@ -290,7 +290,7 @@ export class Day {
   async sessionIs(id: string, what: string, p: Promised): Promise<Session> {
     budget(DAY_STEP_MS)
     let s = await this.api.session(id)
-    await expect.poll(async () => promised((s = await this.api.session(id)), p), { timeout: DAY_STEP_MS, message: `${what} is ${p.status} with attention ${p.attention || 'none'}` }).toBe('')
+    await expect.poll(async () => promised((s = await this.api.session(id)), p), { timeout: DAY_STEP_MS, message: `${what} is to be ${p.status} with attention ${p.attention || 'none'}` }).toBe('')
     return s
   }
 

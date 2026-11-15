@@ -72,11 +72,11 @@ export function runInfo(o: { tasks: 6 | 40 | 128; states?: TaskState[] }): StubR
 const CANDIDATE_PAGE = 8
 
 export interface ServedRun {
+  /** Every read the module answered, by method, path and query. */
+  readonly answered: string[]
   /** Every /api/ request the page made that the module did not answer (a read under the run answered 404 is among them). */
   readonly unanswered: string[]
 }
-
-const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 
 /**
  * Answers the run page's reads of `run`: the runs list (the server's, `run` added: the live store keeps only the runs it lists),
@@ -86,6 +86,7 @@ const json = (route: Route, status: number, body: unknown) => route.fulfill({ st
  * server). Set before the page loads.
  */
 export async function serveRun(page: Page, run: StubRun): Promise<ServedRun> {
+  const answered: string[] = []
   const unanswered: string[] = []
   const under = `/api/runs/${run.id}`
   const candidates = (t: RunTask) => ({
@@ -102,6 +103,10 @@ export async function serveRun(page: Page, run: StubRun): Promise<ServedRun> {
       const req = route.request()
       const u = new URL(req.url())
       const path = u.pathname
+      const json = (r: Route, status: number, body: unknown) => {
+        answered.push(`${req.method()} ${path}${u.search}`)
+        return r.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      }
       if (req.method() === 'GET') {
         if (path === under) return json(route, 200, { run })
         if (path === '/api/runs') {
@@ -131,9 +136,9 @@ export async function serveRun(page: Page, run: StubRun): Promise<ServedRun> {
         if (path === '/api/dispatch/links' && u.searchParams.get('run') === run.id) return json(route, 200, { ticket: null })
       }
       unanswered.push(`${req.method()} ${path}${u.search}`)
-      if (path === under || path.startsWith(`${under}/`)) return json(route, 404, { error: { code: 'not_found', message: 'not answered by serveRun' } })
+      if (path === under || path.startsWith(`${under}/`)) return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'not_found', message: 'not answered by serveRun' } }) })
       return route.fallback()
     },
   )
-  return { unanswered }
+  return { answered, unanswered }
 }

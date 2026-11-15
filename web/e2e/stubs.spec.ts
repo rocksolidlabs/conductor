@@ -22,6 +22,7 @@ for (const tasks of [6, 40] as const) {
     }
     // Every state at once (as many as the tasks hold), drawn: the stub's default.
     expect(new Set(run.tasks.map((t) => t.state)).size).toBe(Math.min(tasks, 7))
+    expect(served.answered).toContain(`GET /api/runs/${run.id}`)
     expect(served.unanswered.filter((r) => r.includes(run.id))).toEqual([])
     void day
   })
