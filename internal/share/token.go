@@ -12,7 +12,10 @@ import (
 // Hash is the stored form of a token.
 type Hash [32]byte
 
-// NewToken returns a 43-character base64url token and its hash.
+// TokenLen is the length of every token NewToken returns.
+const TokenLen = 43
+
+// NewToken returns a TokenLen-character base64url token and its hash.
 func NewToken() (string, Hash) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {

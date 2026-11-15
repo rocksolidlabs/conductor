@@ -59,6 +59,12 @@ type Options struct {
 	Log       *slog.Logger
 	// StopGrace is the SIGTERM grace period before SIGKILL.
 	StopGrace time.Duration
+	// Tokens, when set, is the set SetAgentToken adds the hash of a token
+	// it is given to. A launch adds its token's hash itself, at the mint,
+	// and hands the entry over (TakeAgentToken): the session holds it from
+	// that hand-off. Either way the session removes the entry when another
+	// token replaces it or as the session ends (TokenEntry).
+	Tokens TokenSet
 	// OnChange is called (outside the session lock) after status, viewer
 	// count or attention changes so listings and event streams stay current.
 	OnChange func(Info)
@@ -459,6 +465,9 @@ type Local struct {
 	afterAsked     atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
+	// token is the agent token's entry in opts.Tokens while the session
+	// lives (TakeAgentToken).
+	token TokenEntry
 	// agentCalled says the session's agent token has been presented and
 	// taken (AgentTokenOK) at least once: its agent, or a tool it runs
 	// (its MCP server, its hooks), has called the server as itself.
@@ -705,6 +714,7 @@ func (s *Local) markEnded(status Status) {
 		return
 	}
 	s.info.Status = status
+	s.token.Remove()
 	// A claim whose claimant may still resolve it stays, its question kept
 	// as it stands (endedQs): its keys may have been written, and the
 	// question leaves only as the claim settles. Every other claim goes.
@@ -2400,12 +2410,39 @@ func attentionMessage(att Attention) proto.Attention {
 	return m
 }
 
-// SetAgentToken records the per-session token agents use to report attention.
+// SetAgentToken records the per-session token agents use to report
+// attention, with its entry added to opts.Tokens (TakeAgentToken).
 func (s *Local) SetAgentToken(tok string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var e TokenEntry
+	if tok != "" {
+		e = AddToken(s.opts.Tokens, sha256.Sum256([]byte(tok)))
+	}
+	s.takeAgentToken(tok, e)
+}
+
+// TakeAgentToken is SetAgentToken with the token's entry handed over by
+// its launch: the session owns it from here and removes it as it ends, at
+// once when it has ended.
+func (s *Local) TakeAgentToken(tok string, e TokenEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.takeAgentToken(tok, e)
+}
+
+// takeAgentToken, s.mu held: the earlier entry, if another, is removed
+// once e is in.
+func (s *Local) takeAgentToken(tok string, e TokenEntry) {
 	s.agentTokenHash = sha256.Sum256([]byte(tok))
 	s.hasAgentToken = tok != ""
+	if old := s.token.Hand(); old != e {
+		old.Remove()
+	}
+	s.token = e
+	if s.info.Status.Ended() {
+		s.token.Remove()
+	}
 }
 
 // AgentTokenOK compares a presented agent token in constant time. It is
@@ -2423,6 +2460,43 @@ func (s *Local) AgentTokenOK(tok string) bool {
 	}
 	s.agentCalled.Store(true)
 	return true
+}
+
+// TokenSet is a set of the hashes of live agent tokens; removing a hash
+// that is not in it does nothing.
+type TokenSet interface {
+	Add(h [32]byte)
+	Remove(h [32]byte)
+}
+
+// TokenEntry is one hash's entry in a TokenSet, with one owner at a time:
+// its holder removes it or hands it over, and holds nothing after either.
+type TokenEntry struct {
+	set TokenSet
+	h   [32]byte
+}
+
+// AddToken adds h to set and answers its entry (none when set is nil).
+func AddToken(set TokenSet, h [32]byte) TokenEntry {
+	if set == nil {
+		return TokenEntry{}
+	}
+	set.Add(h)
+	return TokenEntry{set, h}
+}
+
+// Hand answers the entry for its next owner; e holds nothing after it.
+func (e *TokenEntry) Hand() TokenEntry {
+	given := *e
+	*e = TokenEntry{}
+	return given
+}
+
+// Remove takes the entry out of its set; e holds nothing after it.
+func (e *TokenEntry) Remove() {
+	if given := e.Hand(); given.set != nil {
+		given.set.Remove(given.h)
+	}
 }
 
 // AgentCalled reports whether the session's agent token has been taken

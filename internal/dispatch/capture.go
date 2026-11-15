@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // A capture is a person's evidence about work (Program item PV1,
@@ -29,9 +30,11 @@ import (
 // of the tree (serving), the changed paths' cut and how a retake is
 // related to the capture it retakes. How the screenshot was taken is the
 // client's word (NewCapture.ImageHow), checked against what the store
-// knows and stored as given. The names the privacy rule compares are what
-// its lists of names allow and nothing else, judged in one form (isTag,
-// isAttributeName, namedAs). The capture's document
+// knows and stored as given. The privacy rule compares names by their
+// local names in one form (namedAs), and an attribute's name not of an
+// attribute's form keeps no value near it (isAttributeName). The client's
+// words are checked by one pure function (CheckNewCapture) before the
+// facts are. The capture's document
 // (CaptureDocument, conductor.capture/1) is what a send freezes as a
 // content file (sends.go).
 
@@ -65,11 +68,16 @@ const (
 )
 
 // ViewportModes is a viewport's device modes; SourceClasses a source's
-// classes in the order a capture's sources take (the app's own first).
+// classes in the order a capture's sources take (the app's own first),
+// SourceUnknown last: a source whose class git was not asked or did not
+// answer.
 var (
 	ViewportModes = []string{"fit", "desktop", "tablet", "phone"}
-	SourceClasses = []string{"tracked", "untracked", "ignored", "vendor"}
+	SourceClasses = []string{"tracked", "untracked", "ignored", "vendor", SourceUnknown}
 )
+
+// SourceUnknown is the class of a source the server could not class.
+const SourceUnknown = "unknown"
 
 // ErrBadReceived is a capture operation whose request digest is no
 // SHA-256 (RequestDigest): answered as a bad op id is, nothing written.
@@ -108,9 +116,13 @@ type Viewport struct {
 }
 
 // ElementReport is what the bridge read of an element (the plan's
-// "element report"), at most MaxElementReport bytes as encoded (measure).
-// Attributes and Styles are name and value pairs.
+// "element report"), at most MaxElementReport bytes as the bridge measures
+// it (bridgeReportOf). Attributes and Styles are name and value pairs.
+// Measured is the report's measure as the bridge cut it, taken by the API
+// before it put the report in this shape (0 when none was taken): never
+// kept, and checked beside the store's own measure.
 type ElementReport struct {
+	Measured      int          `json:"-"`
 	Tag           string       `json:"tag"`
 	ID            string       `json:"id,omitempty"`
 	Classes       []string     `json:"classes,omitempty"`
@@ -465,7 +477,7 @@ func (c *checker) rect(label string, r Rect) {
 }
 
 func (c *checker) viewport(label string, v Viewport) {
-	c.must(slices.Contains(ViewportModes, v.Mode), RefusalInvalid, "%s's mode %q is none of %s", label, v.Mode, strings.Join(ViewportModes, ", "))
+	c.must(slices.Contains(ViewportModes, v.Mode), RefusalInvalid, "%s's mode is none of %s", label, strings.Join(ViewportModes, ", "))
 	c.must(v.Width >= 0 && v.Height >= 0 && v.Width <= MaxRectCoord && v.Height <= MaxRectCoord, RefusalInvalid, "%s's size is out of range", label)
 	c.within(label+"'s scroll", MaxScroll, v.ScrollX, v.ScrollY)
 	c.must(v.Scale > 0 && v.Scale <= 64 && v.DPR > 0 && v.DPR <= 64, RefusalInvalid, "%s's scale and pixel ratio are not above 0 and at most 64", label)
@@ -474,7 +486,7 @@ func (c *checker) viewport(label string, v Viewport) {
 }
 
 func (c *checker) hexID(label, s string, required bool) {
-	c.must((s == "" && !required) || objectIDPattern.MatchString(s), RefusalInvalid, "%s %q is not a full object id", label, s)
+	c.must((s == "" && !required) || objectIDPattern.MatchString(s), RefusalInvalid, "%s is not a full object id", label)
 }
 
 // classes checks an element's or an ancestor's classes, joined by spaces.
@@ -484,18 +496,19 @@ func (c *checker) names(label string, tag, id, role, name string, classes []stri
 	}
 }
 
-// The names the privacy rule judges are what these allow and nothing
-// else. A tag is ASCII letters, digits, '.', '_' and '-', from a letter,
-// with at most one prefix of the same form before one colon: HTML's,
-// SVG's and MathML's elements and custom elements. An attribute's name is
-// ASCII, from a letter, '_', ':' or '@', on with letters, digits, '_',
-// '.', ':', '@' and '-', and something after its last colon.
+// The names of the forms the privacy rule judges. A tag is ASCII letters,
+// digits, '.', '_' and '-', from a letter, with at most one prefix of the
+// same form before one colon: HTML's, SVG's and MathML's elements and
+// custom elements. An attribute's name is ASCII, from a letter, '_', ':' or
+// '@', on with letters, digits, '_', '.', ':', '@' and '-', and something
+// after its last colon. A name of another form is kept, and the element
+// that has one keeps no value (element).
 var (
 	tagPattern           = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]*(:[A-Za-z][A-Za-z0-9._-]*)?$`)
 	attributeNamePattern = regexp.MustCompile(`^[A-Za-z_:@][A-Za-z0-9_.:@-]*$`)
 )
 
-// isTag is whether s is an element's tag (tagPattern).
+// isTag is whether s is an element's tag of the form (tagPattern).
 func isTag(s string) bool { return tagPattern.MatchString(s) }
 
 // isAttributeName is whether s is an attribute's name
@@ -529,31 +542,38 @@ func asciiLetters(s string) string {
 	}, s)
 }
 
-// element checks an element's report by every bound of the plan's, and
-// the privacy rule: an input's value, and a password field's (a type whose
-// letters spell password, on any element), is never kept, its tag and its
-// attributes' names judged as names (isTag, isAttributeName, namedAs).
+// element checks an element's report by every bound of the plan's and the
+// bridge's, and the privacy rule: an input's value, and a password
+// field's (a type whose letters spell password, on any element), is never
+// kept. A tag and an attribute's name are any name within their bounds
+// with no control character, as the bridge reports them; the rule judges
+// them by their local names (namedAs). A name that is not of its form
+// (isTag, isAttributeName) could hide an input or a type: an element with
+// one keeps no value, and an input's or a password field's attributes are
+// all of the form.
 func (c *checker) element(label string, e *ElementReport) {
-	c.must(isTag(e.Tag), RefusalInvalid, "%s's tag is not an element's name", label)
+	c.must(!strings.ContainsFunc(e.Tag, unicode.IsControl), RefusalInvalid, "%s's tag holds a control character", label)
 	c.names(label, e.Tag, e.ID, e.Role, e.Name, e.Classes)
 	c.field("element.text", label+"'s text", e.Text)
 	c.field("element.selector", label+"'s selector", e.Selector)
-	c.rect(label+"'s box", e.Box)
+	c.box(label+"'s box", e.Box)
 	c.count("attributes", len(e.Attributes), MaxElementAttributes)
-	secret := namedAs(e.Tag, "input")
+	secret, odd := namedAs(e.Tag, "input"), !isTag(e.Tag)
 	for _, a := range e.Attributes {
 		c.field("element.attribute_name", label+"'s attribute name", a[0])
-		c.must(isAttributeName(a[0]), RefusalInvalid, "%s's attribute name is not an attribute's name", label)
 		c.field("element.attribute_value", label+"'s attribute value", a[1])
 		secret = secret || (namedAs(a[0], "type") && asciiLetters(a[1]) == "password")
+		odd = odd || !isAttributeName(a[0])
 	}
 	for _, a := range e.Attributes {
-		c.must(!secret || !namedAs(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
+		c.must(!(secret || odd) || !namedAs(a[0], "value"), RefusalInvalid, "%s keeps an input's value, which is never kept", label)
+		c.must(!secret || isAttributeName(a[0]), RefusalInvalid, "%s's attribute name is not an attribute's name, on an element whose value is never kept", label)
 	}
+	// A state's words are bound as the bridge bounds them (a name's bound).
 	for _, w := range []string{e.State.AriaDisabled, e.State.AriaExpanded, e.State.PointerEvents} {
-		c.field("element.word", label+"'s state", w)
+		c.field("element.name", label+"'s state", w)
 	}
-	c.must(e.State.Motion >= 0 && e.State.Motion <= MaxRectCoord, RefusalInvalid, "%s's motion is out of range", label)
+	c.must(e.State.Motion >= 0 && e.State.Motion <= MaxHintLine, RefusalInvalid, "%s's motion is out of range", label)
 	c.field("element.selector", label+"'s hit test's selector", e.Hit.Selector)
 	c.field("element.name", label+"'s hit test's tag", e.Hit.Tag)
 	c.field("element.html", label+"'s HTML", e.HTML)
@@ -561,7 +581,7 @@ func (c *checker) element(label string, e *ElementReport) {
 	c.count("ancestors", len(e.Ancestors), MaxAncestors)
 	for _, a := range e.Ancestors {
 		c.names(label+"'s ancestor", a.Tag, a.ID, a.Role, "", a.Classes)
-		c.measured(label+"'s ancestor", a, MaxAncestor)
+		c.measured(label+"'s ancestor", bridgeAncestorOf(a), MaxAncestor)
 	}
 	c.count("styles", len(e.Styles), MaxStyles)
 	for _, st := range e.Styles {
@@ -573,13 +593,124 @@ func (c *checker) element(label string, e *ElementReport) {
 		c.field("element.word", label+"'s hint's how", h.How)
 		c.field("element.hint_file", label+"'s hint's file", h.File)
 		c.field("element.hint_component", label+"'s hint's component", h.Component)
-		c.must(h.Line >= 0 && h.Column >= 0 && h.Line <= MaxFindingLine && h.Column <= MaxFindingLine, RefusalInvalid, "%s's hint's line is out of range", label)
+		c.must(h.Line >= 0 && h.Column >= 0 && h.Line <= MaxHintLine && h.Column <= MaxHintLine, RefusalInvalid, "%s's hint's line is out of range", label)
 	}
 	c.count("cut steps", len(e.Cut), 10)
 	for _, w := range e.Cut {
 		c.field("element.word", label+"'s cut", w)
 	}
-	c.measured(label+"'s report", e, MaxElementReport)
+	if n := max(e.Measured, measure(bridgeReportOf(e))); c.err == nil && n > MaxElementReport {
+		c.err = refuse(RefusalBound, "%s's report is %d bytes as the bridge measures it, more than %d", label, n, MaxElementReport)
+	}
+}
+
+// box checks an element's box as the bridge bounds it: finite numbers, its
+// size not negative.
+func (c *checker) box(label string, r Rect) {
+	c.within(label, math.MaxFloat64, r.X, r.Y, r.Width, r.Height)
+	c.must(r.Width >= 0 && r.Height >= 0, RefusalInvalid, "%s has a negative size", label)
+}
+
+// bridgeReport is an element's report in the bridge's own shape
+// (internal/proto's ElementReport, docs/protocol.md "Preview bridge"):
+// every member written, a list empty as [], the classes joined by spaces.
+// A report and its ancestors are measured in it, so the store's bound is
+// the one the bridge cut the report to.
+type bridgeReport struct {
+	Tag           string           `json:"tag"`
+	ID            string           `json:"id"`
+	Classes       string           `json:"classes"`
+	Role          string           `json:"role"`
+	Name          string           `json:"name"`
+	Text          string           `json:"text"`
+	Selector      string           `json:"selector"`
+	Box           Rect             `json:"box"`
+	Attributes    [][2]string      `json:"attributes"`
+	State         bridgeState      `json:"state"`
+	Hit           bridgeHit        `json:"hit"`
+	HTML          string           `json:"html"`
+	Neighbourhood string           `json:"neighbourhood"`
+	Ancestors     []bridgeAncestor `json:"ancestors"`
+	Styles        [][2]string      `json:"styles"`
+	Hints         []bridgeHint     `json:"hints"`
+	Cut           []string         `json:"cut"`
+}
+
+type bridgeState struct {
+	Disabled      bool   `json:"disabled"`
+	Hidden        bool   `json:"hidden"`
+	AriaDisabled  string `json:"ariaDisabled"`
+	AriaExpanded  string `json:"ariaExpanded"`
+	PointerEvents string `json:"pointerEvents"`
+	Inert         bool   `json:"inert"`
+	Hovered       bool   `json:"hovered"`
+	Motion        int    `json:"motion"`
+}
+
+type bridgeHit struct {
+	Self     bool   `json:"self"`
+	Selector string `json:"selector"`
+	Tag      string `json:"tag"`
+}
+
+type bridgeAncestor struct {
+	Tag     string `json:"tag"`
+	ID      string `json:"id"`
+	Classes string `json:"classes"`
+	Role    string `json:"role"`
+}
+
+type bridgeHint struct {
+	How       string `json:"how"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Column    int    `json:"column"`
+	Component string `json:"component"`
+}
+
+// bridgeAncestorOf is a in the bridge's shape.
+func bridgeAncestorOf(a Ancestor) bridgeAncestor {
+	return bridgeAncestor{Tag: a.Tag, ID: a.ID, Classes: strings.Join(a.Classes, " "), Role: a.Role}
+}
+
+// bridgeReportOf is e in the bridge's shape.
+func bridgeReportOf(e *ElementReport) bridgeReport {
+	list := func(v [][2]string) [][2]string {
+		if v == nil {
+			return [][2]string{}
+		}
+		return v
+	}
+	b := bridgeReport{Tag: e.Tag, ID: e.ID, Classes: strings.Join(e.Classes, " "), Role: e.Role, Name: e.Name, Text: e.Text, Selector: e.Selector,
+		Box: e.Box, Attributes: list(e.Attributes), State: bridgeState(e.State), Hit: bridgeHit(e.Hit), HTML: e.HTML, Neighbourhood: e.Neighbourhood,
+		Ancestors: []bridgeAncestor{}, Styles: list(e.Styles), Hints: []bridgeHint{}, Cut: e.Cut}
+	if b.Cut == nil {
+		b.Cut = []string{}
+	}
+	for _, a := range e.Ancestors {
+		b.Ancestors = append(b.Ancestors, bridgeAncestorOf(a))
+	}
+	for _, h := range e.Hints {
+		b.Hints = append(b.Hints, bridgeHint(h))
+	}
+	return b
+}
+
+// ReportText is a text of an element's report as the store keeps it,
+// never longer as encoded: a carriage return made a line feed, every other
+// control character but a line feed and a tab made a space, and each run
+// of bytes that is not UTF-8 one space. The API makes every text of a
+// report so before the report is checked.
+func ReportText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\r':
+			return '\n'
+		case unicode.IsControl(r) && r != '\n' && r != '\t':
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s, " "))
 }
 
 // sources checks an element's checked sources: within the hints' bounds,
@@ -592,10 +723,10 @@ func (c *checker) sources(label string, ss []Source) {
 		c.field("element.hint_file", label+"'s source's path", s.Path)
 		c.field("element.hint_component", label+"'s source's component", s.Component)
 		c.field("element.word", label+"'s source's how", s.How)
-		c.must(s.Line >= 0 && s.Column >= 0 && s.Line <= MaxFindingLine && s.Column <= MaxFindingLine, RefusalInvalid, "%s's source's line is out of range", label)
+		c.must(s.Line >= 0 && s.Column >= 0 && s.Line <= MaxHintLine && s.Column <= MaxHintLine, RefusalInvalid, "%s's source's line is out of range", label)
 		c.must(!(s.Outside && s.Found), RefusalInvalid, "%s's source outside the tree is not found in it", label)
 		r := slices.Index(SourceClasses, s.Class)
-		c.must(r >= rank, RefusalInvalid, "%s's sources are not tracked, untracked, ignored and vendor in that order, or name another class", label)
+		c.must(r >= rank, RefusalInvalid, "%s's sources are not tracked, untracked, ignored, vendor and unknown in that order, or name another class", label)
 		rank = max(rank, r)
 	}
 }
@@ -624,13 +755,21 @@ func pageOrigin(s string) string {
 	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + strconv.Itoa(n)
 }
 
-// checkCapture checks a create's client words and the server's facts by
-// every bound and rule that needs no transaction, and gives the capture's
-// row as made of them (its id, times, image and retake's relation the
-// operation's to fill) with its annotations in their order.
-func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotation, error) {
+// CheckNewCapture checks a create's client words as they are handed in,
+// with a screenshot (image, its size as its header gives it, or none yet)
+// or without one (nil), by every rule of the store's that needs nothing
+// else: every text's bound and form, every count, each element's report
+// (its measure as the bridge cut it among it), each annotation's kind, the
+// one moment they were all selected at, and each region within the
+// screenshot when its size is given (inImage). It is pure (no tree, no
+// transaction, no other effect): the store's look before a tree is read
+// (CheckCaptureCreate) and CreateCapture each call it first, so a request
+// it refuses is refused by the store with its receipt. A refusal names the
+// member and what it may be, never what the request carried.
+func CheckNewCapture(n NewCapture, img *CaptureImage) error {
 	c := &checker{}
-	c.must(n.Via == CaptureViaWeb || n.Via == CaptureViaDesktop, RefusalInvalid, "via %q is neither web nor desktop", n.Via)
+	image := img != nil
+	c.must(n.Via == CaptureViaWeb || n.Via == CaptureViaDesktop, RefusalInvalid, "via is neither web nor desktop")
 	c.field("capture.url", "the page's URL", n.URL)
 	c.field("capture.title", "the page's title", n.Title)
 	c.viewport("the viewport", n.Viewport)
@@ -647,13 +786,84 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 	// How the screenshot was taken is the client's word: none exactly when
 	// there is none, the desktop's only from the desktop client.
 	c.must((!image && n.ImageHow == ImageNone) || (image && (n.ImageHow == ImageTab || (n.ImageHow == ImageDesktop && n.Via == CaptureViaDesktop))),
-		RefusalInvalid, "how the screenshot was taken, %q, is not none without one, or tab or (from the desktop client) desktop with one", n.ImageHow)
+		RefusalInvalid, "how the screenshot was taken is not none without one, or tab or (from the desktop client) desktop with one")
 	c.must(n.Label.Changed >= 0 && n.Label.Changed <= MaxChangedCount, RefusalInvalid, "the selection's read counts changed paths not from 0 to %d", MaxChangedCount)
 	// Every time is one the store writes and reads back, and the
 	// selection's read was made before the capture is.
 	c.must(storable(n.SelectedAt), RefusalInvalid, "the moment of selection is not a time the store keeps")
 	c.must(n.Label.ReadAt.IsZero() || (storable(n.Label.ReadAt) && !n.Label.ReadAt.After(time.Now())), RefusalInvalid,
 		"the selection's read is not a time the store keeps before now")
+	c.count("annotations", len(n.Annotations), MaxCaptureAnnotations)
+	for i, a := range n.Annotations {
+		label := fmt.Sprintf("annotation %d", i+1)
+		c.field("annotation.note", label+"'s note", a.Note)
+		c.rect(label+"'s rectangle", a.Rect)
+		switch a.Kind {
+		case AnnotationElement:
+			c.must(a.Element != nil && a.Observed != nil, RefusalInvalid, "%s is an element with no report or no moment", label)
+			if c.err != nil {
+				return c.err
+			}
+			c.element(label, a.Element)
+			o := a.Observed
+			c.must(!o.At.IsZero() && storable(o.At), RefusalInvalid, "%s names no moment the store keeps", label)
+			c.field("capture.title", label+"'s title", o.Title)
+			// Stability is the pixels' verdict: none without a screenshot,
+			// and never stable while the element is in motion.
+			c.must(o.Stable == nil || (image && (!*o.Stable || a.Element.State.Motion == 0)), RefusalInvalid,
+				"%s's stability is claimed without a screenshot, or while it is in motion", label)
+			// One capture is one moment: every element was selected at the
+			// moment the screenshot shows.
+			c.must(o.URL == n.URL && o.Viewport == n.Viewport && o.Epoch == n.Epoch && o.Revision == n.Revision &&
+				o.Label == (RevisionLabel{n.Label.Commit, n.Label.Content}), RefusalInvalid,
+				"%s was selected after the page changed: it is another capture", label)
+		case AnnotationRegion:
+			c.must(a.Element == nil && a.Observed == nil, RefusalInvalid, "%s is a region with an element's report", label)
+			c.must(image, RefusalInvalid, "%s is a region, drawn on a screenshot, and this capture has none", label)
+			if c.err == nil && image && img.Width > 0 {
+				c.err = inImage(label, a.Rect, *img)
+			}
+		default:
+			c.must(false, RefusalInvalid, "%s's kind is neither element nor region", label)
+		}
+	}
+	return c.err
+}
+
+// CheckCaptureEdit checks an edit's annotations as they are handed in by
+// every rule of the store's that needs no capture: their count, each one's
+// kind and note, a region's rectangle, and no new element's report. It is
+// pure, as CheckNewCapture is, and EditCapture calls it first.
+func CheckCaptureEdit(edits []AnnotationEdit) error {
+	c := &checker{}
+	c.count("annotations", len(edits), MaxCaptureAnnotations)
+	for i, e := range edits {
+		label := fmt.Sprintf("annotation %d", i+1)
+		c.must(e.Element == nil, RefusalInvalid, "%s brings a new element: a new element is a new capture: Capture again", label)
+		c.must(e.Kind == AnnotationElement || e.Kind == AnnotationRegion, RefusalInvalid, "%s's kind is neither element nor region", label)
+		c.must(e.K >= 0, RefusalInvalid, "%s names an annotation that is not one of the capture's", label)
+		c.field("annotation.note", label+"'s note", e.Note)
+		if e.Kind == AnnotationRegion {
+			c.rect(label+"'s rectangle", e.Rect)
+		}
+	}
+	return c.err
+}
+
+// checkCapture checks a create's client words (CheckNewCapture, first) and
+// the server's facts by every bound and rule that needs no transaction,
+// and gives the capture's row as made of them (its id, times, image and
+// retake's relation the operation's to fill) with its annotations in their
+// order.
+func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotation, error) {
+	var img *CaptureImage
+	if image {
+		img = &CaptureImage{}
+	}
+	if err := CheckNewCapture(n, img); err != nil {
+		return Capture{}, nil, err
+	}
+	c := &checker{}
 	// The origin and its tree, the server's.
 	switch f.Origin {
 	case OriginURL:
@@ -690,7 +900,6 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		c.field("element.hint_file", "the run's scope", s)
 	}
 	c.measured("the run's scope", f.Scope, MaxCaptureScope)
-	c.count("annotations", len(n.Annotations), MaxCaptureAnnotations)
 	c.must(len(f.Sources) == 0 || len(f.Sources) == len(n.Annotations), RefusalInvalid, "the sources name %d annotations of %d", len(f.Sources), len(n.Annotations))
 	if c.err != nil {
 		return Capture{}, nil, c.err
@@ -702,33 +911,10 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		if len(f.Sources) > 0 {
 			sources = f.Sources[i]
 		}
-		c.field("annotation.note", label+"'s note", a.Note)
-		c.rect(label+"'s rectangle", a.Rect)
-		switch a.Kind {
-		case AnnotationElement:
-			c.must(a.Element != nil && a.Observed != nil, RefusalInvalid, "%s is an element with no report or no moment", label)
-			if c.err != nil {
-				return Capture{}, nil, c.err
-			}
-			c.element(label, a.Element)
+		if a.Kind == AnnotationElement {
 			c.sources(label, sources)
-			o := a.Observed
-			c.must(!o.At.IsZero() && storable(o.At), RefusalInvalid, "%s names no moment the store keeps", label)
-			c.field("capture.title", label+"'s title", o.Title)
-			// Stability is the pixels' verdict: none without a screenshot,
-			// and never stable while the element is in motion.
-			c.must(o.Stable == nil || (image && (!*o.Stable || a.Element.State.Motion == 0)), RefusalInvalid,
-				"%s's stability is claimed without a screenshot, or while it is in motion", label)
-			// One capture is one moment: every element was selected at the
-			// moment the screenshot shows.
-			c.must(o.URL == n.URL && o.Viewport == n.Viewport && o.Epoch == n.Epoch && o.Revision == n.Revision &&
-				o.Label == (RevisionLabel{n.Label.Commit, n.Label.Content}), RefusalInvalid,
-				"%s was selected after the page changed: it is another capture", label)
-		case AnnotationRegion:
-			c.must(a.Element == nil && a.Observed == nil && len(sources) == 0, RefusalInvalid, "%s is a region with an element's report", label)
-			c.must(image, RefusalInvalid, "%s is a region, drawn on a screenshot, and this capture has none", label)
-		default:
-			c.must(false, RefusalInvalid, "%s's kind %q is neither element nor region", label, a.Kind)
+		} else {
+			c.must(len(sources) == 0, RefusalInvalid, "%s is a region with an element's sources", label)
 		}
 		anns[i] = Annotation{K: i + 1, Kind: a.Kind, Note: a.Note, Rect: a.Rect, Element: a.Element, Observed: a.Observed, Sources: sources}
 	}
@@ -811,7 +997,7 @@ func pngSize(path string) (int, int, error) {
 		return 0, 0, refuse(RefusalInvalid, "the screenshot is not a PNG")
 	}
 	if cfg.Width < 1 || cfg.Height < 1 || cfg.Width > MaxCaptureImageSide || cfg.Height > MaxCaptureImageSide {
-		return 0, 0, refuse(RefusalBound, "the screenshot is %d by %d pixels; a side is at most %d", cfg.Width, cfg.Height, MaxCaptureImageSide)
+		return 0, 0, refuse(RefusalBound, "the screenshot has a side past %d pixels", MaxCaptureImageSide)
 	}
 	return cfg.Width, cfg.Height, nil
 }
