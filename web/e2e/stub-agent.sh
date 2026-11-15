@@ -77,6 +77,11 @@
 # `stub approvals <command>|<command>…` asks for each command in turn, the
 # next drawn as soon as the one before is answered, as Codex asks the
 # approvals it has queued.
+# A line `stub mcp-allow` makes the stub ask, as Codex does before a tool of
+# an MCP server it has not been allowed (#716), "Allow the conductor MCP
+# server to run tool "guide"?" with its four choices (digits 1 to 4, Esc
+# cancels, Enter picks Allow); the answer goes into the transcript as
+# "mcp-allow: …".
 # A line `stub plan` makes the stub send the hooks Claude Code sends for its
 # plan's approval and draw that dialog as Claude Code 2.1.304 draws it
 # (#288): its three choices, "1. Yes, and use auto mode" highlighted; 1 or
@@ -307,6 +312,10 @@ handed_off=
 # terminal is not focused, and the turn ends the same way: a bell after the
 # done.
 ring_at_end=
+# mcp_next: Codex's tool approval form was answered (mcp_allow): the next
+# line read goes into the transcript whole, an empty one too, so that a key
+# sent with the choice (an Enter, a letter) shows there.
+mcp_next=
 
 # The arguments: the session, the trust override, the yolo flags, the
 # title and the notifications Codex is launched with. Anything else is
@@ -486,6 +495,59 @@ approval() {
 		printf '✗ You did not approve %s\n' "$cmd"
 	else
 		printf '✔ You approved codex to run %s\n' "$cmd"
+	fi
+}
+
+# mcp_allow draws Codex's form asking to allow a tool of an MCP server
+# (#716), as Codex 0.163.0 to 0.169.0 draw it
+# (tui/src/bottom_pane/mcp_server_elicitation.rs and its snapshot
+# mcp_server_elicitation_approval_form_with_session_persist.snap, the
+# message as src/mcp_tool_call.rs words it), with the bell first and the
+# status blocked (its kind from 0.167, none in the 0.163 mode), on a
+# cleared screen, and waits for one key: a digit picks its choice at once
+# (1 allow, 2 allow-session, 3 always, 4 cancel), Esc cancels, Enter picks
+# the highlighted Allow; anything else (an arrow, a paste) is ignored. The
+# answer goes into the transcript as "mcp-allow: <answer>", and the tool is
+# never run.
+mcp_allow() {
+	local key seq answer= pasted
+	title_stop
+	printf '\a\e[2J\e[H  Field 1/1\n  Allow the conductor MCP server to run tool "guide"?\n  › 1. Allow                   Run the tool and continue\n    2. Allow for this session  Run the tool and remember this choice for this session\n    3. Always allow            Run the tool and remember this choice for future tool calls\n    4. Cancel                  Cancel this tool call\n\n  enter to submit | esc to cancel\n'
+	title_action
+	status_set blocked permission
+	while IFS= read -rsn1 key; do
+		case $key in
+		1 | '' | $'\r') answer=allow ;;
+		2) answer=allow-session ;;
+		3) answer=always ;;
+		4) answer=cancel ;;
+		$'\e')
+			seq=''
+			IFS= read -rsn2 -t 0.2 seq || true
+			if [[ $seq == '[2' ]]; then
+				pasted=''
+				while IFS= read -rsn1 key; do
+					pasted+=$key
+					[[ $pasted == *$'\e[201~' ]] && break
+				done
+				continue
+			fi
+			[[ -n $seq ]] && continue
+			answer=cancel
+			;;
+		*) continue ;;
+		esac
+		break
+	done
+	title_working
+	printf 'mcp-allow: %s\n' "$answer" >>"$transcript"
+	mcp_next=1
+	ring_at_end=1
+	printf '\e[2J\e[H'
+	if [[ $answer == cancel ]]; then
+		printf '• Cancelled conductor.guide\n'
+	else
+		printf '• Called conductor.guide({})\n'
 	fi
 }
 
@@ -1479,6 +1541,9 @@ answer() {
 	if [[ $line == 'stub plan' ]]; then
 		claude_plan
 	fi
+	if [[ $line == 'stub mcp-allow' ]]; then
+		mcp_allow
+	fi
 	if [[ $line == 'stub permission' ]]; then
 		claude_permission
 	fi
@@ -1609,6 +1674,10 @@ fi
 # answer.
 handle_line() {
 	local line=$1
+	if [[ -n $mcp_next ]]; then
+		mcp_next=
+		printf 'mcp-allow next line: %s\n' "${line:0:200}" >>"$transcript"
+	fi
 	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
 		title_working
 		spin "${BASH_REMATCH[1]}"
