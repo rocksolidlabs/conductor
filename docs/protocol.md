@@ -2429,28 +2429,56 @@ each failure, a minute at most) and a revoke again from the list tries at
 once; the route answers `502 rendezvous_unavailable` meanwhile, and a
 revoke again once the switchyard has confirmed it answers `204`. The
 publisher's host connection asks the server's own link store of every
-viewer that came with a link, at its attach and at each act. A revoke
-takes effect there at the store's mark, which comes once the acts under
-way through the link have ended, at most the store's wait for them
-(`HoldWait`, 5 s) after the revoke began; until the mark a viewer of the
-link is judged as before the revoke, on every path alike (its lane's
-operations excepted: none begins once the barrier has). From the mark
-a viewer with the link is refused at its attach and at each act
-(`revoked`, with the words above), whatever the switchyard has taken yet,
-and the server starts ending the viewers attached through a run's link
-on every session and run desk it holds, all at once, and waits for none
-of them: the revoke is answered and the expiry sweep goes on, and the
-server's stop waits for those ends within its own bound. Past a link's
-expiry on the server's clock, an attach and an attached viewer's keys
-and saves are refused `expired`; the attached viewer is ended by the
-server's expiry sweep, every 30 s, which ends the link as a revoke does
-(a desk's viewer is told `expired`), and by the switchyard at the
-deadline on its own clock. When a run is forgotten, the store keeps the
-id of each of its links minted at the switchyard as ended, whatever it
-stood at (a viewer with one is refused `revoked`), until the switchyard
-confirms it is gone there (the forget's one revoke there taken, or
-answered `not_found`), at most 256 of them, the oldest leaving first: the
-id alone, in memory. After a restart the store keeps none, and a link
+viewer that came with a link, at its attach and at each act but a
+resize: a resize is applied as before until the server ends the viewer.
+A revoke takes effect there at the store's mark, which comes once the
+acts under way through the link have ended, at most the store's wait for
+them (`HoldWait`, 5 s) after the revoke began. Until the mark, a decision
+link's viewer through the server's own window has its keys refused from
+the revoke's beginning, as before; through a host's connection its keys
+and saves are written, and its lane's operations are refused from the
+revoke's beginning (none begins once the barrier has). From the mark a
+viewer with the link is refused at its attach and at each act but a
+resize (`revoked`, with the words above), whatever the switchyard has
+taken yet, unless it was refused earlier: where the switchyard has
+already said the link is gone at that connection, or this server's
+credential there was lost, the attach is refused as before
+(`attach_failed`). At a
+run link's end (a revoke, an expiry) the server starts ending the link's
+viewers on every session it holds and on every run desk it keeps at the
+switchyard, all at once, and waits for none of them: the revoke is
+answered meanwhile. The run's desk on this server is ended once those
+sessions' closes are done, each bounded by its viewer's close wait. A
+session link's end waits for its viewers' closes, as before. The
+server's stop waits, within its bound, for an end of a run link's
+viewers begun before its last wait, which comes once its sessions and
+connections are closed; one begun after that is not waited for (the
+process ends, and its connections with it). Past a link's expiry on
+this server's clock, an attach and every act but a resize are refused
+at once (`expired`);
+output can still reach a viewer attached until it is ended. The
+server's expiry sweep, every 30 s, ends every link that is due through
+its barrier, all at once, waiting at most the store's wait (5 s) for the
+acts under way, and then tells the links one at a time: a session
+link's viewers' closes are waited for, so a run link due in the same
+sweep can be told only after them, its viewers refused from its expiry
+all the same. The switchyard closes a viewer at the link's deadline on
+its own clock, which is what usually ends it. A run desk's viewer of the
+expired link is told `expired` while another decision link of the run
+stands; when it was the run's last, the run's desk ends as well, and a
+desk viewer the desk's end reaches before the server's end of the link
+is told that the session ended (`session_ended`). A viewer that opens a
+run's desk with a revoked or expired link is refused at its hello
+(`not_decision_link`), as before: `revoked` and `expired` are what a
+session's viewer is told at its attach, and what an attached desk
+viewer is told when it is ended. When a run is forgotten, the store
+keeps the id of each of its links minted at the switchyard as ended,
+whatever it stood at (a viewer with one is refused `revoked`), until the
+switchyard confirms it is gone there (the forget's one revoke there
+taken, or answered `not_found`), at most 256 of them, the oldest leaving
+first: the id alone, in memory. A link pushed out past the 256 is no
+longer held here, and the switchyard's own answer decides what it
+opens. After a restart the store keeps none, and a link
 the switchyard still holds from before it opens nothing: the server
 registers its sessions there anew, under the instance it makes at its
 start (its secret with the switchyard, which gives a session the same id

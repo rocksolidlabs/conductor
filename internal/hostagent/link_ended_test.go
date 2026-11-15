@@ -10,7 +10,8 @@ import (
 )
 
 // A viewer that came with a link is judged by the publisher's own link
-// store too (Decisions.LinkEnded), at its attach and at each act: a link
+// store too (Decisions.LinkEnded), at its attach and at each act but a
+// resize: a link
 // the publisher holds as ended is refused revoked or expired, as the store
 // says, in the words a page shows, and nothing of its viewer's is written.
 // A host with no Decisions (`conductor host`) asks nothing, a viewer with

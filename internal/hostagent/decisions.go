@@ -56,8 +56,8 @@ type Decisions interface {
 	// linkID (session.ErrRevoked from its mark, session.ErrExpired once past
 	// its expiry), nil while it stands. Every viewer that came with a link
 	// asks it beside the switchyard's word, at its attach and at each act
-	// (peer.authorize), so a link ended here opens none of the publisher's
-	// sessions from then on. A link the publisher does not hold is not
+	// but a resize (peer.authorize), so a link ended here is refused from
+	// then on. A link the publisher does not hold is not
 	// ended. It must not call the session and must not wait.
 	LinkEnded(linkID string) error
 }

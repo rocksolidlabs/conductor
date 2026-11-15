@@ -817,11 +817,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			return
 		}
 		// Its viewers, through the switchyard too, are on this server's
-		// sessions and its runs' desks: all are ended at once
-		// (disconnectLinks), with neither the store's lock nor the
-		// publications' held, on a goroutine of the server's own (track),
-		// which Shutdown waits for: neither the revoke nor the sweep waits
-		// for a viewer's close, nor one link's for another's.
+		// sessions and its runs' desks: disconnectLinks starts ending them
+		// all at once, with neither the store's lock nor the publications'
+		// held, on a goroutine of the server's own (track), and the hook
+		// returns: the revoke is answered, and the sweep tells its next
+		// link, without waiting for this link's viewers' closes. Shutdown
+		// waits, within its bound, for one begun before its last wait
+		// (bgDone); one begun after is not waited for.
 		s.track(func() { s.disconnectLinks([]string{linkID}) })
 	}
 	// Nothing fails past here: the queues of the providers that are no
@@ -866,9 +868,12 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 // disconnectLinks closes the viewers attached through any of linkIDs, run
 // links, and returns once they are closed. Their viewers may be on any session
 // that was a member of the run, the run forgotten meanwhile included, or on
-// a run's desk at the switchyard: every session and every desk is asked,
-// all at once, since each close waits for its viewer's reply. A desk's
-// viewers are told why as the store holds it (linkEndedWhy).
+// a run's desk at the switchyard: every session and every desk there is
+// asked, all at once, since each session's close waits for its viewer's
+// reply (a desk there tells its viewers and does not wait). A desk's
+// viewers are told why as the store holds it (linkEndedWhy). The runs'
+// desks on this server (closeDesks) are closed once the sessions' closes
+// are done.
 func (s *Server) disconnectLinks(linkIDs []string) {
 	var wg sync.WaitGroup
 	s.registry.Each(func(d session.Driver) {
