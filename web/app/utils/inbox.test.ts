@@ -37,10 +37,12 @@ import {
   stepsFinal,
   ticketOf,
   itemOf,
+  itemTimeWords,
   decisionIdOf,
   inboxKindWords,
   inboxSections,
   isDecisionRef,
+  type InboxAction,
   type InboxItem,
   withOutcome,
   writeRecentActions,
@@ -431,5 +433,37 @@ describe('the decision kind', () => {
     expect(kept.map((e) => e.ref)).toEqual(['task:crew-0000aaaa-11112222/build'])
     const stored = { getItem: () => JSON.stringify([{ ref: 'decision:dr-2', receipt: 'r', at: now - 10 }]) }
     expect(readRecentActions(stored, now)).toEqual([])
+  })
+})
+
+describe("an item's time", () => {
+  const now = Date.parse('2026-11-14T12:00:00Z')
+  const since = '2026-11-14T10:33:00Z'
+  const recorded = { step: 'recorded' as const, state: 'done' as const, at: '2026-11-14T11:30:00Z', words: 'recorded' }
+
+  const action = (name: string): InboxAction => ({ name, label: name, expect: '1', scope: name, route: `POST /x/${name}` })
+
+  it('says how long an open item of each kind waits, as the clock moves', () => {
+    expect(itemTimeWords({ kind: 'decision', state: 'open', since }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'question', since }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'task', since, actions: [action('retry'), action('cancel')] }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'plan', since, actions: [action('approve'), action('withdraw')] }, now)).toBe('waiting 1h 27m')
+    // An approval that no longer holds is open: it says so in `now`, and Withdraw is offered.
+    expect(itemTimeWords({ kind: 'plan', since, now: 'The approval no longer holds: the base moved; approve again', actions: [action('withdraw')] }, now)).toBe('waiting 1h 27m')
+    expect(itemTimeWords({ kind: 'question', since }, now + 5 * 60_000)).toBe('waiting 1h 32m')
+  })
+
+  it('never says waiting for an item of any kind no longer open: when it was answered, or nothing', () => {
+    expect(itemTimeWords({ kind: 'decision', state: 'applied', since, delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'decision', state: 'answered', since, delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'decision', state: 'cancelled', since, delivery: [{ ...recorded, state: 'not_applicable', at: undefined }] }, now)).toBe('')
+    expect(itemTimeWords({ kind: 'question', since, now: 'no longer open: answered', delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'question', since, now: 'not open now: set aside' }, now)).toBe('')
+    // The server's words for a task no longer open, and for one whose run it no longer holds.
+    expect(itemTimeWords({ kind: 'task', since, now: 'build is running now', actions: [], delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'task', since, now: 'build is failed now', actions: [] }, now)).toBe('')
+    expect(itemTimeWords({ kind: 'task', since, now: 'run r is no longer held by the engine (it stopped and was let go): build is failed, and a command on it needs the run continued', actions: [] }, now)).toBe('')
+    expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is approved', actions: [], delivery: [recorded] }, now)).toBe('answered 30m ago')
+    expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is withdrawn', actions: [] }, now)).toBe('')
   })
 })

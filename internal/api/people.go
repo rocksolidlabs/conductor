@@ -280,7 +280,8 @@ func personFromSegment(segment string) (string, bool) {
 // handlePerson answers GET /api/people/{name}: a person's work. The
 // crews that list them (at most 100, crewsMore past them), the tasks they
 // own in the runs the engine holds and the managed runs' records, as each
-// run's crew was launched (at most 200, the newest run first and its tasks
+// run's crew was launched, a run a later run continued leaving them to its
+// continuation (at most 200, the newest run first and its tasks
 // in the crew's order, more past them), and Dispatch's tickets they own or
 // are assigned (counts and the list's links; null, with
 // dispatchUnavailable, while Dispatch is off or cannot be read). The name
@@ -366,6 +367,11 @@ func (s *Server) handlePerson(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			known = true
+			// A run a later run continued lists its tasks there: its own
+			// stand as the continuation took them up.
+			if run.ResumedBy != "" {
+				continue
+			}
 			if len(out.Tasks) == maxWorkTasks {
 				out.More = true
 				continue

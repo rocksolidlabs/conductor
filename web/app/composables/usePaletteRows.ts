@@ -19,6 +19,7 @@ import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type 
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
+import { memberOffer, runOffer, sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
@@ -73,6 +74,18 @@ export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'ti
     const to = `/decisions?item=${encodeURIComponent(s.ref)}`
     return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: s.question || s.brief, icon: 'i-lucide-gavel', run: () => go(to), href: to }
   })
+}
+
+/**
+ * The `#` palette's waiting members: every member for which its tile offers Start now (memberOffer), and no other, whatever its start
+ * condition. `start` starts it.
+ */
+export function waitingRows(runs: readonly RunInfo[], start: (r: RunInfo, name: string) => void): PaletteItem[] {
+  return runs.flatMap((r) =>
+    r.members
+      .filter((m) => memberOffer(m.status, r) === 'start')
+      .map((m) => ({ key: `member:${r.id}:${m.name}`, label: `${m.name} · Start now`, detail: `${r.label || r.name} · ${m.agentId} · ${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}`, agentId: m.agentId, icon: 'i-lucide-play', run: () => start(r, m.name) })),
+  )
 }
 
 /** The Tickets group's rows shown with nothing typed, and with something typed (capGroup). */
@@ -351,7 +364,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => openView(s, 'people', 'people') },
       { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },
     ]
-    if (isEnded(s.status)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
+    if (isEnded(s.status) && sessionResumeOffered(s, attention.runOf)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
     const state = rowState(s)
     return {
       key: `session:${s.id}`,
@@ -432,7 +445,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const more: Action[] = []
     if (r && live) {
       more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Broadcast…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
-      more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
+      if (runOffer(r).add) more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
     if (r && live && r.managed) more.push({ id: 'tasks', kind: 'run', target: r.id, label: 'Open the tasks', icon: 'i-lucide-list-checks', run: () => go(`/runs/${encodeURIComponent(r.id)}?view=tasks`) })
@@ -652,12 +665,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const runs: PaletteItem[] = live.map((b) => runItem(b, attention.runOf(b.runId)))
     for (const r of attention.runs.value.filter((r) => !seen.has(r.id) && !r.stoppedAt)) runs.push(runItem({ kind: 'run', id: `run:${r.id}`, runId: r.id, title: r.label || r.name, startedAt: r.startedAt, agents: r.members.length, state: 'idle', needs: 0, members: [] }, r))
     const endedItems: PaletteItem[] = ended.map((b) => runItem(b, attention.runOf(b.runId)))
-    const waiting: PaletteItem[] = []
-    for (const r of attention.runs.value.filter((r) => !r.stoppedAt)) {
-      for (const m of r.members.filter((m) => m.status === 'pending' && m.start.when === 'manual')) {
-        waiting.push({ key: `member:${r.id}:${m.name}`, label: `${m.name} · Start now`, detail: `${r.label || r.name} · ${m.agentId} · waiting for a hand`, agentId: m.agentId, icon: 'i-lucide-play', run: () => void startMember(r, m.name) })
-      }
-    }
+    const waiting = waitingRows(attention.runs.value, (r, name) => void startMember(r, name))
     const crews: PaletteItem[] = palette.crews.value.map((c) => {
       const elsewhere = c.where === 'host'
       return {
@@ -876,7 +884,7 @@ export function usePaletteRows(ctx: PaletteContext) {
           return r ? { key: `verb:resume:${r.id}`, label: `Resume ${v.target.name} as a new run`, icon: 'i-lucide-history', disabled: !r.stoppedAt, detail: r.stoppedAt ? 'A new run of the same crew' : 'It is still running', run: () => resumeRun(r) } : null
         }
         const s = session(v.target.id)
-        return s ? { key: `verb:resume:${s.id}`, label: `${s.agentSession?.resumable ? 'Resume' : 'Relaunch'} ${s.name}`, detail: isEnded(s.status) ? (s.agentSession?.resumable ? 'The conversation comes back from Exited' : 'Nothing to resume: it starts anew') : 'It is still running', icon: 'i-lucide-history', agentId: s.agentId, disabled: !isEnded(s.status), run: () => resumeSession(s) } : null
+        return s && sessionResumeOffered(s, attention.runOf) ? { key: `verb:resume:${s.id}`, label: `${s.agentSession?.resumable ? 'Resume' : 'Relaunch'} ${s.name}`, detail: isEnded(s.status) ? (s.agentSession?.resumable ? 'The conversation comes back from Exited' : 'Nothing to resume: it starts anew') : 'It is still running', icon: 'i-lucide-history', agentId: s.agentId, disabled: !isEnded(s.status), run: () => resumeSession(s) } : null
       }
       case 'open':
         return { key: `verb:open:${v.path}`, label: `Open ${v.path}${v.line ? ` at line ${v.line}` : ''}`, detail: palette.page.value?.openFile ? 'In this page’s editor' : 'Open a session page first', icon: 'i-lucide-file', disabled: !palette.page.value?.openFile, run: () => openFile(v.path, v.line) }

@@ -1182,7 +1182,7 @@ func staleCandidate(fc ledger.AttemptRow, rq RecheckRequest) error {
 // passed (startRechecks). The caller holds e.mu, in the command's change.
 func (e *Engine) recheckTask(r *run, t *task, m *member, fc ledger.AttemptRow, actor string) (*attempt, []event) {
 	ctx, cancel := context.WithCancel(r.ctx)
-	n := len(t.attempts) + t.prior + 1
+	n := t.next()
 	start := cmp.Or(fc.StartCommit, fc.ResultCommit)
 	res := decodeResult(fc.Result)
 	now := time.Now().UTC()

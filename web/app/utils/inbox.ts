@@ -5,6 +5,7 @@
 // (utils/decisions.ts is the durable decision record's).
 
 import { NO_QUESTION, ReplyError } from './reply'
+import { relativeTime } from './sessions'
 import { CommandRefused } from './tasks'
 
 /** One item as the list shows it, folded: no action's input or scope (the page reads the item before it acts). */
@@ -74,6 +75,8 @@ export interface InboxItem {
   /** The ref Ask Brakeman and the evidence use. */
   subject: string
   kind: string
+  /** A DR1 record's state (`decision` items): open, answered, applied, cancelled… */
+  state?: string
   since: string
   title: string
   brief: string
@@ -409,6 +412,25 @@ export function isDecisionRef(ref: string): boolean {
 export function decisionIdOf(ref: string): string {
   return isDecisionRef(ref) ? ref.slice('decision:'.length) : ''
 }
+
+/**
+ * The time an item's card heads it with, at `now` (the page's clock): an open item "waiting <for how long>"; one no longer open never
+ * waits: "answered <how long> ago" when its recorded step carries that time, else nothing. No longer open: a durable decision past
+ * `open`; a question or a task the server says is not open now (`now`, which it sets on an open one of neither); a plan revision with
+ * no action left (an open one is offered its Withdraw, and its `now` may say an approval no longer holds).
+ */
+export function itemTimeWords(it: Pick<InboxItem, 'kind' | 'state' | 'since' | 'now' | 'delivery'> & Partial<Pick<InboxItem, 'actions'>>, now: number): string {
+  const closed = it.kind === 'decision' ? !!it.state && it.state !== 'open' : it.kind === 'plan' ? !it.actions?.length : (it.kind === 'question' || it.kind === 'task') && !!it.now
+  if (!closed) return it.since ? `waiting ${relativeTime(it.since, now)}` : ''
+  const at = it.delivery?.find((s) => s.step === 'recorded' && s.state === 'done')?.at
+  return at ? `answered ${relativeTime(at, now, { suffix: true })}` : ''
+}
+
+/**
+ * A row of a decision list (the page's open and answered rows, a decision link's): a column whose lines take the row's width
+ * (`items-stretch`: a button starts its items at the start), so a long title is cut with an ellipsis and its waiting time stays in view.
+ */
+export const INBOX_ROW_CLASS = 'flex min-h-11 w-full flex-col items-stretch gap-1 rounded-md border px-3 py-2 text-left transition-colors hover:bg-elevated/50'
 
 /**
  * The list's two parts, in the list's order: what needs a person now, and the DR1 records answered and not yet applied ("Answered, not

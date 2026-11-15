@@ -51,6 +51,41 @@ export function runBadge(state: RunState, needs: number): { label: string; color
   return { label: 'Running', color: 'success' }
 }
 
+/** What runOffer and memberOffer read of a run. */
+export type OfferRun = Pick<RunInfo, 'stoppedAt' | 'managed' | 'class' | 'record'>
+
+/**
+ * What a run offers by hand: Add agent (POST /api/runs/{id}/members) on a run not stopped; nothing of a hand's (no member added,
+ * started or resumed) on a managed run, whose tasks start and continue its members (409 managed_run), nor on a Brakeman turn's (409
+ * brakeman_run), nor on a record (a run the engine no longer holds: its routes answer 404); nothing on a run not known yet. The run
+ * page's header, its palette's row and the app's palette ask it.
+ */
+export function runOffer(run: OfferRun | null | undefined): { byHand: boolean; add: boolean } {
+  const byHand = !!run && !run.managed && run.class !== 'brakeman' && !run.record
+  return { byHand, add: byHand && !run!.stoppedAt }
+}
+
+/**
+ * What a member's controls offer by hand (the run page's tile, the graph's node and its list, the page's palette row), as the engine
+ * takes it, in a run that offers a hand's (runOffer): Start now for a waiting member, whatever its start condition, of a run not
+ * stopped (POST /api/runs/{id}/members/{name}/start), Resume or Relaunch for an ended one (…/resume, which reopens a stopped run the
+ * engine still holds). Every surface that offers a member's start or resume asks it and adds no condition of its own.
+ */
+export function memberOffer(status: MemberStatus | undefined, run: OfferRun | null | undefined): 'start' | 'resume' | null {
+  if (!runOffer(run).byHand) return null
+  if (status === 'pending') return run!.stoppedAt ? null : 'start'
+  return status === 'ended' ? 'resume' : null
+}
+
+/**
+ * Whether an ended session offers Resume or Relaunch: a session of no run always; a crew member's session resumes as its member, so
+ * by memberOffer of its run as `runOf` knows it (never a managed run's attempt, a Brakeman turn's session, nor one of a run the
+ * engine no longer holds).
+ */
+export function sessionResumeOffered(s: Pick<SessionInfo, 'crew'>, runOf: (id: string) => OfferRun | null | undefined): boolean {
+  return !s.crew || memberOffer('ended', runOf(s.crew.runId)) === 'resume'
+}
+
 /** A member's status as a dot beside its avatar, and in words. */
 export function memberDot(status: MemberStatus): { label: string; dot: string } {
   switch (status) {
