@@ -59,7 +59,9 @@ web-build build-go`) runs one shard here; `make test-e2e` and `make preflight` s
 the whole suite on one machine. The job keeps its id, so `required-checks` fails when
 either shard does; `scripts/preflight_test.py` holds the matrix to the shard count. Its
 `timeout-minutes: 160` is a hang bound: the set-up steps' own caps (90 minutes) and the
-longest whole-suite run (67, on 2026-11-15) together.
+longest whole-suite run (67, on 2026-11-15) together. On the pull request that cut the
+shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34 and 29
+for each job), where the whole suite of 564 had taken one job 67.
 
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
