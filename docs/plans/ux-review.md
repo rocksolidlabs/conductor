@@ -255,11 +255,11 @@ a whole; where a part of one is, the line says so.
 | P18 | A page to connect, in place of a dialog over the app | PR-31. The dialog's corrected words are on `main` (#908, D6) |
 | P19 | Launch with a first message | PR-35 (the server) and PR-36 (the dialog) |
 | P20 | A design system that rules | PR-37 (the rules in `docs/design/system.md` and their checks) and PR-38 (the capture in the repository). Its third point, the light theme's status text, is PR-24's; the contrast as drawn is PR-25's |
-| P21 | Needs you's item: the question, one set of buttons, the fine print folded, a person's words | PR-20 (a run's decision card) and PR-21 (the list and the item). On `main` already: the plain line of what an approval lets start is the server's own (`gateRequest`, `internal/crew/decisions_wait.go`); #912 makes it right for one task and for several |
+| P21 | Needs you's item: the question, one set of buttons, the fine print folded, a person's words | PR-20 (a run's decision card) and PR-21 (the list and the item). On `main` already: the plain line of what an approval lets start is the server's own (`gateRequest`, `internal/crew/decisions_wait.go`); #912 (merged) made it right for one task and for several |
 | P22 | The Yard is its grid: the queue goes | PR-18 |
 | P23 | One shape for a page with nothing in it | PR-22 (the shape; home, the Yard, the Roundhouse, the sidebar's line, History) and PR-23 (the other pages, and About this page) |
 | P24 | Needs you at zero: a page worth landing on, and a row that leaves | PR-5 (the nav's row hides at zero) and PR-6 (the page) |
-| D1 | A long title runs out of its row in the Decide list | #912 (`INBOX_ROW_CLASS`, with `items-stretch`) |
+| D1 | A long title runs out of its row in the Decide list | on `main` (#912, merged: `INBOX_ROW_CLASS`, with `items-stretch`) |
 | D2 | The run page's count badges run under its buttons, and the name is cut | PR-9 |
 | D3 | The Yard queue cuts a question's third choice | on `main` (#908); the queue itself goes in PR-18 |
 | D4 | The welcome's "Load the example crews" reads "Load the ex…" | on `main` (#908); PR-30 replaces the card's content |
@@ -284,8 +284,9 @@ PR-22, and `utils/contrast.ts` in PR-24.
 
 Read on 2026-11-15 with `gh pr view` and `gh pr diff`: seven pull
 requests held files that rows of this stream change, and an eighth,
-#901, shares two of them at lines apart (below). Two, #908 and #913,
-have merged since (below); five are open, drafts against `main`.
+#901, shares two of them at lines apart (below). Three, #908, #913
+and #912, have merged since (below); four are open, drafts against
+`main`.
 A row is not cut on a file an open pull request holds; it is cut once
 that pull request has merged, and it builds on what the pull request
 made (its widths, its words, its tests). Where a row and an open pull
@@ -376,7 +377,8 @@ caller of `defaultLabel`; PR-35 changes the cut itself),
 from `utils/dispatchPlans.ts` and its test, gives `DispatchLaunch.vue`
 the placeholder "A name for the run, if you want one", and edits
 `dispatch-plan.spec.ts`; so D11's label is the server's alone (PR-35),
-and PR-36 keeps no app copy of it.
+and PR-36 keeps no app copy of it. Its head of 2026-11-15 also edits
+`docs/plans/dispatch-evidence.md` (PR-16, at lines apart).
 
 Rows that wait for it: PR-35; through it PR-36.
 
@@ -394,9 +396,13 @@ reads the agents found and their versions from the same catalog read.
 Rows that wait for it: PR-23, PR-26, PR-27 and PR-30; through them
 PR-28, PR-29, PR-31, PR-37 and PR-38.
 
-#### #912: the decision page asks for its token, a long title stays in its row
+#### #912: the decision page asks for its token, a long title stays in its row (merged)
 
-`Part of #653`. It holds `InboxItem.vue` (the heading's time),
+Merged on 2026-11-15 (`e65af4e7`), after the plan's last read of
+`main`; no row waits for it now, and the rows build on what it made.
+The rows' line references to the files it changed are not read again
+here: each row reads `main` as it is. `Part of #653`. It changed
+`InboxItem.vue` (the heading's time),
 `JoinDecide.vue`, `pages/decisions.vue` (the token asked at mount, the
 rows' class), `utils/inbox.ts` (`INBOX_ROW_CLASS`, `itemTimeWords`),
 `SidebarSessionRow.vue` and `ResumeButton.vue`
@@ -410,12 +416,7 @@ model), `composables/useDispatch.ts`, `composables/useSessions.ts`,
 `internal/api/people.go`, `internal/crew/decisions_wait.go` (the
 gate's words), and the specs `decisions-ask.spec.ts` (new: its browser
 stub of the list is the base of PR-1's `inbox-stub.ts`) and
-`run-start-now.spec.ts` (new). It fixes D1.
-
-Rows that wait for it: PR-3, PR-6, PR-9, PR-10, PR-16, PR-20, PR-24
-and PR-31; through them PR-7, PR-8, PR-11, PR-13 to PR-15, PR-17 to
-PR-19, PR-21, PR-23, PR-25, PR-26, PR-28 to PR-30, PR-33, PR-34 and
-PR-36 to PR-38.
+`run-start-now.spec.ts` (new). It fixed D1.
 
 #### #913: a resume waits for the process of a session whose stop failed (merged)
 
@@ -430,14 +431,12 @@ two rows of `docs/protocol.md` (the resume routes' answer
 
 #### Waits through a file alone
 
-Nine rows wait for an open pull request through a file they change,
-not through a row before them: PR-3 for #907 (`pages/sessions/[id].vue`)
-and #912 (`SidebarSessionRow.vue`, `usePaletteRows.ts`), PR-6 and
-PR-20 for #912 (`pages/decisions.vue`), PR-9 for #899
-(`CrewRunHeader.vue`, the Logins popover), PR-23 for #899 (the Crews
-page's empty state) and #911 (the Agents page's reading), PR-24 for
-#912 (the sidebar's surfaces take the new neutrals), PR-26 and PR-27
-for #911 (the Agents card's badge block), and PR-35 for #909
+Six rows wait for an open pull request through a file they change,
+not through a row before them: PR-3 for #907
+(`pages/sessions/[id].vue`), PR-9 for #899 (`CrewRunHeader.vue`, the
+Logins popover), PR-23 for #899 (the Crews page's empty state) and
+#911 (the Agents page's reading), PR-26 and PR-27 for #911 (the Agents
+card's badge block), and PR-35 for #909
 (`internal/dispatch/launches.go`).
 
 #### Shared at lines apart: no wait
@@ -446,15 +445,19 @@ for #911 (the Agents card's badge block), and PR-35 for #909
   and the one `budget()`. `stub-agent.sh`: #899 and #907 add to it in
   hunks apart from PR-1's `STUB_TURN`. PR-1 waits for neither.
 - `composables/usePaletteRows.ts`: #899 (a crew's launch opens its
-  sheet) and #912 (Resume only where it is offered) change rows that
-  PR-4 does not; PR-4 adds the page rows' line.
-- `composables/useSessions.ts` is held by #899, #911 and #912 at once;
-  PR-2 adds `turns` to the `Info` type in a line of its own, and PR-35
-  two type lines.
-- `docs/protocol.md` is held by #901, #907, #909, #911 and #912; PR-2
-  adds its part on `main` as it is, and PR-35 after #909.
-- `pages/decisions.vue` (#912) for PR-5's name;
-  `composables/usePaletteRows.ts` for PR-5, PR-13, PR-14, PR-27 and
+  sheet) changes rows that PR-4 does not; PR-4 adds the page rows'
+  line.
+- `composables/useSessions.ts` is held by #899 and #911 at once; PR-2
+  adds `turns` to the `Info` type in a line of its own, and PR-35 two
+  type lines.
+- `docs/protocol.md` is held by #901, #907, #909 and #911; PR-2 adds
+  its part on `main` as it is, and PR-35 after #909.
+- `utils/dispatchPlans.ts` and `dispatchPlans.test.ts`: #909 removes
+  `defaultLabel` and its tests (`:231-237`); PR-16 adds `planFold` and
+  its cases beside "a revision's words" (56-105), at lines apart; and
+  `docs/plans/dispatch-evidence.md`, which #909 edits and PR-16's
+  People lines rewrite at lines apart. PR-16 does not wait for #909.
+- `composables/usePaletteRows.ts` for PR-5, PR-13, PR-14, PR-27 and
   PR-30; `internal/api/server.go` (#901, #911) for PR-35's seam.
 - #901 (`Fixes #900`): `internal/api/server.go` and `docs/protocol.md`
   (listed above); no file of `internal/session`.
@@ -462,37 +465,38 @@ for #911 (the Agents card's badge block), and PR-35 for #909
   `web/package.json` and its lock. No row of this stream changes a
   dependency.
 
-If #912 is still open when PR-1 is cut, PR-1 writes `inbox-stub.ts` on
-its own, and the first row cut after #912 merges moves
-`decisions-ask.spec.ts`'s own stub onto it, PR-21 at the latest.
+#912 has merged, so `decisions-ask.spec.ts` is on `main`: the first
+row cut after it that writes or uses `inbox-stub.ts` (PR-1, unless it
+was cut before) moves the spec's own stub onto it, PR-21 at the
+latest.
 
 #### Each row and what it waits for
 
 Directly or through a row before it:
 
-- Nothing open: PR-1, PR-2, PR-4, PR-5, PR-12, PR-22, PR-32 and PR-39.
-- #912 alone: PR-6, PR-20, PR-21, PR-24 and PR-25.
+- Nothing open: PR-1, PR-2, PR-4, PR-5, PR-6, PR-12, PR-20, PR-21,
+  PR-22, PR-24, PR-25, PR-32 and PR-39.
 - #911 alone: PR-27.
 - #909 alone: PR-35.
-- #907 and #912: PR-3, PR-7, PR-8, PR-10, PR-13, PR-14, PR-15, PR-16,
+- #907 alone: PR-3, PR-7, PR-8, PR-10, PR-13, PR-14, PR-15, PR-16,
   PR-17, PR-18 and PR-19.
-- #899, #907 and #912: PR-9, PR-11, PR-33 and PR-34.
-- #907, #911 and #912: PR-28.
-- #899, #911 and #912: PR-23, PR-30 and PR-31.
-- #899, #907, #911 and #912: PR-26, PR-29, PR-37 and PR-38.
-- #907, #909 and #912: PR-36.
+- #899 and #907: PR-9, PR-11, PR-33 and PR-34.
+- #907 and #911: PR-28.
+- #899 and #911: PR-23, PR-30 and PR-31.
+- #899, #907 and #911: PR-26, PR-29, PR-37 and PR-38.
+- #907 and #909: PR-36.
 - Issue #716 fixed before PR-3 merges (PR-3 may be cut and built while
   that fix is in review): PR-3, and through it PR-7 to PR-11, PR-13 to
   PR-19, PR-26, PR-28, PR-29, PR-33, PR-34 and PR-36 to PR-38.
 
 The order of merges that frees the most rows soonest, now that #908
-(the sidebar, the nav, the welcome, the queue) and #913 (a resume) have
-merged: #912 (Needs you's page, the run page's graph), then #907 (the
-session page and the Yard: eleven rows more, with #716 fixed), then
-#899 (the run header, Crews), then #911 (Agents), then #909 (for
-PR-35). PR-1 goes first, with PR-39 beside it; PR-2, PR-4, PR-5,
-PR-12, PR-22 and PR-32 can follow before any of the five open pull
-requests merges.
+(the sidebar, the nav, the welcome, the queue), #913 (a resume) and
+#912 (Needs you's page, the run page's graph) have merged: #907 (the
+session page and the Yard: eleven rows, with #716 fixed), then #899
+(the run header, Crews), then #911 (Agents), then #909 (for PR-35).
+PR-1 goes first, with PR-39 beside it; PR-2, PR-4, PR-5, PR-6, PR-12,
+PR-20, PR-21, PR-22, PR-24, PR-25 and PR-32 can follow before any of
+the four open pull requests merges.
 
 #### The issues this stream answers or leaves
 
@@ -516,8 +520,8 @@ review. Each of its rows and who takes it:
 #908, merged, was `Part of #906`; #906 keeps rows 1, 6, 8, 10 and 11
 open. PR-9, PR-19, PR-21 and PR-35 each say `Part of #906`, and
 the last of them to merge says `Fixes #906`. The
-review's twelfth defect, D1, is #912's, under #653, as #906 says. D13
-is in no issue: PR-22's issue names it.
+review's twelfth defect, D1, was #912's (merged), under #653, as #906
+says. D13 is in no issue: PR-22's issue names it.
 
 **#374**, the welcome card's cut label, what each choice does, and a
 tooltip on every button. Its first point (no label cut) is on `main`
@@ -803,10 +807,11 @@ them moved), `fixtures.ts` 100, `inbox-stub.ts` 70, `stubs.spec.ts` 70,
   `run-fixtures.ts` land in PR-1, not with their first user. Why: they
   depend on nothing, every later row can count on them, and
   `stubs.spec.ts` holds them to the real server.
-- **If #912 is still open.** Default: PR-1 writes `inbox-stub.ts` on its
-  own, and the first row cut after #912 merges moves
-  `decisions-ask.spec.ts`'s local stub onto it, PR-21 at the latest.
-  Why: PR-1 waits for nothing. Alternative: PR-1 waits for #912.
+- **The stub of `decisions-ask.spec.ts`.** Default: #912 has merged,
+  so PR-1 writes `inbox-stub.ts` and, unless it was cut before #912
+  merged, moves `decisions-ask.spec.ts`'s local stub onto it; else the
+  first row cut after #912 merged does, PR-21 at the latest. Why: one
+  stub of the inbox.
 - **Exited sessions kept a day.** Default: the day's server sets
   `CONDUCTOR_EXITED_RETENTION=24h`. Why: the default ten minutes would
   drop the exited session in the middle of a run.
@@ -1125,8 +1130,9 @@ tests with the table.
 
 **Depends on.** Nothing open: it changes `internal/session` and
 `internal/api` on `main` as they are. It shares `useSessions.ts` with
-open #899, #911 and #912 and `docs/protocol.md` with #901, #907, #909,
-#911 and #912, at lines apart; plain merge. No open pull request holds
+open #899 and #911 and `docs/protocol.md` with #901, #907, #909 and
+#911, at lines apart; plain merge (#912, which held both, has merged).
+No open pull request holds
 the host frame's files (`internal/proto/hostmsg.go`,
 `internal/hostagent/agent.go`,
 `internal/signal`, `internal/api/ws_host.go`,
@@ -1435,8 +1441,9 @@ No proof is lost: no spec asserts `AttentionBadge`'s words or pulse,
 - The bar's hatched running slice beside the working slice.
 
 **Size.** About 420 lines of code (`status.ts` 110, `StatusMark.vue` 50,
-`useNow.ts` 25, the surfaces 160, the deleted badges and their helpers
-about 75 out, the docs 50) and 580 of tests (`status.test.ts` 200, the
+`useNow.ts` 25, the surfaces 185, the docs 50; and about 75 deleted
+with the old badges and their helpers, counted apart as PR-10 counts
+its deletions) and 580 of tests (`status.test.ts` 200, the
 changed unit tests 50, `status-walk.spec.ts` 300 with each surface's
 own states and the absences, the other specs 30).
 
@@ -1464,11 +1471,11 @@ own states and the absences, the other specs 30).
 
 **Depends on.** PR-1: the day's `states`, `dayPage`, `useTheme`,
 `probeColour` and the `day` fixture's guard. PR-2: `turns`, the cleared
-`done`, the kept `since` and the shared table. Open PRs merged: #907
-(`pages/sessions/[id].vue`) and #912 (`SidebarSessionRow.vue`,
-`usePaletteRows.ts`); #899 and #911 (`usePaletteRows.ts`,
+`done`, the kept `since` and the shared table. Open #907 merged
+(`pages/sessions/[id].vue`); #899 and #911 (`usePaletteRows.ts`,
 `useSessions.ts`) merged or taken in a plain merge. It builds on what
-#908 (merged) made of `utils/sidebar.ts`, `SidebarSection.vue`,
+#912 (merged: `SidebarSessionRow.vue`, `usePaletteRows.ts`) and #908
+(merged) made of `utils/sidebar.ts`, `SidebarSection.vue`,
 `SidebarSharedList.vue` and `sidebar.spec.ts`. Issue #716 fixed before
 it merges (owner decision 20); the row may be cut and built while that
 fix is in review: it would draw Codex's misread approval as a
@@ -1483,7 +1490,8 @@ PR-4 and PR-5. A session the server no longer holds: PR-19 (D7). The
 light theme's status text tones and the contrast test: PR-24 and PR-25;
 this row adds no status-coloured text. Green kept as a health mark
 (`EventsAside`'s and `IntegrationsTable`'s "hooks installed",
-"injected at launch"): PR-27 makes it neutral.
+"injected at launch"): PR-27 makes it neutral; the Agents identity
+badge's green `ok` (`agents.vue:7`): PR-26.
 
 ### PR-4: web: the pages in one table; one list and one number for what needs you (X-pages, X-needs-model, P13's nav part)
 
@@ -1697,8 +1705,9 @@ pointer moves down the nav.
 **Depends on.** It builds on #908 (merged), which rewrote the header
 and the width in `layouts/default.vue` and the specs of
 `sidebar.spec.ts` this row adds to. PR-1 for `dayPage` and `tabTo`.
-Open pull requests #899 and #912 change other lines of
-`usePaletteRows.ts`; whichever merges first, the other rebases.
+Open #899 changes other lines of `usePaletteRows.ts`; whichever
+merges first, the other rebases. #912, which changed it too, has
+merged.
 
 **Left out.** The numbers and the name (PR-5). The welcome's "Where
 things are" (PR-30) and a page's empty state (PR-22, PR-23) read
@@ -1884,9 +1893,10 @@ and nothing jumps while the inbox is first read.
 
 **Depends on.** PR-4 (`pages.ts`, `needsYou.ts`). PR-1 (the day's
 `busy` part, `ownServer`, `dayPage`, `inbox-stub.ts`, `tabTo`). Owner
-decisions 2 and 5 (the name, one number). Open #899 and #912 hold
-`usePaletteRows.ts`, and #912 `decisions.vue`: the row takes them in a
-plain merge, whichever lands first.
+decisions 2 and 5 (the name, one number). Open #899 holds
+`usePaletteRows.ts`: the row takes it in a plain merge, whichever
+lands first. It builds on #912 (merged: `usePaletteRows.ts`,
+`decisions.vue`).
 
 **Left out.** Plans and tasks listed in the sidebar (PR-13, which
 removes the header's "+N on the page"). "Open on your phone" in your
@@ -1908,9 +1918,9 @@ waiting the page is as it was: the list beside the open item at `lg`,
 the list alone on a phone. The nav's row, the phone's tab and the count
 are PR-5's and do not change here.
 
-**Today.** On `main`, and with #912, which changes the rows and the
-mount but none of what follows, `pages/decisions.vue:296` lays the page
-out in two columns at `lg` whatever it holds. With nothing open,
+**Today.** On `main`, with #912 (merged), which changed the rows and
+the mount but none of what follows, `pages/decisions.vue:296` lays the
+page out in two columns at `lg` whatever it holds. With nothing open,
 `:309-312` draw an icon and "Nothing needs your decision now." in the 24
 rem left column; `inboxEmpty` (`utils/inbox.ts:385-387`) allows that
 only after a read that answered. `:436` draws "Pick an item to see its
@@ -2088,9 +2098,9 @@ column's width, the four marks told apart, where the link sits.
 
 **Depends on.** PR-5: `utils/pages.ts` holds the page's name, and the
 nav row that leaves at zero is PR-5's; this row's menu item is how the
-phone offer is reached once that row is gone. Open pull request #912
-merged: it rewrites the rows and the mount of `pages/decisions.vue` and
-adds `INBOX_ROW_CLASS` to `utils/inbox.ts`. PR-1 for `dayPage`,
+phone offer is reached once that row is gone. It builds on #912
+(merged: it rewrote the rows and the mount of `pages/decisions.vue`
+and added `INBOX_ROW_CLASS` to `utils/inbox.ts`). PR-1 for `dayPage`,
 `web/e2e/layout.ts` and `inbox-stub.ts`.
 
 **Left out.** The nav row hiding at zero, the phone's tab and the count
@@ -2244,7 +2254,9 @@ gives "Yes, and d…". A run block lists every member
 - `web/e2e/sidebar.spec.ts:48-112` moves: its run of two (review asks,
   lead runs) now shows one member and `[data-run-more]` in Needs you.
   The test asserts that, unfolds the line, and then asserts the two
-  members and lead's meta line. Its title says the run shows who asks.
+  members and lead's meta line. Its title becomes "a run of two in
+  Needs you shows its asking member, the rest folded", which differs
+  from the new test's.
 - `web/e2e/chat.spec.ts:366`, `rail-squares.spec.ts:38` and
   `sidebar.spec.ts:470`, `:574` clicked `[data-sidebar-collapse]`; they
   press Alt+B instead, after the sidebar's root is drawn (a key a page
@@ -2279,8 +2291,8 @@ specs this row rewrites, and its fixes of "Shared with you" and of the
 name's title stay. PR-3 for the row's mark and the words of "1 working
 · 1 finished". PR-6 for your menu's items (its "Open on your phone" is
 in the list this row's test asserts). PR-1 for `dayPage`, `inside`,
-`uncut`. Owner decision 6 (the 200 px sidebar). Open pull request #912
-changes two other lines of `SidebarSessionRow.vue`. PR-7 and PR-8 merge
+`uncut`. Owner decision 6 (the 200 px sidebar). #912 (merged) changed
+two other lines of `SidebarSessionRow.vue`. PR-7 and PR-8 merge
 back to back, since PR-7 undoes #908's 268 px opening, its Alerts in
 the header and its 348 px drag, and PR-8 makes the rows short.
 
@@ -2596,7 +2608,7 @@ checks the phone strip at 390 px; nothing checks 1440.
   agent.
 - The same spec: `[data-run-progress]` holds the sentence, and the
   bar's `[data-part]` counts are done 2, working 1, checking 1, needs
-  you 2, with no `failed` part (the failed task offers Retry: it waits
+  2, with no `failed` part (the failed task offers Retry: it waits
   on a person). Without the change there is no such element.
 - The same spec, the menu: no button named "Add agent" or "Share" is in
   the header. Add agent is taken on `legacyRun()` (a run of members,
@@ -2681,8 +2693,9 @@ number). PR-4: `useNeedsYou`, whose run's items the sentence counts
 (PR-10 stands on it too). PR-1: `run-fixtures.ts`, `layout.ts`,
 `dayPage`, `tabTo`. Open PR 899 merged: it adds the Logins popover
 and the Add agent table's accounts to the lines this row moves
-(`CrewRunHeader.vue:194-269`). Open #912 merged (`CrewRunHeader.vue`:
-Add agent offered by `runOffer`). PR-7 is not needed: the checks read
+(`CrewRunHeader.vue:194-269`). It builds on #912 (merged:
+`CrewRunHeader.vue`'s Add agent offered by `runOffer`). PR-7 is not
+needed: the checks read
 the sidebar's width off the page and hold at 268 px and at 200 px.
 
 **Left out.** Chat in the menu (kept as a button: an owner decision).
@@ -2938,9 +2951,9 @@ read twice, the other specs 50).
 **Depends on.** PR-3: `utils/status.ts`, `StatusMark.vue`, `useNow` and
 the guard. PR-4 (`utils/needsYou.ts`: the test that holds `taskStatus`
 and `needsYou()` to one answer). PR-1: `dayPage`, `useTheme`,
-`probeColour`, `run-fixtures.ts` and the day's `states`. Open PR #912
-merged: it changes `CrewGraph.vue`, `CrewGraphList.vue`,
-`CrewGraphNode.vue`, `pages/runs/[run].vue` and `utils/runs.ts`. PR-9
+`probeColour`, `run-fixtures.ts` and the day's `states`. It builds on
+#912 (merged: it changed `CrewGraph.vue`, `CrewGraphList.vue`,
+`CrewGraphNode.vue`, `pages/runs/[run].vue` and `utils/runs.ts`). PR-9
 builds the run header's sentence on `runStatusLine`, so it lands after
 this row.
 
@@ -3369,8 +3382,8 @@ mix labels, milestones, owners and assignees), `dayPage`, and
 `web/e2e/layout.ts` (`topAtMost`, `rowsInView`, `aligned`,
 `noOverlap`, `uncut`, `inside`, `noSideways`, which takes over
 `sideways` from `dispatch-helpers.ts:90`). No open pull request
-touches its files (#899, #907, #908, #909, #911, #912 and #913
-checked).
+touches its files (#899, #907, #909 and #911 checked; #908, #912 and
+#913 have merged).
 
 **Left out.** A Group control: the list draws no groups yet, though
 `group` is kept in the address and in views (`dispatchQuery.ts:43`).
@@ -3561,11 +3574,12 @@ true for every agent that reports.
 - `SessionSidebar.vue`, `SidebarSection.vue`: the two sections, each
   drawn only when it has rows; the folded preview's squares and the
   rail's squares from `STATUS_LOOK`.
-- `usePaletteRows.ts`: the group "Running" becomes "Finished" then
-  "Working", in the sidebar's order; the fold actions name the five
-  sections. A session whose question an open decision mirrors is listed
-  in Working, its decision's Answer row in Needs you standing for the
-  question, as it is in Running today.
+- `utils/palette.ts` (PR-13's pure function for the palette's groups,
+  which `usePaletteRows.ts` calls): the group "Running" becomes
+  "Finished" then "Working", in the sidebar's order; the fold actions
+  name the five sections. A session whose question an open decision
+  mirrors is listed in Working, its decision's Answer row in Needs you
+  standing for the question, as it is in Running today.
 - `docs/features.md`: the sidebar's sections.
 
 **Tests.**
@@ -3996,12 +4010,15 @@ again on every decision event (`useTicketDecisions`), the close card
 
 **Depends on.** PR-10: `summaryStatusLine` in `utils/status.ts`, so
 that the strip's run words are the run card's.
-PR-4: `useNeedsYou()`, so that the waits are the one list's. Open pull
-request #912 merged: it edits `DispatchPlanBody.vue`'s member line,
+PR-4: `useNeedsYou()`, so that the waits are the one list's. It builds
+on #912 (merged: it edited `DispatchPlanBody.vue`'s member line,
 `utils/dispatchPlans.ts` and `dispatchPlans.test.ts`, which this row
-edits too. PR-1 (`ownServer`, `dayPage`, `layout.ts`) comes through
+edits too). PR-1 (`ownServer`, `dayPage`, `layout.ts`) comes through
 PR-10. #899 touches `DispatchLaunch.vue` and `useDispatch.ts`'s
-`PlanCrew` and no file of this row.
+`PlanCrew` and no file of this row. Open #909 removes `defaultLabel`
+from `utils/dispatchPlans.ts` and its test, at lines apart from
+`planFold`, and edits `docs/plans/dispatch-evidence.md`, whose People
+lines this row rewrites: no wait; plain merge.
 
 **Left out.** While an approved revision is featured, a newer proposed
 one stays folded under "Other revisions", as today
@@ -4591,10 +4608,10 @@ and keeps one letter.
 - D7: `utils/sessions.ts` gains `gonePage(err, record)`: `record` for
   an `ApiError` 404 `not_found` whose record answers, `forgotten` for a
   404 whose record answers 404 `not_found`, `unread` for a 404 whose
-  record read failed otherwise (a record answering 404
-  `history_unavailable`, a server that keeps no history such as a
-  switchyard, `history_journal.go:642-648`, is `unread` with no History
-  link), and `null` for any other error (today's alert
+  record read failed otherwise, with `history: false` when the record
+  answered 404 `history_unavailable` (a server that keeps no history
+  such as a switchyard, `history_journal.go:642-648`) and `history:
+  true` otherwise, and `null` for any other error (today's alert
   stays: a 401 or a token prompt is never "gone"). On a 404 the page
   reads `useHistory().record(id)` once and draws `data-session-gone`:
   the record's name as the title and the tab's title, the exited mark
@@ -4627,7 +4644,7 @@ and keeps one letter.
   server session, keeps "on build-box" for a hosted one, and holds no
   id; `gonePage` gives the four answers above for a 404 with a record,
   a 404 with a 404 `not_found` record, a 404 with a 500 record, and a
-  500, and `unread` with no History link for a 404 with a 404
+  500, and `unread` with `history: false` for a 404 with a 404
   `history_unavailable` record. Without
   the change: the line holds the whole path and "server"; a 404 gives
   today's alert.
@@ -4891,7 +4908,7 @@ button beside the evidence chips, in both themes.
 - **Where the option rows go.** Default: dropped only where the buttons
   are drawn (the `controls` prop, passed while DecisionRespond draws
   them); a decision link, a person's page and a record no longer open
-  keep them.
+  with no choice waiting for Confirm keep them.
   Why: there they are the only list of choices.
 - **The step names.** Default: "Asked", then "Your answer" ("The
   answer" on a card with no controls), then "Checked by Yardmaster",
@@ -4902,11 +4919,11 @@ button beside the evidence chips, in both themes.
 - **The decision modal's title.** Default: "A decision for you"; the id
   moves into Details.
 
-**Depends on.** Open pull request #912 merged: its words for a gate
+**Depends on.** It builds on #912 (merged): its words for a gate
 ("Approve lets deploy start; Reject cancels it.") are the plain line
-this row shows, and it edits `pages/decisions.vue`, where this row adds
-one attribute. Nothing else of the stream: PR-20 can go beside PR-6,
-with which it shares that one line.
+this row shows, and it edited `pages/decisions.vue`, where this row
+adds one attribute. Nothing else of the stream: PR-20 can go beside
+PR-6, with which it shares that one line.
 
 **Left out.** The inbox's own kinds (a question, a plan, a task): their
 step names, their scope lines and the colour of Approve and Retry
@@ -5137,7 +5154,7 @@ its words and its tab.
 
 **Depends on.** PR-6, for `kindLook` and the page's "Pick an item" rule.
 PR-20, for the card's controls and the modal's title: the item's heading
-leaves the question to the card. Open pull request #912 merged: the
+leaves the question to the card. It builds on #912 (merged): the
 rows, `INBOX_ROW_CLASS`, `itemTimeWords` in the item's header and
 `JoinDecide.vue`. It shares no file of the app with open #907, and
 does not wait for it.
@@ -5241,7 +5258,8 @@ person's page, `pages/people/[name].vue:228`) keeps its words.
   and `data-state`, and passes the attributes it is given through, so
   `[data-welcome]`, `[data-history-none]` and the like keep working.
   The not-found shape is a state of PageEmpty and not of `pageState`: a
-  page knows it from its own 404, before any count.
+  page knows it from its own 404, or (the Yard's focused session) from
+  a first read that does not hold the session, never before that read.
 - `web/app/components/PageAbout.vue` (new): a ghost icon button with
   the tooltip "About this page" in the page's header, shown only while
   `pageState` is `'content'`, opening the page's standing paragraph in
@@ -5891,8 +5909,9 @@ tests.
   Codex screens finds one off.
 
 **Depends on.** PR-1: `dayPage` and its theme switch, without which a
-"light" pass runs dark. Open PR #912 merged (`SidebarSessionRow.vue`,
-whose hover class changes here); it builds on what #908 (merged) made
+"light" pass runs dark. It builds on #912 (merged:
+`SidebarSessionRow.vue`, whose hover class changes here) and on what
+#908 (merged) made
 of `SessionSidebar.vue`, `SidebarSection.vue` and
 `SidebarSharedList.vue`.
 
@@ -6058,7 +6077,9 @@ font family or a button's variant today.
   `data-mono="<kind>"`; a number that ticks ("up 9m", "1 of 3") takes
   `tabular-nums`. The pill's key hints are keys and stay mono, marked.
 - Amber: "Not installed" becomes neutral subtle; `unidentified`
-  becomes neutral, `failed` stays amber (a person should look); "not
+  becomes neutral, `failed` stays amber (a person should look);
+  `identityColor`'s `ok` (`pages/agents.vue:7`, green) goes neutral as
+  well: green is for a live agent; "not
   configured" is a neutral dot and muted words; "revoked" and "gone"
   are muted, and "unreachable", a read failure, stays amber.
 - The two places of PR-25's known list: the unavailable agent card
@@ -6095,8 +6116,10 @@ font family or a button's variant today.
 - `web/e2e/main-action.spec.ts`, amber: on Agents, the
   `[data-not-installed]` badge of the catalog's uninstalled agent (the
   one `identity.spec.ts:17` finds) is not drawn in the resolved warning
-  text colour, while the status mark of the Yard's "Needs you" chip
-  (`[data-yard-filter="needs"] [data-status-mark]`), with the day's
+  text colour, and an identified agent's identity badge is not drawn in
+  the resolved success colour, while the status mark of the Yard's
+  "Needs you" chip (`[data-yard-filter="needs"] [data-status-mark]`),
+  with the day's
   questions waiting, is drawn in the resolved `--ui-warning`. The
   chip's own text and number are PR-17's neutral (its default ink), and
   this test reads no colour of them: one contract, PR-17's, in both
@@ -6138,8 +6161,9 @@ spec 180, the two template rules and their list 150).
 - **What stays amber.** Default: confirms that lose or override work
   ("Save mine", "Read it again", "Resume anyway", Brakeman's "Do it")
   stay amber with ink text; an agent's "unidentified" goes neutral and
-  "failed" stays amber; "records unavailable" and a link "unreachable"
-  stay amber as read failures; "revoked" and "gone" go muted.
+  "failed" stays amber, and its identified badge's green goes neutral;
+  "records unavailable" and a link "unreachable" stay amber as read
+  failures; "revoked" and "gone" go muted.
 - **Open run.** Default: a neutral outline button with its arrow, not a
   plain link.
 - **The faded places.** Default: the unavailable agent card and the
@@ -6370,8 +6394,9 @@ switches mounted once in the layout.
   (`usePaletteRows.ts:554-560`); its "Events · Routing" row goes.
 - `AlertSwitches.vue`: the first line becomes "When a session needs
   input, and for the events routed to Browser:". Where it is drawn
-  alone (the phone's More) it ends with a link "All alert rules" that
-  opens the panel; inside the panel it has none.
+  alone (the phone's More) it ends with a button "All alert rules"
+  that opens the panel (it may be drawn like a link; it opens a panel,
+  not a page); inside the panel it has none.
 - A query `?alerts` on any page of the default layout opens the panel
   and is taken off the address (`router.replace`), so a link can open
   it.
@@ -6865,11 +6890,12 @@ or fails, leaves it empty, and `followAsk` opens the dialog.
   browser's stored token never offered). Nothing they proved is lost:
   Cancel's ending of the ask is still proved, for the dialog, in
   `connect.spec.ts`.
-- `history-page.spec.ts:176-182`, `history-record.spec.ts:201-204`,
-  `brakeman-act.spec.ts:506-509`, `brakeman-cards.spec.ts:397` and
-  `decide-only.spec.ts:437` change their ask's locator to
-  `tokenAsk(page)`, its field and its Connect button (the page keeps
-  the placeholder "paste the workbench token");
+- `history-page.spec.ts:176-181`, `history-record.spec.ts:201-207`,
+  `brakeman-act.spec.ts:506-512` and `brakeman-cards.spec.ts:397-398`
+  change their ask's locator to `tokenAsk(page)`, its field and its
+  Connect button (the page keeps the placeholder "paste the workbench
+  token"); `decide-only.spec.ts:437` asserts `tokenAsk(page)` count 0
+  beside the dialog's;
   `history-record.spec.ts:203` checks the panel's error after Connect,
   or attached (`toBeAttached`) under the page, since the app is hidden
   there.
@@ -6900,7 +6926,7 @@ or fails, leaves it empty, and `followAsk` opens the dialog.
   token held.
 
 **Depends on.** It builds on #908 (merged: the dialog's words,
-`default.vue`). #912 merged (it adds the decision page's ask); #899
+`default.vue`) and #912 (merged: the decision page's ask). #899
 merged (it changes `web/e2e/fixtures.ts`). PR-1 (`dayPage` with `token:
 false` and `ready`). PR-30 (it rewrites `welcome.spec.ts`, whose dialog
 check this row moves, so this row is cut after it).
@@ -7128,6 +7154,10 @@ The algorithm, for a reviewer to check:
   it for the reader (about 2,700 px wide); a chain of 128 is drawn with
   one lane.
 
+**By hand.** The Ledger shape's lines and connectors at `full` and at
+`mini`, read once as the test prints them; this row draws nothing, so
+how they look in both themes is PR-33's and PR-34's look.
+
 **Size.** About 300 lines of code (with the connector's channels and
 `taskDepths`' narrowed type) and 470 of tests.
 
@@ -7353,9 +7383,10 @@ tests.
 **Depends on.** PR-32 (`lineLayout`). PR-11 (`taskRow` for the caption;
 and through it PR-9's `run-fixtures.ts` with the Ledger run). PR-10
 (`taskStatus` and `StatusMark`, which this row gives an `svg` form).
-PR-1 (`dayPage`, `inside`, `noOverlap`, `tabTo`). Open PR 912 merged:
-it edits `CrewGraph.vue`'s Members mode (a `managed` prop to the member
-nodes and `CrewGraphList`), beside the Tasks mode this row replaces.
+PR-1 (`dayPage`, `inside`, `noOverlap`, `tabTo`). It builds on #912
+(merged), which edited `CrewGraph.vue`'s Members mode (a `managed`
+prop to the member nodes and `CrewGraphList`), beside the Tasks mode
+this row replaces.
 
 **Left out.** Members mode and the crew editor (Vue Flow, owner
 decision 13). The phone's diagram (it keeps the list, owner decision
@@ -7937,8 +7968,8 @@ title that runs out of its row on the Needs you page) came from a row
 that is a `<button>` laid out as a flex column with no `items-*`: the
 browser's style for a button starts its items at the start, so the
 title's line is sized to its content, and a `truncate` line's content
-is its whole text (`white-space: nowrap`). Open PR #912 fixes it with
-`items-stretch` in `INBOX_ROW_CLASS` (`utils/inbox.ts`) and measures
+is its whole text (`white-space: nowrap`). #912 (merged) fixed it with
+`items-stretch` in `INBOX_ROW_CLASS` (`utils/inbox.ts`) and measured
 the row; a missing `min-w-0` was not the cause, since a `truncate`
 element hides its overflow and its automatic minimum is already 0. The
 maintainers also keep a design-system page outside the repository, made
@@ -8103,7 +8134,7 @@ sees that a tooltip exists, not that its words say what happens.
 **Depends on.** PR-3 (`STATUS_LOOK`, which the table test reads, and
 the file's Status section), PR-12 (the toolbar it writes down), PR-24
 (`CONTRAST_FLOORS` and the rule harness) and PR-26 (the three rules it
-writes and their checks). Open PR #912's `INBOX_ROW_CLASS`, which the
+writes and their checks). #912's `INBOX_ROW_CLASS` (merged), which the
 cut rule's proof removes. PR-10 shrinks the status-map list first. Of
 issue #374, #908 (merged) took the first point (no label
 cut on the welcome card), PR-30 the second (each choice says what
@@ -8253,11 +8284,12 @@ each covered by a preflight step.
   --shard=${{ matrix.shard }}/2` in `web/`; the failure artifact is
   named `playwright-report-${{ matrix.shard }}` (`upload-artifact@v4`
   refuses a second artifact of one name in a run); `timeout-minutes:
-  160` on the job: the sum of its set-up steps' own caps (Neovim's 5,
-  the mirrors' 5, the browser's packages and download at 40 each) and
-  the unsharded run's longest (65), so a shard that only waited out its
-  retries is never cut; the comment at `ci.yml:248-252` names this
-  bound in place of "the job's 360". `fail-fast: false`
+  160` on the job, above the sum of its set-up steps' own caps
+  (Neovim's 5, the mirrors' 5, the browser's packages and download at
+  40 each, 90 in all) and the unsharded run's longest (65), 155
+  together, so a shard that only waited out its retries is never cut;
+  the comment at `ci.yml:248-252` names this bound in place of "the
+  job's 360". `fail-fast: false`
   keeps one shard's failure from cancelling the other, so both reports
   are kept.
 - The job id stays `e2e`: `required-checks`' `needs` and the preflight
@@ -8293,8 +8325,8 @@ tests.
 
 - **The shards' job.** Default: the job keeps its id `e2e` (so
   `required-checks` and the preflight test hold), with `fail-fast:
-  false` and `timeout-minutes: 160`, the sum of its steps' caps and
-  the unsharded run's longest, as a hang bound.
+  false` and `timeout-minutes: 160`, above the sum (155) of its steps'
+  caps and the unsharded run's longest, as a hang bound.
 
 **Depends on.** Nothing; it is cut first, beside PR-1. It shares
 `docs/checks.md` with PR-1 and PR-38, in paragraphs of their own.
@@ -8464,7 +8496,7 @@ Some shapes the day cannot make exactly or cheaply: a title of 200
 characters in a decision, a run of 40 or 128 tasks, every task state at
 once, an item answered and not yet applied, a read that fails. For those
 PR-1 adds two modules that answer the app's reads in the browser
-(`page.route`), modelled on `longRows` in open PR #912's
+(`page.route`), modelled on `longRows` in #912's (merged)
 `decisions-ask.spec.ts`:
 
 - `web/e2e/inbox-stub.ts`: `inboxItem(kind, over)` and `stubInbox(page,
@@ -8528,8 +8560,8 @@ the document), `yardheader.spec.ts:17-38` (pairwise overlap at 390 px)
 and `fitsSidebar` in `sidebar.spec.ts:942-953`. Containment alone is not
 enough: `fitsSidebar` passes a `truncate` label cut to "C…", because the
 cut label's box is inside the sidebar. D1 is the opposite case, caught
-only by containment: the title is not cut, it runs out of its row (open
-PR #912's diagnosis, the row's line not taking the button's width). A
+only by containment: the title is not cut, it runs out of its row
+(#912's diagnosis, the row's line not taking the button's width). A
 row asserts each claim with the helper that catches it.
 
 `web/e2e/layout.spec.ts` proves every helper on pages made with
@@ -8991,55 +9023,56 @@ What is on `main` and what is not: the app's screens as the UX review
 read them, the inbox and its routes, the durable decisions, the
 catalog, the crews and their runs, Dispatch and History are, at
 `9fb98b06`, #908's sidebar, welcome and screen texts since it merged
-(`f3d39b1f`), and #913's resume (`e5d93094`); PR-1, PR-2, PR-4, PR-5,
-PR-12, PR-22, PR-32 and PR-39 build on them alone. Five open pull
-requests are not (#899, #907, #909, #911 and #912, in "What must merge
-first"): a row that changes a file one of them holds is cut once it
-has merged, unless the row's Depends on says it takes that pull
+(`f3d39b1f`), #913's resume (`e5d93094`) and #912's decision page and
+run graph (`e65af4e7`); PR-1, PR-2, PR-4, PR-5, PR-6, PR-12, PR-20,
+PR-21, PR-22, PR-24, PR-25, PR-32 and PR-39 build on them alone. Four
+open pull requests are not (#899, #907, #909 and #911, in "What must
+merge first"): a row that changes a file one of them holds is cut once
+it has merged, unless the row's Depends on says it takes that pull
 request in a plain merge. Issue #716 (Codex's tool-approval prompt
 shown as working) is asked to be fixed before PR-3 merges.
 
 | PR | Title | Contains | Touches | Tests | Depends on | Parallel with |
 |---|---|---|---|---|---|---|
 | PR-1 | e2e: a seeded day, layout assertions, one theme and viewport helper | The seeded day (a server of its own per worker, named read-only parts, a guard that fails the test that leaves something), STUB_TURN in the stub, layout.ts measures, inbox and run stubs, dayPage and useTheme, one exported budget(), the rail-squares light-theme fix | web/e2e (new own-server.ts, day.ts, layout.ts, inbox-stub.ts, run-fixtures.ts, day.spec.ts, layout.spec.ts, stubs.spec.ts; changed fixtures.ts, decisions-helpers.ts, stub-agent.sh, rail-squares.spec.ts), docs/checks.md | day.spec.ts (each part holds what it promises, states survive viewers, the leftover guard, dayPage themes and touch); layout.spec.ts (each helper passes a good page and fails a bad one); stubs.spec.ts (stubs held to the real server); rail-squares.spec.ts light pass really light | none (open PR 899 touches fixtures.ts and stub-agent.sh, and 907 stub-agent.sh, in other hunks; plain merge) | PR-2, PR-20, PR-32, PR-35, PR-39 |
-| PR-2 | session: a turn's start and end are said in the listing | Info.turns learned from the agent's own reports; an Enter after a shown done shows the empty state with input; a done of the same turn keeps the first, a done of another turn (on a hosted copy, another id) replaces it; the host's attention frame carries turns (proto, protocol.ts, docs/protocol.md together), so a hosted copy shows what its host shows after a restart or a registration afresh; the join reply carries turns; the shared status-table.json | internal/session (info.go, local.go, turn_test.go, status_table_test.go, testdata/status-table.json), internal/proto (hostmsg.go, hostmsg_test.go), internal/signal (hosted.go, answeras.go, signal_test.go), internal/hostagent (agent.go, agent_test.go), internal/api (ws_host.go, links.go, links_test.go), internal/crew/run_test.go, docs/protocol.md, web/app/utils/protocol.ts, web/app/composables/useSessions.ts | Go race tests: Enter after done, done after done and a later turn's done, turns learned, the shared table, the hosted copy's same and other done, the frame's turns, the host told, a registration afresh after an Enter keeps turns, done B after the host was away, crew readiness after an Enter, the join's turns | none (shares useSessions.ts with open #899, #911 and #912 and docs/protocol.md with #901, #907, #909, #911 and #912, at lines apart; plain merge) | PR-1, PR-4, PR-5, PR-6, PR-12, PR-20, PR-21, PR-22, PR-23, PR-24, PR-25, PR-27, PR-30, PR-31, PR-32, PR-39 |
-| PR-3 | web: one status language for sessions | utils/status.ts (sessionStatus, STATUS_LOOK), StatusMark.vue (shaped for PR-33's SVG form), useNow; every session surface draws one of five marks; AttentionBadge and SessionStatusBadge deleted; the done event mark gives way; docs/design/system.md begun with its Status section | web/app/utils (status.ts, sidebar.ts, charts.ts, events.ts), web/app/components (StatusMark, SessionSidebar, SidebarSessionRow, SidebarRailSquare, SidebarSection, SidebarSharedList, SessionTile, AttentionBar, CarouselStrip, CommandPalette, EventMarkBadge, TransportBadge; AttentionBadge and SessionStatusBadge removed), web/app/composables (useNow.ts, usePaletteRows.ts, useSessions.ts), web/app/pages (yard, sessions/[id], roundhouse, join/[token]), web/e2e (status-walk.spec.ts, codexworking, palette-reach, sidebar specs), docs/design, docs/features.md | vitest status.test.ts (every rule, the shared table, the distinctness guard) and moved sidebar/charts/events tests; Playwright status-walk.spec.ts per surface at 1440 and 390 in both themes, each surface's own states (exited read where ended sessions are kept, and asserted not drawn on the Yard and the Roundhouse), guest page, host away; codexworking real-signal marks | PR-1 (day states, dayPage, useTheme, probeColour), PR-2 (turns, the cleared done, the table); open PRs #907 (sessions/[id].vue) and #912 merged, #899 and #911 (usePaletteRows.ts, useSessions.ts) merged or taken in a plain merge; issue #716 fixed before it merges | PR-4, PR-5, PR-6, PR-12, PR-20, PR-21, PR-22, PR-23, PR-24, PR-25, PR-27, PR-30, PR-31, PR-32, PR-35, PR-39 |
-| PR-4 | web: the pages in one table; one list and one number for what needs you | utils/pages.ts (every destination with its one sentence) read by the nav, rail, phone bar and palette; utils/needsYou.ts with useNeedsYou (tasks from the inbox's task items; the number known only when the sessions, the decisions and the inbox are all read, none failed or cut short; no caller yet but its test); the nav's tooltips and the palette's page lines | web/app/utils/pages.ts (new), web/app/utils/needsYou.ts (new), web/app/composables/useNeedsYou.ts (new), web/app/layouts/default.vue, web/app/components/BottomBar.vue, web/app/composables/usePaletteRows.ts, web/e2e/sidebar.spec.ts | vitest pages.test.ts (today's lists, active rules, chords agree with the shortcuts) and needsYou.test.ts (the day's cases, the inbox lagging attention, known only with every store read: each of the sessions, the decisions and the inbox held, failed and cut short by itself, the held decisions read beside an inbox that lists a gate, switchyard (inbox and decisions refused)); Playwright tooltip and palette-line test in sidebar.spec.ts | PR-1 (dayPage, tabTo); builds on #908's header (merged); PRs 899 and 912 rebase on usePaletteRows.ts | PR-2, PR-3, PR-12, PR-19, PR-20, PR-24, PR-25, PR-32, PR-35, PR-36, PR-39 |
-| PR-5 | web: one amber number, a row that leaves, one name | the one number on the nav, rail, phone tab, palette, tab title, favicon and pill; the Yard's nav badge and rail chip gone; needsRowShown hides the row at zero; the sidebar section's header says what it leaves out ("Needs you 6 · +3 on the page", plans, tasks and stopped runs' records) until PR-13; the phone's Yard count neutral; the name Needs you everywhere but the decide-only page and the palette's second group, a decision link's tab and a ticket's link included | web/app/layouts/default.vue, web/app/utils/needsYou.ts, web/app/utils/pages.ts (+test), web/app/components/SidebarRail.vue, SessionSidebar.vue, BottomBar.vue, NeedsYouPill.vue, DispatchDecisions.vue, web/app/composables/useNeedsCursor.ts, useAttention.ts, usePaletteRows.ts, useShortcuts.ts, web/app/pages/decisions.vue, yard.vue, join/[token].vue, README, docs/features.md, docs/plans/decision-inbox.md, web/e2e/counts.spec.ts (new), sidebar.spec.ts, phone.spec.ts | vitest needsRowShown and sectionHeader tables; Playwright counts.spec.ts on busy (every reader, the favicon's dot among them, equals the server's oracle at one poll, every number computed from the server's refs, the section's header names what it leaves out, all move together on the test's own question, again after reload) and the row-leaves test on its own server with /api/inbox held, failed and switchyard by the spec's own route; needsRowShown with each store unread, failed or cut short | PR-4 (pages.ts, needsYou.ts); PR-1 (day busy part, ownServer, dayPage, inbox-stub); open PRs 899 and 912 hold usePaletteRows.ts and 912 decisions.vue; plain merge | every row but PR-1, PR-4, PR-6, PR-7, PR-8, PR-13, PR-14, PR-15, PR-21, PR-23, PR-26, PR-28, PR-29, PR-30, PR-31, PR-37, PR-38 |
-| PR-6 | web: the page of what needs you, with nothing on it | Needs you at zero: one column, when the last item closed, the four kinds, "Decided in the last day" with a link to History; "Pick an item" only with an item; kindLook; Open on your phone moved to the layout and into your menu | web/app/pages/decisions.vue, web/app/utils/inbox.ts, web/app/utils/actions.ts, web/app/components/OpenOnPhone.vue (new), web/app/composables/useOpenOnPhone.ts (new), web/app/components/SidebarHeaderMenus.vue, web/app/layouts/default.vue (one mount), web/e2e | vitest kindLook, atZero, pickShown, lastClosedWords, accountItems with phone; Playwright decide-zero.spec.ts (stubbed inbox, 1440 and 390 touch, failed and switchyard reads) and the menu path in decision-page.spec.ts | PR-5 (pages.ts name, the row that leaves), PR-1 (dayPage, layout.ts, inbox-stub.ts), #912 merged (rows and mount of decisions.vue) | every row but PR-1, PR-4, PR-5, PR-7, PR-8, PR-13, PR-14, PR-15, PR-21, PR-23, PR-26, PR-28, PR-29, PR-30, PR-31, PR-37, PR-38 |
+| PR-2 | session: a turn's start and end are said in the listing | Info.turns learned from the agent's own reports; an Enter after a shown done shows the empty state with input; a done of the same turn keeps the first, a done of another turn (on a hosted copy, another id) replaces it; the host's attention frame carries turns (proto, protocol.ts, docs/protocol.md together), so a hosted copy shows what its host shows after a restart or a registration afresh; the join reply carries turns; the shared status-table.json | internal/session (info.go, local.go, turn_test.go, status_table_test.go, testdata/status-table.json), internal/proto (hostmsg.go, hostmsg_test.go), internal/signal (hosted.go, answeras.go, signal_test.go), internal/hostagent (agent.go, agent_test.go), internal/api (ws_host.go, links.go, links_test.go), internal/crew/run_test.go, docs/protocol.md, web/app/utils/protocol.ts, web/app/composables/useSessions.ts | Go race tests: Enter after done, done after done and a later turn's done, turns learned, the shared table, the hosted copy's same and other done, the frame's turns, the host told, a registration afresh after an Enter keeps turns, done B after the host was away, crew readiness after an Enter, the join's turns | none (shares useSessions.ts with open #899 and #911 and docs/protocol.md with #901, #907, #909 and #911, at lines apart; plain merge) | PR-1, PR-4, PR-5, PR-6, PR-12, PR-20, PR-21, PR-22, PR-23, PR-24, PR-25, PR-27, PR-30, PR-31, PR-32, PR-39 |
+| PR-3 | web: one status language for sessions | utils/status.ts (sessionStatus, STATUS_LOOK), StatusMark.vue (shaped for PR-33's SVG form), useNow; every session surface draws one of five marks; AttentionBadge and SessionStatusBadge deleted; the done event mark gives way; docs/design/system.md begun with its Status section | web/app/utils (status.ts, sidebar.ts, charts.ts, events.ts), web/app/components (StatusMark, SessionSidebar, SidebarSessionRow, SidebarRailSquare, SidebarSection, SidebarSharedList, SessionTile, AttentionBar, CarouselStrip, CommandPalette, EventMarkBadge, TransportBadge; AttentionBadge and SessionStatusBadge removed), web/app/composables (useNow.ts, usePaletteRows.ts, useSessions.ts), web/app/pages (yard, sessions/[id], roundhouse, join/[token]), web/e2e (status-walk.spec.ts, codexworking, palette-reach, sidebar specs), docs/design, docs/features.md | vitest status.test.ts (every rule, the shared table, the distinctness guard) and moved sidebar/charts/events tests; Playwright status-walk.spec.ts per surface at 1440 and 390 in both themes, each surface's own states (exited read where ended sessions are kept, and asserted not drawn on the Yard and the Roundhouse), guest page, host away; codexworking real-signal marks | PR-1 (day states, dayPage, useTheme, probeColour), PR-2 (turns, the cleared done, the table); open PR #907 (sessions/[id].vue) merged (#912 has merged), #899 and #911 (usePaletteRows.ts, useSessions.ts) merged or taken in a plain merge; issue #716 fixed before it merges | PR-4, PR-5, PR-6, PR-12, PR-20, PR-21, PR-22, PR-23, PR-24, PR-25, PR-27, PR-30, PR-31, PR-32, PR-35, PR-39 |
+| PR-4 | web: the pages in one table; one list and one number for what needs you | utils/pages.ts (every destination with its one sentence) read by the nav, rail, phone bar and palette; utils/needsYou.ts with useNeedsYou (tasks from the inbox's task items; the number known only when the sessions, the decisions and the inbox are all read, none failed or cut short; no caller yet but its test); the nav's tooltips and the palette's page lines | web/app/utils/pages.ts (new), web/app/utils/needsYou.ts (new), web/app/composables/useNeedsYou.ts (new), web/app/layouts/default.vue, web/app/components/BottomBar.vue, web/app/composables/usePaletteRows.ts, web/e2e/sidebar.spec.ts | vitest pages.test.ts (today's lists, active rules, chords agree with the shortcuts) and needsYou.test.ts (the day's cases, the inbox lagging attention, known only with every store read: each of the sessions, the decisions and the inbox held, failed and cut short by itself, the held decisions read beside an inbox that lists a gate, switchyard (inbox and decisions refused)); Playwright tooltip and palette-line test in sidebar.spec.ts | PR-1 (dayPage, tabTo); builds on #908's header (merged); open PR 899 rebases on usePaletteRows.ts | PR-2, PR-3, PR-12, PR-19, PR-20, PR-24, PR-25, PR-32, PR-35, PR-36, PR-39 |
+| PR-5 | web: one amber number, a row that leaves, one name | the one number on the nav, rail, phone tab, palette and tab title, the favicon's dot following it, the pill's count with its "N more in Needs you" adding up to it; the Yard's nav badge and rail chip gone; needsRowShown hides the row at zero; the sidebar section's header says what it leaves out ("Needs you 6 · +3 on the page", plans, tasks and stopped runs' records) until PR-13; the phone's Yard count neutral; the name Needs you everywhere but the decide-only page and the palette's second group, a decision link's tab and a ticket's link included | web/app/layouts/default.vue, web/app/utils/needsYou.ts, web/app/utils/pages.ts (+test), web/app/components/SidebarRail.vue, SessionSidebar.vue, BottomBar.vue, NeedsYouPill.vue, DispatchDecisions.vue, web/app/composables/useNeedsCursor.ts, useAttention.ts, usePaletteRows.ts, useShortcuts.ts, web/app/pages/decisions.vue, yard.vue, join/[token].vue, README, docs/features.md, docs/plans/decision-inbox.md, web/e2e/counts.spec.ts (new), sidebar.spec.ts, phone.spec.ts | vitest needsRowShown and sectionHeader tables; Playwright counts.spec.ts on busy (every reader, the favicon's dot among them, equals the server's oracle at one poll, every number computed from the server's refs, the section's header names what it leaves out, all move together on the test's own question, again after reload) and the row-leaves test on its own server with /api/inbox held, failed and switchyard by the spec's own route; needsRowShown with each store unread, failed or cut short | PR-4 (pages.ts, needsYou.ts); PR-1 (day busy part, ownServer, dayPage, inbox-stub); open PR 899 holds usePaletteRows.ts; plain merge | every row but PR-1, PR-4, PR-6, PR-7, PR-8, PR-13, PR-14, PR-15, PR-21, PR-23, PR-26, PR-28, PR-29, PR-30, PR-31, PR-37, PR-38 |
+| PR-6 | web: the page of what needs you, with nothing on it | Needs you at zero: one column, when the last item closed, the four kinds, "Decided in the last day" with a link to History; "Pick an item" only with an item; kindLook; Open on your phone moved to the layout and into your menu | web/app/pages/decisions.vue, web/app/utils/inbox.ts, web/app/utils/actions.ts, web/app/components/OpenOnPhone.vue (new), web/app/composables/useOpenOnPhone.ts (new), web/app/components/SidebarHeaderMenus.vue, web/app/layouts/default.vue (one mount), web/e2e | vitest kindLook, atZero, pickShown, lastClosedWords, accountItems with phone; Playwright decide-zero.spec.ts (stubbed inbox, 1440 and 390 touch, failed and switchyard reads) and the menu path in decision-page.spec.ts | PR-5 (pages.ts name, the row that leaves), PR-1 (dayPage, layout.ts, inbox-stub.ts); builds on #912 (merged: rows and mount of decisions.vue) | every row but PR-1, PR-4, PR-5, PR-7, PR-8, PR-13, PR-14, PR-15, PR-21, PR-23, PR-26, PR-28, PR-29, PR-30, PR-31, PR-37, PR-38 |
 | PR-7 | web: sidebar rows that fit: gutters, the row, the header | the sidebar back to 200 px (drag to at least 280); header = mark, name, your menu with Alerts (AlertsPanel, a slideover of the switches) and Collapse to the rail inside it; 8 px gutters; name on one line, initials and the status word on the meta line, choices at the row's edge; a run in Needs you shows its askers and 'and 2 more' | web/app/utils/sidebar.ts, web/app/layouts/default.vue, web/app/components/SidebarHeaderMenus.vue, AlertsPanel.vue (new), SidebarSessionRow.vue, SidebarPrompt.vue, SidebarRunBlock.vue, SessionSidebar.vue, README, docs/features.md, web/e2e/sidebar.spec.ts, chat.spec.ts, rail-squares.spec.ts | vitest widths at six window sizes, blockRows, focusRows' more row; Playwright header at 200 px (rewrite of #908's), your menu holds Alerts and the collapse, a row fits 200 px, a run shows who asks; width group and collapse clicks moved | builds on #908 (merged: header, SIDEBAR_SIZE, specs it rewrites); PR-3 (marks and words); PR-6 (your menu's items); PR-1; owner decision 6 | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-8, PR-13, PR-14, PR-15, PR-26, PR-28, PR-29, PR-37, PR-38 |
 | PR-8 | web: a question on two lines in the narrow sidebar, whole beside its row | below 280 px one decision (narrowSidebar) clamps the question to two lines and opens a non-modal panel beside the row on focus or Answer; 1 to 9 still answer; the spec uses (47 on main) moved onto rowAnswer | web/app/utils/sidebar.ts, web/app/components/SessionSidebar.vue, SidebarSessionRow.vue, SidebarRowPanel.vue (new), SidebarPrompt.vue, web/e2e/fixtures.ts, sidebar-question.spec.ts (new), and 13 specs (answered, question, sidebar, approval, choices, claudedialog, askwait, codexworking, decision-mirror, held, phone, dispatch-evidence, hosted-question) | vitest narrowSidebar and panelRow; Playwright sidebar-question.spec.ts: a 500-byte question two lines in the row and whole in the panel, digits and J K, the #596 reply-field rule through the panel, touch, five asking rows in view, whole again at 300 px | PR-7 (200 px and the row); PR-1 (helpers, busy part); owner decision 7 (the clamp ships with its panel at 280 px) | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-13, PR-14, PR-15, PR-26, PR-29, PR-37, PR-38 |
-| PR-9 | web: a run header that fits | P7 (header), D2: the name whole, one ticket chip, Add agent and Share in one menu, Stop neutral at rest; row two at every width with the bar, the one sentence, the pause, people, Logins, who launched, the uptime in sans; the Ledger and legacy runs added to run-fixtures.ts | web/app/components/CrewRunHeader.vue, web/app/utils/crewWords.ts, web/app/utils/status.ts (runBarParts), web/app/pages/runs/[run].vue, web/e2e/run-fixtures.ts (PR-1's, extended), web/e2e/run-header.spec.ts (new), web/e2e/{tasks,tasks-resume,manifest,decisions,crew-people,switchyard,graph}.spec.ts, docs/features.md | vitest runTicketChips, runBarParts, runStatusLine with a gate's decision, one gate holding two tasks (1 needs you) and two decisions holding one task (2 need you); Playwright run-header.spec.ts (name uncut and nothing overlapping at 1440 and 390, the menu by key and touch, Add agent on the legacy run and disabled on the managed one, the sentence's need-you count equal to the run's items in needsYou() and the bar's needs segment the tasks held, Stop not red and the needs segment amber in both themes, re-checked after the 5 s tick); seven specs moved off the badges | PR-10 (runStatusLine, taskStatus, STATUS_LOOK; cut before this row), PR-4 (useNeedsYou), PR-1 (layout.ts, dayPage, tabTo), open PRs 899 and 912 merged (the header's lines; Add agent offered by runOffer) | every row but PR-1, PR-2, PR-3, PR-4, PR-10, PR-11, PR-26, PR-33, PR-34, PR-37, PR-38 |
-| PR-10 | web: one status language for runs and tasks | taskStatus, memberStatusOf, runStatusLine(run, sessions, needs, now) (its "N need you" the run's items of needsYou(), each once) and summaryStatusLine(summary, needs) for Dispatch's run summaries (the done part and the items alone; working and finished only while the run is in the live store, no server change), and TASK_LOOK in utils/status.ts; task rows, graph nodes and legend, mini DAG, the run card (the header left to PR-9), Dispatch's run card, the run page's palette rows, the people page and the Crews outcomes speak PR-3's language | web/app/utils (status.ts, tasks.ts, runs.ts, crewWords.ts, dispatchEvidence.ts), web/app/components (RunTasks, CrewGraph, CrewGraphTaskNode, CrewGraphNode, CrewGraphList, CrewMiniDag, CrewRunCard, DispatchRunCard, CrewRunsPanel, CrewsTable, CrewRunBars), pages/crews/[[id]].vue (the bars' legend), web/app/pages (runs/[run], people/[name]), web/e2e (run-status.spec.ts, run-fixtures.ts (PR-1's, extended), tasks, decisions, graph specs) | vitest taskStatus from task-commands.json, memberStatusOf, runStatusLine (a gate's decision that holds no task counted, one gate holding two tasks once, two decisions holding one task twice), summaryStatusLine on a summary alone, taskStatus and needsYou agreeing on one run, the task-mark guard, moved runs/tasks/dispatchEvidence/crewWords tests; Playwright run-status.spec.ts on a stubbed run in both themes and at 390, Dispatch's run card with the summary alone and with the live run, real-engine needs marks in tasks.spec and decisions.spec | PR-3 (status.ts, StatusMark, the guard), PR-4 (needsYou.ts: the test that holds taskStatus and needsYou() to one answer), PR-1 (run-fixtures.ts, dayPage, useTheme, probeColour); open PR #912 merged (CrewGraph*, runs/[run].vue, runs.ts) | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-11, PR-16, PR-26, PR-33, PR-34, PR-37, PR-38 |
+| PR-9 | web: a run header that fits | P7 (header), D2: the name whole, one ticket chip, Add agent and Share in one menu, Stop neutral at rest; row two at every width with the bar, the one sentence, the pause, people, Logins, who launched, the uptime in sans; the Ledger and legacy runs added to run-fixtures.ts | web/app/components/CrewRunHeader.vue, web/app/utils/crewWords.ts, web/app/utils/status.ts (runBarParts), web/app/pages/runs/[run].vue, web/e2e/run-fixtures.ts (PR-1's, extended), web/e2e/run-header.spec.ts (new), web/e2e/{tasks,tasks-resume,manifest,decisions,crew-people,switchyard,graph}.spec.ts, docs/features.md | vitest runTicketChips, runBarParts, runStatusLine with a gate's decision, one gate holding two tasks (1 needs you) and two decisions holding one task (2 need you); Playwright run-header.spec.ts (name uncut and nothing overlapping at 1440 and 390, the menu by key and touch, Add agent on the legacy run and disabled on the managed one, the sentence's need-you count equal to the run's items in needsYou() and the bar's needs segment the tasks held, Stop not red and the needs segment amber in both themes, re-checked after the 5 s tick); seven specs moved off the badges | PR-10 (runStatusLine, taskStatus, STATUS_LOOK; cut before this row), PR-4 (useNeedsYou), PR-1 (layout.ts, dayPage, tabTo), open PR 899 merged (the header's lines); builds on #912 (merged: Add agent offered by runOffer) | every row but PR-1, PR-2, PR-3, PR-4, PR-10, PR-11, PR-26, PR-33, PR-34, PR-37, PR-38 |
+| PR-10 | web: one status language for runs and tasks | taskStatus, memberStatusOf, runStatusLine(run, sessions, needs, now) (its "N need you" the run's items of needsYou(), each once) and summaryStatusLine(summary, needs) for Dispatch's run summaries (the done part and the items alone; working and finished only while the run is in the live store, no server change), and TASK_LOOK in utils/status.ts; task rows, graph nodes and legend, mini DAG, the run card (the header left to PR-9), Dispatch's run card, the run page's palette rows, the people page and the Crews outcomes speak PR-3's language | web/app/utils (status.ts, tasks.ts, runs.ts, crewWords.ts, dispatchEvidence.ts), web/app/components (RunTasks, CrewGraph, CrewGraphTaskNode, CrewGraphNode, CrewGraphList, CrewMiniDag, CrewRunCard, DispatchRunCard, CrewRunsPanel, CrewsTable, CrewRunBars), pages/crews/[[id]].vue (the bars' legend), web/app/pages (runs/[run], people/[name]), web/e2e (run-status.spec.ts, run-fixtures.ts (PR-1's, extended), tasks, decisions, graph specs) | vitest taskStatus from task-commands.json, memberStatusOf, runStatusLine (a gate's decision that holds no task counted, one gate holding two tasks once, two decisions holding one task twice), summaryStatusLine on a summary alone, taskStatus and needsYou agreeing on one run, the task-mark guard, moved runs/tasks/dispatchEvidence/crewWords tests; Playwright run-status.spec.ts on a stubbed run in both themes and at 390, Dispatch's run card with the summary alone and with the live run, real-engine needs marks in tasks.spec and decisions.spec | PR-3 (status.ts, StatusMark, the guard), PR-4 (needsYou.ts: the test that holds taskStatus and needsYou() to one answer), PR-1 (run-fixtures.ts, dayPage, useTheme, probeColour); builds on #912 (merged: CrewGraph*, runs/[run].vue, runs.ts) | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-11, PR-16, PR-26, PR-33, PR-34, PR-37, PR-38 |
 | PR-11 | web: task rows as a table that says the state once | P7 (rows): one grid template for every row (state, task, who, what, actions), the attempt said once, an owner only when the task names one, words uncoloured; Cancel, Copy branch, Ask Brakeman why behind a row menu; taskRow and taskWords' attempt option | web/app/components/RunTasks.vue, web/app/utils/tasks.ts, web/app/utils/tasks.test.ts, web/e2e/run-tasks.spec.ts (new), web/e2e/{decisions,crew-people,brakeman-cards,manifest,tasks,dispatch-links}.spec.ts, docs/features.md | vitest taskWords option and the taskRow table; Playwright run-tasks.spec.ts (columns aligned at 1440, one mark and one attempt a row, nothing red at rest in both themes, the row menu by key and touch with the closed-menu wait, the fold at 390); six specs moved | PR-9 (the Ledger run in run-fixtures.ts; the people say the acceptance owner once), PR-10 (taskStatus, StatusMark), PR-1 | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-10, PR-33, PR-34 |
 | PR-12 | web: one toolbar on a Dispatch project, and columns that line up | P8: the description as one line (descriptionLine), one toolbar with Filter behind a popover and chips (filterChips, parent and deleted shown), Views as a menu naming the view applied, fixed tracks for milestone, priority, owner, assignees and age with empty cells drawn, a palette row Filter the tickets… | web/app/pages/dispatch/[project]/index.vue; web/app/components/DispatchFilters.vue, DispatchViewsBar.vue, DispatchTicketList.vue; web/app/utils/dispatchQuery.ts (+test), markdown.ts (+test), dispatch.ts; web/e2e/dispatch-toolbar.spec.ts (new), dispatch.spec.ts, dispatch-views.spec.ts, palette-rows.spec.ts; docs/plans/dispatch.md, docs/features.md | vitest filterChips and descriptionLine; Playwright on the seeded day: first ticket at most 160 px down and all 14 rows in view at 1440 x 900, at least 12 at 1280 x 720, five tracks aligned within 1 px before and after a selection, priority and age aligned and nothing sideways at 390 x 844, chips in and out of the address; moved specs open Filter or Views first | PR-1 (the day's dispatch part, dayPage, layout.ts) | every row but PR-1, PR-23, PR-29, PR-30, PR-31, PR-37, PR-38 (palette-rows.spec.ts is shared with PR-4, PR-10 and PR-13 in other tests; docs/features.md with every row) |
 | PR-13 | web: one inbox: the sidebar lists everything that needs you | Needs you lists questions, plans, tasks and decisions with their kind marks; a waiting run leaves Running in the same call; the section counts the nav's number and its "+N on the page" words go; the palette's two groups become one Needs you group | web/app/utils/sidebar.ts, web/app/utils/needsYou.ts, web/app/components/SessionSidebar.vue, SidebarInboxRow.vue (new), SidebarRunBlock.vue, web/app/composables/usePaletteRows.ts, web/app/utils/palette.ts (+test), web/app/utils/sidebar.test.ts, docs/features.md, web/e2e/counts.spec.ts | vitest sidebarModel with the waiting runs, item focus rows, the palette's one group; Playwright counts.spec.ts extended: section equals the oracle with no "on the page" words, each kind once with its mark, the failed run absent from Running at the same moment, failed and cut inbox reads | PR-5 (number, name, counts spec); PR-6 (kindLook); PR-7 (asking members first) and PR-8 (rows short enough for nine); PR-1 | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-8, PR-14, PR-15, PR-26, PR-29, PR-37, PR-38 |
-| PR-14 | web: finished apart from working | Running splits into Finished and Working, in the order Needs you, Finished, Working, Shared, Exited; a run sits once by its busiest member and says '2 working · 2 finished'; old folds read; the palette's groups follow | web/app/utils/sidebar.ts, web/app/components/SessionSidebar.vue, SidebarSection.vue, SidebarRunHeader.vue, SidebarRailSquare.vue, web/app/composables/usePaletteRows.ts, docs/features.md, web/app/utils/palette.test.ts, web/e2e/sidebar.spec.ts, askwait, choices, codexworking, phone, question, palette-keys, decisions specs | vitest sections per status key, run placement and subtitle, old fold mapping, palette groups; Playwright two sessions set working and done land in their sections in order and move at once; nine 'running' assertions widened to the live states | PR-3 (sessionStatus, STATUS_LOOK, useNow); PR-13 (waiting run's place); PR-2 so finished is true | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-8, PR-13, PR-26, PR-37, PR-38 |
+| PR-14 | web: finished apart from working | Running splits into Finished and Working, in the order Needs you, Finished, Working, Shared, Exited; a run sits once by its busiest member and says '2 working · 2 finished'; old folds read; the palette's groups follow | web/app/utils/sidebar.ts, web/app/components/SessionSidebar.vue, SidebarSection.vue, SidebarRunHeader.vue, SidebarRailSquare.vue, web/app/composables/usePaletteRows.ts, docs/features.md, web/app/utils/palette.ts (+test), web/e2e/sidebar.spec.ts, askwait, choices, codexworking, phone, question, palette-keys, decisions specs | vitest sections per status key, run placement and subtitle, old fold mapping, palette groups; Playwright two sessions set working and done land in their sections in order and move at once; nine 'running' assertions widened to the live states | PR-3 (sessionStatus, STATUS_LOOK, useNow); PR-13 (waiting run's place); PR-2 so finished is true | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-8, PR-13, PR-26, PR-37, PR-38 |
 | PR-15 | web: the pages as six tiles | the full sidebar's foot as six tiles (Needs you, Yard, Crews, Dispatch, Brakeman, More) about 116 px tall; Brakeman's slot held while unknown; Needs you tile stays at zero (left out on a switchyard); the phone's More gains Brakeman; the rail keeps every page | web/app/utils/pages.ts, web/app/components/SidebarTiles.vue (new), web/app/layouts/default.vue, web/app/components/BottomBar.vue, README, docs/features.md, web/e2e/sidebar.spec.ts, phone.spec.ts, settings.spec.ts | vitest navTiles and phoneMore; Playwright foot at most 120 px with six uncut tiles, More by click and Enter, active rules, the held Brakeman slot (More does not move), the zero tile; phone More with Brakeman at 44 px | PR-5 (name, number, tile stays at zero); PR-13; PR-4; PR-7; PR-17 (the Roundhouse leaves the nav and More); PR-1 | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-8, PR-13, PR-17, PR-29 |
-| PR-16 | web: a ticket's strip of sections; a plan folds once approved | P9: a sticky strip of nine sections with states on five (ticketSections, ticketWaits over useNeedsYou), sections with ids and scroll margins, the aside under the strip, an approved plan that holds folded to one line (planFold) with Show the whole plan, the Arguments line and People's command lines removed | web/app/components/DispatchTicketPage.vue, DispatchTicketStrip.vue (new), DispatchPlan.vue, DispatchPlanBody.vue, DispatchPeople.vue; web/app/utils/ticketSections.ts (new, +test), dispatchPlans.ts (+test); web/e2e/ticket-strip.spec.ts (new), dispatch-delivery.spec.ts; docs/plans/dispatch-evidence.md, docs/features.md | vitest ticketSections (order, words, waits filtered by run and ticket, 50+) and planFold (stale never folds); Playwright on its own server: strip at the scroller's top after a real scroll and after a live comment, sections land below the strip with focus, states follow a gate answered with no reload, the fold and its stale reopening, one command line per member, opaque strip in both themes, 390 x 844 nothing sideways, none in Review | PR-10 (summaryStatusLine: the done part a summary carries), PR-4 (useNeedsYou); open PR 912 merged (DispatchPlanBody.vue, dispatchPlans.ts and its test) | every row but PR-1, PR-2, PR-3, PR-4, PR-10 |
+| PR-16 | web: a ticket's strip of sections; a plan folds once approved | P9: a sticky strip of nine sections with states on five (ticketSections, ticketWaits over useNeedsYou), sections with ids and scroll margins, the aside under the strip, an approved plan that holds folded to one line (planFold) with Show the whole plan, the Arguments line and People's command lines removed | web/app/components/DispatchTicketPage.vue, DispatchTicketStrip.vue (new), DispatchPlan.vue, DispatchPlanBody.vue, DispatchPeople.vue; web/app/utils/ticketSections.ts (new, +test), dispatchPlans.ts (+test); web/e2e/ticket-strip.spec.ts (new), dispatch-delivery.spec.ts; docs/plans/dispatch-evidence.md, docs/features.md | vitest ticketSections (order, words, waits filtered by run and ticket, 50+) and planFold (stale never folds); Playwright on its own server: strip at the scroller's top after a real scroll and after a live comment, sections land below the strip with focus, states follow a gate answered with no reload, the fold and its stale reopening, one command line per member, opaque strip in both themes, 390 x 844 nothing sideways, none in Review | PR-10 (summaryStatusLine: the done part a summary carries), PR-4 (useNeedsYou); builds on #912 (merged: DispatchPlanBody.vue, dispatchPlans.ts and its test); open #909 at lines apart (dispatchPlans.ts and its test, dispatch-evidence.md), plain merge | every row but PR-1, PR-2, PR-3, PR-4, PR-10 |
 | PR-17 | web: Yard tiles lead with the name; the Roundhouse is a view of the Yard | P10 and P12's first move: the tile's header is its name, its state (StatusMark) moves to a foot cell outside the slot, chips All, Needs you, Working, Finished (and Running while it has a session or is chosen) from utils/wall.ts, the Needs you chip counts the grid's sessions from needsYou() and says so, YardViews (Grid and Roundhouse) with /roundhouse, its name, G R and Alt+R kept and its nav and More rows gone | web/app/components/SessionTile.vue, EventMarkBadge.vue, YardViews.vue (new); web/app/pages/yard.vue, roundhouse.vue; web/app/utils/wall.ts, pages.ts; docs/features.md, README.md; web/e2e/yard-tiles.spec.ts, yard-views.spec.ts (new), palette-reach, palette-rows, sidebar, phone, chords specs; web/app/utils/wall.test.ts, pages.test.ts | vitest yardFilter, yardCounts, yardChips and filterOf against needsYou() and yardRoute; Playwright yard-tiles.spec.ts (names uncut and the four live states in the foot on the seeded day at 1440 and 390, the exited session not on the grid, chips by id after a state change, the chip's neutral number in both themes, the phone's chip row) and yard-views.spec.ts (the view switch, nav and More without the Roundhouse, G R and /carousel); five existing specs edited, none lost | PR-3 (sessionStatus, StatusMark, useNow), PR-4 (pages.ts, needsYou), PR-1 (day, dayPage, layout.ts) | every row but PR-1, PR-2, PR-3, PR-4, PR-15, PR-18, PR-26, PR-29, PR-37, PR-38 |
 | PR-18 | web: the Yard is its grid | P22: WallQueue.vue and its Answered list deleted, the grid takes the 340 px at every width, a tile that asks shows its question's start in its foot (tileAsk on rowPrompt), the pill's Enter on /yard expands the tile (pillTarget), J, K and Enter leave the Yard's keys and KeyJ and KeyK leave ALT_PASSTHROUGH_CODES, QuickReplyBar choices get choiceTitle | web/app/components/WallQueue.vue (deleted), SessionTile.vue, NeedsYouPill.vue, QuickReplyBar.vue (one line); web/app/pages/yard.vue; web/app/composables/useShortcuts.ts; web/app/utils/wall.ts, needsCursor.ts, attention.ts; docs/features.md, README.md; web/e2e/yard-queue.spec.ts (deleted), yard-grid.spec.ts (new), approval, askwait, choices, codexworking, decision-mirror, question, chords specs; vitest useShortcuts, wall, needsCursor, attention | Playwright yard-grid.spec.ts (no queue, grid box and tile sizes against bestGrid on the seeded day, rail and phone, the tile's question start after a re-ask, the pill's Enter expanding in place) and chords.spec.ts (Alt+J and Alt+K reach the terminal); nine queue proofs moved to the tile and the expanded bar, four lost by design; vitest WALL_SHORTCUTS, tileAsk, pillTarget, choiceTitle | PR-17 (the foot cell), PR-1; open #907 (QuickReplyBar.vue, attention.ts) merged; sequenced with PR-8 on four shared specs | every row but PR-1, PR-2, PR-3, PR-4, PR-17 |
 | PR-19 | web: a session page where the terminal has the room | Inspector closed until opened (one remembered choice), meta line agent · folder · branch, outline Share, the connection as an icon while healthy, a choice filled only when its label ends (Recommended); D7's gone page with a link to the record; D9's whole name on a phone | web/app/pages/sessions/[id].vue, web/app/components/TransportBadge.vue, QuickReplyBar.vue, WallQueue.vue (if PR-18 has not removed it), web/app/utils/attention.ts, utils/sessions.ts, utils/transport/look.ts (new), web/e2e/session-page.spec.ts (new), inspector-rail.spec.ts, hscroll.spec.ts, README.md, docs/features.md | vitest for recommendedChoice, sessionHeadline, gonePage, transportLook; session-page.spec.ts at 1440 x 900 and 390 x 844 touch, both themes, rechecked after a redraw; inspector-rail and hscroll specs moved to the closed default | PR-1 (dayPage, uncut), PR-3 (StatusMark in the header and the gone page); open #907 (QuickReplyBar.vue, [id].vue, attention.ts) | every row but PR-1, PR-2, PR-3, PR-26, PR-36, PR-37, PR-38 |
-| PR-20 | web: a run's decision: the question, one set of buttons, the fine print folded | DecisionCard's option rows dropped where DecisionRespond draws the buttons (controls prop), the recommended mark and tradeoffs on the buttons, the yes line above them, Details (open for a plan's approval), steps Asked, Your answer, Checked by Yardmaster, Applied with no loader, the modal titled A decision for you | web/app/components/DecisionCard.vue, web/app/components/DecisionRespond.vue, web/app/components/DecisionModal.vue, web/app/utils/decisions.ts, web/app/pages/decisions.vue (one attribute), web/e2e | vitest stepLook, step labels, detailsOpen, authorizesLine; Playwright decisions.spec.ts (1440), decision-page-durable.spec.ts (390 touch), decisions-gate.spec.ts; switchyard.spec.ts:696 must hold (a link keeps its rows) | #912 merged (the gate's plain words, decisions.vue) | every row but PR-21, PR-26, PR-37, PR-38 |
-| PR-21 | web, api: the list and the item in a person's words | Kind marks on the rows (page and decision link), the oldest item opens by itself at lg, kind words and step titles in a person's words, the server's title and brief of a run's decision and the link's words, D12's briefLine and rowLine, a question's scopes under Details, Approve and Retry in forest | web/app/pages/decisions.vue, web/app/components/InboxItem.vue, web/app/components/JoinDecide.vue, web/app/components/DecisionModal.vue, web/app/utils/inbox.ts, web/app/composables/usePaletteRows.ts (one line), internal/api/inbox.go, internal/api/inbox_decisions.go, internal/api/lane_decisions.go, docs/protocol.md (one quote), web/e2e | vitest firstToOpen, briefLine, rowLine, new kind words and step titles; Go race TestADecisionItemIsInAPersonsWords and TestInboxDecisionQuestionOffersNoReply; Playwright decide-item.spec.ts (stubbed, 1440 and 390 touch, both themes for forest) and edits to decision-page.spec.ts and switchyard.spec.ts | PR-6 (kindLook, the Pick an item rule), PR-20 (controls, the modal's title), #912 merged | every row but PR-1, PR-4, PR-5, PR-6, PR-20, PR-26, PR-37, PR-38 |
+| PR-20 | web: a run's decision: the question, one set of buttons, the fine print folded | DecisionCard's option rows dropped where DecisionRespond draws the buttons (controls prop), the recommended mark and tradeoffs on the buttons, the yes line above them, Details (open for a plan's approval), steps Asked, Your answer, Checked by Yardmaster, Applied with no loader, the modal titled A decision for you | web/app/components/DecisionCard.vue, web/app/components/DecisionRespond.vue, web/app/components/DecisionModal.vue, web/app/utils/decisions.ts, web/app/pages/decisions.vue (one attribute), web/e2e | vitest stepLook, step labels, detailsOpen, authorizesLine; Playwright decisions.spec.ts (1440), decision-page-durable.spec.ts (390 touch), decisions-gate.spec.ts; switchyard.spec.ts:696 must hold (a link keeps its rows) | none (builds on #912, merged: the gate's plain words, decisions.vue) | every row but PR-21, PR-26, PR-37, PR-38 |
+| PR-21 | web, api: the list and the item in a person's words | Kind marks on the rows (page and decision link), the oldest item opens by itself at lg, kind words and step titles in a person's words, the server's title and brief of a run's decision and the link's words, D12's briefLine and rowLine, a question's scopes under Details, Approve and Retry in forest | web/app/pages/decisions.vue, web/app/components/InboxItem.vue, web/app/components/JoinDecide.vue, web/app/components/DecisionModal.vue, web/app/utils/inbox.ts, web/app/composables/usePaletteRows.ts (one line), internal/api/inbox.go, internal/api/inbox_decisions.go, internal/api/lane_decisions.go, docs/protocol.md (one quote), web/e2e | vitest firstToOpen, briefLine, rowLine, new kind words and step titles; Go race TestADecisionItemIsInAPersonsWords and TestInboxDecisionQuestionOffersNoReply; Playwright decide-item.spec.ts (stubbed, 1440 and 390 touch, both themes for forest) and edits to decision-page.spec.ts and switchyard.spec.ts | PR-6 (kindLook, the Pick an item rule), PR-20 (controls, the modal's title); builds on #912 (merged) | every row but PR-1, PR-4, PR-5, PR-6, PR-20, PR-26, PR-37, PR-38 |
 | PR-22 | web: one shape for a page with nothing in it: the session pages and History | P23 first half and D13: PageEmpty, pageState, PageAbout; home, Yard, Roundhouse, the sidebar's line and History drawn in one shape and only after the first read; the Yard's not-found; History's caption to About; the table of every empty place | web/app/components/PageEmpty.vue, PageAbout.vue (new); web/app/utils/pageState.ts, history.ts; web/app/pages/index.vue, yard.vue, roundhouse.vue, history/index.vue; web/app/components/SessionSidebar.vue; web/e2e/empty-pages.spec.ts (new), welcome.spec.ts; docs/features.md | vitest pageState and historyNoneWords; Playwright empty-pages.spec.ts on an empty own server at 1440 and 390 in both themes, plus a held first read on the seeded day proving the welcome and a false not-found are never drawn, and a failed first read drawn in the failed shape | PR-4 (pages.ts about), PR-1 (ownServer, dayPage, layout.ts) | every row but PR-1, PR-4, PR-23, PR-29, PR-30, PR-31, PR-37, PR-38 |
 | PR-23 | web: one shape for a page with nothing in it: the rest, and About this page | P23 second half: Crews, Dispatch, a project (list, Board, Roadmap), the feed, Brakeman, Agents and PR-6's page in PageEmpty; reading and failed shapes; not-found for crew, project, ticket, run; Brakeman's and Agents' paragraphs fold to About | web/app/pages/crews/[[id]].vue, dispatch/index.vue, dispatch/[project]/index.vue, runs/[run].vue, brakeman.vue, agents.vue, decisions.vue; web/app/components/DispatchTicketPage.vue, EventFeed.vue; web/e2e/empty-pages.spec.ts, fixtures.ts (readAgain moved); docs/features.md | Playwright empty-pages.spec.ts extended: each page's three parts at 1440 and 390, an empty catalog by page.route, a project with no ticket on all three views, a failed first read with readAgain, four not-found routes, About on Brakeman and Agents | PR-22 (the shape), PR-12 (project page), PR-6 (the zero page); #899 and #911 merged | every row but PR-1, PR-4, PR-5, PR-6, PR-12, PR-22, PR-29, PR-30, PR-31, PR-37, PR-38 |
-| PR-24 | web: the brand's own neutrals; contrast as a test | An eleven-step ink scale (sage at 100, ink at 900) as the neutral, a sidebar canvas tone, text-safe light amber and green, ink text on amber fills, Monaco and fallbacks off zinc, utils/contrast.ts with its floors table, the first designRules rule (no zinc) | web/app/assets/css/main.css, web/app/app.config.ts, web/app/utils/{contrast,monacoColors,monaco,terminalTheme,charts}.ts, eight Sidebar*/SessionSidebar components, docs/design (brand.md, two briefs), web/public/brand/tokens.css, scripts/brand_assets.py, web/e2e/theme-surfaces.spec.ts | vitest contrast.test.ts, themeContrast.test.ts (every token pair in both themes against the floors), terminalTheme.test.ts changed, designRules.test.ts zinc ban; Playwright theme-surfaces.spec.ts at 1440 and 390 in both themes | PR-1 (dayPage's theme switch); open PR 912 merged (SidebarSessionRow.vue) | every row but PR-1, PR-25, PR-26, PR-37, PR-38 |
+| PR-24 | web: the brand's own neutrals; contrast as a test | An eleven-step ink scale (sage at 100, ink at 900) as the neutral, a sidebar canvas tone, text-safe light amber and green, ink text on amber fills, Monaco and fallbacks off zinc, utils/contrast.ts with its floors table, the first designRules rule (no zinc) | web/app/assets/css/main.css, web/app/app.config.ts, web/app/utils/{contrast,monacoColors,monaco,terminalTheme,charts}.ts, eight Sidebar*/SessionSidebar components, docs/design (brand.md, two briefs), web/public/brand/tokens.css, scripts/brand_assets.py, web/e2e/theme-surfaces.spec.ts | vitest contrast.test.ts, themeContrast.test.ts (every token pair in both themes against the floors), terminalTheme.test.ts changed, designRules.test.ts zinc ban; Playwright theme-surfaces.spec.ts at 1440 and 390 in both themes | PR-1 (dayPage's theme switch); builds on #912 (merged: SidebarSessionRow.vue) | every row but PR-1, PR-25, PR-26, PR-37, PR-38 |
 | PR-25 | e2e: the contrast actually drawn | A browser walker (web/e2e/contrast.ts) that composes each drawn text over its real ground, opacity and tints counted, and judges it with contrast.ts; a known-places list that only shrinks and fails on a stale entry | web/e2e/contrast.ts, web/e2e/contrast.spec.ts, web/e2e/contrast-known.ts (main.css only if PR-24's tokens need a fix) | Playwright contrast.spec.ts: a setContent self-test of the walker, then six pages of the seeded day at 1440 and 390, both themes, at rest and with a row hovered | PR-24 (contrast.ts, the floors, the scale), PR-1 (day, dayPage, budget) | every row but PR-1, PR-24, PR-26, PR-37, PR-38 |
-| PR-26 | web: one colour for the main action; mono for evidence; amber only when someone must act | One filled forest button an area (Open run and the view-link Copy go outline), sentences out of the code font with data-mono marks on evidence, Not installed, not configured, revoked and gone go neutral, the two faded places of PR-25's list fixed | CrewRunCard, pages/crews/[[id]], ShareLinksModal, pages/paste, pages/agents, IntegrationsTable, EventsAside, SidebarSharedList, SidebarRunHeader, SidebarSessionRow, SessionInspector, SessionTile, NeedsYouPill, CommandPalette, FileBrowser, DispatchRunCard, pages/roundhouse, HistoryRow, CrewsTable; web/e2e/contrast.ts and contrast-known.ts; designRules.test.ts | Playwright main-action.spec.ts (forest Retry and Approve, one filled per header, ids mono and sentences not, amber only where asked, read on the Yard's Needs you chip's mark and never its text, PR-17's contract) at 1440 and 390 in both themes; vitest designRules mono rule and one-filled-action rule | PR-19 (Share, reply bar), PR-21 (Approve, Retry), PR-9 (run header), PR-24 (harness, ink on amber), PR-25 (filledPrimaries' module, the known list), PR-14 (the exited row), PR-17 (the Needs you chip's StatusMark, which the amber test reads); open PR 911 (agents.vue badges) | PR-11, PR-12, PR-15, PR-16, PR-18, PR-22, PR-23, PR-27, PR-28, PR-29, PR-30, PR-31, PR-32, PR-33, PR-34, PR-35, PR-36, PR-39 |
+| PR-26 | web: one colour for the main action; mono for evidence; amber only when someone must act | One filled forest button an area (Open run and the view-link Copy go outline), sentences out of the code font with data-mono marks on evidence, Not installed, not configured, revoked and gone go neutral, and so does the identity badge's green, the two faded places of PR-25's list fixed | CrewRunCard, pages/crews/[[id]], ShareLinksModal, pages/paste, pages/agents, IntegrationsTable, EventsAside, SidebarSharedList, SidebarRunHeader, SidebarSessionRow, SessionInspector, SessionTile, NeedsYouPill, CommandPalette, FileBrowser, DispatchRunCard, pages/roundhouse, HistoryRow, CrewsTable; web/e2e/contrast.ts and contrast-known.ts; designRules.test.ts | Playwright main-action.spec.ts (forest Retry and Approve, one filled per header, ids mono and sentences not, amber only where asked, read on the Yard's Needs you chip's mark and never its text, PR-17's contract) at 1440 and 390 in both themes; vitest designRules mono rule and one-filled-action rule | PR-19 (Share, reply bar), PR-21 (Approve, Retry), PR-9 (run header), PR-24 (harness, ink on amber), PR-25 (filledPrimaries' module, the known list), PR-14 (the exited row), PR-17 (the Needs you chip's StatusMark, which the amber test reads); open PR 911 (agents.vue badges) | PR-11, PR-12, PR-15, PR-16, PR-18, PR-22, PR-23, PR-27, PR-28, PR-29, PR-30, PR-31, PR-32, PR-33, PR-34, PR-35, PR-36, PR-39 |
 | PR-27 | web: an agent's hooks and skill are set up on its card | P12 Integrations to Agents and P13's card line: reportStatus (one rule for three readers), each card says Reports to Conductor, Not set up, Experimental or No hooks and links its adapter's row; the table and skill card move to Agents' Reporting section; no Install on the card; installed and injected drawn neutral; a Refresh on Agents | web/app/utils/integrations.ts; web/app/pages/agents.vue, events.vue, settings.vue; web/app/components/EventsAside.vue, IntegrationsTable.vue, EventFeed.vue; web/app/utils/pages.ts; web/app/composables/usePaletteRows.ts; web/e2e/agents-reporting.spec.ts (new), events.spec.ts, palette-rows.spec.ts; README.md; docs/features.md | vitest reportStatus; Playwright agents-reporting.spec.ts: each card's key against GET /api/integrations, the Set up link to its row, one install on an own server moving both cards of goose's adapter from Not set up; events.spec.ts:70-78 moved | PR-4 (pages.ts palette row); #911 merged | every row but PR-1, PR-4, PR-28, PR-29 |
 | PR-28 | web: Alerts opens the rules | P12 Routing to Alerts and P13's link: PR-7's AlertsPanel gains the routing matrix and webhooks under the switches, opened by your menu's Alerts, the palette and ?alerts; the phone's More ends its switches with All alert rules; the Routing tab leaves Events | web/app/components/AlertsPanel.vue (PR-7's), AlertSwitches.vue, SidebarHeaderMenus.vue, BottomBar.vue, EventsAside.vue; web/app/composables/useAlertsPanel.ts (new), usePaletteRows.ts; web/app/utils/pages.ts; web/app/layouts/default.vue; web/app/pages/events.vue, roundhouse.vue; web/e2e/alerts.spec.ts (new), events.spec.ts, sidebar.spec.ts, palette-rows.spec.ts, phone.spec.ts; README.md; docs/features.md | Playwright alerts.spec.ts: the pill kept across a reload through the panel (events.spec.ts:55-68 moved), the panel at 390 with 44 px pills and no sideways scroll, /events?tab=routing and ?alerts open it | PR-27 (events.vue tabs, in turn), PR-7 (Alerts in your menu) | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-27, PR-29 |
 | PR-29 | web: History gets the feed; Events is retired | P12 Feed to History: History's Search and Feed views, /events redirecting by eventsRedirect, Events out of the nav, rail, phone and palette, G E to the feed; the final lists of the seven destinations written once and held by destinations.spec.ts | web/app/pages/history/index.vue, events.vue; web/app/utils/events.ts, pages.ts; web/app/layouts/default.vue; web/app/components/BottomBar.vue, CrewFeed.vue, SessionInspector.vue, EventFeed.vue; web/app/composables/usePaletteRows.ts, useShortcuts.ts; web/e2e/destinations.spec.ts, history-feed.spec.ts (new), events.spec.ts (deleted), sidebar.spec.ts, phone.spec.ts, touched.spec.ts, timeline.spec.ts, shortcuts.spec.ts, palette-rows.spec.ts; README.md; docs/features.md | vitest eventsRedirect and pages.ts; Playwright destinations.spec.ts (every list as drawn), history-feed.spec.ts (events.spec.ts:38-53 moved, the four old links, G E) | PR-27, PR-28 (the tabs left), PR-23 (the feed's shape), PR-17, PR-15, PR-5 (the lists it writes once) | every row but PR-1, PR-2, PR-3, PR-4, PR-5, PR-6, PR-7, PR-8, PR-12, PR-13, PR-15, PR-17, PR-22, PR-23, PR-27, PR-28 |
 | PR-30 | web: a welcome that teaches | P17 (the second point of #374): one sentence, three steps (the agents found with versions, conductor host, the example crews), Where things are from pages.ts; Settings leaves the card; the card on the phone's Sessions page when the server has nothing; each choice says what happens, on the welcome, on Crews' Load the examples and on the palette's row for it | web/app/components/WelcomeCard.vue; web/app/utils/agents.ts, agents.test.ts, crews.ts; web/app/pages/sessions/index.vue, crews/[[id]].vue; web/app/composables/usePaletteRows.ts; web/e2e/welcome.spec.ts, home-wide.spec.ts, empty-pages.spec.ts; README.md; docs/features.md | vitest welcomeAgents; Playwright welcome.spec.ts on an own empty server at 1440, 1024 and 390: nothing cut, agents equal to the first four of GET /api/catalog's available with "and N more" for the rest, Where things are equal to navPages and the nav's tooltips, #908's dialog-words check kept, the examples land on Crews, the examples' line on Crews and in the palette | PR-4 (pages.ts, navPages), PR-22 (welcome on home only), PR-23 (Crews' empty page in PageEmpty, and so #899 through it); #911 merged | every row but PR-1, PR-4, PR-5, PR-6, PR-12, PR-22, PR-23, PR-31, PR-37, PR-38 |
-| PR-31 | web: a page to connect | P18: connectShown and ConnectPage for no token or a refused one (in the desktop app only after its bridge has answered none, or a refusal), true words on where the token is, no Cancel, the app hidden not unmounted; the dialog only for the menu, Set token opening it; tokenAsk(page) for the specs | web/app/components/ConnectPage.vue (new), WorkbenchTokenGate.vue; web/app/utils/workbenchGate.ts, workbenchGate.test.ts; web/app/composables/useWorkbenchToken.ts, useTokenDialog.ts (new); web/app/layouts/default.vue; web/app/pages/index.vue, sessions/index.vue; web/e2e/connect.spec.ts (new), fixtures.ts, token-fragment.spec.ts, history-page.spec.ts, history-record.spec.ts, brakeman-act.spec.ts, brakeman-cards.spec.ts, decide-only.spec.ts, decisions-ask.spec.ts, welcome.spec.ts; README.md; docs/features.md | vitest connectShown; Playwright connect.spec.ts (no token at 1440 and 390 in both themes, a refusal mid-work keeping a crew's unsaved edit and a session's viewers, the menu's dialog with Cancel, the phone's menu too); token-fragment.spec.ts moved onto tokenAsk | #912, #899 merged; PR-1 (dayPage with token: false and ready); PR-30 (welcome.spec.ts, so this row is cut after it) | every row but PR-1, PR-4, PR-5, PR-6, PR-12, PR-22, PR-23, PR-30 |
+| PR-31 | web: a page to connect | P18: connectShown and ConnectPage for no token or a refused one (in the desktop app only after its bridge has answered none, or a refusal), true words on where the token is, no Cancel, the app hidden not unmounted; the dialog only for the menu, Set token opening it; tokenAsk(page) for the specs | web/app/components/ConnectPage.vue (new), WorkbenchTokenGate.vue; web/app/utils/workbenchGate.ts, workbenchGate.test.ts; web/app/composables/useWorkbenchToken.ts, useTokenDialog.ts (new); web/app/layouts/default.vue; web/app/pages/index.vue, sessions/index.vue; web/e2e/connect.spec.ts (new), fixtures.ts, token-fragment.spec.ts, history-page.spec.ts, history-record.spec.ts, brakeman-act.spec.ts, brakeman-cards.spec.ts, decide-only.spec.ts, decisions-ask.spec.ts, welcome.spec.ts; README.md; docs/features.md | vitest connectShown; Playwright connect.spec.ts (no token at 1440 and 390 in both themes, a refusal mid-work keeping a crew's unsaved edit and a session's viewers, the menu's dialog with Cancel, the phone's menu too); token-fragment.spec.ts moved onto tokenAsk | #899 merged (#912 has merged); PR-1 (dayPage with token: false and ready); PR-30 (welcome.spec.ts, so this row is cut after it) | every row but PR-1, PR-4, PR-5, PR-6, PR-12, PR-22, PR-23, PR-30 |
 | PR-32 | web: a run's tasks laid out as lines | P15 (the layout): lineLayout(nodes, opts) as a pure function: depth by taskDepths (narrowed to an id and its needs), chains as lines, splits and merges as orthogonal connectors and junctions, in the gutters between depths and on the tracks between lanes, rounded corners, clear of every station they do not end at; lanes by interval packing nearest the parent, 4 px geometry in LR and TB, labels that alternate, flip, cut or hide; the shared forty-task shape | web/app/utils/lineDiagram.ts (new), web/app/utils/lineDiagram.test.ts (new), web/app/utils/testdata/line-forty.json (new), web/app/utils/taskGraph.ts (taskDepths' type) | vitest table of graphs written as {id: [depth, lane]} with lines, connectors and junctions (chain, split, the example diamond, the Ledger, reuse, nearest lane, long need, missing need, cycle, TB, mini, one root and fourteen children, a merge past a line that goes on, taskDepths' smallest input); seeded properties over 200 random graphs of 1 to 128 nodes, every connector at least the stated clearance from every station it does not end at; forty tasks inside 960 x 400 | none | every row but PR-33, PR-34 (which draw it) |
-| PR-33 | web: a run drawn as a line diagram | P15 (Graph view's Tasks mode) and issue 449: RunLineDiagram.vue replaces Vue Flow in Tasks mode (stations with StatusMark's new SVG form, one neutral ink, keys and a caption with Open), Fit and Direction on the diagram, CrewGraphTaskNode and taskLayout deleted, each Vue Flow graph on a store of its own | web/app/components/RunLineDiagram.vue (new), web/app/components/CrewGraph.vue, web/app/components/CrewGraphTaskNode.vue (deleted), web/app/components/StatusMark.vue, web/app/utils/lineDiagram.ts, web/app/utils/taskGraph.ts, web/app/utils/{lineDiagram,taskGraph,crewGraph}.test.ts, web/e2e/run-fixtures.ts, web/e2e/line-diagram.spec.ts (new), web/e2e/{tasks,decisions-restart,graph,run-status}.spec.ts, docs/features.md, docs/design/crews-graph-brief.md | vitest stepFrom, taskListRows, connectionAllowed on hand-built and handoff edges; Playwright line-diagram.spec.ts (6, 40 and 128 tasks inside the pane, nothing overlapping, keys, the caption, unchanged after a mode switch, a direction switch and the 5 s tick, colours in both themes, the phone's list, a station tapped at 1024 with touch); graph.spec.ts two graphs two stores; tasks, decisions-restart and run-status moved | PR-32 (lineLayout), PR-11 (taskRow; the Ledger fixture through it), PR-10 (taskStatus, StatusMark), PR-1, open PR 912 merged (CrewGraph.vue) | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-10, PR-11, PR-32, PR-34 |
+| PR-33 | web: a run drawn as a line diagram | P15 (Graph view's Tasks mode) and issue 449: RunLineDiagram.vue replaces Vue Flow in Tasks mode (stations with StatusMark's new SVG form, one neutral ink, keys and a caption with Open), Fit and Direction on the diagram, CrewGraphTaskNode and taskLayout deleted, each Vue Flow graph on a store of its own | web/app/components/RunLineDiagram.vue (new), web/app/components/CrewGraph.vue, web/app/components/CrewGraphTaskNode.vue (deleted), web/app/components/StatusMark.vue, web/app/utils/lineDiagram.ts, web/app/utils/taskGraph.ts, web/app/utils/{lineDiagram,taskGraph,crewGraph}.test.ts, web/e2e/run-fixtures.ts, web/e2e/line-diagram.spec.ts (new), web/e2e/{tasks,decisions-restart,graph,run-status}.spec.ts, docs/features.md, docs/design/crews-graph-brief.md | vitest stepFrom, taskListRows, connectionAllowed on hand-built and handoff edges; Playwright line-diagram.spec.ts (6, 40 and 128 tasks inside the pane, nothing overlapping, keys, the caption, unchanged after a mode switch, a direction switch and the 5 s tick, colours in both themes, the phone's list, a station tapped at 1024 with touch); graph.spec.ts two graphs two stores; tasks, decisions-restart and run-status moved | PR-32 (lineLayout), PR-11 (taskRow; the Ledger fixture through it), PR-10 (taskStatus, StatusMark), PR-1; builds on #912 (merged: CrewGraph.vue) | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-10, PR-11, PR-32, PR-34 |
 | PR-34 | web, crew: the small line drawing in the Crews table and on a run's card | P15 (the small drawing): the crew summary's task shape in Go, given only with ?tasks=1 so conductor up's 4 MiB page bound holds; RunLineDiagram's mini and card sizes in the Shape column and on a live run's card; members' start rules drawn as lines; CrewMiniDag deleted | internal/crew/store.go, internal/crew/store_test.go, internal/api/crews.go, internal/api/crews_test.go, docs/protocol.md, web/app/composables/useSessions.ts, web/app/utils/crews.ts, web/app/utils/lineDiagram.ts, web/app/components/RunLineDiagram.vue, web/app/components/CrewsTable.vue, web/app/components/CrewRunCard.vue, web/app/components/CrewMiniDag.vue (deleted), web/app/pages/crews/[[id]].vue, web/e2e/{examples,crews}.spec.ts, docs/features.md, docs/design/crews-graph-brief.md | Go race TestStoreSummaryCarriesTaskShape and TestCrewsListTaskShapeWhenAsked; vitest summaryOf and memberNodes; Playwright examples.spec.ts (the tasks crew's diamond and the tree crew's split in the Shape cell, the live card's stations) and crews.spec.ts (the Ledger card lit, amber in both themes, inside the card at 390; the live-run banner's runStatusLine) | PR-33 (RunLineDiagram.vue), PR-10 (taskStatus, memberStatusOf), PR-1, open PR 899 merged (crews page and its specs) | every row but PR-1, PR-2, PR-3, PR-4, PR-9, PR-10, PR-11, PR-32, PR-33 |
 | PR-35 | api, session: a launch's first message | POST /api/sessions takes message (at most proto.MaxSubmit bytes), kept in memory, typed once ready by the crew's readiness rule, held behind every startup question, withdrawn when a person types first, dropped when the session ends; a nameless session named by its first words; Info.firstMessage; one cut-at-a-word rule with … and defaultLabel's … (D11 Go) | internal/api (sessions.go, server.go), internal/crew (firstmessage.go new, run.go), internal/session (name.go, local.go, submit.go, info.go, testdata/cut-at-word.json), internal/dispatch/launches.go, web/app/composables/useSessions.ts (two type lines), docs/protocol.md, docs/features.md | Go race tests: internal/crew firstmessage_test.go on a ticks seam (trust, each startup question, the sign-in screen as main draws it, withdrawal, end, past the cap) and run_test.go's two questions in a row, internal/session PersonTyped and the cut table, internal/dispatch label, internal/api bound, name, typed (the flag itself polled until it clears, the Activity entry checked apart: it is written before the submission ends), shutdown, clone | PR-2 (the readiness after an Enter, info.go, useSessions.ts, protocol.md); open #909 (launches.go); builds on #913 (merged: createLocalSession) | every row but PR-2, PR-36 |
 | PR-36 | web: launch with a first message | The Launch dialog's optional 'What should it do?' field with its byte bound and the name's preview, the waiting line above the terminal, and the app's copy of the cut rule for the name's preview (D11's label is the server's once #909 removes the app's copy) | web/app/components/LaunchSessionModal.vue, web/app/pages/sessions/[id].vue, web/app/utils/launch.ts, web/e2e/launch-first-message.spec.ts (new), docs/features.md, README.md | vitest on the shared cut table, namePreview, messageProblem and firstMessageLine; launch-first-message.spec.ts on a server of its own: trust held then typed once, Claude stub typed when ready, the bound, the phone | PR-35 (the field, firstMessage, the table), PR-19 (the page's layout with the inspector closed), PR-1 (ownServer, inside) | every row but PR-1, PR-2, PR-3, PR-19, PR-35 |
-| PR-37 | docs, web: a design system that rules | docs/design/system.md, begun by PR-3, made whole (status table, colour and contrast, main action, mono, amber, page header, toolbar, list row, cutting text from PR 912's diagnosis, tooltips, what a PR cannot do), each rule Decided or Described; IconButton.vue and about 77 icon-only buttons moved onto it | docs/design/system.md (PR-3's), docs/design/brand.md, docs/design/briefs/sidebar.md, docs/checks.md, web/app/components/IconButton.vue (new) and about 45 components and pages with icon-only buttons, web/app/utils/designRules.test.ts, web/e2e/tooltips.spec.ts | vitest designRules: every rule marked, status table equals STATUS_LOOK, floors equal CONTRAST_FLOORS, status-map ratchet, the cut rule (fails with items-stretch removed), the tooltip rule; Playwright tooltips.spec.ts on hover and focus | PR-3 (STATUS_LOOK, system.md), PR-12 (the toolbar), PR-24 (floors, harness), PR-26 (the three rules and checks); open PR 912 (INBOX_ROW_CLASS); PR-30 merged first, so that this row's Fixes #374 closes the issue | PR-11, PR-15, PR-16, PR-18, PR-27, PR-28, PR-29, PR-31, PR-32, PR-33, PR-34, PR-35, PR-36, PR-39 |
+| PR-37 | docs, web: a design system that rules | docs/design/system.md, begun by PR-3, made whole (status table, colour and contrast, main action, mono, amber, page header, toolbar, list row, cutting text from PR 912's diagnosis, tooltips, what a PR cannot do), each rule Decided or Described; IconButton.vue and about 77 icon-only buttons moved onto it | docs/design/system.md (PR-3's), docs/design/brand.md, docs/design/briefs/sidebar.md, docs/checks.md, web/app/components/IconButton.vue (new) and about 45 components and pages with icon-only buttons, web/app/utils/designRules.test.ts, web/e2e/tooltips.spec.ts | vitest designRules: every rule marked, status table equals STATUS_LOOK, floors equal CONTRAST_FLOORS, status-map ratchet, the cut rule (fails with items-stretch removed), the tooltip rule; Playwright tooltips.spec.ts on hover and focus | PR-3 (STATUS_LOOK, system.md), PR-12 (the toolbar), PR-24 (floors, harness), PR-26 (the three rules and checks); PR-10 (the status-map list shrunk first); #912's INBOX_ROW_CLASS (merged); PR-30 merged first, so that this row's Fixes #374 closes the issue | PR-11, PR-15, PR-16, PR-18, PR-27, PR-28, PR-29, PR-31, PR-32, PR-33, PR-34, PR-35, PR-36, PR-39 |
 | PR-38 | e2e, scripts: the design capture in the repository, and what drifted | An opt-in web/e2e/look.spec.ts run by make design-capture (screens and computed values of every page, both themes, both sizes), scripts/design_drift.py against a committed docs/design/system.json, and the by-hand publish step on the draft release's checklist | web/e2e/look.spec.ts, scripts/design_drift.py and _test.py, scripts/release_draft.py and _test.py, docs/design/system.json (new), docs/design/system.md, docs/checks.md, Makefile | scripts suite design_drift_test.py (each kind of drift, no drift, --check, stable --write) and release_draft_test.py (the checklist body); look.spec.ts opt-in, typechecked, run once by hand | PR-37 (system.md's rules and marks), PR-25 (the walk it records), PR-4 (utils/pages.ts), PR-1 (day, dayPage) | PR-11, PR-15, PR-16, PR-18, PR-27, PR-28, PR-29, PR-31, PR-32, PR-33, PR-34, PR-35, PR-36, PR-39 |
-| PR-39 | ci: the e2e job in two shards | CI's e2e job as a two-shard matrix under the same job id, a report artifact per shard, a 160-minute hang bound (its steps' caps and the unsharded run's longest), docs on reproducing a shard | .github/workflows/ci.yml, docs/checks.md, scripts/preflight_test.py | preflight_test.py test_the_e2e_shards_cover_the_suite (the matrix lists 1..N and the step shards matrix.shard/N); test_every_ci_job_has_a_linux_step unchanged holds the job id | none; cut first, beside PR-1 | every row (docs/checks.md is shared with PR-1 and PR-38, in paragraphs of their own) |
+| PR-39 | ci: the e2e job in two shards | CI's e2e job as a two-shard matrix under the same job id, a report artifact per shard, a 160-minute hang bound (above its steps' caps and the unsharded run's longest, 155), docs on reproducing a shard | .github/workflows/ci.yml, docs/checks.md, scripts/preflight_test.py | preflight_test.py test_the_e2e_shards_cover_the_suite (the matrix lists 1..N and the step shards matrix.shard/N); test_every_ci_job_has_a_linux_step unchanged holds the job id | none; cut first, beside PR-1 | every row (docs/checks.md is shared with PR-1 and PR-38, in paragraphs of their own) |
 
 Sizes, by the guide the owner set (a row is 300 to 800 changed lines of
 code, at most about 1,500 with its tests): PR-1 about 25 lines (docs)
@@ -9248,7 +9281,7 @@ says which.
     Why: one owner each, and no field changes. Alternative: D12 fixed
     in the server's `questionItem`.
 19. **The cutting rule.** Default: D1's cause is the row's line not
-    taking the button's width (open #912's `items-stretch`), not a
+    taking the button's width (#912's `items-stretch`, merged), not a
     missing `min-w-0`, and PR-37's rule and its check are written from
     that. Why: a `truncate` element's automatic minimum is already 0.
     Alternative: a rule that asks for `min-w-0` everywhere, which would
@@ -9496,11 +9529,13 @@ says which.
     brand's signal amber (2.94:1 on white, lower on the sidebar's
     canvas), under the 3:1 that WCAG 1.4.11 asks of a mark that stands
     alone. Why: a darker amber for marks changes the brand's signal
-    colour, which is the owner's to choose; the state is always also in
-    the mark's label for a screen reader (`StatusMark`'s `role="img"`,
-    PR-3) and in words wherever a word is drawn. The other way: marks
-    take the lightest step of the signal scale that holds 3:1 on white
-    and on the canvas, and PR-24's token test holds it.
+    colour, which is the owner's to choose; the state is also in the
+    mark's label for a screen reader wherever a mark stands for one
+    session (`StatusMark`'s `role="img"`, PR-3; a folded section's
+    preview squares are hidden from it, under the section's own name
+    and count), and in words wherever a word is drawn. The other way:
+    marks take the lightest step of the signal scale that holds 3:1 on
+    white and on the canvas, and PR-24's token test holds it.
 
 No question is left open: each answer above lets the plan stand, and
 the owner overturns any of them with one row. Two of them ask for the
