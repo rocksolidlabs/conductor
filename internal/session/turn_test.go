@@ -2,9 +2,13 @@ package session
 
 import (
 	"bytes"
+	"regexp"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // bellAfter writes a bell past the burst limit of the one before and
@@ -43,14 +47,201 @@ func TestADoneIsNotUndoneByItsTurnsBell(t *testing.T) {
 	if a := bellAfter(t, s, p, "\a"); a.State != AttentionDone {
 		t.Fatalf("a bell after a key undid the done: %+v", a)
 	}
-	// The next turn ends with the same words: its done shows nothing new, and still ends it.
-	s.Input(sub, []byte("\r"))
+	// The Enter begins the next turn: the done gives way to the empty state.
+	first := s.Info().Attention
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
 	nextWrite(t, p)
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
+		t.Fatalf("the Enter after the done: %+v", a)
+	}
+	// The next turn ends with the same words: its done shows anew, with its
+	// own id and a Since past the first's, and ends that turn.
 	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
 		t.Fatal(err)
 	}
+	second := s.Info().Attention
+	if second.State != AttentionDone || second.ID == first.ID || second.Since.Before(*first.Since) {
+		t.Fatalf("the second turn's done %+v after %+v", second, first)
+	}
 	if a := bellAfter(t, s, p, "\a"); a.State != AttentionDone {
 		t.Fatalf("the second turn's bell undid its done: %+v", a)
+	}
+}
+
+// doneEntries returns the attention entries of the activity log whose
+// message is one of words, oldest first.
+func doneEntries(s *Local, words ...string) []ActivityEntry {
+	var out []ActivityEntry
+	for _, e := range s.Activity() {
+		if e.Type == ActivityAttention && slices.Contains(words, e.Message) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// An Enter after a done begins the next turn, and the listing says so: the
+// done gives way to the empty state with source input, told to the
+// viewers as an attention message, and nothing is recorded (no entry, no
+// webhook, no turn's end for a crew). The same for a submission's Enter
+// (a crew's next prompt). The agents that report only their done (Amp,
+// Pi) read done through their whole next turn otherwise.
+func TestAnEnterAfterADoneBeginsTheTurnShown(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	sink := newChanSink(false)
+	sub, err := s.Attach("", RoleControl, "", 80, 24, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrySetAttentionFull(AttentionDone, "All tests pass.", SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	logged := len(s.Activity())
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput || a.ID != "" || a.Since != nil {
+		t.Fatalf("the Enter after the done: %+v", a)
+	}
+	// Broadcast in the step that changed it; the viewer's writer hands it
+	// on in its own time.
+	if m := waitControl(sink, func(m map[string]any) bool {
+		return m["t"] == proto.CtlAttention && m["state"] == "" && m["source"] == SourceInput
+	}); m == nil {
+		t.Fatal("the viewer was not told the empty state")
+	}
+	if got := len(s.Activity()); got != logged {
+		t.Fatalf("the Enter recorded %d entries: %+v", got-logged, s.Activity()[logged:])
+	}
+
+	// A submission's Enter, a crew's next prompt.
+	s2, p2 := newLocalWith(t, quiet(Options{}))
+	if err := s2.TrySetAttentionFull(AttentionDone, "All tests pass.", SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	logged = len(s2.Activity())
+	if res, err := s2.Submit(t.Context(), Submission{Text: "now the docs", ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("the next prompt: %+v %v", res, err)
+	}
+	nextWrite(t, p2)
+	nextWrite(t, p2)
+	if a := s2.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
+		t.Fatalf("the submission's Enter after the done: %+v", a)
+	}
+	for _, e := range s2.Activity()[logged:] {
+		if e.Type == ActivityAttention {
+			t.Fatalf("the submission recorded an attention entry: %+v", e)
+		}
+	}
+}
+
+// A done while a done shows is the same turn's (Claude Code's idle_prompt,
+// about a minute after its Stop): the one shown keeps its id, its Since
+// and its words, and the second is still recorded, at its own time. A
+// later turn's done, after an Enter and a working, is a new one. No clock
+// is read: the stamps compared are the session's own.
+func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const stop, idle = "Refactored the parser.", "Claude is waiting for your input"
+	if err := s.TrySetAttentionFull(AttentionDone, stop, SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	first := s.Info().Attention
+	if err := s.TrySetAttentionFull(AttentionDone, idle, SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	a := s.Info().Attention
+	if a.State != AttentionDone || a.ID != first.ID || !a.Since.Equal(*first.Since) || a.Message != stop {
+		t.Fatalf("the second done %+v, the first %+v", a, first)
+	}
+	entries := doneEntries(s, stop, idle)
+	if len(entries) != 2 || entries[0].Message != stop || entries[1].Message != idle {
+		t.Fatalf("entries %+v", entries)
+	}
+	if !entries[0].At.Equal(*first.Since) || entries[1].At.Before(entries[0].At) {
+		t.Fatalf("the entries' stamps %v and %v, the done's %v", entries[0].At, entries[1].At, *first.Since)
+	}
+
+	// A later turn: an Enter, a working, and a done with other words.
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	const next = "Docs updated."
+	if err := s.TrySetAttentionFull(AttentionDone, next, SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	b := s.Info().Attention
+	last := doneEntries(s, next)
+	if b.State != AttentionDone || b.Message != next || b.ID == first.ID || len(last) != 1 || !b.Since.Equal(last[0].At) || b.Since.Before(entries[1].At) {
+		t.Fatalf("the later turn's done %+v, its entries %+v", b, last)
+	}
+}
+
+// Info.Turns says that the session's agent reports its turns: learned from
+// a working or a done of its own (its hooks, its window title, its program
+// status), never from a bell, the screen pattern or an operator's mark,
+// and kept through an Enter and the session's end.
+func TestTurnsIsLearnedFromTheAgentsOwnReports(t *testing.T) {
+	bell, p := newLocalWith(t, quiet(Options{}))
+	p.outW.Write([]byte("\a"))
+	waitAttention(t, bell, isBell)
+	pattern, p2 := newLocalWith(t, quiet(Options{Pattern: regexp.MustCompile(`Continue\? $`)}))
+	p2.outW.Write([]byte("Continue? "))
+	waitAttention(t, pattern, func(a Attention) bool { return a.Source == SourcePattern })
+	if err := pattern.TrySetAttentionFull(AttentionWorking, "", SourceAdmin, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := pattern.TrySetAttentionFull(AttentionDone, "", SourceAdmin, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info := bell.Info(); info.Turns {
+		t.Fatalf("learned from a bell: %+v", info)
+	}
+	if info := pattern.Info(); info.Turns || info.Attention.Source != SourceAdmin {
+		t.Fatalf("learned from the pattern or an operator's mark: %+v", info)
+	}
+	for _, src := range []string{SourceAPI, SourceTitle, SourceStatus} {
+		for _, state := range []AttentionState{AttentionWorking, AttentionDone} {
+			t.Run(src+" "+string(state), func(t *testing.T) {
+				s, p := newLocalWith(t, quiet(Options{}))
+				sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if s.Info().Turns {
+					t.Fatal("a new session reports turns")
+				}
+				if err := s.setAttention(state, "", src, "", nil, fromReport); err != nil {
+					t.Fatal(err)
+				}
+				if !s.Info().Turns {
+					t.Fatalf("a %s from %s taught nothing", state, src)
+				}
+				if err := s.Input(sub, []byte("\r")); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+				if !s.Info().Turns {
+					t.Fatal("the Enter cleared it")
+				}
+				p.exit()
+				<-s.Ended()
+				if !s.Info().Turns {
+					t.Fatal("the end cleared it")
+				}
+			})
+		}
 	}
 }
 
@@ -318,7 +509,7 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 	nextWrite(t, p)
 	close(look)
 	flushed(p)
-	if a := s.Info().Attention; a.State != AttentionDone {
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
 		t.Fatalf("the ended turn's bells asked in the next: %+v", a)
 	}
 	p.outW.Write([]byte("\a"))
@@ -360,7 +551,7 @@ func TestANotificationBegunInTheEndedTurnIsItsOwn(t *testing.T) {
 	close(look)
 	p.outW.Write([]byte(" complete\a"))
 	flushed(p)
-	if a := s.Info().Attention; a.State != AttentionDone {
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
 		t.Fatalf("the ended turn's notification asked in the next: %+v", a)
 	}
 	p.outW.Write([]byte("\x1b]9;need approval\a"))

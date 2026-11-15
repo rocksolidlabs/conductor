@@ -1989,6 +1989,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	// The agent's own word on its turn (ReportsTurn), past the bucket,
+	// whatever the rules below make of it: the session's agent reports its
+	// turns (Info.Turns), told (OnChange) once the change is through.
+	if ReportsTurn(state, source) && !s.info.Turns {
+		s.info.Turns = true
+		defer s.notifyChange()
+	}
 	// The plan the change names (#289), learnt now, past the bucket, under
 	// the lock the change takes: a question's alone, and nothing when the
 	// path is not a plan's.
@@ -2265,6 +2272,24 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if told || keptChanged {
 			s.notifyChange()
 		}
+		return nil
+	}
+	if state == AttentionDone && cur.State == AttentionDone && own.ID == "" {
+		// A done while a done shows, no other state shown between, is the
+		// same turn's (an Enter or a submission ends a done shown: nextTurn):
+		// Claude Code's idle_prompt a minute after its Stop. The one shown
+		// keeps its id, its Since (the turn's end) and its words (the turn's
+		// last); this one is recorded as the report it is, at its own time.
+		if rules&bellPaced != 0 {
+			s.lastBell = time.Now()
+		}
+		now := s.activity.Stamp(1)
+		s.mu.Unlock()
+		label := message
+		if label == "" {
+			label = string(state)
+		}
+		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
 		return nil
 	}
 	if state != AttentionDone {
@@ -3452,11 +3477,25 @@ func listKey(data []byte) bool {
 }
 
 // nextTurn says an Enter is about to be written: the turn a done ended is
-// behind, and a bell is a question again (unlessTurnEnded).
+// behind, and a bell is a question again (unlessTurnEnded). A done that
+// shows gives way to the empty state with source input, as an Enter
+// withdraws a bell's wait (rawKeys): the agent works on what the Enter
+// gave it, and its done no longer says where its turn stands. The empty
+// state records nothing (no entry, no webhook, no turn's end for a crew).
+// A done of an ended session stays. It runs as the writer takes the
+// Enter, so the change is told (OnChange) off the writer's way, as the
+// bell's wait withdrawn is.
 func (s *Local) nextTurn() {
 	s.mu.Lock()
 	s.beginTurn()
+	gave := s.info.Attention.State == AttentionDone && !s.info.Status.Ended()
+	if gave {
+		s.withdrawShownLocked(SourceInput)
+	}
 	s.mu.Unlock()
+	if gave {
+		go s.notifyChange()
+	}
 }
 
 // beginTurn begins the next turn after a done, whichever comes first: an

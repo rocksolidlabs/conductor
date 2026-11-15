@@ -551,8 +551,9 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			break
 		}
 		// The host's own report is not forwarded, so it is never limited;
-		// its question keeps the host's id, and its mark as the agent's own.
-		hs.HostAttentionKept(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept)
+		// its question keeps the host's id, and its mark as the agent's own;
+		// its turns, once true, is learned (an older host sends none).
+		hs.HostAttentionTurns(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept, m.Turns)
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {

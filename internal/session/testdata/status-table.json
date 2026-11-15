@@ -1,0 +1,93 @@
+{
+  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side.",
+  "rows": [
+    {
+      "name": "nothing reported",
+      "steps": [],
+      "attention": { "state": "", "source": "" },
+      "turns": false,
+      "status": "running"
+    },
+    {
+      "name": "a hook's working",
+      "steps": [{ "report": { "state": "working", "source": "api" } }],
+      "attention": { "state": "working", "source": "api" },
+      "turns": true,
+      "status": "working"
+    },
+    {
+      "name": "a hook's done",
+      "steps": [{ "report": { "state": "done", "source": "api", "message": "Refactored the parser." } }],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "done, then an Enter",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "enter": true }
+      ],
+      "attention": { "state": "", "source": "input" },
+      "turns": true,
+      "status": "working"
+    },
+    {
+      "name": "done, then done with idle_prompt's words",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "done, an Enter, working, then done with other words",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "enter": true },
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "working, a hook's permission question, answered",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "needs_input", "source": "api", "message": "Allow Bash: go test ./...?", "kind": "permission", "options": [{ "label": "Yes", "input": "1" }, { "label": "No", "input": "3" }] } },
+        { "answer": "1" }
+      ],
+      "attention": { "state": "", "source": "input" },
+      "turns": true,
+      "status": "working"
+    },
+    {
+      "name": "a bell's wait, then an Enter",
+      "steps": [
+        { "report": { "state": "needs_input", "source": "bell" } },
+        { "enter": true }
+      ],
+      "attention": { "state": "", "source": "input" },
+      "turns": false,
+      "status": "running"
+    },
+    {
+      "name": "Codex's title",
+      "steps": [{ "report": { "state": "working", "source": "title" } }],
+      "attention": { "state": "working", "source": "title" },
+      "turns": true,
+      "status": "working"
+    },
+    {
+      "name": "an operator's mark of working",
+      "steps": [{ "report": { "state": "working", "source": "admin" } }],
+      "attention": { "state": "working", "source": "admin" },
+      "turns": false,
+      "status": "working"
+    }
+  ]
+}

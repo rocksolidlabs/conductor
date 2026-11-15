@@ -610,6 +610,15 @@ type HostAttentionMsg struct {
 	// question set aside from one that ended. At most MaxKept ids, each
 	// ValidQuestionID (KeptValid); an older server ignores it.
 	Kept []string `json:"kept,omitempty"`
+	// Turns goes host to server only: the host's session.Info.Turns, from
+	// the same Info as the message's attention and kept (its agent has
+	// reported a working or a done of its own), so that the server's copy
+	// says what the host's session says also after the server restarted
+	// or the host registered afresh. The server takes true as learned and
+	// never clears it on a message without it; an older host sends none,
+	// and an older server ignores it. A bool: the message's bound
+	// (MaxHostMessage) does not change.
+	Turns bool `json:"turns,omitempty"`
 }
 
 // MaxKept bounds HostAttentionMsg.Kept (session.MaxKept).

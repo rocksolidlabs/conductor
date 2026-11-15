@@ -68,6 +68,14 @@ type Info struct {
 	// ResumedFrom is the session this one resumed or relaunched.
 	ResumedFrom string    `json:"resumedFrom,omitempty"`
 	Attention   Attention `json:"attention"`
+	// Turns says the session's agent reports its turns: it has reported a
+	// working or a done of its own (ReportsTurn: its hooks, its window
+	// title, its program status). A bell, an OSC notification, the screen
+	// pattern and an operator's mark leave it false. Set under the lock
+	// that sets Attention, read with it in one snapshot, never cleared; a
+	// hosted session's copy learns it from the reports it carries and from
+	// its host's word (proto.HostAttentionMsg.Turns).
+	Turns bool `json:"turns,omitempty"`
 	// Kept is the ids of the questions the session keeps without showing
 	// them (the agent's own question while it is set aside, the question a
 	// held turn took the place of), at most MaxKept, read with Attention
