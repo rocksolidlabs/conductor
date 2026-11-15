@@ -71,11 +71,16 @@ const agentRead = (url: URL) => /^\/api\/catalog\/[^/]+$/.exec(url.pathname) && 
 // past its time: the server's quick read shows it missing, from that answer,
 // and marks it for a re-read (here the test's route stands in for that
 // answer: the Codex stub is installed). The page reads it again on the same
-// opening, and the card is right without a second one.
+// opening, and the card is right without a second one. The server never sends
+// `recheck` beside `checking` (an agent still being checked has no answer to
+// keep), so the test's answer has no `checking`, whatever the server's own
+// lookup of the stub was doing when the page asked: the badge is decided by
+// the test's answer alone, never by how warm the server's cache was.
 test('an agent shown from an answer past its time is read again on the same opening', async ({ page }) => {
   await quickRead(page, ['codex'], (a) => {
     a.available = false
     a.recheck = true
+    delete a.checking
     delete a.identity
   })
   let release = () => {}
