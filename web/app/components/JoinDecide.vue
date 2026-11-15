@@ -100,6 +100,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         v-if="item"
         :key="item.ref"
         :item="item"
+        :now="now"
         :route-of="() => null"
         :delivery="delivery"
         :busy="shownFeedback?.busy"

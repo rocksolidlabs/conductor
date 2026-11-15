@@ -405,6 +405,7 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             v-if="item"
             :key="item.ref"
             :item="item"
+            :now="now"
             :route-of="routeOf"
             :delivery="delivery"
             :busy="busy"

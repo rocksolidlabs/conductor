@@ -20,6 +20,8 @@ import type { LaneEvidence } from '~/utils/transport/decide'
  */
 const props = defineProps<{
   item: InboxItem
+  /** The page's clock: the heading's time follows it. */
+  now: number
   routeOf: (ref: string) => string | null
   /** This browser's latest action's steps on the item, when it acted: shown before the item's own. */
   delivery?: readonly DeliveryStep[]
@@ -46,7 +48,7 @@ const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
 /** The heading's time: waiting while the item is open, when it was answered once it is not (itemTimeWords). */
-const timeWords = computed(() => itemTimeWords(props.item))
+const timeWords = computed(() => itemTimeWords(props.item, props.now))
 /** A DR1 record: its record, alternatives, controls and four states are DR1's card's (the `record` slot). */
 const durable = computed(() => props.item.kind === 'decision')
 const evidence = computed(() => (props.drawn?.length ? (props.item.evidence ?? []).filter((e) => !props.drawn!.includes(e.ref)) : (props.item.evidence ?? [])))

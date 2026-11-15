@@ -414,12 +414,13 @@ export function decisionIdOf(ref: string): string {
 }
 
 /**
- * The time an item's card heads it with: an open item "waiting <for how long>"; one no longer open (a durable decision past `open`, a
- * question the server says is not open now) never waits: "answered <how long> ago" when its recorded step carries that time, else
- * nothing.
+ * The time an item's card heads it with, at `now` (the page's clock): an open item "waiting <for how long>"; one no longer open never
+ * waits: "answered <how long> ago" when its recorded step carries that time, else nothing. No longer open: a durable decision past
+ * `open`; a question or a task the server says is not open now (`now`, which it sets on an open one of neither); a plan revision with
+ * no action left (an open one is offered its Withdraw, and its `now` may say an approval no longer holds).
  */
-export function itemTimeWords(it: Pick<InboxItem, 'kind' | 'state' | 'since' | 'now' | 'delivery'>, now = Date.now()): string {
-  const closed = it.kind === 'decision' ? !!it.state && it.state !== 'open' : it.kind === 'question' && !!it.now
+export function itemTimeWords(it: Pick<InboxItem, 'kind' | 'state' | 'since' | 'now' | 'delivery'> & Partial<Pick<InboxItem, 'actions'>>, now: number): string {
+  const closed = it.kind === 'decision' ? !!it.state && it.state !== 'open' : it.kind === 'plan' ? !it.actions?.length : (it.kind === 'question' || it.kind === 'task') && !!it.now
   if (!closed) return it.since ? `waiting ${relativeTime(it.since, now)}` : ''
   const at = it.delivery?.find((s) => s.step === 'recorded' && s.state === 'done')?.at
   return at ? `answered ${relativeTime(at, now, { suffix: true })}` : ''

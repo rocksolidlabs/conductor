@@ -4,8 +4,8 @@ import { expect, test } from './fixtures'
 // Needs your decision, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
 // the address opened with no workbench token asks for it at once, the token saved shows the decision list, and a decide pass held
 // without one opens the decide page, which asks for nothing. A long title stays inside its row, cut with an ellipsis, its waiting
-// time in view. The rows are the list's as the server's shape gives them (the inbox route stubbed in the browser): every wait is on
-// what the page draws.
+// time in view. An open item's card says how long it waits as the page's clock moves, with no new read of it. The rows and the item
+// are as the server's shape gives them (the inbox routes stubbed in the browser): every wait is on what the page draws.
 
 const PHONE = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }
 const GATE = 'Workbench token'
@@ -72,3 +72,34 @@ for (const width of [360, 1440]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })
 }
+
+test("an open item's card says how long it waits by the page's clock, with no new read of the item", async ({ page }) => {
+  // The page's clock is Date.now, read at its own 5 s tick: the test moves it two hours on (an offset it sets), and the tick does the rest.
+  await page.addInitScript(() => {
+    const real = Date.now.bind(Date)
+    const w = window as unknown as { skew: number }
+    w.skew = 0
+    Date.now = () => real() + w.skew
+  })
+  const ref = 'task:e2e-time-0000000a/build'
+  const since = new Date(Date.now() - 90_000).toISOString()
+  const summary = { ref, kind: 'task', since, title: 'build failed in run e2e time', brief: 'b', question: '', answerer: 'you', actions: ['Retry'] }
+  const retry = { name: 'retry', label: 'Retry', expect: '4', scope: 'Allows build one more attempt', route: 'POST /api/runs/e2e-time-0000000a/tasks/build/retry' }
+  const item = { ...summary, subject: ref, briefBy: 'conductor', revision: '4', blocking: { words: '', refs: [] }, actions: [retry], recommended: -1 }
+  // The page reads the open item again whenever it reads the list: the first read is answered and every later one held, so the
+  // card keeps the item it first drew and only the clock can move its words.
+  let reads = 0
+  await page.route(
+    (u) => u.pathname === '/api/inbox',
+    (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [summary], total: 1, at: new Date().toISOString() }) }),
+  )
+  await page.route(
+    (u) => u.pathname === '/api/inbox/item',
+    (route) => (++reads === 1 ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ item }) }) : undefined),
+  )
+  await page.goto(`/decisions?item=${encodeURIComponent(ref)}`)
+  const time = page.locator('[data-decisions-item] [data-inbox-time]')
+  await expect(time).toHaveText(/waiting \d+m$/)
+  await page.evaluate(() => ((window as unknown as { skew: number }).skew = 2 * 3600_000))
+  await expect(time).toHaveText(/waiting 2h( \d+m)?$/)
+})
