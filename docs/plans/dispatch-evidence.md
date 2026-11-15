@@ -970,7 +970,9 @@ that matters is told to a person, never acted on alone. The usage in
   revision, a stale approval, the ticket closed, the project archived,
   managed runs off or no ledger), the reference field's parser
   (`path:12-30=note`), the default label (the key and the title, cut to
-  60 characters at a word).
+  60 characters at a word). As built since issue 770: the app computes
+  no default label and this helper and its test are gone; the server
+  names a run left unnamed, by the key alone when the title is quoted.
 - `utils/dispatchEvidence.ts` (vitest): candidates grouped by task and
   attempt, each receipt's chip (passed, failed with its exit, timed out,
   interrupted, log dropped), the repair history (a review's
@@ -1931,7 +1933,8 @@ taken.
 18. **The words.** "Plan revision", shown as "Plan" on a ticket page and
     as `r3` beside a run, never "plan" alone where the agent's plan or
     `docs/plans/` could be meant; a launched run's label is the ticket's
-    key and title unless the person gives one.
+    key and title unless the person gives one. (As built since issue
+    770: the key alone when the ticket's title is quoted.)
 19. **Required decisions are recorded and shown, not held**, until DR1's
     durable decisions hold the work that waits on them; the page says so
     beside them.

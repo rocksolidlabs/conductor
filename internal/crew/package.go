@@ -86,7 +86,7 @@ type Package struct {
 // PackageSource is the ticket's linked item at the launch (version 2): its
 // system, host, page, reference and node id, its state then, when the
 // ticket last read it, the SHA-256 of its snapshot, the account that
-// wrote it, which of the title and the description are quoted (a read
+// opened it, which of the title and the description are quoted (a read
 // wrote that text: ticket.md quotes them through internal/quoted) and
 // which of those the item holds now (the quote then names the item, and
 // otherwise a source not known), and its steps to reproduce when the
@@ -889,7 +889,7 @@ func ticketMarkdown(p Package) string {
 }
 
 // sourceWords is ticket.md's Source part. Of a linked item: the item, its
-// page, who wrote it where, its state at the launch, when the ticket last
+// page, the account that opened it and where, its state at the launch, when the ticket last
 // read it, its snapshot's SHA-256, and that the system may have changed it
 // since and the run follows the package; of a ticket unlinked before the
 // launch, one line saying so and nothing of an item. Then which texts
@@ -910,7 +910,7 @@ func sourceWords(s PackageSource) string {
 		}
 		fmt.Fprintf(&b, "- Linked item: %s, <%s>\n", c.Ref, quoted.Flat(s.URL))
 		if c.Author != "" {
-			fmt.Fprintf(&b, "- Written by: @%s on %s\n", c.Author, c.On)
+			fmt.Fprintf(&b, "- Opened by: @%s on %s\n", c.Author, c.On)
 		}
 		fmt.Fprintf(&b, "- State at the launch: %s\n", state)
 		if !s.ReadAt.IsZero() {

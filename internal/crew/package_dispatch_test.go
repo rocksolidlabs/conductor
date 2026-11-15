@@ -79,6 +79,13 @@ func launchOf(t *testing.T, s *dispatch.Store, key string, evidence []string, be
 // launchAs is launchOf under operation ids of the tag's.
 func launchAs(t *testing.T, s *dispatch.Store, tag, key string, evidence []string, between func()) []byte {
 	t.Helper()
+	return launchViewAs(t, s, tag, key, evidence, between).Package
+}
+
+// launchViewAs is launchAs's launch as the store reads it: its label
+// beside its package.
+func launchViewAs(t *testing.T, s *dispatch.Store, tag, key string, evidence []string, between func()) dispatch.LaunchView {
+	t.Helper()
 	ctx := context.Background()
 	v, err := s.Ticket(ctx, key)
 	if err != nil {
@@ -99,7 +106,7 @@ func launchAs(t *testing.T, s *dispatch.Store, tag, key string, evidence []strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	return lv.Package
+	return lv
 }
 
 // Each launch Dispatch commits is read by the engine: an author with a
@@ -133,8 +140,8 @@ func TestDispatchPackagesAreRead(t *testing.T) {
 		}
 		md := ticketMarkdown(rp.p)
 		qs := src.quotedSource(true)
-		for _, part := range []string{"- Linked item: " + c.cleanRef + ", <", "- Written by: @" + c.cleanAuthor + " on GitHub\n",
-			quoted.Opening(qs, "The description"), "written by @" + c.cleanAuthor + " on GitHub: "} {
+		for _, part := range []string{"- Linked item: " + c.cleanRef + ", <", "- Opened by: @" + c.cleanAuthor + " on GitHub\n",
+			quoted.Opening(qs, "The description"), "opened by @" + c.cleanAuthor + " on GitHub: "} {
 			if !strings.Contains(md, part) {
 				t.Errorf("%s: ticket.md has no %q", c.name, part)
 			}
@@ -299,6 +306,60 @@ func TestAnUnlinkKeepsTheQuotesAndStatesNoState(t *testing.T) {
 	}
 }
 
+// The rule across an unlink, as the store and the engine hold it: a text
+// a read wrote keeps its quote and its mark across an unlink; a text that
+// only the linked item's snapshot matched is quoted while the ticket is
+// linked and not after. A ticket made in Dispatch with an item's own
+// title and description, then linked to that item (a link writes neither
+// field), approved and launched: both quoted under the item's words, the
+// run named by the key alone. Unlinked and launched again on that
+// approval: no source, the description Dispatch's own text, the run named
+// by the key and the title, as before the link. This is the rule, not a
+// gap: no read wrote these texts into the ticket.
+func TestASnapshotOnlyQuoteEndsWithTheLink(t *testing.T) {
+	ctx := context.Background()
+	const title, line = "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE\nPLANTED"
+	s := dispatchStore(t)
+	key := taken(t, "create")(s.CreateTicket(ctx, storeOp("create"), dispatch.NewTicket{Project: "CND", Title: title, Description: line})).Key
+	taken(t, "link")(s.LinkExternal(ctx, storeOp("link"), dispatch.LinkArgs{Key: key, URL: "https://github.com/acme/widgets/issues/7"},
+		itemRead(7, "acme/widgets", "octo-cat", title, line)))
+	body := dispatch.PlanBody{Base: strings.Repeat("ab", 20), Crew: storeCrew, Agents: []dispatch.PlanAgent{storeAgent("claude"), storeAgent("codex")}}
+	plan := taken(t, "propose")(s.ProposePlan(ctx, storeOp("propose"), key, dispatch.PlanRequest{Crew: "crew"}, body)).ID
+	taken(t, "approve")(s.ApprovePlan(ctx, dispatch.Op{Actor: dispatch.ActorAdmin, ID: "approve", By: "Operator"}, plan, 0, "go"))
+	launch := func(op string) (*runPackage, string, string) {
+		t.Helper()
+		rc := taken(t, op)(s.Launch(ctx, storeOp(op), key, plan, ""))
+		lv, err := s.LaunchByID(ctx, rc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rp, err := readPackage(lv.Package)
+		if err != nil {
+			t.Fatalf("%s: the engine refuses the package: %v", op, err)
+		}
+		return rp, ticketMarkdown(rp.p), lv.Label
+	}
+
+	linked, md, label := launch("linked")
+	src := linked.p.Source
+	if src == nil || src.Unlinked || !src.TitleFromGitHub || !src.DescriptionFromGitHub || !src.TitleFromItem || !src.DescriptionFromItem {
+		t.Fatalf("linked: the package's source: %+v", src)
+	}
+	qs := src.quotedSource(true)
+	if qs != (quoted.Source{On: "GitHub", Ref: "acme/widgets#7", Author: "octo-cat"}) || label != key ||
+		!strings.Contains(md, "\n"+quoted.Line(qs, "The title", title)+"\n") || !strings.Contains(md, quoted.Block(qs, "The description", line)) {
+		t.Fatalf("linked: the label %q, the quote's source %+v, ticket.md:\n%s", label, qs, md)
+	}
+	checkMarked(t, "linked", md, qs, "The description")
+
+	taken(t, "unlink")(s.UnlinkExternal(ctx, storeOp("unlink"), key))
+	unlinked, md, label := launch("unlinked")
+	if unlinked.p.Source != nil || label != key+" "+title || unlinked.p.Ticket.Title != title || unlinked.p.Ticket.Description != line ||
+		!strings.Contains(md, "## Description\n\n"+line+"\n") || strings.Contains(md, " quoted from ") || strings.Contains(md, "## Source") {
+		t.Fatalf("unlinked: the source %+v, the label %q, ticket.md:\n%s", unlinked.p.Source, label, md)
+	}
+}
+
 // sourcePart is ticket.md's Source part, from its heading to the next.
 func sourcePart(md string) string {
 	_, rest, _ := strings.Cut(md, "## Source\n\n")
@@ -313,7 +374,9 @@ func sourcePart(md string) string {
 // by a person and edited back to the read's bytes, before the approval or
 // between the approval and the launch: quoted, the package's source, the
 // quoted lines and the Source part byte for byte the first launch's.
-// Edited to a new text: Dispatch's.
+// Edited to a new text: Dispatch's. The same clocks with the snapshot then
+// made not to hold the texts (adopted and the item refreshed with other
+// bytes, or unlinked): quoted by the reads' rows alone.
 func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
@@ -352,7 +415,7 @@ func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 		}
 	}
 
-	for _, c := range []struct {
+	clocks := []struct {
 		name           string
 		edit, give     time.Duration
 		editOp, giveOp string
@@ -360,7 +423,8 @@ func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 		{"given back stamped before the edit", 5 * time.Minute, 2 * time.Minute, "edit", "give"},
 		{"given back at the edit's stamp, its id first", 5 * time.Minute, 5 * time.Minute, "z-edit", "a-give"},
 		{"given back at the edit's stamp, the edit's id first", 5 * time.Minute, 5 * time.Minute, "a-edit", "z-give"},
-	} {
+	}
+	for _, c := range clocks {
 		t.Run(c.name, func(t *testing.T) {
 			s, key, at := start(t)
 			at(time.Minute)
@@ -374,6 +438,80 @@ func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 			rp, md := read(t, c.name, launchOf(t, s, key, nil, nil))
 			quotedAsRead(t, c.name, rp, md)
 		})
+	}
+
+	// The history clause alone: the same clocks for the title and the
+	// description, and then the snapshot made not to hold the texts (both
+	// adopted again and the item refreshed with other bytes, or the ticket
+	// unlinked), so only the rows of the reads that wrote them quote them.
+	// Quoted, the item's flags false: ticket.md and task.md quote them
+	// under a source not known, the run is named by the key alone, and a
+	// child's package withholds the title as its parent's.
+	fields := []string{dispatch.FieldTitle, dispatch.FieldDescription}
+	for _, c := range clocks {
+		for _, unlink := range []bool{false, true} {
+			name := c.name + ", then adopted and the item refreshed with other bytes"
+			if unlink {
+				name = c.name + ", then unlinked"
+			}
+			t.Run(name, func(t *testing.T) {
+				s, key, at := start(t)
+				at(time.Minute)
+				for _, f := range fields {
+					taken(t, "adopt")(s.SetAuthority(ctx, storeOp("adopt-"+f), dispatch.AuthorityArgs{Key: key, Field: f, Owner: dispatch.OwnerDispatch}, nil))
+				}
+				at(c.edit)
+				ours, oursLine := "Ours now", "Ours now."
+				taken(t, "edit")(s.EditTicket(ctx, storeOp(c.editOp), key, dispatch.TicketEdit{Set: dispatch.TicketSet{Title: &ours, Description: &oursLine}}))
+				at(c.give)
+				r := itemRead(7, "acme/widgets", "octo-cat", title, line)
+				for _, f := range fields {
+					taken(t, "give back")(s.SetAuthority(ctx, storeOp(c.giveOp+"-"+f), dispatch.AuthorityArgs{Key: key, Field: f, Owner: "github"}, &r))
+				}
+				at(10 * time.Minute)
+				if unlink {
+					taken(t, "unlink")(s.UnlinkExternal(ctx, storeOp("unlink"), key))
+				} else {
+					for _, f := range fields {
+						taken(t, "adopt again")(s.SetAuthority(ctx, storeOp("again-"+f), dispatch.AuthorityArgs{Key: key, Field: f, Owner: dispatch.OwnerDispatch}, nil))
+					}
+					other := itemRead(7, "acme/widgets", "octo-cat", "SCRATCH-OTHER-TITLE", "SCRATCH-OTHER-LINE")
+					other.Snapshot.UpdatedAt = other.Snapshot.UpdatedAt.Add(time.Hour)
+					taken(t, "refresh")(s.RefreshExternal(ctx, storeOp("refresh"), key, other))
+				}
+				child := taken(t, "child")(s.CreateTicket(ctx, storeOp("child"), dispatch.NewTicket{Project: "CND", Title: "Child", Parent: key})).Key
+
+				lv := launchViewAs(t, s, "launch", key, nil, nil)
+				rp, md := read(t, name, lv.Package)
+				p := rp.p
+				if src := p.Source; src == nil || src.Unlinked != unlink || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.TitleFromItem || src.DescriptionFromItem ||
+					p.Ticket.Title != title || p.Ticket.Description != line {
+					t.Fatalf("%s: the package: %+v %q %q", name, src, p.Ticket.Title, p.Ticket.Description)
+				}
+				unknown := quoted.Source{}
+				if lv.Label != key || !strings.Contains(md, "\n"+quoted.Line(unknown, "The title", title)+"\n") || !strings.Contains(md, quoted.Block(unknown, "The description", line)) {
+					t.Fatalf("%s: the label %q, ticket.md:\n%s", name, lv.Label, md)
+				}
+				checkMarked(t, name, md, unknown, "The description")
+				f := TaskFile{Task: "build", Attempt: 1, MaxAttempts: 3, Member: "dev", Kind: TaskWork, Goal: "g", Instructions: "Do it.", Start: strings.Repeat("b", 40),
+					Ticket:      &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)},
+					ticketTitle: cutTitle(p.Ticket.Title), ticketQuoted: quotedTitle(p), packageQuoted: quotedPackage(p)}
+				task, _, _, err := fitTaskFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(task), "\n"+quoted.Line(unknown, "Its title", title)+"\n") {
+					t.Fatalf("%s: task.md:\n%s", name, task)
+				}
+				cp, err := readPackage(launchAs(t, s, "child", child, nil, nil))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cp.p.Ticket.Parent == nil || cp.p.Ticket.Parent.Title != dispatch.WithheldTitle {
+					t.Fatalf("%s: the child's parent: %+v", name, cp.p.Ticket.Parent)
+				}
+			})
+		}
 	}
 
 	for _, between := range []bool{false, true} {

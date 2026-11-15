@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A launch's package (docs/plans/dispatch-evidence.md, "The package"):
@@ -36,9 +37,14 @@ func padded(worst func(int) string, n, i int) string { return worst(n-2) + fmt.S
 // approval's note and approver; twenty references; eight attachments;
 // twenty comments of 64 KiB together, by an author and a display name at
 // their worst; the constraints; ten decisions; the launch's label and
-// author. The launch is taken, its package under MaxPackage.
+// author. The launch is taken, its package under MaxPackage. The store's
+// clock is held at a time of nine digits of nanoseconds (the longest a
+// time is written), so every time the package holds is at its longest and
+// the sizes logged are the same on every run.
 func TestPackageAtItsWorst(t *testing.T) {
 	s := openStore(t, storeDir(t))
+	at := time.Date(2026, 11, 15, 10, 0, 0, 123456789, time.UTC)
+	s.SetClockForTest(func() time.Time { return at })
 	ctx := context.Background()
 	newProject(t, s, "CNDXYZ")
 	worstOp := func(id string) Op { return Op{Actor: worstBytes(MaxActor), ID: id, By: worstChars(MaxByName)} }
@@ -69,12 +75,13 @@ func TestPackageAtItsWorst(t *testing.T) {
 	// linked, GitHub owning its title and description, its snapshot at its
 	// worst, its host and its page at their bounds of '"' (two bytes each
 	// as written, a host url.Parse and the link's check admit), the steps
-	// to reproduce among it handed over; eight evidence links, each a page
+	// to reproduce among it handed over, its read written as an import's
+	// is (so the source carries readAt); eight evidence links, each a page
 	// at its bound of '"' and a note at its worst.
 	sn := worstSnapshot(t, worst)
 	sn.Host = worstBytes(MaxExternalHost)
 	sn.URL = "https://" + sn.Host + "/" + worstBytes(MaxExternalURL-len("https://")-len(sn.Host)-1)
-	linkWorst(t, s, key, sn, worstChars(MaxTicketTitle))
+	linkWorst(t, s, key, sn, worstChars(MaxTicketTitle), at)
 	var evidence []string
 	for i := range MaxPackageEvidence {
 		page := fmt.Sprintf("https://example.invalid/%02d/", i)
@@ -137,7 +144,8 @@ func TestPackageAtItsWorst(t *testing.T) {
 	}
 	// The ticket's texts at their worst are not the snapshot's, so neither is
 	// flagged as GitHub's: false is the longer word as encoded.
-	if p.Source == nil || p.Source.Repro != sn.Repro || len(p.Evidence) != MaxPackageEvidence || p.Source.TitleFromGitHub || p.Source.DescriptionFromGitHub {
+	if p.Source == nil || p.Source.Repro != sn.Repro || len(p.Evidence) != MaxPackageEvidence || p.Source.TitleFromGitHub || p.Source.DescriptionFromGitHub ||
+		!p.Source.ReadAt.Equal(at) {
 		t.Fatalf("version 2's parts are short of their bounds: %+v", p.Source)
 	}
 	for _, part := range []struct {
@@ -165,9 +173,9 @@ func TestPackageAtItsWorst(t *testing.T) {
 
 // linkWorst links the ticket with the key to the snapshot's item as an
 // import leaves it, GitHub owning its title and description, its title
-// set to title: written as the columns hold them, past the store's own
-// operations.
-func linkWorst(t *testing.T, s *Store, key string, sn ExternalSnapshot, title string) {
+// set to title, its read kept as read at readAt: written as the columns
+// hold them, past the store's own operations.
+func linkWorst(t *testing.T, s *Store, key string, sn ExternalSnapshot, title string, readAt time.Time) {
 	t.Helper()
 	snapshot, err := encodeSnapshot(sn)
 	if err != nil {
@@ -176,6 +184,10 @@ func linkWorst(t *testing.T, s *Store, key string, sn ExternalSnapshot, title st
 	identity := sn.Identity()
 	if _, err := s.db.Exec("UPDATE tickets SET title = ?, external_id = ?, authority = ?, source = ?, external_url = ?, external_snapshot = ? WHERE key = ?",
 		title, identity, Authority{Of: authorityKey(identity), Title: sn.System, Description: sn.System}.encode(), sn.System, sn.URL, snapshot, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO ticket_reads (ticket_id, external_id, updated_at, read_at, read_by) SELECT id, ?, ?, ?, 'test' FROM tickets WHERE key = ?`,
+		identity, stamp(sn.UpdatedAt), stamp(readAt), key); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -164,6 +164,69 @@ func TestPackageVersionTwo(t *testing.T) {
 	}
 }
 
+// The pin is held by the item's identity as well as by the steps' hash: a
+// ticket unlinked and linked, between the approval and the launch, to
+// another item whose steps to reproduce are the very same bytes is
+// stale_plan at the launch and at an approval again, and no launch is
+// kept.
+func TestThePinHoldsTheItemsIdentity(t *testing.T) {
+	ctx := context.Background()
+	s, key, _ := sourceTicket(t)
+	was := pinOf(t, s, key)
+	body := testPlanBody("crew")
+	body.Source = &PlanSource{Repro: was}
+	plan := approvedPlan(t, s, key, PlanRequest{Crew: "crew"}, body, "go")
+	rc, err := s.UnlinkExternal(ctx, testOp("unlink"), key)
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.LinkExternal(ctx, testOp("relink"), LinkArgs{Key: key, URL: "https://github.com/rocksolidlabs/conductor/issues/612"},
+		ghRead("I_2", 9, "The login loops", "It loops.\n\n### Steps to reproduce\n\n1. Log in\n2. Loop"))
+	want(t, rc, err, StatusDone, "")
+	if now := pinOf(t, s, key); now.SHA256 != was.SHA256 || now.Identity == was.Identity {
+		t.Fatalf("the relinked item's pin %+v, the approved %+v: want the same steps of another item", now, was)
+	}
+	rc, err = s.Launch(ctx, testOp("launch"), key, plan, "")
+	refused(t, rc, err, RefusalStalePlan, "the steps to reproduce changed since revision")
+	rc, err = s.ApprovePlan(ctx, adminOp("again"), plan, 0, "")
+	refused(t, rc, err, RefusalStalePlan, "the steps to reproduce changed since revision")
+	var n int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM launches WHERE ticket_id = ?", ticketOf(t, s, key).ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("the store holds %d launches (%v)", n, err)
+	}
+}
+
+// A ticket imported from one item, unlinked and linked to another that
+// holds both of its texts, the title alone, the description alone or
+// neither: each field is quoted (a read wrote it) and its item's flag says
+// whether the item linked now holds that very text.
+func TestARelinkFlagsEachField(t *testing.T) {
+	ctx := context.Background()
+	const title, body = "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE"
+	for _, c := range []struct {
+		name, title, body      string
+		titleOf, descriptionOf bool
+	}{
+		{"both", title, body, true, true},
+		{"the title alone", title, "Another body", true, false},
+		{"the description alone", "Another title", body, false, true},
+		{"neither", "Another title", "Another body", false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := linkedStore(t)
+			newProject(t, s, "CND")
+			key := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, title, body))
+			rc, err := s.UnlinkExternal(ctx, testOp("unlink"), key)
+			want(t, rc, err, StatusDone, "")
+			rc, err = s.LinkExternal(ctx, testOp("relink"), LinkArgs{Key: key, URL: "https://github.com/rocksolidlabs/conductor/issues/612"}, ghRead("I_2", 9, c.title, c.body))
+			want(t, rc, err, StatusDone, "")
+			p := packageOf(t, mustLaunch(t, s, "l1", key, simplePlan(t, s, key), ""))
+			if src := p.Source; src == nil || src.Unlinked || src.NodeID != "I_2" || !src.TitleFromGitHub || !src.DescriptionFromGitHub ||
+				src.TitleFromItem != c.titleOf || src.DescriptionFromItem != c.descriptionOf {
+				t.Fatalf("the package's source: %+v", src)
+			}
+		})
+	}
+}
+
 // decodeBody decodes a revision's body strictly.
 func decodeBody(t *testing.T, raw []byte, b *PlanBody) {
 	t.Helper()

@@ -52,7 +52,7 @@ type Package struct {
 // PackageSource is the ticket's linked item at the launch: its system,
 // host, page, reference (owner/repo#n) and node id, its state then, when
 // the ticket last read it (zero for never), the SHA-256 of the snapshot
-// the package was built from, the account that wrote it, which of the
+// the package was built from, the account that opened it, which of the
 // ticket's title and description are quoted (a read wrote that text into
 // the field: readWrote) and which of those the item's snapshot holds now
 // (the quote then names the item; otherwise a source not known), and its

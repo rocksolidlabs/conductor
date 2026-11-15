@@ -172,8 +172,8 @@ func TestTicketMarkdownSource(t *testing.T) {
 	}
 	src := p.Source.quotedSource(true)
 	for _, part := range []string{
-		"# CND-12\n\nThe title quoted from acme/widgets#612, written by @octo-cat on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead + "Login loops on Safari\n\n",
-		"## Source\n\n- Linked item: acme/widgets#612, <https://github.com/acme/widgets/issues/612>\n- Written by: @octo-cat on GitHub\n- State at the launch: closed (not planned)\n",
+		"# CND-12\n\nThe title quoted from acme/widgets#612, opened by @octo-cat on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead + "Login loops on Safari\n\n",
+		"## Source\n\n- Linked item: acme/widgets#612, <https://github.com/acme/widgets/issues/612>\n- Opened by: @octo-cat on GitHub\n- State at the launch: closed (not planned)\n",
 		"GitHub may have changed it since: the run follows this package.",
 		"## Description\n\n" + quoted.Opening(src, "The description") + "\n\n> The login page loops.\n>\n> ```\n",
 		"## Steps to reproduce\n\n" + quoted.Opening(src, "The steps to reproduce") + "\n\n> 1. Open the login page.\n> 2. Sign in.\n\n" + quoted.Closing(src) + "\n",
@@ -195,7 +195,7 @@ func TestTicketMarkdownSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		line := "## Your ticket\n\nIts title quoted from acme/widgets#612, written by @octo-cat on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead +
+		line := "## Your ticket\n\nIts title quoted from acme/widgets#612, opened by @octo-cat on GitHub (" + quoted.Untrusted + ")" + quoted.LineHead +
 			strings.Join(quoted.Lines(cutTitle(hp.Ticket.Title)), " ") + "\n\nThis run works for the ticket CND-12 as it stood at its revision 7, when plan revision 2 launched the run. "
 		if !strings.Contains(string(md), line) {
 			t.Fatalf("%s: task.md does not name the title on its own line", name)
