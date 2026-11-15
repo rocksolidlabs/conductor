@@ -244,3 +244,60 @@ func TestShutdownCutsACleanupStepThatOutlastsItsBudget(t *testing.T) {
 		})
 	}
 }
+
+// The server's own order at its shutdown: each run it holds is stopped,
+// then the trees still ending are drained. A finished run whose
+// candidate's preview is open is stopped there, so the preview ends with
+// its run's stop and records that reason (run_stopped), its service gone
+// and its row ended before the ledger closes; Drain's own reason
+// (shutdown) is left to a preview whose run was not stopped first.
+func TestShutdownEndsAPreviewWithItsRunsStop(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	c := crew.Crew{ID: "previewed", Name: "Previewed", Goal: "build it", Cwd: e.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members: []crew.Member{{Name: "lead", AgentID: "ready-cat", Start: crew.Start{When: crew.StartTask}}},
+		Tasks:   []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build it."}},
+		Manifest: &crew.Manifest{Ports: []string{"web"}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/",
+			Services: []crew.Check{{ID: "web", Argv: []string{"sh", "-c", `echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`}}}}}
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	sid := a["sessionId"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "built"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("result: %d %v", resp.StatusCode, out)
+	}
+	if !waitFor(20*time.Second, func() bool {
+		r, _ := e.srv.runs.Get(run.ID)
+		return r.Outcome == "succeeded" && r.Cleaning == 0
+	}) {
+		t.Fatal("the run did not finish with its trees ended")
+	}
+	if _, err := e.srv.runs.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(20*time.Second, func() bool {
+		ps, ok := e.srv.runs.ReadPreview(run.ID, "build", 1, 1)
+		return ok && ps.Preview != ""
+	}) {
+		t.Fatal("the preview is not ready")
+	}
+	pid := servicePid(t, filepath.Join(a["worktree"].(string)+".preview", ".conductor", "state", "web.pid"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	if syscall.Kill(pid, 0) == nil {
+		t.Fatalf("the preview's service %d outlived the shutdown", pid)
+	}
+	ld, err := ledger.Open(filepath.Join(e.srv.cfg.DataDir, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ld.Close()
+	ps, err := ld.Previews(context.Background(), run.ID)
+	if err != nil || len(ps) != 1 || ps[0].State != ledger.PreviewEnded || ps[0].Why != "run_stopped" || ps[0].Interrupted {
+		t.Fatalf("the preview after the shutdown: %+v %v", ps, err)
+	}
+}

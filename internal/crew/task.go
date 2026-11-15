@@ -67,6 +67,12 @@ type LedgerTx interface {
 	PutCheck(ledger.CheckRow) error
 	PutPrerequisite(ledger.PrerequisiteRow) error
 	PutTree(ledger.TreeRow) error
+	// OpenPreview, PreviewReady, PreviewEnding and EndPreview keep a
+	// candidate's preview checkout's row (preview.go).
+	OpenPreview(ledger.PreviewRow) error
+	PreviewReady(ledger.PreviewRow) error
+	PreviewEnding(ledger.PreviewRow) error
+	EndPreview(ledger.PreviewRow) error
 	// Command and Settle keep a command's receipt (commands.go).
 	Command(actor, id, intent, fingerprint string) (prior ledger.CommandRow, found bool, err error)
 	Settle(actor, id, status string, receipt any) error
@@ -659,6 +665,10 @@ type attempt struct {
 	ks        map[string]int
 	uncounted bool
 	preview   string
+	// previewing is the preview checkout of its result open now (preview.go),
+	// nil for none, and previewSeq the seq of its last one, under e.mu.
+	previewing *preview
+	previewSeq int
 	// failed is the receipt of the check or verify step that failed the
 	// attempt (verify), handed to the attempt after it (failedcheck.go).
 	failed *failedCheck
@@ -756,6 +766,10 @@ type AttemptState struct {
 	// the native one): its row's. A run record saved before the ledger
 	// kept it has none.
 	Where string `json:"where,omitempty"`
+	// Previewing is the preview checkout of its result open now
+	// (preview.go): its seq, its state and its URL while ready; absent for
+	// none and for a run that is stopping.
+	Previewing *Previewing `json:"previewing,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -830,6 +844,7 @@ func (r *run) attemptState(a *attempt) AttemptState {
 	as := attemptStateOf(a)
 	if !r.stopping {
 		as.Preview = a.preview
+		as.Previewing = a.previewing.previewing()
 	}
 	return as
 }
@@ -2160,7 +2175,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		}
 	}
 	if r.hasManifest() {
-		tr, err = e.resolveTree(ctx, r, a, ledger.TreeWorktree, a.worktree, cwd, a.start)
+		tr, err = e.resolveTree(ctx, r, a, a, ledger.TreeWorktree, a.worktree, cwd, a.start)
 		held = tr != nil
 		if errors.Is(err, errAttemptClosed) {
 			return // cancelled or stopped meanwhile: what closed it wrote it

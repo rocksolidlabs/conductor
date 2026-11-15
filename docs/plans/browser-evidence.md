@@ -665,8 +665,8 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   passing unchanged; a preview (`*preview`, `preview.go`) is the other:
   closed once its end is committed, listed in the engine's previews
   (never `a.trees`) and counted on its run (`r.previews`, beside
-  `r.trees.n`, from the open's first transaction until its end's last,
-  its teardown done), which the engine's `idle` reads (`run.go`), so
+  `r.trees.n`, from its reservation until its end's last, its teardown
+  done, or until its owed write is no longer tried), which the engine's `idle` reads (`run.go`), so
   `evict` never forgets a run whose preview is opening, serving or
   ending and `forget` never cancels the `r.teardown` its services run
   under (at most 2 previews a server, so at most two runs are held past
@@ -686,12 +686,34 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   the run (below): the run's project manifest is resolved
   for that commit (`resolveTree` with the preview as its owner, a `file`
   manifest read at the commit as EN1 reads it); the checkout is
-  `<worktree>.preview`, added detached at the
-  commit (`gitcli.AddDetachedWorktree`), or, when it is there already,
-  reused only if `checkoutIntact` finds it at the commit with no tracked
-  change (untracked files, a dev server's caches, are left as they are)
-  and refused otherwise with the path and the changed files named:
-  Conductor removes nothing it made (EN1's R7). Then EN1's
+  `<worktree>.preview`, used by its path under the run's worktrees
+  folder; the server makes no further promise about a folder that
+  another process of the same user replaces while it works. Before
+  anything is made or read, the run's worktrees folder is judged as an
+  attempt's dispatch judges it (`checkWorktreesDir`, in the same words).
+  A checkout not there is made as the checks' checkout is (`verify`,
+  which makes its checkout new each time): added detached at the commit
+  (`AddDetachedWorktree`, under the repository's lock and a bound of
+  its own that no end cuts: an end that comes meanwhile waits for the
+  add, and an add that outlives the bound ends the open with the
+  bound's words), its HEAD read and compared with the preview's
+  commit. One there already is reused only when, in this order, it is a
+  directory (looked at before any git runs in it, never a link), the
+  top of its own git work tree, a worktree of the run's repository (its
+  common git directory the repository's; each folder compared by
+  identity, not by its spelling), and at the commit with no tracked
+  change (`checkoutIntact`; untracked files, a dev server's caches, are
+  left as they are); anything else is refused with the path and what is
+  wrong named, before anything is written or made and before any step:
+  Conductor removes nothing it made (EN1's R7). Then the crew's directory is
+  judged as `verify` judges it (`checkMemberDir`: a link or a file
+  there is refused in its words) and made, with the state directory. A
+  reused checkout is served as it was judged when the preview opened;
+  natively the same user can change its files afterwards. A checkout a
+  server left half made when
+  it died (the add's first command done, not its last) is refused as
+  changed; the person removes it (`git worktree remove --force <path>`
+  in the run's repository) and the next open makes it again. Then EN1's
   `prepareTree` and `treeReady` run on it with the preview as owner:
   setup, services, readiness and preview, every step a receipt under the
   attempt (the `checks` table, its phase, `dir` the checkout's, the next
@@ -702,10 +724,44 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   most 2 preview checkouts open per server (`maxPreviews`, `429
   previews_busy` naming the open ones); one per candidate at a time; 20
   opens per candidate in the ledger. Ends: Close; 30 minutes with no read
-  of its label (`previewIdle`, the pane reads it every 5 s); the run's
-  stop; the server's shutdown, as every tree's. A checkout's services
-  that the last server left running are reported at the next start,
-  never signalled (EN1's rule).
+  of its label (`previewIdle`, the pane reads it every 5 s, judged as
+  the end is made); a service lost after readiness; an open that
+  failed; the run's stop; the server's shutdown, as every tree's. The
+  URL is offered once its readiness is committed. An end is of two
+  kinds. A Close and the idle end, which a person can ask again, commit
+  their first write (the URL cleared) before anything of the preview is
+  signalled; one the ledger refuses leaves the preview as it was, a Close
+  answering the refusal and the idle end trying again a `previewIdle`
+  later. While the preview's open is under way (from its reservation
+  until the open has handed it to its serving or ended it), a Close is
+  answered busy at once (`ErrPreviewOpening`, `409 preview_opening`)
+  and nothing of the preview changes. Every other end happens whatever
+  the ledger answers: the
+  preview is ended in the server's memory at once (no reader shows its
+  address from then), its steps' context ended, its teardown registered
+  and its services stopped as a tree's; its first write is tried once,
+  and its last (`preview.ended`, which records all the first would),
+  when the ledger refuses it, is owed. An owed write is tried again by
+  the preview's own end every 10 s, whatever reads its label, until it
+  is written, the engine ends (the shutdown's drain) or the ledger
+  answers that it is closed; the preview stays counted (its candidate's
+  one open, the server's two, its run held, its ports leased) until
+  then, and then is let go, the row left to the next start's recovery,
+  which ends a row it finds open. While a write is owed the ledger's row
+  can still read ready, and neither reader shows it: the label refuses
+  the preview, and `Previewing` says it is ending, with no address, or,
+  once its run is stopping, is absent. No next try is armed once the
+  engine has ended. The reason recorded is the one of
+  the end that began first: the run's stop begins its previews' ends
+  before anything of the stop can fail a step of theirs, so a preview
+  still starting its services when its run stopped records the stop. A
+  run's stop and the shutdown's drain wait for a preview's teardown,
+  never for its idle time and never for a write the ledger refuses. The
+  shutdown stops each run it holds before it drains, so a held run's
+  preview ends with that stop (`run_stopped`); `shutdown` is recorded
+  only for a preview whose run was not stopped first. A checkout's
+  services that the last server left running are reported at the next
+  start, never signalled (EN1's rule).
 - **A run the engine no longer holds** (PR-7). `Engine.Get` and
   `TaskOf` read `e.runs` alone, and the API reads an evicted run, or one
   finished under an earlier server of this ledger, from the ledger
@@ -818,7 +874,8 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   /api/runs/{run}/tasks/{task}/attempts/{n}/preview` (admin, `{commandId}`
   → `202 {seq, state}`; `200` for a repeat; `409 not_candidate`, `409
   run_continued`, `409 preview_dirty`, `429 previews_busy`) and `POST
-  …/preview/{seq}/close` (admin, `{commandId}` → `{state}`); each a
+  …/preview/{seq}/close` (admin, `{commandId}` → `{state}`; `409
+  preview_opening` while its open is under way); each a
   command with its receipt in the ledger, as the task commands are.
 - **Captures** (`captures.go`, new; admin only, `requireAdmin`; every
   JSON body read with `DisallowUnknownFields`):
@@ -1457,17 +1514,24 @@ and the ticket attachments they made stay).
   transaction that leases the ports to the preview's tree; each step is
   a receipt before its process starts (EN1's order); `preview.ready`
   with the URL is committed to the row of its `seq` before the label
-  offers it; the close transaction (`preview.ended`'s first half: the
-  URL cleared, the preview owner closed) is committed before any service
-  is signalled, so no label offers a URL a teardown is ending and no
-  late step of that `seq` writes a row, and the port lease is released
-  only once the end is committed (EN1's rule for trees). A service that
-  exits after readiness ends its preview the same way (`why:
-  service_exited`). The result checkout's `trees` row and the attempt's
-  `a.trees` are never written by a preview. At most one open per
-  candidate; `seq` only grows. Its run is held against eviction
-  (`r.previews`) from the open's first transaction to the end's last,
-  so nothing but its own end stops its services.
+  offers it; an end a person can ask again (a Close, the idle end)
+  commits its first transaction (`preview.ended`'s first half: the URL
+  cleared, the preview owner closed) before any service is signalled;
+  every other end (an open that failed, a service that exits after
+  readiness, `why: service_exited`, the run's stop, the shutdown) closes
+  the preview owner in memory at once, whatever the ledger answers, and
+  its last write, refused, is owed and tried again until written, or
+  until the engine ends or the ledger answers that it is closed, when
+  the row is the next start's recovery's to end. A Close while the
+  preview opens changes nothing of it. Either
+  way no label offers a URL a teardown is ending and no late step of
+  that `seq` writes a row, and the port lease is released only once the
+  end is committed (EN1's rule for trees), or once an owed write is no
+  longer tried. The result checkout's
+  `trees` row and the attempt's `a.trees` are never written by a
+  preview. At most one open per candidate; `seq` only grows. Its run is
+  held against eviction (`r.previews`) from its reservation until its row is ended or its owed write is no longer
+  tried, so nothing but its own end stops its services.
 - **The bridge's messages.** The bridge answers only `window.parent` at
   an origin the server wrote into it (or the shell, for the desktop),
   with the nonce of its `hello`, a message at most 4 KiB, and posts only
