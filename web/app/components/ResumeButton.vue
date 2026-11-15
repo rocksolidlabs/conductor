@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ResumeResult, SessionInfo } from '~/composables/useSessions'
 import { resumeLabel } from '~/utils/yolo'
-import { sessionResumeOffered } from '~/utils/runs'
+import { memberOffer, sessionResumeOffered } from '~/utils/runs'
 
 /**
  * Starts an ended session again (POST /api/sessions/{id}/resume), or an ended member of a run that has no session left on the server
@@ -19,8 +19,8 @@ const live = useAttention()
 const toast = useToast()
 const busy = ref(false)
 const look = computed(() => resumeLabel(props.session ?? live.runOf(props.runId ?? '')?.members.find((m) => m.name === props.member)))
-/** Drawn only where the engine takes it: never for a managed run's member or attempt, nor a Brakeman turn's (memberOffer's rule). */
-const offered = computed(() => (props.session ? sessionResumeOffered(props.session) : !live.runOf(props.runId ?? '')?.managed))
+/** Drawn only where the engine takes it: never for a managed run's member or attempt, nor a Brakeman turn's, nor a run not known yet (memberOffer). */
+const offered = computed(() => (props.session ? sessionResumeOffered(props.session) : memberOffer('ended', live.runOf(props.runId ?? '')) === 'resume'))
 
 async function go() {
   busy.value = true

@@ -51,15 +51,27 @@ export function runBadge(state: RunState, needs: number): { label: string; color
   return { label: 'Running', color: 'success' }
 }
 
+/** What runOffer and memberOffer read of a run. */
+export type OfferRun = Pick<RunInfo, 'stoppedAt' | 'managed' | 'class' | 'record'>
+
+/**
+ * What a run offers by hand: Add agent (POST /api/runs/{id}/members) on a run not stopped and not a record; nothing of a hand's (no
+ * member added, started or resumed) on a managed run, whose tasks start and continue its members (409 managed_run), nor on a Brakeman
+ * turn's (409 brakeman_run); nothing on a run not known yet. The run page's header, its palette's row and the app's palette ask it.
+ */
+export function runOffer(run: OfferRun | null | undefined): { byHand: boolean; add: boolean } {
+  const byHand = !!run && !run.managed && run.class !== 'brakeman'
+  return { byHand, add: byHand && !run!.stoppedAt && !run!.record }
+}
+
 /**
  * What a member's controls offer by hand (the run page's tile, the graph's node and its list, the page's palette row), as the engine
- * takes it: Start now for a member waiting in a run not stopped (POST /api/runs/{id}/members/{name}/start), Resume or Relaunch for an
- * ended one (…/resume, which reopens a stopped run); neither in a managed run, whose tasks start and continue its members (409
- * managed_run).
+ * takes it, in a run that offers a hand's (runOffer): Start now for a waiting member, whatever its start condition, of a run not
+ * stopped (POST /api/runs/{id}/members/{name}/start), Resume or Relaunch for an ended one (…/resume, which reopens a stopped run).
  */
-export function memberOffer(status: MemberStatus | undefined, run: { stopped: boolean; managed: boolean }): 'start' | 'resume' | null {
-  if (run.managed) return null
-  if (status === 'pending') return run.stopped ? null : 'start'
+export function memberOffer(status: MemberStatus | undefined, run: OfferRun | null | undefined): 'start' | 'resume' | null {
+  if (!runOffer(run).byHand) return null
+  if (status === 'pending') return run!.stoppedAt ? null : 'start'
   return status === 'ended' ? 'resume' : null
 }
 

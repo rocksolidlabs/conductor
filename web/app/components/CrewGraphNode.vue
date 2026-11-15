@@ -2,7 +2,7 @@
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection, GraphNode } from '~/utils/crewGraph'
 import { memberDotClass, memberWords, startWords } from '~/utils/crewWords'
-import { memberOffer } from '~/utils/runs'
+import { memberOffer, type OfferRun } from '~/utils/runs'
 
 /**
  * One member on the crew graph: its agent, name, status dot and needs-input
@@ -20,8 +20,8 @@ export interface MemberNodeData {
   /** The run the member is in; empty for a saved crew. */
   runId: string
   stopped: boolean
-  /** A managed run, whose tasks start and continue its members (memberOffer). */
-  managed?: boolean
+  /** The run, as what a member offers by hand reads it (memberOffer); absent for a saved crew. */
+  run?: OfferRun | null
   /** The agent's name from the catalog; its id when unknown. */
   agentName: string
 }
@@ -38,7 +38,7 @@ const start = computed(() => startWords(n.value.member.start))
 /** The run's words for the member; the start rule's in the editor and for a crew not running. */
 const words = computed(() => (state.value ? memberWords({ stoppedAt: props.data.stopped ? 'stopped' : undefined }, n.value.member, state.value) : null))
 /** What the node offers by hand: Start now, Resume or Relaunch, or nothing (memberOffer). */
-const offer = computed(() => memberOffer(state.value, { stopped: props.data.stopped, managed: !!props.data.managed }))
+const offer = computed(() => memberOffer(state.value, props.data.run))
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
 
 const menu = computed(() => [

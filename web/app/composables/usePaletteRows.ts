@@ -19,7 +19,7 @@ import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type 
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
-import { sessionResumeOffered } from '~/utils/runs'
+import { memberOffer, runOffer, sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
 import { SayDrafts } from '~/utils/sayDrafts'
@@ -433,7 +433,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const more: Action[] = []
     if (r && live) {
       more.push({ id: 'broadcast', kind: 'run', target: r.id, label: 'Broadcast…', icon: 'i-lucide-megaphone', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
-      more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
+      if (runOffer(r).add) more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
     if (r && live && r.managed) more.push({ id: 'tasks', kind: 'run', target: r.id, label: 'Open the tasks', icon: 'i-lucide-list-checks', run: () => go(`/runs/${encodeURIComponent(r.id)}?view=tasks`) })
@@ -655,7 +655,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const endedItems: PaletteItem[] = ended.map((b) => runItem(b, attention.runOf(b.runId)))
     const waiting: PaletteItem[] = []
     for (const r of attention.runs.value.filter((r) => !r.stoppedAt)) {
-      for (const m of r.members.filter((m) => m.status === 'pending' && m.start.when === 'manual')) {
+      for (const m of r.members.filter((m) => m.start.when === 'manual' && memberOffer(m.status, r) === 'start')) {
         waiting.push({ key: `member:${r.id}:${m.name}`, label: `${m.name} · Start now`, detail: `${r.label || r.name} · ${m.agentId} · waiting for a hand`, agentId: m.agentId, icon: 'i-lucide-play', run: () => void startMember(r, m.name) })
       }
     }

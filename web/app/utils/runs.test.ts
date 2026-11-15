@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
-import { RUN_EVENT_LIST_AT, RUN_EVENT_WINDOW_MS, RunStore, memberDot, memberOffer, runBadge, sessionResumeOffered, runLive, runState, type RunReader } from './runs'
+import { RUN_EVENT_LIST_AT, RUN_EVENT_WINDOW_MS, RunStore, memberDot, memberOffer, runBadge, runOffer, sessionResumeOffered, runLive, runState, type OfferRun, type RunReader } from './runs'
 
 const member = (p: Partial<RunMember>): RunMember => ({ name: 'lead', agentId: 'claude', start: { when: 'immediately' }, status: 'running', ...p })
 
@@ -68,20 +68,39 @@ describe('runLive and runBadge', () => {
   })
 })
 
-describe('memberOffer', () => {
-  const plain = { stopped: false, managed: false }
-  it('offers Start now for a waiting member of a run not stopped and not managed, as the server takes it', () => {
+describe('runOffer and memberOffer', () => {
+  const plain: OfferRun = {}
+  const managed: OfferRun = { managed: { revision: 3 } }
+  const brakeman: OfferRun = { class: 'brakeman' }
+  const stopped: OfferRun = { stoppedAt: '2026-11-14T12:00:00Z' }
+
+  it('offers Add agent on a plain run not stopped and not a record; never on a managed run, a Brakeman turn or a run not known', () => {
+    expect(runOffer(plain)).toEqual({ byHand: true, add: true })
+    expect(runOffer(stopped)).toEqual({ byHand: true, add: false })
+    expect(runOffer({ record: true })).toEqual({ byHand: true, add: false })
+    expect(runOffer(managed)).toEqual({ byHand: false, add: false })
+    expect(runOffer(brakeman)).toEqual({ byHand: false, add: false })
+    expect(runOffer(undefined)).toEqual({ byHand: false, add: false })
+    expect(runOffer(null)).toEqual({ byHand: false, add: false })
+  })
+
+  it('offers Start now for a waiting member of a run not stopped, by hand, as the server takes it', () => {
     expect(memberOffer('pending', plain)).toBe('start')
-    expect(memberOffer('pending', { stopped: false, managed: true })).toBeNull()
-    expect(memberOffer('pending', { stopped: true, managed: false })).toBeNull()
+    expect(memberOffer('pending', managed)).toBeNull()
+    expect(memberOffer('pending', brakeman)).toBeNull()
+    expect(memberOffer('pending', stopped)).toBeNull()
+    expect(memberOffer('pending', undefined)).toBeNull()
     expect((['starting', 'running', 'needs_input', undefined] as const).map((s) => memberOffer(s, plain))).toEqual([null, null, null, null])
   })
 
-  it('offers Resume or Relaunch for an ended member, in a stopped run too, never in a managed one', () => {
+  it('offers Resume or Relaunch for an ended member, in a stopped run too, never in a managed run, a Brakeman turn or a run not known', () => {
     expect(memberOffer('ended', plain)).toBe('resume')
-    expect(memberOffer('ended', { stopped: true, managed: false })).toBe('resume')
-    expect(memberOffer('ended', { stopped: true, managed: true })).toBeNull()
-    expect(memberOffer('ended', { stopped: false, managed: true })).toBeNull()
+    expect(memberOffer('ended', stopped)).toBe('resume')
+    expect(memberOffer('ended', { ...stopped, ...managed })).toBeNull()
+    expect(memberOffer('ended', managed)).toBeNull()
+    expect(memberOffer('ended', brakeman)).toBeNull()
+    expect(memberOffer('ended', { ...stopped, ...brakeman })).toBeNull()
+    expect(memberOffer('ended', undefined)).toBeNull()
   })
 
   it("offers an ended session's Resume or Relaunch except for a managed run's attempt and a Brakeman turn", () => {

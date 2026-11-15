@@ -9,7 +9,7 @@ import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
 import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
-import { memberOffer } from '~/utils/runs'
+import { memberOffer, runOffer } from '~/utils/runs'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
@@ -336,8 +336,6 @@ function placeholder(t: Tile): { text: string; tone: 'warning' | 'error' | 'mute
 }
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default' }
 
-/** What memberOffer reads of the run: whether it stopped, and whether its tasks start and continue its members. */
-const startRun = computed(() => ({ stopped: !!run.value?.stoppedAt, managed: !!run.value?.managed }))
 const starting = ref('')
 async function startMember(name: string) {
   starting.value = name
@@ -448,18 +446,20 @@ palette.registerPage(() => {
       const pending = m?.status === 'pending'
       const ended = m?.status === 'ended' || (s && (s.status === 'exited' || s.status === 'stopped'))
       const state = s?.attention?.state === 'needs_input' ? ('needs' as const) : ended ? ('exited' as const) : s ? ('running' as const) : ('idle' as const)
+      // What the member's tile offers, and nothing else (memberOffer).
+      const offer = memberOffer(ended ? 'ended' : m?.status, r)
       return {
         key: `page:member:${t.name}`,
         label: t.name,
-        detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? (m.start.when === 'manual' ? 'waiting for a hand · Enter starts it' : 'waiting to start') : (m?.error ?? m?.status ?? ''),
+        detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
         agentId: m?.agentId ?? s?.agentId,
         state,
         session: s,
         prompt: s ? rowPrompt(sessionRow(s)) : null,
         run: () => {
           if (s && !ended) openMember(t.name)
-          else if (pending && m.start.when === 'manual' && memberOffer(m.status, startRun.value) === 'start') void startMember(t.name)
-          else if (ended && !stopped && memberOffer('ended', startRun.value) === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
+          else if (offer === 'start') void startMember(t.name)
+          else if (offer === 'resume') void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
           else if (s) openMember(t.name)
         },
         href: s ? `/sessions/${s.id}` : undefined,
@@ -477,7 +477,7 @@ palette.registerPage(() => {
         fieldOnEnter: true,
         field: { placeholder: 'A line for every selected member…', button: `Send to ${sel.sending.length}`, submit: paletteBroadcast },
       },
-      { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: stopped || !!r.record, run: () => header.value?.openAdd() },
+      { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: !runOffer(r).add, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
       ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
@@ -538,7 +538,7 @@ palette.registerPage(() => {
             :handoffs="handoffs"
             :run-id="runId"
             :stopped="!!run?.stoppedAt"
-            :managed="!!run?.managed"
+            :run="run"
             :selected="selectedMember"
             :now="now"
             :tasks="run?.tasks ?? []"
@@ -580,7 +580,7 @@ palette.registerPage(() => {
                 <div class="flex flex-1 flex-col items-center justify-center gap-2 p-3 text-center text-sm text-muted">
                   <span :class="tone[placeholder(t).tone]" data-member-words>{{ placeholder(t).text }}</span>
                   <UButton
-                    v-if="memberOffer(t.member?.status, startRun) === 'start'"
+                    v-if="memberOffer(t.member?.status, run) === 'start'"
                     label="Start now"
                     icon="i-lucide-play"
                     size="xs"
@@ -589,7 +589,7 @@ palette.registerPage(() => {
                     :loading="starting === t.name"
                     @click="startMember(t.name)"
                   />
-                  <ResumeButton v-else-if="memberOffer(t.member?.status, startRun) === 'resume'" :run-id="runId" :member="t.name" stay size="xs" />
+                  <ResumeButton v-else-if="memberOffer(t.member?.status, run) === 'resume'" :run-id="runId" :member="t.name" stay size="xs" />
                 </div>
               </div>
             </template>
