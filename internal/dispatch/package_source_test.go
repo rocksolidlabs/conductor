@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -25,6 +27,18 @@ func sourceTicket(t *testing.T) (s *Store, key, link string) {
 	rc, err := addLink(s, "link1", key, NewLink{Kind: LinkExternal, URL: "https://example.invalid/report/7", Note: "the first report, " + strings.Repeat("é", 300)})
 	want(t, rc, err, StatusDone, "")
 	return s, key, rc.ID
+}
+
+// pinOf is the pin of the ticket's steps to reproduce as a proposal shows
+// them: the linked item's identity and the steps' SHA-256 now.
+func pinOf(t *testing.T, s *Store, key string) *PlanRepro {
+	t.Helper()
+	tk := ticketOf(t, s, key)
+	sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
+	if !ok || sn.ReproSha256 == "" {
+		t.Fatalf("%s has no steps to reproduce to pin", key)
+	}
+	return &PlanRepro{Identity: tk.ExternalID, SHA256: sn.ReproSha256}
 }
 
 // refused fails the test unless the receipt is the refusal with the code
@@ -55,7 +69,7 @@ func TestPackageVersionTwo(t *testing.T) {
 	sn, _ := ParseSnapshot(string(tk.ExternalSnapshot))
 	req := PlanRequest{Crew: "crew"}
 	body := testPlanBody("crew")
-	body.Source = &PlanSource{Repro: &PlanRepro{}, Evidence: []string{link}}
+	body.Source = &PlanSource{Repro: pinOf(t, s, key), Evidence: []string{link}}
 	plan := approvedPlan(t, s, key, req, body, "go")
 	var kept PlanBody
 	decodeBody(t, planOf(t, s, plan).Body, &kept)
@@ -82,14 +96,15 @@ func TestPackageVersionTwo(t *testing.T) {
 		t.Fatalf("the package's evidence: %+v", p.Evidence)
 	}
 
-	// Neither handed over: the source without the steps, no evidence.
+	// Neither handed over: the source without the steps, the evidence left
+	// out.
 	bare := mustLaunch(t, s, "l2", key, simplePlan(t, s, key), "")
-	if p := packageOf(t, bare); p.Source == nil || p.Source.Repro != "" || p.Evidence == nil || len(p.Evidence) != 0 || !strings.Contains(string(bare.Package), `"evidence":[]`) {
+	if p := packageOf(t, bare); p.Source == nil || p.Source.Repro != "" || p.Evidence != nil || strings.Contains(string(bare.Package), `"evidence"`) {
 		t.Fatalf("the package handing nothing over: %+v %+v", p.Source, p.Evidence)
 	}
-	// A native ticket: no source.
+	// A native ticket: the source left out too.
 	_, native := makeTicket(t, s, NewTicket{Project: "CND", Title: "Native"})
-	if nv := mustLaunch(t, s, "l3", native, simplePlan(t, s, native), ""); packageOf(t, nv).Source != nil || !strings.Contains(string(nv.Package), `"source":null`) {
+	if nv := mustLaunch(t, s, "l3", native, simplePlan(t, s, native), ""); packageOf(t, nv).Source != nil || strings.Contains(string(nv.Package), `"source"`) {
 		t.Fatalf("a native ticket's package: %s", nv.Package)
 	}
 
@@ -117,7 +132,10 @@ func TestPackageVersionTwo(t *testing.T) {
 		name, key, code string
 		src             *PlanSource
 	}{
-		{"steps of a native ticket", native, RefusalInvalid, &PlanSource{Repro: &PlanRepro{}}},
+		{"steps of a native ticket", native, RefusalInvalid, &PlanSource{Repro: &PlanRepro{Identity: "github:github.com:I_1", SHA256: sn.ReproSha256}}},
+		{"an empty pin", key, RefusalInvalid, &PlanSource{Repro: &PlanRepro{}}},
+		{"a pin without its SHA-256", key, RefusalInvalid, &PlanSource{Repro: &PlanRepro{Identity: tk.ExternalID}}},
+		{"a pin without its identity", key, RefusalInvalid, &PlanSource{Repro: &PlanRepro{SHA256: sn.ReproSha256}}},
 		{"another ticket's link", other, RefusalNotFound, &PlanSource{Evidence: []string{links[0]}}},
 		{"a removed link", key, RefusalNotFound, &PlanSource{Evidence: []string{link}}},
 		{"a link twice", key, RefusalInvalid, &PlanSource{Evidence: []string{links[0], links[0]}}},
@@ -129,6 +147,9 @@ func TestPackageVersionTwo(t *testing.T) {
 		rc, err := s.ProposePlan(ctx, testOp(opID("bad", i)), c.key, PlanRequest{Crew: "crew"}, b)
 		if err != nil || rc.Refusal != c.code {
 			t.Errorf("%s: %+v %v, want %s", c.name, rc, err, c.code)
+		}
+		if c.key == key && c.code == RefusalInvalid && c.src.Repro != nil && !strings.Contains(rc.Error, "by their pin: the linked item's identity and the SHA-256 of the steps shown") {
+			t.Errorf("%s: the refusal does not say what the pin is: %q", c.name, rc.Error)
 		}
 	}
 	// Eight are taken; an empty source is none.
@@ -169,14 +190,21 @@ func TestRefreshReproMakesApprovalStale(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	withRepro := func(id string) string {
 		body := testPlanBody("crew")
-		body.Source = &PlanSource{Repro: &PlanRepro{}}
+		body.Source = &PlanSource{Repro: pinOf(t, s, key)}
 		return approvedPlan(t, s, key, PlanRequest{Crew: "crew"}, body, "go")
 	}
 	plan := withRepro("p1")
+	shown := pinOf(t, s, key)
 	read := ghRead("I_1", 5, "T", "B")
 	read.Snapshot.Repro = "1. Log in\n2. Loop twice"
 	rc, err = s.RefreshExternal(ctx, testOp("refresh"), key, read)
 	want(t, rc, err, StatusDone, "")
+	// A proposal that pins the steps it showed before the refresh is
+	// stale_plan.
+	b := testPlanBody("crew")
+	b.Source = &PlanSource{Repro: shown}
+	rc, err = s.ProposePlan(ctx, testOp("shown-before"), key, PlanRequest{Crew: "crew"}, b)
+	refused(t, rc, err, RefusalStalePlan, "the steps to reproduce changed since they were shown")
 	if tk := ticketOf(t, s, key); tk.Description != "Ours." {
 		t.Fatalf("a refresh wrote the description Dispatch owns: %q", tk.Description)
 	}
@@ -208,6 +236,220 @@ func TestRefreshReproMakesApprovalStale(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	rc, err = s.Launch(ctx, testOp("l4"), key, fresh, "")
 	refused(t, rc, err, RefusalStalePlan, "the steps to reproduce changed")
+}
+
+// A title and a description a read of the linked issue wrote are flagged
+// as GitHub's by their text, whoever owns the field: imported, a revision
+// approved, both fields adopted for Dispatch with no edit, the launch is
+// taken on that approval and its package flags both, their text byte for
+// byte the import's; a refresh that changes GitHub's text after the
+// adoption leaves the adopted text flagged. The description edited in
+// Dispatch makes the approval stale as an edit does, and once approved
+// again it is written as Dispatch's, the title still GitHub's.
+func TestAdoptedTextStaysGitHubs(t *testing.T) {
+	ctx := context.Background()
+	s := linkedStore(t)
+	newProject(t, s, "CND")
+	key := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE"))
+	before := ticketOf(t, s, key)
+	plan := simplePlan(t, s, key)
+	for _, field := range []string{FieldTitle, FieldDescription} {
+		rc, err := s.SetAuthority(ctx, testOp("adopt-"+field), AuthorityArgs{Key: key, Field: field, Owner: OwnerDispatch}, nil)
+		want(t, rc, err, StatusDone, "")
+	}
+	if a := ParseAuthority(string(ticketOf(t, s, key).Authority)); a.Title != "" || a.Description != "" {
+		t.Fatalf("the fields are not Dispatch's: %+v", a)
+	}
+	p := packageOf(t, mustLaunch(t, s, "l1", key, plan, ""))
+	if p.Source == nil || !p.Source.TitleFromGitHub || !p.Source.DescriptionFromGitHub || p.Ticket.Title != before.Title || p.Ticket.Description != before.Description {
+		t.Fatalf("the package after the adoption: %+v, %q %q", p.Source, p.Ticket.Title, p.Ticket.Description)
+	}
+	// GitHub's text changes; the adopted text stays as it was, and GitHub's.
+	rc, err := s.RefreshExternal(ctx, testOp("refresh"), key, ghRead("I_1", 5, "SCRATCH-TITLE-EDITED", "SCRATCH-LINE-EDITED"))
+	want(t, rc, err, StatusDone, "")
+	p = packageOf(t, mustLaunch(t, s, "l2", key, plan, ""))
+	if !p.Source.TitleFromGitHub || !p.Source.DescriptionFromGitHub || p.Ticket.Description != before.Description {
+		t.Fatalf("the package after a refresh: %+v %q", p.Source, p.Ticket.Description)
+	}
+	// Edited in Dispatch: stale as an edit makes it, then Dispatch's.
+	mustEdit(t, s, "edit", key, TicketEdit{Set: TicketSet{Description: ptr("Ours now.")}})
+	rc, err = s.Launch(ctx, testOp("l3"), key, plan, "")
+	refused(t, rc, err, RefusalStalePlan, "approve it again or revise it")
+	approve(t, s, "again", plan, "go")
+	p = packageOf(t, mustLaunch(t, s, "l4", key, plan, ""))
+	if !p.Source.TitleFromGitHub || p.Source.DescriptionFromGitHub || p.Ticket.Description != "Ours now." {
+		t.Fatalf("the package after the edit: %+v %q", p.Source, p.Ticket.Description)
+	}
+}
+
+// The quote follows who last wrote a field's text, not its owner: a ticket
+// imported, its fields adopted for Dispatch or the ticket unlinked, each
+// with no change of the text, before the revision's approval or between
+// the approval and the launch: the launch is taken on that approval, and
+// its package flags the title and the description as GitHub's, their text
+// and the source's words (system, reference, account, page, snapshot) as
+// a launch before either made them; unlinked, the source says so.
+func TestTheQuoteFollowsWhoLastWrote(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name             string
+		unlink, approved bool
+	}{{"adopted before the approval", false, false}, {"adopted between the approval and the launch", false, true},
+		{"unlinked before the approval", true, false}, {"unlinked between the approval and the launch", true, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			s := linkedStore(t)
+			newProject(t, s, "CND")
+			key := mustImport(t, s, "imp", "CND", ghRead("I_1", 0, "SCRATCH-TITLE-FROM-OUTSIDE", "SCRATCH-LINE-FROM-OUTSIDE"))
+			was := packageOf(t, mustLaunch(t, s, "l0", key, simplePlan(t, s, key), ""))
+			act := func() {
+				if c.unlink {
+					rc, err := s.UnlinkExternal(ctx, testOp("unlink"), key)
+					want(t, rc, err, StatusDone, "")
+					return
+				}
+				for _, field := range []string{FieldTitle, FieldDescription} {
+					rc, err := s.SetAuthority(ctx, testOp("adopt-"+field), AuthorityArgs{Key: key, Field: field, Owner: OwnerDispatch}, nil)
+					want(t, rc, err, StatusDone, "")
+				}
+			}
+			if !c.approved {
+				act()
+			}
+			plan := simplePlan(t, s, key)
+			if c.approved {
+				act()
+			}
+			p := packageOf(t, mustLaunch(t, s, "l1", key, plan, ""))
+			src, before := p.Source, was.Source
+			if src == nil || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.Unlinked != c.unlink || p.Ticket.Title != was.Ticket.Title ||
+				p.Ticket.Description != was.Ticket.Description || src.System != before.System || src.Ref != before.Ref || src.Author != before.Author ||
+				src.URL != before.URL || src.SnapshotSha256 != before.SnapshotSha256 {
+				t.Fatalf("the package: %+v\nbefore: %+v", src, before)
+			}
+		})
+	}
+}
+
+// A related ticket's title a read of its linked item wrote last is
+// withheld in the package (the parent's, a blocker's), a native one's
+// kept, one a person has since edited kept; a run's default label is the
+// key alone while a read wrote the ticket's title, its key and title once
+// a person has edited it.
+func TestRelatedTitlesAndTheLabel(t *testing.T) {
+	s := linkedStore(t)
+	newProject(t, s, "CND")
+	parent := mustImport(t, s, "imp-parent", "CND", ghRead("I_1", 0, "SCRATCH-PARENT-FROM-OUTSIDE", "b"))
+	blocker := mustImport(t, s, "imp-blocker", "CND", ghRead("I_2", 0, "SCRATCH-BLOCKER-FROM-OUTSIDE", "b"))
+	_, native := makeTicket(t, s, NewTicket{Project: "CND", Title: "Native blocker"})
+	_, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "Child", Parent: parent})
+	for i, b := range []string{blocker, native} {
+		rc, err := relate(s, opID("rel", i), b, RelationBlocks, key)
+		want(t, rc, err, StatusDone, "")
+	}
+	p := packageOf(t, mustLaunch(t, s, "l1", key, simplePlan(t, s, key), ""))
+	titles := map[string]string{}
+	for _, b := range p.Ticket.Blockers {
+		titles[b.Key] = b.Title
+	}
+	if p.Ticket.Parent == nil || p.Ticket.Parent.Title != WithheldTitle || titles[blocker] != WithheldTitle || titles[native] != "Native blocker" {
+		t.Fatalf("the related titles: %+v %v", p.Ticket.Parent, titles)
+	}
+	if v := mustLaunch(t, s, "l2", parent, simplePlan(t, s, parent), ""); v.Label != parent {
+		t.Fatalf("the label of a ticket whose title a read wrote: %q", v.Label)
+	}
+	rc, err := s.SetAuthority(context.Background(), testOp("adopt"), AuthorityArgs{Key: parent, Field: FieldTitle, Owner: OwnerDispatch}, nil)
+	want(t, rc, err, StatusDone, "")
+	if v := mustLaunch(t, s, "l2a", parent, simplePlan(t, s, parent), ""); v.Label != parent {
+		t.Fatalf("the label of a title adopted with no edit: %q", v.Label)
+	}
+	mustEdit(t, s, "edit", parent, TicketEdit{Set: TicketSet{Title: ptr("Ours now")}})
+	if v := mustLaunch(t, s, "l3", parent, simplePlan(t, s, parent), ""); v.Label != parent+" Ours now" {
+		t.Fatalf("the label once a person edited the title: %q", v.Label)
+	}
+	if p := packageOf(t, mustLaunch(t, s, "l4", key, simplePlan(t, s, key), "")); p.Ticket.Parent.Title != "Ours now" {
+		t.Fatalf("the parent's title once a person edited it: %q", p.Ticket.Parent.Title)
+	}
+}
+
+// The bounds are their values, and each is the bound: a source or
+// evidence of exactly its bound as encoded is taken, one byte more
+// refused.
+func TestThePartBoundsAreExact(t *testing.T) {
+	if MaxPackage != 640<<10 || MaxPackageSource != 24<<10 || MaxPackageEvidenceJSON != 48<<10 {
+		t.Fatalf("the bounds: %d %d %d", MaxPackage, MaxPackageSource, MaxPackageEvidenceJSON)
+	}
+	size := func(v any) int {
+		b, err := encodeValue(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(b)
+	}
+	src := &PackageSource{System: "github", URL: "https://github.com/acme/widgets/issues/612", Ref: "acme/widgets#612", State: "open", SnapshotSha256: strings.Repeat("5", 64), Repro: "x"}
+	src.Repro += strings.Repeat("r", MaxPackageSource-size(src))
+	evidence := []PackageEvidence{{URL: "https://example.invalid/log", Note: "x"}}
+	evidence[0].Note += strings.Repeat("n", MaxPackageEvidenceJSON-size(evidence))
+	if size(src) != MaxPackageSource || size(evidence) != MaxPackageEvidenceJSON {
+		t.Fatalf("the parts are %d and %d bytes", size(src), size(evidence))
+	}
+	if err := checkParts(Package{Source: src, Evidence: evidence}); err != nil {
+		t.Fatalf("the parts at their bounds: %v", err)
+	}
+	src.Repro += "r"
+	evidence[0].Note += "n"
+	var ref *Refusal
+	for name, p := range map[string]Package{"the source": {Source: src}, "the evidence": {Evidence: evidence}} {
+		if err := checkParts(p); !errors.As(err, &ref) || ref.Code != RefusalBound {
+			t.Errorf("%s one byte past its bound: %v", name, err)
+		}
+	}
+}
+
+// The source and the evidence are held to the rules the engine reads them
+// by before a launch is committed: a part of characters the package writes
+// long (as a merged replica's snapshot or links could hold them) past its
+// bound as written is refused bound, in words naming it; the same part
+// written short is taken; a page that is not an http or https URL and a
+// state of the source's own are invalid.
+func TestThePartsAreCheckedAsTheEngineReadsThem(t *testing.T) {
+	nul := string(rune(0))
+	src := func() *PackageSource {
+		return &PackageSource{System: "github", Host: "github.com", URL: "HTTPS://github.com/acme/widgets/issues/612", Ref: "acme/widgets#612", State: "open",
+			SnapshotSha256: strings.Repeat("5", 64), Repro: strings.Repeat("r", MaxRepro)}
+	}
+	if err := checkParts(Package{Source: src()}); err != nil {
+		t.Fatalf("the steps at their bound written short: %v", err)
+	}
+	long := src()
+	long.Repro = strings.Repeat(nul, MaxRepro)
+	var ref *Refusal
+	if err := checkParts(Package{Source: long}); !errors.As(err, &ref) || ref.Code != RefusalBound ||
+		!strings.HasPrefix(ref.Words, "the source (the linked item and its steps to reproduce) is 48.") || !strings.HasSuffix(ref.Words, "more than the 24.0 KiB a package holds") {
+		t.Fatalf("the steps at their bound written long: %v", err)
+	}
+	evidence := func(note string) []PackageEvidence {
+		var out []PackageEvidence
+		for i := range MaxPackageEvidence + 2 {
+			out = append(out, PackageEvidence{URL: fmt.Sprintf("http://example.invalid/%02d/", i) + strings.Repeat("a", MaxLinkURL-26), Note: note})
+		}
+		return out
+	}
+	if err := checkParts(Package{Evidence: evidence(strings.Repeat("n", MaxEvidenceNote))}); err != nil {
+		t.Fatalf("the evidence written short: %v", err)
+	}
+	if err := checkParts(Package{Evidence: evidence(strings.Repeat(nul, MaxEvidenceNote) + strings.Repeat("\"", 2000))}); !errors.As(err, &ref) || ref.Code != RefusalBound ||
+		!strings.HasPrefix(ref.Words, "the evidence is ") || !strings.HasSuffix(ref.Words, "more than the 48.0 KiB a package holds") {
+		t.Fatalf("the evidence written long: %v", err)
+	}
+	for name, p := range map[string]Package{
+		"a page not a web page":   {Source: func() *PackageSource { s := src(); s.URL = "ftp://github.com/x"; return s }()},
+		"a state of its own":      {Source: func() *PackageSource { s := src(); s.State = "stale"; return s }()},
+		"an evidence page of ftp": {Evidence: []PackageEvidence{{URL: "ftp://example.invalid/log"}}},
+	} {
+		if err := checkParts(p); !errors.As(err, &ref) || ref.Code != RefusalInvalid {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }
 
 // Evidence is the revision's whatever the ticket's linked issue: a native

@@ -429,6 +429,7 @@ func TestAFailedCheckHandoffAtItsWorst(t *testing.T) {
 	if err := json.Unmarshal(more, &cut); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("task.md at its worst: %d bytes, task.json %d, of %d", len(md), len(js), maxTaskFile)
 	k := kept.Previous.Check
 	if k == nil || k.Receipt != c.Receipt || k.Run != c.Run || k.Task != c.Task || k.Attempt != c.Attempt || k.Phase != c.Phase || k.ID != c.ID || k.K != c.K ||
 		k.Subject != c.Subject || k.Exit != c.Exit || k.Signal != c.Signal || k.TimedOut != c.TimedOut || k.Stable != c.Stable ||

@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
@@ -52,16 +54,17 @@ const (
 	// maxTicketRef bounds an id of the package's (ticket, plan, launch,
 	// attachment, comment) and a ticket's key.
 	maxTicketRef = 64
-	// The bounds of version 2's source and evidence: the links a revision
-	// names as evidence, a page's bytes, an evidence note's characters
-	// (its "…" among them), the steps to reproduce in bytes, and the
-	// source's words (a system's name, a host, a reference, a node id, an
-	// account), Dispatch's own.
-	maxPackageEvidence = 8
-	maxPackageURL      = 2 << 10
-	maxEvidenceNote    = 200
-	maxPackageRepro    = 8 << 10
-	maxSourceWord      = 255
+	// The bounds of version 2's source and evidence, Dispatch's own
+	// (dispatch.MaxPackageEvidence, MaxLinkURL, MaxEvidenceNote,
+	// MaxPackageSource, MaxPackageEvidenceJSON): the links a revision names
+	// as evidence, a page's bytes, an evidence note's characters (its "…"
+	// among them), and the source and the evidence each as the package
+	// writes it, in bytes.
+	maxPackageEvidence     = 8
+	maxPackageURL          = 2 << 10
+	maxEvidenceNote        = 200
+	maxPackageSource       = 24 << 10
+	maxPackageEvidenceJSON = 48 << 10
 )
 
 // Package is a launch package as JSON, version 1 or 2: version 2 adds the
@@ -83,10 +86,13 @@ type Package struct {
 // PackageSource is the ticket's linked item at the launch (version 2): its
 // system, host, page, reference and node id, its state then, when the
 // ticket last read it, the SHA-256 of its snapshot, the account that
-// wrote it, which of the title and the description its system owns
+// wrote it, which of the title and the description a read of it wrote last
 // (ticket.md quotes those as written there: internal/quoted), and its
-// steps to reproduce when the revision hands them over.
+// steps to reproduce when the revision hands them over. Unlinked says the
+// ticket was unlinked before the launch, a text that read wrote still in
+// it: the source is the item as that read left it.
 type PackageSource struct {
+	Unlinked              bool      `json:"unlinked,omitempty"`
 	System                string    `json:"system"`
 	Host                  string    `json:"host"`
 	URL                   string    `json:"url"`
@@ -114,10 +120,6 @@ type PackageEvidence struct {
 func (s *PackageSource) quotedSource() quoted.Source {
 	return quoted.Source{On: quoted.FromSystem(s.System), Ref: s.Ref, Author: s.Author}
 }
-
-// sourceWord is a word of a source's: printable ASCII with no space, as
-// every system, host, reference, node id and account is.
-var sourceWord = regexp.MustCompile(`^[\x21-\x7e]*$`)
 
 // PackageTicket is the ticket as it stood at the launch: its intent (the
 // title, the description and the acceptance criteria, Intent their digest
@@ -303,15 +305,26 @@ func readPackage(raw []byte) (*runPackage, error) {
 		return nil, invalidf("the package is %d bytes, more than %d", len(raw), ledger.MaxPackage)
 	}
 	// The version first, so a package of another one says so rather
-	// than naming a field of it.
+	// than naming a field of it; then version 2's parts as the package
+	// writes them: named at all (null too) in a version 1 package, or
+	// past their bounds as written.
 	var v struct {
-		Version int `json:"version"`
+		Version  int             `json:"version"`
+		Source   json.RawMessage `json:"source"`
+		Evidence json.RawMessage `json:"evidence"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, invalidf("the package cannot be read: %v", err)
 	}
-	if v.Version != 1 && v.Version != PackageVersion {
+	switch {
+	case v.Version != 1 && v.Version != PackageVersion:
 		return nil, invalidf("the package is version %d: this Conductor reads versions 1 and %d", v.Version, PackageVersion)
+	case v.Version == 1 && (v.Source != nil || v.Evidence != nil):
+		return nil, invalidf("the package is version 1, which has no source and no evidence")
+	case len(v.Source) > maxPackageSource:
+		return nil, invalidf("the package's source is %d bytes as written, more than %d", len(v.Source), maxPackageSource)
+	case len(v.Evidence) > maxPackageEvidenceJSON:
+		return nil, invalidf("the package's evidence is %d bytes as written, more than %d", len(v.Evidence), maxPackageEvidenceJSON)
 	}
 	var p Package
 	if err := store.DecodeStrict(raw, &p); err != nil {
@@ -391,51 +404,51 @@ func (p Package) validate() error {
 	return nil
 }
 
-// validateSource holds version 2's source and evidence to Dispatch's
-// bounds: the source's words printable ASCII of at most maxSourceWord
-// bytes (its page an https one of at most maxPackageURL), its state
-// GitHub's, its snapshot's SHA-256 one, its steps at most
-// maxPackageRepro bytes; at most maxPackageEvidence evidence links, each
-// a web page of at most maxPackageURL bytes and a note of at most
-// maxEvidenceNote characters.
+// validateSource holds version 2's source and evidence to the rules
+// Dispatch builds them by (dispatch.checkParts; readPackage holds each
+// part as written to its bound): the source names its system and
+// reference, its page is a web page (webPage), its state and state reason
+// are the linked item's words, its snapshot's SHA-256 is one; at most
+// maxPackageEvidence evidence links, each a web page with a note of at
+// most maxEvidenceNote characters. The source's words and steps are
+// otherwise as Dispatch keeps them (an account with a space, a bot's
+// login with brackets): ticket.md writes them through internal/quoted.
 func (p Package) validateSource() error {
 	if s := p.Source; s != nil {
-		for _, w := range []struct{ name, v string }{
-			{"system", s.System}, {"host", s.Host}, {"ref", s.Ref}, {"nodeId", s.NodeID}, {"author", s.Author}, {"stateReason", s.StateReason},
-		} {
-			if len(w.v) > maxSourceWord || !sourceWord.MatchString(w.v) {
-				return invalidf("the package's source.%s must be at most %d bytes of printable ASCII with no space", w.name, maxSourceWord)
-			}
-		}
 		switch {
 		case s.System == "" || s.Ref == "":
 			return invalidf("the package's source names no system or no reference")
-		case !packageURL(s.URL):
-			return invalidf("the package's source.url is not an https page of at most %d bytes", maxPackageURL)
+		case !webPage(s.URL):
+			return invalidf("the package's source.url is not an http or https URL of at most %d bytes", maxPackageURL)
 		case s.State != "open" && s.State != "closed" && s.State != "merged":
 			return invalidf("the package's source.state %s is not open, closed or merged", quote(s.State))
+		case s.StateReason != "" && s.StateReason != "completed" && s.StateReason != "not_planned" && s.StateReason != "reopened":
+			return invalidf("the package's source.stateReason %s is none of completed, not_planned and reopened", quote(s.StateReason))
 		case !isSHA256(s.SnapshotSha256):
 			return invalidf("the package's source has no SHA-256 of its snapshot")
-		case len(s.Repro) > maxPackageRepro || !utf8.ValidString(s.Repro):
-			return invalidf("the package's steps to reproduce are more than %d bytes, or not UTF-8", maxPackageRepro)
 		}
 	}
 	if len(p.Evidence) > maxPackageEvidence {
 		return invalidf("the package names %d evidence links, more than %d", len(p.Evidence), maxPackageEvidence)
 	}
 	for _, e := range p.Evidence {
-		web := strings.HasPrefix(e.URL, "https://") || strings.HasPrefix(e.URL, "http://")
-		if !web || len(e.URL) > maxPackageURL || !utf8.ValidString(e.URL) || utf8.RuneCountInString(e.Note) > maxEvidenceNote || !utf8.ValidString(e.Note) {
-			return invalidf("the package's evidence link %s is not a web page of at most %d bytes with a note of at most %d characters", quote(e.URL), maxPackageURL, maxEvidenceNote)
+		if !webPage(e.URL) || utf8.RuneCountInString(e.Note) > maxEvidenceNote {
+			return invalidf("the package's evidence link %s is not an http or https URL of at most %d bytes with a note of at most %d characters", quote(e.URL), maxPackageURL, maxEvidenceNote)
 		}
 	}
 	return nil
 }
 
-// packageURL reports whether u is a linked item's page: https, at most
-// maxPackageURL bytes of printable ASCII with no space.
-func packageURL(u string) bool {
-	return strings.HasPrefix(u, "https://") && len(u) <= maxPackageURL && sourceWord.MatchString(u)
+// webPage reports whether u is a page as Dispatch admits a link's URL: at
+// most maxPackageURL bytes of UTF-8 with no control character, which
+// url.Parse reads with the scheme http or https (whatever its case) and a
+// host.
+func webPage(u string) bool {
+	if len(u) > maxPackageURL || !utf8.ValidString(u) || strings.IndexFunc(u, unicode.IsControl) >= 0 {
+		return false
+	}
+	parsed, err := url.Parse(u)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != ""
 }
 
 // isSHA256 reports whether s is a SHA-256 in lower-case hex.
@@ -863,20 +876,28 @@ func ticketMarkdown(p Package) string {
 // wrote it where, its state at the launch, when the ticket last read it,
 // its snapshot's SHA-256, that the system may have changed it since and
 // the run follows the package, and that the text written there stands
-// quoted below. Every word of the source is printable ASCII with no space
-// (validateSource).
+// quoted below. The system's name, the reference and the account are
+// written through internal/quoted's cleaning (quoted.Source.Clean), so they
+// read here as in each block's opening line; the state and its reason are
+// the linked item's words (validateSource); the page a web page, on one
+// line.
 func sourceWords(s PackageSource) string {
-	on := quoted.FromSystem(s.System)
+	c := s.quotedSource().Clean()
+	on := c.On
 	state := s.State
 	if s.StateReason != "" {
 		state += " (" + strings.ReplaceAll(s.StateReason, "_", " ") + ")"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "- Linked item: %s, <%s>\n", s.Ref, s.URL)
-	if s.Author != "" {
-		fmt.Fprintf(&b, "- Written by: @%s on %s\n", s.Author, on)
+	fmt.Fprintf(&b, "- Linked item: %s, <%s>\n", c.Ref, flatLine(s.URL))
+	if c.Author != "" {
+		fmt.Fprintf(&b, "- Written by: @%s on %s\n", c.Author, on)
 	}
-	fmt.Fprintf(&b, "- State at the launch: %s\n", state)
+	if s.Unlinked {
+		fmt.Fprintf(&b, "- Unlinked from the ticket before the launch; its state when last read: %s\n", state)
+	} else {
+		fmt.Fprintf(&b, "- State at the launch: %s\n", state)
+	}
 	if !s.ReadAt.IsZero() {
 		fmt.Fprintf(&b, "- Last read: %s\n", s.ReadAt.UTC().Format(time.RFC3339))
 	}

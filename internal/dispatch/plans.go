@@ -435,10 +435,11 @@ func (t *tx) planComments(tk Ticket, in []PlanComment) ([]PlanComment, error) {
 
 // planSource checks what a revision hands over of the ticket's source and
 // gives it as the body keeps it: nil when it hands over nothing; the steps
-// to reproduce pinned to the linked item's identity and the steps'
-// SHA-256 as the ticket's snapshot holds them now (invalid for a ticket
-// with no linked item or no steps; stale_plan for a pin given that is not
-// the snapshot's: the steps changed since they were shown); each evidence
+// to reproduce by their pin, the linked item's identity and the SHA-256 of
+// the steps the proposal showed (invalid for a ticket with no linked item
+// or no steps, and for a pin that names either part empty; stale_plan for
+// a pin that is not the snapshot's now: the steps changed since they were
+// shown); each evidence
 // link a live link of the ticket, external or delivery (not_found,
 // invalid), named once, at most MaxPackageEvidence (bound).
 func (t *tx) planSource(tk Ticket, in *PlanSource) (*PlanSource, error) {
@@ -452,7 +453,10 @@ func (t *tx) planSource(tk Ticket, in *PlanSource) (*PlanSource, error) {
 			return nil, refuse(RefusalInvalid, "%s has no steps to reproduce from a linked issue to hand over", tk.Key)
 		}
 		pin := PlanRepro{Identity: tk.ExternalID, SHA256: sn.ReproSha256}
-		if (in.Repro.Identity != "" || in.Repro.SHA256 != "") && *in.Repro != pin {
+		if in.Repro.Identity == "" || in.Repro.SHA256 == "" {
+			return nil, refuse(RefusalInvalid, "the steps to reproduce are handed over by their pin: the linked item's identity and the SHA-256 of the steps shown")
+		}
+		if *in.Repro != pin {
 			return nil, refuse(RefusalStalePlan, "the steps to reproduce changed since they were shown: propose it again")
 		}
 		out.Repro = &pin

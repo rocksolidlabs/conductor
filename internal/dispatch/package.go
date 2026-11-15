@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -30,9 +31,10 @@ const PackageVersion = 2
 // the attachments (each with the file name it is written under in an
 // attempt) and the comments the revision hands over, read at the launch,
 // the constraints and decisions as the revision names them, the launch
-// itself, the ticket's linked item (Source, null for none) and the links
-// the revision names as evidence. Encoded as the store encodes values
-// (HTML escaping off), at most MaxPackage bytes.
+// itself, the ticket's linked item (Source, left out for none) and the
+// links the revision names as evidence (left out for none), so a package
+// with neither is version 1's but for its version. Encoded as the store
+// encodes values (HTML escaping off), at most MaxPackage bytes.
 type Package struct {
 	Version     int                 `json:"version"`
 	Ticket      PackageTicket       `json:"ticket"`
@@ -43,18 +45,22 @@ type Package struct {
 	Constraints string              `json:"constraints"`
 	Decisions   []PackageDecision   `json:"decisions"`
 	Launch      PackageLaunch       `json:"launch"`
-	Source      *PackageSource      `json:"source"`
-	Evidence    []PackageEvidence   `json:"evidence"`
+	Source      *PackageSource      `json:"source,omitempty"`
+	Evidence    []PackageEvidence   `json:"evidence,omitempty"`
 }
 
 // PackageSource is the ticket's linked item at the launch: its system,
 // host, page, reference (owner/repo#n) and node id, its state then, when
 // the ticket last read it (zero for never), the SHA-256 of the snapshot
 // the package was built from, the account that wrote it, which of the
-// ticket's title and description its system owns (the text ticket.md
-// quotes as written there), and its steps to reproduce when the revision
-// hands them over. At most MaxPackageSource as encoded.
+// ticket's title and description a read of it wrote last (the text
+// ticket.md quotes as written there: lastWrite), and its steps to
+// reproduce when the revision hands them over. Unlinked says the ticket
+// was unlinked before the launch with a text a read of the item wrote
+// still in it: the source is then the item as that read left it. At most
+// MaxPackageSource as encoded.
 type PackageSource struct {
+	Unlinked              bool      `json:"unlinked,omitempty"`
 	System                string    `json:"system"`
 	Host                  string    `json:"host"`
 	URL                   string    `json:"url"`
@@ -295,6 +301,9 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 	if pkg.Evidence, err = packageEvidence(t.ctx, t.tx, tk, body.Source); err != nil {
 		return "", err
 	}
+	if err := checkParts(pkg); err != nil {
+		return "", err
+	}
 	encoded, err := encodeValue(pkg)
 	if err != nil {
 		return "", err
@@ -305,22 +314,45 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 	return encoded, nil
 }
 
-// packageSource is the package's source: nil for a ticket with no linked
-// item (or a snapshot that cannot be read), else the item as the ticket's
-// snapshot, owners and read hold it, with the steps to reproduce when the
-// revision hands them over (src.Repro, which the caller has checked are
-// the snapshot's: sourceStale).
+// packageSource is the package's source. Whether the title and the
+// description are flagged as written on a linked item's system is who
+// last wrote each (lastWrite), whoever owns the field now: an adoption or
+// an unlink keeps the text and changes nothing of it. For a linked ticket
+// it is the item as the ticket's snapshot and read hold it, with the steps
+// to reproduce when the revision hands them over (src.Repro, which the
+// caller has checked are the snapshot's: sourceStale). For a ticket with
+// no linked item whose title or description a read wrote last, it is the
+// item as that read left it, Unlinked; for one with neither, nil. A
+// snapshot that cannot be read is the store's error, never a package
+// without its source.
 func packageSource(ctx context.Context, q queryer, tk Ticket, src *PlanSource) (*PackageSource, error) {
-	sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
-	if tk.ExternalID == "" || !ok {
-		return nil, nil
+	title, err := lastWrite(ctx, q, tk.ID, FieldTitle)
+	if err != nil {
+		return nil, err
 	}
-	a := ParseAuthority(string(tk.Authority))
+	description, err := lastWrite(ctx, q, tk.ID, FieldDescription)
+	if err != nil {
+		return nil, err
+	}
+	raw, unlinked := string(tk.ExternalSnapshot), tk.ExternalID == ""
+	if unlinked {
+		if raw = cmp.Or(title, description); raw == "" {
+			return nil, nil
+		}
+	}
+	sn, ok := ParseSnapshot(raw)
+	if !ok {
+		return nil, fmt.Errorf("dispatch: the snapshot of %s's linked item cannot be read", tk.Key)
+	}
 	ps := &PackageSource{
-		System: sn.System, Host: sn.Host, URL: tk.ExternalURL, Ref: sn.Space + "#" + sn.ID, NodeID: sn.NodeID, State: sn.State, StateReason: sn.StateReason,
-		SnapshotSha256: sha256Hex(string(tk.ExternalSnapshot)), Author: sn.Author,
-		TitleFromGitHub: a.Title != "" && a.Title == sn.System, DescriptionFromGitHub: a.Description != "" && a.Description == sn.System,
+		System: sn.System, Host: sn.Host, URL: sn.URL, Ref: sn.Space + "#" + sn.ID, NodeID: sn.NodeID, State: sn.State, StateReason: sn.StateReason,
+		SnapshotSha256: sha256Hex(raw), Author: sn.Author, Unlinked: unlinked,
+		TitleFromGitHub: title != "" && tk.Title != "", DescriptionFromGitHub: description != "" && tk.Description != "",
 	}
+	if unlinked {
+		return ps, nil
+	}
+	ps.URL = tk.ExternalURL
 	if src != nil && src.Repro != nil {
 		ps.Repro = sn.Repro
 	}
@@ -332,6 +364,84 @@ func packageSource(ctx context.Context, q queryer, tk Ticket, src *PlanSource) (
 		ps.ReadAt = read.ReadAt
 	}
 	return ps, nil
+}
+
+// lastWrite is who last wrote the ticket's field, read from its own
+// history in the log's one order: when it is a read of a linked item (an
+// observe row: an import, a refresh, a field given back), the item's
+// snapshot as the ticket held it at that read; "" when a person in
+// Dispatch wrote it (a set row) or nothing did. An adopt row keeps the
+// text and writes nothing, nor does an unlink.
+func lastWrite(ctx context.Context, q queryer, ticketID, field string) (string, error) {
+	var op, at, actor, opID string
+	switch err := q.QueryRowContext(ctx, `SELECT op, at, actor, op_id FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op IN (?, ?)
+		ORDER BY at DESC, actor DESC, op_id DESC, n DESC LIMIT 1`, EntityTicket, ticketID, field, OpSet, OpObserve).Scan(&op, &at, &actor, &opID); {
+	case isNoRows(err) || (err == nil && op != OpObserve):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	// The snapshot that read wrote, in its operation or before it.
+	var snapshot string
+	err := q.QueryRowContext(ctx, `SELECT value FROM changes WHERE entity = ? AND entity_id = ? AND field = 'external_snapshot' AND op = ? AND value != ''
+		AND (at, actor, op_id) <= (?, ?, ?) ORDER BY at DESC, actor DESC, op_id DESC, n DESC LIMIT 1`, EntityTicket, ticketID, OpSet, at, actor, opID).Scan(&snapshot)
+	if isNoRows(err) {
+		return "", fmt.Errorf("dispatch: the read that wrote the ticket %s's %s has no snapshot in its history", ticketID, field)
+	}
+	return snapshot, err
+}
+
+// titleReadWrote reports whether a read of a linked item last wrote the
+// title of the ticket with the key (lastWrite); false for a key not in
+// the store.
+func titleReadWrote(ctx context.Context, q queryer, key string) (bool, error) {
+	var id string
+	switch err := q.QueryRowContext(ctx, "SELECT id FROM tickets WHERE key = ?", key).Scan(&id); {
+	case isNoRows(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	snapshot, err := lastWrite(ctx, q, id, FieldTitle)
+	return snapshot != "", err
+}
+
+// checkParts holds the package's source and evidence to the rules the
+// engine reads them by (internal/crew, validateSource and readPackage),
+// so a launch Dispatch commits is never one the engine refuses: the
+// source names its system, its page and each evidence link's are http or
+// https URLs as a link's are (checkField's link.url), its state and state
+// reason are a snapshot's words, and the source and the evidence as
+// encoded are each at most their bound (MaxPackageSource,
+// MaxPackageEvidenceJSON: bound, in words naming the part).
+func checkParts(pkg Package) error {
+	if s := pkg.Source; s != nil {
+		if s.System == "" || s.URL == "" || !slices.Contains(externalStates, s.State) || !slices.Contains(externalReasons, s.StateReason) {
+			return refuse(RefusalInvalid, "the linked item's snapshot names no system, no page or a state of its own: refresh it")
+		}
+		if err := checkField("link.url", "the linked item's page", s.URL); err != nil {
+			return err
+		}
+	}
+	for _, e := range pkg.Evidence {
+		if err := checkField("link.url", "an evidence link's page", e.URL); err != nil {
+			return err
+		}
+	}
+	for _, p := range []struct {
+		name string
+		v    any
+		max  int
+	}{{"the source (the linked item and its steps to reproduce) is", pkg.Source, MaxPackageSource}, {"the evidence is", pkg.Evidence, MaxPackageEvidenceJSON}} {
+		v, err := encodeValue(p.v)
+		if err != nil {
+			return err
+		}
+		if len(v) > p.max {
+			return refuse(RefusalBound, "%s %s as the package writes it, more than the %s a package holds", p.name, sizeWords(len(v)), sizeWords(p.max))
+		}
+	}
+	return nil
 }
 
 // packageEvidence is the links the revision names as evidence, in its
@@ -413,8 +523,29 @@ func packageTicket(ctx context.Context, q queryer, tk Ticket) (PackageTicket, er
 	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) "+blockers, tk.ID, RelationBlocks).Scan(&pt.BlockersTotal); err != nil {
 		return PackageTicket{}, err
 	}
+	// A related ticket's title a read of its linked item wrote last is
+	// WithheldTitle: the package quotes no ticket's text but its own.
+	if pt.Parent != nil {
+		if w, err := titleReadWrote(ctx, q, pt.Parent.Key); err != nil {
+			return PackageTicket{}, err
+		} else if w {
+			pt.Parent.Title = WithheldTitle
+		}
+	}
+	for i, b := range pt.Blockers {
+		if w, err := titleReadWrote(ctx, q, b.Key); err != nil {
+			return PackageTicket{}, err
+		} else if w {
+			pt.Blockers[i].Title = WithheldTitle
+		}
+	}
 	return pt, nil
 }
+
+// WithheldTitle stands, in a package, for the title of a related ticket
+// (its parent, a blocker) that a read of the related ticket's linked item
+// wrote last.
+const WithheldTitle = "(a title written outside Conductor, not shown here)"
 
 // packageBound is the bound refusal of a package of total bytes as
 // encoded, past MaxPackage: its words name the package's largest part and

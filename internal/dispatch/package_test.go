@@ -68,13 +68,14 @@ func TestPackageAtItsWorst(t *testing.T) {
 	// Version 2's parts at their bounds (Program item IN1a): the ticket
 	// linked, GitHub owning its title and description, its snapshot at its
 	// worst, the steps to reproduce among it handed over; eight evidence
-	// links, each a page at its bound and a note at its worst.
+	// links, each a page at its bound of '"' (two bytes each as written)
+	// and a note at its worst.
 	sn := worstSnapshot(t, worst)
 	linkWorst(t, s, key, sn, worstChars(MaxTicketTitle))
 	var evidence []string
 	for i := range MaxPackageEvidence {
 		page := fmt.Sprintf("https://example.invalid/%02d/", i)
-		rc, err := addLink(s, opID("ev", i), key, NewLink{Kind: LinkExternal, URL: page + strings.Repeat("a", MaxLinkURL-len(page)), Note: worstChars(MaxLinkNote)})
+		rc, err := addLink(s, opID("ev", i), key, NewLink{Kind: LinkExternal, URL: page + worstBytes(MaxLinkURL-len(page)), Note: worstChars(MaxLinkNote)})
 		want(t, rc, err, StatusDone, "")
 		evidence = append(evidence, rc.ID)
 	}
@@ -115,7 +116,7 @@ func TestPackageAtItsWorst(t *testing.T) {
 	body := PlanBody{
 		Base: strings.Repeat("e", 64), Crew: crew, Agents: agents, References: refs, Attachments: attachments, Comments: planComments,
 		Constraints: worstBytes(MaxPlanConstraints), Decisions: decisions, Note: worstBytes(MaxPlanNote),
-		Source: &PlanSource{Repro: &PlanRepro{}, Evidence: evidence},
+		Source: &PlanSource{Repro: &PlanRepro{Identity: sn.Identity(), SHA256: sn.ReproSha256}, Evidence: evidence},
 	}
 	plan := propose(t, s, "p1", key, PlanRequest{Crew: crewID, Attachments: attachments, Comments: comments}, body)
 	rc, err = s.ApprovePlan(ctx, Op{Actor: ActorAdmin, ID: "a1", By: worstChars(MaxByName)}, plan, 0, worstChars(MaxApprovedNote))
@@ -131,7 +132,9 @@ func TestPackageAtItsWorst(t *testing.T) {
 		len(p.Attachments) != MaxPlanAttachments, len(p.Comments) != MaxPlanComments, len(p.Decisions) != MaxPlanDecisions:
 		t.Fatalf("a part is short of its bound: %+v", p.Ticket)
 	}
-	if p.Source == nil || p.Source.Repro != sn.Repro || len(p.Evidence) != MaxPackageEvidence || !p.Source.TitleFromGitHub {
+	// The ticket's texts at their worst are not the snapshot's, so neither is
+	// flagged as GitHub's: false is the longer word as encoded.
+	if p.Source == nil || p.Source.Repro != sn.Repro || len(p.Evidence) != MaxPackageEvidence || p.Source.TitleFromGitHub || p.Source.DescriptionFromGitHub {
 		t.Fatalf("version 2's parts are short of their bounds: %+v", p.Source)
 	}
 	for _, part := range []struct {
