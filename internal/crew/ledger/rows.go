@@ -67,10 +67,13 @@ const (
 
 // A tree's kinds and states (TreeRow): an attempt's worktree or the
 // checkout of its result, resolved (its manifest read, the row put),
-// ready (made usable) and ended (its end recorded).
+// ready (made usable) and ended (its end recorded). A preview checkout of
+// a candidate (previews.go) is a tree of kind preview, whose rows are the
+// previews table's, never the trees'.
 const (
 	TreeWorktree = "worktree"
 	TreeCheckout = "checkout"
+	TreePreview  = "preview"
 
 	TreeResolved = "resolved"
 	TreeReady    = "ready"
