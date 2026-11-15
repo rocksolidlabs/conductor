@@ -20,7 +20,7 @@ const toast = useToast()
 const busy = ref(false)
 const look = computed(() => resumeLabel(props.session ?? live.runOf(props.runId ?? '')?.members.find((m) => m.name === props.member)))
 /** Drawn only where the engine takes it: never for a managed run's member or attempt, nor a Brakeman turn's, nor a run not known yet (memberOffer). */
-const offered = computed(() => (props.session ? sessionResumeOffered(props.session) : memberOffer('ended', live.runOf(props.runId ?? '')) === 'resume'))
+const offered = computed(() => (props.session ? sessionResumeOffered(props.session, live.runOf) : memberOffer('ended', live.runOf(props.runId ?? '')) === 'resume'))
 
 async function go() {
   busy.value = true

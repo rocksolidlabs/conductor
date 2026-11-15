@@ -4,7 +4,8 @@ import { expect, member, test, type Api, type Run } from './fixtures'
 // The run page offers a hand's start or resume where the server takes it (memberOffer): Start now on a waiting member of a run
 // without tasks, on its tile and its node of the graph; never on a managed run's waiting member, whose tasks start it (the start
 // route answers 409 managed_run), nor Resume or Relaunch on its ended member once the run is stopped (the resume route answers the
-// same); its header's Add agent is offered on the run without tasks and not on the managed one (runOffer). The managed run's builder is the stub as a plain agent, which never submits, so its deployer waits on build for as long as
+// same); its header's Add agent is offered on the run without tasks and not on the managed one (runOffer). A stopped run the engine
+// holds offers its ended member's Resume; its record offers nothing. The managed run's builder is the stub as a plain agent, which never submits, so its deployer waits on build for as long as
 // the test looks. Every wait is on the run's own record or on what the page draws.
 // Each step raises the test's timeout by the caps of its own waits as it takes them (budget), the config's 120 s above their sum.
 test.describe.configure({ mode: 'serial' })
@@ -110,6 +111,44 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-header]`)
+  await expect(header).toContainText(/exited|stopped/)
+  await expect(header.locator('[data-resume]')).toHaveCount(0)
+})
+
+test("a stopped run the engine holds offers its ended member's Resume or Relaunch; as a record, read when the engine holds it no longer, nothing", async ({ page, api }) => {
+  const run = await launch(api, { name: 'e2e start now record', isolation: 'none', members: [{ name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } }] })
+  budget(STEP_MS)
+  await expect.poll(async () => member(await api.run(run.id), 'lead').status, { timeout: STEP_MS, message: 'lead runs' }).toBe('running')
+  await api.stopRun(run.id)
+  let lead = ''
+  budget(60_000)
+  await expect
+    .poll(async () => {
+      const r = await api.run(run.id)
+      lead = member(r, 'lead').sessionId ?? ''
+      return [!!r.stoppedAt, member(r, 'lead').status, lead ? (await api.session(lead)).status : '']
+    }, { timeout: 60_000, message: "the run stopped, lead's session ended" })
+    .toEqual([true, 'ended', expect.stringMatching(/^(exited|stopped)$/)])
+  budget(3 * STEP_MS) // the navigation, the header's words, its Resume
+  await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
+  const header = page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-header]`)
+  await expect(header).toContainText(/exited|stopped/)
+  await expect(header.locator('[data-resume]')).toHaveCount(1)
+
+  // The run as the server answers a run it no longer holds: its read marked a record, and absent from the live runs.
+  const path = `/api/runs/${encodeURIComponent(run.id)}`
+  await page.route((u) => u.pathname === path, async (route) => {
+    const r = await route.fetch()
+    await route.fulfill({ response: r, json: { ...(await r.json()), record: true } })
+  })
+  await page.route((u) => u.pathname === '/api/runs', async (route) => {
+    const r = await route.fetch()
+    const body = (await r.json()) as { runs: Run[] }
+    await route.fulfill({ response: r, json: { ...body, runs: body.runs.filter((x) => x.id !== run.id) } })
+  })
+  budget(3 * STEP_MS) // the navigation, the record's badge, the header's words
+  await page.reload()
+  await expect(page.locator('[data-run-record]')).toBeVisible()
   await expect(header).toContainText(/exited|stopped/)
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })

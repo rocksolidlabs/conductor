@@ -47,7 +47,8 @@ const target = computed(() => sessionTarget(s.value, live.value))
 const renameModal = useRenameModal()
 const cloneModal = useCloneModal()
 // An exited server session's row ends with Resume, outside the link; the hover actions stop short of it (#257).
-const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server' && sessionResumeOffered(s.value))
+const attention = useAttention()
+const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server' && sessionResumeOffered(s.value, attention.runOf))
 // The Share tooltip, shown on hover or focus, would stay up once the share dialog closed and gave the focus back to the button:
 // a click mutes it until the pointer leaves the button (#137).
 const shareTip = ref(false)
