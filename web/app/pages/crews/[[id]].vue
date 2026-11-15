@@ -449,11 +449,6 @@ function launchNamed() {
 const crewLaunch = useCrewLaunch()
 const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string }>({ open: false, target: null })
 const confirmation = new SheetConfirmation()
-/** The copies of a crew (their revisions) this page knows were replaced: by its own save, or a read that found another copy. */
-const replaced = new Set<string>()
-watch(full, (now, before) => {
-  for (const [id, c] of Object.entries(before ?? {})) if (c.revision && now[id]?.revision && now[id]!.revision !== c.revision) replaced.add(c.revision)
-})
 function openSheet(id: string, label: string) {
   const key = selectedKey.value
   if (!id && (key === undefined || !draft.value)) return
@@ -482,24 +477,17 @@ watch(
 /**
  * The sheet's Launch: its confirmation is taken before anything is awaited, so a second click, or one while it closes, starts nothing.
  * A draft's run starts after its save only while the sheet was not opened again and the token is the one it was confirmed under; the
- * launch, once ended, closes only the opening it was confirmed in; one refused because the crew changed since the sheet read it reads
- * the crew again in that opening instead, as a new confirmation.
+ * launch, once ended, closes only the opening it was confirmed in.
  */
 async function launchFromSheet(read: CrewInfo | null) {
   const t = sheet.target
   const n = t && sheet.at === selectedKey.value ? confirmation.take(sheet.open) : 0
   if (!t || !n) return
   const token = admin.token.value
-  let changed: string | undefined
   try {
-    changed = await launch(t, read, () => confirmation.holds(n) && admin.token.value === token)
+    await launch(t, read, () => confirmation.holds(n) && admin.token.value === token)
   } finally {
-    if (confirmation.holds(n)) {
-      if (changed) {
-        confirmation.opened()
-        sheet.target = { id: changed, label: t.label }
-      } else sheet.open = false
-    }
+    if (confirmation.holds(n)) sheet.open = false
     confirmation.done()
   }
 }
@@ -528,11 +516,10 @@ function hours(ttlSeconds: number): number {
 /**
  * Launches what the sheet was opened for: the draft is saved first (unless it changed since the sheet drew it: then nothing is sent),
  * and its run started only while `confirmed` holds after the save (else the page says no run was started); a saved crew by its id, as
- * the sheet read it (`read`). Nothing is sent for a copy this page knows was replaced (`replaced`): it returns the crew's id, to be read
- * again. The server makes the crew's view link, if it asks for one, and returns it this once: the run page shows it when the launch
- * opens that, else a dialog here does.
+ * the sheet read it (`read`). The server makes the crew's view link, if it asks for one, and returns it this once: the run page shows it
+ * when the launch opens that, else a dialog here does.
  */
-async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => boolean): Promise<string | undefined> {
+async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => boolean) {
   launchingKey.value = 'id' in t ? t.id : t.key
   try {
     const c = 'id' in t ? read : drafts.value[t.key] === t.draft ? await save() : undefined
@@ -540,10 +527,6 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
     if (!('id' in t) && !confirmed()) {
       toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
       return
-    }
-    if (c.revision && replaced.has(c.revision)) {
-      toast.add({ title: 'The launch was not started', description: `${c.name} changed since the launch sheet read it: no run was started. The sheet reads it again.`, icon: 'i-lucide-circle-x', color: 'warning' })
-      return c.id
     }
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
@@ -604,7 +587,6 @@ watch(
     // asked or a sheet drawn from a copy read under it.
     sheet.open = false
     crewLaunch.asked.value = null
-    replaced.clear()
     drafts.value = {}
     crews.value = []
     full.value = {}
