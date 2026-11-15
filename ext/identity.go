@@ -26,8 +26,8 @@ type IdentityProvider interface {
 	// revoked) answers ok false, the free default, which ends the token's
 	// connections at the next recheck. An error is only for a moment it
 	// cannot tell (the keys it checks against out of reach for now): an
-	// error ends no connection, and for a new request it is the free
-	// default's answer, an unknown token.
+	// error ends no connection, and a new request is answered 503, its
+	// credential not checked for now, as for a late answer.
 	Authenticate(ctx context.Context, token string) (p Principal, ok bool, err error)
 }
 

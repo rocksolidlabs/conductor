@@ -3,9 +3,12 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
@@ -93,6 +96,50 @@ func (s *Server) agentTokenOK(r *http.Request, d session.Driver) agentTokenAnswe
 	return agentTokenServed
 }
 
+// liveTokens is the set of the live agent tokens this server minted
+// (session.TokenSet): the hash of each, from before the agent's process
+// starts (createLocalSession) until the session ends, or until its launch
+// fails, one owner of its entry at a time (session.TokenEntry). A hosted
+// session's agent token is minted by its host, not by this server, and is
+// not one of them: at a route that takes it first nothing changes, and at a
+// route that does not take it, it is asked of the provider as any token the
+// chain does not know. tokenPrincipal reads it.
+type liveTokens struct {
+	mu   sync.Mutex
+	held map[[32]byte]struct{}
+	// hashed counts the presented tokens holds hashed.
+	hashed atomic.Int64
+}
+
+func (l *liveTokens) Add(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held == nil {
+		l.held = map[[32]byte]struct{}{}
+	}
+	l.held[h] = struct{}{}
+}
+
+func (l *liveTokens) Remove(h [32]byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.held, h)
+}
+
+// holds says tok is one of the live tokens: one hash and one lookup, for a
+// token of the length the server mints (share.TokenLen) alone.
+func (l *liveTokens) holds(tok string) bool {
+	if len(tok) != share.TokenLen {
+		return false
+	}
+	l.hashed.Add(1)
+	h := share.HashToken(tok)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.held[h]
+	return ok
+}
+
 // reportTarget finds the session a report is about. A session whose launch
 // is under way, its process running but the registry not holding it yet,
 // is waited for (awaitLaunch): an agent's first report comes as its
@@ -134,7 +181,11 @@ func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d se
 		writeLaneClosed(w)
 		return "", false
 	}
-	if p := s.authenticate(r, false); p.admin && !p.yard {
+	p, ok := s.authenticate(w, r, false)
+	if !ok {
+		return "", false
+	}
+	if p.admin && !p.yard {
 		return session.SourceAdmin, true
 	}
 	if !s.limiter.allow(clientKey(r)) {
