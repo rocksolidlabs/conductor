@@ -288,6 +288,11 @@ jobs:
       # the shards by their counts of tests; preflight_test.py holds the matrix to the step's N.
       - run: npx playwright test --shard=${{ matrix.shard }}/2
         working-directory: web
+      # TEMPORARY (#954), taken out by the next commit: shard 2 fails after its tests, so that
+      # this pull request's own run shows the gate failing on one shard, the other finishing
+      # and the report uploaded under its shard's name.
+      - if: matrix.shard == 2
+        run: echo "::error::shard 2 fails here on purpose, to prove the gate (#954)"; exit 1
       # One name a shard: upload-artifact@v4 refuses a second artifact of one name in a run.
       - uses: actions/upload-artifact@v4
         if: failure()
