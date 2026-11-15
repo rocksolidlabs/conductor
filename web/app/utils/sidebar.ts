@@ -54,26 +54,32 @@ export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): voi
 }
 
 /**
- * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum, 12.5 rem (200 px), on
- * every screen, and a drag widens it up to 26 % of the window, never below the minimum (#437). Nuxt UI clamps only during a
- * drag: `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as
- * the window changes.
+ * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum on every screen, and a
+ * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 16.75 rem (268 px), shows the header's
+ * every part whole, the name too, with 10 px to spare (#706): the mark, "Conductor", Alerts, your menu and the collapse button
+ * take 225 px of the row with the bundled font, and the header's padding and border 33 px more. A wider font shortens the name
+ * first, its whole text in its title. The maximum is never less than the minimum plus `range` rem, so the handle widens it in a
+ * window 1024 px wide too, where 26 % is barely the minimum. Nuxt UI clamps only during a drag: `sidebarBounds` gives the
+ * bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window changes.
  */
-export const SIDEBAR_SIZE = { min: 12.5, maxShare: 0.26 } as const
+export const SIDEBAR_SIZE = { min: 16.75, maxShare: 0.26, range: 5 } as const
 /** The full sidebar's bounds in a window, in rem. */
 export interface SidebarBounds {
   min: number
   max: number
 }
 
-/** The bounds in a window `windowWidth` px wide, with `remPx` px to the rem: the maximum is 26 % of the window, never below the minimum. */
+/**
+ * The bounds in a window `windowWidth` px wide, with `remPx` px to the rem: the maximum is 26 % of the window, never below the
+ * minimum plus `SIDEBAR_SIZE.range`.
+ */
 export function sidebarBounds(windowWidth: number, remPx = 16): SidebarBounds {
   const max = Number.isFinite(windowWidth) && Number.isFinite(remPx) && remPx > 0 ? Math.floor(((windowWidth * SIDEBAR_SIZE.maxShare) / remPx) * 100) / 100 : 0
-  return { min: SIDEBAR_SIZE.min, max: Math.max(SIDEBAR_SIZE.min, max) }
+  return { min: SIDEBAR_SIZE.min, max: Math.max(SIDEBAR_SIZE.min + SIDEBAR_SIZE.range, max) }
 }
 
 /** The full sidebar's drawn width: the width Nuxt UI holds (`--width`), within the bounds of the window as it is now. */
-export const SIDEBAR_WIDTH = `clamp(${SIDEBAR_SIZE.min}rem, var(--width), max(${SIDEBAR_SIZE.min}rem, ${SIDEBAR_SIZE.maxShare * 100}vw))`
+export const SIDEBAR_WIDTH = `clamp(${SIDEBAR_SIZE.min}rem, var(--width), max(${SIDEBAR_SIZE.min + SIDEBAR_SIZE.range}rem, ${SIDEBAR_SIZE.maxShare * 100}vw))`
 
 /** The width a drag left, in rem, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
 export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.width'
