@@ -679,36 +679,27 @@ type guardIdentity struct {
 func (g guardIdentity) Name() string { return g.name }
 
 // Authenticate answers the provider's principal for token, or ok false (as
-// the free default answers) when it fails, is late or answers a principal
-// that is not valid or holds no grant, and, without asking it, until its
-// Start has succeeded. It never answers an error.
+// the free default answers) when it did not judge token (judge) or answered
+// a principal that holds no grant. It never answers an error.
 func (g guardIdentity) Authenticate(ctx context.Context, token string) (ext.Principal, bool, error) {
-	if !live(g.ready) {
-		return ext.Principal{}, false, nil
+	p, ok, _ := g.judge(ctx, token)
+	return p, ok, nil
+}
+
+// judge is a new request's ask about token, in the requests' slots: ok
+// with the provider's principal when it admits token with a grant, and
+// known, whether it judged token at all, as recheck's known says (reask):
+// not until its Start has succeeded, not with every slot taken, and not
+// for an answer that is late, fails, panics or is a principal
+// Principal.Valid refuses. A principal with no grant is a judgement (ok
+// false, known), logged as an answer the guard refuses is.
+func (g guardIdentity) judge(ctx context.Context, token string) (p ext.Principal, ok, known bool) {
+	p, ok, known, _ = g.reask(ctx, ext.KindIdentity, token)
+	if ok && len(p.Grants) == 0 {
+		g.s.extFailed(ext.KindIdentity, g.name, "invalid", errNoGrant.Error())
+		return ext.Principal{}, false, true
 	}
-	type answer struct {
-		p  ext.Principal
-		ok bool
-	}
-	a := extCall(ctx, g.s, ext.KindIdentity, g.name, ext.IdentityWait, answer{}, func(a answer) error {
-		if !a.ok {
-			return nil
-		}
-		if err := a.p.Valid(); err != nil {
-			return err
-		}
-		if len(a.p.Grants) == 0 {
-			return errNoGrant
-		}
-		return nil
-	}, func(ctx context.Context) (answer, error) {
-		p, ok, err := g.p.Authenticate(ctx, token)
-		return answer{copyPrincipal(p), ok}, err
-	})
-	if !a.ok {
-		return ext.Principal{}, false, nil
-	}
-	return a.p, true, nil
+	return p, ok, known
 }
 
 // kindIdentityRecheck is the guard's kind of an identity provider's
@@ -785,8 +776,9 @@ func holdsCredential(own []string, vs ...string) bool {
 	return false
 }
 
-// reask is recheck's and renew's ask, in kind's slots; busy says it was
-// not made, every slot of kind taken.
+// reask is judge's, recheck's and renew's ask, in kind's slots: known is
+// the one definition of a token the provider judged; busy says it was not
+// made, every slot of kind taken.
 func (g guardIdentity) reask(ctx context.Context, kind, token string) (p ext.Principal, ok, known, busy bool) {
 	if !live(g.ready) {
 		return ext.Principal{}, false, false, false

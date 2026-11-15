@@ -913,8 +913,10 @@ a link, refused as today, and never reaches a provider. The answer, through
 `extCall` with `IdentityWait`, is taken only when `Principal.Valid` passes
 and it has at least one grant: `GrantAdmin` makes the principal what the
 workbench token makes it (`admin`, `yard` on a switchyard, `host`),
-`GrantHost` a host's. Anything else is the empty principal, as an unknown
-token is today, under the same rate limit. `hostTokenOK` becomes
+`GrantHost` a host's. A principal with no grant, and ok false, are the
+empty principal, as an unknown token is today, under the same rate limit;
+a token the provider did not judge (not started, busy, late, an error, a
+panic, out of bounds) is answered `503 not_checked` instead (#890). `hostTokenOK` becomes
 `(*Server).hostAllowed(r, tok)`: the workbench token, the host tokens,
 then the provider (a principal with either grant). The token is never logged;
 a refused principal is logged at debug by its provider's name, never by
