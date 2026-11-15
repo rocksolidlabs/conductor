@@ -77,7 +77,9 @@ defineExpose({ focusSelected })
       <p class="break-words text-sm leading-snug" data-queue-message>{{ s.attention?.message || 'Waiting for input' }}</p>
       <!-- A durable decision's question takes no reply here: the card says where it is answered (noReply). -->
       <p v-if="decisionOf(s.attention)" class="text-xs text-muted" data-queue-decision>{{ noReply(s.attention) }}</p>
-      <div v-else-if="offeredChoices(s.attention).length" class="flex gap-1.5">
+      <!-- The choices wrap onto as many lines as they need, none pushed out of the card; a label wider than the card is shortened,
+           its whole text on hover, with what a choice that changes the permission mode does, as the sidebar's prompt says it (#906). -->
+      <div v-else-if="offeredChoices(s.attention).length" class="flex flex-wrap gap-1.5">
         <UButton
           v-for="(o, oi) in offeredChoices(s.attention)"
           :key="oi"
@@ -85,9 +87,9 @@ defineExpose({ focusSelected })
           size="xs"
           :variant="oi === firstChoice(offeredChoices(s.attention)) ? 'solid' : 'outline'"
           :color="oi === firstChoice(offeredChoices(s.attention)) ? 'primary' : o.mode ? 'warning' : 'neutral'"
-          :title="o.mode ? MODE_CHOICE : undefined"
+          :title="o.mode ? `${o.label} (${MODE_CHOICE.toLowerCase()})` : o.label"
           :data-choice-mode="o.mode || undefined"
-          class="flex-1 justify-center"
+          class="max-w-full flex-1 justify-center"
           :loading="sending.has(s.id)"
           @click.stop="emit('option', s, oi, questionOf(s.attention))"
         />

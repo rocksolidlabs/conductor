@@ -113,7 +113,9 @@ async function candidateUntil(api: Api, run: string, taskId: string, attempt: nu
 async function selectLines(page: Page, side: 'original' | 'modified', text: string, keys: string[]) {
   const line = page.locator(`[data-review-diff] .editor.${side} .view-line`, { hasText: text }).first()
   await expect(line).toBeVisible(within(30_000))
-  await line.click()
+  // At the line's start: Monaco draws every line as wide as the editor's longest, so the middle of a line can fall past the side's
+  // edge, on its overview ruler or beyond, where the side is narrow (the sidebar at its opening width, #706).
+  await line.click({ position: { x: 4, y: 4 } })
   await page.keyboard.press('Home')
   for (const k of keys) await page.keyboard.press(k)
 }
@@ -164,6 +166,10 @@ test('a candidate reviewed: notes on both sides, a file and the whole, the draft
   // A note on lines of the candidate side of stub-prepper.txt, added since the run's base.
   await page.locator('[data-review-file-path="stub-prepper.txt"]').click()
   await expect(page.locator('[data-review-diff]')).toHaveAttribute('data-review-diff-path', 'stub-prepper.txt', within(15_000))
+  // The draft keeps its 24 rem beside the diff, which has the rest of the row: given to a component of three roots, the width was
+  // dropped, and the draft took its content's whole width, the diff squeezed to 127 px at 1440 wide (#706).
+  await expect.poll(() => page.locator('[data-review-draft]').evaluate((e) => Math.round(e.getBoundingClientRect().width))).toBe(384)
+  expect(await page.locator('[data-review-diff]').evaluate((e) => e.getBoundingClientRect().width)).toBeGreaterThan(384)
   await selectLines(page, 'modified', 'attempt 1 of prep by prepper', ['Shift+End'])
   const bar = page.locator('[data-review-selection-bar]')
   await expect(bar).toHaveAttribute('data-review-selection-side', 'candidate', within(15_000))
