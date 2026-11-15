@@ -403,7 +403,8 @@ func TestAPreviewReadAsItsIdleTimerFiresStaysOpen(t *testing.T) {
 // gateCheckoutGit puts a git first on PATH that, for the command between
 // the two of a preview checkout's add (rev-parse --absolute-git-dir in a
 // *.preview folder), makes the file arrived and waits for the file gate,
-// then runs the real git.
+// or for the test's folder of marks to be gone (a test that ended with
+// the add held leaves no git waiting), then runs the real git.
 func gateCheckoutGit(t *testing.T) (arrived, gate string) {
 	t.Helper()
 	real, err := exec.LookPath("git")
@@ -413,7 +414,7 @@ func gateCheckoutGit(t *testing.T) (arrived, gate string) {
 	bin, marks := t.TempDir(), t.TempDir()
 	arrived, gate = filepath.Join(marks, "arrived"), filepath.Join(marks, "gate")
 	script := "#!/bin/sh\ng=; p=\nfor a in \"$@\"; do case \"$a\" in --absolute-git-dir) g=1;; *.preview) p=1;; esac; done\n" +
-		"if [ \"$g$p\" = 11 ]; then : > '" + arrived + "'; " + gated(gate) + "; fi\nexec '" + real + "' \"$@\"\n"
+		"if [ \"$g$p\" = 11 ]; then : > '" + arrived + "'; while [ ! -e '" + gate + "' ] && [ -d '" + marks + "' ]; do sleep 0.05; done; fi\nexec '" + real + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
