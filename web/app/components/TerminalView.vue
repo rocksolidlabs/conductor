@@ -149,19 +149,24 @@ async function pasteClipboard(): Promise<void> {
   }
 }
 /**
- * A touch device's paste (#902): a page served over plain http on a LAN is given no clipboard to read, and a phone's own paste does
- * not reach xterm, so a controller's terminal there offers a field to paste into. Its text is typed into the terminal as a paste
- * (bracketed when the program asked) with every control character taken out (pasteKeys: no Enter, nothing that ends the paste).
- * It is tied to the screen: while a startup question that takes no line shows it is not offered and types nothing (pasteHeld), and
- * once the startup question it opened on is no longer the one showing it types nothing and says so. The text is held in the field
- * alone and emptied once typed or the field is closed.
+ * The terminal's paste control (#902): a page served over plain http on a LAN is given no clipboard to read, and a phone's own
+ * paste does not reach xterm, so a controller's terminal on a touch device offers a field to paste into (the question bar opens it
+ * too, on a pointer as on touch: openPaste). Its text is typed into the terminal as one paste (bracketed when the program asked)
+ * with every control character taken out (pasteKeys: no Enter, nothing that ends the paste); the person presses Enter. It is tied
+ * to the screen as the page was last told of it: while a startup question with choices shows it is not offered and types nothing
+ * (pasteHeld), and once the startup question it opened on is no longer the one showing it types nothing and says so. The text is
+ * this component's state alone, emptied once typed or the field is closed.
  */
 const touch = ref(false)
 const pasteOpen = ref(false)
 const pasteText = ref('')
 const pasteNote = ref('')
 const pasteForm = useId()
-/** The attention the session's stream last sent, and the startup question showing as the paste control opened (startupShown). */
+/**
+ * The attention the session's stream last sent, as sent: never its live form (liveAttention), which reads a question answered in
+ * the terminal as none while its screen, still drawn, would take the paste. pasteOpenedOn is the startup question showing as the
+ * paste control opened (startupShown).
+ */
 const shownAttention = ref<Attention>()
 let pasteOpenedOn = ''
 const pasteBlocked = computed(() => pasteHeld(shownAttention.value))
@@ -170,15 +175,19 @@ watch(pasteOpen, (open) => {
   if (open) pasteOpenedOn = startupShown(shownAttention.value)
   else pasteText.value = ''
 })
+/** Opens the paste control (the question bar's button), where this connection may type. */
+function openPaste() {
+  if (canPaste() && !props.compact) pasteOpen.value = true
+}
 function typePaste() {
-  if (pasteBlocked.value) {
-    pasteNote.value = PASTE_HELD
-    return
-  }
   const now = startupShown(shownAttention.value)
   if (now !== pasteOpenedOn) {
     pasteOpenedOn = now
     pasteNote.value = PASTE_MOVED
+    return
+  }
+  if (pasteBlocked.value) {
+    pasteNote.value = PASTE_HELD
     return
   }
   const text = pasteKeys(pasteText.value)
@@ -573,9 +582,9 @@ function handleControl(msg: ControlMessage) {
       }
       break
     case 'attention':
-      // A question answered by keys in the terminal reads as none to offer (liveAttention, #258).
-      shownAttention.value = liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision, line: msg.line })
-      emit('attention', shownAttention.value)
+      // A question answered by keys in the terminal reads as none to offer (liveAttention, #258); the paste control keeps it as sent.
+      shownAttention.value = { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision }
+      emit('attention', liveAttention(shownAttention.value))
       break
     case 'viewers':
       roster.value = msg.list ?? []
@@ -755,7 +764,7 @@ function snapshot(): string[] | null {
   for (let y = 0; y < term.rows; y++) lines.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? '')
   return lines
 }
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, lane, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value, snapshot, openPaste })
 
 onMounted(() => {
   term = new Terminal({
@@ -899,14 +908,14 @@ onBeforeUnmount(() => {
       <UButton label="Fit to my window" icon="i-lucide-maximize-2" size="xs" color="neutral" variant="soft" data-fit-mine @click="takeSize" />
     </div>
 
-    <template v-if="touch && !compact && canPaste()">
-      <UButton v-if="!pasteBlocked" icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" aria-label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
-      <UModal v-model:open="pasteOpen" title="Paste into the terminal" description="What you paste or type here is typed into the terminal as keys, with no Enter.">
+    <template v-if="!compact && canPaste()">
+      <UButton v-if="touch && !pasteBlocked" icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" aria-label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
+      <UModal v-model:open="pasteOpen" title="Paste into the terminal" description="What you paste or type here goes to the terminal as a paste, with no Enter: press Enter in the terminal yourself.">
         <template #body>
-          <form :id="pasteForm" class="flex flex-col gap-2" :data-terminal-paste-shown="startupShown(shownAttention)" @submit.prevent="typePaste">
+          <form :id="pasteForm" class="flex flex-col gap-2" :data-terminal-paste-shown="startupShown(shownAttention)" :data-terminal-paste-answered="shownAttention?.answered || undefined" @submit.prevent="typePaste">
             <UTextarea v-model="pasteText" :rows="3" autofocus autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" class="w-full" aria-label="Text to type into the terminal" data-terminal-paste-text />
             <p v-if="holdsBreak(pasteText)" class="text-xs text-muted" data-terminal-paste-breaks>{{ PASTE_BREAKS }}</p>
-            <p v-if="pasteNote || pasteBlocked" class="text-xs text-warning" role="status" data-terminal-paste-note>{{ pasteBlocked ? PASTE_HELD : pasteNote }}</p>
+            <p v-if="pasteNote || pasteBlocked" class="text-xs text-warning" role="status" data-terminal-paste-note>{{ pasteNote || PASTE_HELD }}</p>
           </form>
         </template>
         <template #footer>

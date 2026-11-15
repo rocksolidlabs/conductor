@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -181,24 +180,6 @@ const LineStrandedWords = "the line was typed and not entered: type in the termi
 // turn (Submit).
 var ErrLineStranded = errors.New(LineStrandedWords)
 
-// ErrBadLine refuses a line to the startup question that takes one (#902)
-// that holds a control character: a sign-in code is printable text.
-// Nothing is written.
-var ErrBadLine = fmt.Errorf("%w: the line holds a control character; a sign-in code is printable text", ErrBadAnswer)
-
-// LineMovedWords say why a line to the startup question that takes one
-// (#902) was typed and not entered: the screen showed something else as
-// its Enter was to be written (pressEnter's lineReady, lineGuard).
-const LineMovedWords = "the screen changed before its Enter: " + LineStrandedWords
-
-// ErrLineMoved is that line's word: a kind of ErrLineStranded.
-var ErrLineMoved error = lineMoved{}
-
-type lineMoved struct{}
-
-func (lineMoved) Error() string        { return LineMovedWords }
-func (lineMoved) Is(target error) bool { return target == ErrLineStranded }
-
 // AnswerWord is the word a reply's line gets once finished (a transport's
 // Submission.Finished): err when it ended with one, nil when it was
 // entered, ErrLineStranded when its text was typed and its Enter not.
@@ -229,13 +210,6 @@ type submitState struct {
 	claim       *atomic.Uint64
 	// decision is the decision the line answers (Submission.Decision).
 	decision string
-	// line says the submission is a controller's line to the startup
-	// question that takes one (lineReady), as it began: judged again as
-	// the writer takes its text, and before its Enter. enterFed is
-	// how much output the startup questions' watcher had been fed as its
-	// Enter was written (resolveLine).
-	line     bool
-	enterFed *atomic.Uint64
 }
 
 // claimed reports whether the submission holds a claim on its question.
@@ -264,7 +238,7 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 	if !res.Typed || res.Entered {
 		return false, err
 	}
-	stranded := errors.Is(err, ErrRevoked) || (err == nil || errors.Is(err, ErrLineMoved)) && st.claimed()
+	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
 	if !stranded {
 		return false, err
 	}
@@ -338,13 +312,7 @@ type SubmitResult struct {
 //     a person's and Conductor's own alike (with UnlessWaiting it writes
 //     nothing and returns a zero result, as for any prompt):
 //     ErrTrustQuestion for a trust or startup question, ErrQuestion for
-//     one asked during the work; but a controller's line (By) naming the
-//     startup question that takes one (lineReady: the sign-in screen's
-//     code, printable text: ErrBadLine otherwise) is typed into it with
-//     its Enter, each once the program's output is all fed to the screen
-//     and quiet and one reading of it shows that question alone, and
-//     again as the writer takes it; the startup questions are watched
-//     still after it. A session with a watcher for the latter
+//     one asked during the work. A session with a watcher for the latter
 //     looks at its screen first, so that a dialog drawn and not yet seen
 //     quiet counts.
 //   - It records one input entry: always, with the text, for what Conductor
@@ -385,9 +353,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if len(text) > MaxSubmitText {
 		return res, ErrTextTooLong
 	}
-	if sub.By != nil && sub.Question != "" && hasControl(sub.Text) && s.asksLine(sub.Question) {
-		return res, ErrBadLine
-	}
 	// A controller's submission goes on when the controller goes (a reply
 	// box closes its connection once it has sent, and one that fails or is
 	// too slow is no different), but not once the session has ended the
@@ -427,10 +392,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if err != nil {
 		return res, err
 	}
-	// A controller's line naming the startup question that takes one (the
-	// sign-in screen's code): the one startup question a line is typed into,
-	// never an Enter alone, once the screen is ready to judge (lineReady).
-	line := sub.Question != "" && text != "" && s.lineReady(ctx, sub.Question, sub.By)
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
@@ -465,7 +426,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// Nothing is typed into a question the session holds, whoever types:
 	// a person's reply, and Conductor's own text too (a crew's prompt, which
 	// waits for the answer and is typed then).
-	if showing && source == SourceTrust && !line {
+	if showing && source == SourceTrust {
 		return res, ErrTrustQuestion
 	}
 	if showing && source == SourceQuestion {
@@ -479,7 +440,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	// A startup question the screen still shows, answered or not (the
 	// program slow to move on from it): nothing is typed into it either.
-	if !line && s.startupOnScreen() {
+	if s.startupOnScreen() {
 		if sub.UnlessWaiting {
 			return res, nil
 		}
@@ -497,8 +458,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		aside:    aside,
 		claim:    new(atomic.Uint64),
 		decision: sub.Decision,
-		line:     line,
-		enterFed: new(atomic.Uint64),
 	}
 	// A claim the line made and did not resolve is given up as it ends
 	// (claimSettled): here, or by the goroutine it is handed to.
@@ -1030,27 +989,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// As the writer takes the Enter it looks again: a prompt raised while
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
-	mayShow := s.startupMayShow
-	if st.line {
-		// A line's Enter into the startup question that takes one: that
-		// question alone may show, judged once the screen is ready
-		// (lineReady) and again as the writer takes it (lineGuard); left
-		// out, the answer says the screen changed (ErrLineMoved).
-		if !s.lineReady(ctx, sub.Question, sub.By) {
-			return res, ErrLineMoved
-		}
-		mayShow = func() bool { return false }
-	}
-	wait.guard = s.enterGuard(st.comesAfter, mayShow)
-	if st.line {
-		enter := wait.guard
-		wait.guard = func() error {
-			if !s.lineGuard(sub, []byte{'\r'}) {
-				return ErrLineMoved
-			}
-			return enter()
-		}
-	}
+	wait.guard = s.enterGuard(st.comesAfter)
 	if sub.OnlyAtPrompt {
 		enter := wait.guard
 		wait.guard = func() error {
@@ -1113,11 +1052,6 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			s.rawKeys([]byte{'\r'}, keys, nil, s.startupMayShow(), true, sub.By != nil)
 		}
 		s.nextTurn()
-		if st.line && s.trust != nil {
-			// The output the startup questions' watcher had as the Enter
-			// was written (resolveLine).
-			st.enterFed.Store(s.trust.Fed())
-		}
 	}
 	enterAt := time.Now().UTC()
 	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)
@@ -1125,11 +1059,6 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if errors.Is(err, errPromptCame) {
 		// Left out, as one seen before the Enter is.
 		return res, nil
-	}
-	if errors.Is(err, ErrLineMoved) && !pending {
-		// Left out: the screen moved on from the question as the writer
-		// took it. The text waits without its Enter (strand).
-		return res, err
 	}
 	if err != nil && !pending && res.Typed && waitedOut(err) {
 		return res, errEnterLater
@@ -1144,10 +1073,8 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// An Enter whose write has begun lands when the program reads again:
 	// the submission is entered, and nothing more is pressed for it.
 	res.Entered = true
-	if s.trust != nil && !st.line {
-		// A trust question comes before the first prompt, never after. A
-		// line into a startup question is no prompt: the questions after
-		// it (the folder's trust after the sign-in) are watched still.
+	if s.trust != nil {
+		// A trust question comes before the first prompt, never after.
 		s.trust.Stop()
 		if s.asked != nil && len(s.askedQuestions) == 0 {
 			// The screen kept for the startup questions alone.
@@ -1187,20 +1114,8 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 	if sub.By != nil {
 		by, name = sub.By.ID, sub.By.answerer()
 	}
-	if st.line {
-		if hook := s.beforeLineResolved.Load(); hook != nil {
-			(*hook)()
-		}
-	}
 	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
 	s.resolve(sub.Question, token, by, name, sub.ReqID, nil)
-	if st.line && s.trust != nil && s.trust.Fed() > st.enterFed.Load() {
-		// Output came after its Enter and before the question was resolved
-		// (a code refused, its screen drawn again): a look at it then found
-		// the question claimed and asked nothing. Looked at again, the
-		// screen asks it again if it shows it.
-		s.trust.Poke()
-	}
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its
@@ -1270,122 +1185,6 @@ func (s *Local) lookAsked(ctx context.Context) (bool, error) {
 	return s.asked.CheckNow(), nil
 }
 
-// drawnWait bounds how long a line to the startup question that takes one
-// waits for its screen to be ready to judge (lineReady): drawn again after
-// the window was made smaller, a redraw finished, the program's output all
-// fed and quiet. It only bounds a program that never gets there.
-const drawnWait = 5 * time.Second
-
-// lineQuiet is how long no output may have been fed to the screen that a
-// line to the startup question that takes one is judged on (lineCaughtUp):
-// a program drawing its next screen (the folder's trust question after the
-// sign-in) is caught in the middle of it no more.
-const lineQuiet = 100 * time.Millisecond
-
-// unreadOutput is a Process that tells how much of its output waits in its
-// terminal, not read yet (pty.Process.Unread: the kernel's count). A
-// Process that cannot tell takes no line (lineCaughtUp).
-type unreadOutput interface{ Unread() (int, error) }
-
-// lineNow is the session's clock for lineQuiet: a test's (lineClock), else
-// the wall's.
-func (s *Local) lineNow() time.Time {
-	if now := s.lineClock.Load(); now != nil {
-		return (*now)()
-	}
-	return time.Now()
-}
-
-// lineCaughtUp reports, in this order, that everything the program has
-// written is in the screen the line is judged on (the pump has fed all it
-// has read, and the kernel holds none of its output unread, asked between
-// two looks at the pump's counts) and that no output was fed to it for
-// lineQuiet on the session's clock.
-func (s *Local) lineCaughtUp() bool {
-	read := s.outRead.Load()
-	if s.outFed.Load() != read {
-		return false
-	}
-	u, ok := s.proc.(unreadOutput)
-	if !ok {
-		return false
-	}
-	if n, err := u.Unread(); err != nil || n > 0 {
-		return false
-	}
-	if s.outRead.Load() != read || s.outFed.Load() != read {
-		return false
-	}
-	return s.lineNow().Sub(time.Unix(0, s.fedAt.Load())) >= lineQuiet
-}
-
-// lineHolds is a line's judgement now (#902): the output caught up
-// (lineCaughtUp), then one reading of the screen (lineFitsLocked). judged
-// is false while the output has not caught up or the screen is not a whole
-// frame yet: what to wait for.
-func (s *Local) lineHolds(id string, by *Subscription) (fits, judged bool) {
-	if !s.lineCaughtUp() {
-		return false, false
-	}
-	s.feedMu.Lock()
-	defer s.feedMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lineFitsLocked(id, by)
-}
-
-// lineReady waits until a line from by naming the question id, while that
-// is the startup question that takes one (Attention.Line), is judged
-// (lineHolds), and reports whether it fits: false at once for any other
-// question, and once drawnWait has passed, ctx or the session ended. A
-// phone's layout moving its terminal (the question bar shown again)
-// resizes the session just before the line comes, and a TUI draws its
-// screen again at once: the line waits for that.
-func (s *Local) lineReady(ctx context.Context, id string, by *Subscription) bool {
-	s.mu.Lock()
-	att := s.info.Attention
-	s.mu.Unlock()
-	if s.asked == nil || by == nil || att.ID != id || !att.Line {
-		return false
-	}
-	deadline := time.Now().Add(drawnWait)
-	for waited := false; ; waited = true {
-		if fits, judged := s.lineHolds(id, by); judged {
-			return fits
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		if hook := s.inLineWait.Load(); hook != nil && !waited {
-			(*hook)()
-		}
-		t := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-t.C:
-		case <-ctx.Done():
-			t.Stop()
-			return false
-		case <-s.ended:
-			t.Stop()
-			return false
-		}
-	}
-}
-
-// lineGuard is the judgement of a line's text or Enter (data) as the
-// writer takes it: it holds now (lineHolds), with no wait.
-func (s *Local) lineGuard(sub Submission, data []byte) bool {
-	if hook := s.atLineGuard.Load(); hook != nil {
-		(*hook)(data)
-	}
-	fits, judged := s.lineHolds(sub.Question, sub.By)
-	return fits && judged
-}
-
-// hasControl reports whether text holds a control character (ESC, a line
-// break, a C1 control among them).
-func hasControl(text string) bool { return strings.ContainsFunc(text, unicode.IsControl) }
-
 // lookBudget bounds how long Submit waits, before its Enter, for the screen
 // watchers to look at what the program drew: the echo of a paste moves the
 // output, and a program that keeps drawing is not held up for longer than
@@ -1420,12 +1219,10 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 		s.mu.Unlock()
 		showing := att.State == AttentionNeedsInput && !(sub.Decision != "" && att.Decision != "")
 		startup := s.startupOnScreen()
-		// The line to the startup question that takes one, looked at again.
-		line := st.line && att.ID == sub.Question && s.lineGuard(sub, nil)
 		switch {
 		case sub.UnlessWaiting && (showing || dialog || startup):
 			return errWaiting
-		case (showing && att.Source == SourceTrust || startup) && !line:
+		case showing && att.Source == SourceTrust || startup:
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
@@ -1465,12 +1262,12 @@ var errPromptCame = errors.New("session: a prompt came before the Enter")
 // last; a wait showing keeps the question from being raised,
 // unlessWaiting, so the attention alone does not tell of it, #263): the
 // Enter would pick what the dialog highlights.
-func (s *Local) enterGuard(waits func(Attention) bool, startupMayShow func() bool) func() error {
+func (s *Local) enterGuard(waits func(Attention) bool) func() error {
 	return func() error {
 		if s.asked != nil && (s.asked.Held() || s.asked.CheckNow()) {
 			return errPromptCame
 		}
-		if startupMayShow() {
+		if s.startupMayShow() {
 			return errPromptCame
 		}
 		s.mu.Lock()
@@ -1566,7 +1363,7 @@ func (s *Local) enterAgain(ctx context.Context, onlyAtPrompt bool) bool {
 	// meanwhile is answered by it.
 	guard := s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput
-	}, s.startupMayShow)
+	})
 	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: func() error {
 		if onlyAtPrompt && !s.atPrompt() {
 			return errPromptCame

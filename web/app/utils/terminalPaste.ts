@@ -1,10 +1,9 @@
-import { takesLine } from './attention'
 import type { Attention } from './protocol'
 
 /**
- * What the touch terminal's paste control types for text (#902): its characters with every control character taken out (a line
- * break, a tab, ESC and the C1 controls among them), never turned into a key. A program with bracketed paste off reads no Enter
- * from it, and with it on the text cannot end the paste early (ESC [ 2 0 1 ~ loses its ESC and stays inside the paste).
+ * What the terminal's paste control types for text (#902): its characters with every control character taken out (a line break,
+ * a tab, ESC and the C1 controls among them), never turned into a key. A program with bracketed paste off reads no Enter from it,
+ * and with it on the text cannot end the paste early (ESC [ 2 0 1 ~ loses its ESC and stays inside the paste).
  */
 export function pasteKeys(text: string): string {
   let out = ''
@@ -22,7 +21,7 @@ export function holdsBreak(text: string): boolean {
 }
 
 /**
- * The startup question a showing, when it is one (the session's trust source): its id, '' for none. The paste control is tied to
+ * The startup question a shows, when it is one (the session's trust source): its id, '' for none. The paste control is tied to
  * it: opened on one question, it types nothing once another shows.
  */
 export function startupShown(a: Pick<Attention, 'state' | 'source' | 'id'> | undefined): string {
@@ -30,14 +29,16 @@ export function startupShown(a: Pick<Attention, 'state' | 'source' | 'id'> | und
 }
 
 /**
- * Whether a startup question that takes no line shows (a folder's trust question, an update dialog, a numbered choice): the paste
- * control is not offered then, and types nothing; the question is answered with its own choices.
+ * Whether a startup question with choices shows (a folder's trust question, an update dialog, a numbered choice): the paste
+ * control is not offered then, and types nothing; the question is answered with its own choices. a is the attention as the page
+ * received it, never its live form (liveAttention): a question answered in the terminal reads as none there, while its screen,
+ * still drawn, would take the paste. A startup question with no choices (a sign-in screen that asks for a code) holds nothing.
  */
-export function pasteHeld(a: Pick<Attention, 'state' | 'source' | 'options' | 'decision' | 'line'> | undefined): boolean {
-  return a?.state === 'needs_input' && a.source === 'trust' && !takesLine(a)
+export function pasteHeld(a: Pick<Attention, 'state' | 'source' | 'options'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'trust' && !!a.options?.length
 }
 
-/** What the paste control says while a startup question that takes no line shows (pasteHeld). */
+/** What the paste control says while a startup question with choices shows (pasteHeld). */
 export const PASTE_HELD = 'The agent asks a startup question: answer it with the question’s choices, not by typing.'
 
 /** What it says when the startup question it opened on is no longer the one showing. */

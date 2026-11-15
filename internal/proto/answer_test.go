@@ -88,28 +88,3 @@ func TestAnswerOwnerShapes(t *testing.T) {
 		t.Fatalf("header %q %v", typ, err)
 	}
 }
-
-// A startup question that takes a line (#902: Claude Code's sign-in
-// screen) says so with `line`, absent from every other attention; the line
-// that answers it is an answer's text, bounded as a submit's line is, and a
-// recipe's question carries the catalog's mark to a host.
-func TestALineQuestionOnTheWire(t *testing.T) {
-	b, _ := json.Marshal(Attention{T: CtlAttention, State: "needs_input", Message: "Browser didn't open? Use the url below to sign in", Source: "trust", Kind: "prompt", ID: "0123456789abcdef", Line: true})
-	if !strings.Contains(string(b), `"line":true`) {
-		t.Fatalf("a question that takes a line %s", b)
-	}
-	b, _ = json.Marshal(Attention{T: CtlAttention, State: "needs_input", Message: "Trust this folder?", Source: "trust", ID: "0123456789abcdef"})
-	if strings.Contains(string(b), `"line"`) {
-		t.Fatalf("a question that takes none %s", b)
-	}
-	for n, valid := range map[int]bool{MaxSubmit: true, MaxSubmit + 1: false} {
-		line := Answer{T: CtlAnswer, Question: "0123456789abcdef", Text: strings.Repeat("c", n)}
-		if line.Valid() != valid || (Submit{T: CtlSubmit, Text: line.Text}).Valid() != valid {
-			t.Errorf("a line of %d bytes: valid %v, as a submit's %v", n, line.Valid(), valid)
-		}
-	}
-	b, _ = json.Marshal(RecipeQuestion{Prompt: "paste code", Line: true})
-	if string(b) != `{"prompt":"paste code","line":true}` {
-		t.Fatalf("a recipe's question %s", b)
-	}
-}

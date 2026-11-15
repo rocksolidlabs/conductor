@@ -47,36 +47,29 @@ export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'option
  * Why a page takes no typed reply to a, in the words its reply field shows in place of one; undefined when it takes one. Every
  * place that draws a reply field for an attention (the question bar, the sidebar's row and Needs you, the Yard's queue, the
  * command palette) asks this one function: the session waits for its terminal (waitsForTerminal), the question is answered in
- * the terminal (answersInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
+ * the terminal (answersInTerminal, startupInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
  */
-export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision' | 'line'> | undefined): string | undefined {
+export function noReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined): string | undefined {
   if (waitsForTerminal(a)) return TERMINAL_FIRST
-  if (answersInTerminal(a)) return ANSWER_IN_TERMINAL
+  if (answersInTerminal(a) || startupInTerminal(a)) return ANSWER_IN_TERMINAL
   const d = decisionOf(a)
-  if (d) return decisionAnsweredBy(d)
-  // A startup question with no choices (#902): a typed line's Enter would pick what its screen highlights, so the owner refuses it,
-  // but for the one its catalog entry marks as taking a line, which the session's own question bar alone takes (takesLine).
-  if (a?.state === 'needs_input' && a.source === 'trust' && !a.options?.length) return takesLine(a) ? OPEN_TO_ANSWER : ANSWER_IN_TERMINAL
-  return undefined
-}
-
-/** Whether a page takes a typed reply to a from a viewer of role: a controller's, unless a takes none (noReply). */
-export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision' | 'line'> | undefined, role: Role): boolean {
-  return role === 'control' && noReply(a) === undefined
+  return d ? decisionAnsweredBy(d) : undefined
 }
 
 /**
- * Whether a is the startup question that takes a line (#902): the agent's catalog entry marks it (`line`: Claude Code's sign-in
- * screen, which asks for the code a browser on another device shows), it offers no choices and mirrors no decision. The question
- * bar offers a field for it, whose text is sent as the answer's line and kept nowhere (no draft, no storage, no typed answer shown
- * under the question); every other place says OPEN_TO_ANSWER.
+ * Whether a is a startup question with no choices (#902: a sign-in screen that asks for a code a browser on another device shows):
+ * its answer is given in the terminal, where the person sees the screen and presses Enter; the session refuses a line while it
+ * shows, for its Enter would pick what the screen highlights. The session page's question bar opens the terminal's paste control
+ * for it.
  */
-export function takesLine(a: Pick<Attention, 'state' | 'source' | 'options' | 'decision' | 'line'> | undefined): boolean {
-  return a?.state === 'needs_input' && a.source === 'trust' && a.line === true && !a.options?.length && !a.decision
+export function startupInTerminal(a: Pick<Attention, 'state' | 'source' | 'options' | 'decision'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'trust' && !a.options?.length && !a.decision
 }
 
-/** What a reply field away from the question bar says for a question that takes a line (takesLine). */
-export const OPEN_TO_ANSWER = 'Open the session to answer it'
+/** Whether a page takes a typed reply to a from a viewer of role: a controller's, unless a takes none (noReply). */
+export function takesReply(a: Pick<Attention, 'state' | 'source' | 'kind' | 'options' | 'decision'> | undefined, role: Role): boolean {
+  return role === 'control' && noReply(a) === undefined
+}
 
 /** Where a question that mirrors decision id (decisionOf) is answered, said in place of a reply: by the operator, in Conductor. */
 export function decisionAnsweredBy(id: string): string {

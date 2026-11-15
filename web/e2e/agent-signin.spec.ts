@@ -1,26 +1,29 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
-import { expect, showView, test, type Session } from './fixtures'
+import { expect, test, type Api, type Session } from './fixtures'
 import { stubFiles } from './held-helpers'
 
-// A sign-in code given to an agent from a phone (#902). The stub signed out (signed-out in conductor.e2e.json) starts on
-// Claude Code's sign-in screen, the startup question its entry marks as taking a line: at a phone's width the question bar offers
-// a field for it, a refused code has the screen drawn again and asked again, the code it takes signs it in, and the code is kept
-// nowhere Conductor keeps anything (the session, the chat, the activity log, the server's log). The terminal's paste control on a
-// touch device types its text as keys, with no Enter. Every code here is invented: no real tool runs, nothing signs in.
+// A sign-in code given to an agent from a phone (#902). The stub signed out (signed-out in conductor.e2e.json) starts on Claude
+// Code's sign-in screen, a startup question with no choices, and records every byte it reads there. Conductor types nothing into
+// it: the person gives the code in the terminal. On a touch device that is the terminal's paste control, which sends the text as
+// one paste with no Enter; the person presses Enter. The question bar says to answer in the terminal and opens that control. Every
+// code here is invented: no real tool runs, nothing signs in.
 test.describe.configure({ mode: 'serial' })
 
-/** The code the stub takes (STUB_SIGNIN in conductor.e2e.json) and one it refuses: invented strings. */
+/** The code the stub takes (STUB_SIGNIN in conductor.e2e.json): an invented string. */
 const CODE = 'e2e-Code-7Hq2Wx9Kp4'
-const WRONG = 'e2e-Wrong-3Fz8Lm1Qd6'
+const PASTE_START = '\u001b[200~'
+const PASTE_END = '\u001b[201~'
+/** The Right arrow's keys: typed after a paste, once the stub has read them it has read everything before them. */
+const RIGHT = '\u001b[C'
+/** The hex of text's bytes, as the stub records what it read. */
+const hex = (text: string) => Buffer.from(text, 'utf8').toString('hex')
 
 let ctx: BrowserContext | null = null
 let phone: Page
 const sessions: string[] = []
 
 test.beforeAll(async ({ browser, state }) => {
-  ctx = await browser.newContext({ viewport: { width: 360, height: 780 }, hasTouch: true, isMobile: true })
+  ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
   await ctx.addInitScript(
     ({ token }) => {
       localStorage.setItem('conductor.workbenchToken', token)
@@ -42,158 +45,172 @@ function partOf(text: string, code: string): string {
   return ''
 }
 
-test('the sign-in screen takes a code at a phone’s width, a refused one is asked again, and no code is kept', async ({ api, page, state }) => {
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'signed-out', name: 'e2e sign-in' })
+/** Opens session id on p and waits for its terminal's connection. */
+async function open(p: Page, id: string) {
+  await p.goto(`/sessions/${encodeURIComponent(id)}`)
+  await expect(p.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+}
+
+/** The signed-out stub's session, once its sign-in screen is asked as a startup question with no choices: the session and its id. */
+async function signedOut(api: Api, name: string) {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'signed-out', name })
   sessions.push(s.id)
-  const stub = stubFiles(state.home, s)
-  const signIn = async () => {
+  const asked = async () => {
     const a = (await api.session(s.id)).attention
-    return a?.state === 'needs_input' && a.source === 'trust' && a.line === true ? (a.id ?? '') : ''
+    return a?.state === 'needs_input' && a.source === 'trust' && !a.options?.length && (a.message ?? '').includes("Browser didn't open") ? (a.id ?? '') : ''
   }
-  await expect.poll(signIn, { timeout: 30_000, message: 'the sign-in screen is asked as a question that takes a line' }).not.toBe('')
-  const first = await signIn()
+  await expect.poll(asked, { timeout: 30_000, message: 'the sign-in screen is asked, with no choices' }).not.toBe('')
+  return { s, first: await asked() }
+}
 
-  await phone.goto(`/sessions/${encodeURIComponent(s.id)}`)
-  const form = phone.locator('[data-quick-reply-line]')
-  await expect(form).toBeVisible({ timeout: 30_000 })
-  await expect(phone.locator('[data-quick-reply-message]')).toContainText("Browser didn't open")
-  const field = form.getByRole('textbox')
-  const send = form.getByRole('button', { name: 'Send' })
-  // The bar fits the phone: nothing of it past the window's edge, and the page does not scroll sideways.
-  expect(((await form.boundingBox())?.x ?? 0) + ((await form.boundingBox())?.width ?? 0)).toBeLessThanOrEqual(360)
-  expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360)
+test('the sign-in screen takes a code pasted on a touch device, as one paste with no Enter; the person’s Enter signs in', async ({ api, state }) => {
+  const { s } = await signedOut(api, 'e2e sign-in paste')
+  const stub = stubFiles(state.home, s)
+  await open(phone, s.id)
 
-  // A code the stub refuses: it is typed with its Enter, the field empties, and the screen drawn again is asked again.
-  await field.fill(WRONG)
-  await expect(field).toHaveValue(WRONG)
+  // The question bar says to answer in the terminal, takes no line itself, and its button opens the terminal's paste control.
+  const bar = phone.locator('[data-quick-reply-startup]')
+  await expect(bar).toContainText('Answer it in the terminal', { timeout: 30_000 })
+  await expect(phone.locator('[data-quick-reply] input')).toHaveCount(0)
+  expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await bar.locator('[data-quick-reply-paste]').tap()
+  const text = phone.locator('[data-terminal-paste-text]')
+  const send = phone.locator('[data-terminal-paste-send]')
+  const terminal = phone.locator('.terminal-host .xterm-helper-textarea').first()
+  const control = phone.locator('[data-terminal-paste]')
+
+  // A text with line breaks, a tab, ESC, a C1 control and the sequence that ends a paste followed by a digit: the modal says the
+  // breaks are taken out, and none of those arrives. The stub (bracketed paste on) reads one paste between its two marks, the
+  // digit inside it, and no Enter: the arrow typed after it is read next.
+  await text.fill('e2e\nJu\r\nnk\t\u001b[201~1\u0085')
+  await expect(phone.locator('[data-terminal-paste-breaks]')).toBeVisible()
   await send.tap()
-  await expect(field).toHaveValue('')
-  await expect.poll(() => stub.typedLines(), { timeout: 30_000, message: 'the stub refused the code' }).toContain('signin: refused')
-  await expect.poll(async () => { const id = await signIn(); return id !== '' && id !== first }, { timeout: 30_000, message: 'asked again' }).toBe(true)
-
-  // The code it takes, typed by the keyboard and sent with its Send: the stub signs in and leaves the screen.
-  await expect(form).toBeVisible()
-  await field.fill(CODE)
-  await expect(field).toHaveValue(CODE)
-  await send.tap()
-  await expect.poll(() => stub.typedLines(), { timeout: 30_000, message: 'the stub took the code' }).toContain('signin: accepted')
-  // Signed in, the stub asks whether to trust the folder: a startup question with choices, which takes no line and no paste.
+  await expect(text).toBeHidden()
+  await terminal.focus()
+  await phone.keyboard.press('ArrowRight')
   await expect
-    .poll(async () => (await api.session(s.id)).attention?.message ?? '', { timeout: 30_000, message: 'the trust question follows the sign-in' })
-    .toContain('Trust this folder')
-  await expect(phone.locator('[data-quick-reply-message]')).toContainText('Trust this folder', { timeout: 30_000 })
-  await expect(form).toBeHidden()
-  await expect(phone.locator('[data-terminal-paste]')).toBeHidden()
-  expect((await api.session(s.id)).lastAnswer).toMatchObject({ byName: 'Nate' })
+    .poll(() => stub.signin().at(-1), { timeout: 30_000, message: 'the stub read the paste and the arrow after it, and nothing between' })
+    .toBe(hex(`${PASTE_START}e2eJunk[201~1${PASTE_END}${RIGHT}`))
+  expect(stub.signin(), 'no Enter came of the paste').not.toContain('enter')
+  // The person's Enter: the stub refuses that text and draws its screen again.
+  await phone.keyboard.press('Enter')
+  await expect.poll(() => stub.typedLines(), { timeout: 30_000, message: 'the stub refused the text' }).toContain('signin: refused')
 
-  // Kept nowhere by the browser that sent both codes: the phone's chat, its page, the app's state and the browser's storages.
-  await phone.locator('[data-chat-button]').tap()
-  const sheet = phone.locator('[data-chat-sheet]')
-  await expect(sheet).toBeVisible()
-  await expect(sheet).toContainText('Nate', { timeout: 30_000 })
-  const phoneKept = {
-    phoneChat: (await sheet.textContent()) ?? '',
-    phonePage: await phone.evaluate(() => document.body.innerText),
-    phoneState: await phone.evaluate(() => {
+  // The code, through the terminal's own paste control: read as one paste and nothing else, no Enter.
+  await expect(control).toBeVisible({ timeout: 30_000 })
+  await control.tap()
+  await text.fill(CODE)
+  await expect(phone.locator('[data-terminal-paste-breaks]')).toBeHidden()
+  await send.tap()
+  await expect(text).toBeHidden()
+  await terminal.focus()
+  await phone.keyboard.press('ArrowRight')
+  await expect.poll(() => stub.signin().at(-1), { timeout: 30_000, message: 'the stub read the code as one paste' }).toBe(hex(`${PASTE_START}${CODE}${PASTE_END}${RIGHT}`))
+  expect(stub.signin().filter((r) => r === 'enter'), 'one Enter so far, the person’s for the refused text').toHaveLength(1)
+
+  // The browser that sent it keeps it nowhere: the control opened again is empty, and neither the page, the app's state nor the
+  // browser's storages hold any of it.
+  await control.tap()
+  await expect(text).toBeVisible()
+  await expect(text).toHaveValue('')
+  await phone.getByRole('button', { name: 'Cancel' }).tap()
+  await expect(text).toBeHidden()
+  const kept = {
+    page: await phone.evaluate(() => document.body.innerText),
+    state: await phone.evaluate(() => {
       const host = Array.from(document.querySelectorAll('*')).find((e) => '__vue_app__' in e) as (Element & { __vue_app__?: { config: { globalProperties: { $nuxt?: { payload?: { state?: unknown } } } } } }) | undefined
       return JSON.stringify(host?.__vue_app__?.config.globalProperties.$nuxt?.payload?.state ?? null)
     }),
-    phoneStorage: await phone.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } })),
+    storage: await phone.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } })),
   }
-  expect(phoneKept.phoneState, 'the phone’s state was read').toContain('typedAnswers')
+  expect(kept.state, 'the app’s state was read').toContain('typedAnswers')
+  for (const [where, held] of Object.entries(kept)) expect(partOf(held, CODE), `the phone's ${where} holds part of the code`).toBe('')
 
-  // Kept nowhere: the session, the chat and the activity log (the desktop's inspector, both answers listed), the server's log.
-  await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
-  await showView(page, 'activity')
-  const inspector = page.locator('[data-inspector]')
-  await expect(inspector.locator('[data-activity="input"]')).toHaveCount(2, { timeout: 30_000 })
-  const activity = (await inspector.textContent()) ?? ''
-  await showView(page, 'chat')
-  await expect(page.locator('[data-inspector] [data-rail-item="chat"]')).toHaveAttribute('aria-pressed', 'true')
-  const chat = (await inspector.textContent()) ?? ''
-  const described = JSON.stringify(await api.session(s.id))
-  const log = existsSync(state.log) ? readFileSync(state.log, 'utf8') : ''
-  for (const [where, text] of Object.entries({ activity, chat, described, log, ...phoneKept })) {
-    for (const code of [CODE, WRONG]) expect(partOf(text, code), `${where} holds part of a code`).toBe('')
-  }
-  // The stub's own transcript says what it did with them, never a code.
-  expect(partOf(stub.typedLines(), CODE) + partOf(stub.typedLines(), WRONG)).toBe('')
-})
-
-test('the terminal’s paste control on a touch device types its text as keys, with no Enter', async ({ api, state }) => {
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e touch paste' })
-  sessions.push(s.id)
-  const stub = stubFiles(state.home, s)
-  await phone.goto(`/sessions/${encodeURIComponent(s.id)}`)
-  await expect(phone.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
-  // The stub reads key by key from here and keeps the line not yet entered in its .line file.
-  const terminal = phone.locator('.terminal-host .xterm-helper-textarea').first()
+  // Enter pressed on the touch keyboard: the stub takes the code and asks whether to trust the folder, a startup question with
+  // choices, where the terminal's paste control is not offered and the question bar has no paste button.
   await terminal.focus()
-  await phone.keyboard.type('stub tui on')
   await phone.keyboard.press('Enter')
-  await expect.poll(stub.tui, { timeout: 30_000, message: 'the stub reads as a TUI' }).toBe(true)
-
-  // A text with line breaks inside it and the sequence that ends a paste, then a digit: the modal says the breaks are taken out,
-  // and every control character is (no Enter, no ESC to end the paste early: the digit stays inside it).
-  const control = phone.locator('[data-terminal-paste]')
-  await expect(control).toBeVisible()
-  await control.tap()
-  const text = phone.locator('[data-terminal-paste-text]')
-  await expect(text).toBeVisible()
-  await text.fill('pasted\non a\r\nphone\u001b[201~1')
-  await expect(phone.locator('[data-terminal-paste-breaks]')).toBeVisible()
-  await phone.locator('[data-terminal-paste-send]').tap()
-  await expect(text).toBeHidden()
-  // A key typed after the paste: once the stub has it, it has read the whole paste before it.
-  await terminal.focus()
-  await phone.keyboard.type('Z')
-  await expect.poll(stub.pending, { timeout: 30_000, message: 'the paste and the key after it reached the terminal' }).toBe('pastedon aphone[201~1Z')
-  expect(stub.enters().filter((e) => e.line.includes('pasted') || e.line.includes('phone')), 'no Enter came of the paste').toEqual([])
+  await expect.poll(() => stub.typedLines(), { timeout: 30_000, message: 'the stub took the code' }).toContain('signin: accepted')
+  await expect.poll(async () => (await api.session(s.id)).attention?.message ?? '', { timeout: 30_000, message: 'the trust question follows' }).toContain('Trust this folder')
+  await expect(phone.locator('[data-quick-reply-message]')).toContainText('Trust this folder', { timeout: 30_000 })
+  await expect(phone.locator('[data-quick-reply]').getByRole('button', { name: /Yes, trust this folder/ })).toBeVisible()
+  await expect(control).toBeHidden()
+  await expect(phone.locator('[data-quick-reply-paste]')).toHaveCount(0)
 })
 
-test('the paste control is tied to the startup question it opened on, and is not offered at one that takes no line', async ({ api, page, state }) => {
+test('the paste control is tied to the startup question it opened on, and types nothing at one with choices, answered in the terminal or not', async ({ api, page, state }) => {
   const sent: string[] = []
   phone.on('websocket', (ws) => ws.on('framesent', (f) => sent.push(typeof f.payload === 'string' ? f.payload : f.payload.toString('latin1'))))
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'signed-out', name: 'e2e paste tie' })
-  sessions.push(s.id)
+  const PASTED = 'e2e-Paste-5Rt8'
+  const { s, first } = await signedOut(api, 'e2e paste tie')
   const stub = stubFiles(state.home, s)
   const attention = async () => (await api.session(s.id)).attention
-  await expect.poll(async () => (await attention())?.line === true, { timeout: 30_000, message: 'the sign-in screen is asked' }).toBe(true)
-  const first = (await attention())?.id ?? ''
+
+  // A pointer's page: the question bar's button opens the paste control too, and its terminal shows no button of its own.
+  await open(page, s.id)
+  await page.locator('[data-quick-reply-paste]').click({ timeout: 30_000 })
+  await expect(page.locator('[data-terminal-paste-text]')).toBeVisible()
+  await expect(page.locator('[data-terminal-paste]')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.locator('[data-terminal-paste-text]')).toBeHidden()
 
   // The phone opens its paste control on the sign-in screen, and a text waits in it.
-  await phone.goto(`/sessions/${encodeURIComponent(s.id)}`)
-  await expect(phone.locator('[data-quick-reply-line]')).toBeVisible({ timeout: 30_000 })
-  await phone.locator('[data-terminal-paste]').tap()
+  await open(phone, s.id)
+  await phone.locator('[data-terminal-paste]').tap({ timeout: 30_000 })
   const pasteForm = phone.locator('[data-terminal-paste-shown]')
   await expect(pasteForm).toHaveAttribute('data-terminal-paste-shown', first)
-  await phone.locator('[data-terminal-paste-text]').fill('e2e-Paste-5Rt8')
+  const text = phone.locator('[data-terminal-paste-text]')
+  await text.fill(PASTED)
   const send = phone.locator('[data-terminal-paste-send]')
   const note = phone.locator('[data-terminal-paste-note]')
 
-  // The desk sends a code the stub refuses: the sign-in screen is asked again, another question. Type it types nothing.
-  await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
-  const desk = page.locator('[data-quick-reply-line]')
-  await desk.getByRole('textbox').fill(WRONG)
-  await desk.getByRole('button', { name: 'Send' }).click()
-  await expect.poll(stub.typedLines, { timeout: 30_000, message: 'the stub refused the code' }).toContain('signin: refused')
-  await expect.poll(async () => { const a = await attention(); return a?.line === true && a.id !== first }, { timeout: 30_000, message: 'asked again' }).toBe(true)
-  const again = (await attention())?.id ?? ''
-  await expect(pasteForm).toHaveAttribute('data-terminal-paste-shown', again, { timeout: 30_000 })
-  await send.tap()
-  await expect(note).toContainText('The screen changed since this opened: nothing was typed')
-
-  // The desk sends the code it takes: the trust question follows, which takes no paste. Type it types nothing again.
-  await desk.getByRole('textbox').fill(CODE)
-  await desk.getByRole('button', { name: 'Send' }).click()
+  // The code typed in the desk's terminal, with its Enter: the stub signs in and asks whether to trust the folder.
+  const desk = page.locator('.terminal-host .xterm-helper-textarea').first()
+  await desk.focus()
+  await page.keyboard.type(CODE)
+  await page.keyboard.press('Enter')
+  await expect.poll(stub.typedLines, { timeout: 30_000, message: 'the stub took the code' }).toContain('signin: accepted')
   await expect.poll(async () => (await attention())?.message ?? '', { timeout: 30_000, message: 'the trust question' }).toContain('Trust this folder')
   const trust = (await attention())?.id ?? ''
+  // The phone was told: its control says to answer with the choices. Type it types nothing and says the screen changed; again,
+  // nothing, with the choices' words.
   await expect(pasteForm).toHaveAttribute('data-terminal-paste-shown', trust, { timeout: 30_000 })
   await expect(note).toContainText('answer it with the question’s choices')
   await send.tap()
+  await expect(note).toContainText('The screen changed since this opened: nothing was typed')
+  await send.tap()
   await expect(note).toContainText('answer it with the question’s choices')
-  expect(sent.some((f) => f.includes('e2e-Paste-5Rt8')), 'the phone sent the text').toBe(false)
-  await phone.getByRole('button', { name: 'Cancel' }).tap()
-  await expect(phone.locator('[data-terminal-paste]')).toBeHidden()
-  expect((await attention())?.id, 'the trust question waits, unanswered').toBe(trust)
+
+  // The trust question answered in the desk's terminal while its screen stays drawn (the stub stopped, so that it reads nothing
+  // yet): the phone is told it was answered, and its control still types nothing.
+  await expect.poll(stub.pid, { timeout: 30_000, message: 'the stub wrote its pid' }).toBeGreaterThan(0)
+  const pid = stub.pid()
+  process.kill(pid, 'SIGSTOP')
+  try {
+    await desk.focus()
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await attention())?.answered ?? '', { timeout: 30_000, message: 'answered in the terminal' }).toBe('terminal')
+    expect((await attention())?.id, 'the trust question still shows').toBe(trust)
+    await expect(pasteForm).toHaveAttribute('data-terminal-paste-answered', 'terminal', { timeout: 30_000 })
+    await send.tap()
+    await expect(note).toContainText('answer it with the question’s choices')
+    await expect(text).toHaveValue(PASTED)
+    await phone.getByRole('button', { name: 'Cancel' }).tap()
+    await expect(text).toBeHidden()
+    await expect(phone.locator('[data-terminal-paste-shown]')).toHaveCount(0)
+    await expect(phone.locator('[data-terminal-paste]')).toBeHidden()
+  } finally {
+    process.kill(pid, 'SIGCONT')
+  }
+
+  // The stub reads the desk's Enter and trusts the folder: the control is offered again. A line typed after it is entered as it was
+  // typed, nothing of the text before it: the phone never sent the text.
+  await expect.poll(async () => (await attention())?.state ?? '', { timeout: 30_000, message: 'the trust question went' }).not.toBe('needs_input')
+  await expect(phone.locator('[data-terminal-paste]')).toBeVisible({ timeout: 30_000 })
+  await desk.focus()
+  await page.keyboard.type('e2e after the trust')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => stub.entered('e2e after the trust'), { timeout: 30_000, message: 'the line after the trust question' }).toBe(true)
+  expect(stub.typedLines()).not.toContain(PASTED)
+  expect(sent.some((f) => f.includes(PASTED)), 'the phone sent the text').toBe(false)
 })

@@ -487,23 +487,6 @@ func (w *PatternWatcher) Frame() (text string, settled, uncut bool, cols, rows i
 	return w.tracker.Last(), true, true, 0, 0
 }
 
-// Complete is the screen as one reading, under one lock, for what types
-// into it (a line to the startup question that takes one, #902): its text
-// (Lines), whether it is a frame the program finished and nothing since
-// has half begun (whole: Settled, uncut as DrawnAt says, and the parser
-// between sequences, Screen.Ground), and its width. The others' Last,
-// whole, 0.
-func (w *PatternWatcher) Complete() (text string, whole bool, cols int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if sc, ok := w.tracker.(*Screen); ok {
-		uncut, _, _ := sc.DrawnAt()
-		cols, _ = sc.Size()
-		return sc.Lines(), sc.Settled() && uncut && sc.Ground(), cols
-	}
-	return w.tracker.Last(), true, 0
-}
-
 // Sight is a screen as one reading of it (PatternWatcher.Seen): its text
 // (Whole's), whether it shows everything the program drew as it drew it
 // (DrawnAt's uncut), how many Feeds it had seen (Fed), its size and the

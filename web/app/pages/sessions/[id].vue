@@ -117,8 +117,7 @@ function answerQuestion(reply: QuestionReply) {
     .once(reply.question, () => t.answer(reply))
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
-      // Never a startup question's line (#902): a sign-in code is kept nowhere.
-      if (sent && 'text' in reply && reply.text && !reply.line) typedAnswers.remember(reply.question, reply.text)
+      if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
     })
     .catch((e: unknown) => toast.add(replyFailure(e)))
 }
@@ -204,7 +203,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean; openPaste: () => void } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -324,8 +323,8 @@ async function stop() {
   }
 }
 
-function reply(text: string, question?: string, line?: boolean) {
-  answerQuestion({ question, text, line })
+function reply(text: string, question?: string) {
+  answerQuestion({ question, text })
 }
 
 function option(index: number, question?: string) {
@@ -617,7 +616,7 @@ palette.registerPage(() => {
           />
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers @answer="decisionModal.open" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->

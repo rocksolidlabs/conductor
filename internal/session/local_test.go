@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,14 +29,7 @@ type fakeProc struct {
 	// onWrite, when set, runs in Write before the bytes arrive: what a
 	// process does as it is written to.
 	onWrite func()
-	// unread is what Unread says waits in the terminal not read yet: a
-	// test's, standing for output the program wrote that the pump has not
-	// read (the pipe hands the pump all it is written).
-	unread atomic.Int64
 }
-
-// Unread is the output not read yet (session's unreadOutput): unread.
-func (f *fakeProc) Unread() (int, error) { return int(f.unread.Load()), nil }
 
 func newFakeProc() *fakeProc {
 	r, w := io.Pipe()

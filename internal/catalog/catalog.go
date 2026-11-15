@@ -431,9 +431,6 @@ func validate(a Agent) error {
 		if q.AnswersFromScreen && (!q.Anytime || len(q.Answers) > 0) {
 			return fmt.Errorf("agent %s: questions[%d].answersFromScreen: only for a question asked at any time (anytime), with no answers of its own", a.ID, i)
 		}
-		if q.Line && (q.Anytime || len(q.Answers) > 0 || q.AnswersFromScreen || q.ModeAnswers != "" || q.TypedAnswers != "") {
-			return fmt.Errorf("agent %s: questions[%d].line: only for a question asked as the agent starts (not anytime), with no answers of its own", a.ID, i)
-		}
 		if q.ModeAnswers != "" {
 			if _, err := CompilePattern(q.ModeAnswers); err != nil {
 				return fmt.Errorf("agent %s: questions[%d].modeAnswers: %w", a.ID, i, err)
@@ -902,14 +899,6 @@ type Question struct {
 	// before one, its keys type into that field, so the question offers
 	// no choices and is answered in the terminal. A pattern as Prompt is.
 	TypedAnswers string `json:"typedAnswers,omitempty"`
-	// Line marks a startup question that asks for a line of text and offers
-	// no choices (Claude Code's sign-in screen, "Paste code here if
-	// prompted"): a controller's `answer` with text naming it is typed into
-	// the screen with its Enter, and kept nowhere. Only for a question asked
-	// as the agent starts (not Anytime) with no answers of its own: the trust
-	// question (TrustPrompt) never takes one, nor does a dialog with choices
-	// (an update dialog), whose Enter picks what it highlights.
-	Line bool `json:"line,omitempty"`
 }
 
 // MaxQuestions bounds Agent.Questions.

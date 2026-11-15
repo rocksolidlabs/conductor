@@ -142,8 +142,8 @@ function fail(title: string) {
 }
 
 /** A reply names the question the card or the bar showed (its id): one answered meanwhile takes nothing, and says so. */
-function reply(s: SessionInfo, text: string, question?: string, line?: boolean) {
-  quick.reply(s, text, { question, line }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
+function reply(s: SessionInfo, text: string, question?: string) {
+  quick.reply(s, text, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
 }
 
 function option(s: SessionInfo, index: number, question?: string) {
@@ -297,7 +297,7 @@ usePalette().registerPage(() => {
             @open-url="openUrl"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q, line) => reply(focused!, text, q, line)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
         <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">

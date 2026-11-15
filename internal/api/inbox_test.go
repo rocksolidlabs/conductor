@@ -17,9 +17,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/ext"
-	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
-	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -308,32 +306,6 @@ func TestInboxDecisionQuestionOffersNoReply(t *testing.T) {
 	sub := fs.owner(t, "Nate")
 	if err := fs.l.AnswerInput(context.Background(), sub, q, []byte("yes\r")); !errors.Is(err, session.ErrDecisionQuestion) {
 		t.Fatalf("a reply naming it: %v", err)
-	}
-}
-
-// Claude Code's sign-in screen, the startup question that takes a line
-// (#902), is an item with no line to send: a startup question's line is
-// taken from the session's question bar alone, which keeps it nowhere; a
-// line the decision page sent would be shown under its question there.
-func TestInboxSignInScreenOffersNoLine(t *testing.T) {
-	e := newTestEnv(t, nil)
-	claude, _ := catalog.Default().Get("claude")
-	w, err := agents.CompileRecipe(agents.Recipe(claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fs := newFakeSession(t, e, sessionHex("signin"), session.Options{TrustPattern: w.TrustPattern, TrustAnswers: w.TrustAnswers, Questions: w.Questions})
-	if err := fs.proc.Print("\x1b[2J\x1b[H Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in\r\n\r\n Paste code here if prompted > "); err != nil {
-		t.Fatal(err)
-	}
-	var a session.Attention
-	until(t, "the sign-in screen asked", func() bool {
-		a = fs.l.Info().Attention
-		return a.State == session.AttentionNeedsInput && a.Source == session.SourceTrust && a.Line
-	})
-	it := e.itemOf(t, questionRef(sessionHex("signin"), a.ID))
-	if slices.ContainsFunc(it.Actions, func(act inboxAction) bool { return act.Text }) {
-		t.Fatalf("the sign-in screen's item offers a line: %+v", it.Actions)
 	}
 }
 

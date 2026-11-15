@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, noReply, offeredChoices, takesLine, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
-import { MAX_SUBMIT, type Attention, type Role } from '~/utils/protocol'
+import { ANSWER_IN_TERMINAL, MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, noReply, offeredChoices, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
 /**
@@ -8,20 +8,14 @@ import { draftQuestion, questionOf } from '~/utils/reply'
  * decision as the decision: Answer opens its card. Without it (a shared session's viewer, whose link no decision route takes) the bar
  * says where the decision is answered, and emits nothing for it.
  */
-const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean; answers?: boolean }>()
+const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean; answers?: boolean; pastes?: boolean }>()
 /**
  * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
  * the plan a plan approval is about (#289), to open in the editor; `previewPlan` the same plan, to open rendered (#432); `answer` the
- * durable decision the question mirrors (`dr-7`), to open its card.
+ * durable decision the question mirrors (`dr-7`), to open its card; `paste` asks the page for its terminal's paste control
+ * (`pastes`: the session's page, which has it).
  */
-const emit = defineEmits<{
-  /** `line`: the text answers a startup question that takes a line (takesLine): the page keeps it nowhere once sent. */
-  reply: [text: string, question: string | undefined, line?: boolean]
-  option: [index: number, question: string | undefined]
-  openPlan: [path: string]
-  previewPlan: [path: string]
-  answer: [decision: string]
-}>()
+const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string]; previewPlan: [path: string]; answer: [decision: string]; paste: [] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -30,6 +24,9 @@ const held = computed(() => waitsForTerminal(props.attention))
 const heading = computed(() => waitingHeading(props.attention, props.agentName))
 // A permission dialog whose choices are not given (#288): its Enter would pick what it highlights, so it is answered in the terminal.
 const terminal = computed(() => answersInTerminal(props.attention))
+// A startup question with no choices (#902: a sign-in screen that asks for a code): answered in the terminal, whose paste control
+// the session's page opens from here.
+const startup = computed(() => startupInTerminal(props.attention))
 // A question that mirrors a durable decision (decisionOf) is answered as the decision: no reply field, choice or number key.
 const decision = computed(() => decisionOf(props.attention))
 const options = computed(() => offeredChoices(props.attention))
@@ -51,25 +48,6 @@ function send() {
   if (!t || !canReply.value) return
   emit('reply', t, draftFor.value)
   text.value = ''
-}
-
-/**
- * A startup question that takes a line (#902: a sign-in screen's code): its own field, a controller's only, whose text is a
- * credential for a moment. It is held in this field alone, never in a draft, the browser's storage or the page's state, and
- * emptied as it is sent and whenever the question shown changes; it names the question shown as it is sent.
- */
-const line = computed(() => takesLine(props.attention))
-const lineText = ref('')
-const canLine = computed(() => !props.busy && props.role === 'control' && line.value)
-watch(
-  () => props.attention?.id,
-  () => (lineText.value = ''),
-)
-function sendLine() {
-  const t = lineText.value.trim()
-  lineText.value = ''
-  if (!t || !canLine.value) return
-  emit('reply', t, questionOf(props.attention), true)
 }
 
 function pick(i: number) {
@@ -140,26 +118,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" :class="i === first ? 'opacity-70' : ''" /></template>
       </UButton>
     </div>
-    <!-- The line a startup question asks for (#902: a sign-in code pasted from a phone's browser): a plain field, no autofill or
-         correction, its own Send; it names the question shown as it is sent. -->
-    <form v-else-if="line" class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 flex-wrap items-center gap-x-2 gap-y-1 sm:flex-none" data-quick-reply-line @submit.prevent="sendLine">
-      <UInput
-        v-model="lineText"
-        size="sm"
-        class="w-64 min-w-0 max-w-full flex-1 sm:flex-none"
-        :placeholder="role === 'control' ? `Paste or type what ${agentName} asks for` : 'View only'"
-        :disabled="!canLine"
-        :maxlength="MAX_SUBMIT"
-        autocomplete="off"
-        autocapitalize="off"
-        autocorrect="off"
-        :spellcheck="false"
-        enterkeyhint="send"
-        aria-label="The line the agent asks for"
-      />
-      <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canLine || !lineText.trim()" />
-      <p class="basis-full text-xs text-muted" data-quick-reply-line-note>Conductor keeps it nowhere. What {{ agentName }} shows as it is typed, this session's viewers see.</p>
-    </form>
+    <!-- A startup question with no choices is answered in the terminal (#902): no field takes it here; on the session's page a
+         controller's button opens the terminal's paste control, which sends no Enter. -->
+    <div v-else-if="startup" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2" data-quick-reply-startup>
+      <span class="text-xs text-muted">{{ ANSWER_IN_TERMINAL }}</span>
+      <UButton v-if="pastes && role === 'control'" label="Paste into the terminal" icon="i-lucide-clipboard-paste" size="sm" color="neutral" variant="soft" class="max-w-full" data-quick-reply-paste @click="emit('paste')" />
+    </div>
     <!-- The form shrinks with its pane (the terminal's, beside the editor: Codex's round on #309) rather than overflowing it. -->
     <form v-else class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" @submit.prevent="send">
       <UInput v-model="text" size="sm" class="w-64 min-w-0 max-w-full flex-1 sm:flex-none" :placeholder="placeholder" :disabled="!canReply" />

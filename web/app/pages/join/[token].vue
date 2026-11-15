@@ -252,8 +252,7 @@ function answerQuestion(reply: QuestionReply) {
     .once(reply.question, () => t.answer(reply))
     // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
     .then((sent) => {
-      // Never a startup question's line (#902): a sign-in code is kept nowhere.
-      if (sent && 'text' in reply && reply.text && !reply.line) typedAnswers.remember(reply.question, reply.text)
+      if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
     })
     .catch((e: unknown) => toast.add(replyFailure(e)))
 }
@@ -384,8 +383,8 @@ function backToCrew() {
   fetchInfo()
 }
 
-function reply(text: string, question?: string, line?: boolean) {
-  answerQuestion({ question, text, line })
+function reply(text: string, question?: string) {
+  answerQuestion({ question, text })
 }
 
 function option(index: number, question?: string) {

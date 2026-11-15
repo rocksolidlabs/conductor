@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, OPEN_TO_ANSWER, takesLine, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -178,34 +178,25 @@ describe("a durable decision's question (Program item DR1)", () => {
   })
 })
 
-describe('a startup question that takes a line (#902)', () => {
-  const signIn: Attention = { state: 'needs_input', source: 'trust', kind: 'prompt', id: 'q1', message: "Browser didn't open? Use the url below to sign in", line: true }
+describe('a startup question with no choices (#902)', () => {
+  const signIn: Attention = { state: 'needs_input', source: 'trust', kind: 'prompt', id: 'q1', message: "Browser didn't open? Use the url below to sign in" }
   const trust: Attention = { state: 'needs_input', source: 'trust', kind: 'prompt', id: 'q2', message: 'Is this a project you created or one you trust?', options: [{ label: 'Yes, I trust this folder', input: '\x1b[B\r' }, { label: 'No, exit', input: '\r' }] }
 
-  it('is the sign-in screen its catalog marks, and nothing else', () => {
-    expect(takesLine(signIn)).toBe(true)
-    // The folder's trust question and an update dialog have choices; a mark on one is no line (the owner refuses it too).
-    expect(takesLine(trust)).toBe(false)
-    expect(takesLine({ ...trust, line: true })).toBe(false)
-    // A startup screen no entry marks (a theme, a login method), and the sign-in from an older owner that sends no mark.
-    expect(takesLine({ ...signIn, line: undefined })).toBe(false)
-    // A question asked during the work, an agent's own, one that mirrors a decision, one gone.
-    expect(takesLine({ ...signIn, source: 'question' })).toBe(false)
-    expect(takesLine({ ...signIn, source: 'api' })).toBe(false)
-    expect(takesLine({ ...signIn, decision: 'dr-7' })).toBe(false)
-    expect(takesLine({ ...signIn, state: '' })).toBe(false)
-    expect(takesLine(undefined)).toBe(false)
+  it('is answered in the terminal, and takes no typed reply anywhere', () => {
+    expect(startupInTerminal(signIn)).toBe(true)
+    expect(noReply(signIn)).toBe(ANSWER_IN_TERMINAL)
+    for (const role of ['control', 'view'] as Role[]) expect(takesReply(signIn, role)).toBe(false)
+    expect(startupInTerminal({ ...signIn, options: [] })).toBe(true)
   })
 
-  it('takes no typed reply anywhere but the question bar, and a startup question with no choices none at all', () => {
-    // The sidebar's row, Needs you, the Yard's queue and the palette send the session to its bar.
-    expect(noReply(signIn)).toBe(OPEN_TO_ANSWER)
-    expect(takesReply(signIn, 'control')).toBe(false)
-    // A startup screen with no choices that takes no line: its Enter would pick what it highlights (#902; refused by the owner).
-    expect(noReply({ ...signIn, line: undefined })).toBe(ANSWER_IN_TERMINAL)
-    expect(takesReply({ ...signIn, line: undefined }, 'control')).toBe(false)
-    // One with choices is answered with them, as before.
+  it('is none of the others: one with choices is answered with them, and a question of any other source is as before', () => {
+    expect(startupInTerminal(trust)).toBe(false)
     expect(noReply(trust)).toBeUndefined()
     expect(offeredChoices(trust)).toEqual(trust.options)
+    expect(startupInTerminal({ ...signIn, source: 'question' })).toBe(false)
+    expect(startupInTerminal({ ...signIn, source: 'api' })).toBe(false)
+    expect(noReply({ ...signIn, source: 'api' })).toBeUndefined()
+    expect(startupInTerminal({ ...signIn, state: '' })).toBe(false)
+    expect(startupInTerminal(undefined)).toBe(false)
   })
 })

@@ -16,19 +16,12 @@ import (
 // folder's trust and the sign-in screen.
 func claudeStartupQuestions(t *testing.T) []StartupQuestion {
 	t.Helper()
-	return builtInStartupQuestions(t, "claude")
-}
-
-// builtInStartupQuestions are the startup questions of the built-in
-// catalog entry id (those not asked at any time), the line mark with them.
-func builtInStartupQuestions(t *testing.T, id string) []StartupQuestion {
-	t.Helper()
-	agent, ok := catalog.Default().Get(id)
+	claude, ok := catalog.Default().Get("claude")
 	if !ok {
-		t.Fatalf("no built-in %s", id)
+		t.Fatal("no built-in claude")
 	}
 	var out []StartupQuestion
-	for _, q := range agent.Questions {
+	for _, q := range claude.Questions {
 		if q.Anytime {
 			continue
 		}
@@ -36,7 +29,7 @@ func builtInStartupQuestions(t *testing.T, id string) []StartupQuestion {
 		for i, a := range q.Answers {
 			answers[i] = Option{Label: a.Label, Input: a.Input}
 		}
-		sq := StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Answers: answers, Line: q.Line}
+		sq := StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Answers: answers}
 		if q.Words != "" {
 			sq.Words = regexp.MustCompile(q.Words)
 		}

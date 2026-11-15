@@ -453,21 +453,6 @@ type Local struct {
 	// written (input) come to what follows their write, with the keys.
 	beforeEnter   atomic.Pointer[func()]
 	beforeWritten atomic.Pointer[func(data []byte)]
-	// atLineGuard, a test's hook, runs as the writer takes a line's write
-	// to the startup question that takes one (its text: nil; its Enter),
-	// before its judgement (lineGuard); inLineWait as lineReady begins to
-	// wait; beforeLineResolved as the line's Enter is written, before its
-	// question is resolved (resolveLine). lineClock, a test's, is the
-	// clock lineQuiet is measured on (lineNow).
-	atLineGuard        atomic.Pointer[func(data []byte)]
-	inLineWait         atomic.Pointer[func()]
-	beforeLineResolved atomic.Pointer[func()]
-	lineClock          atomic.Pointer[func() time.Time]
-	// outRead and outFed count the output's reads the pump has made and
-	// those it has fed to the screens; fedAt is when it last fed one, on
-	// the session's clock (lineNow), in Unix nanoseconds (lineCaughtUp).
-	outRead, outFed atomic.Uint64
-	fedAt           atomic.Int64
 	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
 	// begins (screenQuiet), before it takes the session's lock; beforeHold
 	// as holdTyped begins, before the hold of the turn is installed;
@@ -640,7 +625,6 @@ func (s *Local) pump() {
 		// ended turn's (scanOutput).
 		turn := s.turn.Load()
 		if n > 0 {
-			s.outRead.Add(1)
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 			if hook := s.beforeScan.Load(); hook != nil {
@@ -664,10 +648,6 @@ func (s *Local) pump() {
 			if s.asked != nil && !title {
 				left = s.feedAsked(chunk)
 			}
-			// Fed, and when (lineCaughtUp): a title alone too, which feeds
-			// nothing and was read all the same.
-			s.fedAt.Store(s.lineNow().UnixNano())
-			s.outFed.Add(1)
 			s.feedMu.Unlock()
 			// The screen a submission's prompt is looked for on (atPrompt)
 			// takes it too before any viewer has it, and before the output
@@ -1187,11 +1167,7 @@ func (s *Local) fireTrust(text string) {
 			// is never asked.
 			return
 		}
-		rules := unlessWaiting | startupLook
-		if q.Line && len(q.Answers) == 0 {
-			rules |= takesLine
-		}
-		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), rules, anyTurn, s.trust.LookedAt(), "")
+		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
 		if len(q.Answers) == 0 {
 			if hook := s.afterAsked.Load(); hook != nil {
 				(*hook)()
@@ -1295,59 +1271,6 @@ func (s *Local) startupOnScreen() bool {
 	whole, _, _, _ := s.asked.Whole()
 	uncut, _, _ := s.asked.DrawnAt()
 	return uncut && s.lastStartup(whole) != ""
-}
-
-// asksLine reports whether the session shows id as the startup question
-// that takes a line (Attention.Line).
-func (s *Local) asksLine(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	att := s.info.Attention
-	return id != "" && att.ID == id && att.State == AttentionNeedsInput && att.Source == SourceTrust && att.Line
-}
-
-// lineFitsLocked is the judgement of a reply's line from by to the
-// question named id, its Enter after it (#902; lineHolds): by is a
-// controller (a viewer's answer, never Conductor's own text), id the
-// startup question the session shows, marked as one that takes a line
-// (Attention.Line), and one reading of the screen (Complete: its text,
-// whether it is whole and its width together) shows a frame the program
-// finished, nothing of the next half received, that question as the only
-// startup question on it, with its words, no dialog asked during the work
-// and no numbered choice. Every other startup question (the trust
-// question, an update dialog, any with choices or none that is not
-// marked) takes no line: its Enter would pick what it highlights. judged
-// is false only while the screen is not whole: what a line waits for. The
-// caller holds feedMu and mu, which output fed to the screen and a resize
-// take (pump, sized).
-func (s *Local) lineFitsLocked(id string, by *Subscription) (fits, judged bool) {
-	if id == "" || by == nil || s.trust == nil || !s.trust.Watching() || s.asked == nil {
-		return false, true
-	}
-	att := s.info.Attention
-	if att.ID != id || att.State != AttentionNeedsInput || att.Source != SourceTrust || !att.Line || len(att.Options) != 0 || att.Decision != "" {
-		return false, true
-	}
-	text, whole, cols := s.asked.Complete()
-	if !whole {
-		return false, false
-	}
-	if startupChoiceShown(text) {
-		return false, true
-	}
-	if q, _, _, _ := s.askedIn(text, cols); q != nil {
-		return false, true
-	}
-	var shown *StartupQuestion
-	for i := range s.questions {
-		if q := &s.questions[i]; q.Pattern.MatchString(text) {
-			if shown != nil {
-				return false, true
-			}
-			shown = q
-		}
-	}
-	return shown != nil && shown.Line && len(shown.Answers) == 0 && sameWords(shown.words(text), att.words()), true
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a
@@ -1466,11 +1389,6 @@ type StartupQuestion struct {
 	// highlight stands before one, the dialog's keys type into its field,
 	// and the question offers no choices.
 	Typed *regexp.Regexp
-	// Line marks a startup question with no answers that takes a line of
-	// text (the catalog's line: Claude Code's sign-in screen): a
-	// controller's reply naming it is typed into it with its Enter
-	// (lineReady). Ignored on a question with answers or asked at any time.
-	Line bool
 }
 
 // read returns what text, the screen the questions asked during the work
@@ -1960,9 +1878,6 @@ const (
 	// question asked during the work (keepAsked), whether or not it spends
 	// a token here (a forwarded report paid on the server).
 	fromReport
-	// takesLine (fireTrust) marks a startup question with no answers that
-	// takes a line of text (StartupQuestion.Line): Attention.Line.
-	takesLine
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -2361,8 +2276,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
 	}
-	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list,
-		Line: rules&takesLine != 0 && state == AttentionNeedsInput && source == SourceTrust && len(options) == 0}
+	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
 	// The plan the change names rides its question; the approval's dialog
 	// read off the screen (planApproval) that takes the place of a wait
 	// carrying one (the hook's report of that approval) keeps it; any
@@ -2489,7 +2403,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan, Decision: att.Decision, Line: att.Line}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan, Decision: att.Decision}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -3633,12 +3547,7 @@ func (s *Local) claimLocked(id, decision string) (uint64, error) {
 	case SourceQuestion:
 		s.noteDialogAnswered(att.words())
 	case SourceTrust:
-		// A question that takes a line is not noted answered by its words:
-		// drawn again after its line (a code the program refused), it is
-		// asked again, to take another.
-		if !att.Line {
-			s.startupAnsweredWords = att.words()
-		}
+		s.startupAnsweredWords = att.words()
 	}
 	return c.token, nil
 }
@@ -5582,8 +5491,6 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeDecision, err.Error()
 	case errors.Is(err, ErrQuestionAnswered):
 		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
-	case errors.Is(err, ErrLineMoved):
-		msg = LineMovedWords
 	case errors.Is(err, ErrLineStranded):
 		msg = LineStrandedWords
 	case errors.Is(err, ErrTrustQuestion):
@@ -5713,24 +5620,8 @@ const maxLastLine = 200
 
 // LastLine is the last line of output the session kept that is not blank,
 // its escape sequences stripped and cut to at most maxLastLine bytes: what
-// an agent printed as it exited ("Please run /login"). It is "" while the
-// screen shows a startup question, and when the line holds one's words:
-// what is copied from it into a record that lasts (a Brakeman request's)
-// is never what a sign-in screen drew as a code was typed into it (#902).
+// an agent printed as it exited ("Please run /login").
 func (s *Local) LastLine() string {
-	if s.asked != nil {
-		if text, _, _ := s.asked.Complete(); s.lastStartup(text) != "" {
-			return ""
-		}
-	}
-	if l := s.lastLine(); s.lastStartup(l) == "" {
-		return l
-	}
-	return ""
-}
-
-// lastLine is LastLine's read of the output kept.
-func (s *Local) lastLine() string {
 	text := strings.ReplaceAll(string(StripANSI(s.ring.Snapshot())), "\r", "\n")
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

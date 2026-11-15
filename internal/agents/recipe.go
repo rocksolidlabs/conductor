@@ -26,7 +26,7 @@ func Recipe(a catalog.Agent) *proto.HostRecipe {
 	for _, q := range a.Questions {
 		r.Questions = append(r.Questions, proto.RecipeQuestion{
 			Prompt: q.Prompt, Words: q.Words, Anytime: q.Anytime, Answers: recipeAnswers(q.Answers),
-			AnswersFromScreen: q.AnswersFromScreen, ModeAnswers: q.ModeAnswers, TypedAnswers: q.TypedAnswers, Line: q.Line,
+			AnswersFromScreen: q.AnswersFromScreen, ModeAnswers: q.ModeAnswers, TypedAnswers: q.TypedAnswers,
 		})
 	}
 	if r.TrustPrompt == "" && len(r.TrustAnswers) == 0 && len(r.Questions) == 0 && r.WorkingTitle == "" && !r.ConfirmSubmit {
@@ -85,9 +85,7 @@ func CompileRecipe(r *proto.HostRecipe) (Watch, error) {
 	}
 	w.TrustAnswers = sessionOptions(r.TrustAnswers)
 	for _, q := range r.Questions {
-		// Only a startup question with no answers takes a line, whatever the
-		// recipe says (catalog.Question.Line).
-		sq := session.StartupQuestion{Anytime: q.Anytime, Answers: sessionOptions(q.Answers), FromScreen: q.AnswersFromScreen && q.Anytime, Line: q.Line && !q.Anytime && len(q.Answers) == 0}
+		sq := session.StartupQuestion{Anytime: q.Anytime, Answers: sessionOptions(q.Answers), FromScreen: q.AnswersFromScreen && q.Anytime}
 		if sq.Pattern, err = catalog.CompilePattern(q.Prompt); err != nil {
 			return Watch{}, ErrRecipeQuestion
 		}
