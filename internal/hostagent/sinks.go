@@ -268,6 +268,8 @@ func errorCode(reason error) string {
 	switch reason.Error() {
 	case "session: link revoked":
 		return proto.ErrCodeRevoked
+	case "session: link expired":
+		return proto.ErrCodeExpired
 	case "session: slow consumer":
 		return proto.ErrCodeSlowConsumer
 	}

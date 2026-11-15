@@ -285,12 +285,21 @@ type Lane struct{ s *Server }
 // Lane is the server's lane, which a publisher hands its connections.
 func (s *Server) Lane() *Lane { return &Lane{s: s} }
 
-// LinkEnded says whether this server's link store holds linkID as no
-// longer live, revoked or past its expiry (hostagent.Decisions), in one
-// read of it (share.Store.Live). A link it does not hold is not ended.
-func (l *Lane) LinkEnded(linkID string) bool {
-	_, err := l.s.links.Live(linkID)
-	return errors.Is(err, share.ErrRevoked) || errors.Is(err, share.ErrExpired)
+// LinkEnded is what this server's link store holds of linkID
+// (hostagent.Decisions), in one read of it (share.Store.Stands): revoked
+// from the moment its revoke begins, expired once past its expiry, else
+// when it expires. A link it does not hold is not ended.
+func (l *Lane) LinkEnded(linkID string) (time.Time, error) {
+	link, err := l.s.links.Stands(linkID)
+	switch {
+	case errors.Is(err, share.ErrExpired):
+		return time.Time{}, session.ErrExpired
+	case errors.Is(err, share.ErrRevoked):
+		return time.Time{}, session.ErrRevoked
+	case err != nil || link.ExpiresAt == nil:
+		return time.Time{}, nil
+	}
+	return *link.ExpiresAt, nil
 }
 
 // SetSwitchyardDecisions says whether this server's host connections say,

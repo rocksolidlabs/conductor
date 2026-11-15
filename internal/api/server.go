@@ -599,7 +599,15 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// The run is gone here: its records go with it, settled
 		// (forgetRemote), their revokes carried once more below.
 		s.forgetRemote("", run.ID, "", true)
-		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
+		// A link revoked here whose revoke is still owed there stays
+		// revoked here until that revoke is taken (Settle, below).
+		var owed []string
+		for _, rl := range remote {
+			if rl.revokePending {
+				owed = append(owed, rl.ID)
+			}
+		}
+		if live := s.links.DeleteRun(run.ID, owed...); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
 		if (len(carriers) > 0 && len(remote) > 0) || desk != nil {
@@ -805,17 +813,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.dropLinkFile(linkID)
 		if l, ok := s.links.Get(linkID); ok && l.Remote {
 			s.remoteRevoked(l)
-			// Its viewers through the switchyard are attached to the
-			// members' sessions here: each ends them as a session's own
-			// link's revoke does (OnRevoke), with neither the store's lock
-			// nor the publications' held.
-			if run, ok := s.runs.Get(runID); ok {
-				for _, m := range run.Members {
-					if d, ok := s.registry.Get(m.SessionID); ok && m.SessionID != "" {
-						d.DisconnectLink(linkID)
-					}
-				}
-			}
+			// Its viewers through the switchyard are on this server's
+			// sessions and its runs' desks: all are ended at once
+			// (disconnectLinks), with neither the store's lock nor the
+			// publications' held.
+			s.disconnectLinks([]string{linkID})
 			return
 		}
 		// A switchyard's group link holds viewers on its group's sessions
@@ -869,9 +871,9 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 
 // disconnectLinks closes the viewers attached through any of linkIDs, run
 // links, and returns once they are closed. Their viewers may be on any session
-// that was a member of the run, the run forgotten meanwhile included: every
-// session is asked, all at once, since each close waits for its viewer's
-// reply.
+// that was a member of the run, the run forgotten meanwhile included, or on
+// a run's desk at the switchyard: every session and every desk is asked,
+// all at once, since each close waits for its viewer's reply.
 func (s *Server) disconnectLinks(linkIDs []string) {
 	var wg sync.WaitGroup
 	s.registry.Each(func(d session.Driver) {
@@ -881,6 +883,16 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 			}
 		})
 	})
+	s.pubMu.Lock()
+	for _, rd := range s.desks {
+		desk := rd.desk
+		wg.Go(func() {
+			for _, id := range linkIDs {
+				desk.DisconnectLink(id)
+			}
+		})
+	}
+	s.pubMu.Unlock()
 	wg.Wait()
 	s.closeDesks(nil, linkIDs...)
 }

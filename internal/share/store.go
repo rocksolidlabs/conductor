@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -156,7 +157,22 @@ type Store struct {
 	// Log, when set, is told of a revoke or an expiry that returned with
 	// acts still under way, and how many. Set before the store is used.
 	Log *slog.Logger
+
+	// kept are the marks of links revoked here and forgotten with their
+	// run while their revoke was owed elsewhere (DeleteRun's owed), oldest
+	// first, at most MaxKept: the link's id and expiry, no token.
+	kept []keptMark
 }
+
+// keptMark is a link revoked here that the store keeps knowing as revoked
+// after it forgot the link (Stands), until Settle or its expiry.
+type keptMark struct {
+	id        string
+	expiresAt *time.Time
+}
+
+// MaxKept bounds the marks DeleteRun keeps; past it the oldest goes.
+const MaxKept = 256
 
 // NewStore creates an empty store.
 func NewStore() *Store {
@@ -437,6 +453,40 @@ func (s *Store) Live(linkID string) (*Link, error) {
 	return copyLink(link), nil
 }
 
+// Stands is Live counting a revoke or an expiry from its beginning: once
+// the link's barrier has begun (end), why (ErrRevoked, ErrExpired), as
+// Held.Stands answers; for a link forgotten with its revoke owed
+// (DeleteRun's owed), ErrRevoked until Settle or its expiry; else what
+// Live answers.
+func (s *Store) Stands(linkID string) (*Link, error) {
+	s.mu.RLock()
+	l, ok := s.byID[linkID]
+	kept := !ok && slices.ContainsFunc(s.kept, func(k keptMark) bool {
+		return k.id == linkID && (k.expiresAt == nil || s.now().Before(*k.expiresAt))
+	})
+	s.mu.RUnlock()
+	if kept {
+		return nil, ErrRevoked
+	}
+	if ok && l.acts != nil {
+		l.acts.mu.Lock()
+		ended, why := l.acts.isEnded(), l.acts.why
+		l.acts.mu.Unlock()
+		if ended {
+			return nil, why
+		}
+	}
+	return s.Live(linkID)
+}
+
+// Settle forgets the kept mark of linkID (DeleteRun's owed): its revoke
+// was taken where it was owed, or the link is known gone there.
+func (s *Store) Settle(linkID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kept = slices.DeleteFunc(s.kept, func(k keptMark) bool { return k.id == linkID })
+}
+
 // Get returns a link by ID.
 func (s *Store) Get(linkID string) (*Link, bool) {
 	s.mu.RLock()
@@ -710,14 +760,21 @@ func (s *Store) Count() int {
 
 // DeleteRun forgets every link of a run, as DeleteSession does a session's,
 // and returns the IDs of those that were not revoked: viewers may still be
-// attached through them.
-func (s *Store) DeleteRun(runID string) []string {
+// attached through them. Each of owed, a link of the run revoked here
+// whose revoke is owed elsewhere (a switchyard's), keeps its mark
+// (Stands) until Settle, its expiry, or MaxKept newer marks.
+func (s *Store) DeleteRun(runID string, owed ...string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var live []string
 	for id, l := range s.byRun[runID] {
 		if !l.Revoked {
 			live = append(live, id)
+		} else if slices.Contains(owed, id) {
+			s.kept = append(s.kept, keptMark{id: id, expiresAt: l.ExpiresAt})
+			if len(s.kept) > MaxKept {
+				s.kept = slices.Delete(s.kept, 0, len(s.kept)-MaxKept)
+			}
 		}
 		delete(s.byHash, l.hash)
 		delete(s.byID, id)

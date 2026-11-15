@@ -142,6 +142,30 @@ func (k *Desk) Revoke(ctx context.Context, linkID string) error {
 	return k.a.requestRevoke(ctx, linkID)
 }
 
+// DisconnectLink ends the desk's viewers that came with linkID, as a
+// revoke here ends a session's (session.Local.DisconnectLink): nothing of
+// theirs is acted on from now on (peer.letGo), and each is told revoked
+// through the switchyard, which closes it and tells this host it left, as
+// a viewer let go for its reads is (deskLetGo). It does not wait.
+func (k *Desk) DisconnectLink(linkID string) {
+	why := error(session.ErrRevoked)
+	code, msg, _ := session.LinkRefusal(why)
+	k.a.mu.Lock()
+	var hit []*peer
+	for _, p := range k.a.peers {
+		if p.linkID == linkID {
+			hit = append(hit, p)
+		}
+	}
+	k.a.mu.Unlock()
+	for _, p := range hit {
+		p.letGo.CompareAndSwap(nil, &why)
+		if !k.a.sendViewerError(p.id, code, msg) {
+			go p.close()
+		}
+	}
+}
+
 // HeldLinks is what the switchyard last said it holds of the run's links
 // for the desk (Published.HeldLinks).
 func (k *Desk) HeldLinks() ([]string, bool) { return k.a.heldLinks() }

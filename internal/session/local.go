@@ -5450,13 +5450,17 @@ func (s *Local) Resize(sub *Subscription, cols, rows uint16) error {
 // refused with ErrNotSizer, except from one of the owner's own windows
 // while nobody holds the size. With take (Fit to my window) any controller
 // becomes the sizer. Every viewer hears who sizes it in the resize frame's
-// By, a change of sizer at the same size included.
+// By, a change of sizer at the same size included. A viewer whose link no
+// longer opens the session is refused, as its keys are (revoked).
 func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
 	if !proto.ValidDimension(cols) || !proto.ValidDimension(rows) {
 		return ErrBadDimension
+	}
+	if err := revoked(sub); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
