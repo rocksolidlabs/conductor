@@ -243,9 +243,11 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437).** The full sidebar opens at its minimum, 12.5 rem
-  (200 px) on every screen, and a drag on its edge widens it up to 26 % of the
-  window, never below the minimum; a drag on toward the window's left edge
+- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
+  16.75 rem (268 px) on every screen, which shows its header's every part
+  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
+  drag on its edge widens it up to 26 % of the window, never less than the
+  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
@@ -254,6 +256,50 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **The app's screens: eight defects the owner met (#702, #706, #906,
+  2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
+  wait for the open pull requests that hold their files.
+  - #702: the sidebar's filter spans the list as Launch agent does, in the
+    sidebar and on the phone's list (`sidebar.spec.ts`, "the filter lines
+    up with Launch agent").
+  - #706 and #906 row 4: the sidebar opens at 16.75 rem (268 px), the
+    header whole with 10 px to spare beside its items, "Conductor" and
+    "Launch agent" whole; a wider font shortens the name, its whole text in
+    its title, and no control leaves the bar; the most a drag reaches is
+    never less than 348 px, so the handle widens it at 1024 wide. A width
+    an earlier version saved below 268 px opens at 268 px, the stored value
+    kept until the next drag. The cost: the session page's terminal at
+    1440 wide has 92 columns (about 100 at #437's 200 px), at 1280 wide 72
+    (about 80) (`sidebar.spec.ts`, the header, the wider font and the
+    1024 range; `sidebar.test.ts`).
+  - #906 row 7: Shared with you keeps its heading whole and its count on
+    one line; Forget shows over the row's corner on hover and takes no
+    click while hidden; on a touch screen it always shows, and a tap
+    beside it opens the link (`sidebar.spec.ts`, "Shared with you" and
+    "Shared with you on a touch screen").
+  - #906 row 2: the Yard queue's choices wrap, none cut off the card; a
+    shortened one has its whole label in its title, a choice that changes
+    the permission mode its label and what it does (`choices.spec.ts`).
+  - #906 row 3 (and #374's first point): the welcome's three choices one
+    to a row at equal widths, each label whole (`welcome.spec.ts`).
+  - #906 row 5: the token dialog says the server prints the path of the
+    file that keeps a token it made, never the token (`welcome.spec.ts`).
+  - #906 row 9: a view that follows another window's size never draws the
+    grid larger than its own text, for every window, the workbench's own
+    included: a Yard tile's few rows show at 13 px with room around them,
+    not blown up to fill the pane. Where the window may take the size the
+    "Fit to my window" chip is there; a view-only link has one line under
+    the grid, "Another window sets this session's size."
+    (`terminalSizer.test.ts`; `sizing.spec.ts`).
+  - The Review view's draft keeps its 24 rem beside the diff: the page's
+    width class was dropped by the draft's three roots, and with the wider
+    sidebar the diff was squeezed to 127 px at 1440 wide, which failed
+    `review.spec.ts` in CI (the spec now checks both widths).
+  - Each new spec test checks again after a redraw it causes (a drag, a
+    resize, the question asked again, a page left and come back to).
+    Checks: typecheck, typecheck of the specs, vitest whole, and the four
+    specs with `--repeat-each 10` and once more beside a Go race package
+    as load; the pull request's Verification has the counts.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
