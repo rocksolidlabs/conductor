@@ -10,13 +10,12 @@ import (
 )
 
 // A viewer that came with a link is judged by the publisher's own link
-// store too (Decisions.LinkEnded), at its attach and at each act, a resize
-// among them: a link the publisher holds as ended is refused revoked or
-// expired, as the store says, in the words a page shows, and nothing of
-// its viewer's is written; one it holds is granted until its expiry there,
-// the session ending the viewer then. A host with no Decisions (`conductor
-// host`) asks nothing, a viewer with no link is never asked about, and an
-// attach refused for anything else is answered as it always was.
+// store too (Decisions.LinkEnded), at its attach and at each act: a link
+// the publisher holds as ended is refused revoked or expired, as the store
+// says, in the words a page shows, and nothing of its viewer's is written.
+// A host with no Decisions (`conductor host`) asks nothing, a viewer with
+// no link is never asked about, and an attach refused for anything else is
+// answered as it always was.
 
 // endedHost is a host of a session on a FakeProc whose publisher answers
 // with d (nil: none), its server heard from all along, its session taking
@@ -110,21 +109,22 @@ var endedHere = []struct {
 }
 
 // A viewer that joins with a link the publisher holds as ended is refused
-// at its attach, in the store's word, the publisher asked; it is acted on
-// no more while the switchyard closes it, and the process's next write is
-// the owner's.
+// at its attach, in the store's word, from the one answer the attach's own
+// check got: the store forgets the link as it answers, and is asked once.
+// The viewer is acted on no more while the switchyard closes it, and the
+// process's next write is the owner's.
 func TestALinkThePublisherHoldsEndedIsRefusedAtTheAttach(t *testing.T) {
 	for _, c := range endedHere {
 		t.Run(c.name, func(t *testing.T) {
-			d := &fakeDecisions{}
+			d := &fakeDecisions{forgets: true}
 			d.ended.Store("l1", c.why)
 			h := newEndedHost(t, d, editOpts())
 			guest := h.join("0123456789abcdef", "l1")
 			if m := h.refusal(guest); m.Code != c.code || m.Message != c.words {
 				t.Fatalf("the attach was refused with %+v, want %s %q", m, c.code, c.words)
 			}
-			if d.endedAsks.Load() == 0 {
-				t.Fatal("the publisher was not asked at the attach")
+			if n := d.endedAsks.Load(); n != 1 {
+				t.Fatalf("the publisher was asked %d times at the attach, want once", n)
 			}
 			guest.key("g")
 			owner := h.viewer("fedcba9876543210", "")
@@ -138,8 +138,7 @@ func TestALinkThePublisherHoldsEndedIsRefusedAtTheAttach(t *testing.T) {
 
 // A viewer attached while its link stood is refused at its next act once
 // the publisher holds the link as ended, in the store's word: its keys are
-// never written, and a resize it asks for (Fit to my window) leaves the
-// process's size as it was, refused as its keys are; the owner's go on.
+// never written; the owner's go on.
 func TestALinkThePublisherHoldsEndedIsRefusedAtTheNextAct(t *testing.T) {
 	for _, c := range endedHere {
 		t.Run(c.name, func(t *testing.T) {
@@ -151,11 +150,6 @@ func TestALinkThePublisherHoldsEndedIsRefusedAtTheNextAct(t *testing.T) {
 			if got := typedNext(t, h.proc); got != "a" {
 				t.Fatalf("the standing link's keys were written as %q", got)
 			}
-			guest.send(proto.Resize{T: proto.CtlResize, Cols: 90, Rows: 30, Take: true})
-			guest.sync()
-			if cols, rows := h.proc.Size(); cols != 90 || rows != 30 {
-				t.Fatalf("the standing link's resize made %dx%d", cols, rows)
-			}
 			asked := d.endedAsks.Load()
 			d.ended.Store("l1", c.why)
 			guest.key("b")
@@ -163,36 +157,11 @@ func TestALinkThePublisherHoldsEndedIsRefusedAtTheNextAct(t *testing.T) {
 			if d.endedAsks.Load() <= asked {
 				t.Fatal("the publisher was not asked at the act")
 			}
-			guest.send(proto.Resize{T: proto.CtlResize, Cols: 99, Rows: 33, Take: true})
-			refusedFor(t, guest.first(func(m map[string]any) bool { return m["t"] == proto.CtlError }), c.code, c.words)
-			if cols, rows := h.proc.Size(); cols != 90 || rows != 30 {
-				t.Fatalf("the process was sized %dx%d by a viewer whose link ended", cols, rows)
-			}
 			owner.key("o")
 			if got := typedNext(t, h.proc); got != "o" {
 				t.Fatalf("the process was written %q before the owner's keys", got)
 			}
 		})
-	}
-}
-
-// A link the publisher holds is granted until its expiry there: a viewer
-// admitted while the store still held it (its clock behind the session's)
-// is ended by the session at that expiry, told expired over its transport,
-// and its keys are never written.
-func TestALinkThePublisherHoldsIsGrantedUntilItsExpiry(t *testing.T) {
-	d := &fakeDecisions{}
-	d.until.Store("l1", time.Now().Add(-time.Second))
-	h := newEndedHost(t, d, editOpts())
-	guest := h.join("0123456789abcdef", "l1")
-	refusedFor(t, guest.first(func(m map[string]any) bool { return m["t"] == proto.CtlError }), proto.ErrCodeExpired, session.ErrExpired.Error())
-	// Its data channel closed after the word, or about to: keys it sends
-	// now go nowhere, whether its channel takes them or not.
-	_ = guest.dc.Send(proto.Encode(proto.TypeInput, []byte("g")))
-	owner := h.viewer("fedcba9876543210", "")
-	owner.key("o")
-	if got := typedNext(t, h.proc); got != "o" {
-		t.Fatalf("the process was written %q before the owner's keys", got)
 	}
 }
 

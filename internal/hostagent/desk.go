@@ -144,11 +144,11 @@ func (k *Desk) Revoke(ctx context.Context, linkID string) error {
 
 // DisconnectLink ends the desk's viewers that came with linkID, as a
 // revoke here ends a session's (session.Local.DisconnectLink): nothing of
-// theirs is acted on from now on (peer.letGo), and each is told revoked
-// through the switchyard, which closes it and tells this host it left, as
-// a viewer let go for its reads is (deskLetGo). It does not wait.
-func (k *Desk) DisconnectLink(linkID string) {
-	why := error(session.ErrRevoked)
+// theirs is acted on from now on (peer.letGo), and each is told why
+// (session.ErrRevoked, ErrExpired) through the switchyard, which closes it
+// and tells this host it left, as a viewer let go for its reads is
+// (deskLetGo). It does not wait.
+func (k *Desk) DisconnectLink(linkID string, why error) {
 	code, msg, _ := session.LinkRefusal(why)
 	k.a.mu.Lock()
 	var hit []*peer

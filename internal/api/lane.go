@@ -285,21 +285,19 @@ type Lane struct{ s *Server }
 // Lane is the server's lane, which a publisher hands its connections.
 func (s *Server) Lane() *Lane { return &Lane{s: s} }
 
-// LinkEnded is what this server's link store holds of linkID
-// (hostagent.Decisions), in one read of it (share.Store.Stands): revoked
-// from the moment its revoke begins, expired once past its expiry, else
-// when it expires. A link it does not hold is not ended.
-func (l *Lane) LinkEnded(linkID string) (time.Time, error) {
-	link, err := l.s.links.Stands(linkID)
-	switch {
+// LinkEnded is why this server's link store no longer opens linkID
+// (hostagent.Decisions), in one read of it (share.Store.Live): revoked
+// from its mark, or kept as ended with its forgotten run; expired once
+// past its expiry on this server's clock. A link it does not hold is not
+// ended.
+func (l *Lane) LinkEnded(linkID string) error {
+	switch _, err := l.s.links.Live(linkID); {
 	case errors.Is(err, share.ErrExpired):
-		return time.Time{}, session.ErrExpired
+		return session.ErrExpired
 	case errors.Is(err, share.ErrRevoked):
-		return time.Time{}, session.ErrRevoked
-	case err != nil || link.ExpiresAt == nil:
-		return time.Time{}, nil
+		return session.ErrRevoked
 	}
-	return *link.ExpiresAt, nil
+	return nil
 }
 
 // SetSwitchyardDecisions says whether this server's host connections say,
@@ -1593,8 +1591,17 @@ func (s *Server) armLapse(linkID string, at time.Time, fire func()) (stop func()
 	return func() { t.Stop() }
 }
 
+// linkEndedWhy is why a desk's viewers of linkID are ended, as the store
+// holds the link: expired, else revoked.
+func (s *Server) linkEndedWhy(linkID string) error {
+	if _, err := s.links.Live(linkID); errors.Is(err, share.ErrExpired) {
+		return session.ErrExpired
+	}
+	return session.ErrRevoked
+}
+
 // closeDesks closes the desks of the links named, each as its link stands
-// (expired, else revoked), or every desk with why when no link is named.
+// (linkEndedWhy), or every desk with why when no link is named.
 func (s *Server) closeDesks(why error, linkIDs ...string) {
 	s.lanes.mu.Lock()
 	var todo []*wsSink
@@ -1605,10 +1612,7 @@ func (s *Server) closeDesks(why error, linkIDs ...string) {
 		}
 		reason := why
 		if reason == nil {
-			reason = session.ErrRevoked
-			if _, err := s.links.Live(id); errors.Is(err, share.ErrExpired) {
-				reason = session.ErrExpired
-			}
+			reason = s.linkEndedWhy(id)
 		}
 		for c := range conns {
 			todo, reasons = append(todo, c), append(reasons, reason)

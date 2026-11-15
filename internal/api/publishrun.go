@@ -227,8 +227,9 @@ func (s *Server) revokeRemoteRunLinks(runID string, carriers []runCarrier, links
 		if last != nil && !refusedAs(last, "not_found") {
 			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", last)
 		} else if len(carriers) > 0 {
-			// Taken there, or gone there: its kept mark goes (DeleteRun's owed).
-			s.links.Settle(rl.ID)
+			// Taken there, or not known there: the store keeps it as
+			// ended no more (DeleteRun).
+			s.links.GoneThere(rl.ID)
 		}
 	}
 }

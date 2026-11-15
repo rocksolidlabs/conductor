@@ -2427,22 +2427,37 @@ kept (the desk may carry the revoke; one the switchyard ended is opened
 again for it), the revoke is tried again (2 s, then twice as long after
 each failure, a minute at most) and a revoke again from the list tries at
 once; the route answers `502 rendezvous_unavailable` meanwhile, and a
-revoke again once the switchyard has confirmed it answers `204`. From the
-moment a link's revoke begins on the server, or its expiry passes on the
-server's clock, a viewer with that link is refused at its attach and at
-each act, a resize among them (`revoked` or `expired`, with the words
-above), whatever the switchyard has taken yet; an attached one is ended
-as the revoke is made, and a session's viewer at the expiry itself (a
-desk's at the expiry sweep). The publisher's host connection asks the
-server's own link store of every viewer that came with a link, and
-admits one until the link's expiry there; a run link's revoke (or its
-expiry sweep) ends its viewers on every session and run desk of the
-server at once; and a run forgotten while a link's revoke
-is owed keeps that link revoked there until the revoke is taken (at most
-256 such marks, the oldest leaving first, each gone at its link's
-expiry). A link the store does not hold is judged by the switchyard, and
-an attach refused for any other reason is answered as before
-(`attach_failed`). The switchyard is told as before. A run's
+revoke again once the switchyard has confirmed it answers `204`. The
+publisher's host connection asks the server's own link store of every
+viewer that came with a link, at its attach and at each act. A revoke
+takes effect there at the store's mark, which comes once the acts under
+way through the link have ended, at most the store's wait for them
+(`HoldWait`, 5 s) after the revoke began; until the mark a viewer of the
+link is judged as before the revoke, on every path alike (its lane's
+operations excepted: none begins once the barrier has). From the mark
+a viewer with the link is refused at its attach and at each act
+(`revoked`, with the words above), whatever the switchyard has taken yet,
+and the server starts ending the viewers attached through a run's link
+on every session and run desk it holds, all at once, and waits for none
+of them: the revoke is answered and the expiry sweep goes on, and the
+server's stop waits for those ends within its own bound. Past a link's
+expiry on the server's clock, an attach and an attached viewer's keys
+and saves are refused `expired`; the attached viewer is ended by the
+server's expiry sweep, every 30 s, which ends the link as a revoke does
+(a desk's viewer is told `expired`), and by the switchyard at the
+deadline on its own clock. When a run is forgotten, the store keeps the
+id of each of its links minted at the switchyard as ended, whatever it
+stood at (a viewer with one is refused `revoked`), until the switchyard
+confirms it is gone there (the forget's one revoke there taken, or
+answered `not_found`), at most 256 of them, the oldest leaving first: the
+id alone, in memory. After a restart the store keeps none, and a link
+the switchyard still holds from before it opens nothing: the server
+registers its sessions there anew, under the instance it makes at its
+start (its secret with the switchyard, which gives a session the same id
+there only across the switchyard's restarts). A link the store does not
+hold is judged by the switchyard, and an attach refused for any other
+reason is answered as before (`attach_failed`). The switchyard is told
+as before. A run's
 concurrent first decision links open one desk: the others wait for its
 opening and are minted over it. A publication's or a desk's viewers'
 lanes live under that connection, which ends them with itself: from its

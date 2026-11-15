@@ -855,105 +855,74 @@ func TestAnOpIDNamesOneOperation(t *testing.T) {
 	}
 }
 
-// Stands counts a revoke and an expiry from their beginning: while the
-// barrier waits for an act held, the link is ended for the reason the
-// barrier began with, as the held act is told at its commit boundary;
-// after the mark, the same. A link that stands is the link.
-func TestStandsCountsAnEndFromItsBeginning(t *testing.T) {
-	for _, why := range []error{ErrRevoked, ErrExpired} {
-		t.Run(why.Error(), func(t *testing.T) {
-			s := NewStore()
-			s.HoldWait = time.Hour
-			now := time.Now()
-			s.now = func() time.Time { return now }
-			l, _, _ := s.CreateRunDecision("r1", session.RoleControl, "phone", time.Minute)
-			if got, err := s.Stands(l.ID); err != nil || got.ID != l.ID {
-				t.Fatalf("a link that stands: %+v %v", got, err)
-			}
-			held, err := s.Hold(l.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			done := make(chan struct{})
-			go func() {
-				if why == ErrRevoked {
-					s.RevokeRun("r1", l.ID)
-				} else {
-					// The sweep's own now: the store's clock still says the
-					// link stands, so only the barrier says it ended.
-					s.ExpireDue(now.Add(time.Minute))
-				}
-				close(done)
-			}()
-			barrierBegun(t, s, l.ID, why)
-			if _, err := s.Stands(l.ID); !errors.Is(err, why) {
-				t.Fatalf("stands while the barrier waits: %v", err)
-			}
-			select {
-			case <-done:
-				t.Fatal("the barrier returned with an act held")
-			default:
-			}
-			held.Release()
-			<-done
-			if _, err := s.Stands(l.ID); !errors.Is(err, why) {
-				t.Fatalf("stands after the barrier: %v", err)
-			}
-		})
-	}
-}
-
-// A run's link revoked here whose revoke is owed elsewhere keeps its mark
-// once the run is forgotten: Stands answers revoked until Settle or the
-// link's expiry; a link not named owed, or one that stood, leaves no
-// mark. The marks are bounded, the oldest leaving first.
-func TestAForgottenRunKeepsTheMarkOfAnOwedRevoke(t *testing.T) {
+// A forgotten run's links its viewers reach through a switchyard (Remote)
+// stay ended here, whatever they stood at: one standing, one revoked, one
+// past its expiry, and one whose revoke waits for an act under way when
+// the run goes; Live answers each revoked until GoneThere, and a link of
+// the run that is not Remote is forgotten as before. The ids are bounded,
+// the oldest leaving first.
+func TestAForgottenRunsSwitchyardLinksStayEnded(t *testing.T) {
 	s := NewStore()
+	s.HoldWait = time.Hour
 	now := time.Now()
 	s.now = func() time.Time { return now }
-	owed, _, _ := s.CreateRunDecision("r1", session.RoleControl, "owed", time.Minute)
-	taken, _, _ := s.CreateRunDecision("r1", session.RoleControl, "taken", 0)
-	standing, _, _ := s.CreateRunDecision("r1", session.RoleControl, "standing", 0)
-	s.RevokeRun("r1", owed.ID)
-	s.RevokeRun("r1", taken.ID)
-	if live := s.DeleteRun("r1", owed.ID, standing.ID); !slices.Equal(live, []string{standing.ID}) {
-		t.Fatalf("live %v", live)
-	}
-	if _, err := s.Stands(owed.ID); !errors.Is(err, ErrRevoked) {
-		t.Fatalf("the owed revoke's link after its run went: %v", err)
-	}
-	for _, id := range []string{taken.ID, standing.ID} {
-		if _, err := s.Stands(id); !errors.Is(err, ErrUnknownLink) {
-			t.Fatalf("%s after its run went: %v", id, err)
+	for _, id := range []string{"standing", "revoked", "waiting"} {
+		if err := s.AddRemote(id, "", "r1", "", now, nil); err != nil {
+			t.Fatal(err)
 		}
 	}
-	s.Settle(owed.ID)
-	if _, err := s.Stands(owed.ID); !errors.Is(err, ErrUnknownLink) {
-		t.Fatalf("a settled mark: %v", err)
+	if err := s.AddRemote("expired", "", "r1", "", now, &now); err != nil {
+		t.Fatal(err)
 	}
-
-	again, _, _ := s.CreateRunDecision("r2", session.RoleControl, "", time.Minute)
-	s.RevokeRun("r2", again.ID)
-	s.DeleteRun("r2", again.ID)
-	now = now.Add(time.Minute)
-	if _, err := s.Stands(again.ID); !errors.Is(err, ErrUnknownLink) {
-		t.Fatalf("a mark past its link's expiry: %v", err)
+	if _, err := s.Live("expired"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("a link at its expiry: %v", err)
+	}
+	local, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	s.RevokeRun("r1", "revoked")
+	held, err := s.Hold("waiting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := make(chan struct{})
+	go func() {
+		s.RevokeRun("r1", "waiting")
+		close(revoked)
+	}()
+	barrierBegun(t, s, "waiting", ErrRevoked)
+	s.DeleteRun("r1")
+	held.Release()
+	<-revoked
+	for _, id := range []string{"standing", "revoked", "waiting", "expired"} {
+		if _, err := s.Live(id); !errors.Is(err, ErrRevoked) {
+			t.Fatalf("the forgotten run's link %s: %v", id, err)
+		}
+	}
+	if _, err := s.Live(local.ID); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("the forgotten run's own link: %v", err)
+	}
+	s.GoneThere("standing")
+	if _, err := s.Live("standing"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a link gone there: %v", err)
+	}
+	if _, err := s.Live("revoked"); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("another after one went there: %v", err)
 	}
 
 	var ids []string
-	for i := range MaxKept + 1 {
-		runID := "b" + strconv.Itoa(i)
-		l, _, _ := s.CreateRunDecision(runID, session.RoleControl, "", 0)
-		s.RevokeRun(runID, l.ID)
-		s.DeleteRun(runID, l.ID)
-		ids = append(ids, l.ID)
+	for i := range MaxEnded + 1 {
+		runID, id := "b"+strconv.Itoa(i), "l"+strconv.Itoa(i)
+		if err := s.AddRemote(id, "", runID, "", now, nil); err != nil {
+			t.Fatal(err)
+		}
+		s.DeleteRun(runID)
+		ids = append(ids, id)
 	}
-	if _, err := s.Stands(ids[0]); !errors.Is(err, ErrUnknownLink) {
-		t.Fatalf("the oldest mark past the bound: %v", err)
+	if _, err := s.Live(ids[0]); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("the oldest past the bound: %v", err)
 	}
-	for _, id := range []string{ids[1], ids[MaxKept]} {
-		if _, err := s.Stands(id); !errors.Is(err, ErrRevoked) {
-			t.Fatalf("a mark within the bound: %v", err)
+	for _, id := range []string{ids[1], ids[MaxEnded]} {
+		if _, err := s.Live(id); !errors.Is(err, ErrRevoked) {
+			t.Fatalf("one within the bound: %v", err)
 		}
 	}
 }

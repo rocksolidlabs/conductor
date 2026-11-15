@@ -359,11 +359,7 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		case proto.CtlResize:
 			var m proto.Resize
 			if json.Unmarshal(f.Payload, &m) == nil {
-				if err := p.a.local.ResizeWith(sub, m.Cols, m.Rows, m.Take); err != nil {
-					if _, _, ok := session.LinkRefusal(err); ok {
-						p.a.local.Send(sub, inputError(err))
-					}
-				}
+				_ = p.a.local.ResizeWith(sub, m.Cols, m.Rows, m.Take)
 			}
 		case proto.CtlPing:
 			var m proto.Ping
@@ -877,16 +873,20 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	replaces := p.replaces
 	p.mu.Unlock()
 	decides := p.decides("")
+	// The publisher's store's answer when it was what refused this attach:
+	// the refusal is said from that one answer.
+	var ended atomic.Pointer[error]
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
-		Owner: p.owner, Replaces: replaces, Authorize: p.authorize, Fresh: p.fresh, Decisions: decides,
+		Owner: p.owner, Replaces: replaces, Fresh: p.fresh, Decisions: decides,
+		Authorize: func() (session.Grant, error) { return p.authorizeAs(&ended) },
 	}, sink)
 	if err != nil {
 		code, msg := "attach_failed", err.Error()
-		if _, why := p.linkHere(); why != nil && errors.Is(err, session.ErrRevoked) {
+		if why := ended.Load(); why != nil && errors.Is(err, session.ErrRevoked) {
 			// A link the publisher's store holds as ended: revoked or
 			// expired, in the words its viewers are told at an act.
-			code, msg, _ = session.LinkRefusal(why)
+			code, msg, _ = session.LinkRefusal(*why)
 		}
 		p.a.sendViewerError(p.id, code, msg)
 		return
@@ -922,34 +922,30 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 // is under way of the viewer's, on any of its subscriptions (one it had
 // before a move to the relay too), also once it has left, is withdrawn
 // then, and a text typed without its Enter holds the session's turn for a
-// person. A link the publisher's own store holds as ended is refused too,
-// revoked or expired as the store says (linkHere), whatever the switchyard
-// has said of it yet, and one it holds is granted until its expiry there,
-// the session ending the viewer then. It takes no lock of the host's; the
-// publisher's answer takes its store's.
-func (p *peer) authorize() (session.Grant, error) {
+// person. A link the publisher's own store holds as ended
+// (Decisions.LinkEnded) is refused too, revoked or expired as the store
+// says, whatever the switchyard has said of it yet. It takes no lock of
+// the host's; the publisher's answer takes its store's.
+func (p *peer) authorize() (session.Grant, error) { return p.authorizeAs(nil) }
+
+// authorizeAs is authorize, keeping in ended, when not nil, the store's
+// answer when it is what refuses.
+func (p *peer) authorizeAs(ended *atomic.Pointer[error]) (session.Grant, error) {
 	if why := p.letGo.Load(); why != nil {
 		return session.Grant{}, *why
 	}
 	if err := p.cred.err(); err != nil {
 		return session.Grant{}, err
 	}
-	until, why := p.linkHere()
-	if why != nil {
-		return session.Grant{}, why
-	}
-	return session.Grant{Role: p.role, Until: until}, nil
-}
-
-// linkHere is the publisher's own word on the viewer's link
-// (Decisions.LinkEnded): when it expires, or why it no longer opens the
-// session. A host with no Decisions, or a viewer with no link, asks
-// nothing.
-func (p *peer) linkHere() (time.Time, error) {
 	if d := p.a.opts.Decisions; d != nil && p.linkID != "" {
-		return d.LinkEnded(p.linkID)
+		if why := d.LinkEnded(p.linkID); why != nil {
+			if ended != nil {
+				ended.Store(&why)
+			}
+			return session.Grant{}, why
+		}
 	}
-	return time.Time{}, nil
+	return session.Grant{Role: p.role}, nil
 }
 
 // fresh is the rest of the check of what a viewer who joined through a link

@@ -2,7 +2,6 @@ package hostagent
 
 import (
 	"context"
-	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
@@ -53,14 +52,12 @@ type Decisions interface {
 	// (PR-6), so a viewer of any other link, or a link of the server's
 	// own, has no lane through the switchyard.
 	DecisionLink(linkID, sessionID, runID string) bool
-	// LinkEnded is what the publisher's own link store holds of linkID:
-	// why it no longer opens anything (session.ErrRevoked from the moment
-	// a revoke of it begins, session.ErrExpired once past its expiry), or
-	// nil and when it expires (zero for never). Every viewer that came with
-	// a link asks it beside the switchyard's word, at its attach and at
-	// each act (peer.authorize), and is admitted until that expiry, so a
-	// link ended here opens none of the publisher's sessions from then on.
-	// A link the publisher does not hold is not ended. It must not call
-	// the session and must not wait.
-	LinkEnded(linkID string) (until time.Time, why error)
+	// LinkEnded is why the publisher's own link store no longer opens
+	// linkID (session.ErrRevoked from its mark, session.ErrExpired once past
+	// its expiry), nil while it stands. Every viewer that came with a link
+	// asks it beside the switchyard's word, at its attach and at each act
+	// (peer.authorize), so a link ended here opens none of the publisher's
+	// sessions from then on. A link the publisher does not hold is not
+	// ended. It must not call the session and must not wait.
+	LinkEnded(linkID string) error
 }
