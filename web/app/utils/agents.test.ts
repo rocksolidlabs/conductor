@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents, settleChecks } from './agents'
+import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks } from './agents'
 import type { After } from './capacity'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
@@ -239,5 +239,33 @@ describe('agents still being checked (#704)', () => {
       ['y', true],
     ])
     expect(late).toEqual([])
+  })
+
+  it("starts each read's generation over the one before, and hands on answers only while the page lives", async () => {
+    const requests = pageRequests()
+    const first = requests.next()
+    const second = requests.next()
+    expect([first.aborted, second.aborted]).toEqual([true, false])
+    await expect(requests.live(Promise.resolve('hidden'))).resolves.toBe('hidden')
+    await expect(requests.live(Promise.reject(new Error('refused')))).rejects.toThrow('refused')
+    expect(requests.left()).toBe(false)
+  })
+
+  it('once the page is left, aborts its reads, starts none, and lets no answer still to come settle (Codex round 2)', async () => {
+    const requests = pageRequests()
+    const gen = requests.next()
+    let answer = (_: string) => {}
+    let refuse = (_: Error) => {}
+    const settled: string[] = []
+    requests.live(new Promise<string>((r) => (answer = r))).then((v) => settled.push(`answered:${v}`), () => settled.push('failed'))
+    requests.live(new Promise<string>((_, r) => (refuse = r))).then(() => settled.push('answered'), (e: Error) => settled.push(`failed:${e.message}`))
+    requests.end()
+    expect(requests.left()).toBe(true)
+    expect(gen.aborted).toBe(true)
+    expect(requests.next().aborted).toBe(true)
+    answer('hidden')
+    refuse(new Error('refused'))
+    await tick()
+    expect(settled).toEqual([])
   })
 })

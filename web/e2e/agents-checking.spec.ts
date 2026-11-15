@@ -210,3 +210,54 @@ test('the reads of a page that was left are aborted, never stacked past two', as
   expect(most).toBe(2)
   release()
 })
+
+// Nothing the page started outlives it (Codex round 2): a hide still under
+// way when the page is left answers to a page that is gone. It starts no read
+// of the catalog (counted at the route) and changes nothing; the page opened
+// again draws the agent hidden, as the server now holds it. OpenCode is a
+// built-in no other spec uses, restored at the end.
+test('a hide that answers after the page was left starts no read, and the page opened again shows it hidden', async ({ page, api }) => {
+  let quick = 0
+  await page.route(
+    (url) => url.pathname === '/api/catalog' && url.searchParams.get('wait') === '0',
+    async (route) => {
+      quick++
+      await route.continue()
+    },
+  )
+  let release = () => {}
+  const held = new Promise<void>((r) => (release = r))
+  let asked = () => {}
+  const hiding = new Promise<void>((r) => (asked = r))
+  await page.route(
+    (url) => url.pathname === '/api/catalog/opencode',
+    async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback()
+      asked()
+      await held
+      await route.continue()
+    },
+  )
+  try {
+    await page.goto('/agents')
+    await page.locator('[data-agent="opencode"]').getByRole('button', { name: /^Hide / }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByRole('button', { name: 'Hide', exact: true }).click()
+    await hiding
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await page.locator('a[href="/events"]').first().click()
+    await expect(page).toHaveURL(/\/events$/)
+    const before = quick
+    const hidden = page.waitForResponse((r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname === '/api/catalog/opencode')
+    release()
+    expect((await hidden).ok()).toBe(true)
+    await page.locator('a[href="/agents"]').first().click()
+    await expect(page.getByRole('button', { name: 'Restore opencode' })).toBeVisible()
+    await expect(page.locator('[data-agent="opencode"]')).toHaveCount(0)
+    // One read of the catalog since the hide was let go: the reopened page's.
+    expect(quick).toBe(before + 1)
+  } finally {
+    await api.ok('POST', '/api/catalog/opencode/unhide')
+  }
+})

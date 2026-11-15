@@ -69,6 +69,36 @@ export async function settleChecks<T extends { checking?: boolean }>(
   await Promise.all(Array.from({ length: Math.min(opts.workers ?? 2, queue.length) }, work))
 }
 
+/**
+ * The life of a page's requests (#704): nothing the page started outlives it. `next()` starts a generation of reads and aborts the one
+ * before; `live(p)` hands on p's answer, or its failure, only while the page lives. Once the page is left (`end()`), every generation is
+ * aborted, `next()` hands back a signal already aborted, and an answer still to come never settles, so it starts nothing and changes nothing.
+ */
+export function pageRequests() {
+  const life = new AbortController()
+  let gen = new AbortController()
+  return {
+    left: () => life.signal.aborted,
+    next(): AbortSignal {
+      gen.abort()
+      gen = new AbortController()
+      if (life.signal.aborted) gen.abort()
+      return gen.signal
+    },
+    live: <T>(p: Promise<T>) =>
+      new Promise<T>((resolve, reject) =>
+        p.then(
+          (v) => !life.signal.aborted && resolve(v),
+          (e) => !life.signal.aborted && reject(e),
+        ),
+      ),
+    end() {
+      life.abort()
+      gen.abort()
+    },
+  }
+}
+
 function quote(s?: string): string {
   return s ? `"${s}"` : 'nothing'
 }

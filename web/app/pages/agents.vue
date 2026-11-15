@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { checkBadge, identity, isAvailable, notInstalledBadge, settleChecks } from '~/utils/agents'
+import { checkBadge, identity, isAvailable, notInstalledBadge, pageRequests, settleChecks } from '~/utils/agents'
 
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
@@ -22,8 +22,10 @@ const launch = useLaunchModal()
 const serverHost = useServerHost()
 
 // Each read of the list is a generation: the checks a read started filling
-// in are aborted once a newer one (or leaving the page) supersedes it.
-let generation = new AbortController()
+// in are aborted once a newer one (or leaving the page) supersedes it. Once
+// the page is left, no request of it still under way (a hide, a restore, a
+// read) starts a read or changes the page when it answers.
+const requests = pageRequests()
 /** The agents whose check the page gave up reading (#704): their reads ran out or one failed. */
 const unanswered = ref<ReadonlySet<string>>(new Set())
 const check = (a: AgentInfo) => checkBadge(a, serverHost.host.value, unanswered.value.has(a.id))
@@ -35,16 +37,16 @@ const check = (a: AgentInfo) => checkBadge(a, serverHost.host.value, unanswered.
  * has expired, as its own read answers.
  */
 async function refresh() {
+  if (requests.left()) return
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
-  generation.abort()
-  const gen = (generation = new AbortController())
-  const stop = () => gen.signal.aborted
+  const gen = requests.next()
+  const stop = () => gen.aborted
   loading.value = true
   try {
-    const r = await api.catalogNow()
+    const r = await requests.live(api.catalogNow())
     if (stop()) return
     agents.value = r.agents
     hidden.value = r.hidden
@@ -55,7 +57,7 @@ async function refresh() {
       r.agents.filter((a) => a.checking || a.recheck).map((a) => a.id),
       api.catalogAgent,
       (a) => (agents.value = agents.value.map((x) => (x.id === a.id ? a : x))),
-      { signal: gen.signal, gaveUp: (id) => (unanswered.value = new Set([...unanswered.value, id])) },
+      { signal: gen, gaveUp: (id) => (unanswered.value = new Set([...unanswered.value, id])) },
     )
   } catch (e) {
     if (!stop()) error.value = (e as Error).message
@@ -65,7 +67,7 @@ async function refresh() {
 }
 
 onMounted(refresh)
-onBeforeUnmount(() => generation.abort())
+onBeforeUnmount(requests.end)
 watch(() => admin.token.value, refresh)
 
 // Add, edit and clone share one slideover; `editing` is the agent being
@@ -115,7 +117,7 @@ async function confirmHide() {
   hiding.value = true
   hideError.value = ''
   try {
-    await api.deleteAgent(a.id)
+    await requests.live(api.deleteAgent(a.id))
     hideOpen.value = false
     toast.add({ title: text.toast.title, description: text.toast.description, icon: text.icon, color: 'neutral' })
     await refresh()
@@ -132,7 +134,7 @@ const restoring = ref('')
 async function restore(id: string) {
   restoring.value = id
   try {
-    const a = await api.unhideAgent(id)
+    const a = await requests.live(api.unhideAgent(id))
     if (a) toast.add({ title: 'Restored', description: a.name, icon: 'i-lucide-eye', color: 'success' })
     else toast.add({ title: 'Nothing to restore', description: `No agent has the ID ${id} any more; it is off the hidden list.`, icon: 'i-lucide-eye', color: 'neutral' })
   } catch (e) {
