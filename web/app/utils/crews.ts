@@ -357,6 +357,9 @@ export function toCrewMember(m: CrewMember): CrewMember {
     prompt: m.prompt,
     args: m.args,
     start: { when: m.start.when, member: m.start.member },
+    // The account and model it names, absent for its adapter's default and the agent's (a crew saved before them is the body it was).
+    account: m.account || undefined,
+    model: m.model?.trim() || undefined,
   }
 }
 

@@ -719,7 +719,11 @@ func gateRequest(p Package, pd PackageDecision) (string, requestBody) {
 	if typ == ledger.DecisionApproval {
 		body.Options = []DecisionOption{{Label: "Approve"}, {Label: "Reject"}}
 		if len(pd.Before) > 0 {
-			body.Authorizes = "Approve lets " + strings.Join(pd.Before, ", ") + " start; Reject cancels them."
+			them := "them"
+			if len(pd.Before) == 1 {
+				them = "it"
+			}
+			body.Authorizes = "Approve lets " + strings.Join(pd.Before, ", ") + " start; Reject cancels " + them + "."
 		} else {
 			body.Authorizes = "Approve records the plan's decision " + pd.ID + "."
 		}

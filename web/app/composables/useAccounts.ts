@@ -81,6 +81,8 @@ export class AccountsLive {
   available: boolean | null = null
   /** Why the last read failed, in the server's words (or "Cannot reach the server"); "" when it did not. */
   problem = ''
+  /** Why the server offers no accounts to this page, in words ("this token may not read them"); "" while it does or is not known. */
+  unavailable = ''
   /** A write is under way, until the read of the document after it has ended. */
   busy = false
   private reads: AccountsReads | null = null
@@ -120,11 +122,13 @@ export class AccountsLive {
       this.doc = doc
       this.available = true
       this.problem = ''
+      this.unavailable = ''
     } else if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
       // Not here (404) or not yours (403); a 503 is a store that could not be read just then, said as any failed read.
       this.available = false
       this.doc = null
       this.problem = ''
+      this.unavailable = error.status === 403 ? 'this token may not read them' : 'this server keeps none'
     } else {
       this.problem = (error as Error).message || 'Cannot reach the server'
     }
@@ -187,6 +191,7 @@ export class AccountsLive {
     this.doc = null
     this.available = null
     this.problem = ''
+    this.unavailable = ''
     this.busy = false
     this.changed()
     void this.load()
@@ -241,5 +246,9 @@ export function useAccounts() {
     void version.value
     return store.problem
   })
-  return { store, doc, available, busy, problem }
+  const unavailable = computed(() => {
+    void version.value
+    return store.unavailable
+  })
+  return { store, doc, available, busy, problem, unavailable }
 }

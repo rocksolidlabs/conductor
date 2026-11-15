@@ -344,8 +344,8 @@ async function submit() {
             <UFormField v-if="decided.offered" label="Account" name="account" hint="the login it uses" data-launch-account>
               <AccountSelect v-model="account" :doc="accounts.doc.value" :adapter="adapter" />
             </UFormField>
-            <UFormField label="Model" name="model" hint="empty for the agent's default" :error="modelError || undefined" data-launch-model>
-              <UInput v-model="model" placeholder="the agent's default" class="w-full font-mono" data-launch-model-input />
+            <UFormField label="Model" name="model" hint="empty: the agent chooses, or its arguments do" :error="modelError || undefined" data-launch-model>
+              <UInput v-model="model" placeholder="no model named" class="w-full font-mono" data-launch-model-input />
             </UFormField>
           </template>
           <div class="flex flex-col gap-1.5" data-launch-yolo>
