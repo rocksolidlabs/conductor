@@ -57,7 +57,10 @@ const (
 // under the same rules as the in-band file_get message.
 func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	p := s.authenticate(r, true)
+	p, ok := s.authenticate(w, r, true)
+	if !ok {
+		return
+	}
 	role := p.role(id)
 	if role == "" {
 		if !s.limiter.allow(clientKey(r)) {

@@ -220,6 +220,8 @@ type Server struct {
 	// stages (launchSeam).
 	starting   startingSessions
 	launchHook atomic.Pointer[func(stage, id string)]
+	// agentTokens is the set of the live agent tokens (liveTokens).
+	agentTokens liveTokens
 	// captureWait, when a test sets it, bounds a hosted hook's wait for its
 	// recorder in place of launchWait (captureHostedAgentSession).
 	captureWait atomic.Int64
@@ -234,6 +236,18 @@ type Server struct {
 	// trees reads the trees of the previews, their indexes kept
 	// (preview_label.go).
 	trees treeReads
+	// afterCaptureRead, when a test sets it, is called once a capture's
+	// tree read has returned, before what it read is scrubbed
+	// (captures.go).
+	afterCaptureRead func()
+	// repoTop, when a test sets it, stands in for gitcli.TopOf in a
+	// capture's look for its run's repository (topOf, captures.go).
+	repoTop func(ctx context.Context, dir string) (string, error)
+	// inScreenshotGate, when a test sets it, is called inside the
+	// screenshots' gate, at "decoding" and at "kept" (keptScreenshot);
+	// keptImageMax, when set, stands in for the kept file's bound.
+	inScreenshotGate func(at string)
+	keptImageMax     int
 	// runOf answers the run a session is a member of, for run links (see
 	// principal.role). It takes no lock of the engine.
 	runOf func(sessionID string) (runID string, ok bool)
@@ -1020,6 +1034,7 @@ func (s *Server) Handler() http.Handler {
 	s.routeDispatch(mux)
 	// An attempt's preview label (preview_label.go), the admin's alone.
 	s.routePreviewLabel(mux)
+	s.routeCaptures(mux) // a preview's captures (captures.go), the admin's alone
 	s.routeTrackers(mux) // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
