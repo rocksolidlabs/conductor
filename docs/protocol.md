@@ -787,10 +787,16 @@ asks for a second Enter gets it (a crew's prompt); no submission on a host
 asks for one yet, hosted crews being to come, so today it changes nothing
 there. A question's `line` (#902) has the host's session take a viewer's
 `answer` with `text` into that startup question as a server session does
-(Attention); the server's listing of a hosted session does not carry the
-attention's `line` (`host_attention` has no such field), so the app offers
-no field for it there and the hosted sign-in screen is answered in its
-terminal (the touch paste control). An older host ignores `line`. It is absent
+(Attention), judged by the host's own session under the same rules. The
+live `attention` message a viewer of a hosted session is sent is the
+host's session's own and carries `line`, so a controller on a hosted
+session's page gets the field, and its `answer` travels over the relay
+to the host's session (a view role's is refused, `read_only`). The
+server's listing of a hosted session does not carry the attention's
+`line` (`host_attention` has no such field): the places that read the
+listing (the sidebar, Needs you, the palette) say "Answer it in the
+terminal" for a hosted sign-in screen rather than "Open the session to
+answer it". An older host ignores `line`. It is absent
 when the catalog has no agent of that id (or none is named), when the
 agent has nothing to watch, from an older server, when its encoding is
 past 24 KiB (the built-in entries are far under it), and when `registered`
@@ -1586,22 +1592,46 @@ as a `submit`'s line is (a bracketed paste while the program has that mode
 on, its Enter written apart), under every rule an `answer` has (still the
 question shown, first to claim wins, `answer_ok` once the line is entered,
 `read_only` for a view link); a line that is empty once cleaned is not
-taken. It is typed only while the screen as it is now, a whole frame with
-nothing cut by a window made smaller, shows that question as the only
-startup question on it and no dialog's numbered choice, looked at as the
-answer arrives and again as the session's writer takes its text and its
-Enter. A screen cut by a window made smaller (a phone's question bar shown
-again shrinks its terminal just before the line) is waited for, at most
-5 s, until the program has drawn it again, as a TUI does at once;
-otherwise it is refused in the words above, nothing typed (or its
-Enter left out, as for a question come in a `submit`'s pause). An `answer`
+taken, and one that holds a control character (ESC, a line break, a tab)
+is refused as invalid (`bad_frame`): a sign-in code is printable text.
+Before its text and again before its Enter, in this order: everything
+the program has written is in the screen the owner keeps (all it read is
+fed to that screen, and the kernel holds none of the program's output
+unread), no output has come for 100 ms, and then one reading of that
+screen (its text, whether it is drawn whole and its size together) shows
+a frame the program finished, nothing of the next half received (no
+synchronized update open, no control sequence cut by a read), the
+question as the only startup question on it and no dialog's numbered
+choice; the screen is judged once more as the session's writer takes
+each. The text goes in one write, as one bracketed paste while the
+program has that mode on. Until that holds the line waits, at most 5 s (a
+phone's question bar shown again shrinks its terminal just before the
+line, and a TUI draws its screen again at once); otherwise, or when the
+screen shows anything else, its text is refused in the words above,
+nothing typed, and its Enter is left out with the answer "the screen
+changed before its Enter: the line was typed and not entered: type in the
+terminal to continue". What no check can close: a program that changes
+its own screen in the moment between that reading and its read of what
+was typed (a browser on the same machine finishing the sign-in just as
+the code is sent). That moment is bounded by the 100 ms quiet before the
+reading and the time the program takes to read its input; a bracketed
+paste reaches the next dialog as one paste, not as keys. An `answer`
 with `text` naming any other startup question (the trust question, an
 update dialog, a screen the entry does not mark), a `submit`, a `chat` to
 the agent and a `chat_send` are refused in those words while any startup
-question shows. The line is kept nowhere: not in the chat (its `answered`
-line says who answered, never the text), the activity log (the entry
-records the question's words and who answered), a run's record or chat,
-an event or a log line. Such a line is no first prompt: the startup
+question shows. Conductor keeps the line nowhere of its own: not in the
+chat (its `answered` line says who answered, never the text), the
+activity log (the entry records the question's words and who answered),
+a run's record or chat, an event or a log line, and a session's last
+line copied into a record that lasts (a Brakeman request's) is never read
+off a screen that shows a startup question. What the agent's program
+itself draws is terminal output like any other: if it shows the code as
+it is typed, that session's viewers see it and its scrollback holds it.
+The built-in mark rests on the sign-in screen as the catalog's tests
+record it (Claude Code 2.1.319: the line about the browser, the address,
+the line asking for the code, and no numbered row); with a numbered row
+anywhere on that screen every line is refused, and the person is told to
+answer in the terminal. Such a line is no first prompt: the startup
 questions are watched after it (the folder's trust question that comes
 next is held as before), and the screen drawn again after it (a code the
 program refused) is asked again with a new `id`, to take another line.

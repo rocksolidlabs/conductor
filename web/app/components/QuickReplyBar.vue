@@ -142,7 +142,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     </div>
     <!-- The line a startup question asks for (#902: a sign-in code pasted from a phone's browser): a plain field, no autofill or
          correction, its own Send; it names the question shown as it is sent. -->
-    <form v-else-if="line" class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" data-quick-reply-line @submit.prevent="sendLine">
+    <form v-else-if="line" class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 flex-wrap items-center gap-x-2 gap-y-1 sm:flex-none" data-quick-reply-line @submit.prevent="sendLine">
       <UInput
         v-model="lineText"
         size="sm"
@@ -158,6 +158,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         aria-label="The line the agent asks for"
       />
       <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canLine || !lineText.trim()" />
+      <p class="basis-full text-xs text-muted" data-quick-reply-line-note>Conductor keeps it nowhere. What {{ agentName }} shows as it is typed, this session's viewers see.</p>
     </form>
     <!-- The form shrinks with its pane (the terminal's, beside the editor: Codex's round on #309) rather than overflowing it. -->
     <form v-else class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" @submit.prevent="send">

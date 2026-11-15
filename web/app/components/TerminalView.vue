@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { liveAttention } from '~/utils/attention'
+import { holdsBreak, PASTE_BREAKS, PASTE_HELD, PASTE_MOVED, pasteHeld, pasteKeys, startupShown } from '~/utils/terminalPaste'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
@@ -9,7 +10,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
 import { ALT_PASSTHROUGH_CODES, usePageAltCodes } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
-import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
+import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type Attention, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import type { LaneWire } from '~/utils/transport/decide'
 import { ReplyError, type QuestionReply } from '~/utils/reply'
@@ -149,19 +150,38 @@ async function pasteClipboard(): Promise<void> {
 }
 /**
  * A touch device's paste (#902): a page served over plain http on a LAN is given no clipboard to read, and a phone's own paste does
- * not reach xterm, so a controller's terminal there offers a field to paste into. Its text is typed into the terminal as keys (a
- * paste, bracketed when the program asked), with no Enter added: line breaks at its end are dropped. The text is held in the field
+ * not reach xterm, so a controller's terminal there offers a field to paste into. Its text is typed into the terminal as a paste
+ * (bracketed when the program asked) with every control character taken out (pasteKeys: no Enter, nothing that ends the paste).
+ * It is tied to the screen: while a startup question that takes no line shows it is not offered and types nothing (pasteHeld), and
+ * once the startup question it opened on is no longer the one showing it types nothing and says so. The text is held in the field
  * alone and emptied once typed or the field is closed.
  */
 const touch = ref(false)
 const pasteOpen = ref(false)
 const pasteText = ref('')
+const pasteNote = ref('')
 const pasteForm = useId()
+/** The attention the session's stream last sent, and the startup question showing as the paste control opened (startupShown). */
+const shownAttention = ref<Attention>()
+let pasteOpenedOn = ''
+const pasteBlocked = computed(() => pasteHeld(shownAttention.value))
 watch(pasteOpen, (open) => {
-  if (!open) pasteText.value = ''
+  pasteNote.value = ''
+  if (open) pasteOpenedOn = startupShown(shownAttention.value)
+  else pasteText.value = ''
 })
 function typePaste() {
-  const text = pasteText.value.replace(/[\r\n]+$/, '')
+  if (pasteBlocked.value) {
+    pasteNote.value = PASTE_HELD
+    return
+  }
+  const now = startupShown(shownAttention.value)
+  if (now !== pasteOpenedOn) {
+    pasteOpenedOn = now
+    pasteNote.value = PASTE_MOVED
+    return
+  }
+  const text = pasteKeys(pasteText.value)
   pasteOpen.value = false
   pasteText.value = ''
   if (text && canPaste() && term) term.paste(text)
@@ -554,7 +574,8 @@ function handleControl(msg: ControlMessage) {
       break
     case 'attention':
       // A question answered by keys in the terminal reads as none to offer (liveAttention, #258).
-      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision, line: msg.line }))
+      shownAttention.value = liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered, plan: msg.plan, decision: msg.decision, line: msg.line })
+      emit('attention', shownAttention.value)
       break
     case 'viewers':
       roster.value = msg.list ?? []
@@ -879,11 +900,13 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="touch && !compact && canPaste()">
-      <UButton icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" aria-label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
+      <UButton v-if="!pasteBlocked" icon="i-lucide-clipboard-paste" size="xs" color="neutral" variant="soft" class="absolute bottom-2 left-2 z-10" aria-label="Paste into the terminal" data-terminal-paste @click="pasteOpen = true" />
       <UModal v-model:open="pasteOpen" title="Paste into the terminal" description="What you paste or type here is typed into the terminal as keys, with no Enter.">
         <template #body>
-          <form :id="pasteForm" @submit.prevent="typePaste">
+          <form :id="pasteForm" class="flex flex-col gap-2" :data-terminal-paste-shown="startupShown(shownAttention)" @submit.prevent="typePaste">
             <UTextarea v-model="pasteText" :rows="3" autofocus autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" class="w-full" aria-label="Text to type into the terminal" data-terminal-paste-text />
+            <p v-if="holdsBreak(pasteText)" class="text-xs text-muted" data-terminal-paste-breaks>{{ PASTE_BREAKS }}</p>
+            <p v-if="pasteNote || pasteBlocked" class="text-xs text-warning" role="status" data-terminal-paste-note>{{ pasteBlocked ? PASTE_HELD : pasteNote }}</p>
           </form>
         </template>
         <template #footer>
