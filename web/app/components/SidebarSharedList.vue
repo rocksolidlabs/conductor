@@ -10,6 +10,9 @@ import { agentInitials } from '~/utils/sessions'
 withDefaults(defineProps<{ focusedId?: string | null }>(), { focusedId: null })
 const joined = useJoined()
 const route = useRoute()
+// Forget shows on hover where the pointer hovers; with none to hover (a touch screen) it always shows, and the link stops short of
+// it. Hidden, it takes no tap or click: a tap on the row opens the link, never forgets it unseen.
+const hovers = useMedia('(hover: hover)')
 
 const dots = { running: 'bg-success', idle: 'bg-neutral-400', ended: '', revoked: '', unreachable: 'bg-warning' }
 function line(e: JoinedEntry): { text: string; warn: boolean } {
@@ -38,7 +41,7 @@ function title(e: JoinedEntry): string {
       <NuxtLink
         :to="joinedPath(e)"
         class="flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 transition-colors"
-        :class="joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-elevated/60'"
+        :class="[joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-elevated/60', !hovers && 'pr-10']"
         :aria-current="joinedOpen(route.path, e.token) ? 'page' : undefined"
         :title="title(e)"
       >
@@ -53,8 +56,13 @@ function title(e: JoinedEntry): string {
         </span>
         <span v-if="dots[joinedDot(e)]" class="mt-2 size-[7px] flex-none rounded-full" :class="dots[joinedDot(e)]" />
       </NuxtLink>
-      <!-- Forget shows over the row's corner on hover or focus, as a session row's actions do, so the name has the row's width (#906). -->
-      <span class="absolute right-1.5 top-1.5 rounded-md bg-default/95 p-0.5 opacity-0 shadow-xs ring ring-default transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <!-- Forget shows over the row's corner on hover or focus, as a session row's actions do, so the name has the row's width (#906);
+           on a touch screen it always shows (hovers). -->
+      <span
+        class="absolute right-1.5 top-1.5 rounded-md bg-default/95 p-0.5 shadow-xs ring ring-default transition-opacity"
+        :class="hovers && 'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'"
+        data-shared-forget-bar
+      >
         <UTooltip :text="`Forget ${e.name}`">
           <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Forget ${e.name}`" data-shared-forget @click="joined.forget(e.id)" />
         </UTooltip>

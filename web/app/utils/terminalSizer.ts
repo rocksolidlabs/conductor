@@ -44,6 +44,14 @@ export function sizerChip(v: SizerView): { who: string; cols: number; rows: numb
   return { who, cols: v.cols, rows: v.rows }
 }
 
+/**
+ * Another window sets the session's size and this view cannot take it (a view-only link, a read-only view): one line under the grid
+ * says so, where a controller has the chip instead. A full view, welcomed, not compact, not ended.
+ */
+export function sizedElsewhere(v: SizerView): boolean {
+  return v.fit === 'fill' && v.welcomed && !v.mayFit && !v.compact && !v.ended
+}
+
 /** The font sizes a scaled pane may draw the session's grid at. */
 export const SCALE_FONT = { min: 5, max: 28 } as const
 

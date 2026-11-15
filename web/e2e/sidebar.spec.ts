@@ -493,11 +493,11 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })
 
-// The full sidebar's width (#437): it opens at its minimum, 16.25 rem (260 px; 12.5 rem before #706), on every screen; a drag
-// widens it up to 26 % of the window and no narrower than the minimum, and on toward the window's edge gives the rail. Each case
-// has its own page, so its own browser context and storage.
+// The full sidebar's width (#437): it opens at its minimum, 16.75 rem (268 px; 12.5 rem before #706), on every screen; a drag
+// widens it up to 26 % of the window, never less than the minimum plus 5 rem (348 px), and no narrower than the minimum, and on
+// toward the window's edge gives the rail. Each case has its own page, so its own browser context and storage.
 test.describe('the full sidebar\'s width', () => {
-  const MIN = 260
+  const MIN = 268
   const handle = (page: Page) => page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]')
   const width = (page: Page) => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)
   const saved = (page: Page, key = 'conductor.sidebar.width') => page.evaluate((k) => localStorage.getItem(k), key)
@@ -524,7 +524,7 @@ test.describe('the full sidebar\'s width', () => {
     [1440, 900],
     [2560, 1440],
   ] as const) {
-    test(`with no saved width it opens at its minimum, 260 px, at ${w}×${h}`, async ({ page }) => {
+    test(`with no saved width it opens at its minimum, 268 px, at ${w}×${h}`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h })
       await open(page)
       await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
@@ -565,7 +565,7 @@ test.describe('the full sidebar\'s width', () => {
     const at = await grip(page)
     await page.mouse.dblclick(at.x, at.y)
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    await expect.poll(() => saved(page)).toBe('16.25')
+    await expect.poll(() => saved(page)).toBe('16.75')
   })
 
   test('the rail and back keeps the width', async ({ page }) => {
@@ -597,14 +597,14 @@ test.describe('the full sidebar\'s width', () => {
     await open(page)
     await drag(page, [900])
     await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
-    // At 1024 px the most is 26 %, 266 px; a drag there stops at it too.
+    // At 1024 px 26 % is 266 px, so the most is the minimum plus 5 rem, 348 px; a drag there stops at it too.
     await page.setViewportSize({ width: 1024, height: 900 })
-    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
     await drag(page, [600])
-    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
     // Wider again: the width stays what it was, the drag's bound grows back.
     await page.setViewportSize({ width: 2560, height: 1440 })
-    await expect.poll(() => width(page)).toBeCloseTo(266.24, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
     await drag(page, [1500])
     await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
     await page.setViewportSize({ width: 1440, height: 900 })
@@ -659,6 +659,12 @@ test.describe('the full sidebar\'s width', () => {
       expect(await whole(name), `the name ${at}`).toBe(true)
       expect(await whole(launch.locator('[data-slot="label"]')), `Launch agent ${at}`).toBe(true)
       expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+      // Not on a margin of a pixel or two: with the bundled font the row has at least 8 px to spare, between the name and Alerts.
+      const spare = await name.evaluate((el) => {
+        const next = el.nextElementSibling!.getBoundingClientRect().left
+        return next - el.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(el.parentElement!).columnGap)
+      })
+      expect(spare, `the row's room to spare ${at}`).toBeGreaterThanOrEqual(8)
     }
     await shownWhole('as it opens')
     // Dragged wider and back past the minimum: it stops there, drawn again, and still shows it all.
@@ -667,6 +673,43 @@ test.describe('the full sidebar\'s width', () => {
     await drag(page, [150])
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
     await shownWhole('at the minimum')
+  })
+
+  test('with a wider font the name gives way, shortened with its whole text in its title, and every control stays in the bar, uncovered (#706)', async ({ page }) => {
+    await open(page)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    const header = page.locator('#dashboard-sidebar-main [data-slot="header"]')
+    const name = header.locator('[data-sidebar-name]')
+    await expect(name).toHaveText('Conductor')
+    expect(await whole(name), 'the name, with the bundled font').toBe(true)
+    // A machine whose font sets "Conductor" much wider than the bundled Inter does.
+    await page.addStyleTag({ content: '[data-sidebar-name] { letter-spacing: 0.6em; }' })
+    await expect.poll(() => whole(name), { message: 'the name is shortened' }).toBe(false)
+    await expect(name).toHaveAttribute('title', 'Conductor')
+    for (const part of ['[data-sidebar-mark]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) {
+      const control = header.locator(part)
+      await expect(control, part).toBeVisible()
+      await fitsSidebar(page, control)
+      // Nothing over it: what a click at its middle reaches is the control itself.
+      const reached = await control.evaluate((el) => {
+        const r = el.getBoundingClientRect()
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        return !!hit && el.contains(hit)
+      })
+      expect(reached, `${part} uncovered`).toBe(true)
+    }
+    expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth), 'nothing spills out of the bar').toBe(true)
+  })
+
+  test('in a window 1024 wide the handle still widens the sidebar: its most is the minimum plus 5 rem (#706)', async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 })
+    await open(page)
+    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+    const before = await width(page)
+    await drag(page, [(await grip(page)).x + 200])
+    // 26 % of 1024 px is 266 px, below the minimum: the most is 268 + 80 px.
+    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
+    expect((await width(page)) - before).toBeGreaterThanOrEqual(60)
   })
 
   test('the filter lines up with Launch agent, at the width it opens with, dragged wider, and on the phone\'s list (#702)', async ({ page }) => {
@@ -691,7 +734,7 @@ test.describe('the full sidebar\'s width', () => {
     await linedUp(list.locator('xpath=..'), 'on the phone')
   })
 
-  test('Shared with you: its heading whole, its count on one line, and a joined session\'s name whole, as the sidebar opens (#906)', async ({ page, api }) => {
+  test('Shared with you: its heading whole, its count on one line, and a joined session\'s name whole, as the sidebar opens and drawn again (#906)', async ({ page, api }) => {
     await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'e2e sharer'))
     const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e shared row' })
     sessions.push(s.id)
@@ -704,24 +747,87 @@ test.describe('the full sidebar\'s width', () => {
       await expect(row).toHaveCount(1)
       await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
       const title = section.locator('[data-section-title]')
-      await expect(title).toHaveText('Shared with you')
-      expect(await whole(title), 'the heading').toBe(true)
-      // One line: the count is no taller than the heading's one line beside it.
       const count = section.locator('[data-section-count]')
-      await expect(count).toHaveText('· 1')
-      expect((await count.boundingBox())!.height).toBeLessThanOrEqual((await title.boundingBox())!.height + 1)
       const name = row.locator('[data-shared-name]')
-      await expect(name).toHaveText('e2e shared row')
-      expect(await whole(name), "the row's name").toBe(true)
+      const forget = row.locator('[data-shared-forget]')
+      async function shownWhole(at: string) {
+        await expect(title).toHaveText('Shared with you')
+        expect(await whole(title), `the heading ${at}`).toBe(true)
+        // One line: the count is no taller than the heading's one line beside it.
+        await expect(count).toHaveText('· 1')
+        expect((await count.boundingBox())!.height, `the count ${at}`).toBeLessThanOrEqual((await title.boundingBox())!.height + 1)
+        await expect(name).toHaveText('e2e shared row')
+        expect(await whole(name), `the row's name ${at}`).toBe(true)
+        // Hidden, Forget takes no click: the pointer away, what its place reaches is the row's link.
+        await page.mouse.move(1, 1)
+        await expect(forget.locator('xpath=ancestor::span[1]')).toHaveCSS('opacity', '0')
+        const reached = await forget.evaluate((el) => {
+          const r = el.getBoundingClientRect()
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+          return hit?.closest('a') ? 'link' : hit && el.contains(hit) ? 'forget' : 'other'
+        })
+        expect(reached, `the hidden Forget's place ${at}`).toBe('link')
+        // Forget shows over the row's corner on hover, inside the sidebar, as a session row's actions do.
+        await row.hover()
+        await expect(forget.locator('xpath=ancestor::span[1]')).toHaveCSS('opacity', '1')
+        await fitsSidebar(page, forget)
+      }
+      await shownWhole('as the sidebar opens')
       // A longer name than fits is shortened, and its whole text is the row's title.
       await expect(row.getByRole('link')).toHaveAttribute('title', 'e2e shared row · view only')
-      // Forget shows over the row's corner on hover, inside the sidebar, as a session row's actions do.
-      await row.hover()
-      const forget = row.locator('[data-shared-forget]')
-      await expect(forget.locator('xpath=ancestor::span[1]')).toHaveCSS('opacity', '1')
-      await fitsSidebar(page, forget)
+      // Dragged wider and back to the minimum: the list is drawn again at each width, and still shows it all.
+      await drag(page, [420])
+      await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
+      await drag(page, [150])
+      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      await shownWhole('dragged wider and back')
     } finally {
+      await page.locator('[data-shared-entry]').first().hover().catch(() => {})
       await page.locator('[data-shared-forget]').first().click().catch(() => {})
+    }
+  })
+
+  test('Shared with you on a touch screen: Forget shows, a tap beside it opens the link and forgets nothing, a tap on it forgets (#906)', async ({ browser, api, state }) => {
+    const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e shared touch' })
+    sessions.push(s.id)
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view' })
+    const ctx = await browser.newContext({ viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true })
+    try {
+      await ctx.addInitScript((t) => {
+        localStorage.setItem('conductor.workbenchToken', t)
+        localStorage.setItem('conductor.displayName', 'e2e sharer')
+      }, state.token)
+      const phone = await ctx.newPage()
+      await phone.goto(`/join/${token}`)
+      await phone.getByRole('button', { name: 'Join session' }).tap()
+      await expect(phone.locator('.terminal-host')).toHaveCount(1, { timeout: 30_000 })
+      await phone.goto('/sessions')
+      const row = phone.locator('[data-sidebar-section="shared"] [data-shared-entry]').filter({ hasText: 'e2e shared touch' })
+      const forget = row.locator('[data-shared-forget]')
+      const bar = row.locator('[data-shared-forget-bar]')
+      /** Forget in sight with nothing hovered (a touch screen has no hover), over none of the row's words. */
+      async function forgetShows(at: string) {
+        await expect(row, at).toHaveCount(1)
+        await expect(bar, at).toHaveCSS('opacity', '1')
+        await expect(forget, at).toBeVisible()
+        const name = (await row.locator('[data-shared-name]').boundingBox())!
+        expect(name.x + name.width, `the name clear of Forget ${at}`).toBeLessThanOrEqual((await bar.boundingBox())!.x)
+      }
+      await forgetShows('on the list')
+      // A tap on the row's upper right corner, just beside Forget: the link opens, and nothing is forgotten. A tap at a point goes
+      // where the point is on the screen: the row is brought into view first (other specs' sessions can push it below the fold).
+      await row.scrollIntoViewIfNeeded()
+      const b = (await bar.boundingBox())!
+      await phone.touchscreen.tap(b.x - 6, b.y + b.height / 2)
+      await expect(phone).toHaveURL(new RegExp(`/join/${token}$`))
+      await phone.goBack()
+      await expect(phone).toHaveURL(/\/sessions$/)
+      // Drawn again on the way back: still listed, Forget still in sight.
+      await forgetShows('after going back')
+      await forget.tap()
+      await expect(row).toHaveCount(0)
+    } finally {
+      await ctx.close()
     }
   })
 

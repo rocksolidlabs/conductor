@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { holdsSize, SCALE_FONT, scaledFont, showsScaled, sizerChip, sizesSession, type SizerView } from './terminalSizer'
+import { holdsSize, SCALE_FONT, scaledFont, showsScaled, sizedElsewhere, sizerChip, sizesSession, type SizerView } from './terminalSizer'
 
 const base: SizerView = { fit: 'fill', mayFit: true, welcomed: true, sizer: true, sizedBy: 'me', me: 'me', compact: false, ended: false, roster: [{ id: 'me', name: 'Nate' }, { id: 'j', name: 'Jane' }], cols: 212, rows: 54 }
 
@@ -67,5 +67,27 @@ describe('the font a scaled pane draws the grid at (#906)', () => {
   it('lets a scale view (a view-only tile) fill its pane', () => {
     expect(scaledFont(13, 4, 'scale', 13)).toBe(SCALE_FONT.max)
     expect(scaledFont(13, 1.5, 'scale', 13)).toBe(20)
+  })
+})
+
+describe('a view that cannot take the size says another window sets it', () => {
+  const viewOnly: SizerView = { ...base, mayFit: false, sizedBy: 'j' }
+  it('on a full view that may not size the session, whoever holds the size, an older owner too', () => {
+    expect(sizedElsewhere(viewOnly)).toBe(true)
+    expect(sizedElsewhere({ ...viewOnly, sizedBy: '' })).toBe(true)
+    expect(sizedElsewhere({ ...viewOnly, sizer: false })).toBe(true)
+    // The view-only line and the controller's chip never show together.
+    expect(sizerChip(viewOnly)).toBe(null)
+  })
+
+  it('never on a view that may take the size (it has the chip), a tile, a scale view, before the welcome, or once ended', () => {
+    expect(sizedElsewhere({ ...base, sizedBy: 'j' })).toBe(false)
+    expect(sizerChip({ ...base, sizedBy: 'j' })).not.toBe(null)
+    expect(sizedElsewhere(base)).toBe(false)
+    expect(sizedElsewhere({ ...viewOnly, fit: 'scale' })).toBe(false)
+    expect(sizedElsewhere({ ...viewOnly, fit: 'tile' })).toBe(false)
+    expect(sizedElsewhere({ ...viewOnly, compact: true })).toBe(false)
+    expect(sizedElsewhere({ ...viewOnly, welcomed: false })).toBe(false)
+    expect(sizedElsewhere({ ...viewOnly, ended: true })).toBe(false)
   })
 })

@@ -58,7 +58,7 @@ test('the wall queue offers the same buttons', async ({ page, api, state }) => {
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
 })
 
-test("the wall queue wraps a question's three choices onto lines of their own: none is cut off (#906)", async ({ page, api }) => {
+test("the wall queue wraps a question's choices onto lines of their own: none is cut off, a shortened one whole in its title (#906)", async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e three choices' })
   sessions.push(s.id)
   // Three labels as a permission prompt words them: each fits the card alone, together they do not fit one line of it.
@@ -67,20 +67,34 @@ test("the wall queue wraps a question's three choices onto lines of their own: n
   await page.goto('/yard')
   const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
   await expect(card).toBeVisible({ timeout: 30_000 })
-  const choices = labels.map((label) => card.getByRole('button', { name: label, exact: true }))
-  const inside = (await card.boundingBox())!
-  for (let i = 0; i < labels.length; i++) {
-    const choice = choices[i]!
-    await expect(choice).toBeVisible()
-    const box = (await choice.boundingBox())!
-    expect(box.x, labels[i]).toBeGreaterThanOrEqual(inside.x)
-    expect(box.x + box.width, labels[i]).toBeLessThanOrEqual(inside.x + inside.width)
-    expect(await choice.locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth), labels[i]).toBe(true)
+  const choice = (label: string) => card.getByRole('button', { name: label, exact: true })
+  /** Each choice inside the card; whole unless `cut` names it, which is shortened and inside the card all the same. */
+  async function inside(all: string[], at: string, cut?: string) {
+    const box = (await card.boundingBox())!
+    for (const label of all) {
+      await expect(choice(label), `${label} ${at}`).toBeVisible()
+      const b = (await choice(label).boundingBox())!
+      expect(b.x, `${label} ${at}`).toBeGreaterThanOrEqual(box.x)
+      expect(b.x + b.width, `${label} ${at}`).toBeLessThanOrEqual(box.x + box.width)
+      expect(await choice(label).locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth), `${label} whole ${at}`).toBe(label !== cut)
+    }
   }
+  await inside(labels, 'as the card shows')
   // A label wider than the card would be shortened: its whole text is the button's title.
-  for (let i = 0; i < labels.length; i++) await expect(choices[i]!).toHaveAttribute('title', labels[i]!)
+  for (const label of labels) await expect(choice(label)).toHaveAttribute('title', label)
   // More than one line: the third went below the first.
-  expect((await choices[2]!.boundingBox())!.y).toBeGreaterThan((await choices[0]!.boundingBox())!.y)
+  expect((await choice(labels[2]!).boundingBox())!.y).toBeGreaterThan((await choice(labels[0]!).boundingBox())!.y)
+
+  // The question asked again with a choice that changes the permission mode, longer than the card (the server's 60 runes at most): the
+  // card is drawn again; every choice is still inside it, and the long one, shortened, has its words and what it does in its title,
+  // as the sidebar's prompt says them.
+  const mode = 'Yes, and switch to BYPASS PERMISSIONS (no further prompts)'
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Run git status again?', options: [...labels, mode].map((label, i) => ({ label, input: String(i + 1), mode: label === mode })) })
+  await expect(card.locator('[data-queue-message]')).toHaveText('Run git status again?')
+  await expect(card.locator('button[data-choice-mode]')).toHaveCount(1)
+  await inside([...labels, mode], 'asked again', mode)
+  await expect(choice(mode)).toHaveAttribute('title', `${mode} (changes the session's permission mode)`)
+  for (const label of labels) await expect(choice(label)).toHaveAttribute('title', label)
 })
 
 test('the sidebar row offers the choices, numbered, and a click types one without opening the session', async ({ page, api, state }) => {

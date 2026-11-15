@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { liveAttention } from '~/utils/attention'
 import { FitAddon } from '@xterm/addon-fit'
-import { scaledFont, showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
+import { scaledFont, showsScaled, sizedElsewhere, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -216,6 +216,9 @@ const terminalMenu = computed(() => [
 const scaledView = ref(props.fit === 'scale')
 /** Who sizes it and Fit to my window: on a full view of a controller that does not hold the size. */
 const sizerChip = computed(() => chipFor(sizerView()))
+const sizedHere = computed(() => sizedElsewhere(sizerView()))
+// The line that says so sits under the grid: the scaled grid is placed in the pane above it (applyScale).
+const sizedLine = ref<HTMLElement>()
 /** The size the last hello carried: 0 × 0 when this view did not size the session as it connected. */
 let helloSent: { cols: number; rows: number } = { ...FOLLOW_SIZE }
 /** True once the process is gone: the cursor is hidden and stops blinking. */
@@ -415,8 +418,10 @@ function applyScale() {
   const natW = el.offsetWidth
   const natH = el.offsetHeight
   const hw = h.clientWidth
-  const hh = h.clientHeight
-  if (!natW || !natH || !hw || !hh) return
+  // A view that cannot take the size keeps the bottom of its pane for the line under the grid that says why (sizedHere).
+  const line = sizedHere.value ? sizedLine.value : undefined
+  const hh = h.clientHeight - (line ? line.offsetHeight + 12 : 0)
+  if (!natW || !natH || !hw || hh <= 0) return
   const k = Math.min(hw / natW, hh / natH)
   const font = term.options.fontSize ?? props.fontSize
   const want = scaledFont(font, k, props.fit, props.fontSize)
@@ -474,6 +479,13 @@ function takeSize() {
   sizedBy.value = subscriberId.value
   applyFitMode()
 }
+
+// The line under the grid shown or gone: the grid is placed again around it.
+watch(sizedHere, () => {
+  if (!scaledView.value) return
+  fontAdjustments = 0
+  scheduleScale()
+}, { flush: 'post' })
 
 function scheduleScale() {
   if (scaleFrame !== undefined) return
@@ -860,6 +872,9 @@ onBeforeUnmount(() => {
       <span class="text-muted">Sized by <span class="font-medium text-default" data-sizer-name>{{ sizerChip.who }}</span> · <span class="font-mono">{{ sizerChip.cols }} × {{ sizerChip.rows }}</span></span>
       <UButton label="Fit to my window" icon="i-lucide-maximize-2" size="xs" color="neutral" variant="soft" data-fit-mine @click="takeSize" />
     </div>
+
+    <!-- A view that cannot take the size (a view-only link) says why its grid may be small, under it (#906). -->
+    <p v-else-if="sizedHere" ref="sizedLine" class="absolute inset-x-0 bottom-2 z-10 mx-auto w-fit max-w-[calc(100%-1rem)] truncate rounded-md border border-default bg-default/90 px-2.5 py-1 text-xs text-muted shadow-sm backdrop-blur-sm" data-terminal-sized-elsewhere>Another window sets this session's size.</p>
 
     <div v-if="notice && !compact" class="absolute top-2 right-2 z-10">
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />

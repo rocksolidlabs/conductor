@@ -32,12 +32,12 @@ async function loadExamples() {
           <p class="text-sm text-muted">Nothing is running yet. Start with one of these.</p>
         </div>
       </div>
-      <!-- Each choice as wide as its words, sharing the row and wrapping to the next line where the row is too narrow for them:
-           three equal columns cut the middle one short (#374, #906). -->
-      <div class="flex flex-wrap gap-2">
-        <UButton label="Launch agent" icon="i-lucide-play" class="flex-auto justify-center" @click="launch.show()" />
-        <UButton label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" class="flex-auto justify-center" :loading="loadingExamples" data-welcome-examples @click="loadExamples" />
-        <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="outline" class="flex-auto justify-center" to="/settings" />
+      <!-- The three choices one to a row, at the card's width: the card (32 rem) has no row wide enough for three equal choices
+           with "Load the example crews" whole, and two in a row with the third stretched under them reads as unbalanced (#374, #906). -->
+      <div class="flex flex-col gap-2" data-welcome-choices>
+        <UButton label="Launch agent" icon="i-lucide-play" block @click="launch.show()" />
+        <UButton label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" block :loading="loadingExamples" data-welcome-examples @click="loadExamples" />
+        <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="outline" block to="/settings" />
       </div>
       <p class="text-xs text-muted">Or run <code>conductor host</code> on another machine to bring its agents here. The <a class="underline" href="https://github.com/rocksolidlabs/conductor#readme" target="_blank" rel="noopener">README</a> has the rest.</p>
     </div>
