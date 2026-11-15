@@ -497,6 +497,8 @@ const PARTS: Record<PartName, Part> = {
       await d.listedRef('waiting', 'plan:CND-2/1')
       // The clarifier's session shows the decision it asked, as its own question.
       await d.sessionsOf(n['Paging spike'], 'clarifier', (s) => s.attention?.state === 'needs_input' && s.attention?.decision === n.clarification, "naming's session mirrors its clarification")
+      // Each member's one session left: index's attempts before its last have ended.
+      await d.oneSessionPerMember(n['Paging spike'])
       return n
     },
     async check(d, n) {
