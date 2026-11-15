@@ -1297,7 +1297,8 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		return ErrRateLimited
 	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
-	if session.ReportsTurn(state, source) || turns && !forward {
+	learned := !h.info.Turns && (session.ReportsTurn(state, source) || turns && !forward)
+	if learned {
 		h.info.Turns = true
 	}
 	if !forward {
@@ -1321,6 +1322,9 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		h.mu.Unlock()
 		if conn != nil {
 			conn.sendJSON(hostAttentionMsg("", att, false))
+		}
+		if learned {
+			h.notifyChange()
 		}
 		return nil
 	}
