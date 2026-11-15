@@ -291,6 +291,10 @@ open deferred item from rounds 1 and 2, then the features below.
     "Fit to my window" chip is there; a view-only link has one line under
     the grid, "Another window sets this session's size."
     (`terminalSizer.test.ts`; `sizing.spec.ts`).
+  - The Review view's draft keeps its 24 rem beside the diff: the page's
+    width class was dropped by the draft's three roots, and with the wider
+    sidebar the diff was squeezed to 127 px at 1440 wide, which failed
+    `review.spec.ts` in CI (the spec now checks both widths).
   - Each new spec test checks again after a redraw it causes (a drag, a
     resize, the question asked again, a page left and come back to).
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
