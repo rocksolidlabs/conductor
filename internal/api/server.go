@@ -807,7 +807,6 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.dropLinkFile(linkID)
 		if l, ok := s.links.Get(linkID); ok && l.Remote {
 			s.remoteRevoked(l)
-			return
 		}
 		// A switchyard's group link holds viewers on its group's sessions
 		// alone (a session that leaves the group takes them along,
@@ -817,7 +816,15 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.closeLinkViewers(l)
 			return
 		}
-		s.disconnectLinks([]string{linkID})
+		// Its viewers, through the switchyard too, are on this server's
+		// sessions and its runs' desks: disconnectLinks starts ending them
+		// all at once, with neither the store's lock nor the publications'
+		// held, on a goroutine of the server's own (track), and the hook
+		// returns: the revoke is answered, and the sweep tells its next
+		// link, without waiting for this link's viewers' closes. Shutdown
+		// waits, within its bound, for one begun before its last wait
+		// (bgDone); one begun after is not waited for.
+		s.track(func() { s.disconnectLinks([]string{linkID}) })
 	}
 	// Nothing fails past here: the queues of the providers that are no
 	// Starter drain from now on (a Starter's once its Start has succeeded).
@@ -859,10 +866,15 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 }
 
 // disconnectLinks closes the viewers attached through any of linkIDs, run
-// links, and returns once they are closed. Their viewers may be on any session
-// that was a member of the run, the run forgotten meanwhile included: every
-// session is asked, all at once, since each close waits for its viewer's
-// reply.
+// links, and returns once the sessions' closes are done: a desk at the
+// switchyard is told and not waited for. Their viewers may be on any session
+// that was a member of the run, the run forgotten meanwhile included, or on
+// a run's desk at the switchyard: every session and every desk there is
+// asked, all at once, since each session's close waits for its viewer's
+// reply (a desk there tells its viewers and does not wait). A desk's
+// viewers are told why as the store holds it (linkEndedWhy). The runs'
+// desks on this server (closeDesks) are closed once the sessions' closes
+// are done.
 func (s *Server) disconnectLinks(linkIDs []string) {
 	var wg sync.WaitGroup
 	s.registry.Each(func(d session.Driver) {
@@ -872,6 +884,16 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 			}
 		})
 	})
+	s.pubMu.Lock()
+	for _, rd := range s.desks {
+		desk := rd.desk
+		wg.Go(func() {
+			for _, id := range linkIDs {
+				desk.DisconnectLink(id, s.linkEndedWhy(id))
+			}
+		})
+	}
+	s.pubMu.Unlock()
 	wg.Wait()
 	s.closeDesks(nil, linkIDs...)
 }
