@@ -1,6 +1,6 @@
-import type { Page, Route } from '@playwright/test'
+import type { Browser, Page, Route } from '@playwright/test'
 import { budget, dayPage, expect, readAgain, test, useTheme, type Session } from './fixtures'
-import { inside, noSideways, tapTarget, uncut } from './layout'
+import { inside, noOverlap, noSideways, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
@@ -467,11 +467,29 @@ test('a project with no ticket: the list, the Board and the Roadmap each say so,
 })
 
 /** The page's standing paragraph is not in its body; About this page opens it, Escape closes it, and it is gone before the next step. */
+/** Resolves once every finite animation on `l` or an element around it (a popover's scale as it opens) has finished. */
+async function opened(l: ReturnType<Page['locator']>) {
+  await l.evaluate((el) =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => {
+          const t = (a.effect as KeyframeEffect | null)?.target
+          return t instanceof Element && t.contains(el) && a.effect!.getTiming().iterations !== Infinity
+        })
+        .map((a) => a.finished.catch(() => undefined)),
+    ).then(() => undefined),
+  )
+}
+
 async function aboutFolds(page: Page, at: string, body: string, words: string) {
   await expect(page.locator(body), `${at}: no paragraph in the body`).toHaveCount(0)
   await page.locator('[data-page-about-button]').click()
   const open = page.locator('[data-page-about-open]')
   await expect(open, at).toContainText(words)
+  // The popover opens with a short scale: measured inside it, its text's lines (each the line's height) run past a box drawn smaller.
+  // The measure waits for the popover's own animations to end.
+  await opened(open)
   await uncut(open.locator('p').first())
   await page.keyboard.press('Escape')
   // A popover that has closed is not gone at once.
@@ -496,8 +514,29 @@ test('About this page: Agents and Crews fold their paragraphs once they have con
   }
 })
 
-test("About this page: Brakeman folds its paragraph once a request is done, and keeps Settings in its header", async ({ browser }) => {
-  budget(START_WAIT_MS + 60_000 + 10 * STEP_MS)
+/**
+ * Brakeman's header on a phone with a brief done (About this page drawn beside Settings): the title whole, Settings still named and
+ * a link to Settings, nothing in the header over anything else or past the window, and the day's budget line read in the body.
+ */
+async function brakemanPhoneHeader(browser: Browser, srv: OwnServer, theme: 'dark' | 'light') {
+  const page = await dayPage(browser, { ...PHONE, theme, path: '/brakeman', server: srv.started })
+  const header = page.locator('[data-brakeman-header]')
+  const at = `Brakeman at 390, ${theme}`
+  await expect(header.locator('[data-page-about-button]'), `${at}: About this page in the header`).toBeVisible()
+  const settings = header.getByRole('link', { name: 'Settings' })
+  await expect(settings, `${at}: Settings in the header`).toBeVisible()
+  await expect(settings).toHaveAttribute('href', '/settings')
+  await uncut(header.locator('[data-slot="title"]'))
+  await expect(header.locator('[data-slot="title"]'), `${at}: the title`).toHaveText('Brakeman')
+  await noOverlap(header)
+  await noSideways(page)
+  await expect(page.locator('[data-brakeman-page] [data-turns-today]'), `${at}: the budget line in the body`).toContainText('turns,')
+  await uncut(page.locator('[data-brakeman-page] [data-turns-today]'))
+  await page.context().close()
+}
+
+test("About this page: Brakeman folds its paragraph once a request is done, and keeps Settings in its header, whole on a phone", async ({ browser }) => {
+  budget(START_WAIT_MS + 60_000 + 20 * STEP_MS)
   const srv = await ownServer('empty-pages-brakeman')
   try {
     const { config: c } = await srv.api.ok<{ config: Record<string, unknown> & { rev: number } }>('GET', '/api/brakeman')
@@ -513,6 +552,7 @@ test("About this page: Brakeman folds its paragraph once a request is done, and 
       await expect(page.locator('[data-brakeman-settings-link]')).toHaveAttribute('href', '/settings')
       await aboutFolds(page, `Brakeman, ${theme}`, '[data-brakeman-about]', 'nothing it writes becomes work until you act')
       await page.context().close()
+      await brakemanPhoneHeader(browser, srv, theme)
     }
   } finally {
     await srv.stop()

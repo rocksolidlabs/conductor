@@ -86,6 +86,10 @@ async function stop(r: BrakemanRequest) {
 const ABOUT =
   'Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in Settings.'
 const unavailable = computed(() => bk.available.value === false)
+/** The day's budget, spent and allowed: in the header on a wide window, the body's first line on a phone. */
+const budgetLine = computed(() =>
+  state.value ? `${state.value.turnsToday} of ${config.value?.budget.turnsPerDay} turns, ${state.value.minutesToday ?? 0} of ${config.value?.budget.minutesPerDay} minutes today` : '',
+)
 /** The briefs' part of the page (P23): reading until the first answer, failed when it did not come, none yet, or the briefs. Once a
  * request is done the page has content, and its standing paragraph folds to About this page. */
 const briefsState = computed(() => pageState({ read: !!state.value, error: bk.problem.value, count: done.value.length }))
@@ -94,20 +98,23 @@ const briefsState = computed(() => pageState({ read: !!state.value, error: bk.pr
 <template>
   <UDashboardPanel id="brakeman">
     <template #header>
-      <UDashboardNavbar title="Brakeman" :ui="{ root: 'h-14' }">
+      <!-- On a phone the header holds the title whole: Settings is its icon (its name stays its label) and the day's budget line
+           is the body's first line, not the header's. -->
+      <UDashboardNavbar :toggle="false" title="Brakeman" :ui="{ root: 'h-14' }" data-brakeman-header>
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
           <PageAbout :shown="!unavailable && briefsState === 'content'">
             <p>{{ ABOUT }}</p>
           </PageAbout>
-          <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="ghost" to="/settings" data-brakeman-settings-link />
-          <span v-if="state" class="text-xs text-muted" data-turns-today>{{ state.turnsToday }} of {{ config?.budget.turnsPerDay }} turns, {{ state.minutesToday ?? 0 }} of {{ config?.budget.minutesPerDay }} minutes today</span>
+          <IconButton label="Settings" icon="i-lucide-settings" color="neutral" variant="ghost" to="/settings" data-brakeman-settings-link><span class="max-sm:sr-only">Settings</span></IconButton>
+          <span v-if="state" class="text-xs text-muted max-sm:hidden" data-turns-today>{{ budgetLine }}</span>
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
     </template>
     <template #body>
       <div class="mx-auto flex w-full max-w-3xl flex-col gap-5" data-brakeman-page>
+        <p v-if="state" class="text-xs text-muted sm:hidden" data-turns-today>{{ budgetLine }}</p>
         <UAlert v-if="unavailable" color="neutral" variant="subtle" icon="i-lucide-info" title="Brakeman is not here" :description="bk.problem.value" data-brakeman-unavailable />
         <template v-else>
           <p v-if="briefsState !== 'content'" class="text-sm text-muted" data-brakeman-about>{{ ABOUT }}</p>
