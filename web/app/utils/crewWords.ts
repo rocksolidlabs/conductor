@@ -1,4 +1,5 @@
-import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { RelatedTicket } from '~/composables/useDispatch'
+import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, RunTicket, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { runLength } from './charts'
 import { memberStatus, toCrewInput, type MemberStatus } from './crews'
@@ -178,6 +179,15 @@ export function startedClock(iso: string): string {
 /** The part after the crew's name: the run's own name when it was given one at launch, else "run started 08:31". */
 export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
   return run.label || `run started ${startedClock(run.startedAt)}`
+}
+
+/**
+ * The ticket chips a run's header draws: "Launched from CND-12 · plan r3" for a run launched from a ticket's revision, and the
+ * ticket the run is linked to, which is dropped when it names the ticket the run was launched from (one chip for one ticket; both
+ * only when they name two, so a different linked ticket is never hidden).
+ */
+export function runTicketChips(launched: RunTicket | null | undefined, linked: RelatedTicket | null | undefined): { launched: RunTicket | null; linked: RelatedTicket | null } {
+  return { launched: launched ?? null, linked: linked && linked.key !== launched?.key ? linked : null }
 }
 
 /** How a run is named where one line must do (a tab title, the sidebar): its own name, else its crew's. */

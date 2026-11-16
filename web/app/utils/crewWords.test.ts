@@ -9,6 +9,7 @@ import {
   filterRuns,
   readRunFilter,
   runSubtitle,
+  runTicketChips,
   runTitle,
   sinceStart,
   crewShape,
@@ -272,5 +273,20 @@ describe('runOutcome', () => {
     expect(runOutcome({ members: [] }, 'interrupted')).toBe('interrupted')
     expect(filterState('interrupted')).toBe('stopped')
     expect(outcomeBadge('interrupted')).toEqual({ label: 'interrupted', color: 'warning', variant: 'outline' })
+  })
+})
+
+describe('runTicketChips', () => {
+  const launched = { id: 't12', key: 'CND-12', rev: 4, plan: 'p3', planN: 3, launch: 'l1', digest: 'd' }
+  const linked = (key: string) => ({ id: `id-${key}`, key, title: `The ticket ${key}`, status: 'in_progress' as const })
+  it('draws one chip for one ticket: launched from CND-12 and linked to it gives the launched chip alone', () => {
+    expect(runTicketChips(launched, linked('CND-12'))).toEqual({ launched, linked: null })
+  })
+  it('draws both only when they name two tickets', () => {
+    expect(runTicketChips(launched, linked('CND-9'))).toEqual({ launched, linked: linked('CND-9') })
+  })
+  it('draws the linked chip alone for a run not launched from a ticket, and none for neither', () => {
+    expect(runTicketChips(undefined, linked('CND-9'))).toEqual({ launched: null, linked: linked('CND-9') })
+    expect(runTicketChips(undefined, null)).toEqual({ launched: null, linked: null })
   })
 })

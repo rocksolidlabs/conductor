@@ -908,7 +908,8 @@ test("the run page's Logins say a registered account in words while the accounts
 
   // Add member: Work chosen for a Claude Code member, then the agent whose yolo recipe sets its login: asked under the run's yolo,
   // that login alone is offered, Work beside it is marked in the server's words and Add is held; the login chosen, Add is free.
-  await page.locator('[data-crew-run-header]').getByRole('button', { name: 'Add agent', exact: true }).click()
+  await page.locator('[data-crew-run-header] [data-run-menu]').click()
+  await page.locator('[data-run-add]').click()
   const slide = page.locator('[role="dialog"]').filter({ has: page.locator('[data-crew-members]') })
   const row = slide.locator('[data-crew-member]')
   const add = slide.getByRole('button', { name: 'Add to the run' })

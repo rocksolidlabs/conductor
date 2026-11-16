@@ -507,8 +507,10 @@ test("a live run's Add an agent marks a person's name and holds the button, as t
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   budget(30_000)
   await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
-  const addAgent = page.getByRole('button', { name: 'Add agent', exact: true })
-  await expect(addAgent).toBeEnabled()
+  // Add agent is in the run's menu.
+  await page.locator('[data-crew-run-header] [data-run-menu]').click()
+  const addAgent = page.locator('[data-run-add]')
+  await expect(addAgent).not.toHaveAttribute('data-disabled', '')
   await addAgent.click()
   const dialog = page.getByRole('dialog', { name: 'Add an agent' })
   // The member's name field, by its placeholder exactly: the Model field's "no model named" has the word too.

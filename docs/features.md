@@ -2998,9 +2998,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
   id, a reply lost to the network is asked for once more with the same id,
   a refusal's words come from the receipt; `useTaskCommands` for the toasts).
-  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
-  `paused` instead of the member counts, and has a Pause / Resume button for
-  the dispatch (a receipt too). The grid's tiles say the member's task
+  The header has two rows (`CrewRunHeader.vue`, UX1's PR-9). Row one: the
+  run's name, whole from 1024 px up (below it the label and the short id
+  give way first), one ticket chip ("Launched from CND-12 · plan r3", or the
+  linked ticket's when the run was not launched from one; both only when
+  they name two tickets, `runTicketChips`), then Chat with its unread
+  count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
+  (neutral until its confirm), one menu ("More for this run": Add agent and
+  Share) and full screen. Row two, at every width: the run's bar of task
+  parts and its one sentence, "scheduling paused" with the pause's words,
+  "cleaning up", the people, the Logins, who launched the run with the
+  launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
   (Tasks unless switched; the choice kept with the graph's preferences): one
   node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,

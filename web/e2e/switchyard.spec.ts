@@ -268,7 +268,9 @@ test('a crew run published to the switchyard is shared through it: Share says wo
   await ctx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
   const owner = await ctx.newPage()
   await owner.goto(`${publisher.baseURL}/runs/${runId}`)
-  await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+  // Share is in the run's menu.
+  await owner.locator('[data-run-menu]').click()
+  await owner.locator('[data-run-share]').click()
   const dialog = owner.getByRole('dialog')
   await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
   await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
@@ -496,7 +498,9 @@ test("a run decision link through the switchyard: a phone answers a member's que
     await ownerCtx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
     const owner = await ownerCtx.newPage()
     await owner.goto(`${publisher.baseURL}/runs/${runId}`)
-    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    // Share is in the run's menu.
+    await owner.locator('[data-run-menu]').click()
+    await owner.locator('[data-run-share]').click()
     const dialog = owner.getByRole('dialog')
     await expect(dialog.locator('[data-created-url], [data-share-making]').first()).toBeVisible({ timeout: STEP })
     await dialog.getByText('Another link').click()
