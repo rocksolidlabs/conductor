@@ -1,11 +1,14 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // A launch's package (Program item DS2, docs/plans/dispatch-evidence.md,
@@ -19,16 +22,19 @@ import (
 // the revision's body has it.
 
 // PackageVersion is the version of the package's shape this binary
-// builds.
-const PackageVersion = 1
+// builds. Version 2 (Program item IN1a) adds the source and the evidence;
+// a package version 1 built keeps its version, and the engine reads both.
+const PackageVersion = 2
 
 // Package is a launch's package, version PackageVersion: the ticket as it
 // stood, the approved revision that launched it, the source references,
 // the attachments (each with the file name it is written under in an
 // attempt) and the comments the revision hands over, read at the launch,
-// the constraints and decisions as the revision names them, and the
-// launch itself. Encoded as the store encodes values (HTML escaping off),
-// at most MaxPackage bytes.
+// the constraints and decisions as the revision names them, the launch
+// itself, the ticket's linked item (Source, left out for none) and the
+// links the revision names as evidence (left out for none), so a package
+// with neither is version 1's but for its version. Encoded as the store
+// encodes values (HTML escaping off), at most MaxPackage bytes.
 type Package struct {
 	Version     int                 `json:"version"`
 	Ticket      PackageTicket       `json:"ticket"`
@@ -39,6 +45,46 @@ type Package struct {
 	Constraints string              `json:"constraints"`
 	Decisions   []PackageDecision   `json:"decisions"`
 	Launch      PackageLaunch       `json:"launch"`
+	Source      *PackageSource      `json:"source,omitempty"`
+	Evidence    []PackageEvidence   `json:"evidence,omitempty"`
+}
+
+// PackageSource is the ticket's linked item at the launch: its system,
+// host, page, reference (owner/repo#n) and node id, its state then, when
+// the ticket last read it (zero for never), the SHA-256 of the snapshot
+// the package was built from, the account that opened it, which of the
+// ticket's title and description are quoted (a read wrote that text into
+// the field: readWrote) and which of those the item's snapshot holds now
+// (the quote then names the item; otherwise a source not known), and its
+// steps to reproduce when the revision hands them over. Unlinked says the
+// ticket has no linked item at the launch while a quoted text is in it:
+// the source then holds which fields are quoted and nothing of an item.
+// At most MaxPackageSource as encoded.
+type PackageSource struct {
+	Unlinked              bool      `json:"unlinked,omitempty"`
+	System                string    `json:"system,omitempty"`
+	Host                  string    `json:"host,omitempty"`
+	URL                   string    `json:"url,omitempty"`
+	Ref                   string    `json:"ref,omitempty"`
+	NodeID                string    `json:"nodeId,omitempty"`
+	State                 string    `json:"state,omitempty"`
+	StateReason           string    `json:"stateReason,omitempty"`
+	ReadAt                time.Time `json:"readAt,omitzero"`
+	SnapshotSha256        string    `json:"snapshotSha256,omitempty"`
+	Author                string    `json:"author,omitempty"`
+	TitleFromGitHub       bool      `json:"titleFromGitHub"`
+	DescriptionFromGitHub bool      `json:"descriptionFromGitHub"`
+	TitleFromItem         bool      `json:"titleFromItem"`
+	DescriptionFromItem   bool      `json:"descriptionFromItem"`
+	Repro                 string    `json:"repro,omitempty"`
+}
+
+// PackageEvidence is a link the revision names as evidence, read at the
+// launch: its page, and its note cut to MaxEvidenceNote characters with
+// "…".
+type PackageEvidence struct {
+	URL  string `json:"url"`
+	Note string `json:"note"`
 }
 
 // PackageDecision is a decision of the revision as its package names it:
@@ -252,6 +298,15 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 	for _, c := range comments {
 		pkg.Comments = append(pkg.Comments, PackageComment{ID: c.ID, N: c.N, Author: c.Author, By: c.By, At: c.CreatedAt, Body: c.Body, SHA256: sha256Hex(c.Body)})
 	}
+	if pkg.Source, err = packageSource(t.ctx, t.tx, tk, body.Source); err != nil {
+		return "", err
+	}
+	if pkg.Evidence, err = packageEvidence(t.ctx, t.tx, tk, body.Source); err != nil {
+		return "", err
+	}
+	if err := checkParts(pkg); err != nil {
+		return "", err
+	}
 	encoded, err := encodeValue(pkg)
 	if err != nil {
 		return "", err
@@ -260,6 +315,158 @@ func (t *tx) buildPackage(tk Ticket, p PlanSummary, body PlanBody, crew planCrew
 		return "", packageBound(pkg, len(encoded))
 	}
 	return encoded, nil
+}
+
+// packageSource is the package's source: which of the title and the
+// description are quoted and which of those the linked item holds now
+// (readWrote), whoever owns the field. For a linked ticket it is the item
+// as the ticket's snapshot and read hold it, with the steps to reproduce
+// when the revision hands them over (src.Repro, which the caller has
+// checked are the snapshot's: sourceStale). For a ticket with no linked
+// item and a quoted text, it is Unlinked and the flags alone; for one with
+// neither, nil. A snapshot that cannot be read is the store's error, never
+// a package without its source.
+func packageSource(ctx context.Context, q queryer, tk Ticket, src *PlanSource) (*PackageSource, error) {
+	title, titleOfItem, err := readWrote(ctx, q, tk, FieldTitle)
+	if err != nil {
+		return nil, err
+	}
+	description, descriptionOfItem, err := readWrote(ctx, q, tk, FieldDescription)
+	if err != nil {
+		return nil, err
+	}
+	if tk.ExternalID == "" {
+		if !title && !description {
+			return nil, nil
+		}
+		return &PackageSource{Unlinked: true, TitleFromGitHub: title, DescriptionFromGitHub: description}, nil
+	}
+	raw := string(tk.ExternalSnapshot)
+	sn, ok := ParseSnapshot(raw)
+	if !ok {
+		return nil, fmt.Errorf("dispatch: the snapshot of %s's linked item cannot be read", tk.Key)
+	}
+	ps := &PackageSource{
+		System: sn.System, Host: sn.Host, URL: tk.ExternalURL, Ref: sn.Space + "#" + sn.ID, NodeID: sn.NodeID, State: sn.State, StateReason: sn.StateReason,
+		SnapshotSha256: sha256Hex(raw), Author: sn.Author, TitleFromGitHub: title, DescriptionFromGitHub: description,
+		TitleFromItem: titleOfItem, DescriptionFromItem: descriptionOfItem,
+	}
+	if src != nil && src.Repro != nil {
+		ps.Repro = sn.Repro
+	}
+	read, err := ticketReadOf(ctx, q, tk.ID)
+	if err != nil {
+		return nil, err
+	}
+	if read != nil && read.ExternalID == tk.ExternalID {
+		ps.ReadAt = read.ReadAt
+	}
+	return ps, nil
+}
+
+// readWrote decides whether the ticket's title or description (field) is
+// quoted: its text is one a read of a linked item wrote into that field
+// of that ticket (an observe row of the field whose value is the text: an
+// import, a refresh, a field given back) or one the linked item's
+// snapshot holds for the field now (ofItem: the quote then names the
+// item). It is the text alone that decides, never which row came last:
+// a person who types a read's text back, byte for byte, has it quoted. An
+// empty text is never quoted.
+func readWrote(ctx context.Context, q queryer, tk Ticket, field string) (quoted, ofItem bool, err error) {
+	text := textOf(tk, field)
+	if text == "" {
+		return false, false, nil
+	}
+	if sn, ok := ParseSnapshot(string(tk.ExternalSnapshot)); ok && tk.ExternalID != "" {
+		title, _, _ := FromExternal(sn.Title, "")
+		ofItem = (field == FieldTitle && text == title) || (field == FieldDescription && sha256Hex(text) == sn.DescriptionSha256)
+	}
+	if ofItem {
+		return true, true, nil
+	}
+	err = q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op = ? AND value = ?)",
+		EntityTicket, tk.ID, field, OpObserve, text).Scan(&quoted)
+	return quoted, false, err
+}
+
+// titleReadWrote reports whether the title of the ticket with the key is
+// quoted (readWrote); false for a key not in the store.
+func titleReadWrote(ctx context.Context, q queryer, key string) (bool, error) {
+	var tk Ticket
+	var snapshot string
+	switch err := q.QueryRowContext(ctx, "SELECT id, title, external_id, external_snapshot FROM tickets WHERE key = ?", key).Scan(&tk.ID, &tk.Title, &tk.ExternalID, &snapshot); {
+	case isNoRows(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	tk.ExternalSnapshot = json.RawMessage(snapshot)
+	quoted, _, err := readWrote(ctx, q, tk, FieldTitle)
+	return quoted, err
+}
+
+// checkParts holds the package's source and evidence to the rules the
+// engine reads them by (internal/crew, validateSource and readPackage),
+// so a launch Dispatch commits is never one the engine refuses: at most
+// MaxPackageEvidence evidence links, the source and the evidence as
+// encoded each at most their bound (MaxPackageSource,
+// MaxPackageEvidenceJSON), each bound refused in words naming the part;
+// then a linked source names its system, its page and each evidence
+// link's are http or https URLs as a link's are (checkField's link.url),
+// and its state and state reason are a snapshot's words.
+func checkParts(pkg Package) error {
+	if n := len(pkg.Evidence); n > MaxPackageEvidence {
+		return refuse(RefusalBound, "the revision names %d evidence links, more than the %d a package holds", n, MaxPackageEvidence)
+	}
+	for _, p := range []struct {
+		name string
+		v    any
+		max  int
+	}{{"the source (the linked item and its steps to reproduce) is", pkg.Source, MaxPackageSource}, {"the evidence is", pkg.Evidence, MaxPackageEvidenceJSON}} {
+		v, err := encodeValue(p.v)
+		if err != nil {
+			return err
+		}
+		if len(v) > p.max {
+			return refuse(RefusalBound, "%s %s as the package writes it, more than the %s a package holds", p.name, sizeWords(len(v)), sizeWords(p.max))
+		}
+	}
+	if s := pkg.Source; s != nil && !s.Unlinked {
+		if s.System == "" || s.URL == "" || !slices.Contains(externalStates, s.State) || !slices.Contains(externalReasons, s.StateReason) {
+			return refuse(RefusalInvalid, "the linked item's snapshot names no system, no page or a state of its own: refresh it")
+		}
+		if err := checkField("link.url", "the linked item's page", s.URL); err != nil {
+			return err
+		}
+	}
+	for _, e := range pkg.Evidence {
+		if err := checkField("link.url", "an evidence link's page", e.URL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// packageEvidence is the links the revision names as evidence, in its
+// order, each live (the caller has checked: sourceStale), whatever the
+// ticket's linked item: each link's page (its ref when it has none) and
+// its note cut to MaxEvidenceNote characters.
+func packageEvidence(ctx context.Context, q queryer, tk Ticket, src *PlanSource) ([]PackageEvidence, error) {
+	out := []PackageEvidence{}
+	if src == nil {
+		return out, nil
+	}
+	for _, id := range src.Evidence {
+		var ref, page, note string
+		if err := q.QueryRowContext(ctx, "SELECT ref, url, note FROM links WHERE id = ? AND ticket_id = ?", id, tk.ID).Scan(&ref, &page, &note); err != nil {
+			return nil, err
+		}
+		if utf8.RuneCountInString(note) > MaxEvidenceNote {
+			note = cutChars(note, MaxEvidenceNote-1) + "…"
+		}
+		out = append(out, PackageEvidence{URL: cmp.Or(page, ref), Note: note})
+	}
+	return out, nil
 }
 
 // packageTicket reads the package's part of the ticket tk inside the
@@ -319,8 +526,28 @@ func packageTicket(ctx context.Context, q queryer, tk Ticket) (PackageTicket, er
 	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) "+blockers, tk.ID, RelationBlocks).Scan(&pt.BlockersTotal); err != nil {
 		return PackageTicket{}, err
 	}
+	// A related ticket's quoted title (readWrote) is WithheldTitle: the
+	// package quotes no ticket's text but its own.
+	if pt.Parent != nil {
+		if w, err := titleReadWrote(ctx, q, pt.Parent.Key); err != nil {
+			return PackageTicket{}, err
+		} else if w {
+			pt.Parent.Title = WithheldTitle
+		}
+	}
+	for i, b := range pt.Blockers {
+		if w, err := titleReadWrote(ctx, q, b.Key); err != nil {
+			return PackageTicket{}, err
+		} else if w {
+			pt.Blockers[i].Title = WithheldTitle
+		}
+	}
 	return pt, nil
 }
+
+// WithheldTitle stands, in a package, for the title of a related ticket
+// (its parent, a blocker) that is quoted (readWrote).
+const WithheldTitle = "(a title written outside Conductor, not shown here)"
 
 // packageBound is the bound refusal of a package of total bytes as
 // encoded, past MaxPackage: its words name the package's largest part and
@@ -332,7 +559,7 @@ func packageBound(pkg Package, total int) error {
 	}{
 		{"the ticket is", pkg.Ticket}, {"the plan revision is", pkg.Plan}, {"the references are", pkg.References},
 		{"the attachments are", pkg.Attachments}, {"the comments are", pkg.Comments}, {"the constraints are", pkg.Constraints},
-		{"the decisions are", pkg.Decisions}, {"the launch is", pkg.Launch},
+		{"the decisions are", pkg.Decisions}, {"the launch is", pkg.Launch}, {"the source is", pkg.Source}, {"the evidence is", pkg.Evidence},
 	}
 	largest, size := "", -1
 	for _, p := range parts {

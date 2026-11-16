@@ -222,9 +222,25 @@ export function severityColor(w: Pick<CapacityWindow, 'severity'>): 'primary' | 
 /** The share used past which the panel warns, whatever the provider's severity (the plan's 90%). */
 export const WARN_PERCENT = 90
 
-/** Whether the panel says the agent may stop before the reset: a window at warning or critical, or at 90% used. It never stops a launch. */
-export function warns(view: Pick<CapacityView, 'windows'>): boolean {
-  return view.windows.some((w) => w.severity === 'warning' || w.severity === 'critical' || w.percent >= WARN_PERCENT)
+/** Whether the provider says a limit holds: a limit reached, its spend control reached, or ordinary use not allowed now. */
+export function limited(l: CapacityLimits | undefined): boolean {
+  return !!l && (!!l.reached || l.spendControl === true || l.ordinaryAllowed === false)
+}
+
+/**
+ * What the panel warns, in its colour, or null: at a limit the provider reports (whatever the windows say), the limit's words in
+ * brick; else at a window at warning or critical, or at 90% used, that a window is near its limit (brick for critical, else signal).
+ * It never stops a launch.
+ */
+export function warningOf(v: Pick<CapacityView, 'windows' | 'limits'>): { words: string; color: 'warning' | 'error' } | null {
+  if (limited(v.limits)) return { words: LIMIT_WORDS, color: 'error' }
+  if (!v.windows.some((w) => w.severity === 'warning' || w.severity === 'critical' || w.percent >= WARN_PERCENT)) return null
+  return { words: WARN_WORDS, color: v.windows.some((w) => w.severity === 'critical') ? 'error' : 'warning' }
+}
+
+/** Whether the panel says the agent may stop (warningOf). */
+export function warns(view: Pick<CapacityView, 'windows' | 'limits'>): boolean {
+  return warningOf(view) !== null
 }
 
 /** A figure as the provider wrote it, with thousands marked when it is a plain number ("1250" → "1,250"); never computed with. */
@@ -299,9 +315,12 @@ export function capacityHostWords(h: CapacityView['host']): string {
   return h.words || 'Where it runs is not decided yet'
 }
 
-/** The model in words: the one chosen, or the agent's default, which Conductor does not read. */
+/**
+ * The model in words: the one chosen; for none, one sentence wherever a launch or a run's member is said (the panels, the launch lines,
+ * the run page): its arguments may choose a model, which Conductor does not read, so none is never said to be the agent's default.
+ */
 export function modelWords(m: CapacityView['model'] | undefined): string {
-  return m?.chosen ? m.chosen : "the agent's default"
+  return m?.chosen ? m.chosen : 'no model named: the agent chooses, or its arguments do'
 }
 
 /** The plan as the tool reported it, with its provider's name: "Claude Max", "ChatGPT Pro"; "" when none was reported. */
@@ -312,6 +331,78 @@ export function planWords(plan: string | undefined, adapter: string | undefined)
   if (adapter === 'claude') return `Claude ${shown}`
   if (adapter === 'codex') return `ChatGPT ${shown}`
   return shown
+}
+
+/** What the panel says at the provider's warning or critical severity, or at 90% used: the agent may stop; the launch stays enabled. */
+export const WARN_WORDS = 'The agent may stop before the reset: a window is near its limit. Launching is still yours to decide.'
+/** What the panel says when the provider reports a limit reached, spend control reached or ordinary use not allowed. */
+export const LIMIT_WORDS = 'The agent may stop: the provider says a limit is reached. Launching is still yours to decide.'
+
+/** One statement of a capacity view, as both the full panel and the compact one say it (capacityStatements). */
+export interface CapacityStatement {
+  kind: 'host' | 'account' | 'model' | 'plan' | 'host-words' | 'entry-login' | 'state' | 'words' | 'window' | 'no-windows' | 'warning' | 'provider' | 'estimate' | 'fresh'
+  /** Its words, said after `label` when it has one. */
+  text: string
+  label?: string
+  /** A warning's colour. */
+  color?: 'warning' | 'error'
+  /** A window's statement: the window, for its bar. */
+  window?: CapacityWindow
+}
+
+/** A statement in words, its label first. */
+export function statementWords(s: CapacityStatement): string {
+  return s.label ? `${s.label}: ${s.text}` : s.text
+}
+
+/**
+ * Everything a panel says of a view, in order, one statement each (the full panel draws each in its place, the compact one says them
+ * in its line or its details): where the launch runs, the account and the model (none for a launch with its own login, the account
+ * only for one on a registered account), the plan, the server's words on where the figures come from, the entry's login, the state
+ * (or the server's words beside a reading's figures), each window with its reset, the warning, the provider's figures and flags,
+ * Conductor's estimate, and how fresh. `model` is the launch's own, as typed.
+ */
+export function capacityStatements(v: CapacityView, now: number, model = '', timeZone?: string): CapacityStatement[] {
+  const login = launchLogin(v)
+  const out: CapacityStatement[] = [{ kind: 'host', text: capacityHostWords(v.host) }]
+  if (login.kind === 'account') out.push({ kind: 'account', label: 'Account', text: accountWords(v.account) })
+  if (login.kind !== 'own') out.push({ kind: 'model', label: 'Model', text: modelWords(model.trim() ? { chosen: model.trim() } : v.model) })
+  const plan = planWords(v.account.plan, v.agent.adapter)
+  if (plan) out.push({ kind: 'plan', text: plan })
+  if (v.host.kind === 'undetermined' && v.host.words) out.push({ kind: 'host-words', text: v.host.words })
+  if (login.kind === 'entry') out.push({ kind: 'entry-login', text: `This agent's entry sets ${login.variable}: every launch of it uses that login, not an account chosen here.` })
+  const state = capacityStateWords(v)
+  if (v.state !== 'ok') out.push({ kind: 'state', label: state.title, text: state.words })
+  else if (v.words) out.push({ kind: 'words', text: v.words })
+  for (const w of v.windows) out.push({ kind: 'window', text: windowWords(w, now, timeZone), window: w })
+  if (!v.windows.length && v.state === 'ok') out.push({ kind: 'no-windows', text: 'The provider reported no usage window.' })
+  const warning = warningOf(v)
+  if (warning) out.push({ kind: 'warning', text: warning.words, color: warning.color })
+  const provider = [...v.credits.map(creditWords), ...limitsWords(v.limits)]
+  if (provider.length) out.push({ kind: 'provider', label: "The provider's figures", text: provider.join(' · ') })
+  if (v.counts && login.kind !== 'own') out.push({ kind: 'estimate', label: "Conductor's estimate", text: countsWords(v.counts) })
+  const fresh = freshnessWords(v, now)
+  if (fresh) out.push({ kind: 'fresh', text: fresh })
+  return out
+}
+
+/**
+ * The compact panel (the crew's launch sheet, a ticket's launch, Settings' Accounts), made from capacityStatements: a line (the plan,
+ * the windows' shares or the state, and the server's own words beside a reading's figures), how fresh, the warning in its colour and
+ * the server's words on where the figures come from, in text a phone shows; `details`, every other statement of the full panel (each
+ * window with its reset, the provider's figures, the estimate, the entry's login…), for details that open by keyboard and by touch.
+ */
+export function compactWords(v: CapacityView, now: number, model = ''): { line: string; fresh: string; warning: { words: string; color: 'warning' | 'error' } | null; host: string; details: string[] } {
+  const all = capacityStatements(v, now, model)
+  const s = capacityStateWords(v)
+  const shown = v.state === 'ok' ? [v.windows.map((w) => `${w.name} ${w.percent}%`).join(' · ') || 'no windows reported', v.words ?? ''].filter(Boolean).join(' · ') : `${s.title}: ${s.words}`
+  const plan = planWords(v.account.plan, v.agent.adapter)
+  const line = plan ? `${plan} · ${shown}` : shown
+  const fresh = freshnessWords(v, now) || 'not read yet'
+  const warning = warningOf(v)
+  const host = all.find((x) => x.kind === 'host-words')?.text ?? ''
+  const said = [line, fresh, warning?.words ?? '', host]
+  return { line, fresh, warning, host, details: all.map(statementWords).filter((t) => !said.some((x) => x.includes(t))) }
 }
 
 /** The account in words: its label, or the agent's default login. */

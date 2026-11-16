@@ -138,7 +138,10 @@ export function resolvedArgv(agent: Pick<PlanAgent, 'command' | 'startArgs' | 'y
   return [...agent.command, ...agent.startArgs, ...memberArgs, ...agent.yoloArgs]
 }
 
-/** A member's model as its launch runs it, in the capacity rows' words: the one the revision names, else the agent's default. */
+/**
+ * A member's model as its launch runs it, in the capacity rows' words (modelWords): the one the revision names, else the one sentence
+ * for no model named, never the agent's default, since the member's arguments may choose one.
+ */
 export function planMemberModel(m: { model?: string }): string {
   return modelWords({ chosen: m.model?.trim() ?? '' })
 }
@@ -242,20 +245,6 @@ export function referenceText(r: NewPlanReference): string {
   if (r.start && r.end && r.end !== r.start) s += `-${r.end}`
   if (r.note) s += `=${r.note}`
   return s
-}
-
-/**
- * A launched run's default label, as the store makes it when none is given: the ticket's key and title, cut to 60 characters at a word
- * (`CND-12 Fix the login loop`), never inside the key.
- */
-export function defaultLabel(key: string, title: string): string {
-  const s = `${key} ${title}`
-  const r = Array.from(s)
-  if (r.length <= PLAN_BOUNDS.label) return s
-  let cut = r.slice(0, PLAN_BOUNDS.label).join('')
-  const i = cut.lastIndexOf(' ')
-  if (i > key.length) cut = cut.slice(0, i)
-  return cut.replace(/ +$/, '')
 }
 
 /** What a launch's reply came to: its run started, the launch failed with why, still pending, or the operation refused before any run. */
