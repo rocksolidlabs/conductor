@@ -8,6 +8,7 @@ import { checkBadge, identity, isAvailable, notInstalledBadge, pageRequests, set
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
 import { removalOf, removalText } from '~/utils/catalog'
+import { pageState } from '~/utils/pageState'
 
 useHead({ title: 'Agents' })
 
@@ -19,6 +20,10 @@ const agents = ref<AgentInfo[]>([])
 const hidden = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
+/** Whether the catalog has answered once. */
+const loaded = ref(false)
+/** What the page shows of the catalog (P23); with an agent listed, its standing paragraph folds to About this page. */
+const shownState = computed(() => pageState({ read: loaded.value, error: error.value, count: agents.value.length }))
 const launch = useLaunchModal()
 const serverHost = useServerHost()
 
@@ -96,6 +101,7 @@ async function refresh() {
     if (stop()) return
     agents.value = r.agents
     hidden.value = r.hidden
+    loaded.value = true
     unanswered.value = new Set()
     error.value = ''
     serverHost.load()
@@ -240,6 +246,9 @@ usePalette().registerPage(() => ({
     <template #header>
       <UDashboardNavbar :toggle="false" title="Agents" data-agents-header>
         <template #right>
+          <PageAbout :shown="shownState === 'content'">
+            <p>Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.</p>
+          </PageAbout>
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" aria-label="Refresh" data-agents-refresh @click="refresh"><span class="max-sm:sr-only">Refresh</span></UButton>
           <UButton label="Add agent" icon="i-lucide-plus" color="neutral" variant="outline" @click="addAgent" />
           <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
@@ -248,9 +257,9 @@ usePalette().registerPage(() => ({
       </UDashboardNavbar>
     </template>
     <template #body>
-      <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-4" />
+      <UAlert v-if="error && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-4" />
       <UAlert v-if="serverHost.switchyard.value" color="neutral" variant="subtle" icon="i-lucide-train-track" title="This server is a switchyard" description="It coordinates hosted sessions from other Conductors and launches nothing of its own: the catalog here is not used." class="mb-4" data-switchyard-notice />
-      <p class="text-sm text-muted mb-4">
+      <p v-if="shownState !== 'content'" class="text-sm text-muted mb-4" data-agents-about>
         Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.
       </p>
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -334,7 +343,16 @@ usePalette().registerPage(() => ({
           </div>
         </UCard>
       </div>
-      <p v-if="!agents.length && !loading && !error" class="text-sm text-muted">No agents in the catalog.</p>
+      <PageEmpty
+        v-if="shownState !== 'content'"
+        page="agents"
+        :state="shownState"
+        words="The catalog has no agent. Add one here, or in the config file's catalog."
+        thing="catalog"
+        :error="error"
+        :actions="[{ label: 'Add agent', icon: 'i-lucide-plus', onClick: addAgent }]"
+        @again="refresh"
+      />
 
       <section v-if="hidden.length" class="mt-8" aria-labelledby="hidden-agents">
         <h2 id="hidden-agents" class="text-[11px] font-semibold uppercase tracking-wider text-muted">Hidden · {{ hidden.length }}</h2>

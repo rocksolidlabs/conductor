@@ -5,6 +5,7 @@ import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAf
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
+import { pageState } from '~/utils/pageState'
 import { SheetConfirmation, type SheetTarget } from '~/utils/crewLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
@@ -170,6 +171,10 @@ function isLive(r: RunInfo): boolean {
 }
 /** Every run going now, newest first: the home's "Running now". */
 const liveRuns = computed(() => live.runs.value.filter(isLive))
+/** The saved crews' part of the home (P23): reading, a first read that failed, none yet, or the table. */
+const crewsState = computed(() => pageState({ read: loaded.value, error: error.value, count: crews.value.length }))
+/** The home has something to show, a crew or a run: its sections' captions fold to About this page. */
+const crewsShown = computed(() => crews.value.length > 0 || liveRuns.value.length > 0)
 /** The runs of the crew on screen, and the ones going now. */
 const crewRuns = computed(() => runsOf(crewId.value))
 const crewLive = computed(() => crewRuns.value.filter(isLive))
@@ -624,6 +629,10 @@ usePalette().registerPage(() => ({
     <template #header>
       <UDashboardNavbar :toggle="false" v-if="home" title="Crews">
         <template #right>
+          <PageAbout :shown="crewsShown">
+            <p><b class="font-medium text-default">Running now</b>: launches of a saved crew; each member is a live session.</p>
+            <p class="mt-2"><b class="font-medium text-default">Saved crews</b>: plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one.</p>
+          </PageAbout>
           <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" data-new-crew @click="newCrew" />
           <FullscreenButton />
         </template>
@@ -679,13 +688,13 @@ usePalette().registerPage(() => ({
     <template #body>
       <!-- The home: the runs going now, then the saved crews. -->
       <div v-if="home" class="flex flex-col gap-7 p-4 sm:p-6" data-crews-home>
-        <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
+        <UAlert v-if="error && crewsState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
         <UAlert v-if="serverHost.switchyard.value" color="neutral" variant="subtle" icon="i-lucide-train-track" title="This server is a switchyard" description="It launches no crews: run them from a Conductor of your own and share them here." data-switchyard-notice />
 
         <section v-if="liveRuns.length" class="flex flex-col gap-2.5" data-running-now>
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Running now · {{ liveRuns.length }}</span>
-            <span class="text-xs text-muted">launches of a saved crew; each member is a live session</span>
+            <span v-if="!crewsShown" class="text-xs text-muted" data-crews-caption>launches of a saved crew; each member is a live session</span>
           </div>
           <div class="grid gap-3 xl:grid-cols-2" data-crew-runs>
             <CrewRunCard v-for="r in liveRuns" :key="r.id" :run="r" :sessions="live.sessions.value" :now="now" />
@@ -695,21 +704,23 @@ usePalette().registerPage(() => ({
         <section class="flex flex-col gap-2.5" data-saved-crews>
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
-            <span class="text-xs text-muted">plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
+            <span v-if="!crewsShown" class="text-xs text-muted" data-crews-caption>plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
           <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="crewLaunch.ask($event)" />
-          <UEmpty
-            v-else-if="loaded"
-            icon="i-lucide-users"
-            title="No crews yet"
-            description="A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew by start rules and one by tasks, where Yardmaster gives each member its tasks as the results they need come in; they are ordinary crews once loaded."
+          <PageEmpty
+            v-else-if="crewsState !== 'content'"
+            page="crews"
+            :state="crewsState"
+            words="A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew by start rules and one by tasks, where Yardmaster gives each member its tasks as the results they need come in; they are ordinary crews once loaded."
+            thing="crews"
+            :error="error"
             :actions="[
               { label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew },
-              { label: 'Load the examples', icon: 'i-lucide-package-open', color: 'neutral', variant: 'outline', loading: seeding, onClick: loadExamples },
+              { label: 'Load the examples', icon: 'i-lucide-package-open', loading: seeding, onClick: loadExamples },
             ]"
-            data-crews-empty
+            :data-crews-empty="crewsState === 'empty' ? '' : undefined"
+            @again="refresh"
           />
-          <div v-else-if="loading" class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading crews…</div>
           <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green finished, grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
@@ -758,10 +769,7 @@ usePalette().registerPage(() => ({
           <div v-else-if="isNew" class="flex items-center gap-2 text-sm text-muted">
             <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the catalog…
           </div>
-          <div v-else class="flex flex-col items-start gap-3 text-sm text-muted">
-            <p>No crew has the id <code>{{ routeId }}</code>.</p>
-            <UButton label="All crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
-          </div>
+          <PageEmpty v-else state="missing" :words="`No crew has the id ${routeId}.`" :actions="[{ label: 'All crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-crew-missing />
         </div>
         <!-- The unsaved-changes bar stays in view at the bottom of the page. -->
         <div v-if="dirty && draft" class="sticky bottom-0 px-4 pb-4 pt-2 sm:px-6">

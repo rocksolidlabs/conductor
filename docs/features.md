@@ -273,6 +273,20 @@ open deferred item from rounds 1 and 2, then the features below.
   kept yet."; its search caption folds to "About this page" (`PageAbout`)
   once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
   `history.test.ts`).
+- **The rest of the pages take the one shape, and About this page (#938;
+  P23, second half).** Crews, Dispatch, a project, the Events feed,
+  Brakeman's briefs and Agents draw `PageEmpty` when they have nothing to
+  show, and its reading and could-not-read shapes while they read
+  (Dispatch's first read that fails says the server's words with Read
+  again, in place of an alert over a blank page). A crew, a project, a
+  ticket and a run that are not found draw its not-found shape with the
+  way back. A project's Board and Roadmap say the project has no tickets,
+  with New ticket (C), in place of empty columns; a filter that matches
+  nothing stays a plain line. The standing paragraphs of Brakeman and
+  Agents, and the Crews page's two section captions, fold to About this
+  page once the page has content; Brakeman's Settings link is a header
+  button. The feed says it is this tab's alone and links Agents'
+  Reporting (`empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`

@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { test as base, expect, type Browser, type BrowserContext, type Page } from '@playwright/test'
+import { test as base, expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
 import { startDay, type Day } from './day'
 import { git, START_WAIT_MS } from './server'
 import { readState, type E2EState } from './state'
@@ -372,6 +372,17 @@ export interface E2ECrew {
   /** The crew's project manifest (EN1), as the server keeps it; its count of changes beside it. */
   manifest?: Record<string, unknown>
   manifestRevision?: number
+}
+
+/**
+ * A Read again pressed until what it leads to is shown (`shown`). The page asks its failed read again by itself, as a re-read is, and
+ * that read may answer first and take the button away: a click on it then waits for a button that never comes back.
+ */
+export async function readAgain(retry: Locator, shown: Locator) {
+  await expect(async () => {
+    if (!(await shown.count())) await retry.click({ timeout: 2_000 })
+    await expect(shown).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 15_000 })
 }
 
 /** Raises the running test's timeout by `ms`, as a step is about to make waits of those caps (AGENTS.md, Tests that do not flake). */

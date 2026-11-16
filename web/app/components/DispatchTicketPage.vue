@@ -864,11 +864,7 @@ const askBrakeman = computed(() =>
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
 
-      <div v-if="missing" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted" data-ticket-missing>
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No ticket has the key <code>{{ ticketKey }}</code>.</p>
-        <UButton :label="`Back to ${project}`" icon="i-lucide-arrow-left" color="neutral" variant="soft" :to="projectPath(project)" />
-      </div>
+      <PageEmpty v-if="missing" state="missing" :words="`No ticket has the key ${ticketKey}.`" :actions="[{ label: `Back to ${project}`, icon: 'i-lucide-arrow-left', to: projectPath(project) }]" data-ticket-missing />
 
       <div v-else-if="ticket" class="flex flex-col gap-5 px-4 py-5 sm:px-6" :data-ticket="ticket.key" :data-ticket-rev="ticket.rev">
         <UAlert
