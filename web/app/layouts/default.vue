@@ -387,7 +387,7 @@ defineShortcuts({
         <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
           <SidebarHeaderMenus collapsed @token="showToken = true" />
           <UTooltip text="Expand sidebar" :kbds="['meta', 'B']" :content="{ side: 'right' }" ignore-non-keyboard-focus>
-            <UButton icon="i-lucide-panel-left-open" color="neutral" variant="ghost" size="sm" aria-label="Expand sidebar" class="hidden lg:inline-flex" data-rail-expand @click="expandByButton" />
+            <UButton icon="i-lucide-panel-left-open" color="neutral" variant="ghost" size="sm" aria-label="Expand sidebar" class="hidden lg:inline-flex hover:bg-canvas-hover active:bg-canvas-hover" data-rail-expand @click="expandByButton" />
           </UTooltip>
         </div>
       </template>

@@ -218,6 +218,43 @@ function sample(text: string): Record<string, TNode> {
   return { 'components/Sample.vue': parseSfc(text, { filename: 'Sample.vue' }).descriptor.template!.ast as unknown as TNode }
 }
 
+/**
+ * The neutral ghost buttons that sit on the canvas itself (the rail's, the sidebar header's, the rail's Expand in the layout), as
+ * `path:line` when one would hover to Nuxt UI's raised tone: bg-elevated is the light canvas itself, so its hover would show nothing.
+ * Each carries the canvas's hover tone (hover:bg-canvas-hover) instead. A row's buttons sit on the row, which hovers to that tone, and
+ * keep the raised one.
+ */
+function canvasGhosts(from: Record<string, TNode> = templates): { found: number; breaking: string[] } {
+  const onCanvas = (path: string) => /^components\/(SidebarRail|SidebarHeaderMenus)\.vue$/.test(path) || path === 'layouts/default.vue'
+  let found = 0
+  const breaking: string[] = []
+  for (const [path, ast] of Object.entries(from)) {
+    if (!onCanvas(path)) continue
+    for (const { el } of elements(ast)) {
+      if (el.tag !== 'UButton' && el.tag !== 'IconButton') continue
+      if (propOf(el, 'variant')?.value !== 'ghost' || propOf(el, 'color')?.value !== 'neutral') continue
+      // In the layout, the rail's own button alone: the rest of it is not on the canvas.
+      if (path === 'layouts/default.vue' && !propOf(el, 'data-rail-expand')) continue
+      found++
+      if (!/(^|\s)hover:bg-canvas-hover(\s|$)/.test(propOf(el, 'class')?.value ?? '')) breaking.push(`${path}:${el.loc.start.line}`)
+    }
+  }
+  return { found, breaking }
+}
+
+describe("the canvas's controls", () => {
+  it("hover the rail's and the sidebar header's ghost buttons to the canvas's hover tone, never to the raised tone the light canvas is", () => {
+    const { found, breaking } = canvasGhosts()
+    expect(found).toBeGreaterThanOrEqual(3)
+    expect(breaking).toEqual([])
+  })
+
+  it('see a ghost button on the canvas left with the raised hover', () => {
+    const sample = parseSfc('<template><UButton icon="i-lucide-search" color="neutral" variant="ghost" /><UButton color="neutral" variant="ghost" class="hover:bg-canvas-hover" /></template>', { filename: 'x.vue' }).descriptor.template!.ast as unknown as TNode
+    expect(canvasGhosts({ 'components/SidebarRail.vue': sample })).toEqual({ found: 2, breaking: ['components/SidebarRail.vue:1'] })
+  })
+})
+
 describe("the design system's rules", () => {
   it('give every icon-only button a tooltip: an IconButton, whose label is its tooltip and its name', () => {
     expect(Object.keys(templates).length).toBeGreaterThan(100)

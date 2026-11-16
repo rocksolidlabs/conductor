@@ -78,6 +78,26 @@ for (const theme of THEMES) {
     await expect.poll(() => background(page, editor.locator('.monaco-editor-background').first()), { timeout: MEASURE_WAIT_MS }).toBe(ground)
   })
 
+  test(`the ${theme} theme: the canvas's icon buttons, your menu's and the rail's, hover to the canvas's hover tone`, async ({ day, browser }) => {
+    await day.part('states')
+    const page = await dayPage(browser, { path: '/yard', theme })
+    const hoverTone = await probeColour(page, 'var(--ui-bg-canvas-hover)')
+    expect(hoverTone).not.toBe(await probeColour(page, 'var(--ui-bg-canvas)'))
+    const sidebar = page.locator('#dashboard-sidebar-main')
+    // Each hovered: the tone that holds once the button's transition has passed.
+    const hovers = async (l: Locator) => {
+      await l.hover()
+      await expect.poll(() => background(page, l), { timeout: MEASURE_WAIT_MS }).toBe(hoverTone)
+    }
+    await hovers(sidebar.locator('[data-slot="header"] [data-header-account]'))
+    // Folded to the rail: its filter, your menu in its foot, and Expand.
+    await page.keyboard.press('Alt+b')
+    await expect(sidebar.locator('[data-rail]')).toBeVisible()
+    await hovers(sidebar.getByRole('button', { name: 'Filter sessions' }))
+    await hovers(sidebar.locator('[data-rail-foot] [data-header-account]'))
+    await hovers(sidebar.locator('[data-rail-expand]'))
+  })
+
   test(`the ${theme} theme on a phone: the page and the terminal on the brand's ground`, async ({ day, browser }) => {
     const d = await driver(day)
     const page = await dayPage(browser, { path: '/sessions', theme, width: 390, height: 844, touch: true })

@@ -52,7 +52,7 @@ function openExited() {
       <UButton icon="i-lucide-plus" size="sm" aria-label="Launch agent" @click="launch.show()" />
     </UTooltip>
     <UTooltip text="Filter sessions" :kbds="['/']" :content="{ side: 'right' }">
-      <UButton icon="i-lucide-search" color="neutral" variant="ghost" size="sm" aria-label="Filter sessions" @click="emit('search')" />
+      <UButton icon="i-lucide-search" color="neutral" variant="ghost" size="sm" class="hover:bg-canvas-hover active:bg-canvas-hover" aria-label="Filter sessions" @click="emit('search')" />
     </UTooltip>
     <div class="flex min-h-0 w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto py-0.5" data-rail-sessions>
       <template v-for="it in rail.items" :key="it.id">
