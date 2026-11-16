@@ -257,6 +257,22 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **One shape for a page with nothing in it (#937; the UX review's P23,
+  first half).** A page with nothing to show says what the page is (its
+  sentence from the pages' table), why it is empty and what fills it, and
+  the action that fills it with its key, through one component,
+  `PageEmpty`; while it reads it says so with a spinner, a first read that
+  failed shows the server's words and Read again, and a thing not found
+  shows the way back. `pageState` decides which (`web/app/utils/pageState.ts`):
+  content wins over an error beside it, and empty needs a read, so the Yard,
+  the Roundhouse, the home and the sidebar's line never draw their empty
+  picture before the sessions are read. The welcome is the home's alone;
+  the Yard says "Nothing is running…" with Launch agent and a link to the
+  README's Quick start; a focused session that went is not found, with its
+  record. History with nothing typed and nothing kept says "No session is
+  kept yet."; its search caption folds to "About this page" (`PageAbout`)
+  once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
+  `history.test.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
@@ -338,6 +354,27 @@ open deferred item from rounds 1 and 2, then the features below.
   aligned before and after a selection, a phone's lines, the chips and
   the address, the keys paused while Filter is open);
   `dispatchQuery.test.ts` and `markdown.test.ts`.
+- **A Dispatch ticket's strip of sections; a plan folds once approved (UX1
+  PR-16, #931, 2026-11-16).** Under a ticket's title a strip names its
+  sections, Description, Acceptance, Plan, Runs, Decisions, To close,
+  People, Comments and History, each with its state where it has one
+  ("Plan approved", "Runs 2 of 6 done · 2 need you", "Decisions 2 open",
+  "Comments 3", "50+" past the newest page), from what the page reads
+  already (`ticketSections` and `ticketWaits` in
+  `web/app/utils/ticketSections.ts`, the waits filtered from the one list
+  of what needs you; a run's done part from `summaryDoneWords`, the
+  counts the run card shows, until the run words of UX1 PR-10 replace
+  it). It stays at the top as the page scrolls, on a
+  background of its own; a press brings its section up under it with the
+  focus, and the properties aside stays under it. The Review view has no
+  strip. An approved revision whose approval holds is folded to one line
+  of what the approval covers ("2 members · 3 tasks · 4 checks · from
+  1a2b3c4d5e6f · Yolo off", `planFold`) with "Show the whole plan", opened
+  for the page; a proposed, stale or superseded one stays open. Each
+  member's command is printed once, in the plan: the "Arguments:" line
+  and People's command lines are gone, People linking to the Plan.
+  Tests: `ticket-strip.spec.ts` on a server of its own, `ticketSections`
+  and `planFold` in vitest, `dispatch-delivery.spec.ts`'s People check.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
