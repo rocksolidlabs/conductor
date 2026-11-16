@@ -110,8 +110,8 @@ const scale = computed(() => {
   if (!box.value.w || !box.value.h) return 1
   return Math.max(0.5, Math.min(1, box.value.w / width, box.value.h / height))
 })
-const drawnW = computed(() => Math.round(layout.value.width * scale.value * 100) / 100)
-const drawnH = computed(() => Math.round(layout.value.height * scale.value * 100) / 100)
+const drawnW = computed(() => Math.floor(layout.value.width * scale.value * 100) / 100)
+const drawnH = computed(() => Math.floor(layout.value.height * scale.value * 100) / 100)
 
 /** The station's name: its id, then what it does now. */
 function nameOf(s: LineStation): string {
