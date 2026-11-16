@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
-import { RUN_EVENT_LIST_AT, RUN_EVENT_WINDOW_MS, RunStore, memberDot, memberOffer, runBadge, runOffer, sessionResumeOffered, runLive, runState, type OfferRun, type RunReader } from './runs'
+import { RUN_EVENT_LIST_AT, RUN_EVENT_WINDOW_MS, RunStore, memberOffer, runOffer, sessionResumeOffered, runLive, runState, type OfferRun, type RunReader } from './runs'
 
 const member = (p: Partial<RunMember>): RunMember => ({ name: 'lead', agentId: 'claude', start: { when: 'immediately' }, status: 'running', ...p })
 
@@ -58,13 +58,11 @@ describe('runState', () => {
   })
 })
 
-describe('runLive and runBadge', () => {
-  it('says which runs still go, and how', () => {
+// A run's words (its sentence, "Ended" or its outcome for a run that ended) and a member's mark are status.test.ts's: runStatusLine and
+// memberStatusOf.
+describe('runLive', () => {
+  it('says which runs still go', () => {
     expect([runLive('running'), runLive('needs_input'), runLive('stopped'), runLive('finished')]).toEqual([true, true, false, false])
-    expect(runBadge('needs_input', 2)).toEqual({ label: 'Needs input 2', color: 'warning' })
-    expect(runBadge('running', 0).label).toBe('Running')
-    expect(runBadge('finished', 0).label).toBe('Finished')
-    expect(memberDot('needs_input').label).toBe('needs input')
   })
 })
 
@@ -147,7 +145,6 @@ describe('runState', () => {
   it('takes a record as recorded, its interrupted state included, since nothing of it is live', () => {
     const r = run({ id: 'r1', state: 'interrupted', needsInput: 0, record: true, members: [{ name: 'a', agentId: 'cat', start: { when: 'immediately' }, status: 'ended' }] })
     expect(runState(r, [])).toEqual({ state: 'interrupted', needs: 0 })
-    expect(runBadge('interrupted', 0)).toEqual({ label: 'Interrupted', color: 'warning' })
   })
 })
 

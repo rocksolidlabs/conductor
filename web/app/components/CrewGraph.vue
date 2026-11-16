@@ -7,7 +7,8 @@ import type { OfferRun } from '~/utils/runs'
 import type { MemberStatus } from '~/utils/crews'
 import { connectError, connectionAllowed, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
 import { taskLayout, taskListRows } from '~/utils/taskGraph'
-import { taskDot, taskWords, type TaskRun } from '~/utils/tasks'
+import { taskWords, type TaskRun } from '~/utils/tasks'
+import { markLook, STATUS_KEYS, TASK_KEYS, type MarkKey, type MarkView } from '~/utils/status'
 import type { MemberNodeData } from '~/components/CrewGraphNode.vue'
 import type { TaskNodeData } from '~/components/CrewGraphTaskNode.vue'
 import type { CrewEdgeData } from '~/components/CrewGraphEdge.vue'
@@ -27,6 +28,10 @@ const props = withDefaults(
     members: GraphMember[]
     /** Live member states in a run (memberStatus). */
     states?: Map<string, MemberStatus>
+    /** Each member's mark in a run (memberStatusOf), by name; absent for a saved crew. */
+    marks?: Map<string, MarkView>
+    /** Each task's mark (taskStatus), by id. */
+    taskMarks?: Map<string, MarkView>
     handoffs?: HandoffSeen[]
     editable?: boolean
     runId?: string
@@ -48,7 +53,7 @@ const props = withDefaults(
     /** The task selected in Tasks mode. */
     selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, run: null, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
+  { states: undefined, marks: undefined, taskMarks: undefined, editable: false, runId: '', stopped: false, run: null, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -119,7 +124,7 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         id: n.id,
         type: 'task',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, run: taskRun.value, agentId: agentOf(n.task.member) },
+        data: { node: n, direction: prefs.value.direction, run: taskRun.value, agentId: agentOf(n.task.member), mark: props.taskMarks?.get(n.id) },
         connectable: false,
         draggable: false,
         selected: n.id === props.selectedTask,
@@ -128,7 +133,7 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         id: n.id,
         type: 'member',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, run: props.run, agentName: props.agentNames[n.member.agentId] ?? '' },
+        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, run: props.run, agentName: props.agentNames[n.member.agentId] ?? '', mark: props.marks?.get(n.id) },
         connectable: props.editable,
         draggable: false,
         selected: n.id === props.selected,
@@ -216,22 +221,14 @@ function onNodeDoubleClick(e: NodeMouseEvent) {
   else emit('open', e.node.id)
 }
 
-const memberLegend = [
-  { dot: 'bg-success', label: 'running' },
-  { dot: 'bg-warning', label: 'needs input' },
-  { dot: 'bg-info', label: 'starting' },
-  { dot: 'bg-neutral-400', label: 'ended' },
-  { dot: 'bg-transparent ring-1 ring-neutral-400', label: 'pending' },
-]
-const taskLegend = [
-  { dot: taskDot('running'), label: 'an attempt runs' },
-  { dot: taskDot('verifying'), label: 'checking a result' },
-  { dot: taskDot('succeeded'), label: 'done' },
-  { dot: taskDot('failed'), label: 'failed' },
-  { dot: taskDot('ready'), label: 'ready, or cancelled' },
-  { dot: taskDot('blocked'), label: 'waiting for a result' },
-]
-const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
+/**
+ * The legend: one line a key, made from the status table (STATUS_LOOK and TASK_LOOK, in their order), listing only the keys the graph
+ * draws now (the tasks' marks in Tasks mode, else the members').
+ */
+const legend = computed(() => {
+  const drawn = new Set<MarkKey>([...((tasksMode.value ? props.taskMarks : props.marks)?.values() ?? [])].map((m) => m.key))
+  return [...STATUS_KEYS, ...TASK_KEYS].filter((k) => drawn.has(k)).map((k) => ({ key: k, look: markLook(k) }))
+})
 </script>
 
 <template>
@@ -252,12 +249,12 @@ const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
       <USwitch v-if="!editable && !tasksMode" v-model="prefs.handoffs" label="Handoffs" size="xs" data-graph-handoffs />
       <span v-if="editable && wide" class="ml-1.5 text-xs text-muted" data-graph-hint>Drag from a member's right edge onto another to make it wait. One "after" each; loops can't be drawn.</span>
       <UPopover v-if="!editable" :content="{ align: 'end' }">
-        <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" />
+        <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" data-graph-legend-open />
         <template #content>
-          <dl class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 p-3 text-xs">
-            <template v-for="l in legend" :key="l.label">
-              <dt class="size-2 rounded-full" :class="l.dot" />
-              <dd>{{ l.label }}</dd>
+          <dl class="grid max-w-sm grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 p-3 text-xs" data-graph-legend-list>
+            <template v-for="l in legend" :key="l.key">
+              <dt class="flex items-center"><StatusMark :status="{ key: l.key, word: l.look.word, legend: l.look.legend }" /></dt>
+              <dd :data-graph-legend="l.key">{{ l.look.legend }}</dd>
             </template>
             <template v-if="tasksMode">
               <dt class="h-px w-4 border-t border-dotted border-(--ui-primary)" />
@@ -291,14 +288,14 @@ const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
           <div class="flex items-center gap-2">
             <UIcon :name="n.task.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" />
             <span class="truncate font-mono text-sm font-semibold">{{ n.id }}</span>
-            <span class="size-2 flex-none rounded-full" :class="taskDot(n.task.state)" aria-hidden="true" />
+            <StatusMark v-if="taskMarks?.get(n.id)" :status="taskMarks.get(n.id)!" word class="flex-none" />
             <span class="ml-auto truncate text-xs text-muted">{{ n.task.member }}</span>
           </div>
           <span class="truncate text-xs" :class="n.warning ? 'text-warning' : 'text-muted'">{{ n.warning ?? taskWordsOf(n.task).text }}</span>
         </div>
       </li>
     </ol>
-    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :run="run" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
+    <CrewGraphList v-else-if="!wide" :graph="graph" :marks="marks" :editable="editable" :run="run" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
     <div v-else class="relative overflow-hidden rounded-md border border-default bg-elevated/30" :class="fill ? 'min-h-72 flex-1' : 'h-96'" data-graph-canvas>
       <VueFlow
         :id="flowId"

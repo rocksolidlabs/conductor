@@ -41,7 +41,10 @@ for the wire details.
 
 - **Status marks.** Every surface draws a session's state with one of five
   marks and its word, as the status section of
-  [design/system.md](design/system.md#status) says. Terracotta stays on the
+  [design/system.md](design/system.md#status) says; a run's tasks, members,
+  graph and cards speak the same language, a task's own states (waiting,
+  ready, done, failed, cancelled) with marks of their own, and a run says
+  one sentence ("2 of 6 done · 1 working · 1 checking · 2 need you"). Terracotta stays on the
   brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
   code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
@@ -262,11 +265,29 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
-  16.75 rem (268 px) on every screen, which shows its header's every part
-  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
-  drag on its edge widens it up to 26 % of the window, never less than the
-  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
+- **A question in the narrow sidebar (UX1 PR-8, owner decision 7).** Below
+  280 px (`NARROW_SIDEBAR_PX`, `narrowSidebar` in `web/app/utils/sidebar.ts`,
+  from the sidebar's drawn width) a row's question is clamped to two lines
+  (`data-row-clamped`) and the row shows an Answer button in place of its
+  choices; one panel for the list (`SidebarRowPanel.vue`, a popover that is
+  not modal, `data-row-panel`, `data-panel-for`) holds the name, the whole
+  question and the row's own prompt controls, labels wrapped. It is for the
+  focused row while it asks, or the row whose Answer was pressed
+  (`panelRow`); focus opens it without moving the focus, Answer moves the
+  focus into it, Escape gives the focus back to the row, and the list counts
+  the panel as its own, so typing in its field keeps the row focused (#596).
+  The phone's list, the palette, the pill, the Yard and the session page keep
+  the question whole. Specs reach a row's answer through `rowAnswer`
+  (`web/e2e/fixtures.ts`).
+- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
+  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
+  UX review's P5): its header is the mark, "Conductor" and your menu, about
+  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
+  `accountActions`, which the phone's More and the palette show). A drag on
+  its edge widens it up to 26 % of the window, never less than the minimum
+  plus 5 rem (280 px, the width at which a row shows its question whole) and
+  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
@@ -359,6 +380,23 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in
@@ -3089,7 +3127,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
   rows 5 and 6. A managed run's page has a **Tasks** tab first
   (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
-  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  in the crew's order (`RunTasks.vue`) with its state's mark and word
+  (`taskStatus`, since the UX review's PR-10), kind,
   member, attempt, what it does in words (`taskWords`: what it waits for,
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
@@ -3108,7 +3147,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
   (neutral until its confirm), one menu ("More for this run": Add agent and
   Share) and full screen. Row two, at every width: what the run is doing
-  (a managed run's task badges, a run of members' counts), "scheduling paused" with the pause's words,
+  (its bar, the tasks counted by part, held tasks in amber; and its one
+  sentence, "2 of 6 done · 1 working · 1 checking · 2 need you", whose
+  "need you" counts the run's items of what needs you; a run of members
+  says "1 working · 2 finished"), "scheduling paused" with the pause's words,
   "cleaning up", the people, the Logins, who launched the run with the
   launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
@@ -7887,7 +7929,7 @@ screen. Nothing said which was the plan and which the thing running.
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
   (one card per live run: badge, the members as chips in the crew's shape
-  with a status dot each, a line per member that asks with Answer beside it,
+  with a status mark each, a line per member that asks with Answer beside it,
   up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
   shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
   alone", where it runs, the last runs as bars, Edit, Launch run).

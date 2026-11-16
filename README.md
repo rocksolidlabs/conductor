@@ -593,7 +593,10 @@ session open in two windows at once keeps the first one's size, the other
 showing it scaled until **Fit to my window**. Click into a
 tile and type: the keys go to that session, the plain-key shortcuts pause
 while the tile has focus and the **Alt** chords still work. The chips in the
-header filter tiles (**All**, **Needs you**, **Running**). A queue on the left
+header filter tiles by state (**All**, **Needs you**, **Working**, **Finished**,
+and **Running** while an agent that reports no turns, or one still starting,
+is on the grid); **Needs you** counts the sessions on this grid that ask. A
+tile's header is its name; its state is at its foot. A queue on the left
 lists every session waiting for input with its prompt: answer from there
 (**J**/**K** select, **Enter** types a reply) without opening the session,
 and see who answered what under **Answered**. The expand button in a tile's
@@ -605,7 +608,9 @@ fullscreen button turns a spare monitor into a status board.
 
 ## The Roundhouse
 
-`/roundhouse` (`/carousel` still lands there) rotates through the active sessions one at a time, full size and
+The Yard's second view: **Grid** and **Roundhouse** in the Yard's header switch
+between the two, and the Yard's row in the sidebar stays current on both.
+`/roundhouse` (`/carousel` still lands there, and **G R** opens it) rotates through the active sessions one at a time, full size and
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow routed events** on, the
@@ -631,11 +636,16 @@ needs you: **Needs you**, then **Running**. Sessions launched together are a
 run, listed once as one block where its most urgent member is, never split:
 the crew's name (or the run's own) and its start time on top, which open the
 run page, and its sessions beneath, joined by a line, the one asking first;
-an exited member stays inside with its **Resume**. The crew itself, the plan
+an exited member stays inside with its **Resume**. In Needs you a run shows
+only the members that ask and one line for the rest ("and 2 more · 1 working
+· 1 finished"), which shows them all for the visit (a click, or **Enter**
+once **J** reaches it). The crew itself, the plan
 the run came from, is not listed (it lives on the Crews page). A session
 another machine hosts here (`conductor host`) says so on its row, a laptop
-and the machine's name; this server's own say `server`. Rows say agent ·
-where · how long; the path is the row's tooltip and the session page's. The
+and the machine's name; this server's own say `server`. A row puts its name
+on one line across the row with its status mark at the end, and below it
+the agent's initials as a small chip, agent · where · how long, and the
+status's word last ("finished 12m ago"); the path is the row's tooltip and the session page's. The
 links shared with you (see Sharing) sit below your own sessions, and
 **Exited** folds to one line. Every section folds from its header, which keeps
 its count and a preview of what is inside; the choice is remembered per
@@ -653,7 +663,13 @@ its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
 reply field where Enter sends; the answer goes over a short-lived connection
 as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
-away".
+away". In a sidebar narrower than 280 px a row shows two lines of
+its question, and the whole question with its choices or its reply field
+opens in a panel beside the row, to the right of the sidebar: while the row
+has the focus, or from its **Answer** button, which moves the focus into the
+panel; **Escape** closes it, and **1**–**9** answer the focused row as
+before. At 280 px and wider, and on the phone's list, the question is whole
+in the row.
 
 **The command palette** is the sidebar's row actions and the Yard's queue
 from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
@@ -709,8 +725,8 @@ Windows, which keeps that one for its windows); the shortcuts modal
 system or its browser takes before the app sees it (Firefox's Ctrl+B, the
 browser's Ctrl+Tab and Ctrl+W, the Mac's Option+letter).
 
-The sidebar collapses to an icon rail with the panel button in its header or
-**Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
+The sidebar collapses to an icon rail with **Collapse to the rail** in your
+menu, the divider, or **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
 initials, solid while it needs you, dashed once exited), a capsule is a run
 with its sessions inside (the play icon amber while one needs you), and the
 corners say the rest: top right the state (amber needs you, green running,
@@ -728,15 +744,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 ("users api · run started 08:31 · review needs you · core running · lead
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
-the header's two menus. The panel button at the bottom of the rail brings the
+your menu. The panel button at the bottom of the rail brings the
 full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 16.75 rem (268 px) on every screen, wide enough for its header
-whole with room to spare (a wider font shortens the name first); drag its
+narrowest, 12.5 rem (200 px) on every screen, its header the mark,
+"Conductor" and your menu (a wider font shortens the name first); drag its
 right edge to widen it, up to 26 % of the window but never less than
-21.75 rem (348 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 268 px, and a narrower window keeps
-it within that window's bounds. A width an earlier version saved below
-268 px opens at 268 px; the saved value stays until the next drag. The mode and the full sidebar's width are
+17.5 rem (280 px), and on to the window's left edge for the rail; a
+double-click on the edge returns it to 200 px, and a narrower window keeps
+it within that window's bounds. A width you dragged is kept as you left it. The mode and the full sidebar's width are
 remembered per browser (localStorage keys `conductor.sidebar.mode` and
 `conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
 becomes the rail, and a width an earlier version saved, under
@@ -746,14 +761,15 @@ opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
 swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
-count), Crews, Events, and under More: Roundhouse, Agents, Settings, Alerts
+count), Crews, Events, and under More: Agents, Settings, Alerts
 and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
 behind your initials beside the sidebar's name, with **Your name…**, **Toggle
-theme**, **Workbench token…** and **Forget token**; **Alerts** sits beside it,
-so the foot holds only the pages) for the list of shortcuts on the current
+theme**, **Workbench token…** and **Forget token**, and in the sidebar
+**Alerts…**, which opens the alert switches in a panel, and **Collapse to the
+rail**; the foot holds only the pages) for the list of shortcuts on the current
 screen. The list itself takes keys once
 a row has the focus (**↓** from the filter puts the first there; a click or
 Tab, any): **↑ ↓** or **J K** move, **Enter** opens the session or the run

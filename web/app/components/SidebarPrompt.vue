@@ -9,7 +9,8 @@ import { bindDraft } from '~/utils/reply'
  * never inside it (a link holds no button), and keeps its keys to itself so that the list's and the window's digit keys never see
  * what is typed.
  */
-const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean }>(), { busy: false, big: false })
+/** `wrap`: in the question's panel (SidebarRowPanel) a label wraps over its lines rather than being cut. */
+const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean; wrap?: boolean }>(), { busy: false, big: false, wrap: false })
 /** Each answer names the question the row showed as it was clicked or typed (its id). */
 const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined] }>()
 
@@ -25,6 +26,11 @@ watch(text, (now, before) => {
   draftFor.value = bindDraft(before, now, draftFor.value, props.prompt.question)
 })
 
+/** The field keeps its keys from the list's and the window's (a digit, J, X), Escape excepted: it leaves the field (the list's own). */
+function keepKeys(e: KeyboardEvent) {
+  if (e.key !== 'Escape') e.stopPropagation()
+}
+
 function send() {
   const t = text.value.trim()
   if (!t || off.value) return
@@ -34,7 +40,7 @@ function send() {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2" :class="big ? 'flex-col items-stretch pl-2 pt-1' : 'pl-10'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
+  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2.5" :class="big ? 'flex-col items-stretch pl-2 pt-1' : wrap ? 'px-3 pb-3' : 'pl-2.5'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
     <!-- A durable decision's question takes no reply here: the row says where it is answered (noReply). -->
     <p v-if="prompt.decision" class="text-xs text-muted" data-row-decision>{{ prompt.placeholder }}</p>
     <template v-else-if="prompt.choices.length">
@@ -47,7 +53,7 @@ function send() {
         variant="outline"
         class="min-w-0 max-w-full"
         :class="big && 'min-h-11 justify-start'"
-        :ui="{ label: 'truncate' }"
+        :ui="{ label: wrap ? 'whitespace-normal break-words text-left' : 'truncate' }"
         :title="o.mode ? `${o.label} (${MODE_CHOICE.toLowerCase()})` : o.label"
         :disabled="off"
         :loading="busy"
@@ -70,7 +76,7 @@ function send() {
       :ui="{ base: 'font-normal' }"
       aria-label="Reply"
       data-row-reply
-      @keydown.stop
+      @keydown="keepKeys"
       @keydown.enter.prevent="send"
     >
       <template #trailing>

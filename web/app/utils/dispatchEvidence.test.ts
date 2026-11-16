@@ -31,7 +31,6 @@ import {
   runsSignature,
   stepOf,
   summaryBadges,
-  summaryState,
 } from './dispatchEvidence'
 
 // A ticket's runs and their evidence in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11).
@@ -92,13 +91,10 @@ describe("a ticket's run entries", () => {
 })
 
 describe("a run summary", () => {
-  it('counts its tasks as the run page does, and says its state', () => {
+  it('counts its tasks as the run page does, in neutral but for what failed (its sentence is summaryStatusLine, status.test.ts)', () => {
     expect(summaryBadges(summary({ tasks: { succeeded: 2, running: 1, failed: 1 }, paused: true })).map((b) => b.label)).toEqual(['2/4 tasks', '1 failed', '1 running', 'paused'])
-    expect(summaryBadges(summary({ tasks: { succeeded: 2 }, outcome: 'succeeded' }))[0]).toEqual({ label: '2/2 tasks', color: 'success' })
-    expect(summaryState(summary(), 0).label).toBe('Running')
-    expect(summaryState(summary(), 2).label).toBe('Needs input 2')
-    expect(summaryState(summary({ outcome: 'failed' }), 0).label).toBe('Failed')
-    expect(summaryState(summary({ stoppedAt: '2026-11-01T11:00:00Z' }), 1).label).toBe('Stopped')
+    expect(summaryBadges(summary({ tasks: { succeeded: 2, running: 1, verifying: 1, failed: 1 } })).map((b) => b.color)).toEqual(['neutral', 'error', 'neutral', 'neutral'])
+    expect(summaryBadges(summary({ tasks: { succeeded: 2 }, outcome: 'succeeded' }))[0]).toEqual({ label: '2/2 tasks', color: 'neutral' })
   })
 
   it("counts its questions from the live sessions, by the session ids it names, with no run event", () => {
