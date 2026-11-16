@@ -5,7 +5,7 @@ import { expect, test } from './fixtures'
 // The Events page: it opens on the feed, which names a crew member as
 // "<crew> / <member>" and offers Answer on what needs you; beside it the last
 // hour and where events go; Routing toggles a destination and keeps it in
-// this browser; Integrations lists the agents and the snippet of one.
+// this browser. The Integrations tab's test moved with the table to the Agents page (agents-reporting.spec.ts).
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -65,14 +65,4 @@ test('Routing toggles a destination as a pill and keeps it in this browser', asy
   await expect(page.locator('[data-cell="done.browser"]')).toHaveAttribute('aria-checked', 'true')
   await expect(page.locator('[data-cell="working.badge"]')).toHaveAttribute('data-fixed-cell', '')
   await page.locator('[data-cell="done.browser"]').click()
-})
-
-test('Integrations lists every agent with its status and opens a snippet', async ({ page }) => {
-  await page.goto('/events?tab=integrations')
-  const claude = page.locator('[data-integration][data-id="claude"]')
-  await expect(claude).toBeVisible()
-  await expect(claude.locator('[data-status]')).not.toBeEmpty()
-  await claude.locator('[data-snippet-toggle]').click()
-  await expect(page.locator('[data-snippet-for="claude"] [data-snippet]')).toBeVisible()
-  await expect(page.locator('[data-skill-card]')).toBeVisible()
 })

@@ -3,6 +3,7 @@ package agents
 import (
 	"errors"
 	"regexp"
+	"slices"
 
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -12,9 +13,10 @@ import (
 // Recipe is what a session of agent a watches on its screen (#293): its
 // trust question and answers, its other questions, the window title that
 // says it works, and whether it reports taking a prompt. The server starts
-// its own sessions with it (CompileRecipe) and hands it to a host that
-// registers a session of the same agent (proto.Registered.Recipe), so
-// that the two watch the same things. Nil when the agent has none of them.
+// its own sessions with it (CompileRecipe) and hands it, without its forms
+// (HostRecipe), to a host that registers a session of the same agent
+// (proto.Registered.Recipe), so that the two watch the same things but
+// those. Nil when the agent has none of them.
 func Recipe(a catalog.Agent) *proto.HostRecipe {
 	sig := a.EffectiveSignal()
 	r := &proto.HostRecipe{
@@ -33,6 +35,17 @@ func Recipe(a catalog.Agent) *proto.HostRecipe {
 		return nil
 	}
 	return r
+}
+
+// HostRecipe is Recipe as a host is sent it (proto.Registered.Recipe):
+// without the questions that are forms (asked at any time, their answers
+// read off the screen, and answers of their own: Codex's MCP tool
+// approval, #716), which a hosted session leaves to its terminal.
+func HostRecipe(a catalog.Agent) *proto.HostRecipe {
+	a.Questions = slices.DeleteFunc(slices.Clone(a.Questions), func(q catalog.Question) bool {
+		return q.Anytime && q.AnswersFromScreen && len(q.Answers) > 0
+	})
+	return Recipe(a)
 }
 
 func recipeAnswers(in []catalog.Answer) []proto.RecipeAnswer {
