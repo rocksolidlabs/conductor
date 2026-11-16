@@ -38,6 +38,8 @@ const cloneModal = useCloneModal()
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
 const now = useNow()
+// A row's More menu stays open while its row moves between sections (useRowMenu): the list keeps which one is open.
+provideRowMenu()
 
 // Needs you lists every item of the one list of what needs you (useNeedsYou, the UX review's P3): the sessions' questions as their
 // rows, a run's decisions and tasks under its header, a plan (and an item of a run the store does not hold) as a loose row. Its header

@@ -479,9 +479,9 @@ test("a Yardmaster attempt's Clone… is disabled with the reason, and Clone wit
   await page.goto('/crews')
   const r = row(page, attempt!)
   await expect(r).toBeVisible()
-  // The attempt's turn ends at the instructions' Enter, and its run moves from Working to Finished in the sidebar, drawn again there:
-  // a menu opened on the row before the move goes with it. Open it once the row has its last state.
-  await expect(r).toHaveAttribute('data-row-state', 'finished', { timeout: 30_000 })
+  // The attempt's turns start and end around the instructions' Enter, and its run moves between Working and Finished in the sidebar
+  // (on CI: Finished, Working, Finished as the menu opened): the menu stays open on the row as it is drawn now (useRowMenu,
+  // sidebar-row-menu.spec.ts), so it is opened whatever the row's state.
   await r.hover()
   await r.locator('[data-row-more]').click()
   const quick = page.getByRole('menuitem', { name: /^Clone…/ })
