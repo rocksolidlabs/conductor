@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
 import { crewShape } from '~/utils/crewWords'
+import { memberNodes } from '~/utils/lineDiagram'
 import { runLive, runState } from '~/utils/runs'
 import { shortCwd } from '~/utils/sessions'
 
 /**
  * The saved crews: plans, one row each. Its name and goal (and "1 live run"
- * when one is going, leading to it), its shape as a mini graph with a few
- * words, where it runs, its last runs as bars, Edit and Launch run. Nothing
+ * when one is going, leading to it), its shape drawn as lines with a few
+ * words (its tasks, else its members by their start rules), where it runs, its last runs as bars, Edit and Launch run. Nothing
  * here runs until a crew is launched.
  */
 const props = defineProps<{ crews: CrewSummary[]; runs: RunInfo[]; sessions: SessionInfo[]; now: number; launching: string }>()
@@ -19,6 +20,10 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[minmax(0,1.
 
 function liveOf(id: string): RunInfo[] {
   return props.runs.filter((r) => r.crewId === id && runLive(runState(r, props.sessions).state))
+}
+/** The crew drawn as lines: its tasks when it has any (the list's task shape), else its members by their start rules, hollow. */
+function shapeOf(c: CrewSummary) {
+  return c.tasks?.length ? c.tasks.map((t) => ({ id: t.id, needs: t.needs })) : memberNodes(c.members)
 }
 function allOf(id: string): RunInfo[] {
   return props.runs.filter((r) => r.crewId === id)
@@ -59,8 +64,10 @@ function where(c: CrewSummary): { cwd: string; mode: string } {
       </div>
 
       <div class="col-span-2 row-start-2 flex flex-wrap items-center gap-x-6 gap-y-2 @min-[64rem]:contents">
-        <div class="flex flex-col gap-1 @min-[64rem]:col-start-2 @min-[64rem]:row-start-1">
-          <CrewMiniDag :members="c.members" size="mini" :max-width="150" />
+        <div class="flex flex-col gap-1 @min-[64rem]:col-start-2 @min-[64rem]:row-start-1" data-crew-shape-cell>
+          <div class="max-w-[150px]" data-crew-shape-drawing>
+            <RunLineDiagram :stations="shapeOf(c)" size="mini" :max-width="150" :label="`${c.name}: ${crewShape(c.members)}`" />
+          </div>
           <span class="text-[11.5px] text-muted" data-crew-shape>{{ crewShape(c.members) }}</span>
         </div>
         <span class="flex min-w-0 flex-col font-mono text-[11.5px] leading-normal text-muted @min-[64rem]:col-start-3 @min-[64rem]:row-start-1" data-crew-meta>

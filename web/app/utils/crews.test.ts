@@ -401,6 +401,27 @@ describe('summaryOf', () => {
     expect(s).toEqual({ id: info.id, name: info.name, goal: info.goal, cwd: info.cwd, where: info.where, isolation: info.isolation, members: info.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: info.updatedAt })
     expect(JSON.stringify(s)).not.toContain('prompt')
   })
+  it("copies each task's id, member, kind and needs, as the server's summary has them, and leaves the rest out", () => {
+    const tasked: CrewInfo = {
+      ...info,
+      tasks: [
+        { id: 'build', member: 'lead', kind: 'work', instructions: 'Assemble the zeppelin.', checks: [{ id: 'unit', argv: ['go', 'test'] }], owner: 'nate', needs: [] },
+        { id: 'docs', member: 'lead', kind: 'work', instructions: 'Describe the gondola.', needs: ['build'] },
+        { id: 'review', member: 'lead', kind: 'review', instructions: 'Inspect the rigging.', needs: ['build'] },
+      ],
+    }
+    const s = summaryOf(tasked)
+    expect(s.tasks).toEqual([
+      { id: 'build', member: 'lead', kind: 'work' },
+      { id: 'docs', member: 'lead', kind: 'work', needs: ['build'] },
+      { id: 'review', member: 'lead', kind: 'review', needs: ['build'] },
+    ])
+    for (const never of ['instructions', 'checks', 'owner', 'zeppelin', 'gondola', 'rigging']) expect(JSON.stringify(s)).not.toContain(never)
+    // A change to the task's needs in the editor's copy never reaches the summary's.
+    tasked.tasks![1]!.needs!.push('review')
+    expect(s.tasks![1]!.needs).toEqual(['build'])
+    expect('tasks' in summaryOf(info)).toBe(false)
+  })
 })
 
 describe('pageAfterDelete', () => {

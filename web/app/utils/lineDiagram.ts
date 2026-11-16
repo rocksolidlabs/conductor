@@ -243,6 +243,28 @@ export function placeLabels(stations: readonly LineStation[], direction: GraphDi
   })
 }
 
+/** A member as a station: the member it starts after is its one need; one started by hand is `manual`. */
+export interface MemberNode {
+  id: string
+  needs?: string[]
+  manual?: boolean
+}
+
+/**
+ * A crew's members as the line diagram draws them (UX1 PR-34): a member that starts after another needs it, so a crew without tasks
+ * is drawn by its start rules as lines too; a member after one not in the crew is a root (its need is left out, never warned of: the
+ * editor says it); one started by hand is marked `manual`.
+ */
+export function memberNodes(members: ReadonlyArray<{ name: string; start: { when: string; member?: string } }>): MemberNode[] {
+  const names = new Set(members.map((m) => m.name))
+  return members.map((m) => {
+    const n: MemberNode = { id: m.name }
+    if (m.start.when === 'after' && m.start.member && m.start.member !== m.name && names.has(m.start.member)) n.needs = [m.start.member]
+    if (m.start.when === 'manual') n.manual = true
+    return n
+  })
+}
+
 /** A step of the focus over a drawing, named as in `LR`: right and left along a line, down and up across the lanes. */
 export type LineStep = 'right' | 'left' | 'down' | 'up'
 

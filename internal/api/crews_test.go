@@ -431,6 +431,43 @@ func TestCrewRoutesPageThroughMoreThan50Crews(t *testing.T) {
 	}
 }
 
+// The crew list carries a crew's task shape only when asked with tasks=1
+// (UX1 PR-34): conductor up reads pages that never ask, sized on summaries
+// without it. Any other value, or the parameter twice, is refused.
+func TestCrewsListTaskShapeWhenAsked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Shaped", "sh", nil), http.StatusCreated)
+	e.sendCrew("POST", "/api/crews", e.crewBody("Plain"), http.StatusCreated)
+	byName := func(out map[string]any) map[string]map[string]any {
+		m := map[string]map[string]any{}
+		for _, c := range out["crews"].([]any) {
+			m[c.(map[string]any)["name"].(string)] = c.(map[string]any)
+		}
+		return m
+	}
+	resp, out := e.do("GET", "/api/crews", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || len(out["crews"].([]any)) != 2 {
+		t.Fatalf("the list: %d %v", resp.StatusCode, out)
+	}
+	for name, c := range byName(out) {
+		if _, ok := c["tasks"]; ok {
+			t.Fatalf("%s lists tasks unasked: %v", name, c)
+		}
+	}
+	resp, out = e.do("GET", "/api/crews?offset=0&limit=100&tasks=1", adminToken, nil)
+	got := byName(out)
+	if resp.StatusCode != http.StatusOK || fmt.Sprint(got["Shaped"]["tasks"]) != "[map[id:build kind:work member:lead]]" {
+		t.Fatalf("asked: %d %v", resp.StatusCode, got["Shaped"])
+	}
+	if _, ok := got["Plain"]["tasks"]; ok {
+		t.Fatalf("a crew without tasks lists tasks: %v", got["Plain"])
+	}
+	for _, q := range []string{"tasks=2", "tasks=", "tasks=true", "tasks=1&tasks=1"} {
+		resp, out := e.do("GET", "/api/crews?"+q, adminToken, nil)
+		wantAPIError(t, q, resp, out, http.StatusBadRequest, "invalid_request", "tasks must be 1")
+	}
+}
+
 // A crew file that cannot be used is left out of the list; reading or
 // updating it answers 409 crew_unreadable with why, without the data
 // directory's path; deleting it works.
