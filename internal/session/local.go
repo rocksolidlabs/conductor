@@ -151,6 +151,11 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// EchoWait bounds how long the Enter of a submission typed into the
+	// agent's prompt that must hold its text (Submission.PromptHoldsText)
+	// waits for the screen to show the prompt holding it; EchoWait when
+	// zero.
+	EchoWait time.Duration
 	// InputWait bounds how long a write to the process waits for the
 	// program to take it (input.go); InputWait when zero.
 	InputWait time.Duration
@@ -564,6 +569,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	}
 	if opts.ConfirmWait <= 0 {
 		opts.ConfirmWait = ConfirmWait
+	}
+	if opts.EchoWait <= 0 {
+		opts.EchoWait = EchoWait
 	}
 	if opts.InputWait <= 0 {
 		opts.InputWait = InputWait
@@ -1815,6 +1823,40 @@ func (s *Local) SetFirstMessage(v string) {
 	s.mu.Lock()
 	changed := s.info.FirstMessage != v
 	s.info.FirstMessage = v
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// MarkFirstMessageTyped sets Info.FirstMessage to "typed": the launch's
+// first message sits in the agent's input, its Enter left out, until a
+// person's next key or line (firstMessageKeys). A person who has typed
+// already (PersonTyped) is at the keyboard: nothing is set then.
+func (s *Local) MarkFirstMessageTyped() {
+	s.mu.Lock()
+	select {
+	case <-s.personTyped:
+		s.mu.Unlock()
+		return
+	default:
+	}
+	changed := s.info.FirstMessage != "typed"
+	s.info.FirstMessage = "typed"
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// firstMessageKeys ends a first message's "typed" (MarkFirstMessageTyped)
+// at a person's key or line: the person deals with what sits in the input.
+func (s *Local) firstMessageKeys() {
+	s.mu.Lock()
+	changed := s.info.FirstMessage == "typed"
+	if changed {
+		s.info.FirstMessage = ""
+	}
 	s.mu.Unlock()
 	if changed {
 		s.notifyChange()
@@ -3444,6 +3486,10 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		// not yet, read off the screen (startupMayShow): then they did not
 		// enter a stranded line's text, and its hold is kept (rawKeys, #224).
 		startup := s.startupMayShow()
+		if typed && !quiet && !isTerminalReport(data) {
+			// A person's key: a first message left typed is theirs now.
+			s.firstMessageKeys()
+		}
 		if typed && !quiet && question == "" && !isTerminalReport(data) && !startup &&
 			!(shown.State == AttentionNeedsInput && (shown.Source == SourceTrust || shown.Source == SourceQuestion)) {
 			// A person's keys at the program's text, no dialog on show:
@@ -5930,6 +5976,84 @@ func (s *Local) atPrompt() bool {
 		return false
 	}
 	return !startupChoiceShown(text)
+}
+
+// promptHolds stands for the text a submission typed into the agent's
+// prompt, in its place on the screen, as atPromptHolding judges it: a
+// word every prompt shape takes in its input row.
+const promptHolds = "text"
+
+// atPromptHolding is atPrompt for the screen once text has been typed
+// into the agent's prompt: the screen is the prompt holding that text and
+// nothing else. The text's words, each as typed, are found last on the
+// screen with only spaces and line breaks between them (the prompt's own
+// wrapping); the row they begin on has nothing but the prompt's mark
+// before them (no letter, no digit), the row they end on nothing after
+// them; and the screen with them put back as one word (promptHolds) is the
+// prompt by atPrompt's rule, its shape and no numbered choice. A text
+// shown otherwise (folded as a paste, rewritten, cut mid-word by a
+// narrow window, scrolled out of the composer) is not found, and the
+// screen is not taken for the prompt holding it.
+func (s *Local) atPromptHolding(text string) bool {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return s.atPrompt()
+	}
+	frame, _, uncut, _, _ := s.shot.Frame()
+	if !uncut {
+		return false
+	}
+	frame = plainSpaces(frame)
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = regexp.QuoteMeta(w)
+	}
+	re, err := regexp.Compile(strings.Join(quoted, `\s+`))
+	if err != nil {
+		return false
+	}
+	all := re.FindAllStringIndex(frame, -1)
+	if len(all) == 0 {
+		return false
+	}
+	at := all[len(all)-1]
+	rowStart := strings.LastIndexByte(frame[:at[0]], '\n') + 1
+	rowEnd := len(frame)
+	if i := strings.IndexByte(frame[at[1]:], '\n'); i >= 0 {
+		rowEnd = at[1] + i
+	}
+	if strings.ContainsFunc(frame[rowStart:at[0]], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) ||
+		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
+		return false
+	}
+	held := frame[:at[0]] + promptHolds + frame[at[1]:]
+	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(held) {
+		return false
+	}
+	return !startupChoiceShown(held)
+}
+
+// awaitEcho waits, up to Options.EchoWait, for the screen to show the
+// agent's prompt holding text (atPromptHolding): the agent draws what it
+// was given in its own time. It returns at once when it does, and after
+// the wait, or as ctx or the session ends, when it does not: the Enter's
+// guard judges again as the writer takes it.
+func (s *Local) awaitEcho(ctx context.Context, text string) {
+	deadline := time.NewTimer(s.opts.EchoWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for !s.atPromptHolding(text) {
+		select {
+		case <-deadline.C:
+			return
+		case <-ctx.Done():
+			return
+		case <-s.ended:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // plainSpaces is text with every Unicode space (unicode.IsSpace: a

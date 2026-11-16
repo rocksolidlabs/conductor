@@ -50,7 +50,14 @@ const FirstMessageBy = "launch"
 // Submit finds first holds it too, tried again a poll later. It clears
 // the session's FirstMessage as it returns.
 func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
-	defer l.SetFirstMessage("")
+	// "waiting" ends as it returns, but for a line typed and not sent
+	// (MarkFirstMessageTyped), which a person's key ends.
+	typed := false
+	defer func() {
+		if !typed {
+			l.SetFirstMessage("")
+		}
+	}()
 	note := fm.Note
 	if note == nil {
 		note = func(m string) { l.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: m}) }
@@ -108,10 +115,20 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 				return
 			}
 		}
-		res, err := l.Submit(ctx, session.Submission{Text: fm.Text, ByName: FirstMessageBy, Confirm: true, OnlyAtPrompt: true, Withdrawn: person, WithdrawnByKeys: true})
+		res, err := l.Submit(ctx, session.Submission{Text: fm.Text, ByName: FirstMessageBy, Confirm: true, OnlyAtPrompt: true, PromptHoldsText: true, Withdrawn: person, WithdrawnByKeys: true})
 		switch {
+		case err == nil && !res.Entered && res.Typed && res.NotAtPrompt:
+			// No question came: the screen was not the prompt holding the
+			// text, and Conductor does not press Enter into what it does
+			// not recognise.
+			note("the first message is typed in the agent's input and was not sent: press Enter in the terminal to send it")
+			l.MarkFirstMessageTyped()
+			typed = true
+			return
 		case err == nil && !res.Entered && res.Typed:
 			note("the first message was typed without its Enter: answer the question, then press Enter in the terminal")
+			l.MarkFirstMessageTyped()
+			typed = true
 			return
 		case err == nil, errors.Is(err, session.ErrSubmitPending):
 			return

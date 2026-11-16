@@ -32,6 +32,10 @@ const (
 	// taking it (Options.ConfirmSubmit and Submission.Confirm), before it
 	// presses Enter once more.
 	ConfirmWait = 3 * time.Second
+	// EchoWait is how long the Enter of a line that must be seen in the
+	// agent's prompt (Submission.PromptHoldsText) waits for the agent to
+	// draw it there.
+	EchoWait = time.Second
 )
 
 // The bracketed-paste markers a terminal wraps a paste in.
@@ -167,6 +171,14 @@ type Submission struct {
 	// (ErrNotAtPrompt); its Enter refused, it is left out, as for a prompt
 	// come in the pause. A Brakeman turn's line (#714).
 	OnlyAtPrompt bool
+	// PromptHoldsText, with OnlyAtPrompt, writes the line's Enter only
+	// while the screen is the agent's prompt holding the line's own text
+	// (atPromptHolding), waited for up to Options.EchoWait after the pause
+	// and judged again as the writer takes the Enter: a prompt shape
+	// judges the prompt as it is at rest, and some text in its input row
+	// reads otherwise. Else the Enter is left out (SubmitResult.NotAtPrompt).
+	// A launch's first message.
+	PromptHoldsText bool
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -297,6 +309,11 @@ type SubmitResult struct {
 	Entered bool
 	// Reentered is set when a second Enter was written (Confirm).
 	Reentered bool
+	// NotAtPrompt is set, with Typed and not Entered, when the Enter was
+	// left out because the screen was not the agent's prompt holding the
+	// text (Submission.PromptHoldsText) and no question came: the text sits
+	// in the agent's input, not sent.
+	NotAtPrompt bool
 	// landed, when set, is the Enter's write begun and not finished when
 	// its time ran out: the program has not taken it yet, and it gives the
 	// write's result once it has (landEnter).
@@ -498,6 +515,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 				if sub.By != nil || sub.From != nil {
 					// A person's line at the program's text (PersonTyped).
 					s.notePersonTyped()
+					s.firstMessageKeys()
 				}
 			}
 		}
@@ -1012,7 +1030,24 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
 	wait.guard = s.enterGuard(st.comesAfter)
-	if sub.OnlyAtPrompt {
+	holding := sub.OnlyAtPrompt && sub.PromptHoldsText && res.Typed
+	if holding {
+		// The prompt holding the line's text, as the agent draws it in
+		// its own time; a question or a dialog come meanwhile refuses the
+		// Enter first, as for any line.
+		text := SubmitLine(sub.Text)
+		s.awaitEcho(ctx, text)
+		enter := wait.guard
+		wait.guard = func() error {
+			if err := enter(); err != nil {
+				return err
+			}
+			if !s.atPromptHolding(text) {
+				return errNotHolding
+			}
+			return nil
+		}
+	} else if sub.OnlyAtPrompt {
 		enter := wait.guard
 		wait.guard = func() error {
 			if !s.atPrompt() {
@@ -1082,6 +1117,11 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		// Left out, as one seen before the Enter is.
 		return res, nil
 	}
+	if errors.Is(err, errNotHolding) {
+		// Left out: the screen is not the prompt holding the text.
+		res.NotAtPrompt = true
+		return res, nil
+	}
 	if err != nil && !pending && res.Typed && waitedOut(err) {
 		return res, errEnterLater
 	}
@@ -1118,7 +1158,16 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	}
 	s.resolveLine(sub, st)
 	if sub.Confirm && s.opts.ConfirmSubmit && !s.confirmed(ctx, enterAt) {
-		res.Reentered = s.enterAgain(ctx, sub.OnlyAtPrompt)
+		res.Reentered = s.enterAgain(ctx, func() bool {
+			switch {
+			case sub.OnlyAtPrompt && sub.PromptHoldsText && res.Typed:
+				// Pressed again only while the text still sits there.
+				return s.atPromptHolding(SubmitLine(sub.Text))
+			case sub.OnlyAtPrompt:
+				return s.atPrompt()
+			}
+			return true
+		})
 	}
 	return res, nil
 }
@@ -1273,6 +1322,11 @@ func (s *Local) textGuard(sub Submission, st submitState) func() error {
 // submission began would take (pressEnter's guard).
 var errPromptCame = errors.New("session: a prompt came before the Enter")
 
+// errNotHolding refuses the Enter of a line whose text must be seen in the
+// agent's prompt (Submission.PromptHoldsText) while the screen is not that
+// prompt holding it, no question come.
+var errNotHolding = errors.New("session: the screen is not the prompt holding the text")
+
 // enterGuard is an Enter's guard (writeWait.guard), asked as the writer
 // takes it: errPromptCame when the session's attention is one waits says
 // the Enter must not answer, or when a dialog asked during the work is on
@@ -1372,9 +1426,11 @@ func (s *Local) confirmed(ctx context.Context, enterAt time.Time) bool {
 }
 
 // enterAgain writes one more carriage return, unless the session has ended or
-// waits on a prompt, which the Enter must not answer, or, onlyAtPrompt,
-// its screen is not the agent's prompt (atPrompt). It records nothing.
-func (s *Local) enterAgain(ctx context.Context, onlyAtPrompt bool) bool {
+// waits on a prompt, which the Enter must not answer, or atPrompt, asked as
+// the writer takes it, says the screen is not the one the line's first
+// Enter was judged by (the agent's prompt, or its prompt holding the
+// line's text). It records nothing.
+func (s *Local) enterAgain(ctx context.Context, atPrompt func() bool) bool {
 	s.mu.Lock()
 	skip := s.info.Status.Ended() || s.info.Attention.State == AttentionNeedsInput
 	s.mu.Unlock()
@@ -1387,7 +1443,7 @@ func (s *Local) enterAgain(ctx context.Context, onlyAtPrompt bool) bool {
 		return att.State == AttentionNeedsInput
 	})
 	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: func() error {
-		if onlyAtPrompt && !s.atPrompt() {
+		if !atPrompt() {
 			return errPromptCame
 		}
 		return guard()
