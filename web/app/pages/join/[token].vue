@@ -470,7 +470,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
       <section v-if="runDesk.shown.value" class="mx-auto mb-4 w-full max-w-2xl rounded-lg border border-default bg-default p-3" data-join-run-decide>
-        <JoinDecide :state="runDecide" :offline="!runDesk.live.value" title="Needs your decision" @open-session="openRunSession" />
+        <JoinDecide :state="runDecide" :offline="!runDesk.live.value" title="Needs you" @open-session="openRunSession" />
       </section>
       <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
@@ -529,9 +529,9 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <FullscreenButton size="sm" />
     </header>
 
-    <!-- A decision link's two tabs, under the header so a phone's narrow header keeps its badges: Decide first, the terminal one tap away. -->
-    <nav v-if="sessionDecides" class="flex gap-1 border-b border-default px-2 py-1.5 sm:px-3" role="tablist" aria-label="Decide or the terminal" data-join-tabs>
-      <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Decide' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="md" class="min-h-11 flex-1 justify-center sm:flex-none" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'soft' : 'ghost'" :data-join-tab="t" @click="tab = t" />
+    <!-- A decision link's two tabs, under the header so a phone's narrow header keeps its badges: Needs you first, the terminal one tap away. -->
+    <nav v-if="sessionDecides" class="flex gap-1 border-b border-default px-2 py-1.5 sm:px-3" role="tablist" aria-label="Needs you or the terminal" data-join-tabs>
+      <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Needs you' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="md" class="min-h-11 flex-1 justify-center sm:flex-none" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'soft' : 'ghost'" :data-join-tab="t" @click="tab = t" />
     </nav>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">

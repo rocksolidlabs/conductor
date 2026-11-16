@@ -7,16 +7,18 @@ const labels = (ps: ReadonlyArray<{ label: string }>) => ps.map((p) => p.label)
 
 describe('the pages in one table', () => {
   it("gives the sidebar's foot as it was: Brakeman while the server has it, Settings in the desktop app", () => {
-    const base = ['Decide', 'Yard', 'Roundhouse', 'Agents', 'Crews', 'Dispatch', 'Events', 'History']
+    const base = ['Needs you', 'Yard', 'Roundhouse', 'Agents', 'Crews', 'Dispatch', 'Events', 'History']
     expect(labels(navPages())).toEqual(base)
     expect(labels(navPages({ brakeman: true }))).toEqual([...base, 'Brakeman'])
     expect(labels(navPages({ desktop: true }))).toEqual([...base, 'Settings'])
     expect(labels(navPages({ brakeman: true, desktop: true }))).toEqual([...base, 'Brakeman', 'Settings'])
     expect(navPages().map((p) => p.to)).toEqual(['/decisions', '/yard', '/roundhouse', '/agents', '/crews', '/dispatch', '/events', '/history'])
+    // Needs you's row leaves when nothing waits and nothing was decided that day (needsRowShown); the rest keep their places.
+    expect(labels(navPages({ needs: false, desktop: true }))).toEqual([...base.slice(1), 'Settings'])
   })
 
   it("gives the phone's bar and its More as they were", () => {
-    expect(labels(phoneTabs())).toEqual(['Decide', 'Sessions', 'Yard', 'Crews'])
+    expect(labels(phoneTabs())).toEqual(['Needs you', 'Sessions', 'Yard', 'Crews'])
     expect(phoneTabs().map((p) => p.to)).toEqual(['/decisions', '/sessions', '/yard', '/crews'])
     expect(labels(phoneMore())).toEqual(['Roundhouse', 'Agents', 'Dispatch', 'Events', 'History'])
     expect(labels(phoneMore({ desktop: true }))).toEqual(['Roundhouse', 'Agents', 'Dispatch', 'Events', 'History', 'Settings'])
@@ -25,7 +27,7 @@ describe('the pages in one table', () => {
   it("gives the palette's page rows in their order, by the page's own name", () => {
     expect(ids(palettePages())).toEqual(['decisions', 'yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'history'])
     expect(ids(palettePages({ desktop: true }))).toEqual(['decisions', 'yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'history', 'settings'])
-    expect(palettePages()[0]!.title).toBe('Needs your decision')
+    expect(palettePages()[0]!.title).toBe('Needs you')
     expect(palettePages().map((p) => p.chord)).toEqual([['G', 'N'], ['G', 'Y'], ['G', 'R'], ['G', 'C'], ['G', 'D'], ['G', 'A'], ['G', 'E'], ['G', 'H']])
   })
 
@@ -70,7 +72,7 @@ describe('the pages in one table', () => {
   it("says the page in the nav's tooltip", () => {
     expect(pageTip(pageById('yard'))).toBe('Yard: every live terminal on one screen')
     expect(pageTip(pageById('agents'))).toBe('Agents: the agents this machine can launch, and how each reports to Conductor')
-    expect(pageTip(pageById('decisions'))).toBe('Decide: everything that waits for your answer, in one list')
+    expect(pageTip(pageById('decisions'))).toBe('Needs you: everything that waits for your answer, in one list')
   })
 
   it("gives every page's key as a row of the shortcuts dialog, and no two pages one key", () => {

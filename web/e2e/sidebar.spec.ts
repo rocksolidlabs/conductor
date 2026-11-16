@@ -431,9 +431,13 @@ test('alerts and your menu sit beside the name; the foot holds only the pages', 
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
   await expect(page.locator('[data-header-account]')).toHaveAttribute('aria-label', 'Your menu, Nate R')
-  // The foot: the pages, nothing else; Needs your decision's Decide row first (docs/plans/decision-inbox.md, PR-2).
+  // The foot: the pages, nothing else. Needs you's row leaves when nothing waits and nothing was decided that day, which this shared
+  // server's earlier specs decide: here it is first when present, and the pages after it are in order (counts.spec.ts proves the
+  // row's rule on servers whose state it knows).
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
-  await expect(foot.getByRole('link')).toHaveText([/Decide/, /Yard/, /Roundhouse/, /Agents/, /Crews/, /Dispatch/, /Events/, /History/, /Brakeman/])
+  const pages = [/^Yard/, /^Roundhouse/, /^Agents/, /^Crews/, /^Dispatch/, /^Events/, /^History/, /^Brakeman/]
+  await expect(foot.getByRole('link').filter({ hasNotText: /^Needs you/ })).toHaveText(pages)
+  await expect(foot.getByRole('link').first()).toHaveText(/^(Needs you|Yard)/)
 })
 
 

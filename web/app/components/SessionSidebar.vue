@@ -9,6 +9,7 @@ import { blockSubtitle, focusRows, mayRefocusRow, moveFocus, needsDotShown, reop
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
+import { sectionHeader } from '~/utils/needsYou'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
@@ -48,6 +49,11 @@ const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.op
 const decisionsCut = computed(() => (query.value ? '' : cutNotice(decisions.cut.value, loneDecisions.value.length)))
 // The list's last read failed (Codex's round 3 on #719): said, with Read again, until a read succeeds; the store reads again by itself.
 const decisionsStale = computed(() => (query.value ? '' : staleNotice(decisions.stale.value.since, decisions.stale.value.error)))
+// The section lists the questions and the gates of runs that run; until it lists every kind, its header says what of the one list
+// (useNeedsYou) it leaves out, "+3 on the page" (plans, tasks, the open decisions of stopped runs), linked to the page.
+const oneList = useNeedsYou()
+const needsHeader = computed(() => sectionHeader(model.value.counts.needs + loneDecisions.value.length, query.value ? [] : oneList.items.value))
+const needsMore = computed(() => (needsHeader.value.more ? { label: `+${needsHeader.value.more} on the page`, to: '/decisions', title: needsHeader.value.words } : undefined))
 const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */
@@ -368,7 +374,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
 
-      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
+      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale || needsMore" id="needs" title="Needs you" :count="needsHeader.listed" tone="warning" :more="needsMore" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
             <SidebarRunBlock

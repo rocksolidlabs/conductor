@@ -40,6 +40,7 @@ watch(
 )
 const active = computed(() => attention.sessions.value.filter(isActive))
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
+const gridAsksWords = computed(() => `${waiting.value.length} ${waiting.value.length === 1 ? 'session on this grid asks' : 'sessions on this grid ask'} you. Plans, tasks and decisions wait in Needs you.`)
 const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
 const tiles = computed(() => (filter.value === 'needs' ? waiting.value : filter.value === 'running' ? running.value : active.value))
 const answered = computed(() =>
@@ -252,7 +253,10 @@ usePalette().registerPage(() => {
             </template>
             <div v-else class="flex items-center gap-1.5 text-xs">
               <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" data-yard-filter="all" :data-active="filter === 'all' ? '' : undefined" @click="filter = 'all'" />
-              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
+              <!-- It counts the sessions of this grid alone, and says so: the one number of what needs you is on Needs you. -->
+              <UTooltip :text="gridAsksWords">
+                <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" :aria-label="gridAsksWords" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
+              </UTooltip>
               <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" data-yard-filter="running" :data-active="filter === 'running' ? '' : undefined" @click="filter = 'running'" />
               <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
               <AttentionBar :sessions="attention.sessions.value" />

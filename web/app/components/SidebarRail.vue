@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { needsDotShown, railModel, sidebarModel } from '~/utils/sidebar'
+import { needsCount } from '~/utils/needsYou'
 
 /**
  * The sidebar as a rail (design 3d): the counts on top (how many need you,
@@ -22,6 +23,9 @@ const folds = useSidebarFolds()
 const unread = useChatUnread()
 
 const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf), joined.list.value, events.marks.value, unread.counts.value))
+// The top count is the one number of what needs you (useNeedsYou), the nav's: nothing while it is not known.
+const needs = useNeedsYou()
+const needsShown = computed(() => (needs.number.value ? needsCount(needs.list.value) : ''))
 const needsDot = computed(() => needsDotShown(events.routes.value))
 
 /** +N: the full sidebar, its Exited open. */
@@ -33,9 +37,9 @@ function openExited() {
 
 <template>
   <div class="flex h-full min-h-0 flex-col items-center gap-2" data-rail>
-    <div v-if="rail.needs || rail.news" class="flex items-center gap-1" data-rail-counts>
-      <UTooltip v-if="rail.needs" :text="`${rail.needs} ${rail.needs === 1 ? 'needs' : 'need'} you`" :content="{ side: 'right' }">
-        <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-inverted" data-rail-count="needs">{{ rail.needs }}</span>
+    <div v-if="needsShown || rail.news" class="flex items-center gap-1" data-rail-counts>
+      <UTooltip v-if="needsShown" :text="`${needsShown} ${needsShown === '1' ? 'needs' : 'need'} you`" :content="{ side: 'right' }">
+        <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-inverted" data-rail-count="needs" data-count-of="needs">{{ needsShown }}</span>
       </UTooltip>
       <UTooltip v-if="rail.news" :text="`${rail.news} with new events or unread chat`" :content="{ side: 'right' }">
         <span class="rounded-full bg-default px-1.5 text-[10px] font-semibold leading-4 text-muted" data-rail-count="news">{{ rail.news }}</span>
