@@ -96,7 +96,9 @@ holds its states with no timer (`STUB_TURN`, a question, a check that exits
 the test that leaves a session, a run or an inbox item of its own on it or
 changes a part's item; a measure of how much fits is made on `busy`, so that
 it measures the same page whatever ran before it. The whole day builds in
-about 20 s on the 64-core Linux box. To look at it by hand,
+about 16 s on CI's runner (the first test that asks for `busy`, 2026-11-15)
+and about 20 s on the 64-core Linux box; the e2e job took 60 minutes with it,
+against 56 to 67 on `main` that day. To look at it by hand,
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.
