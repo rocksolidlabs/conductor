@@ -66,6 +66,11 @@ test.describe('a Dispatch project at 1440 x 900', () => {
     await page.keyboard.press('x')
     await expect(page.locator('[data-selection-bar]')).toBeVisible()
     for (const c of [...CELLS, '[data-row-select]']) expect((await aligned(page.locator(ROWS), c)).got).toHaveLength(TICKETS.length)
+    // The select track is widened for the box, which stands clear of the status after it on every row.
+    const overlaps = await page.locator(ROWS).evaluateAll((rows) =>
+      rows.filter((r) => r.querySelector('[data-row-select]')!.getBoundingClientRect().right > r.querySelector('[data-row-status-icon]')!.getBoundingClientRect().left + 0.5).length,
+    )
+    expect(overlaps, 'rows whose select box runs into their status').toBe(0)
   })
 })
 
