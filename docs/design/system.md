@@ -185,7 +185,7 @@ hover.
 
 ### One main action
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 One filled forest button a work area: a page's header, a dialog, a card.
 The rest are outline or ghost. The forest fill means the view's main
@@ -199,7 +199,7 @@ seeded day (`filledPrimaries` in `web/e2e/contrast.ts`).
 
 ### The code font for evidence
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 Ids, paths, commits, commands, keys, logs and measures are in the code
 font (JetBrains Mono); sentences, names and labels are in Inter.
@@ -215,7 +215,7 @@ count per source in `designRules.mono.json`, a list that only shrinks);
 
 ### Amber when someone must act
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 Amber is for what waits on a person: a question, a plan to approve, a
 task out of attempts, a decision, a confirm that loses work, a read that
@@ -237,7 +237,7 @@ tooltip, and the less used ones move into More.
 
 Checks: `web/e2e/session-page.spec.ts` and `web/e2e/run-header.spec.ts`
 (the name whole and nothing overlapping at 1440 x 900 and at 390 x 844);
-the tooltip rule below.
+the one-filled-action rule above; the tooltip rule below.
 
 ### The toolbar
 
