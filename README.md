@@ -790,7 +790,7 @@ one. A permission question whose dialog the screen does not show (a hosted
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
-**The Events page** has three tabs. **Feed** (the default) lists the events
+**The Events page** has two tabs. **Feed** (the default) lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
 it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
@@ -803,10 +803,19 @@ sidebar and on its Yard tile (until the session reports `working` or
 `needs_input`, or you open it), a browser notification with the chime (as
 switched on under the sidebar's alerts), a Roundhouse jump while it follows, and
 a line in the live feed, which keeps the last 500 events in memory. Routes are
-saved in the browser. **Integrations** is a table of the agents: whether their
-hooks reach them, what they report, where an install writes, and **Install on
-this machine**, with the snippet of an agent nothing wires open below. An
-artifact's URL becomes a link only when it is `http(s)`.
+saved in the browser. An artifact's URL becomes a link only when it is
+`http(s)`.
+
+**Reporting to Conductor** is a section of the **Agents** page, under the
+cards. Each card says whether its agent reports: **Reports to Conductor** (its
+hooks are installed, or a launch from this server injects them), **Not set
+up** with a **Set up** link to its row in the section, **Experimental**, or
+**No hooks** for an agent with no adapter, which reports by the bell or a
+screen pattern. The section is a table of the hook adapters (one adapter can
+serve many agents of the catalog): whether their hooks reach them, what they
+report, where an install writes, and **Install on this machine**, with the
+snippet of an agent nothing wires open below, then the Conductor skill. An
+old link to the Events page's Integrations tab opens it.
 
 **Wired at launch.** Conductor has a hook adapter for every built-in agent but
 the shell. At startup `conductor serve` writes the hook files into `hooks/` in
@@ -835,8 +844,10 @@ waiting on a question, and an idle member is not.
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
-them. The **Events** page lists every adapter with what it reports and whether
-its hooks are installed, the snippet to paste, and **Install on this machine**,
+them. The **Agents** page's section Reporting to Conductor lists every adapter
+with what it reports and whether its hooks are installed, the snippet to
+paste, and **Install on this machine** (one install for every agent of the
+adapter),
 which adds Conductor's hooks to the agent's config in the server user's home,
 next to your own settings and hooks and never over them: entries in its hook
 lists, a marked block, or a file of Conductor's own. An entry of Conductor's
@@ -902,7 +913,7 @@ convention, for pi, Goose, Cursor, Copilot, OpenCode, oh-my-pi, Amp and
 DeepSeek Harness; aider reads none), one attempt per agent per server start,
 and a `SKILL.md` of your own there is never touched (the log says so once).
 `agents.installSkill: false` or `CONDUCTOR_AGENT_INSTALL_SKILL=0` turns that
-off; installing the hooks (`conductor hooks install`, the Events page) puts
+off; installing the hooks (`conductor hooks install`, the Agents page) puts
 the skill in place too. The server keeps its copy in
 `hooks/skills/conductor/SKILL.md`, and every session names it in
 `CONDUCTOR_SKILL`, so an agent with no skills directory can be told to read
@@ -915,7 +926,7 @@ on the `PATH`.
 <details>
 <summary>Wiring the hooks by hand</summary>
 
-`conductor hooks install` and the Events page write these for you, naming the
+`conductor hooks install` and the Agents page write these for you, naming the
 binary by its absolute path. Written by hand as below, `conductor` must be on
 the `PATH` the agent runs its hooks with. A session Conductor launches already
 gets Claude Code's hooks through `--settings`: add them to your own settings
@@ -940,7 +951,7 @@ for Claude Code started elsewhere.
   notify = ["conductor", "notify", "--codex"]
   ```
 
-- Every other agent: the snippet on its card on the Events page, which is also
+- Every other agent: the snippet of its row on the Agents page, which is also
   its file in `hooks/` in the server's data directory.
 
 </details>

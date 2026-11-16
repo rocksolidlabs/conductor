@@ -188,7 +188,7 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/stopped|ended/)
 })
 
-test("the other pages: the Yard's chips, the Roundhouse's switches and rotation, Crews' New crew, Events' tabs and refresh, Agents' Launch, Settings' Save", async ({ page, api }) => {
+test("the other pages: the Yard's chips, the Roundhouse's switches and rotation, Crews' New crew, Events' tabs, Agents' refresh and Launch, Settings' Save", async ({ page, api }) => {
   // Six pages and some thirty palette opens and closes in one test: on a loaded machine (a load of 140, PR #503's full run) every step
   // went on and the whole took 2.1 m, past the config's 120 s for one test. Its own budget, tripled; each step keeps its own waits.
   test.slow()
@@ -225,14 +225,16 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await expect(page.locator('[data-palette]')).toBeHidden()
   await runRow(page, 'page:new')
   await expect(page).toHaveURL(/\/crews\/new/)
-  // Events: a tab row shows its tab and reads as on; Refresh asks the server again and shows its answer (the answer rewritten
-  // on the way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
+  // Events: a tab row shows its tab and reads as on.
   await page.goto('/events')
   await expect(page.locator('[data-events-tabs]')).toBeVisible({ timeout: 30_000 })
   await runRow(page, 'page:tab:routing')
   expect(await switchOf(page, 'page:tab:routing')).toBe('on')
-  await runRow(page, 'page:tab:integrations')
-  await expect(page.locator('[data-events-integrations-tab]')).toBeVisible()
+  // Agents: Refresh asks the server again and its section Reporting to Conductor shows the answer (the answer rewritten on the
+  // way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[data-agents-reporting] [data-integration]').first()).toBeVisible({ timeout: 30_000 })
   await page.route('**/api/integrations', async (route) => {
     const res = await route.fetch()
     const body = (await res.json()) as { integrations: Array<{ name: string }> }
@@ -242,11 +244,9 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   const asked = page.waitForResponse((r) => r.url().includes('/api/integrations'))
   await runRow(page, 'page:refresh')
   await asked
-  await expect(page.locator('[data-events-integrations-tab]').getByText('(refreshed)').first()).toBeVisible()
+  await expect(page.locator('[data-agents-reporting]').getByText('(refreshed)').first()).toBeVisible()
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
-  await page.goto('/agents')
-  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await runRow(page, 'page:launch')
   await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')

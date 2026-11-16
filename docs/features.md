@@ -7692,6 +7692,13 @@ picked.
   it the last hour as bars, where events go, who reports), Routing (the ten
   events grouped by how loud they are, destinations as switches) and
   Integrations (a table, the snippet of an agent nothing wires open below).
+  Since the UX review's P12 (PR-27) the table and the Conductor skill are
+  the Agents page's section Reporting to Conductor: each card there says
+  whether its agent reports (Reports to Conductor, Not set up with a Set up
+  link to its adapter's row, Experimental, No hooks), by one rule
+  (`reportStatus`) that the table and the feed's Reporting list read too,
+  with installed and injected drawn neutral; `/events?tab=integrations`
+  opens the section, and the palette's row is "Agents · Reporting".
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers
