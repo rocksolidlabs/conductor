@@ -1,12 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"runtime"
+	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,11 +20,13 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/hostagent"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 	"github.com/rocksolidlabs/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // A viewer that joins through the switchyard reaches a member's session
@@ -102,9 +109,16 @@ func shutAtEnd(t *testing.T, e *testEnv) {
 // session in procs, shut as the test ends (shutAtEnd).
 func onFakes(t *testing.T) (*testEnv, *fakeProcs) {
 	t.Helper()
+	return onFakesWith(t, nil)
+}
+
+// onFakesWith is onFakes with its configuration changed by mutate (nil
+// for none).
+func onFakesWith(t *testing.T, mutate func(*config.Config)) (*testEnv, *fakeProcs) {
+	t.Helper()
 	procs := &fakeProcs{by: map[string]*sessiontest.FakeProc{}, more: make(chan struct{})}
 	rt := &sessiontest.FakeRuntime{Terminal: procs.start}
-	e := newTestEnvAgents(t, nil, slog.New(slog.DiscardHandler), nil, withNativeRuntime(rt))
+	e := newTestEnvAgents(t, mutate, slog.New(slog.DiscardHandler), nil, withNativeRuntime(rt))
 	shutAtEnd(t, e)
 	return e, procs
 }
@@ -949,38 +963,74 @@ func TestALinkTheStoreDoesNotHoldOpensItsSessionAsTheSwitchyardSays(t *testing.T
 	}
 }
 
-// ownGoroutines counts the goroutines running this repository's code
-// outside any test's own (a server's, a session's, a connection's), from
-// one read of every goroutine's stack, and returns their stacks. A
-// server's rate limiters' sweeps are left out: each server starts two
-// that last as long as the process (newRateLimiter), on main as here.
-func ownGoroutines() (int, string) {
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		if n < len(buf) {
-			buf = buf[:n]
-			break
-		}
-		buf = make([]byte, 2*len(buf))
+// fixtureLabel is the profiler label (runtime/pprof) a subtest's
+// goroutines carry when it runs under underFixtureLabel: a goroutine
+// inherits its maker's labels, so every goroutine the subtest's servers
+// start, and those their goroutines start, carries the subtest's value,
+// and no goroutine another test of the binary starts does.
+const fixtureLabel = "link-admission-fixture"
+
+// fixtureRuns numbers the label's values, one per subtest run.
+var fixtureRuns atomic.Int64
+
+// underFixtureLabel runs the subtest f as name with the label's next
+// value, and returns that value.
+func underFixtureLabel(t *testing.T, name string, f func(*testing.T)) string {
+	t.Helper()
+	value := strconv.FormatInt(fixtureRuns.Add(1), 10)
+	pprof.Do(context.Background(), pprof.Labels(fixtureLabel, value), func(context.Context) {
+		t.Run(name, f)
+	})
+	return value
+}
+
+// fixtureGoroutines counts the goroutines that carry the label's value
+// and run this repository's code outside a test's runner (a server's, a
+// session's, a connection's), from one read of the goroutine profile, and
+// returns their stacks. A server's rate limiters' sweeps are left out:
+// each server starts two that last as long as the process
+// (newRateLimiter), on main as here.
+func fixtureGoroutines(value string) (int, string) {
+	var buf bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&buf, 1); err != nil {
+		return -1, err.Error()
 	}
+	mark := fmt.Sprintf("# labels: {%q:%q}", fixtureLabel, value)
+	n := 0
 	var own []string
-	for _, g := range strings.Split(string(buf), "\n\n") {
-		if strings.Contains(g, "rocksolidlabs/conductor/internal/") && !strings.Contains(g, "testing.tRunner") && !strings.Contains(g, "(*rateLimiter).sweep") {
-			own = append(own, g)
+	for _, g := range strings.Split(buf.String(), "\n\n") {
+		if !strings.Contains(g, mark) || !strings.Contains(g, "rocksolidlabs/conductor/internal/") ||
+			strings.Contains(g, "testing.tRunner") || strings.Contains(g, "(*rateLimiter).sweep") {
+			continue
 		}
+		// A record of the profile is the goroutines of one stack and one
+		// set of labels, headed "N @ ...".
+		c := 1
+		for _, line := range strings.Split(g, "\n") {
+			if count, _, ok := strings.Cut(line, " @ "); ok {
+				if v, err := strconv.Atoi(count); err == nil {
+					c = v
+				}
+				break
+			}
+		}
+		n += c
+		own = append(own, g)
 	}
-	return len(own), strings.Join(own, "\n\n")
+	return n, strings.Join(own, "\n\n")
 }
 
 // This file's fixture ends what its servers started before their stores
 // close and their folders go: once a test that launched a run, published
 // its member, attached a viewer and a desk viewer through the switchyard
-// and forgot the run has returned, its cleanups run, the goroutines
-// running this repository's code are no more than before it.
+// and forgot the run has returned, and its cleanups have run, no goroutine
+// its servers started is left running this repository's code. A goroutine
+// that has signalled its end (closed its done channel) can still be
+// returning, so the count is polled, within the tests' wait, until none
+// is left; the subtest runs under a label of its own (underFixtureLabel),
+// so a goroutine another test starts meanwhile is not counted.
 func TestTheFixtureEndsWhatItsServersStarted(t *testing.T) {
-	before, _ := ownGoroutines()
-	t.Run("a forgotten run", func(t *testing.T) {
+	value := underFixtureLabel(t, "a forgotten run", func(t *testing.T) {
 		yard, local, procs := deskPairOnFakes(t)
 		runID, _, hostedID, _ := publishedMember(t, local, procs)
 		_, token := remoteDecisionLink(t, local, "/api/runs/"+runID+"/links", "phone")
@@ -988,7 +1038,46 @@ func TestTheFixtureEndsWhatItsServersStarted(t *testing.T) {
 		joinDesk(t, yard, token)
 		local.srv.runs.ForgetForTest(runID)
 	})
-	if after, stacks := ownGoroutines(); after > before {
-		t.Fatalf("%d goroutines of this repository's code before the test, %d once its cleanups ran:\n%s", before, after, stacks)
+	left, stacks := 0, ""
+	if !waitFor(testWait, func() bool {
+		left, stacks = fixtureGoroutines(value)
+		return left == 0
+	}) {
+		t.Fatalf("%d goroutines its servers started still run this repository's code %s after the test's cleanups ran:\n%s", left, testWait, stacks)
+	}
+}
+
+// The fixture shuts its server (shutAtEnd) before the cleanups that close
+// the server's stores and remove its folders: a run the test leaves
+// running is stopped in its record, which the run's records closed before
+// the stop would not let it write (a save after their Close is dropped).
+// The data folder is the parent test's, so the record is read, as it is
+// on disk, once the subtest's cleanups have all run.
+func TestTheFixtureShutsItsServerBeforeItsStoresClose(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	var runID string
+	t.Run("a run left running", func(t *testing.T) {
+		local, procs := onFakesWith(t, func(c *config.Config) { c.DataDir = dir })
+		runID = local.launchCrew(t, "Left", catMember("lead", "immediately"))
+		if procs.of(t, local.waitRunning(t, runID, "lead")).Stopped() {
+			t.Fatal("the run's member was stopped before the test ended")
+		}
+	})
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := st.Sub("runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec map[string]any
+	if ok, err := records.Load(runID+".json", &rec); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("the run left running has no record once the test's cleanups ran: its stop was never written")
+	}
+	if rec["state"] != crew.RunStopped || rec["stoppedAt"] == nil {
+		t.Fatalf("the run left running is %v (stopped at %v) in its record once the test's cleanups ran; want %s", rec["state"], rec["stoppedAt"], crew.RunStopped)
 	}
 }

@@ -866,7 +866,8 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 }
 
 // disconnectLinks closes the viewers attached through any of linkIDs, run
-// links, and returns once they are closed. Their viewers may be on any session
+// links, and returns once the sessions' closes are done: a desk at the
+// switchyard is told and not waited for. Their viewers may be on any session
 // that was a member of the run, the run forgotten meanwhile included, or on
 // a run's desk at the switchyard: every session and every desk there is
 // asked, all at once, since each session's close waits for its viewer's

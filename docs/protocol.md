@@ -2463,9 +2463,10 @@ acts under way through the link have ended, at most the store's wait for
 them (`HoldWait`, 5 s) after the revoke began. Until the mark, a decision
 link's viewer through the server's own window has its keys refused from
 the revoke's beginning, as before; through a host's connection its keys
-and saves are written, and its lane's operations are refused from the
-revoke's beginning (none begins once the barrier has). From the mark a
-viewer with the link is refused at its attach and at each act but a
+and saves are written, its lane's acts (a decision, a replay, a task
+command) are refused from the revoke's beginning (none begins once the
+barrier has), and its lane's reads are answered until the mark. From
+the mark a viewer with the link is refused at its attach and at each act but a
 resize (`revoked`, with the words above), whatever the switchyard has
 taken yet, unless it was refused earlier: where the switchyard has
 already said the link is gone at that connection, or this server's
