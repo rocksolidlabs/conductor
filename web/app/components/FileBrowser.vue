@@ -503,7 +503,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 flex-none text-muted" />
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="text-[13px] font-semibold text-highlighted">Commits</span>
-        <span class="truncate font-mono text-[11px] text-muted">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
+        <span class="truncate text-[11px] text-muted tabular-nums">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
       </div>
       <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :loading="logLoading" @click="loadLog" />
     </div>
@@ -511,7 +511,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <UIcon name="i-lucide-folder" class="size-3.5 flex-none text-muted" />
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="text-[13px] font-semibold text-highlighted">Explorer</span>
-        <span class="truncate font-mono text-[11px] text-muted">{{ cwd }}</span>
+        <span class="truncate font-mono text-[11px] text-muted" data-mono="path">{{ cwd }}</span>
       </div>
     </div>
     <div v-if="mode === 'tree' && section === 'explorer'" class="border-b border-default px-2 py-1.5">
@@ -521,7 +521,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <UIcon name="i-lucide-git-branch" class="size-3.5 flex-none text-muted" />
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="text-[13px] font-semibold text-highlighted">Changes</span>
-        <span class="truncate font-mono text-[11px] text-muted">{{ notRepo ? 'not a repository' : `${status?.branch || '…'} · ${base && base !== 'HEAD' ? `vs ${base}` : 'working directory'} · ${changesTitle(changes.length)}` }}</span>
+        <span class="truncate text-[11px] text-muted tabular-nums"><template v-if="notRepo">not a repository</template><template v-else><span class="font-mono" data-mono="commit">{{ status?.branch || '…' }}</span> · {{ base && base !== 'HEAD' ? `vs ${base}` : 'working directory' }} · {{ changesTitle(changes.length) }}</template></span>
       </div>
       <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :loading="statusLoading" @click="loadStatus" />
     </div>

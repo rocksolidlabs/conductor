@@ -532,7 +532,7 @@ function pieces(text: string): [string, string, string] {
                     <UBadge v-if="row.on !== undefined" :label="row.on ? 'on' : 'off'" :color="row.on ? 'success' : 'neutral'" variant="subtle" size="sm" :data-palette-switch="row.on ? 'on' : 'off'" />
                     <span v-if="row.kbds?.length" class="ml-auto flex flex-none items-center gap-0.5"><UKbd v-for="(k, i) in row.kbds" :key="i" :value="k" size="sm" /></span>
                   </div>
-                  <div v-if="row.detail" class="truncate font-mono text-[11.5px] text-muted" data-palette-detail>{{ row.detail }}</div>
+                  <div v-if="row.detail" class="truncate text-[11.5px] text-muted" data-palette-detail>{{ row.detail }}</div>
                   <div v-if="row.third" class="truncate text-xs text-toned" data-palette-third>{{ row.third }}</div>
                   <div v-if="row.note" class="text-xs text-warning" data-palette-note>{{ row.note }}</div>
                   <!-- A Needs-you row: its choices numbered, or a reply field; held and away as the sidebar shows them. -->
