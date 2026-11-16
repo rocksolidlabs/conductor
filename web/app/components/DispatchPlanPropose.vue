@@ -234,7 +234,7 @@ async function submit() {
           <div v-for="(_, i) in refs" :key="i" class="flex flex-col gap-0.5">
             <div class="flex items-center gap-1">
               <UInput v-model="refs[i]" placeholder="internal/api/session.go:12-30=the loop" class="min-w-0 flex-1 font-mono" size="sm" :data-plan-propose-ref="i" />
-              <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Remove reference ${i + 1}`" @click="removeRef(i)" />
+              <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :label="`Remove reference ${i + 1}`" @click="removeRef(i)" />
             </div>
             <span v-if="refErrors[i]" class="text-xs text-warning">{{ refErrors[i] }}</span>
           </div>
@@ -284,7 +284,7 @@ async function submit() {
             <UInput v-model="d.question" :maxlength="PLAN_BOUNDS.decisionQuestion" placeholder="The question…" class="min-w-0 flex-1" size="sm" aria-label="The question" />
             <USelectMenu v-model="d.before" :items="crewTasks" multiple placeholder="Before tasks…" size="sm" class="sm:w-40" aria-label="The tasks that wait on it" />
             <USelect :model-value="d.for || FOR_NONE" :items="forOptions" size="sm" class="sm:w-44" aria-label="Whom it is for" :data-plan-propose-decision-for="i" @update:model-value="(v) => setFor(d, String(v))" />
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :aria-label="`Remove decision ${i + 1}`" @click="removeDecision(i)" />
+            <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" :label="`Remove decision ${i + 1}`" @click="removeDecision(i)" />
           </div>
         </div>
 

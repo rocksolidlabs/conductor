@@ -505,7 +505,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <span class="text-[13px] font-semibold text-highlighted">Commits</span>
         <span class="truncate text-[11px] text-muted tabular-nums">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
       </div>
-      <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="logLoading" @click="loadLog" />
+      <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :loading="logLoading" @click="loadLog" />
     </div>
     <div v-if="mode === 'tree' && section === 'explorer'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-explorer-head>
       <UIcon name="i-lucide-folder" class="size-3.5 flex-none text-muted" />
@@ -523,7 +523,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <span class="text-[13px] font-semibold text-highlighted">Changes</span>
         <span class="truncate text-[11px] text-muted tabular-nums"><template v-if="notRepo">not a repository</template><template v-else><span class="font-mono" data-mono="commit">{{ status?.branch || '…' }}</span> · {{ base && base !== 'HEAD' ? `vs ${base}` : 'working directory' }} · {{ changesTitle(changes.length) }}</template></span>
       </div>
-      <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="statusLoading" @click="loadStatus" />
+      <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :loading="statusLoading" @click="loadStatus" />
     </div>
     <div v-if="mode !== 'tree' || section === 'explorer'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs">
       <template v-if="mode === 'url'">
@@ -532,7 +532,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <UButton label="New tab" icon="i-lucide-external-link" size="xs" color="neutral" variant="soft" :to="url!" target="_blank" rel="noopener noreferrer" />
       </template>
       <template v-else>
-        <UButton v-if="mode !== 'tree'" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" aria-label="Back to the files" data-files-back @click="backToTree" />
+        <IconButton v-if="mode !== 'tree'" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" label="Back to the files" data-files-back @click="backToTree" />
         <!-- The end of the path reads whole (#169): the folders above fold into "…", which lists them; nothing is cut to a letter. -->
         <nav ref="crumbsNav" class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap [scrollbar-width:none]" aria-label="path" :title="fullPath" data-files-crumbs @vue:mounted="scrollCrumbsToEnd">
           <template v-if="folded.hidden.length">
@@ -551,10 +551,10 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <UBadge v-if="header?.kind === 'file'" :label="fmtSize(header.size)" color="neutral" variant="subtle" size="sm" />
         <UBadge v-if="header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
         <UBadge v-if="header?.binary" label="binary" color="neutral" variant="subtle" size="sm" />
-        <UButton v-if="mode === 'file'" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy path" @click="copyPath" />
-        <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" />
+        <IconButton v-if="mode === 'file'" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" label="Copy path" @click="copyPath" />
+        <IconButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" />
       </template>
-      <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="loading || treeLoading" @click="refresh" />
+      <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" :loading="loading || treeLoading" @click="refresh" />
     </div>
 
     <div ref="content" class="file-view flex-1 min-h-24 overflow-auto">

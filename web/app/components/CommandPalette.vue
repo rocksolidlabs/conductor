@@ -553,7 +553,7 @@ function pieces(text: string): [string, string, string] {
                     </div>
                     <div v-else-if="!row.prompt.held && !row.prompt.away" class="flex items-center gap-1.5" data-palette-reply @click.stop>
                       <UInput :model-value="replies[row.key]?.text ?? ''" :placeholder="row.prompt.placeholder" size="xs" class="flex-1" :aria-label="`Reply to ${row.label}`" @update:model-value="(v) => draftReply(row, String(v))" />
-                      <UButton icon="i-lucide-send" size="xs" color="neutral" variant="soft" aria-label="Send" @click="sendReply(row)" />
+                      <IconButton icon="i-lucide-send" size="xs" color="neutral" variant="soft" label="Send" @click="sendReply(row)" />
                     </div>
                     <p v-if="row.prompt.held || row.prompt.away" class="text-xs text-muted" data-palette-held>{{ row.prompt.placeholder }}</p>
                   </div>

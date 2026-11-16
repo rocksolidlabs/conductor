@@ -398,7 +398,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
         <div>
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
-            <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" aria-label="Refresh" @click="refresh" />
+            <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" label="Refresh" @click="refresh" />
           </div>
           <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
           <ul v-else class="flex flex-col gap-2">

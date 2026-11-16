@@ -51,9 +51,11 @@ for the wire details.
   you, Running and Exited, with a filter box. The selected session fills the
   main pane. A right-hand inspector has People, Files and Activity tabs; Files
   replaces the current slideover. The Sessions table page is removed.
-- **Wall** (1b): header chips All / Needs you / Running; a queue panel that
-  lists every session waiting for input with its attention message and a
-  reply box that sends text plus Enter over a control connection.
+- **Wall** (1b): header chips by state; a tile that asks says the start of
+  its question at its foot (the queue panel beside the grid is gone since
+  UX1 PR-18: a question is answered in the sidebar's Needs you, the pill or
+  the expanded tile's bar, which sends text plus Enter over a control
+  connection).
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
   a "next up" line, and a "jumped here" note when follow mode moved. Follow
   mode holds for two intervals (at least 20 s), not forever, so a stray
@@ -77,8 +79,9 @@ Each item touches `internal/proto`, `web/app/utils/protocol.ts` and
   (Claude Code permission requests). Otherwise the UI shows a plain reply box.
   Buttons disable the moment the attention state changes.
 - **Activity log.** Bounded per-session log of attention transitions, inputs
-  during needs-input, link changes and joins. Feeds the Activity tab and the
-  wall's Answered list.
+  during needs-input, link changes and joins. Feeds the Activity tab (and,
+  until UX1 PR-18, the wall's Answered list; who answered stays in a
+  session's Activity and its History record).
 - **Session metadata.** Git branch (read at launch for server sessions,
   reported by the host for hosted ones), host OS user, per-link viewer count,
   client-measured transport round-trip time.
@@ -247,7 +250,7 @@ Collected here so they are not lost. None of these block the planned work.
   worktrees, verify, and a human merge gate with named approvers. Every step
   is an ordinary session that can be opened, shared or taken over. The run
   page shows the stage graph, a Spec / Events / Artifacts inspector, and
-  `on_needs_input: queue` routes step prompts into the wall queue. Presence
+  `on_needs_input: queue` routes step prompts to the sidebar's Needs you. Presence
   and the activity log above are prerequisites for gates and approvers.
 
 ## Round 3: polish, examples and completion (planned 2026-10-01)
@@ -412,9 +415,27 @@ open deferred item from rounds 1 and 2, then the features below.
   counts. The page is "Needs you" wherever its name is read (the decide-only
   page stays "Decide"); its row in the nav leaves when nothing waits and
   nothing was decided in the last day, and stays while its page is open. The
-  sidebar's section says what it leaves out: "+3 on the page", linked to the
-  page. The pill steps through what it can answer, a stopped run's decision
-  too, and says how many more wait in Needs you.
+  pill steps through what it can answer, a stopped run's decision too, and
+  says how many more wait in Needs you.
+- **One inbox: the sidebar lists everything that needs you (UX1 PR-13,
+  #928).** The sidebar's Needs you lists every item of the one list, each
+  with its kind's mark and word: the questions as their sessions' rows, and
+  a row each for a plan waiting for approval, a task out of its attempts and
+  a run's decision (`SidebarInboxRow`: the title and the question or brief,
+  each on one line with its whole text in its title). A run that waits on
+  an item sits in Needs you in the same moment, the item under its header
+  before its members, whatever its members do: a run whose task failed
+  while its members work, a stopped run with an open decision, and a run
+  with no session listed yet (a gate held before any attempt), drawn as its
+  header and its items; its capsule on the rail is amber. A plan, and an
+  item whose run the app does not hold, is a loose row. A decision opens its
+  card; a plan or a task opens on the Needs you page; each is a row the keys
+  land on. The section's count is the nav's one number. Below the rows:
+  "Showing 150 of 212 · all on Needs you" while the inbox holds a next page,
+  and "Plans and tasks could not be read" with Read again after a failed
+  read, the questions still listed. The palette's two groups of what waits
+  are one, "Needs you": answer-all, the questions, the decisions as "Answer
+  dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -432,6 +453,23 @@ open deferred item from rounds 1 and 2, then the features below.
   it leaves the nav, the rail and the phone's More, where the Yard's row and
   tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
   `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
+- **The Yard is its grid (UX1 PR-18, #933).** The queue beside the grid is
+  gone (`WallQueue.vue` deleted), so the grid takes the panel at every width
+  and never shrinks while a question waits: on a 390 px phone it is 366 px
+  wide where it was 26. A tile that asks says the start of its question at
+  its foot in place of the host, "dr-7 · " before one that mirrors a
+  decision, the whole question in its title and its name (`tileAsk`, on the
+  sidebar row's `rowPrompt`). A question is answered in the sidebar's Needs
+  you, the pill (] and [), whose Enter on the Yard now expands the tile in
+  place (`pillTarget`), or the expanded tile's bar, whose choices carry the
+  title the queue's had (`choiceTitle`). J, K and Enter leave the Yard's
+  keys, and Alt+J and Alt+K reach the terminal again on every page. The
+  "Answered" list is dropped: a session's Activity and its History record
+  keep who answered. Tests: `yard-grid.spec.ts` (the busy day's grid beside
+  the sidebar, on the rail and opened again; a phone; a question asked
+  again; the pill's Enter), `chords.spec.ts`, and the queue's proofs moved
+  to the tile and the bar in `choices`, `question`, `approval`, `askwait`,
+  `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in
@@ -2910,7 +2948,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 - **No scoping on a run page** (3f, S1): the full list shows with the open
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
-- The counts: Needs you is how many sessions need you, members included;
+- The counts: Needs you is the one number of what needs you (UX1 PR-13);
   Running is that section's live sessions; Exited is that section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run

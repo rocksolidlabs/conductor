@@ -3,22 +3,22 @@ import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
-import type { InboxSummary } from '~/utils/inbox'
+import { kindLook, rowLine } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
 import { hostedReason } from '~/utils/clone'
-import { answerRows, cutNotice, mirroringSessions, oneRowPerDecision, rowDecision, runRuns, staleNotice } from '~/utils/decisions'
-import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
+import { answerRows, cutNotice, oneRowPerDecision, rowDecision, staleNotice, type Decision } from '~/utils/decisions'
+import { isEnded, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedPath } from '~/utils/joined'
 import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
 import { PAGES, palettePages } from '~/utils/pages'
-import { needsCount } from '~/utils/needsYou'
-import { capGroup, parsePrefix, parseVerb, placeAfter, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
+import { needsCount, type NeedsItem } from '~/utils/needsYou'
+import { capGroup, foldActions, parsePrefix, parseVerb, placeAfter, rank, readRecent, sessionGroups, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
-import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
+import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
@@ -60,15 +60,13 @@ const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }>
 ]
 
 /**
- * The decision page's rows (docs/plans/decision-inbox.md, PR-2): one per open item, by its ref, "Decide: <title>", each opening the
- * item on the page. `go` navigates (and closes the palette).
+ * A plan's or a task's row in the palette's Needs you (the UX review's P3): "Plan: <title>", "Task: <title>" (its kind's word, kindLook),
+ * its question or brief below, opening the item on the Needs you page. `go` navigates (and closes the palette).
  */
-export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'title' | 'question' | 'brief' | 'tracking'>>, go: (to: string) => void): PaletteItem[] {
-  // A DR1 record answered and not yet applied waits on Yardmaster, not on a person: no row (the bar's number leaves it out too).
-  return items.filter((s) => !s.tracking).map((s) => {
-    const to = `/decisions?item=${encodeURIComponent(s.ref)}`
-    return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: s.question || s.brief, icon: 'i-lucide-gavel', run: () => go(to), href: to }
-  })
+export function needsItemRow(it: Pick<NeedsItem, 'kind' | 'ref' | 'summary'>, go: (to: string) => void): PaletteItem {
+  const to = `/decisions?item=${encodeURIComponent(it.ref)}`
+  const look = kindLook(it.kind)
+  return { key: `needs:${it.ref}`, label: `${look.word}: ${it.summary?.title || it.ref}`, detail: (it.summary && rowLine(it.summary)) || undefined, icon: look.icon, state: 'needs', run: () => go(to), href: to }
 }
 
 /**
@@ -87,7 +85,7 @@ export function waitingRows(runs: readonly RunInfo[], start: (r: RunInfo, name: 
 const TICKETS_IDLE = 10
 const TICKETS_MATCHED = 50
 /** The groups the plain search's History group follows: it goes after Tickets, before Shared with you. */
-const HISTORY_AFTER = ['needs', 'page', 'running', 'exited', 'decide', 'runs', 'tickets']
+const HISTORY_AFTER = ['needs', 'page', 'running', 'exited', 'runs', 'tickets']
 
 /** The row's second line, in the sidebar's grammar: `agent · where · how long`. */
 function sessionDetail(s: SessionInfo, now: number): string {
@@ -96,7 +94,6 @@ function sessionDetail(s: SessionInfo, now: number): string {
 
 export function usePaletteRows(ctx: PaletteContext) {
   const attention = useAttention()
-  const inbox = useInbox()
   const events = useEvents()
   const joined = useJoined()
   const desktop = useDesktop()
@@ -587,10 +584,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     out.push({ key: 'action:shortcuts', label: 'Keyboard shortcuts', icon: 'i-lucide-keyboard', kbds: ['?'], run: () => ctx.shortcuts() })
     out.push({ key: 'action:sidebar', label: sidebar.rail.value ? 'Expand the sidebar' : 'Collapse the sidebar to the rail', icon: 'i-lucide-panel-left', kbds: ['meta', 'B'], run: () => sidebar.toggle() })
     out.push({ key: 'action:fullscreen', label: 'Fullscreen', icon: 'i-lucide-maximize', kbds: ['F'], run: () => void fullscreen.toggle() })
-    for (const k of ['needs', 'running', 'shared', 'exited'] as const) {
-      const names = { needs: 'Needs you', running: 'Running', shared: 'Shared with you', exited: 'Exited' }
-      out.push({ key: `action:fold:${k}`, label: `${folds.folds.value[k] ? 'Unfold' : 'Fold'} the sidebar's ${names[k]}`, icon: folds.folds.value[k] ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right', run: () => folds.toggle(k) })
-    }
+    for (const f of foldActions(folds.folds.value)) out.push({ key: `action:fold:${f.key}`, label: f.label, icon: f.folded ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right', run: () => folds.toggle(f.key) })
     return out
   }
 
@@ -661,7 +655,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const live = blocks.filter((b) => !b.stoppedAt && b.state !== 'exited')
     const ended = blocks.filter((b) => b.stoppedAt || b.state === 'exited')
     const runs: PaletteItem[] = live.map((b) => runItem(b, attention.runOf(b.runId)))
-    for (const r of attention.runs.value.filter((r) => !seen.has(r.id) && !r.stoppedAt)) runs.push(runItem({ kind: 'run', id: `run:${r.id}`, runId: r.id, title: r.label || r.name, startedAt: r.startedAt, agents: r.members.length, state: 'idle', needs: 0, members: [] }, r))
+    for (const r of attention.runs.value.filter((r) => !seen.has(r.id) && !r.stoppedAt)) runs.push(runItem({ kind: 'run', id: `run:${r.id}`, runId: r.id, title: r.label || r.name, startedAt: r.startedAt, agents: r.members.length, state: 'idle', needs: 0, members: [], items: [] }, r))
     const endedItems: PaletteItem[] = ended.map((b) => runItem(b, attention.runOf(b.runId)))
     const waiting = waitingRows(attention.runs.value, (r, name) => void startMember(r, name))
     const crews: PaletteItem[] = palette.crews.value.map((c) => {
@@ -898,22 +892,11 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
-  // The open durable decisions of runs that run (Program item DR1): "Answer dr-7: …", Enter opening its card in the app's modal, one
-  // row per decision. A decision a session's shown question mirrors is that row too (its detail names the session), so the session is
-  // listed among the running ones, not again in Needs you (searchGroups). A stopped run's is answered from its run page or its ticket's.
-  function liveDecisions() {
-    return decisions.open.value.filter((d) => runRuns(attention.runOf(d.run)))
-  }
-  function decisionItems(): PaletteItem[] {
-    const mirrored = new Map([...mirroringSessions(attention.sessions.value, liveDecisions())].map(([sid, d]) => [d, sid]))
-    const rows: PaletteItem[] = answerRows(
-      liveDecisions(),
-      (id) => decisionModal.open(id),
-      (id) => {
-        const sid = mirrored.get(id)
-        return sid ? attention.sessions.value.find((s) => s.id === sid)?.name : undefined
-      },
-    )
+  // The open durable decisions (Program item DR1), of every run as the one list holds them: "Answer dr-7: …", Enter opening its card in
+  // the app's modal, one row per decision. A decision a session's shown question mirrors is that row too (its detail names the session),
+  // so the session is listed among the running ones, not again in Needs you (sessionGroups).
+  function decisionItems(open: readonly Decision[], inSession: (id: string) => string | undefined): PaletteItem[] {
+    const rows: PaletteItem[] = answerRows(open, (id) => decisionModal.open(id), inSession)
     // The store's list is cut (Codex's round 2 on #719): said by a row of its own, whether or not a row of the list read is here.
     const cut = cutNotice(decisions.cut.value, rows.length)
     if (cut) rows.push({ key: 'decisions-cut', label: cut, detail: 'Enter opens Dispatch', icon: 'i-lucide-info', run: () => go('/dispatch') })
@@ -928,30 +911,20 @@ export function usePaletteRows(ctx: PaletteContext) {
 
   function searchGroups(query: string, now: number): PaletteGroup<PaletteItem>[] {
     const page = palette.page.value
-    const model = sidebarModel(attention.sessions.value, attention.runOf)
-    // A session whose shown question mirrors an open decision listed below is that decision's row in Needs you, and running here.
-    const asDecision = mirroringSessions(attention.sessions.value, liveDecisions())
-    const needs = needingInput(attention.sessions.value)
-      .filter((s) => !asDecision.has(s.id))
-      .sort((a, b) => (a.attention?.since ?? '').localeCompare(b.attention?.since ?? ''))
-    const needsIds = new Set(needs.map((s) => s.id))
-    // Every session in the sidebar's order, its run's section aside (a run sits where its most urgent member is: a working
-    // member of a run that needs you is Running here, an exited member of a live run Exited), then each by its own state.
-    const flat = (items: readonly (SessionRow | RunBlock)[]) => items.flatMap((it) => (it.kind === 'run' ? it.members : [it]))
-    const everyRow = flat([...model.needs, ...model.running, ...model.exited])
-    const running = everyRow.filter((r) => !needsIds.has(r.id) && isActive(r.session))
-    const exited = everyRow.filter((r) => isEnded(r.session.status))
+    const needsList = oneList.items.value
+    const model = sidebarModel(attention.sessions.value, attention.runOf, needsList)
+    // One Needs you group (the UX review's P3): every item of the one list once, then the sessions by the sidebar's sections.
+    const rows = sessionGroups(model, needsList, { answerAll: answerAllItems, session: (s) => sessionItem(s, now), decisions: decisionItems, item: (it) => needsItemRow(it, go) })
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
-      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now)), ...decisionItems()] },
+      { id: 'needs', label: 'Needs you', pinned: true, rows: rows.needs },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
-      { id: 'running', label: 'Running', rows: running.map((r) => sessionItem(r.session, now)) },
+      { id: 'running', label: 'Running', rows: rows.running },
     ]
-    if (exited.length) {
-      if (query || showExited.value) groups.push({ id: 'exited', label: 'Exited', rows: exited.map((r) => sessionItem(r.session, now)) })
-      else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${exited.length} exited ${exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', keepOpen: true, run: () => (showExited.value = true) }] })
+    if (rows.exited.length) {
+      if (query || showExited.value) groups.push({ id: 'exited', label: 'Exited', rows: rows.exited })
+      else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${rows.exited.length} exited ${rows.exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', keepOpen: true, run: () => (showExited.value = true) }] })
     }
-    groups.push({ id: 'decide', label: 'Needs your decision', rows: decisionRows(inbox.state.value.items, go) })
     groups.push({ id: 'runs', label: 'Runs', rows: blocks.map((b) => runItem(b, attention.runOf(b.runId))) })
     // A ticket's key typed whole puts the Tickets group first after Needs you and the page's, so Enter opens that ticket.
     const tickets: PaletteGroup<PaletteItem> = { id: 'tickets', label: 'Tickets', rows: ticketItems(query) }

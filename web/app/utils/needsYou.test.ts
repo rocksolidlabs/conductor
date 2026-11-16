@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionInfo, SessionStatus } from '~/composables/useSessions'
 import type { Decision, DecisionState } from './decisions'
 import type { InboxSummary } from './inbox'
-import { needsCount, needsRowShown, needsYou, pillWords, sectionHeader, unanswerable, type NeedsInput } from './needsYou'
+import { needsCount, needsRowShown, needsYou, pillWords, unanswerable, type NeedsInput } from './needsYou'
 
 // The shape of the UX review's day and its edges: six sessions that ask (one a host away, one mirroring an open record), one that
 // is starting, one ended that still shows a question; a gate no question mirrors, a stopped run's open record, a record answered and
@@ -198,18 +198,7 @@ describe("needsRowShown: Needs you's row in the nav", () => {
   }
 })
 
-describe("sectionHeader: the sidebar section's header says what it leaves out", () => {
-  it('counts the plans and tasks of the one list, never a difference of two stores', () => {
-    const items = needsYou(day({ decisions: { records: RECORDS.filter((d) => d.id !== 'dr-3') } })).items
-    // The section lists six questions and the running gate; the list holds two plans and a task besides.
-    expect(sectionHeader(7, items)).toEqual({ listed: 7, more: 3, words: 'Needs you 7 · +3 on the page' })
-    // With an open record of a stopped run in the list as well: one more.
-    expect(sectionHeader(7, needsYou(day()).items).words).toBe('Needs you 7 · +4 on the page')
-    // Questions and decisions of running runs alone: nothing left out.
-    const listed = needsYou(day({ decisions: { records: RECORDS.filter((d) => d.id !== 'dr-3') }, inbox: { items: [] } })).items
-    expect(sectionHeader(7, listed)).toEqual({ listed: 7, more: 0, words: 'Needs you 7' })
-  })
-
+describe("the pill's words", () => {
   it("gives the pill's count and what it cannot answer", () => {
     const items = needsYou(day()).items
     expect(unanswerable(items)).toBe(3)

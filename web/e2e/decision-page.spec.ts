@@ -165,6 +165,9 @@ test("a phone opened with a question waiting lands on the page, the Sessions tab
   await expect(item.locator('[data-inbox-recommendation]')).toHaveText('No recommendation')
   await expect(item.locator('[data-inbox-answerer]')).toContainText('you, the operator')
   await expect(item.locator('[data-inbox-action="answer"]')).toHaveText(['Postgres', 'SQLite', 'Keep both'])
+  // A question's fine print folds under Details.
+  await expect(item.locator('[data-action-scope]')).toHaveCount(0)
+  await item.locator('[data-inbox-scopes-toggle]').tap()
   await expect(item.locator('[data-action-scope]').first()).toContainText('Types')
   for (const b of await item.locator('[data-inbox-action]').all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44)
 
@@ -442,6 +445,9 @@ test('with the events stream cut, a question answered and another asked meanwhil
   await phone.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
+/** The decision page's address with `ref` the open item, as the router spells it (it may leave `:` and `/` unencoded). */
+const itemURL = (ref: string) => new RegExp(`/decisions\\?item=${ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:/g, '(:|%3A)').replace(/\//g, '(/|%2F)')}$`)
+
 /** Open on your phone from your menu (the sidebar's header), the menu gone before the caller reads the dialog. */
 async function openFromMenu(page: Page) {
   await page.locator('[data-header-account]').click()
@@ -479,17 +485,21 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
   await page.locator('[data-sidebar-decide]').first().click()
-  await expect(page).toHaveURL(/\/decisions$/)
+  // At a desktop's width the oldest open item opens by itself: the list's first open row, read from the page (the spec's earlier
+  // tests leave items open).
   await expect(page.locator(`[data-inbox-row="${ref}"]`)).toBeVisible()
+  const first = (await page.locator('[data-decisions-list] > ul [data-inbox-row]').first().getAttribute('data-inbox-row'))!
+  const opened = itemURL(first)
+  await expect(page).toHaveURL(opened)
 
   // G then N, pressed once.
   budget(2)
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
   await pressInTurn(page, 'g', 'n')
-  await expect(page).toHaveURL(/\/decisions$/)
+  await expect(page).toHaveURL(opened)
 
-  // The palette's row for the item opens it.
+  // The palette lists the question once (UX1 PR-13), as its session's row in Needs you: no second row for the page's item.
   budget(4)
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
@@ -498,10 +508,12 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await expect(palette).toBeVisible()
   await palette.locator('input[data-palette-input]').fill('decide desk')
   await expect(palette.locator('input[data-palette-input]')).toHaveValue('decide desk')
-  const row = palette.locator(`[data-palette-row="decide:${ref}"]`)
-  await expect(row).toBeVisible()
-  await row.click()
-  await expect(page).toHaveURL(new RegExp(`/decisions\\?item=${encodeURIComponent(ref).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
+  await expect(palette.locator(`[data-palette-group="needs"] [data-palette-row="session:${s.id}"]`)).toBeVisible()
+  // Its one row: the session's, in Needs you alone; no row of the question's own (the old "Decide: …").
+  await expect(palette.locator(`[data-palette-row="session:${s.id}"]`)).toHaveCount(1)
+  await expect(palette.locator(`[data-palette-row*="question:${s.id}/"]`)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.goto(`/decisions?item=${encodeURIComponent(ref)}`)
   await expect(page.locator(`[data-inbox-item="${ref}"]`)).toBeVisible()
 
   // Open on your phone, on this machine's own address: a phone cannot reach it, and the page says so.

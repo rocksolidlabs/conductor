@@ -477,14 +477,14 @@ usePalette().registerPage(() => {
             <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them." :ui="fieldUi">
               <div class="flex gap-2">
                 <UTextarea v-model="rootsText" :rows="3" class="min-w-0 flex-1 font-mono text-xs" />
-                <UButton icon="i-lucide-folder-plus" color="neutral" variant="outline" aria-label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
+                <IconButton icon="i-lucide-folder-plus" color="neutral" variant="outline" label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
               </div>
             </UFormField>
             <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
             </UFormField>
             <UFormField label="Data directory" description="The server's catalog, crews, hooks and certificates. Keep it outside the allowed roots." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
             </UFormField>
           </div>
         </UCard>
