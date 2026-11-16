@@ -4,8 +4,7 @@ import { QUICK_START_URL } from '~/utils/about'
 import { agentIcon } from '~/utils/agentIcons'
 import { pageRequests, settleChecks, welcomeAgents } from '~/utils/agents'
 import { EXAMPLES_LINE } from '~/utils/crews'
-import { needsRowShown } from '~/utils/needsYou'
-import { navPages } from '~/utils/pages'
+import { navTiles } from '~/utils/pages'
 
 // The first-run welcome (#359; the UX review's P17): what Conductor is in one sentence, then three steps, the first filled (the
 // agents this machine has, each with its version), and "Where things are": each page of the nav with its sentence from the pages'
@@ -20,16 +19,14 @@ const desktop = useDesktop()
 const brakeman = useBrakeman()
 
 const inbox = useInbox()
-const needs = useNeedsYou()
-const route = useRoute()
-const now = useNow()
 /**
- * The pages of the nav in this window, by the layout's rule: Settings in the desktop app, Brakeman while the server has it, Needs you
- * while its row shows (needsRowShown).
+ * The pages of the full sidebar's foot, as it draws them: its tiles in order (Brakeman's while the server has it, no Needs you on a
+ * switchyard), then the pages under its More (Settings in the desktop app).
  */
-const where = computed(() =>
-  navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value, needs: needsRowShown(inbox.state.value, needs.list.value, route.path, now.value) }),
-)
+const where = computed(() => {
+  const t = navTiles({ brakeman: brakeman.available.value, desktop: desktop.isDesktop.value, switchyard: !!inbox.state.value.unavailable })
+  return [...t.tiles.flatMap((c) => (c.kind === 'page' ? [c.page] : [])), ...t.more]
+})
 
 // The agents: the server's quick answer (#704), each agent still checked filled in as its own read answers, as the Agents page does.
 const catalog = ref<AgentInfo[] | null>(null)

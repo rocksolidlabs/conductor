@@ -154,29 +154,37 @@ test("step 1 offers the first four agents the server can launch, in the catalog'
   await expect(dialog.getByRole('radio', { checked: true })).toContainText(first[0]!.name)
 })
 
-test('Where things are lists the pages of the nav, in its order, each with the sentence its tooltip says', async ({ browser }) => {
+test("Where things are lists the sidebar's pages, its tiles in order then those under More, each tile's line the sentence its tooltip says", async ({ browser }) => {
   const srv = await empty()
-  budget(20 * STEP_MS)
+  budget(24 * STEP_MS)
   const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
   const card = await settled(page)
   const where = card.locator('[data-where-page]')
   const labels = await where.locator('[data-where-label]').allTextContents()
   const abouts = await where.locator('[data-where-about]').allTextContents()
   const sidebar = page.locator('#dashboard-sidebar-main')
-  const nav = sidebar.locator('[data-nav-label]')
-  // The same pages as the nav, in its order.
-  expect(labels.length).toBeGreaterThan(0)
-  await expect(nav).toHaveText(labels)
-  // Each line is the nav's tooltip, read from the page: hovered, the label's tooltip says "Label: its sentence".
-  const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })
-  for (const [i, label] of labels.entries()) {
+  // Brakeman's slot is held until the server has said whether it has Brakeman: the tiles are read once it has.
+  await expect(sidebar.locator('[data-sidebar-tile="held"]')).toHaveCount(0)
+  const tiles = sidebar.locator('[data-sidebar-tiles] [data-sidebar-tile]:not([data-sidebar-tile="more"])')
+  const tileLabels = await tiles.locator('[data-nav-label]').allTextContents()
+  // The pages under More, as its menu lists them.
+  await sidebar.locator('[data-sidebar-tile="more"]').click()
+  const menu = page.getByRole('menu')
+  await expect(menu).toBeVisible()
+  const moreLabels = (await menu.getByRole('menuitem').locator('[data-slot="itemLabel"]').allTextContents()).map((t) => t.trim())
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  expect(tileLabels.length).toBeGreaterThan(0)
+  expect(labels, 'the tiles, then More').toEqual([...tileLabels, ...moreLabels])
+  // Each tile's line is its tooltip, read from the page: hovered, the tile says "Label: its sentence".
+  const tipText = page.locator('[data-slot="content"] [data-slot="text"]')
+  for (const [i, label] of tileLabels.entries()) {
     const about = abouts[i]!.trim().replace(/\.$/, '')
-    const want = tip(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`)
-    await nav.nth(i).hover()
-    await expect(want, `${label}'s tooltip`).toBeVisible()
-    // Away from the nav, the tooltip closed and gone before the next label is hovered: one open at a time.
+    await tiles.nth(i).hover()
+    await expect(tipText, `${label}'s tooltip`).toHaveText(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`)
+    // Away from the tiles, the tooltip closed and gone before the next is hovered: one open at a time.
     await page.mouse.move(1000, 450)
-    await expect(page.locator('[data-slot="content"] [data-slot="text"]'), `${label}'s tooltip closed`).toHaveCount(0)
+    await expect(tipText, `${label}'s tooltip closed`).toHaveCount(0)
   }
 })
 
