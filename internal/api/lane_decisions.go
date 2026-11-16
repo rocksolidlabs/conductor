@@ -48,7 +48,7 @@ import (
 // lane answers unavailable, and its watch keeps the last hash it saw.
 
 // linkCannotAnswer are the words of a record on a link.
-const linkCannotAnswer = "Answer it on the LAN or the desktop: a link cannot answer a durable decision yet"
+const linkCannotAnswer = "Answer it on the LAN or the desktop: a link cannot answer a run's decision yet"
 
 // The lane's pages of a record's parts. A responses part holds as many
 // receipts as fit proto.MaxDecision beside the rest of its frame, each at
@@ -117,7 +117,7 @@ func (s *Server) laneDecisionItems(ctx context.Context, rd *inboxRead, sc laneSc
 // laneScopeCut are the words of a scope whose read of DR1's records
 // reached its bound of limit.
 func laneScopeCut(limit int) string {
-	return fmt.Sprintf("More than %d durable decisions are in this link's scope: it reads %d, the open and answered first, then the newest of the rest, so an older final one is not listed here and its changes are not told. Open the run on the LAN or the desktop for every record.", limit, limit)
+	return fmt.Sprintf("More than %d of a run's decisions are in this link's scope: it reads %d, the open and answered first, then the newest of the rest, so an older final one is not listed here and its changes are not told. Open the run on the LAN or the desktop for every record.", limit, limit)
 }
 
 // laneRecordItem is a record's item as a link shows it: its actions taken

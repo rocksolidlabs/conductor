@@ -3,7 +3,7 @@ import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
-import { kindLook } from '~/utils/inbox'
+import { kindLook, rowLine } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
@@ -53,9 +53,8 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-/** The Go to rows that are no page of their own (utils/pages.ts): Events' Routing tab, Agents' Reporting section and the paste invite, after the pages. */
+/** The Go to rows that are no page of their own (utils/pages.ts): Agents' Reporting section and the paste invite, after the pages. */
 const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
-  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', icon: 'i-lucide-route' },
   { id: 'agents-reporting', label: 'Agents · Reporting', to: '/agents#reporting', icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
 ]
@@ -67,7 +66,7 @@ const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }>
 export function needsItemRow(it: Pick<NeedsItem, 'kind' | 'ref' | 'summary'>, go: (to: string) => void): PaletteItem {
   const to = `/decisions?item=${encodeURIComponent(it.ref)}`
   const look = kindLook(it.kind)
-  return { key: `needs:${it.ref}`, label: `${look.word}: ${it.summary?.title || it.ref}`, detail: it.summary?.question || it.summary?.brief || undefined, icon: look.icon, state: 'needs', run: () => go(to), href: to }
+  return { key: `needs:${it.ref}`, label: `${look.word}: ${it.summary?.title || it.ref}`, detail: (it.summary && rowLine(it.summary)) || undefined, icon: look.icon, state: 'needs', run: () => go(to), href: to }
 }
 
 /**
@@ -100,6 +99,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const desktop = useDesktop()
   const update = useDesktopUpdate()
   const settings = useAttentionSettings()
+  const alertsPanel = useAlertsPanel()
   const sidebar = useSidebar()
   const folds = useSidebarFolds()
   const colorMode = useColorMode()
@@ -559,6 +559,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     })
     const marked = Object.keys(events.marks.value)
     out.push({ key: 'action:clear-marks', label: `Clear the new-event badges${marked.length ? ` · ${marked.length}` : ''}`, icon: 'i-lucide-bell-off', disabled: !marked.length, keepOpen: true, run: () => marked.forEach((id) => events.clearMark(id)) })
+    out.push({ key: 'action:alerts', label: 'Alerts…', detail: 'The switches and where each kind of event goes', icon: 'i-lucide-bell', run: () => alertsPanel.show() })
     out.push({ key: 'action:notifications', label: 'Browser notifications', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input

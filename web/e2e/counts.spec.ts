@@ -32,7 +32,7 @@ async function oracle(day: Day) {
       railLabel: n ? `Needs you, ${n} waiting` : 'Needs you',
       phone: n ? String(n) : '',
       phoneYard: grid ? String(grid) : '',
-      yardChip: `Needs you ${grid}`,
+      yardChip: String(grid),
       // The sidebar's section lists every kind (UX1 PR-13): it counts the one number, and says nothing is left out.
       section: n ? String(n) : '',
       sectionMore: 0,
@@ -60,8 +60,7 @@ async function readAll(desk: Page, rail: Page, phone: Page) {
     text(rail, '[data-rail-count="needs"][data-count-of="needs"]'),
     rail.locator('#dashboard-sidebar-main nav a[data-count-of="needs"]').getAttribute('aria-label').catch(() => ''),
     rail.locator('#dashboard-sidebar-main nav a[href="/yard"] [data-slot="linkLeadingChip"]').count(),
-    // The chip's words and its count, as a person reads them (they are drawn apart).
-    rail.locator('[data-yard-filter="needs"]').evaluateAll((els) => (els[0] ? Array.from(els[0].querySelectorAll(':scope > span')).map((s) => s.textContent?.trim() ?? '').filter(Boolean).join(' ') : '')),
+    text(rail, '[data-yard-filter="needs"] [data-yard-count]'),
   ])
   const [phoneN, phoneYard] = await Promise.all([text(phone, '[data-bottom-tab="decide"] [data-count-of="needs"]'), text(phone, '[data-bottom-tab="yard"] [data-bottom-count]')])
   return { nav, title, favicon, palette, railCount, railLabel: railLabel ?? '', phone: phoneN, phoneYard, yardChip, section, sectionMore, yardNavBadge, railYardChip }

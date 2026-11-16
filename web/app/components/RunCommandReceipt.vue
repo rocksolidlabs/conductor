@@ -53,7 +53,7 @@ const answer = computed(() => {
       <UIcon name="i-lucide-receipt" class="size-4 flex-none text-muted" />
       <span class="font-medium">Command receipt</span>
       <code class="font-mono text-xs text-muted">{{ command }}</code>
-      <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-run-command-close @click="closed = true" />
+      <IconButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" label="Close" data-run-command-close @click="closed = true" />
     </div>
     <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-run-command-error />
     <p v-else-if="!shown" class="text-xs text-muted">Reading the receipt…</p>

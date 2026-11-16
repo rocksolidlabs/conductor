@@ -14,7 +14,7 @@ const VIEWS = [
 
 <template>
   <nav class="flex flex-none items-center gap-0.5 rounded-md border border-default p-0.5" aria-label="Yard views" data-yard-views>
-    <UButton
+    <IconButton
       v-for="v in VIEWS"
       :key="v.key"
       :to="v.to"
@@ -22,13 +22,13 @@ const VIEWS = [
       size="xs"
       color="neutral"
       :variant="props.current === v.key ? 'soft' : 'ghost'"
-      :aria-label="v.label"
+      :label="v.label"
       :aria-current="props.current === v.key ? 'page' : undefined"
       :data-yard-view="v.key"
       class="pointer-coarse:min-h-11 pointer-coarse:min-w-11 pointer-coarse:justify-center"
       :class="props.current === v.key ? 'text-highlighted' : 'text-muted'"
     >
       <span class="hidden sm:inline">{{ v.label }}</span>
-    </UButton>
+    </IconButton>
   </nav>
 </template>

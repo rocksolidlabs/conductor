@@ -116,8 +116,8 @@ async function go(continueRun: boolean) {
           <button v-if="n.kind !== 'general' && n.kind !== 'check'" type="button" class="min-w-0 break-all text-left font-mono text-muted hover:underline" data-review-draft-open @click="emit('open', n)">{{ noteWhere(n) }}</button>
           <span v-else class="text-muted">{{ noteWhere(n) }}</span>
           <span class="ml-auto flex flex-none items-center">
-            <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Edit the note" data-review-draft-edit @click="emit('edit', n)" />
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Drop the note" data-review-draft-drop @click="emit('drop', n)" />
+            <IconButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the note" data-review-draft-edit @click="emit('edit', n)" />
+            <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" label="Drop the note" data-review-draft-drop @click="emit('drop', n)" />
           </span>
         </div>
         <p class="whitespace-pre-wrap break-words" data-review-draft-message>{{ n.message }}</p>

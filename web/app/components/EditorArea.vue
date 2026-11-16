@@ -815,7 +815,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
                 <span class="truncate font-mono">{{ t.title }}</span>
                 <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
               </button>
-              <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
+              <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
             </div>
           </UContextMenu>
         </div>
@@ -844,8 +844,8 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UIcon name="i-lucide-globe" class="size-3.5 flex-none text-muted" />
           <span class="min-w-0 flex-1 truncate font-mono text-muted" data-editor-url>{{ active.path }}</span>
           <UButton label="New tab" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="active.path" target="_blank" rel="noopener noreferrer" />
-          <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" @click="reload" />
-          <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy URL" @click="copy(active.path, 'URL copied')" />
+          <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" label="Refresh" @click="reload" />
+          <IconButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" label="Copy URL" @click="copy(active.path, 'URL copied')" />
         </template>
         <template v-else>
           <nav class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto font-mono" aria-label="path" data-editor-crumbs>
@@ -875,8 +875,8 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UTooltip v-if="previewable" :text="previewing ? 'The source (Alt+P)' : 'Preview (Alt+P)'">
             <UButton :label="previewing ? 'Source' : 'Preview'" :icon="previewing ? 'i-lucide-code' : 'i-lucide-eye'" size="xs" :color="previewing ? 'primary' : 'neutral'" :variant="previewing ? 'soft' : 'ghost'" :data-editor-preview="previewing ? 'on' : 'off'" @click="togglePreviewOf" />
           </UTooltip>
-          <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy path" data-editor-copy @click="copy(active.path, 'Path copied')" />
-          <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
+          <IconButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" label="Copy path" data-editor-copy @click="copy(active.path, 'Path copied')" />
+          <IconButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
         </template>
       </div>
       <!-- Neovim's status line (design round 12, F8): the mode, the command line as typed, the last message. -->
@@ -929,7 +929,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       </div>
       <div v-if="saveError && !activeConflict" class="flex flex-none items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-editor-save-error>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" /><span class="min-w-0 flex-1">Not saved: {{ saveError }}</span>
-        <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Dismiss" @click="saveError = ''" />
+        <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" label="Dismiss" @click="saveError = ''" />
       </div>
       <div v-if="activeCompare" class="flex flex-none items-center gap-2 border-b border-default px-3 py-1.5 text-xs" data-editor-comparing>
         <span class="min-w-0 flex-1 text-muted">On disk, left · yours, right</span>

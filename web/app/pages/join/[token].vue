@@ -467,7 +467,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
   <template v-else-if="run && !current">
     <header class="flex items-center gap-3 border-b border-default px-4 py-2">
-      <UButton v-if="inWorkbench" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+      <IconButton v-if="inWorkbench" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <template v-if="!inWorkbench">
         <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
@@ -479,12 +479,12 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <UBadge :label="`${run.members.length} ${run.members.length === 1 ? 'agent' : 'agents'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
-      <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="refreshRun" />
-      <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+      <IconButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" label="Refresh the members" @click="refreshRun" />
+      <IconButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="runChatUnread" />
-      </UButton>
-      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
+      </IconButton>
+      <IconButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></IconButton>
       <FullscreenButton size="sm" />
     </header>
 
@@ -516,7 +516,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
   <template v-else-if="info && current">
     <header class="flex items-center gap-3 border-b border-default px-4 py-2">
-      <UButton v-if="inWorkbench && !run" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+      <IconButton v-if="inWorkbench && !run" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <UTooltip v-if="run" text="Back to the crew">
         <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the crew" @click="backToCrew" />
       </UTooltip>
@@ -537,15 +537,15 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <ViewerAvatars :viewers="viewerList" class="hidden lg:flex" />
       <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" size="sm" aria-label="Files" class="hidden md:inline-flex" :class="filesPanel && 'ring-2 ring-primary/40'" data-files-button @click="filesPanel = !filesPanel"><span>Files</span></UButton>
       <!-- The chat (design 2c, 2d): the count while the thread is closed; the panel beside the terminal where there is room, a sheet below. -->
-      <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+      <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
-      </UButton>
-      <UButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+      </IconButton>
+      <IconButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
         <span class="hidden sm:inline">Run chat</span>
         <ChatUnreadPill :count="runChatUnread" />
-      </UButton>
-      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
+      </IconButton>
+      <IconButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></IconButton>
       <FullscreenButton size="sm" />
     </header>
 

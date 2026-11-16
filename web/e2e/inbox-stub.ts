@@ -120,8 +120,9 @@ export function inboxItem(kind: InboxKind, over: ItemOver = {}): StubItem {
       const id = `dr-${900 + n}`
       const type = over.type ?? 'approval'
       const question = type === 'approval' ? `May ${t.id} commit its change?` : `Which name should ${t.id} take?`
-      const where = plan ? 'The plan\'s gate gate' : `Worker, CLI (e2e stub) in attempt ${t.id}.${t.attempt?.n ?? 1}`
-      base = { ref: `decision:${id}`, kind, since, title: `${type === 'approval' ? 'Approval' : 'Clarification'} ${id}: ${question}`, brief: `${where} asks ${id}, a durable decision of run ${run.name}`, question, answerer: ANSWERER, choices: type === 'approval' ? ['Approve', 'Reject'] : ['stub-a', 'stub-b'], state: 'open', type, origin: plan ? 'plan' : 'agent', run, task: t.id }
+      // In a person's words, as inbox_decisions.go's decisionItem says it: titled by its question, briefed by where it comes from.
+      const from = plan ? `the plan of run ${run.name}` : `Worker, CLI (e2e stub) in attempt ${t.id}.${t.attempt?.n ?? 1} of run ${run.name}`
+      base = { ref: `decision:${id}`, kind, since, title: question, brief: `A decision for you, from ${from}`, question, answerer: ANSWERER, choices: type === 'approval' ? ['Approve', 'Reject'] : ['stub-a', 'stub-b'], state: 'open', type, origin: plan ? 'plan' : 'agent', run, task: t.id }
       break
     }
   }

@@ -872,7 +872,7 @@ const askBrakeman = computed(() =>
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ left: 'min-w-0 flex-1' }" data-ticket-header>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" :aria-label="`Back to ${project}`" :to="projectPath(project)" data-back-to-project />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" :label="`Back to ${project}`" :to="projectPath(project)" data-back-to-project />
         </template>
         <template #title>
           <span class="flex min-w-0 items-baseline gap-2">
@@ -896,11 +896,7 @@ const askBrakeman = computed(() =>
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
 
-      <div v-if="missing" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted" data-ticket-missing>
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No ticket has the key <code>{{ ticketKey }}</code>.</p>
-        <UButton :label="`Back to ${project}`" icon="i-lucide-arrow-left" color="neutral" variant="soft" :to="projectPath(project)" />
-      </div>
+      <PageEmpty v-if="missing" state="missing" :words="`No ticket has the key ${ticketKey}.`" :actions="[{ label: `Back to ${project}`, icon: 'i-lucide-arrow-left', to: projectPath(project) }]" data-ticket-missing />
 
       <div v-else-if="ticket" class="flex flex-col gap-5 px-4 py-5 sm:px-6" :data-ticket="ticket.key" :data-ticket-rev="ticket.rev">
         <UAlert
@@ -934,7 +930,7 @@ const askBrakeman = computed(() =>
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
             <span class="min-w-0 break-words" data-ticket-title>{{ ticket.title }}</span>
-            <UButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
+            <IconButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
           </h1>
           <p v-if="editingTitle && titleTheirs !== null" class="flex items-start gap-1.5 text-xs text-warning" data-title-theirs>
             <UIcon name="i-lucide-triangle-alert" class="mt-px size-3.5 flex-none" />
@@ -1032,7 +1028,7 @@ const askBrakeman = computed(() =>
                 <span v-if="!ticket.parent.deletedAt" class="flex flex-none items-center gap-1 text-xs text-dimmed" :data-parent-status="ticket.parent.status">
                   <UIcon :name="statusWord(ticket.parent.status).icon" class="size-3.5" />{{ statusWord(ticket.parent.status).label }}
                 </span>
-                <UButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" aria-label="No parent" data-parent-clear @click="setParent('')" />
+                <IconButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" label="No parent" data-parent-clear @click="setParent('')" />
               </div>
               <TicketPicker v-if="!locked" :project="project" :exclude="parentExclude" :placeholder="ticket.parent ? 'Another parent…' : 'A parent ticket…'" data-parent-picker @pick="(t: TicketSummary) => setParent(t.key)" />
               <span v-else-if="!ticket.parent" class="text-dimmed">None</span>

@@ -167,7 +167,7 @@ function confirmStop() {
           <UButton icon="i-lucide-square" size="xs" color="neutral" variant="ghost" :aria-label="`Stop ${s.name}`" data-row-stop @click="confirming = true" />
         </UTooltip>
         <UDropdownMenu :items="menu" :content="{ align: 'end' }">
-          <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
+          <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
       <div v-if="prompt && !confirming && clamped" class="px-2.5 pb-1.5">

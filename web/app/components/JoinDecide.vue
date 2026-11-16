@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
 import { provide } from 'vue'
-import { INBOX_ROW_CLASS, recentBadge, trackKey } from '~/utils/inbox'
+import { INBOX_ROW_CLASS, kindLook, recentBadge, rowLine, trackKey } from '~/utils/inbox'
 import { linkRefAccess, REF_ACCESS } from '~/utils/refAccess'
 import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
 
@@ -62,12 +62,14 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
               <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
               <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
             </span>
-            <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
+            <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
             <span class="flex flex-wrap gap-1">
+              <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
               <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
-              <UBadge v-if="s.kind === 'decision'" :label="s.tracking ? 'Answered, not yet applied' : 'A durable decision'" color="neutral" variant="subtle" size="sm" data-inbox-row-durable />
-              <UBadge v-else-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
-              <UBadge v-else :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
+              <UBadge v-if="s.kind === 'decision' && s.tracking" label="Answered, not yet applied" color="neutral" variant="subtle" size="sm" data-inbox-row-durable />
+              <!-- A run's decision on a link has no action (a link cannot answer one yet): its kind says what it is. -->
+              <UBadge v-else-if="s.kind !== 'decision' && !s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
+              <UBadge v-else-if="s.kind !== 'decision'" :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
             </span>
           </button>
         </li>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -225,5 +225,12 @@ describe('a startup question with no choices (#902)', () => {
     expect(noReply({ ...signIn, source: 'api' })).toBeUndefined()
     expect(startupInTerminal({ ...signIn, state: '' })).toBe(false)
     expect(startupInTerminal(undefined)).toBe(false)
+  })
+})
+
+describe('choiceTitle', () => {
+  it("gives a plain choice its label, and a mode answer its label and what it does", () => {
+    expect(choiceTitle({ label: 'Yes' })).toBe('Yes')
+    expect(choiceTitle({ label: 'Yes, and switch to BYPASS PERMISSIONS', mode: true })).toBe('Yes, and switch to BYPASS PERMISSIONS (allows from now on, not this request alone)')
   })
 })

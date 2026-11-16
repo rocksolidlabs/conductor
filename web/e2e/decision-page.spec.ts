@@ -165,6 +165,9 @@ test("a phone opened with a question waiting lands on the page, the Sessions tab
   await expect(item.locator('[data-inbox-recommendation]')).toHaveText('No recommendation')
   await expect(item.locator('[data-inbox-answerer]')).toContainText('you, the operator')
   await expect(item.locator('[data-inbox-action="answer"]')).toHaveText(['Postgres', 'SQLite', 'Keep both'])
+  // A question's fine print folds under Details.
+  await expect(item.locator('[data-action-scope]')).toHaveCount(0)
+  await item.locator('[data-inbox-scopes-toggle]').tap()
   await expect(item.locator('[data-action-scope]').first()).toContainText('Types')
   for (const b of await item.locator('[data-inbox-action]').all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44)
 
@@ -442,6 +445,9 @@ test('with the events stream cut, a question answered and another asked meanwhil
   await phone.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
+/** The decision page's address with `ref` the open item, as the router spells it (it may leave `:` and `/` unencoded). */
+const itemURL = (ref: string) => new RegExp(`/decisions\\?item=${ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:/g, '(:|%3A)').replace(/\//g, '(/|%2F)')}$`)
+
 /** Open on your phone from your menu (the sidebar's header), the menu gone before the caller reads the dialog. */
 async function openFromMenu(page: Page) {
   await page.locator('[data-header-account]').click()
@@ -479,15 +485,19 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
   await page.locator('[data-sidebar-decide]').first().click()
-  await expect(page).toHaveURL(/\/decisions$/)
+  // At a desktop's width the oldest open item opens by itself: the list's first open row, read from the page (the spec's earlier
+  // tests leave items open).
   await expect(page.locator(`[data-inbox-row="${ref}"]`)).toBeVisible()
+  const first = (await page.locator('[data-decisions-list] > ul [data-inbox-row]').first().getAttribute('data-inbox-row'))!
+  const opened = itemURL(first)
+  await expect(page).toHaveURL(opened)
 
   // G then N, pressed once.
   budget(2)
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
   await pressInTurn(page, 'g', 'n')
-  await expect(page).toHaveURL(/\/decisions$/)
+  await expect(page).toHaveURL(opened)
 
   // The palette lists the question once (UX1 PR-13), as its session's row in Needs you: no second row for the page's item.
   budget(4)

@@ -80,7 +80,7 @@ function send() {
       @keydown.enter.prevent="send"
     >
       <template #trailing>
-        <UButton icon="i-lucide-send" size="xs" color="neutral" variant="link" class="p-0" aria-label="Send the reply" :disabled="off || !text.trim()" data-row-reply-send @click="send" />
+        <IconButton icon="i-lucide-send" size="xs" color="neutral" variant="link" class="p-0" label="Send the reply" :disabled="off || !text.trim()" data-row-reply-send @click="send" />
       </template>
     </UInput>
   </div>

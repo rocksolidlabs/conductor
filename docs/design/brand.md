@@ -99,6 +99,8 @@ controls, focus, disabled states and dark-mode combinations when adopting tokens
 Brand and operational status are separate. Never animate or recolor the junction
 to imply approval, execution, verification or health. Use dedicated status tokens,
 explicit text and supporting facts. Keep dedicated operational statuses and their explicit labels when applying the palette.
+How the screens draw a state, its mark and its word, is the Status rule of
+[the design system](system.md#status).
 
 ## Typography and layout
 
@@ -110,6 +112,9 @@ Prefer a 4 px spacing basis with 8, 12, 16, 24 and 32 px steps, restrained 6 px 
 corners, quiet borders and clear hierarchy. Keep panels flat instead of using heavy
 decorative shadows. Show one visually primary next action within each work area.
 Keep design prose readable and evidence compact but legible.
+How the screens apply these, the main action, the code font, the page
+header, the list row, cutting text and tooltips, is
+[the design system](system.md), with the checks that hold each rule.
 
 The browser workbench carries these values as Tailwind scales in
 `web/app/assets/css/main.css`; `tokens.css` names the same values, light and

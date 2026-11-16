@@ -5602,8 +5602,7 @@ same file). PR-6 (the zero page it converts). #899 (`pages/crews/
 Integrations tabs: they move with their tables, to the Alerts panel
 (PR-28) and to Agents' Reporting section (PR-27), where each becomes
 its section's caption and is not folded. The empty states of lists
-inside a page (PR-22's table, rows 13, 14, 21, 22, 24). Crews' section
-captions (`pages/crews/[[id]].vue:634`, `:643`) stay as they are.
+inside a page (PR-22's table, rows 13, 14, 21, 22, 24).
 
 ### PR-24: web: the brand's own neutrals; contrast as a test (P14, P20)
 

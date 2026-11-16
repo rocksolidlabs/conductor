@@ -98,7 +98,7 @@ function setKind(i: number, by: 'command' | 'url') {
             <template #trailing><span class="text-xs text-muted">s</span></template>
           </UInput>
         </UFieldGroup>
-        <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${what} ${i + 1}`" @click="remove(i)" />
+        <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :label="`Remove ${what} ${i + 1}`" @click="remove(i)" />
       </div>
       <span v-if="problems?.[i]" class="text-xs leading-snug text-error" data-probe-error>{{ problems[i] }}</span>
     </div>

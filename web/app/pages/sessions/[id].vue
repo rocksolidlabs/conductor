@@ -6,6 +6,7 @@ import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
+import { firstMessageLine } from '~/utils/launch'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
 import { sessionStatus, statusOfKey } from '~/utils/status'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
@@ -182,6 +183,8 @@ watch(
 )
 
 const agentLabel = computed(() => agentName(session.value?.agentId ?? ''))
+// The first message waiting to be typed (P19): what it waits for, in one line above the terminal, until the listing clears it.
+const firstLine = computed(() => firstMessageLine(current.value, agentLabel.value))
 // Agent · folder · branch under the name (P11), the whole path its tooltip; the ids are in the More menu.
 const headline = computed(() => (current.value ? sessionHeadline(current.value) : null))
 
@@ -584,7 +587,7 @@ palette.registerPage(() => {
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
@@ -611,12 +614,12 @@ palette.registerPage(() => {
             <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
             <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" class="hidden sm:inline-flex" data-share-button @click="share = true">Share</UButton>
             <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-            <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+            <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
               <span class="hidden sm:inline">Chat</span>
               <ChatUnreadPill :count="chatUnread" />
-            </UButton>
+            </IconButton>
             <UDropdownMenu :items="menu">
-              <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" data-more-button />
+              <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" data-more-button />
             </UDropdownMenu>
           </template>
           <div class="hidden sm:flex"><FullscreenButton /></div>
@@ -638,23 +641,32 @@ palette.registerPage(() => {
       <UAlert v-else-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
         <EditorColumn ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
-          <TerminalView
-            ref="terminal"
-            :create-transport="createTransport"
-            @nvim="editor.onNvim"
-            @welcome="onWelcome"
-            @status="onStatus"
-            @attention="onAttention"
-            @viewers="onViewers"
-            @activity="onActivity"
-            @transport="transport = $event"
-            @closed="onClosed"
-            @chat="onChat"
-            @chat-history="onChatHistory"
-            @request-error="onRequestError"
-            @open-file="openFile"
-            @open-url="openUrl"
-          />
+          <!-- The first message's wait (P19), said above the terminal: the inspector, where Activity says it too, starts closed. -->
+          <div class="flex h-full min-h-0 flex-col gap-2">
+            <p v-if="firstLine" class="flex flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 py-1.5 text-xs text-muted" data-first-message>
+              <UIcon name="i-lucide-message-square-text" class="size-3.5 flex-none" aria-hidden="true" />
+              <span class="min-w-0 truncate" :title="firstLine">{{ firstLine }}</span>
+            </p>
+            <div class="relative min-h-0 flex-1">
+              <TerminalView
+                ref="terminal"
+                :create-transport="createTransport"
+                @nvim="editor.onNvim"
+                @welcome="onWelcome"
+                @status="onStatus"
+                @attention="onAttention"
+                @viewers="onViewers"
+                @activity="onActivity"
+                @transport="transport = $event"
+                @closed="onClosed"
+                @chat="onChat"
+                @chat-history="onChatHistory"
+                @request-error="onRequestError"
+                @open-file="openFile"
+                @open-url="openUrl"
+              />
+            </div>
+          </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
             <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />

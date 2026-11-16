@@ -206,7 +206,7 @@ test("a question the agent asks while one of Codex's async questions is pending 
   await page.goto('/crews')
   const yard = await page.context().newPage()
   await yard.goto('/yard')
-  const card = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
+  const tile = yard.locator(`[data-session-tile][data-session-id="${id}"]`)
   await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub async-ask ${ASYNC_ASK}`, members: ['asks'] })
   // Codex's title says Action Required while its question is pending, but its program status (0.164) says working: the agent's own question shows for its second, then gives way. A second is too short to assert on the row or the Yard's card under load; the entries below hold the words and the timing.
   await expect.poll(() => watch!.of(id).some((e) => e.state === 'needs_input' && e.message === ASYNC_ASK), { timeout: 45_000, message: 'the question is asked' }).toBe(true)
@@ -214,7 +214,9 @@ test("a question the agent asks while one of Codex's async questions is pending 
   expect(stub).not.toBe('')
   await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
   await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
-  await expect(card).toHaveCount(0)
+  // The Yard's tile, read after the server says working: its foot says working, and it asks nothing.
+  await expect(tile.locator('[data-tile-foot] [data-status-mark]')).toHaveAttribute('data-status-mark', 'working', { timeout: 15_000 })
+  await expect(tile.locator('[data-tile-ask]')).toHaveCount(0)
   // Working came a second or more after the question and before the async question resolved: the entries and the
   // stub's resolution stamp say so, whatever the pace of the polls above.
   await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
