@@ -57,7 +57,7 @@ export interface EventInfo {
 
 export const EVENT_INFO: Record<EventType, EventInfo> = {
   needs_input: { title: 'An agent asks for input', label: 'needs input', icon: 'i-lucide-hand', color: 'warning', source: 'permission and question hooks · bell · OSC 9/777 · screen pattern' },
-  done: { title: 'An agent finished its turn', label: 'done', icon: 'i-lucide-check', color: 'success', source: 'the agent finished its turn' },
+  done: { title: 'An agent finished its turn', label: 'finished', icon: 'i-lucide-check', color: 'neutral', source: 'the agent finished its turn' },
   working: { title: 'An agent is at work', label: 'working', icon: 'i-lucide-loader-circle', color: 'neutral', source: 'a prompt submitted · a tool about to run (the hooks) · Codex\'s title saying Working · clears the badge' },
   tool_denied: { title: 'A tool call was refused', label: 'denied', icon: 'i-lucide-shield-x', color: 'error', source: 'a tool call was refused' },
   progress: { title: 'A step of a long task', label: 'progress', icon: 'i-lucide-list-checks', color: 'success', source: 'skill: a step of a long task' },

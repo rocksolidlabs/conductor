@@ -39,10 +39,11 @@ for the wire details.
 
 ### Client only (no protocol change)
 
-- **Status colours.** Needs-input is amber, running is green, idle and exited
-  are grey. Terracotta stays on the brand mark only, per
-  [design/brand.md](design/brand.md). JetBrains Mono for code and terminal
-  chrome.
+- **Status marks.** Every surface draws a session's state with one of five
+  marks and its word, as the status section of
+  [design/system.md](design/system.md#status) says. Terracotta stays on the
+  brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
+  code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
   you, Running and Exited, with a filter box. The selected session fills the
   main pane. A right-hand inspector has People, Files and Activity tabs; Files

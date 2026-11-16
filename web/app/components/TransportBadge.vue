@@ -33,7 +33,8 @@ const label = computed(() => {
 const color = computed(() => {
   if (props.state === 'closed') return 'error'
   if (props.state !== 'open') return 'warning'
-  return props.kind === 'webrtc' ? 'success' : 'neutral'
+  // A direct connection is neutral: green is for a live agent (docs/design/system.md, Status).
+  return 'neutral'
 })
 
 const icon = computed(() => {
