@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1117,5 +1118,39 @@ func TestADoneOverTheAgentsQuestionTellsTurns(t *testing.T) {
 	defer mu.Unlock()
 	if len(told) == n || !told[len(told)-1].Turns {
 		t.Fatalf("turns was not told: %d before, %+v", n, told)
+	}
+}
+
+// A copy that learned turns before its host (a report of the agent's own
+// it took while the host had not yet told it) keeps the attention the
+// host shows when the host's next frame adds only turns: an operator's
+// working, without turns, then the same working with it keeps its id,
+// its Since and its words.
+func TestATurnsOnlyFrameKeepsTheStampWhenTheCopyKnewTurns(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	if err := hs.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostAttention)
+	if !hs.Info().Turns {
+		t.Fatal("the forwarded working taught nothing")
+	}
+	const id = "0123456789abcdef"
+	hs.HostAttentionTurns(session.AttentionWorking, "on it", session.SourceAdmin, "", nil, id, false, "", "", nil, false)
+	first := hs.Info().Attention
+	if first.ID != id || first.Since == nil {
+		t.Fatalf("the operator's working: %+v", first)
+	}
+	// The clock moves past the first stamp, so that a restamp shows.
+	for !time.Now().After(*first.Since) {
+		runtime.Gosched()
+	}
+	hs.HostAttentionTurns(session.AttentionWorking, "on it", session.SourceAdmin, "", nil, id, false, "", "", nil, true)
+	if a := hs.Info().Attention; a.ID != id || !a.Since.Equal(*first.Since) || a.Message != first.Message || a.Source != session.SourceAdmin {
+		t.Fatalf("after turns alone: %+v, before %+v", a, first)
+	}
+	if v := hs.HostView().Attention; !v.Since.Equal(*first.Since) {
+		t.Fatalf("the host's view restamped: %+v", v)
 	}
 }

@@ -891,6 +891,10 @@ type HostedSession struct {
 	// it and tells it back: with info.Kept, the host's one snapshot
 	// (HostView). Guarded by mu.
 	reported session.Attention
+	// hostTurns is the host's word that its session's agent reports its
+	// turns (a frame's turns), once said: a frame that adds only it changes
+	// nothing shown, whoever learned turns first. Guarded by mu.
+	hostTurns bool
 	// desk is the run a desk carries (desk.go), "" for a session; place
 	// its place among the registry's sessions while it lives.
 	desk  string
@@ -1305,10 +1309,13 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		if !h.answerAs {
 			kept = nil
 		}
-		if cur := h.info.Attention; (!slices.Equal(h.info.Kept, kept) || learned) && sameAttention(cur, att) && cur.ID == id && h.asked == ask {
-			// What the session keeps changed, or its turns was learned
-			// (the frame's turns), and nothing it shows: the router hears
-			// of it (OnChange), and nothing else changes, its stamp too.
+		told := turns && !h.hostTurns
+		h.hostTurns = h.hostTurns || turns
+		if cur := h.info.Attention; (!slices.Equal(h.info.Kept, kept) || learned || told) && sameAttention(cur, att) && cur.ID == id && h.asked == ask {
+			// What the session keeps changed, or its turns was learned or
+			// newly told (the frame's turns, the copy knowing it or not),
+			// and nothing it shows: the router hears of it (OnChange), and
+			// nothing else changes, its stamp too.
 			h.info.Kept = slices.Clone(kept)
 			h.reported = cur
 			h.mu.Unlock()
