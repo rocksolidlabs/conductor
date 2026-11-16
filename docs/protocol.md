@@ -2482,7 +2482,10 @@ server's stop waits, within its bound, for an end of a run link's
 viewers begun before its last wait, which comes once its sessions and
 connections are closed; one a revoke or an expiry begins after that is
 done before the revoke or the expiry returns, and one a run's forget
-begins after it is not begun (the stop has closed every viewer it held).
+begins after it is not begun: the stop has closed every viewer it held,
+and from then on each of its sessions refuses a new viewer, by the
+server's own window or through a link, as it closes them (`1001`,
+`server shutting down`).
 Past a link's expiry on
 this server's clock, an attach and every act but a resize are refused
 at once (`expired`);
@@ -2497,7 +2500,11 @@ expired link is told `expired`, also when it was the run's last and the
 run's desk ends as well: the desk's end tells each of its viewers whose
 link the store holds as ended that link's word before the switchyard
 hears of the end, which tells the rest that the session ended
-(`session_ended`). A viewer that opens a run's desk with a link the store
+(`session_ended`). Those words wait together, each at most the turn the
+desk's own end message waits for (15 s), or until its viewer leaves. The
+switchyard closes a viewer the host refuses as `revoked` or `expired`
+with that word, also when the desk ends before the viewer was written
+what was queued for it. A viewer that opens a run's desk with a link the store
 holds as revoked or expired is refused at its hello with the store's
 word (`revoked`, `expired`), in the words a session's viewer is told at
 its attach; one with a link that is no decision link of the run is

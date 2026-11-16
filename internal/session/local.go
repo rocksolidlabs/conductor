@@ -216,6 +216,9 @@ type Local struct {
 	// retired says the session left the server's registry (Retire): no
 	// client attaches any more.
 	retired bool
+	// shutBy is the reason the server's stop closed every client with
+	// (CloseAllBy): no client attaches after, refused with it. Under mu.
+	shutBy error
 	// closing holds the clients that have left the hub (Detach) while their
 	// transport still closes: with the hub's, every client until its
 	// transport has closed, for DisconnectLink and CloseAll to wait for.
@@ -2641,6 +2644,10 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	if s.retired {
 		s.mu.Unlock()
 		return nil, ErrSessionEnded
+	}
+	if s.shutBy != nil {
+		s.mu.Unlock()
+		return nil, s.shutBy
 	}
 	// The credential is checked under the lock that registers the client
 	// (see AttachOptions.Authorize).
@@ -5806,10 +5813,11 @@ func (s *Local) Retire() {
 // CloseAllBy closes every connection with reason and ends the session's
 // editors: they may leave on their own until deadline, shared by every
 // session a shutdown closes, then are ended through their contexts
-// (endEditorsBy).
+// (endEditorsBy). No client attaches after, refused with reason.
 func (s *Local) CloseAllBy(reason error, deadline time.Time) {
 	var all []*Subscription
 	s.mu.Lock()
+	s.shutBy = reason
 	s.hub.Each(func(sub *Subscription) {
 		sub.closeWith(reason)
 		all = append(all, sub)

@@ -89,10 +89,12 @@ func (k *Desk) end(runCtx context.Context) {
 // tellEnded tells each of the desk's viewers whose link the publisher's
 // own store holds as ended (Decisions.LinkEnded: the run's last decision
 // link expired, say) that link's word, revoked or expired, and returns
-// once each word is written or its viewer has left: the desk's end, which
-// the switchyard tells the rest as the session's end, comes after them on
-// the same connection. A word the walk sent the viewer already is sent
-// again: the switchyard closes the viewer at the first.
+// once each word is written, its viewer has left, or its turn has not come
+// within the wait the desk's end has for its own message (controlTurnWait),
+// the words waiting together: the desk's end, which the switchyard tells
+// the rest as the session's end, comes after them on the same connection.
+// A word the walk sent the viewer already is sent again: the switchyard
+// closes the viewer at the first.
 func (k *Desk) tellEnded() {
 	d := k.a.opts.Decisions
 	if d == nil {
@@ -116,7 +118,7 @@ func (k *Desk) tellEnded() {
 		p.letGo.CompareAndSwap(nil, &why)
 		code, msg, _ := session.LinkRefusal(why)
 		wg.Go(func() {
-			_ = k.a.tell(proto.ViewerError{T: proto.HostViewerError, ViewerID: p.id, Code: code, Message: msg}, p.left)
+			_ = k.a.tellTurn(proto.ViewerError{T: proto.HostViewerError, ViewerID: p.id, Code: code, Message: msg}, p.left)
 		})
 	}
 	wg.Wait()

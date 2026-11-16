@@ -907,8 +907,9 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 // goroutine. Then, with inline, f is done in its caller before the caller
 // returns; without (a caller that may not wait: the engine's forget,
 // under the engine's lock), f is not begun, for Shutdown has closed every
-// viewer the server held, and the store refuses the ended links from
-// their mark on.
+// viewer the server held, each session and desk refuses a new one from
+// then on (errShuttingDown: CloseAllBy, shutDesks), and the store refuses
+// the ended links from their mark on.
 func (s *Server) walk(f func(), inline bool) {
 	s.bgMu.Lock()
 	if !s.bgDone {

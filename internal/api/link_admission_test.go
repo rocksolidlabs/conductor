@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
@@ -618,6 +619,35 @@ func TestALinksEndAfterTheStopsLastWaitIsDoneBeforeItsCallerReturns(t *testing.T
 	}
 }
 
+// Once the server's stop has closed its sessions' viewers, a session
+// refuses a new one with the stop's reason (1001, server shutting down),
+// by the server's own window and through a run's link alike; a run
+// forgotten after the stop leaves no viewer attached through its link.
+func TestASessionOfAStoppedServerAdmitsNoViewer(t *testing.T) {
+	local, _ := onFakes(t)
+	runID := local.launchCrew(t, "Pair", catMember("a", "immediately"))
+	sid := local.waitRunning(t, runID, "a")
+	_, token := local.decisionLink(t, "/api/runs/"+runID+"/links", "phone", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	local.srv.Shutdown(ctx)
+	for who, tok := range map[string]string{"the server's own window": adminToken, "the run link's viewer": token} {
+		v := dialViewer(t, local, sid, tok)
+		v.hello(80, 24)
+		if code, reason := closedAs(v); code != websocket.StatusGoingAway || reason != "" {
+			t.Fatalf("%s attaching after the stop was closed %d, told %q", who, code, reason)
+		}
+	}
+	local.srv.runs.ForgetForTest(runID)
+	d, ok := local.srv.registry.Get(sid)
+	if !ok {
+		return
+	}
+	if n := d.(*session.Local).LinkViewers(); len(n) != 0 {
+		t.Fatalf("viewers attached through links after the run was forgotten past the stop: %v", n)
+	}
+}
+
 // A run's decision links expiring in one sweep, their revokes owed at the
 // switchyard, a session whose close does not finish held: the sweep
 // returns (it tells both run links without waiting for their viewers'
@@ -714,6 +744,35 @@ func TestARunsLastDecisionLinkExpiringTellsItsDesksViewersExpired(t *testing.T) 
 			until(t, "the run's desk ended", func() bool { return local.srv.liveDesk(runID) == nil })
 		})
 	}
+}
+
+// A run's last decision link expiring while its desk's viewer's pump at
+// the switchyard is held inside a write, until the desk has ended here and
+// there: once let go, the viewer is told expired, not that the session
+// ended, nor closed without a word.
+func TestARunsLastLinksWordReachesADeskViewerWhosePumpIsHeld(t *testing.T) {
+	yard, local, procs := deskPairOnFakes(t)
+	// The held write outlasts no close wait of the viewer's.
+	yard.srv.viewerCloseWait = 2 * time.Minute
+	writes := newHoldWrites(t)
+	yard.srv.viewerSeam = writes.seam()
+	var ahead atomic.Int64
+	local.srv.links.SetNowForTest(func() time.Time { return time.Now().UTC().Add(time.Duration(ahead.Load())) })
+	runID, _ := publishedMembers(t, local, procs, "a")
+	_, token := ttlLink(t, local, runID, 3600, "phone")
+	desk := joinDesk(t, yard, token)
+	writes.hold.Store(true)
+	// The list's reply holds the viewer's pump inside its write.
+	desk.send(proto.MustControl(proto.DecisionsList{T: proto.CtlDecisionsList, ReqID: desk.reqID()}))
+	until(t, "the desk viewer's pump held in a write", func() bool { return writes.held.Load() > 0 })
+	ahead.Store(int64(90 * time.Minute))
+	if n := local.srv.links.ExpireDue(time.Now().UTC().Add(90 * time.Minute)); n != 1 {
+		t.Fatalf("the sweep told %d links", n)
+	}
+	until(t, "the run's desk ended here", func() bool { return local.srv.liveDesk(runID) == nil })
+	until(t, "the switchyard let the desk go", func() bool { return yard.srv.hosts.DeskCount() == 0 })
+	writes.let()
+	endsTold(t, desk.wsClient, "the desk's viewer whose pump was held", proto.ErrCodeExpired, true)
 }
 
 // The run's desk on this server is closed beside the sessions' closes:
