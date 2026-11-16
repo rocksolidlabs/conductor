@@ -1137,9 +1137,11 @@ own `id`, `since` and words. A `done` reported while a `done` shows, no
 other state shown between, is weighed in this order. First, one the same
 as the last report of the `done` shown (its words, source, kind and
 choices) is that report again: nothing changes and nothing is recorded
-(a turn's end told twice, as Codex with its hooks on tells it, is
-recorded once). Else, when the session's agent tells its turns' starts,
-it is the same turn's: the session has shown a `working` of the agent's
+(a turn's end told twice, as Codex with its hooks on tells it, with no
+Enter written between the two reports, is recorded once). Else, when
+both `done`s are the agent's own (source `api`, `title` or `status`; an
+operator's mark, `admin`, is not) and the session's agent tells its
+turns' starts, it is the same turn's: the session has shown a `working` of the agent's
 own with source `api` (a hook's; learned once in the session's life and
 never cleared, as `turns` is; an operator's mark, a title, a status
 sequence and a bell do not teach it), and such an agent's next turn
@@ -1150,19 +1152,29 @@ end) and its words (its turn's first `done`), and the report is recorded
 as its own `attention` entry at its own time; reports A, B, B record A
 and B, and A, B, A record all three. Else it ends another turn, of an
 agent that reports only its `done` or whose `working` is kept out while
-a `done` shows (a status's or a title's): a new `done`, with its own
+a `done` shows (a status's or a title's), or, either way round, an
+operator's mark of `done` and the agent's own (a mark made during a turn
+does not hide the agent's end): a new `done`, with its own
 `id`, `since` and words, recorded. So no turn's end is dropped but for
 the first limit below, and within a turn each report that differs from
 the last is recorded (an agent's idle reminder is a second entry, as
 before). The limits: an agent whose `done` always carries the same words,
 when a prompt was entered while its turn ran, ends the next turn with a
-`done` equal to the last report, which is not recorded; an agent whose
-hooks report `working` only when it runs a tool, and that takes a turn by
-itself right after another without running one, keeps the earlier
-`done`'s words and `since` (the later end is recorded); and the first
-`done` of a session, before its agent has told a start, is weighed as an
-agent's that reports only its `done`, so a reminder after it shows as a
-new `done`.
+`done` equal to the last report, which is not recorded. An agent that
+reports its turns' starts, when it takes a turn by itself right after
+another and that turn's start did not reach the session (its hooks
+report `working` only for a tool; or the report was lost, as one sent
+while a host has no connection is), keeps the earlier done's words and
+time; the later end is recorded. The first `done` of a session, before
+its agent has told a start, is weighed as an agent's that reports only
+its `done`, so a reminder after it shows as a new `done`. An agent that
+reports one turn's end twice with the same words (Codex with its hooks
+on, whose hook and whose notify program each report it) has that end
+shown again as a new done and recorded twice when an Enter is written
+between the two reports (a person's, or the Enter of a submission the
+first report woke, which follows its text by 250 ms). An older server
+recorded it once. A change of its own is to give a turn's end one
+identity, so that it is told once.
 `turns` in the session's `Info` (absent when false)
 says the session's agent reports its turns: it has reported a `working`
 or a `done` of its own, with source `api`, `title` or `status`; a bell,
