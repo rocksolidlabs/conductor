@@ -33,7 +33,7 @@ import {
 // DecisionRespond) inside the item, its brief, what waits and its evidence around it; one answered and not yet applied stays under
 // "Answered, not yet applied" from the server's list, and the records closed in the last day are the server's Recent, the same for
 // every viewer. This browser's Recent keeps only its actions on the items DR1 does not hold.
-useHead({ title: 'Needs your decision' })
+useHead({ title: 'Needs you' })
 
 const inbox = useInbox()
 const live = useAttention()
@@ -256,7 +256,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
 <template>
   <UDashboardPanel id="decisions">
     <template #header>
-      <UDashboardNavbar title="Needs your decision" :toggle="false">
+      <UDashboardNavbar title="Needs you" :toggle="false">
         <template #right>
           <UButton label="Open on your phone" icon="i-lucide-smartphone" color="neutral" variant="outline" size="sm" class="hidden lg:inline-flex" data-open-on-phone @click="phone.show()" />
         </template>

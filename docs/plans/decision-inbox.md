@@ -1949,6 +1949,11 @@ taken.
 15. **The route is `/decisions`, the page "Needs your decision", the tab
     "Decide".** Short for the bar's 44 px targets; "Needs you" stays the
     attention's name.
+    Replaced by the UX review's plan (`docs/plans/ux-review.md`, owner
+    decision 2, built in its PR-5, #920): the page, its nav row, the
+    phone's tab, the palette's row and the shortcut are "Needs you"; the
+    route `/decisions`, the key G N and the decide-only page ("Decide")
+    stay.
 
 ## Acceptance
 

@@ -371,6 +371,26 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **One number of what needs you, under one name (the UX review's P2, P24's
+  nav row and P3's name; #920, after #919).** The pages are one table
+  (`web/app/utils/pages.ts`: a page's name, its sentence, its key and its
+  place on the nav, the rail, the phone's bar and the palette); a page's
+  sentence is its tooltip in the nav and its palette row's second line.
+  What needs a person is one list (`web/app/utils/needsYou.ts`, read through
+  `useNeedsYou`): a session's question, an open decision no question
+  mirrors (a stopped run's too), a plan and a task waiting on a person, each
+  once. Its number is the one amber number: on Needs you in the nav, on the
+  rail's top count and its label, on the phone's first tab, in the
+  palette's row, in the tab's title and the favicon's dot; "9+" past a store
+  read in part, and no number while a store is unread or its read failed.
+  The Yard's nav badge is gone; the phone's Yard tab counts the asking
+  sessions on its grid in neutral ink, and the Yard's own chip says what it
+  counts. The page is "Needs you" wherever its name is read (the decide-only
+  page stays "Decide"); its row in the nav leaves when nothing waits and
+  nothing was decided in the last day, and stays while its page is open. The
+  sidebar's section says what it leaves out: "+3 on the page", linked to the
+  page. The pill steps through what it can answer, a stopped run's decision
+  too, and says how many more wait in Needs you.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
