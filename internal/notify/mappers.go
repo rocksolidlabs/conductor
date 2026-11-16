@@ -324,7 +324,18 @@ type CodexPayload struct {
 	Type                 string   `json:"type"`
 	LastAssistantMessage string   `json:"last-assistant-message"`
 	ThreadID             string   `json:"thread-id"`
+	TurnID               string   `json:"turn-id"`
 	InputMessages        []string `json:"input-messages"`
+}
+
+// turnName is the name a payload gives its turn, as a report carries it
+// (Request.TurnID): left out when it is out of a turn's bound or shape
+// (proto.ValidTurnID), never cut, since two names cut could become one.
+func turnName(id string) string {
+	if !proto.ValidTurnID(id) {
+		return ""
+	}
+	return id
 }
 
 // codexTitlePrompt begins what Codex asks the hidden thread that names a
@@ -352,7 +363,7 @@ func MapCodex(raw []byte) (req Request, ok bool) {
 		if msg == "" {
 			msg = "Codex finished its turn"
 		}
-		return Request{State: "done", Message: msg, Kind: "done", AgentSession: truncate(p.ThreadID, 128), Turn: true}, true
+		return Request{State: "done", Message: msg, Kind: "done", AgentSession: truncate(p.ThreadID, 128), Turn: true, TurnID: turnName(p.TurnID)}, true
 	}
 	return Request{}, false
 }
@@ -368,14 +379,19 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 		ToolInput            json.RawMessage `json:"tool_input"`
 		LastAssistantMessage string          `json:"last_assistant_message"`
 		SessionID            string          `json:"session_id"`
+		TurnID               string          `json:"turn_id"`
 		Cwd                  string          `json:"cwd"`
 	}
 	if json.Unmarshal(raw, &h) != nil {
 		return Request{}, false
 	}
+	// Every hook Conductor installs for Codex names its turn (turn_id, the
+	// notify program's turn-id for the same turn): a report of the turn's
+	// work after its end was recorded says the turn went on.
+	turn := turnName(h.TurnID)
 	switch h.HookEventName {
 	case "Stop":
-		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true}, true
+		return Request{State: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200), Kind: "done", AgentSession: truncate(h.SessionID, 128), Turn: true, TurnID: turn}, true
 	case "PostToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName, Files: codexFiles(h.ToolName, h.ToolInput, h.Cwd)}, true
 	case "PermissionRequest":
@@ -383,9 +399,9 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 		if h.ToolName != "" {
 			msg = "Allow " + h.ToolName + "?"
 		}
-		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission"}, true
+		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", TurnID: turn}, true
 	case "PreToolUse":
-		return Request{State: "working"}, true
+		return Request{State: "working", TurnID: turn}, true
 	}
 	return Request{}, false
 }
