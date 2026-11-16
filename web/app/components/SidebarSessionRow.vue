@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { relativeTime, sessionMeta } from '~/utils/sessions'
+import { agentInitials, relativeTime, sessionMeta } from '~/utils/sessions'
 import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
 import { sessionStatus } from '~/utils/status'
 import { sessionTarget } from '~/utils/actions'
@@ -7,8 +7,9 @@ import { sessionResumeOffered } from '~/utils/runs'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
- * One session in the list (design 3b, 3c): the agent's initials, the name, its status mark (StatusMark of sessionStatus), what it asks when it asks, and a meta
- * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
+ * One session in the list (design 3b, 3c): the name on one line across the row, its status mark (StatusMark of sessionStatus) at
+ * its end; what it asks when it asks; and a meta line: the agent's initials as a small chip, agent · where · how long, and the
+ * status's word last (cut only once the rest is). The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
  * row carries its machine with a laptop, in place of a heading. The path is the row's tooltip. An exited row says how it ended
  * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the mark; Stop
  * asks first, in the row; a right-click or a long press opens the same menu as More. A prompt is answered in the row, below the
@@ -93,15 +94,13 @@ function confirmStop() {
       <div class="flex items-center gap-1">
       <NuxtLink
         :to="`/sessions/${s.id}`"
-        class="flex min-w-0 flex-1 gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
+        class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md px-2.5 py-1.5 transition-colors"
         :class="[!current && 'hover:bg-canvas-hover', row.state === 'exited' && !current && 'opacity-75']"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >
-        <SessionAvatar :agent-id="s.agentId" :solid="row.state === 'needs'" :dashed="row.state === 'exited'" />
-        <span class="flex min-w-0 flex-1 flex-col gap-0.5">
           <span class="flex min-w-0 items-center gap-1.5">
-            <span class="truncate text-sm" :class="row.state === 'needs' ? 'font-semibold' : 'font-medium'">{{ s.name }}</span>
+            <span class="truncate text-sm" :class="row.state === 'needs' ? 'font-semibold' : 'font-medium'" data-row-name>{{ s.name }}</span>
             <EventMarkBadge :session-id="s.id" :finished="status.key === 'finished'" />
             <YoloBadge v-if="s.yolo" icon />
             <slot name="pill" />
@@ -120,16 +119,28 @@ function confirmStop() {
                  default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
                  would move the choices under the pointer. -->
             <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
-            <span v-if="row.state === 'exited'" class="truncate font-mono text-[11px] text-muted">{{ exitLine }}</span>
-            <span v-else class="flex items-center overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted" data-row-meta>
-              <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
-                <UIcon name="i-lucide-laptop" class="size-3 flex-none" :aria-label="`Hosted on ${row.machine}`" />{{ meta[0] }}
-              </span>
-              <!-- Spaces kept: the text starts with the dot that follows the machine. -->
-              <span class="overflow-hidden text-ellipsis whitespace-pre">{{ metaText }}</span>
+            <!-- The meta line: the initials as a chip, then the meta, then the status's word. The meta takes only the room the word
+                 leaves (its basis 0), so it is cut first and the word only once the meta has none. -->
+            <span class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" data-row-meta-line>
+              <span
+                class="flex-none rounded px-1 font-mono text-[10px] leading-4 font-semibold select-none"
+                :class="row.state === 'exited' ? 'border border-dashed border-accented' : 'bg-default text-toned'"
+                :title="s.agentId"
+                data-row-initials
+              >{{ agentInitials(s.agentId) }}</span>
+              <span v-if="row.state === 'exited'" class="min-w-0 truncate font-mono">{{ exitLine }}</span>
+              <template v-else>
+                <span class="flex min-w-0 flex-1 basis-0 items-center overflow-hidden whitespace-nowrap font-mono" data-row-meta>
+                  <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
+                    <UIcon name="i-lucide-laptop" class="size-3 flex-none" :aria-label="`Hosted on ${row.machine}`" />{{ meta[0] }}
+                  </span>
+                  <!-- Spaces kept: the text starts with the dot that follows the machine. -->
+                  <span class="overflow-hidden text-ellipsis whitespace-pre">{{ metaText }}</span>
+                </span>
+                <span class="min-w-0 truncate" :title="status.word" data-status-word>{{ status.word }}</span>
+              </template>
             </span>
           </template>
-        </span>
       </NuxtLink>
       <ResumeButton v-if="resumable" :session="s" icon-only size="xs" class="relative z-10 mr-1.5" />
       </div>

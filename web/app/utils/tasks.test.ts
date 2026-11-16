@@ -41,23 +41,24 @@ describe('taskCounts and taskBadges', () => {
     expect(taskCounts(tasks)).toEqual({ total: 7, done: 1, failed: 1, cancelled: 1, running: 1, checking: 1, waiting: 2 })
     expect(taskCounts(undefined).total).toBe(0)
   })
-  it('says the counts as badges, the wrong and the moving ones only when there are any', () => {
+  it('says the counts as badges, the wrong and the moving ones only when there are any, neutral but for what waits on a person and what failed', () => {
     expect(taskBadges({ tasks, paused: true })).toEqual([
       { label: '1/7 tasks', color: 'neutral' },
       { label: '1 failed', color: 'error' },
       { label: '1 cancelled', color: 'neutral' },
-      { label: '1 running', color: 'success' },
-      { label: '1 checking', color: 'info' },
+      { label: '1 running', color: 'neutral' },
+      { label: '1 checking', color: 'neutral' },
       { label: 'paused', color: 'warning', title: 'Paused by a person' },
     ])
-    expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded' })).toEqual([{ label: '1/1 tasks', color: 'success' }])
+    // Green is for a live agent alone: a run's done tasks are counted in neutral ink.
+    expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded' })).toEqual([{ label: '1/1 tasks', color: 'neutral' }])
   })
   it("titles a pause the run made itself with its words, and says cleaning up while trees are being ended (EN1)", () => {
     const why = 'the prerequisite node failed: exited 127: node: not found'
     expect(taskBadges({ tasks: [task({})], paused: true, pausedWhy: why })).toContainEqual({ label: 'paused', color: 'warning', title: `Paused: ${why}` })
     expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded', cleaning: 2 })).toEqual([
-      { label: '1/1 tasks', color: 'success' },
-      { label: 'cleaning up', color: 'info', title: '2 trees are being ended: services stopped, cleanup steps run' },
+      { label: '1/1 tasks', color: 'neutral' },
+      { label: 'cleaning up', color: 'neutral', title: '2 trees are being ended: services stopped, cleanup steps run' },
     ])
     expect(taskBadges({ tasks: [], cleaning: 1 }).at(-1)?.title).toBe('1 tree is being ended: services stopped, cleanup steps run')
     expect(taskBadges({ tasks: [], cleaning: 0 }).map((b) => b.label)).toEqual(['0/0 tasks'])

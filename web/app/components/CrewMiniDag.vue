@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import { layout, type GraphMember } from '~/utils/crewGraph'
-import type { MemberStatus } from '~/utils/crews'
-import { memberDotClass } from '~/utils/crewWords'
+import type { MemberMark } from '~/utils/status'
 import { agentInitials } from '~/utils/sessions'
 
 /**
  * A crew's shape at a glance: its members as small chips in the columns of
  * the graph's layout (roots on the left), joined by their "after" edges.
- * `chip` (a run card) shows each member's initials, name and status dot;
+ * `chip` (a run card) shows each member's initials, name and status mark;
  * `mini` (the saved crews table) only the initials, dashed for a member
  * started by hand. Wider than `maxWidth`, it is scaled down. Nothing to click.
  */
-const props = withDefaults(defineProps<{ members: GraphMember[]; size?: 'chip' | 'mini'; states?: Map<string, MemberStatus>; maxWidth?: number }>(), {
+const props = withDefaults(defineProps<{ members: GraphMember[]; size?: 'chip' | 'mini'; states?: Map<string, MemberMark>; maxWidth?: number }>(), {
   size: 'mini',
   states: undefined,
   maxWidth: 0,
@@ -24,7 +23,8 @@ const nodes = computed(() =>
     n,
     x: n.depth * dims.value.cs,
     y: n.row * dims.value.rs,
-    state: props.states?.get(n.id),
+    state: props.states?.get(n.id)?.status,
+    mark: props.states?.get(n.id)?.mark,
     manual: n.member.start.when === 'manual',
   })),
 )
@@ -85,7 +85,7 @@ function chipClass(x: (typeof nodes.value)[number]): string {
         <template v-if="size === 'chip'">
           <span class="grid size-4 flex-none place-items-center rounded bg-elevated font-mono text-[8px] font-semibold text-primary">{{ agentInitials(x.n.member.agentId) }}</span>
           <span class="truncate">{{ x.n.id }}</span>
-          <span v-if="x.state" class="ml-auto size-1.5 flex-none rounded-full" :class="memberDotClass(x.state, x.n.member)" />
+          <StatusMark v-if="x.mark" :status="x.mark" class="ml-auto" :data-run-member-mark="x.n.id" />
         </template>
         <template v-else>{{ agentInitials(x.n.member.agentId) }}</template>
       </span>

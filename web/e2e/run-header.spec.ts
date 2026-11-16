@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { dayPage, expect, test, type DayPageOptions } from './fixtures'
 import { inboxItem, stubInbox } from './inbox-stub'
 import { inside, noOverlap, noSideways, probeColour, tabTo, uncut } from './layout'
-import { ledgerRun, legacyRun, serveRun, type StubRun } from './run-fixtures'
+import { ledgerRun, legacyRun, runInfo, serveRun, type StubRun } from './run-fixtures'
 
 // A run's header (UX1's PR-9, docs/plans/ux-review.md: P7, D2), on runs served from run-fixtures.ts: row one holds the name whole,
 // one ticket chip and the run's actions, nothing under a button; row two, at every width, what the run is doing, its people and
@@ -12,8 +12,8 @@ import { ledgerRun, legacyRun, serveRun, type StubRun } from './run-fixtures'
 const NAME = 'Reconcile the ledger after the schema five cutover, each host'.slice(0, 60)
 
 /** The Ledger run on a page of its own: its decision gate and its failed task in the inbox, the run served; the page at the run. */
-async function ledgerPage(browser: Parameters<typeof dayPage>[0], o: DayPageOptions = {}): Promise<{ page: Page; run: StubRun; header: Locator }> {
-  const run = ledgerRun({ name: NAME })
+async function ledgerPage(browser: Parameters<typeof dayPage>[0], o: DayPageOptions & { soak?: string } = {}): Promise<{ page: Page; run: StubRun; header: Locator }> {
+  const run = ledgerRun({ name: NAME, ...(o.soak ? { soak: o.soak } : {}) })
   const page = await dayPage(browser, { path: '/', ...o })
   await stubInbox(page, [inboxItem('decision', { ref: 'decision:dr-1', run, task: 'release-notes', origin: 'plan', question: 'May release-notes ship?' }), inboxItem('task', { run, task: 'migrate' })])
   await serveRun(page, run)
@@ -136,3 +136,68 @@ for (const theme of ['dark', 'light'] as const) {
     void day
   })
 }
+
+// What the run is doing (UX1 PR-10): row two's bar counts the run's tasks by part, and its one sentence says them with the run's items
+// of the one list ("N need you"). soak's attempt runs in the day's working session, so it is working.
+for (const theme of ['dark', 'light'] as const) {
+  test(`in the ${theme} theme the bar counts the tasks by part, the sentence says the run's two items, and the held tasks are amber`, async ({ day, browser }) => {
+    const n = await day.part('states')
+    const { page, header } = await ledgerPage(browser, { theme, soak: n['yard-tile-resize']! })
+    const bar = header.locator('[data-run-bar]')
+    const counts = async () => bar.locator('[data-part]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-part')} ${e.getAttribute('data-count')}`))
+    await expect.poll(counts, { message: "the bar's parts" }).toEqual(['done 2', 'working 1', 'checking 1', 'needs 2'])
+    const progress = header.locator('[data-run-progress]')
+    await expect(progress).toHaveText('2 of 6 done · 1 working · 1 checking · 2 need you')
+    // The run's number is the one list's for this run: the gate's decision and the failed task, one item each.
+    await expect(progress).toHaveAttribute('data-needs', '2')
+    await expect(bar.locator('[data-part="needs"]')).toHaveAttribute('title', '2 tasks held')
+    const fill = await bar.locator('[data-part="needs"]').evaluate((e) => getComputedStyle(e).backgroundColor)
+    expect(await probeColour(page, fill), 'the held tasks are drawn amber').toBe(await probeColour(page, 'var(--ui-warning)'))
+  })
+}
+
+test('one gate holding two tasks: the sentence says one item, the bar two tasks held', async ({ day, browser }) => {
+  void day
+  const run = runInfo({ tasks: 6, states: ['ready', 'ready', 'succeeded', 'succeeded', 'succeeded', 'succeeded'] })
+  const gate = inboxItem('decision', { run, task: 't01', origin: 'plan' })
+  const hold = [{ id: gate.ref.slice('decision:'.length), type: 'approval', state: 'open', question: gate.question }] as StubRun['tasks'][number]['holds']
+  run.tasks[0]!.holds = hold
+  run.tasks[1]!.holds = hold
+  const page = await dayPage(browser, { path: '/' })
+  await stubInbox(page, [gate])
+  await serveRun(page, run)
+  await page.goto(`/runs/${run.id}`)
+  const header = page.locator('[data-crew-run-header]')
+  await expect(header.locator('[data-run-bar] [data-part="needs"]')).toHaveAttribute('data-count', '2')
+  await expect(header.locator('[data-run-progress]')).toHaveAttribute('data-needs', '1')
+  await expect(header.locator('[data-run-progress]')).toHaveText('4 of 6 done · 1 needs you')
+})
+
+test("at 390 with touch a run of members says its members' sentence and draws no bar", async ({ day, browser }) => {
+  void day
+  const legacy = legacyRun()
+  const page = await dayPage(browser, { path: '/', width: 390, height: 844, touch: true })
+  await stubInbox(page, [])
+  await serveRun(page, legacy)
+  await page.goto(`/runs/${legacy.id}`)
+  const header = page.locator('[data-crew-run-header]')
+  // Its members run in sessions no server holds: each is running as the run last read it.
+  await expect(header.locator('[data-run-progress]')).toHaveText('4 running')
+  await expect(header.locator('[data-run-bar]')).toHaveCount(0)
+  await inside(header.locator('[data-run-summary]'), page.locator('body'))
+  await noSideways(page)
+})
+
+test('in a low window (1440 x 360) row two gives way and the bar and the sentence stay, in row one', async ({ day, browser }) => {
+  const { page, header } = await ledgerPage(browser, { height: 360 })
+  await expect(header.locator('[data-run-summary]')).toBeHidden()
+  const low = header.locator('[data-run-progress-low]')
+  await expect(low).toBeVisible()
+  await expect(low).toContainText(/^\d of 6 done · /)
+  await noOverlap(header.locator('[data-run-row-one]'))
+  // Back to a tall window: row two again, the sentence there alone.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(header.locator('[data-run-summary]')).toBeVisible()
+  await expect(low).toBeHidden()
+  void day
+})

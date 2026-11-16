@@ -4,15 +4,16 @@ import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { dayPage, endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
-import { tabTo } from './layout'
+import { inside, tabTo, uncut } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
 // what needs you, a run kept whole where its most urgent member is, a machine
 // as a tag on the row, Shared with you below your own, Exited folded to one
 // line, every section folding from its header and remembered; the actions on
-// a row; a prompt answered in the row; the keys on a focused row; alerts and
-// your menu beside the name, the foot holding only the pages; the rail.
+// a row; a prompt answered in the row; the keys on a focused row; your menu
+// beside the name, holding Alerts and the collapse; the foot holding only the
+// pages; the rail.
 test.describe.configure({ mode: 'serial' })
 
 const sessions: string[] = []
@@ -46,7 +47,7 @@ async function ended(api: { session: (id: string) => Promise<Session> }, id: str
   await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
 }
 
-test('a run sits whole in Needs you: its header, then its members, the one asking first', async ({ page, api }) => {
+test('a run of two in Needs you shows its asking member, the rest folded', async ({ page, api }) => {
   alive = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e alive' })
   sessions.push(alive.id)
   crewId = (
@@ -90,17 +91,24 @@ test('a run sits whole in Needs you: its header, then its members, the one askin
   await expect(header).toContainText('2 agents')
   await expect(header).toHaveAttribute('href', `/runs/${encodeURIComponent(runId)}`)
   await expect(block.locator('[data-run-play="needs"]')).toHaveCount(1)
-  // The members under a line, the one asking first with its question; no crew, run or path words on the rows.
-  const members = block.locator('ol > [data-sidebar-row]')
-  await expect(members).toHaveCount(2)
+  // Under a line, the member asking with its question, and one line for the other; no crew, run or path words on the rows.
+  const members = block.locator('ol > [data-row-kind="session"]')
+  await expect(members).toHaveCount(1)
   await expect(members.nth(0)).toHaveAttribute('data-row-state', 'needs')
   await expect(members.nth(0)).toContainText('review')
   await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
+  const more = block.locator('[data-run-more]')
+  await expect(more).toHaveText(/^and 1 more · 1 (working|finished|running)$/)
   // At the sidebar's minimum (#437) the choices wrap inside it.
   const choices = members.nth(0).locator('[data-row-answer] button')
   // The trust question's two answers, drawn before they are measured: a loop over none would check nothing.
   await expect(choices).toHaveCount(2)
   for (let i = 0; i < (await choices.count()); i++) await fitsSidebar(page, choices.nth(i))
+  // Unfolded, the run shows both, the one asking first.
+  await more.click()
+  await expect(more).toHaveCount(0)
+  await expect(members).toHaveCount(2)
+  await expect(members.nth(0)).toContainText('review')
   await expect(members.nth(1)).toContainText('lead')
   await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
   // Other specs leave sessions behind: the counts are checked by shape, not by number.
@@ -267,6 +275,8 @@ test('a member stops from its own row after the row asks; the run stops from its
   const leadId = (await api.run(runId)).members.find((m) => m.name === 'lead')!.sessionId!
   const block = page.locator(`[data-session-list] [data-sidebar-run-block="${runId}"]`).first()
   const lead = block.locator(`[data-sidebar-row="s:${leadId}"]`)
+  // In Needs you the run shows review alone: its line shows lead too.
+  await block.locator('[data-run-more]').click()
   await lead.hover()
   await lead.locator('[data-row-stop]').click()
   await expect(lead.locator('[data-row-stop-confirm]')).toHaveText('Stop lead?')
@@ -420,25 +430,56 @@ test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a d
   await expect(page).toHaveURL(new RegExp(`/runs/${runId}$`))
 })
 
-test('alerts and your menu sit beside the name; the foot holds only the pages', async ({ page }) => {
+test('your menu holds Alerts and the collapse; the foot holds only the pages', async ({ page }) => {
   await page.goto('/crews')
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  const header = page.locator('#dashboard-sidebar-main [data-slot="header"]')
+  const account = header.locator('[data-header-account]')
   await expect(page.locator('[data-sidebar-tools]')).toHaveCount(0)
-  await page.locator('[data-header-alerts]').click()
-  await expect(page.getByText('Browser notification')).toBeVisible()
+  await expect(header.locator('[data-header-alerts]')).toHaveCount(0)
+  await expect(header.locator('[data-sidebar-collapse]')).toHaveCount(0)
+  await account.click()
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
+  // Alerts opens its panel with the switches; Escape closes it and gives the focus back to your menu's button.
+  await page.getByRole('menuitem', { name: /^Alerts/ }).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  const panel = page.getByRole('dialog', { name: 'Alerts' })
+  await expect(panel.getByText('Browser notification')).toBeVisible()
   await page.keyboard.press('Escape')
-  await page.locator('[data-header-account]').click()
-  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
+  await expect(panel).toHaveCount(0)
+  await expect(account).toBeFocused()
+  // Collapse to the rail: the rail shows, its Expand button takes the focus; Alt+B brings the sidebar back, and Expand gives the
+  // focus to your menu's button.
+  await account.click()
+  await page.getByRole('menuitem', { name: /Collapse to the rail/ }).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  const rail = page.locator('[data-rail]')
+  await expect(rail).toBeVisible()
+  await expect(page.locator('[data-rail-expand]')).toBeFocused()
+  // On the rail the menu keeps Alerts, not the collapse.
+  await page.locator('[data-rail-foot] [data-header-account]').click()
+  await expect(page.getByRole('menuitem', { name: /^Alerts/ })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: /Collapse to the rail/ })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await page.keyboard.press('Alt+b')
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  await page.keyboard.press('Alt+b')
+  await expect(rail).toBeVisible()
+  await page.locator('[data-rail-expand]').click()
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  await expect(account).toBeFocused()
+  await account.click()
   await page.getByRole('menuitem', { name: /Your name/ }).click()
   const dialog = page.locator('[data-name-dialog]')
   await dialog.getByRole('textbox', { name: 'Your name' }).fill('Nate R')
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
-  await expect(page.locator('[data-header-account]')).toHaveAttribute('aria-label', 'Your menu, Nate R')
+  await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
   // The foot: the pages, nothing else; Needs your decision's Decide row first (docs/plans/decision-inbox.md, PR-2).
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
   await expect(foot.getByRole('link')).toHaveText([/Decide/, /Yard/, /Roundhouse/, /Agents/, /Crews/, /Dispatch/, /Events/, /History/, /Brakeman/])
 })
-
 
 test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
   // A crew asking for the capsule (review holds the trust question); a session with an event badge for the news corner.
@@ -471,7 +512,9 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   sessions.push(marked.id)
 
   await page.goto('/crews')
-  await page.locator('[data-sidebar-collapse]').click()
+  // Folded by its key, pressed once the layout that listens for it has drawn the list.
+  await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+  await page.keyboard.press('Alt+b')
   const rail = page.locator('[data-rail]')
   await expect(rail).toBeVisible()
   await expect(rail.locator(`[data-rail-session="${marked.id}"]`)).toBeVisible()
@@ -499,11 +542,12 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   await api.call('DELETE', `/api/crews/${encodeURIComponent(crew2)}`)
 })
 
-// The full sidebar's width (#437): it opens at its minimum, 16.75 rem (268 px; 12.5 rem before #706), on every screen; a drag
-// widens it up to 26 % of the window, never less than the minimum plus 5 rem (348 px), and no narrower than the minimum, and on
-// toward the window's edge gives the rail. Each case has its own page, so its own browser context and storage.
+// The full sidebar's width (#437): it opens at its minimum, 12.5 rem (200 px; 16.75 rem while its header held five parts, #706),
+// on every screen; a drag widens it up to 26 % of the window, never less than the minimum plus 5 rem (280 px), and no narrower than
+// the minimum, and on toward the window's edge gives the rail. Each case has its own page, so its own browser context and storage.
+// The widths are written here, never read from the app's table, so that a change of the number fails them.
 test.describe('the full sidebar\'s width', () => {
-  const MIN = 268
+  const MIN = 200
   const handle = (page: Page) => page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]')
   const width = (page: Page) => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)
   const saved = (page: Page, key = 'conductor.sidebar.width') => page.evaluate((k) => localStorage.getItem(k), key)
@@ -530,7 +574,7 @@ test.describe('the full sidebar\'s width', () => {
     [1440, 900],
     [2560, 1440],
   ] as const) {
-    test(`with no saved width it opens at its minimum, 268 px, at ${w}×${h}`, async ({ page }) => {
+    test(`with no saved width it opens at its minimum, 200 px, at ${w}×${h}`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h })
       await open(page)
       await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
@@ -571,13 +615,13 @@ test.describe('the full sidebar\'s width', () => {
     const at = await grip(page)
     await page.mouse.dblclick(at.x, at.y)
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    await expect.poll(() => saved(page)).toBe('16.75')
+    await expect.poll(() => saved(page)).toBe('12.5')
   })
 
   test('the rail and back keeps the width', async ({ page }) => {
     await open(page)
     await drag(page, [310])
-    await page.locator('[data-sidebar-collapse]').click()
+    await page.keyboard.press('Alt+b')
     await expect(page.locator('[data-rail]')).toBeVisible()
     await expect.poll(() => width(page)).toBe(64)
     await page.locator('[data-rail-expand]').click()
@@ -603,14 +647,14 @@ test.describe('the full sidebar\'s width', () => {
     await open(page)
     await drag(page, [900])
     await expect.poll(() => width(page)).toBeCloseTo(374.4, 0)
-    // At 1024 px 26 % is 266 px, so the most is the minimum plus 5 rem, 348 px; a drag there stops at it too.
+    // At 1024 px 26 % is 266 px, so the most is the minimum plus 5 rem, 280 px; a drag there stops at it too.
     await page.setViewportSize({ width: 1024, height: 900 })
-    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
     await drag(page, [600])
-    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
     // Wider again: the width stays what it was, the drag's bound grows back.
     await page.setViewportSize({ width: 2560, height: 1440 })
-    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
+    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
     await drag(page, [1500])
     await expect.poll(() => width(page)).toBeCloseTo(665.6, 0)
     await page.setViewportSize({ width: 1440, height: 900 })
@@ -648,38 +692,42 @@ test.describe('the full sidebar\'s width', () => {
   /** Whether `el`'s text shows whole: nothing of it cut off by an ellipsis or its box. */
   const whole = (el: Locator) => el.evaluate((e) => e.scrollWidth <= e.clientWidth)
 
-  test('every part of the header shows, the name whole, at the width it opens with and at the minimum (#706)', async ({ page }) => {
-    await open(page)
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    const root = page.locator('#dashboard-sidebar-main')
-    const header = root.locator('[data-slot="header"]')
-    const name = header.locator('[data-sidebar-name]')
-    const launch = root.getByRole('button', { name: /Launch agent/ }).first()
-    async function shownWhole(at: string) {
-      for (const part of ['[data-sidebar-mark]', '[data-sidebar-name]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) {
-        await expect(header.locator(part), `${part} ${at}`).toBeVisible()
-        await fitsSidebar(page, header.locator(part))
+  for (const [w, h, widest] of [
+    [1440, 900, 374],
+    [1280, 720, 333],
+  ] as const) {
+    test(`the header is the mark, the name and your menu, the name whole, as it opens and dragged to its widest and back, at ${w}×${h}`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h })
+      await open(page)
+      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      const root = page.locator('#dashboard-sidebar-main')
+      const header = root.locator('[data-slot="header"]')
+      const name = header.locator('[data-sidebar-name]')
+      const launch = root.getByRole('button', { name: /Launch agent/ }).first()
+      async function shownWhole(at: string) {
+        for (const part of ['[data-sidebar-mark]', '[data-sidebar-name]', '[data-header-account]']) await inside(header.locator(part), root)
+        // Alerts and the collapse are in your menu, not in the header.
+        await expect(header.locator('[data-header-alerts]'), at).toHaveCount(0)
+        await expect(header.locator('[data-sidebar-collapse]'), at).toHaveCount(0)
+        // "Conductor", not "C…"; "Launch agent", not "Launch ag…" (#906, row 4).
+        await expect(name).toHaveText('Conductor')
+        await uncut(name)
+        await uncut(launch.locator('[data-slot="label"]'))
+        expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth), `nothing spills out of the header ${at}`).toBe(true)
+        // Not on a margin of a pixel or two: with the bundled font the name has at least 8 px to spare before your menu.
+        const spare = await name.evaluate((el) => el.parentElement!.querySelector('[data-sidebar-menus]')!.getBoundingClientRect().left - el.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(el.parentElement!).columnGap))
+        expect(spare, `the row's room to spare ${at}`).toBeGreaterThanOrEqual(8)
       }
-      // "Conductor", not "C…"; "Launch agent", not "Launch ag…" (#906, row 4).
-      await expect(name).toHaveText('Conductor')
-      expect(await whole(name), `the name ${at}`).toBe(true)
-      expect(await whole(launch.locator('[data-slot="label"]')), `Launch agent ${at}`).toBe(true)
-      expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
-      // Not on a margin of a pixel or two: with the bundled font the row has at least 8 px to spare, between the name and Alerts.
-      const spare = await name.evaluate((el) => {
-        const next = el.nextElementSibling!.getBoundingClientRect().left
-        return next - el.getBoundingClientRect().right - Number.parseFloat(getComputedStyle(el.parentElement!).columnGap)
-      })
-      expect(spare, `the row's room to spare ${at}`).toBeGreaterThanOrEqual(8)
-    }
-    await shownWhole('as it opens')
-    // Dragged wider and back past the minimum: it stops there, drawn again, and still shows it all.
-    await drag(page, [340])
-    await expect.poll(() => width(page)).toBeCloseTo(340, 0)
-    await drag(page, [150])
-    await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    await shownWhole('at the minimum')
-  })
+      await shownWhole('as it opens')
+      // Dragged to its widest and back past the minimum: it stops at each, drawn again, and still shows it all.
+      await drag(page, [w])
+      await expect.poll(() => width(page)).toBeCloseTo(widest, 0)
+      await shownWhole('at its widest')
+      await drag(page, [100])
+      await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
+      await shownWhole('back at the minimum')
+    })
+  }
 
   test('with a wider font the name gives way, shortened with its whole text in its title, and every control stays in the bar, uncovered (#706)', async ({ page }) => {
     await open(page)
@@ -692,7 +740,7 @@ test.describe('the full sidebar\'s width', () => {
     await page.addStyleTag({ content: '[data-sidebar-name] { letter-spacing: 0.6em; }' })
     await expect.poll(() => whole(name), { message: 'the name is shortened' }).toBe(false)
     await expect(name).toHaveAttribute('title', 'Conductor')
-    for (const part of ['[data-sidebar-mark]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) {
+    for (const part of ['[data-sidebar-mark]', '[data-header-account]']) {
       const control = header.locator(part)
       await expect(control, part).toBeVisible()
       await fitsSidebar(page, control)
@@ -707,15 +755,13 @@ test.describe('the full sidebar\'s width', () => {
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth), 'nothing spills out of the bar').toBe(true)
   })
 
-  test('in a window 1024 wide the handle still widens the sidebar: its most is the minimum plus 5 rem (#706)', async ({ page }) => {
+  test('in a window 1024 wide the handle widens the sidebar from 200 to 280 px: its most is the minimum plus 5 rem (#706)', async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 })
     await open(page)
     await expect.poll(() => width(page)).toBeCloseTo(MIN, 0)
-    const before = await width(page)
     await drag(page, [(await grip(page)).x + 200])
-    // 26 % of 1024 px is 266 px, below the minimum: the most is 268 + 80 px.
-    await expect.poll(() => width(page)).toBeCloseTo(348, 0)
-    expect((await width(page)) - before).toBeGreaterThanOrEqual(60)
+    // 26 % of 1024 px is 266 px, short of the minimum plus 80 px: the most is 280 px, the width at which a row's question is whole.
+    await expect.poll(() => width(page)).toBeCloseTo(280, 0)
   })
 
   test('the filter lines up with Launch agent, at the width it opens with, dragged wider, and on the phone\'s list (#702)', async ({ page }) => {
@@ -882,7 +928,7 @@ test.describe('the full sidebar\'s width', () => {
   }
 
   test('at the minimum the header, Launch agent, the filter and a pending update sit inside the sidebar', async ({ page, state }) => {
-    // The desktop app's bridge with an update ready: the header's widest, its update button beside Alerts and your menu.
+    // The desktop app's bridge with an update ready: the header's widest, its update button beside your menu.
     await desktopApp(page, state, '0.7.0-rc.99')
     await open(page)
     const root = page.locator('#dashboard-sidebar-main')
@@ -891,9 +937,7 @@ test.describe('the full sidebar\'s width', () => {
     const header = root.locator('[data-slot="header"]')
     const parts = [
       header.locator('[data-header-update]'),
-      header.locator('[data-header-alerts]'),
       header.locator('[data-header-account]'),
-      header.locator('[data-sidebar-collapse]'),
       root.getByRole('button', { name: /Launch agent/ }).first(),
       root.getByRole('textbox').first(),
     ]
@@ -923,7 +967,7 @@ test.describe('the full sidebar\'s width', () => {
     await found(page, '0.7.0-rc.99')
     await expect(header.locator('[data-header-update]')).toBeVisible()
     expect(await shown()).toBeGreaterThanOrEqual(without)
-    for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
+    for (const part of ['[data-header-update]', '[data-header-account]']) await fitsSidebar(page, header.locator(part))
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
 
     // As wide as the minimum plus what the update's button takes, the name has its width back with the mark beside it: the
@@ -940,8 +984,128 @@ test.describe('the full sidebar\'s width', () => {
     await expect.poll(() => width(page)).toBeCloseTo(300, 0)
     await expect(mark).toBeVisible()
     await expect(header.locator('[data-header-update]')).toBeVisible()
-    for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
+    for (const part of ['[data-header-update]', '[data-header-account]']) await fitsSidebar(page, header.locator(part))
   })
+})
+
+// A row at the sidebar's minimum (the UX review's P5): the name on one line across the row, the gutter 8 px, the initials a chip on the
+// meta line, the status's word whole at its end, and the question's choices from the row's text edge, each whole.
+test('a row fits 200 px', async ({ day, browser }) => {
+  const api = day.api
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e twenty chars xy' })
+  try {
+    const choices = ['Yes', "Yes, and don't ask again", 'No, tell Claude why']
+    const ask = (message: string) => api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message, options: choices.map((label, i) => ({ label, input: String(i + 1) })) })
+    await ask('Edit the file?')
+    // A page that is not the session's: its own page would mark the row as the one open.
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/crews' })
+    const root = page.locator('#dashboard-sidebar-main')
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
+    const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`)
+    async function fits(message: string) {
+      await expect(row.locator('[data-row-prompt]')).toHaveText(message)
+      const name = row.locator('[data-row-name]')
+      await expect(name).toHaveText('e2e twenty chars xy')
+      await uncut(name)
+      const [r, side] = [(await row.boundingBox())!, (await root.boundingBox())!]
+      expect(r.x - side.x, "the row's gutter").toBeLessThanOrEqual(9)
+      // The initials are a chip on the meta line, below the name's line, not a column before it.
+      await inside(row.locator('[data-row-initials]'), row.locator('[data-row-meta-line]'))
+      expect((await row.locator('[data-row-initials]').boundingBox())!.y, 'the initials below the name').toBeGreaterThanOrEqual((await name.boundingBox())!.y + (await name.boundingBox())!.height - 1)
+      await expect(row.locator('[data-status-word]')).toHaveText('needs you')
+      await uncut(row.locator('[data-status-word]'))
+      const buttons = row.locator('[data-row-choice]')
+      await expect(buttons).toHaveCount(3)
+      expect(Math.abs((await buttons.first().boundingBox())!.x - (await name.boundingBox())!.x), "the first choice at the row's text edge").toBeLessThanOrEqual(2)
+      // Each choice inside the row; a label is cut only when it is wider than the row ("Yes, and don't ask again" with its key
+      // is, at 200 px), its whole text in its title. At 280 px and wider each is whole in the row (PR-8 moves them into the panel
+      // beside a narrower row).
+      for (let i = 0; i < choices.length; i++) {
+        await expect(buttons.nth(i)).toContainText(choices[i]!.slice(0, 8))
+        await expect(buttons.nth(i)).toHaveAttribute('title', choices[i]!)
+        await inside(buttons.nth(i), row)
+      }
+      await uncut(buttons.nth(0).locator('[data-slot="label"]'))
+      await uncut(buttons.nth(2).locator('[data-slot="label"]'))
+    }
+    await fits('Edit the file?')
+    // Drawn again (Needs you folded and unfolded), it still fits. Not by asking again: a second question is posted to the session's
+    // chat too, and the row's unread pill then takes the room a name of twenty characters needs (cut by its rule, whole in its title).
+    const needs = page.locator('[data-session-list="sidebar"] [data-sidebar-section="needs"]')
+    await needs.getByRole('button', { name: /^Needs you/ }).click()
+    await expect(needs).toHaveAttribute('data-folded', 'true')
+    await needs.getByRole('button', { name: /^Needs you/ }).click()
+    await expect(needs).toHaveAttribute('data-folded', 'false')
+    await fits('Edit the file?')
+  } finally {
+    await api.stopSession(s.id)
+    await expect.poll(async () => (await api.session(s.id)).status, { message: 'the row\'s session ends' }).toMatch(/^(exited|stopped)$/)
+    await api.stopSession(s.id)
+  }
+})
+
+// A crew of three in Needs you: only the member that asks is a row; the rest is one line that says how many and in which states, a
+// button that shows them all for the visit (a reload folds them again), reached by J and opened by Enter.
+test('a run in Needs you shows who asks', async ({ page, api }) => {
+  const crew = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e who asks',
+      goal: 'be listed',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } },
+        { name: 'review', agentId: 'codex-untrusted', prompt: 'review it', start: { when: 'immediately' } },
+        { name: 'docs', agentId: 'claude', prompt: 'write it up', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  let run = ''
+  try {
+    run = (await api.launchCrew(crew)).id
+    // review holds the trust question; lead and docs run.
+    await expect
+      .poll(
+        async () => {
+          const r = await api.run(run)
+          const review = r.members.find((m) => m.name === 'review')?.sessionId
+          const others = r.members.filter((m) => m.name !== 'review').map((m) => m.status)
+          return `${review ? (await api.session(review)).attention?.state : ''}/${others.join(',')}`
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('needs_input/running,running')
+    await page.goto('/crews')
+    const block = page.locator(`[data-session-list="sidebar"] [data-sidebar-section="needs"] [data-sidebar-run-block="${run}"]`)
+    const members = block.locator('ol > [data-row-kind="session"]')
+    const more = block.locator('[data-run-more]')
+    await expect(more).toHaveText(/^and 2 more · /)
+    await expect(members).toHaveCount(1)
+    await expect(members.first()).toContainText('review')
+    await more.click()
+    await expect(members).toHaveCount(3)
+    await expect(more).toHaveCount(0)
+    // Held for the visit only: a reload folds it again.
+    await page.reload()
+    await expect(more).toHaveText(/^and 2 more · /)
+    await expect(members).toHaveCount(1)
+    // From the run's header, J lands on the member, J again on the line; Enter unfolds it, the focus on the first member it held.
+    await block.locator('[data-sidebar-run-group]').focus()
+    await expect(block.locator('[data-row-focused] [data-sidebar-run-group]')).toHaveCount(1)
+    await page.keyboard.press('j')
+    await expect(members.first()).toHaveAttribute('data-row-focused', '')
+    await page.keyboard.press('j')
+    await expect(block.locator('[data-sidebar-row^="m:"]')).toHaveAttribute('data-row-focused', '')
+    await page.keyboard.press('Enter')
+    await expect(members).toHaveCount(3)
+    await expect(block.locator('[data-row-focused]')).toHaveAttribute('data-row-kind', 'session')
+    await expect(page).toHaveURL(/\/crews$/)
+  } finally {
+    if (run) await api.stopRun(run)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew)}`)
+  }
 })
 
 // The pages' one table (utils/pages.ts): a page's sentence is its tooltip in the full sidebar (on hover over its label) and on the rail
