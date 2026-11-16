@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, member, test, type Api } from './fixtures'
+import { expect, member, rowAnswer, test, type Api } from './fixtures'
 
 // A Codex member's Needs you while Codex works (#186). Conductor launches
 // Codex with tui.terminal_title=["activity","run-state"], and the stub, so
@@ -312,8 +312,9 @@ test("Codex's approval still shows with its three choices, and Working follows i
   expect(asked?.source).toBe('question')
   expect(asked?.options?.map((o) => o.label)).toEqual(['Yes, proceed', "Yes, and don't ask again", 'No, tell Codex what to do differently'])
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
-  await expect(row(page, id).locator('[data-row-choice]')).toHaveCount(3)
-  await row(page, id).locator('[data-row-choice="1"]').click()
+  const answers = await rowAnswer(page, row(page, id))
+  await expect(answers.locator('[data-row-choice]')).toHaveCount(3)
+  await answers.locator('[data-row-choice="1"]').click()
   const stub = stubOf(state.home, `stub approve ls -la ${nonce}`)
   await expect.poll(() => readFileSync(join(state.home, '.stub-sessions', `${stub}.txt`), 'utf8'), { timeout: 15_000 }).toContain('approval: approved\n')
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
