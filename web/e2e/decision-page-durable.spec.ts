@@ -150,6 +150,30 @@ function probeColour(page: Page, cls: string): Promise<string> {
 type Box = [left: number, top: number, right: number, bottom: number]
 
 /**
+ * Waits until nothing moves `holder`'s boxes: no running animation or transition on it, on an element it lies in (the modal's
+ * dialog, which scales in from 0.95 for 200 ms as it opens) or on one inside it, read from the page (`document.getAnimations()`) and
+ * each awaited by its own `finished`, again until none is left. An endless one (a loader's spin) is never waited for. Every measure
+ * of a holder's boxes is taken after it, all related boxes in one evaluation, so they are of one frame and the last (review round 3).
+ */
+function settled(holder: ReturnType<Page['locator']>): Promise<string[]> {
+  return holder.evaluate(async (el) => {
+    const waited: string[] = []
+    for (;;) {
+      const moving = document.getAnimations().filter((a) => {
+        const t = (a.effect as KeyframeEffect | null)?.target
+        return !!t && (t.contains(el) || el.contains(t)) && a.playState === 'running' && Number.isFinite(Number(a.effect?.getComputedTiming().endTime))
+      })
+      if (!moving.length) return waited
+      for (const a of moving) waited.push((a as CSSAnimation).animationName ?? (a as CSSTransition).transitionProperty)
+      await Promise.all(moving.map((a) => a.finished.catch(() => undefined)))
+    }
+  })
+}
+
+/** The box of `e` as drawn, in the page (for use inside one evaluation). */
+type BoxOf = (e: Element) => Box
+
+/**
  * The choices drawn whole in `holder` (UX1 PR-20, invariant 6): each button's label is the choice's text, not clipped (its box's
  * scrollWidth not above its clientWidth), each button inside the holder, the recommended mark inside its button, no two buttons
  * overlapping, nothing sideways. Returns the tallest button's height.
@@ -157,21 +181,19 @@ type Box = [left: number, top: number, right: number, bottom: number]
 async function choicesWhole(page: Page, holder: ReturnType<Page['locator']>, labels: string[], where: string): Promise<number> {
   const buttons = holder.locator('[data-decision-choice]')
   await expect(buttons).toHaveCount(labels.length)
-  const outer = await holder.evaluate((e) => {
-    const r = e.getBoundingClientRect()
-    return [r.left, r.top, r.right, r.bottom] as Box
-  })
-  const drawn = await buttons.evaluateAll((els) =>
-    els.map((b) => {
-      const box = (e: Element | null) => {
-        if (!e) return null
-        const r = e.getBoundingClientRect()
-        return [r.left, r.top, r.right, r.bottom] as Box
-      }
+  await settled(holder)
+  const { outer, drawn } = await holder.evaluate((h) => {
+    const box: BoxOf = (e) => {
+      const r = e.getBoundingClientRect()
+      return [r.left, r.top, r.right, r.bottom]
+    }
+    const drawn = Array.from(h.querySelectorAll('[data-decision-choice]'), (b) => {
       const l = b.querySelector<HTMLElement>('[data-slot="label"]')
-      return { text: l?.innerText.trim() ?? '', scroll: l?.scrollWidth ?? -1, client: l?.clientWidth ?? -1, box: box(b)!, mark: box(b.querySelector('[data-decision-recommended-mark]')) }
-    }),
-  )
+      const m = b.querySelector('[data-decision-recommended-mark]')
+      return { text: l?.innerText.trim() ?? '', scroll: l?.scrollWidth ?? -1, client: l?.clientWidth ?? -1, box: box(b), mark: m ? box(m) : null }
+    })
+    return { outer: box(h), drawn }
+  })
   drawn.forEach((d, i) => {
     expect(d.text, `${where}: choice ${i} says its label whole`).toBe(labels[i])
     expect(d.scroll, `${where}: choice ${i}'s label draws ${d.scroll} px of text in ${d.client} px`).toBeLessThanOrEqual(d.client)
@@ -240,6 +262,7 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await expect(card.locator('[data-decision-subject]')).toContainText('plan revision')
   await expect(card.locator('[data-decision-card-id]')).toHaveText(gate1)
   await expect(card.locator('[data-decision-from-plan]')).toContainText('From the plan')
+  await settled(item)
   await tapTarget(details)
   for (const choice of await item.locator('[data-decision-choice]').all()) await tapTarget(choice)
   await onScreen(phone, item.locator('[data-decision-choice]'))
@@ -251,6 +274,7 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await respond.locator('[data-decision-choice-label="Approve"]').tap()
   await expect(respond.locator('[data-decision-confirm-step]')).toBeVisible()
   // Confirm and Back, as the choices, a thumb's size (UX1 PR-20, invariant 8).
+  await settled(respond)
   await tapTarget(respond.locator('[data-decision-confirm]'))
   await tapTarget(respond.locator('[data-decision-back]'))
   const shown = await decision(srv.api, gate1)
@@ -437,12 +461,19 @@ test('choices as long as the server takes them read whole on their buttons, on a
   for (const [page, size] of [[phone, 'phone'], [desk, 'desktop']] as const) {
     const answered = page.locator(`[data-inbox-item="decision:${ids.approval}"] [data-decision-card]`)
     await expect(answered.locator('[data-decision-answer-choice]')).toHaveText(LONG.approval[0]!, { timeout: STEP_MS })
-    const outer = await boxOf(answered)
-    for (const part of [...(await answered.locator('[data-decision-option-label]').all()), answered.locator('[data-decision-answer-choice]')]) {
-      const box = await boxOf(part)
-      const what = (await part.getAttribute('data-decision-option-label')) === null ? 'the answer' : 'a row'
+    await settled(answered)
+    const { outer, rows, answer } = await answered.evaluate((h) => {
+      const box: BoxOf = (e) => {
+        const r = e.getBoundingClientRect()
+        return [r.left, r.top, r.right, r.bottom]
+      }
+      const a = h.querySelector('[data-decision-answer-choice]')
+      return { outer: box(h), rows: Array.from(h.querySelectorAll('[data-decision-option-label]'), (e) => box(e)), answer: a ? box(a) : null }
+    })
+    expect(rows, `${size}, answered: a row for each choice`).toHaveLength(LONG.approval.length)
+    expect(answer, `${size}, answered: the answer is drawn`).not.toBeNull()
+    for (const [what, box] of [...rows.map((r) => ['a row', r] as const), ['the answer', answer!] as const])
       expect(within(box, outer), `${size}, answered: ${what} runs ${box.join(',')} in its card ${outer.join(',')}`).toBe(true)
-    }
     await noSideways(page)
     await page.context().close()
   }
@@ -455,14 +486,6 @@ async function deskPage(browser: Browser): Promise<Page> {
   return ctx.newPage()
 }
 
-/** An element's box as drawn. */
-function boxOf(l: ReturnType<Page['locator']>): Promise<Box> {
-  return l.evaluate((e) => {
-    const r = e.getBoundingClientRect()
-    return [r.left, r.top, r.right, r.bottom] as Box
-  })
-}
-
 /** Box `a` lies within box `b`. */
 const within = (a: Box, b: Box) => a[0] >= b[0] - 0.5 && a[1] >= b[1] - 0.5 && a[2] <= b[2] + 0.5 && a[3] <= b[3] + 0.5
 
@@ -470,9 +493,16 @@ const within = (a: Box, b: Box) => a[0] >= b[0] - 0.5 && a[1] >= b[1] - 0.5 && a
 async function tradeoffWhole(page: Page, holder: ReturnType<Page['locator']>, where: string) {
   const line = holder.locator('[data-decision-tradeoff]')
   await expect(line).toHaveText([`${LONG.clarification[1]}: ${TRADEOFF}`])
-  const [scroll, client] = await line.evaluate((e) => [e.scrollWidth, e.clientWidth])
-  expect(scroll, `${where}: the tradeoffs line draws ${scroll} px of text in ${client} px`).toBeLessThanOrEqual(client!)
-  const [box, outer] = [await boxOf(line), await boxOf(holder)]
+  await settled(holder)
+  const { scroll, client, box, outer } = await holder.evaluate((h) => {
+    const at: BoxOf = (e) => {
+      const r = e.getBoundingClientRect()
+      return [r.left, r.top, r.right, r.bottom]
+    }
+    const l = h.querySelector('[data-decision-tradeoff]')!
+    return { scroll: l.scrollWidth, client: l.clientWidth, box: at(l), outer: at(h) }
+  })
+  expect(scroll, `${where}: the tradeoffs line draws ${scroll} px of text in ${client} px`).toBeLessThanOrEqual(client)
   expect(within(box, outer), `${where}: the tradeoffs line ${box.join(',')} lies in its card ${outer.join(',')}`).toBe(true)
   await noSideways(page)
 }
@@ -488,9 +518,17 @@ async function confirmWhole(page: Page, holder: ReturnType<Page['locator']>, whe
   await expect(label).toHaveText(`Answer ${LONG.approval[1]}`)
   const asked = holder.locator('[data-decision-confirm-choice]')
   await expect(asked).toHaveText(LONG.approval[1]!)
-  const [scroll, client] = await label.evaluate((e) => [e.scrollWidth, e.clientWidth])
-  expect(scroll, `${where}: Confirm's label draws ${scroll} px of text in ${client} px`).toBeLessThanOrEqual(client!)
-  const [outer, button, text, asks] = [await boxOf(holder), await boxOf(confirm), await boxOf(label), await boxOf(asked)]
+  await settled(holder)
+  const { scroll, client, outer, button, text, asks } = await holder.evaluate((h) => {
+    const at: BoxOf = (e) => {
+      const r = e.getBoundingClientRect()
+      return [r.left, r.top, r.right, r.bottom]
+    }
+    const c = h.querySelector('[data-decision-confirm]')!
+    const l = c.querySelector('[data-slot="label"]')!
+    return { scroll: l.scrollWidth, client: l.clientWidth, outer: at(h), button: at(c), text: at(l), asks: at(h.querySelector('[data-decision-confirm-choice]')!) }
+  })
+  expect(scroll, `${where}: Confirm's label draws ${scroll} px of text in ${client} px`).toBeLessThanOrEqual(client)
   expect(within(text, button), `${where}: Confirm's label ${text.join(',')} lies in its button ${button.join(',')}`).toBe(true)
   expect(within(button, outer), `${where}: Confirm ${button.join(',')} lies in its card ${outer.join(',')}`).toBe(true)
   expect(within(asks, outer), `${where}: the line that asks ${asks.join(',')} lies in its card ${outer.join(',')}`).toBe(true)

@@ -92,6 +92,27 @@ function probe(page: Page, cls: string, prop: 'color' | 'backgroundColor' | 'box
 /** The colour a class of the app's resolves to on the page now, through a probe element (no parsing of oklch). */
 const probeColour = (page: Page, cls: string) => probe(page, cls)
 
+/**
+ * Waits until nothing moves what `holder` draws: no running animation or transition on it, on an element it lies in (the modal's
+ * dialog, which scales in for 200 ms as it opens) or on one inside it (a colour's transition after the theme changes), read from the
+ * page (`document.getAnimations()`) and each awaited by its own `finished`, again until none is left. An endless one is never waited
+ * for. Every colour or ring the spec reads in the modal is read after it, so it is the last frame's (review round 3).
+ */
+function settled(holder: ReturnType<Page['locator']>): Promise<string[]> {
+  return holder.evaluate(async (el) => {
+    const waited: string[] = []
+    for (;;) {
+      const moving = document.getAnimations().filter((a) => {
+        const t = (a.effect as KeyframeEffect | null)?.target
+        return !!t && (t.contains(el) || el.contains(t)) && a.playState === 'running' && Number.isFinite(Number(a.effect?.getComputedTiming().endTime))
+      })
+      if (!moving.length) return waited
+      for (const a of moving) waited.push((a as CSSAnimation).animationName ?? (a as CSSTransition).transitionProperty)
+      await Promise.all(moving.map((a) => a.finished.catch(() => undefined)))
+    }
+  })
+}
+
 /** Presses Tab from `from` until `target` has the focus, at most `max` times; it then draws a focus ring (an outline or a shadow). */
 async function tabTo(page: Page, from: ReturnType<Page['locator']>, target: ReturnType<Page['locator']>, max: number) {
   await from.focus()
@@ -100,6 +121,7 @@ async function tabTo(page: Page, from: ReturnType<Page['locator']>, target: Retu
     expect(++n, `Tab reaches the control within ${max} presses`).toBeLessThanOrEqual(max)
     await page.keyboard.press('Tab')
   }
+  await settled(target)
   const ring = await target.evaluate((e) => {
     const s = getComputedStyle(e)
     return (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) || s.boxShadow !== 'none'
@@ -221,6 +243,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
     } else {
       await expect(page.locator('html')).toHaveClass(/\bdark\b/)
     }
+    await settled(modal)
     const [warning, ink, success] = [await probeColour(page, 'text-warning'), await probeColour(page, 'text-default'), await probeColour(page, 'text-success')]
     expect(ink, `${theme}: the success token is not the ink`).not.toBe(success)
     expect(await stepColour(modal, 'recorded'), `${theme}: the answer owed is amber`).toBe(warning)
@@ -314,6 +337,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
         document.documentElement.classList.add('dark')
       })
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /\blight\b/)
+    await settled(modal)
     const ink = await probeColour(page, 'text-default')
     const [fill, ring] = [await probe(page, 'bg-elevated/40', 'backgroundColor'), await probe(page, 'ring ring-default', 'boxShadow')]
     expect(fill, `${theme}: the success fill is not the neutral one`).not.toBe(await probe(page, 'bg-success/5', 'backgroundColor'))
