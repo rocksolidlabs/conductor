@@ -111,7 +111,9 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   const rows = page.locator('[data-task-row]')
   await expect(rows).toHaveCount(2)
   await expect(page.locator('[data-task-row="build"]')).toHaveAttribute('data-task-state', 'succeeded')
-  await expect(page.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('attempt 2')
+  // The attempt is said once: the words name it, so the who column does not (UX1 PR-11).
+  await expect(page.locator('[data-task-row="build"] [data-task-words]')).toContainText('succeeded by attempt 2')
+  await expect(page.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('')
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('succeeded by attempt 1')
   const commit = git(state.repo, 'rev-parse', `crew/${run.id}/build.2`)
   await expect(page.locator('[data-task-row="build"] [data-task-commit]')).toHaveText(commit.slice(0, 12))

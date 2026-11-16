@@ -502,10 +502,15 @@ test("a handoff longer than a ticket's comment holds is commented as the person 
 
 test("the run page's Ask Brakeman why and the palette's Brakeman rows open the composer about the task and the run", async ({ page }) => {
   await open(page, `/runs/${encodeURIComponent(runId)}?view=tasks`)
-  const ask = page.locator('[data-task-row="build"] [data-task-ask-brakeman="build"]')
-  await expect(ask).toBeVisible({ timeout: 30_000 })
+  // Ask Brakeman why is behind each row's menu (UX1 PR-11), which draws in a portal outside the row.
+  await page.locator('[data-task-menu="docs"]').click({ timeout: 30_000 })
   // docs, blocked, is asked about too (a failed, cancelled or blocked task, or one whose attempt reports a blocker).
-  await expect(page.locator('[data-task-row="docs"] [data-task-ask-brakeman="docs"]')).toBeVisible()
+  await expect(page.locator('[data-task-ask-brakeman="docs"]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await page.locator('[data-task-menu="build"]').click()
+  const ask = page.locator('[data-task-ask-brakeman="build"]')
+  await expect(ask).toBeVisible()
   await ask.click()
   await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=explain&subject=${encodeURIComponent(`task:${runId}/build`)}$`))
   await expect(page.locator('[data-ask-kind]')).toContainText('Explain this')

@@ -3158,7 +3158,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
-  apply); the selected task, kept in the URL as `?task=`, opens its result
+  apply). Since the UX review's PR-11 the rows are a table, state, task,
+  who, what and actions each read straight down (two lines a row under
+  48 rem): the state said once, the attempt once (in the words when they
+  name it, else "attempt N" past the first), the owner only when the task
+  names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
+  menu, so nothing in a row at rest is red. The selected task, kept in the
+  URL as `?task=`, opens its result
   (summary, issues, findings) and every attempt with what it submitted
   (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
