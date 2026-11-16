@@ -222,10 +222,11 @@ const launchBlocked = computed(() => {
   if (ruleProblem.value || ((dirty.value || !d.id) && saveOnlyProblem.value)) return 'Fix the fields marked in red first'
   return ''
 })
+/** The header's line: where the crew is saved (a path, in the code font) and how many agents, in words. */
 const subtitle = computed(() => {
   const d = draft.value
-  if (!d) return ''
-  return `${d.id ? `crews/${d.id}.json` : 'not saved yet'} · ${d.members.length} ${d.members.length === 1 ? 'agent' : 'agents'}`
+  if (!d) return null
+  return { file: d.id ? `crews/${d.id}.json` : '', words: `${d.members.length} ${d.members.length === 1 ? 'agent' : 'agents'}` }
 })
 
 function newCrew() {
@@ -659,7 +660,7 @@ usePalette().registerPage(() => ({
             />
             <span v-else class="truncate text-[17px] font-semibold text-highlighted">{{ routeId }}</span>
             <UBadge v-if="draft" :label="draft.id ? 'Saved crew' : 'New crew'" :icon="draft.id ? 'i-lucide-bookmark' : 'i-lucide-pencil'" color="neutral" variant="outline" size="sm" class="hidden flex-none sm:inline-flex" data-crew-kind />
-            <span v-if="draft" class="hidden truncate font-mono text-[11.5px] text-muted lg:inline">{{ subtitle }}</span>
+            <span v-if="subtitle" class="hidden truncate text-[11.5px] text-muted tabular-nums lg:inline" data-crew-subtitle><span v-if="subtitle.file" class="font-mono" data-mono="path">{{ subtitle.file }}</span><template v-else>not saved yet</template> · {{ subtitle.words }}</span>
           </div>
         </template>
         <template #right>
