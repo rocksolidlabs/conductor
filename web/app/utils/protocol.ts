@@ -1673,3 +1673,29 @@ export function parsePreviewMessage(v: unknown, to: PreviewDirection, nonce: str
   if (t === 'described' && (Object.hasOwn(m, 'element') ? !validElement(m.element) : m.missing !== true)) return null
   return m as unknown as PreviewMessage
 }
+
+/**
+ * A crew's revision (crew.Revision), as `GET /api/crews/{id}` and a save answer it: 64 lower-case hex digits, the bound the routes that
+ * take one hold it to (`400 invalid_request` for any other). `POST /api/crews/{id}/launch` takes it as `revision`: the launch starts the
+ * crew only while that is the revision stored, judged on the launch's own read of the crew, and is refused `409 crew_changed` otherwise,
+ * nothing started or recorded; a body without it launches the crew as stored.
+ */
+export const CREW_REVISION = /^[0-9a-f]{64}$/
+export const MAX_CREW_REVISION = 64
+/** The launch's refusal of a revision other than the crew's at the launch: the crew was saved since it was read. */
+export const CREW_CHANGED = 'crew_changed'
+
+/** The body of `POST /api/crews/{id}/launch`: the run's name when one was typed, and the revision of the copy the launch was read from. */
+export interface CrewLaunchBody {
+  label?: string
+  revision?: string
+}
+
+/** A launch's body: the run's name trimmed (none when empty) and the revision as it was read, sent as it is (the server judges it). */
+export function crewLaunchBody(label: string, revision: string | undefined): CrewLaunchBody | undefined {
+  const name = label.trim()
+  const body: CrewLaunchBody = {}
+  if (name) body.label = name
+  if (revision) body.revision = revision
+  return name || revision ? body : undefined
+}

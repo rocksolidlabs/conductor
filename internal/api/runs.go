@@ -243,9 +243,14 @@ func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 // handleLaunchCrew launches a saved crew as a run: 201 {run} once the session
 // of every member that starts immediately exists; each prompt is typed once
 // its session is ready.
-// launchBody is the optional body of POST /api/crews/{id}/launch: the run's own name.
+// launchBody is the optional body of POST /api/crews/{id}/launch: the run's
+// own name, and the revision of the crew as the launch's asker read it
+// (crewReply's): with one, the launch starts only that copy of the crew
+// (409 crew_changed otherwise, nothing started); without one, the crew as
+// stored at the launch.
 type launchBody struct {
-	Label string `json:"label,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Revision string `json:"revision,omitempty"`
 }
 
 // maxLaunchBody bounds that body.
@@ -257,8 +262,12 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if body.Revision != "" && !crewRevisionPattern.MatchString(body.Revision) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "revision must be the 64 lower-case hex digits a read of the crew answers")
+		return
+	}
 	id := r.PathValue("id")
-	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), nil)
+	run, c, release, err := s.launchSaved(r.Context(), id, strings.TrimSpace(body.Label), body.Revision, nil)
 	// Released once the reply is written: the view link is minted first, so a
 	// launch at the cap meanwhile cannot forget the run.
 	defer release()
@@ -312,7 +321,12 @@ func launchRefusal(status int, code, message string) error {
 // /api/crews/{id}/launch does and ext.Host's Launch does: the label's
 // check, the crews store, the managed checks, Launchable, checkLaunch,
 // resolveCwd and the run's yolo, then the engine (runs.LaunchNamed), the
-// one scheduler. ctx is the asker's, for the agents' lookups; the launch
+// one scheduler. revision, when not "", is the crew's revision as the
+// asker read it (crew.Revision): the crew is judged by it in the one read
+// the launch makes, and the run is of that read, so the copy compared is
+// the copy launched whatever a save does after it; another refuses the
+// launch (409 crew_changed) before anything is started or recorded.
+// ctx is the asker's, for the agents' lookups; the launch
 // itself runs on runContext's terms (the asker's values, not its end,
 // bounded by runTimeout). It answers the run, the crew as launched, and
 // the release of both the engine's hold and that context, to call once
@@ -321,7 +335,7 @@ func launchRefusal(status int, code, message string) error {
 // starts nothing (ext.Host's Launch, whose try may have been given up
 // meanwhile). Its error is a launchRefused for a refusal of the request, a
 // crewStoreErr for the store's, admit's, or the engine's (runError).
-func (s *Server) launchSaved(ctx context.Context, crewID, label string, admit func() error) (*crew.Run, crew.Crew, func(), error) {
+func (s *Server) launchSaved(ctx context.Context, crewID, label, revision string, admit func() error) (*crew.Run, crew.Crew, func(), error) {
 	noop := func() {}
 	if err := crew.ValidateLabel(label); err != nil {
 		return nil, crew.Crew{}, noop, launchRefusal(http.StatusBadRequest, "invalid_request", err.Error())
@@ -332,6 +346,9 @@ func (s *Server) launchSaved(ctx context.Context, crewID, label string, admit fu
 	c, err := s.crews.Get(crewID)
 	if err != nil {
 		return nil, crew.Crew{}, noop, crewStoreErr{err}
+	}
+	if revision != "" && crew.Revision(c) != revision {
+		return nil, c, noop, launchRefusal(http.StatusConflict, "crew_changed", "the crew was saved since the copy this launch was read from: read it again")
 	}
 	if c.Managed() {
 		// A managed run needs the server's ledger, as its owner, and the
