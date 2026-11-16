@@ -19,11 +19,12 @@ test.describe.configure({ mode: 'serial' })
 const STUB_PROMPT = String.raw`(?m)^> ?[^\n]*\s*\z`
 
 test.beforeAll(async () => {
-  // Copies of the two stubs whose prompt the server knows; the catalog's own stubs have no prompt shape, so they take no message.
+  // Copies of the two stubs whose prompt the server knows, drawing what is typed in their own row as the agents do (STUB_TUI); the
+  // catalog's own stubs have no prompt shape, so they take no message.
   own = await ownServer('first-message', {
     agents: [
-      { id: 'prompted-untrusted', from: 'codex-untrusted', env: {}, promptShape: STUB_PROMPT },
-      { id: 'prompted', from: 'claude', env: {}, promptShape: STUB_PROMPT },
+      { id: 'prompted-untrusted', from: 'codex-untrusted', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
+      { id: 'prompted', from: 'claude', env: { STUB_TUI: '1' }, promptShape: STUB_PROMPT },
     ],
   })
 })
