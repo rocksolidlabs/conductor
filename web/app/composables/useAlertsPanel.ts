@@ -16,14 +16,15 @@ export function useAlertsPanel() {
 
 /**
  * `?alerts` on a page of the default layout opens the panel and is taken off the address, so a link (an old one to the Events page's
- * Routing tab among them) can open it. Called once, by the layout.
+ * Routing tab among them) can open it. While `held` (the page to connect stands in for the app) it waits in the address, and opens
+ * once the page holds a token. Called once, by the layout.
  */
-export function useAlertsFromAddress() {
+export function useAlertsFromAddress(held: () => boolean = () => false) {
   const route = useRoute()
   const router = useRouter()
   const panel = useAlertsPanel()
   watch(
-    () => 'alerts' in route.query,
+    () => 'alerts' in route.query && !held(),
     (asked) => {
       if (!asked) return
       panel.show()

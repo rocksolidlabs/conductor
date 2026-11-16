@@ -26,8 +26,6 @@ fs.shortcuts()
 const router = useRouter()
 const toast = useToast()
 const route = useRoute()
-// `?alerts` opens the Alerts panel (mounted below) and leaves the address.
-useAlertsFromAddress()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
 // The sidebar's collapsed state is the rail, and useSidebar (localStorage) is
@@ -207,6 +205,8 @@ const workbench = useWorkbenchToken()
 const connect = computed(() =>
   connectShown({ desktop: workbench.desktop, bridged: workbench.bridged.value, hasToken: workbench.hasToken.value, standing: workbench.standing.value }),
 )
+// `?alerts` opens the Alerts panel (mounted below) and leaves the address; while the connect page shows it waits for a token.
+useAlertsFromAddress(() => connect.value)
 // Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
 // held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
 onMounted(() =>

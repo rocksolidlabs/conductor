@@ -10,13 +10,78 @@ const refused = computed(() => admin.standing.value === 'refused')
 // The field starts from the token this browser keeps (none in the desktop app), as the dialog's does.
 onMounted(() => (draft.value = admin.kept()))
 
+/** The Escape this page sends to close what of the app is open over it: let through to the layers it is meant for. */
+let closing: KeyboardEvent | null = null
 // The app's keys (N, ?, the palette's, the G chords) belong to the app under the page: none of them opens anything over it. Taken
 // first and kept from every listener, the key still types, tabs and submits, which are the browser's own.
 function holdKeys(e: KeyboardEvent) {
+  if (e === closing) return
   e.stopImmediatePropagation()
 }
-onMounted(() => window.addEventListener('keydown', holdKeys, { capture: true }))
-onBeforeUnmount(() => window.removeEventListener('keydown', holdKeys, { capture: true }))
+
+/**
+ * What of the app is open over the page: its dialogs, slideovers, menus and popovers are dismissable layers, drawn at the body's end,
+ * outside the hidden app. Open, one would cover this page, hold the focus and keep the keys from it.
+ */
+const LAYER = '[data-dismissable-layer]'
+const layers = () => document.querySelectorAll(LAYER).length
+const field = useTemplateRef<{ inputRef?: HTMLInputElement | null }>('field')
+const root = useTemplateRef<HTMLElement>('root')
+/** The field takes the focus, unless the page already holds it (a person typing, tabbing to Connect). */
+function focusField() {
+  if (root.value?.contains(document.activeElement)) return
+  field.value?.inputRef?.focus()
+}
+/** Waits until fewer than `n` layers are open; false when none closed within a second (one busy, which waits for its answer). */
+async function fewer(n: number): Promise<boolean> {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 50))
+    if (layers() < n) return true
+  }
+  return false
+}
+let shutting = false
+let again = false
+/**
+ * Closes, top first, every overlay of the app that is open as the page appears (an Alerts panel, the Launch dialog, the palette, the
+ * phone's list) or that opens while it shows, each with the Escape its own layer closes on, then gives the field the focus. The close's
+ * own return of the focus (to what opened it, in the hidden app) comes first: the field is focused after it.
+ */
+async function closeOverlays() {
+  if (shutting) {
+    again = true
+    return
+  }
+  shutting = true
+  try {
+    do {
+      again = false
+      for (let n = layers(); n > 0; n = layers()) {
+        closing = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })
+        window.dispatchEvent(closing)
+        closing = null
+        if (!(await fewer(n))) break
+      }
+    } while (again)
+  } finally {
+    shutting = false
+  }
+  focusField()
+}
+// An overlay the app opens while the page shows is drawn at the body's end too: it is closed as it comes.
+let watcher: MutationObserver | undefined
+onMounted(() => {
+  window.addEventListener('keydown', holdKeys, { capture: true })
+  watcher = new MutationObserver(() => {
+    if (layers()) void closeOverlays()
+  })
+  watcher.observe(document.body, { childList: true })
+  void closeOverlays()
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', holdKeys, { capture: true })
+  watcher?.disconnect()
+})
 
 function connect() {
   if (draft.value.trim()) admin.set(draft.value)
@@ -24,7 +89,7 @@ function connect() {
 </script>
 
 <template>
-  <main class="flex min-h-dvh items-center justify-center bg-default p-4 sm:p-8" aria-labelledby="connect-title" data-connect-page>
+  <main ref="root" class="flex min-h-dvh items-center justify-center bg-default p-4 sm:p-8" aria-labelledby="connect-title" :data-standing="admin.standing.value || undefined" data-connect-page>
     <div class="flex w-full max-w-md flex-col gap-6">
       <div class="flex flex-col items-center gap-3 text-center">
         <img src="/brand/conductor-mark.svg" alt="" class="size-12 dark:hidden" data-connect-mark="light" />
@@ -35,7 +100,7 @@ function connect() {
       <UAlert v-if="refused" color="warning" variant="subtle" icon="i-lucide-key-round" title="The server refused the token this browser keeps. Paste the one it uses now." data-connect-refused />
       <form class="flex flex-col gap-3" @submit.prevent="connect">
         <UFormField label="Workbench token" name="token">
-          <UInput v-model="draft" type="password" autocomplete="off" placeholder="paste the workbench token" size="lg" class="w-full" autofocus />
+          <UInput ref="field" v-model="draft" type="password" autocomplete="off" placeholder="paste the workbench token" size="lg" class="w-full" autofocus />
         </UFormField>
         <UButton label="Connect" type="submit" size="lg" block :disabled="!draft.trim()" class="pointer-coarse:min-h-11" data-connect-submit />
       </form>

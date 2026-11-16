@@ -163,3 +163,48 @@ test("the menu's Workbench token… opens the dialog over the working app, with 
   )
   await expect(phone.locator('[data-bottom-bar]')).toBeVisible()
 })
+
+const field = (page: Page) => tokenAsk(page).getByPlaceholder('paste the workbench token')
+
+test('with no token, an address that opens Alerts opens nothing over the page to connect: the field has the focus, and the panel opens once a token is given', async ({ browser, state }) => {
+  budget(10 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, token: false, path: '/crews?alerts', ready: '[data-connect-page]', server: state })
+  // The field focused is the page's last step (what was open closed first); the address keeps what it asks for, for later.
+  await expect(field(page)).toBeFocused()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/crews\?alerts$/)
+  // Escape closes nothing and leaves the focus where it is; typing goes to the field.
+  await page.keyboard.press('Escape')
+  await expect(tokenAsk(page)).toBeVisible()
+  await expect(field(page)).toBeFocused()
+  await page.keyboard.type(state.token)
+  await expect(field(page)).toHaveValue(state.token)
+  await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+  await expect(tokenAsk(page)).toHaveCount(0)
+  // A token held: the panel the address asked for opens, and the address loses it.
+  await expect(page.getByRole('dialog', { name: 'Alerts' })).toBeVisible()
+  await expect(page).toHaveURL(/\/crews$/)
+})
+
+test('a refusal while Alerts or the Launch dialog is open closes it: the page to connect is all there is, its field has the focus, and Escape is harmless', async ({ browser, state }) => {
+  budget(2 * 12 * STEP_MS)
+  const opens: Array<[string, (page: Page) => Promise<void>]> = [
+    ['Alerts', async (page) => void (await page.goto('/crews?alerts'))],
+    ['Launch agent', (page) => page.keyboard.press('n')],
+  ]
+  for (const [name, open] of opens) {
+    const page = await dayPage(browser, { ...DESK, path: '/crews', server: state })
+    const refuser = await refuseNext(page, state.token)
+    await open(page)
+    await expect(page.getByRole('dialog', { name }), name).toBeVisible()
+    await refusedOn(page, refuser)
+    await expect(field(page), name).toBeFocused()
+    await expect(page.getByRole('dialog'), name).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(field(page), name).toBeFocused()
+    await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+    await expect(tokenAsk(page), name).toHaveCount(0)
+    await expect(page.locator('#dashboard-sidebar-main'), name).toBeVisible()
+    await page.context().close()
+  }
+})
