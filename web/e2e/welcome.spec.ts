@@ -150,7 +150,8 @@ test("step 1 offers the first four agents the server can launch, in the catalog'
   await buttons.first().click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByRole('radio', { checked: true })).toHaveText(first[0]!.name)
+  // The radio holds the agent's avatar beside its name.
+  await expect(dialog.getByRole('radio', { checked: true })).toContainText(first[0]!.name)
 })
 
 test('Where things are lists the pages of the nav, in its order, each with the sentence its tooltip says', async ({ browser }) => {
@@ -170,8 +171,12 @@ test('Where things are lists the pages of the nav, in its order, each with the s
   const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })
   for (const [i, label] of labels.entries()) {
     const about = abouts[i]!.trim().replace(/\.$/, '')
+    const want = tip(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`)
     await nav.nth(i).hover()
-    await expect(tip(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`), `${label}'s tooltip`).toBeVisible()
+    await expect(want, `${label}'s tooltip`).toBeVisible()
+    // Away from the nav, the tooltip closed and gone before the next label is hovered: one open at a time.
+    await page.mouse.move(1000, 450)
+    await expect(page.locator('[data-slot="content"] [data-slot="text"]'), `${label}'s tooltip closed`).toHaveCount(0)
   }
 })
 
@@ -189,14 +194,22 @@ test('the examples say what loading them does, on the welcome, on Crews and in t
     const crewsEmpty = page.locator('[data-crews-empty]')
     await expect(crewsEmpty.getByRole('button', { name: 'Load the examples' })).toBeVisible()
     await expect(crewsEmpty.locator('[data-examples-line]')).toHaveText(line)
-    // The palette, from the Crews page: its own group's row and the Crews group's row say them as their detail.
-    await page.keyboard.press('Alt+/')
+    // The palette: on the Crews page its own group's row, and from the home the runs-and-crews mode's (#) row, say them as their detail.
     const palette = page.locator('[data-palette]')
-    await expect(palette).toBeVisible()
-    await palette.locator('input[data-palette-input]').fill('example')
-    for (const key of ['page:examples', 'crews:examples']) await expect(palette.locator(`[data-palette-row="${key}"] [data-palette-detail]`), key).toHaveText(line)
-    await page.keyboard.press('Escape')
-    await expect(palette).toHaveCount(0)
+    const paletteSays = async (key: string, query: string) => {
+      await page.keyboard.press('Alt+/')
+      await expect(palette).toBeVisible()
+      const input = palette.locator('input[data-palette-input]')
+      await input.fill(query)
+      await expect(input).toHaveValue(query)
+      await expect(palette.locator(`[data-palette-row="${key}"] [data-palette-detail]`), key).toHaveText(line)
+      await page.keyboard.press('Escape')
+      await expect(palette).toHaveCount(0)
+    }
+    await paletteSays('page:examples', 'example')
+    await page.goto('/')
+    await settled(page)
+    await paletteSays('crews:examples', '#example')
 
     // The welcome's Load the example crews lands on Crews, listing them.
     await page.goto('/')

@@ -4,6 +4,7 @@ import { QUICK_START_URL } from '~/utils/about'
 import { agentIcon } from '~/utils/agentIcons'
 import { pageRequests, settleChecks, welcomeAgents } from '~/utils/agents'
 import { EXAMPLES_LINE } from '~/utils/crews'
+import { needsRowShown } from '~/utils/needsYou'
 import { navPages } from '~/utils/pages'
 
 // The first-run welcome (#359; the UX review's P17): what Conductor is in one sentence, then three steps, the first filled (the
@@ -18,8 +19,17 @@ const launch = useLaunchModal()
 const desktop = useDesktop()
 const brakeman = useBrakeman()
 
-/** The pages of the nav in this window, as the layout lists them (Settings in the desktop app, Brakeman while the server has it). */
-const where = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value }))
+const inbox = useInbox()
+const needs = useNeedsYou()
+const route = useRoute()
+const now = useNow()
+/**
+ * The pages of the nav in this window, by the layout's rule: Settings in the desktop app, Brakeman while the server has it, Needs you
+ * while its row shows (needsRowShown).
+ */
+const where = computed(() =>
+  navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value, needs: needsRowShown(inbox.state.value, needs.list.value, route.path, now.value) }),
+)
 
 // The agents: the server's quick answer (#704), each agent still checked filled in as its own read answers, as the Agents page does.
 const catalog = ref<AgentInfo[] | null>(null)

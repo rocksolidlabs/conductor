@@ -720,7 +720,10 @@ usePalette().registerPage(() => ({
             ]"
             :data-crews-empty="crewsState === 'empty' ? '' : undefined"
             @again="refresh"
-          />
+          >
+            <!-- What Load the examples does, in the welcome's words (the UX review's P17). -->
+            <p v-if="crewsState === 'empty'" class="text-sm text-muted" data-examples-line>{{ EXAMPLES_LINE }}</p>
+          </PageEmpty>
           <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green still going, grey ended, lighter grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
