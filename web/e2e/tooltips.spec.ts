@@ -25,16 +25,21 @@ for (const theme of ['dark', 'light'] as const) {
     try {
       const page = await dayPage(browser, { path: `/sessions/${s.id}`, theme })
       const more = page.locator('[data-more-button]')
-      const tip = page.getByRole('tooltip', { name: 'More', exact: true })
+      // The tooltip by its role (reka keeps the role on a copy of the words for the button's description, hidden from the tree) and
+      // the box drawn around it.
+      const anyTip = page.getByRole('tooltip', { includeHidden: true })
+      const tip = page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { name: 'More', exact: true, includeHidden: true }) })
       await expect(more).toHaveAccessibleName('More')
-      await expect(page.getByRole('tooltip')).toHaveCount(0)
+      await expect(anyTip).toHaveCount(0)
 
       // On hover.
       await more.hover()
       await expect(tip).toBeVisible()
+      await expect(tip.locator('[data-slot="text"]')).toHaveText('More')
+      await expect(more).toHaveAccessibleDescription('More')
       // Off it, the tooltip is gone before the next is asked for (a closing tooltip is still drawn through its animation).
       await page.locator('[data-session-title]').hover()
-      await expect(page.getByRole('tooltip')).toHaveCount(0)
+      await expect(anyTip).toHaveCount(0)
 
       // On focus by Tab. The page focuses its terminal on load, and the terminal keeps Tab: wait for that focus, then move it off
       // with a click on the page's header before tabbing from the button beside More.

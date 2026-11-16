@@ -32,6 +32,15 @@ python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make we
 python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
 ```
 
+`npm --prefix web test` runs the design system's rule checks among the
+app's tests: `web/app/utils/designRules.test.ts` reads the app's sources
+and `docs/design/system.md` and fails when a rule is broken (an icon-only
+button with no tooltip, a cut whose box does not set its width, a state
+mapped to a status colour outside `utils/status.ts`, a zinc grey) or when
+the file and the code disagree (a rule with no mark, the Status table
+against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each rule of
+`system.md` names its checks.
+
 The race tests' `-timeout 60m` catches a hang; it is not a speed target.
 go test's default, ten minutes a package, is less than `internal/api` takes
 on a machine shared with other runs: 17.7 minutes in a run of the whole
