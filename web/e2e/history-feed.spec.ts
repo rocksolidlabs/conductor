@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, pageTitle, test } from './fixtures'
 
 // History's Feed (the UX review's P12): the live feed of what agents report, the retired Events page's, as History's second view
 // (`?view=feed`). It names a crew member as "<crew> / <member>" and offers Answer on what needs you; beside it the last hour, where
@@ -74,7 +74,8 @@ test("History's Feed names crew members, offers Answer, fills the last hour besi
   await expect(feed).toBeVisible()
   await expect(view(page, 'Feed')).toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('[data-history-feed-caption]')).toHaveText('Since this tab opened')
-  await expect(page).toHaveTitle(/^History · Feed\b/)
+  // The title's page part: a count of what needs you may lead it ("(2) History · Feed · Conductor").
+  await expect.poll(() => pageTitle(page)).toMatch(/^History · Feed\b/)
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   const ask = () => feed.locator('[data-event="needs_input"]').filter({ hasText: 'e2e history feed / review' }).first()

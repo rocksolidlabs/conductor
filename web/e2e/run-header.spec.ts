@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { dayPage, expect, test, type DayPageOptions } from './fixtures'
 import { inboxItem, stubInbox } from './inbox-stub'
 import { inside, noOverlap, noSideways, probeColour, tabTo, uncut } from './layout'
-import { ledgerRun, legacyRun, runInfo, serveRun, type StubRun } from './run-fixtures'
+import { LEDGER_HOLD, ledgerRun, legacyRun, runInfo, serveRun, type StubRun } from './run-fixtures'
 
 // A run's header (UX1's PR-9, docs/plans/ux-review.md: P7, D2), on runs served from run-fixtures.ts: row one holds the name whole,
 // one ticket chip and the run's actions, nothing under a button; row two, at every width, what the run is doing, its people and
@@ -15,7 +15,10 @@ const NAME = 'Reconcile the ledger after the schema five cutover, each host'.sli
 async function ledgerPage(browser: Parameters<typeof dayPage>[0], o: DayPageOptions & { soak?: string } = {}): Promise<{ page: Page; run: StubRun; header: Locator }> {
   const run = ledgerRun({ name: NAME, ...(o.soak ? { soak: o.soak } : {}) })
   const page = await dayPage(browser, { path: '/', ...o })
-  await stubInbox(page, [inboxItem('decision', { ref: 'decision:dr-1', run, task: 'release-notes', origin: 'plan', question: 'May release-notes ship?' }), inboxItem('task', { run, task: 'migrate' })])
+  // The decision is the one that holds release-notes (LEDGER_HOLD), an id the day's server never issues: the day's dr-1 is the
+  // clarification a real session mirrors once the day's waiting part is built, and the one list counted the stub's item as that
+  // session's question, not this run's.
+  await stubInbox(page, [inboxItem('decision', { ref: `decision:${LEDGER_HOLD}`, run, task: 'release-notes', origin: 'plan', question: 'May release-notes ship?' }), inboxItem('task', { run, task: 'migrate' })])
   await serveRun(page, run)
   await page.goto(`/runs/${run.id}`)
   const header = page.locator('[data-crew-run-header]')
