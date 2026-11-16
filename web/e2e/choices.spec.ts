@@ -93,7 +93,7 @@ test("the wall queue wraps a question's choices onto lines of their own: none is
   await expect(card.locator('[data-queue-message]')).toHaveText('Run git status again?')
   await expect(card.locator('button[data-choice-mode]')).toHaveCount(1)
   await inside([...labels, mode], 'asked again', mode)
-  await expect(choice(mode)).toHaveAttribute('title', `${mode} (changes the session's permission mode)`)
+  await expect(choice(mode)).toHaveAttribute('title', `${mode} (allows from now on, not this request alone)`)
   for (const label of labels) await expect(choice(label)).toHaveAttribute('title', label)
 })
 
