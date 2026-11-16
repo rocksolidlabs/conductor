@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
@@ -603,7 +603,7 @@ usePalette().registerPage(() => ({
   label: 'Crews',
   rows: [
     { key: 'page:new', label: 'New crew', icon: 'i-lucide-plus', run: newCrew },
-    { key: 'page:examples', label: 'Load the example crews', icon: 'i-lucide-package-open', run: loadExamples },
+    { key: 'page:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: loadExamples },
     ...crews.value.map((c) => ({
       key: `page:launch:${c.id}`,
       label: `Launch ${c.name}`,

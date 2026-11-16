@@ -273,6 +273,20 @@ open deferred item from rounds 1 and 2, then the features below.
   kept yet."; its search caption folds to "About this page" (`PageAbout`)
   once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
   `history.test.ts`).
+- **A welcome that teaches (#945; the UX review's P17, part of #374).** A
+  server with no session at all shows the welcome on the home and, on a
+  phone, on the Sessions page in place of the list's empty line: what
+  Conductor is in one sentence, then three steps. Launch an agent offers
+  the first four agents the server can launch, in the catalog's order, each
+  with the version its check found (`welcomeAgents`), and "and N more" for
+  the rest; an agent not installed is never offered. Bring one in from
+  another machine says to run `conductor host` there and links the README's
+  Quick start. Try a crew loads the example crews and says what that does
+  (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
+  load them say too. "Where things are" lists each page of the nav with the
+  sentence its tooltip says (`navPages`). Settings left the card
+  (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
+  `empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`

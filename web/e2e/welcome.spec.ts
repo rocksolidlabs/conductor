@@ -1,61 +1,212 @@
-import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import type { Locator, Page } from '@playwright/test'
+import { budget, dayPage, expect, test, useTheme } from './fixtures'
+import { inside, noSideways, tapTarget, uncut } from './layout'
+import { ownServer, type OwnServer } from './own-server'
+import { START_WAIT_MS } from './server'
 
-// The first screens of a new install (#906): the welcome card, whose three choices show their words whole (the first point of
-// #374), and the workbench token's dialog, which says where the token is as the server says it.
+// The first screens of a new install (the UX review's P17; #906 before it): the welcome says what Conductor is in one sentence, then
+// three steps (the agents this machine has, each with its version; another machine's terminal brought in; the example crews), then
+// "Where things are", each page of the nav with the sentence its tooltip says. Every choice says what it does, here and where the
+// examples are offered elsewhere (Crews, the palette). And the workbench token's dialog, which says where the token is as the server
+// says it.
 
-/**
- * The page as a server with no session at all shows it: the event stream refused, so the page reads the list, which is empty. The
- * server the specs share has sessions other specs left; this page sees none of them.
- */
-async function noSessions(page: Page) {
-  await page.route('**/api/events*', (r) => r.abort())
-  await page.route('**/api/sessions', (r) => (r.request().method() === 'GET' ? r.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[]}' }) : r.fallback()))
+/** An expect's bound and an action's (the config's expect timeout). */
+const STEP_MS = 15_000
+
+const SENTENCE = 'Conductor runs your coding agents in terminals on this machine, and lets you watch, answer and share them from any browser.'
+const STEPS = ['Launch an agent', 'Bring one in from another machine', 'Try a crew']
+
+/** An agent of GET /api/catalog, the fields this spec reads. */
+interface CatalogAgent {
+  id: string
+  name: string
+  available?: boolean
+  checking?: boolean
+  identity?: { identified?: boolean; version?: string }
 }
 
-/**
- * The welcome's three choices, each label whole and inside the card, at one width each, either all in one row or one to a row:
- * never two in a row with the third stretched under them (#906).
- */
-async function choicesWhole(page: Page, at: string) {
-  const card = page.locator('[data-welcome]')
-  await expect(card, at).toBeVisible({ timeout: 15_000 })
-  const inside = (await card.boundingBox())!
-  const boxes = []
-  for (const label of ['Launch agent', 'Load the example crews', 'Settings']) {
-    // Settings goes to a page: a link drawn as a button.
-    const choice = card.getByRole(label === 'Settings' ? 'link' : 'button', { name: label, exact: true })
-    await expect(choice, `${label} ${at}`).toBeVisible()
-    // "Load the example crews", not "Load the ex…".
-    expect(await choice.locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth), `${label} whole ${at}`).toBe(true)
-    const box = (await choice.boundingBox())!
-    expect(box.x, `${label} ${at}`).toBeGreaterThanOrEqual(inside.x)
-    expect(box.x + box.width, `${label} ${at}`).toBeLessThanOrEqual(inside.x + inside.width)
-    boxes.push(box)
+// A server with no session at all, shared by the cases that only read it; the case that loads the examples starts one of its own,
+// so that the crews it adds reach no other case.
+let emptyOne: OwnServer | undefined
+async function empty(): Promise<OwnServer> {
+  if (!emptyOne) {
+    budget(START_WAIT_MS)
+    emptyOne = await ownServer('welcome')
   }
-  const widths = boxes.map((b) => Math.round(b.width))
-  expect(Math.max(...widths) - Math.min(...widths), `equal widths ${at}: ${widths.join(', ')}`).toBeLessThanOrEqual(1)
-  const tops = new Set(boxes.map((b) => Math.round(b.y)))
-  expect([1, 3], `one row or one to a row ${at}: ${[...tops].join(', ')}`).toContain(tops.size)
+  return emptyOne
+}
+test.afterAll(async () => {
+  await emptyOne?.stop()
+  emptyOne = undefined
+})
+
+/** The catalog once the server has checked every agent: GET /api/catalog waits for the checks (about 4 s at most), read until none is still checking. */
+async function settledCatalog(srv: OwnServer): Promise<CatalogAgent[]> {
+  let agents: CatalogAgent[] = []
+  await expect
+    .poll(
+      async () => {
+        agents = (await srv.api.ok<{ agents: CatalogAgent[] }>('GET', '/api/catalog')).agents
+        return agents.filter((a) => a.checking).map((a) => a.id)
+      },
+      { message: 'every agent checked', timeout: 30_000 },
+    )
+    .toEqual([])
+  return agents
 }
 
-// The Yard drew the card too, and the phone's case opened it there: the Yard draws its own empty shape now (UX1 PR-22: the welcome is
-// the home's alone), so a phone has no card to measure until the welcome is placed where a phone shows it (PR-30).
-for (const [where, path, sizes] of [['the desktop app\'s first window', '/', [[1440, 900], [1024, 768]]]] as const) {
-  test(`the welcome card shows each choice's words whole, at equal widths, in ${where}, and again as the window changes`, async ({ page }) => {
-    const [[w, h], ...then] = sizes
-    await page.setViewportSize({ width: w, height: h })
-    await noSessions(page)
-    await page.goto(path)
-    await choicesWhole(page, `at ${w} × ${h}`)
-    // The window resized: the card is drawn again at each width, and its choices still read whole.
-    for (const [nw, nh] of then) {
-      await page.setViewportSize({ width: nw, height: nh })
-      await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(nw)
-      await choicesWhole(page, `resized to ${nw} × ${nh}`)
-    }
-  })
+/** The welcome drawn with its agents settled: nothing still looked for, no agent still checked. */
+async function settled(page: Page): Promise<Locator> {
+  const card = page.locator('[data-welcome-card]')
+  await expect(card).toBeVisible()
+  await expect(card.locator('[data-welcome-looking]')).toHaveCount(0)
+  await expect(card.locator('[data-welcome-checking]')).toHaveCount(0)
+  return card
 }
+
+/** Each match of `parts`, scrolled into view in its list, whole and inside `card`: a card taller than the window is read part by part. */
+async function wholeIn(parts: Locator, card: Locator, at: string) {
+  const n = await parts.count()
+  expect(n, `${at}: ${parts} drawn`).toBeGreaterThan(0)
+  for (let i = 0; i < n; i++) {
+    const part = parts.nth(i)
+    await part.scrollIntoViewIfNeeded()
+    await uncut(part)
+    await inside(part, card)
+  }
+}
+
+/**
+ * The welcome read whole at the window's size: the sentence, the three steps by their labels and "Where things are"; each step's label
+ * and each agent's name whole and inside the card; nothing scrolls sideways; under touch each control is big enough to tap.
+ */
+async function welcomeWhole(page: Page, at: string, touch = false) {
+  const card = await settled(page)
+  await expect(card.locator('[data-welcome-sentence]'), at).toHaveText(SENTENCE)
+  await expect(card.locator('[data-welcome-step-label]'), at).toHaveText(STEPS)
+  await expect(card.locator('[data-welcome-where] h3'), at).toHaveText('Where things are')
+  await wholeIn(card.locator('[data-welcome-step-label]'), card, at)
+  await wholeIn(card.locator('[data-welcome-agent-name]'), card, at)
+  await wholeIn(card.locator('[data-welcome-agent], [data-welcome-examples], [data-welcome-host]'), card, at)
+  await noSideways(page)
+  if (touch) {
+    const controls = card.locator('button, a')
+    for (let i = 0; i < (await controls.count()); i++) {
+      await controls.nth(i).scrollIntoViewIfNeeded()
+      await tapTarget(controls.nth(i))
+    }
+  }
+}
+
+test('the welcome shows the sentence, three steps and Where things are, each whole, at 1440 and 1024 wide and in both themes, and again as the window changes', async ({ browser }) => {
+  const srv = await empty()
+  budget(3 * 12 * STEP_MS)
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+  await welcomeWhole(page, 'at 1440 × 900, dark')
+  // The theme switched as the app keeps it: the card drawn again, every part read again after that redraw.
+  await useTheme(page, 'light')
+  await welcomeWhole(page, 'at 1440 × 900, light')
+  // The window resized: the card is drawn again at the new width, and its parts still read whole.
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1024)
+  await welcomeWhole(page, 'resized to 1024 × 768')
+})
+
+test("a phone's Sessions page on a server with no session shows the welcome in place of the list's empty line, each control a target to tap", async ({ browser }) => {
+  const srv = await empty()
+  budget(2 * 20 * STEP_MS)
+  for (const theme of ['dark', 'light'] as const) {
+    const page = await dayPage(browser, { width: 390, height: 844, touch: true, theme, path: '/sessions', server: srv.started })
+    await welcomeWhole(page, `at 390 × 844, ${theme}`, true)
+    await expect(page.locator('[data-sidebar-empty]')).toHaveCount(0)
+    await page.context().close()
+  }
+})
+
+test("step 1 offers the first four agents the server can launch, in the catalog's order with their versions, and the rest in one line", async ({ browser }) => {
+  const srv = await empty()
+  budget(8 * STEP_MS)
+  const catalog = await settledCatalog(srv)
+  const found = catalog.filter((a) => a.available !== false)
+  const first = found.slice(0, 4)
+  expect(first.length, 'the e2e catalog has agents the server can launch').toBeGreaterThan(0)
+
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+  const card = await settled(page)
+  const buttons = card.locator('[data-welcome-agent]')
+  await expect(buttons).toHaveCount(first.length)
+  expect(await buttons.evaluateAll((els) => els.map((e) => e.getAttribute('data-welcome-agent')))).toEqual(first.map((a) => a.id))
+  for (const [i, a] of first.entries()) {
+    await expect(buttons.nth(i).locator('[data-welcome-agent-name]')).toHaveText(a.name)
+    const version = a.identity?.identified ? a.identity.version : undefined
+    if (version) await expect(buttons.nth(i).locator('[data-welcome-version]'), `${a.id}'s version`).toHaveText(version)
+    else await expect(buttons.nth(i).locator('[data-welcome-version]'), `${a.id} has no version`).toHaveCount(0)
+  }
+  const rest = found.length - first.length
+  if (rest) await expect(card.locator('[data-welcome-more]')).toHaveText(`and ${rest} more`)
+  else await expect(card.locator('[data-welcome-more]')).toHaveCount(0)
+
+  // The first agent's button opens the Launch dialog with that agent picked.
+  await buttons.first().click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('radio', { checked: true })).toHaveText(first[0]!.name)
+})
+
+test('Where things are lists the pages of the nav, in its order, each with the sentence its tooltip says', async ({ browser }) => {
+  const srv = await empty()
+  budget(20 * STEP_MS)
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+  const card = await settled(page)
+  const where = card.locator('[data-where-page]')
+  const labels = await where.locator('[data-where-label]').allTextContents()
+  const abouts = await where.locator('[data-where-about]').allTextContents()
+  const sidebar = page.locator('#dashboard-sidebar-main')
+  const nav = sidebar.locator('[data-nav-label]')
+  // The same pages as the nav, in its order.
+  expect(labels.length).toBeGreaterThan(0)
+  await expect(nav).toHaveText(labels)
+  // Each line is the nav's tooltip, read from the page: hovered, the label's tooltip says "Label: its sentence".
+  const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })
+  for (const [i, label] of labels.entries()) {
+    const about = abouts[i]!.trim().replace(/\.$/, '')
+    await nav.nth(i).hover()
+    await expect(tip(`${label}: ${about.charAt(0).toLowerCase()}${about.slice(1)}`), `${label}'s tooltip`).toBeVisible()
+  }
+})
+
+test('the examples say what loading them does, on the welcome, on Crews and in the palette, and the welcome loads them onto Crews', async ({ browser }) => {
+  budget(START_WAIT_MS + 16 * STEP_MS)
+  const srv = await ownServer('welcome-examples')
+  try {
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+    const card = await settled(page)
+    const line = (await card.locator('[data-examples-line]').textContent())!.trim()
+    expect(line).not.toBe('')
+
+    // Crews with nothing on it: the same words under its Load the examples.
+    await page.goto('/crews')
+    const crewsEmpty = page.locator('[data-crews-empty]')
+    await expect(crewsEmpty.getByRole('button', { name: 'Load the examples' })).toBeVisible()
+    await expect(crewsEmpty.locator('[data-examples-line]')).toHaveText(line)
+    // The palette, from the Crews page: its own group's row and the Crews group's row say them as their detail.
+    await page.keyboard.press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette).toBeVisible()
+    await palette.locator('input[data-palette-input]').fill('example')
+    for (const key of ['page:examples', 'crews:examples']) await expect(palette.locator(`[data-palette-row="${key}"] [data-palette-detail]`), key).toHaveText(line)
+    await page.keyboard.press('Escape')
+    await expect(palette).toHaveCount(0)
+
+    // The welcome's Load the example crews lands on Crews, listing them.
+    await page.goto('/')
+    await (await settled(page)).locator('[data-welcome-examples]').click()
+    await expect(page).toHaveURL(/\/crews$/)
+    await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app"] [data-crew-item]')).toBeVisible()
+  } finally {
+    await srv.stop()
+  }
+})
 
 test('the token dialog says where the server keeps a token it made: it prints the file\'s path, never the token', async ({ browser }) => {
   // A browser with no token: the page asks for it.
