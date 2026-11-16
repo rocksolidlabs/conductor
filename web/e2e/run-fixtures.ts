@@ -167,6 +167,99 @@ export function runInfo(o: { tasks: 6 | 40 | 128; states?: TaskState[] }): StubR
   }
 }
 
+/** A task of a stub run named `id` in `state`, made as runInfo makes its tasks, with what it needs and who owns its outcome. */
+function namedTask(run: string, n: number, i: number, id: string, state: TaskState, o: { needs?: string[]; owner?: string; ownerFrom?: string; attempt?: number; session?: string } = {}): StubTask {
+  const t = stubTask(run, n, id, i, state)
+  if (o.needs?.length) t.needs = o.needs
+  else delete t.needs
+  if (state === 'blocked') t.reason = `needs ${o.needs?.join(', ') ?? 'nothing yet'}`
+  if (o.owner) Object.assign(t, { owner: o.owner, ownerFrom: o.ownerFrom ?? 'acceptance' })
+  if (o.attempt && t.attempt && o.attempt !== t.attempt.n) {
+    t.attempt = { ...t.attempt, n: o.attempt, branch: `crew/${run}/${id}.${o.attempt}`, worktree: `/stub/.conductor/worktrees/${run}/${id}.${o.attempt}` }
+    t.attempts = o.attempt
+  }
+  if (o.session && t.attempt) t.attempt.sessionId = o.session
+  return t
+}
+
+/**
+ * The Ledger run: six tasks in this order: schema (done); naming (done) and backfill (checking, on attempt 2), which need schema; soak
+ * (running on attempt 1, its attempt's session `soak`, a session the spec starts), which needs nothing; migrate (failed out of its
+ * attempts, Retry and Accept named) and release-notes (ready, held by the open decision `hold`), which need naming. Every task's
+ * outcome is ana's as the acceptance owner but migrate's, which the task names nate. `name` is the crew's (60 characters at most),
+ * `startedAt` when it started (now, when not given). Shared by the run header's, the task rows' and the line diagram's specs.
+ */
+export function ledgerRun(o: { name?: string; startedAt?: string; soak?: string; hold?: { id: string; question: string } } = {}): StubRun {
+  const run = runInfo({ tasks: 6 })
+  const n = made
+  const own = { owner: 'ana', ownerFrom: 'acceptance' }
+  const hold = o.hold ?? { id: 'dr-1', question: 'May release-notes ship?' }
+  const notes = namedTask(run.id, n, 5, 'release-notes', 'ready', { needs: ['naming'], ...own })
+  notes.reason = `waits for decision ${hold.id}`
+  notes.holds = [{ id: hold.id, type: 'approval', state: 'open', question: hold.question }]
+  run.tasks = [
+    namedTask(run.id, n, 0, 'schema', 'succeeded', own),
+    namedTask(run.id, n, 1, 'naming', 'succeeded', { needs: ['schema'], ...own }),
+    namedTask(run.id, n, 2, 'backfill', 'verifying', { needs: ['schema'], attempt: 2, ...own }),
+    namedTask(run.id, n, 3, 'soak', 'running', { ...own, ...(o.soak ? { session: o.soak } : {}) }),
+    namedTask(run.id, n, 4, 'migrate', 'failed', { needs: ['naming'], owner: 'nate', ownerFrom: 'task' }),
+    notes,
+  ]
+  run.people = [
+    { name: 'ana', responsibilities: ['acceptance'] },
+    { name: 'nate', responsibilities: ['architecture'] },
+  ]
+  run.name = o.name ?? 'Ledger migration'
+  run.label = run.name
+  run.startedAt = o.startedAt ?? new Date().toISOString()
+  run.members = stubMembers(run.id, run.tasks)
+  return run
+}
+
+/**
+ * A run of members and no tasks (a crew without tasks, launched by hand): four members of the catalog's worker-cli, each running in a
+ * session of its own. Options: `name`, `paused` with `pausedWhy`, `record` (a run the server no longer holds, read-only), `startedAt`.
+ * Add agent is offered on it (runOffer), as on any live run of members.
+ */
+export function legacyRun(o: { name?: string; record?: boolean; startedAt?: string } = {}): StubRun {
+  const n = ++made
+  const id = `stub-crew-${(0x2000_0000 + n).toString(16)}`
+  const name = o.name ?? 'Stub crew of four'
+  const startedAt = o.startedAt ?? new Date(Date.now() - 15 * 60_000).toISOString()
+  const run: StubRun = {
+    id,
+    crewId: 'stub-crew',
+    name,
+    label: name,
+    goal: 'four members at work',
+    cwd: '/stub',
+    isolation: 'worktree',
+    startedAt,
+    yolo: false,
+    state: 'running',
+    needsInput: 0,
+    members: MEMBERS.map((m, k) => ({
+      name: m,
+      agentId: 'worker-cli',
+      start: { when: 'immediately' },
+      sessionId: hex(n * 0x10000 + k, 16),
+      branch: `crew/${id}/${m}`,
+      worktree: `/stub/.conductor/worktrees/${id}/${m}`,
+      status: 'running',
+      startedAt,
+      agentSession: { id: `${hex(k + 1, 8)}-0000-4000-8000-${hex(n, 12)}`, resumable: false, source: 'set' },
+      base: COMMIT(1),
+      diff: { added: 0, removed: 0 },
+    })),
+    log: [{ at: startedAt, type: 'status', message: `launched ${name}: ${MEMBERS.length} members, ${MEMBERS.length} starting now` }],
+    managed: { revision: 0 },
+    tasks: [],
+  }
+  // A run of members has no ledger: no `managed`, no tasks.
+  const { managed: _m, tasks: _t, ...members } = run
+  return { ...(members as StubRun), ...(o.record ? { record: true, state: 'stopped', stoppedAt: new Date().toISOString() } : {}) }
+}
+
 /** The run as GET /api/runs lists it: the read's own parts (its chat, each member's diff) left out. */
 export function listedRun(run: StubRun): Record<string, unknown> {
   const { chat: _chat, ...rest } = run
@@ -176,7 +269,7 @@ export function listedRun(run: StubRun): Record<string, unknown> {
 /** The decisions that hold the run's tasks (task `holds`), as GET /api/runs/{run} and a task's read list them: none when none does. */
 function heldBy(run: StubRun, task?: string): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = []
-  for (const t of run.tasks) {
+  for (const t of run.tasks ?? []) {
     if (task && t.id !== task) continue
     for (const h of t.holds ?? []) {
       if (out.some((d) => d.id === h.id)) continue
@@ -215,6 +308,8 @@ export interface ServedRun {
   readonly answered: string[]
   /** Every /api/ request the page made that the module did not answer (a read under a run answered 404 is among them). */
   readonly unanswered: string[]
+  /** Every task command the page sent (POST /api/runs/<id>/tasks/<task>/<command>), each answered done. */
+  readonly commands: Array<{ task: string; command: string; commandId: string }>
 }
 
 const fulfil = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -222,16 +317,18 @@ const refusal = (code: string, message: string) => ({ error: { code, message } }
 
 /**
  * Answers the run page's reads of `runs` (one run, or several) as the server does: GET /api/runs (the server's list, each stub run
- * first in the list's form: the live store keeps only the runs it lists), GET /api/runs/<id> (the run, and the decisions that hold its
- * tasks), its candidates (paged by eight tasks; a task or an `after` that names none refused 400 as the server refuses them), its
- * links (none), a task (with its attempts), and GET /api/dispatch/links?run=<id> (no ticket). Any other request under /api/runs/<id>
- * is answered 404 and recorded; every other /api/ request it does not answer is recorded and goes on (to an earlier route, stubInbox's
+ * but a record first in the list's form: the live store keeps only the runs it lists), GET /api/runs/<id> (the run, `record` beside
+ * a record, and the decisions that hold its tasks), its candidates (paged by eight tasks; a task or an `after` that names none refused
+ * 400 as the server refuses them; none for a run of members), its links (none), a task (with its attempts), GET
+ * /api/dispatch/links?run=<id> (no ticket), and a task's command (answered done, and counted in `commands`). Any other request under
+ * /api/runs/<id> is answered 404 and recorded; every other /api/ request it does not answer is recorded and goes on (to an earlier route, stubInbox's
  * for the decisions, or the server). Set before the page loads.
  */
 export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<ServedRun> {
   const all = Array.isArray(runs) ? runs : [runs]
   const answered: string[] = []
   const unanswered: string[] = []
+  const commands: ServedRun['commands'] = []
   const candidates = (t: StubTask) => ({
     task: t.id,
     kind: t.kind,
@@ -255,10 +352,11 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
       if (req.method() === 'GET') {
         if (path === '/api/runs') {
           // The runs list, the live store's: the server's, with the stub's runs first (it would drop a run the list leaves out).
+          // A record is no run the live store lists.
           const real = await route.fetch()
           const body = (await real.json().catch(() => ({ runs: [] }))) as { runs?: Array<{ id: string }> }
           const theirs = (body.runs ?? []).filter((r) => !all.some((s) => s.id === r.id))
-          return answer(real.status(), { ...body, runs: [...all.map(listedRun), ...theirs] })
+          return answer(real.status(), { ...body, runs: [...all.filter((r) => !r.record).map(listedRun), ...theirs] })
         }
         if (path === '/api/dispatch/links') {
           const of = all.find((r) => r.id === u.searchParams.get('run'))
@@ -266,10 +364,13 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
         }
         if (run) {
           if (path === under) {
+            // A record is answered as the server answers one: the run, and `record` beside it.
             const decisions = heldBy(run)
-            return answer(200, { run, ...(decisions.length ? { decisions } : {}) })
+            const { record, ...held } = run
+            return answer(200, { run: held, ...(record ? { record: true } : {}), ...(decisions.length ? { decisions } : {}) })
           }
           if (path === `${under}/links`) return answer(200, { links: [] })
+          if (path === `${under}/candidates` && !run.managed) return answer(200, { run: run.id, managed: false, base: '', candidates: [] })
           if (path === `${under}/candidates`) {
             const task = u.searchParams.get('task')
             if (task) {
@@ -285,15 +386,23 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
           }
           const task = path.startsWith(`${under}/tasks/`) ? decodeURIComponent(path.slice(`${under}/tasks/`.length)) : ''
           if (task && !task.includes('/')) {
-            const t = run.tasks.find((x) => x.id === task)
+            const t = run.tasks?.find((x) => x.id === task)
             if (t) return answer(200, taskRead(run, t))
           }
         }
+      }
+      // A task's command (cancel, retry, accept, recheck): answered done at the run's next revision, and counted.
+      const command = run && req.method() === 'POST' ? new RegExp(`^${under}/tasks/([^/]+)/(cancel|retry|accept|recheck)$`).exec(path) : null
+      const t = command ? run!.tasks?.find((x) => x.id === decodeURIComponent(command[1]!)) : undefined
+      if (command && t) {
+        const body = (req.postDataJSON() ?? {}) as { commandId?: string }
+        commands.push({ task: t.id, command: command[2]!, commandId: body.commandId ?? '' })
+        return answer(200, { receipt: { commandId: body.commandId ?? '', intent: command[2], revision: (run!.managed?.revision ?? 0) + 1, status: 'done', task: { id: t.id, state: t.state, attempts: t.attempts } } })
       }
       unanswered.push(`${req.method()} ${path}${u.search}`)
       if (run) return fulfil(route, 404, refusal('not_found', 'not answered by serveRun'))
       return route.fallback()
     },
   )
-  return { answered, unanswered }
+  return { answered, unanswered, commands }
 }
