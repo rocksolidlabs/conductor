@@ -265,7 +265,8 @@ export function useAttention() {
   async function stream() {
     // The stream of the token before goes first, even with no token now: after "Forget token" it must not refill the store.
     abort?.abort()
-    if (!admin.token.value) return
+    // While the page to connect shows, the stream is not asked for with the missing or refused token: it opens once one is taken.
+    if (!admin.token.value || admin.gated.value) return
     abort = new AbortController()
     const signal = abort.signal
     try {
@@ -372,7 +373,7 @@ export function useAttention() {
   }
 
   async function poll() {
-    if (!admin.token.value) return
+    if (!admin.token.value || admin.gated.value) return
     try {
       replaceAll(await api.list())
       // The fallback while the stream is down reads the runs with the sessions, and the decision inbox.
@@ -394,19 +395,24 @@ export function useAttention() {
     pollTimer = window.setInterval(() => {
       // While the stream is down, or open but without its first snapshot yet (a stall before it), the list is read
       // directly, so that a page waiting for the sessions to be read (#359) is not left waiting.
-      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') {
+      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible' && !admin.gated.value) {
         poll()
         decisionsLive().down()
       }
     }, 3000)
+    // Another token: what the store holds goes and the stream opens with it. The page to connect shown: the stream stays shut; gone
+    // (a token taken, the same one again among them), the stream opens once, and its snapshot reads the rest as at a first load.
     watch(
-      () => admin.token.value,
-      () => {
-        store.value.sessions = new Map()
-        bump()
-        runs.clear()
-        events.reset()
-        stream()
+      () => [admin.token.value, admin.gated.value] as const,
+      ([token, gated], [before, wasGated]) => {
+        if (token !== before) {
+          store.value.sessions = new Map()
+          bump()
+          runs.clear()
+          events.reset()
+        }
+        if (gated) abort?.abort()
+        else if (token !== before || wasGated) stream()
       },
     )
   }

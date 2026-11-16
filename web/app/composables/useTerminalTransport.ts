@@ -22,13 +22,28 @@ export function useTerminalTransport() {
   const { wsBase } = useApiBase()
 
   const identity = useIdentity()
+  const admin = useWorkbenchToken()
+
+  /**
+   * A connection made with the workbench token waits, while the page to connect shows, until a token is taken: a terminal hidden
+   * under that page asks nothing with the missing or refused token. A link's token is the caller's own and is never held back.
+   */
+  function gated<T extends TerminalTransport>(t: T, token: string): T {
+    if (token !== admin.token.value) return t
+    const open = t.connect.bind(t)
+    t.connect = async (hello) => {
+      await admin.connected()
+      return open(hello)
+    }
+    return t
+  }
 
   function create(spec: TransportSpec): TerminalTransport {
     const base = spec.server ? wsBaseOf(spec.server) : wsBase.value
     const url = `${base}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
     const name = spec.name ?? identity.name.value
-    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name, chatOnly: spec.chatOnly })
-    return new WebSocketTransport(url, { name, chatOnly: spec.chatOnly })
+    if (spec.kind === 'hosted') return gated(new WebRTCTransport(url, { forceRelay: spec.forceRelay, name, chatOnly: spec.chatOnly }), spec.token)
+    return gated(new WebSocketTransport(url, { name, chatOnly: spec.chatOnly }), spec.token)
   }
 
   /**
@@ -38,7 +53,7 @@ export function useTerminalTransport() {
    */
   function desk(runId: string, token: string, server = '', name?: string): TerminalTransport {
     const base = server ? wsBaseOf(server) : wsBase.value
-    return new WebSocketTransport(`${base}/ws/runs/${encodeURIComponent(runId)}/desk?token=${encodeURIComponent(token)}`, { name: name ?? identity.name.value })
+    return gated(new WebSocketTransport(`${base}/ws/runs/${encodeURIComponent(runId)}/desk?token=${encodeURIComponent(token)}`, { name: name ?? identity.name.value }), token)
   }
 
   return { create, desk }

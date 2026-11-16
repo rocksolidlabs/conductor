@@ -46,6 +46,8 @@ async function gateOpened(page: Page) {
 }
 /** A read the page sends now: the inbox reads again when the tab is shown. */
 const shown = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+/** How many of the app's reads the page to connect has held back, waiting for a token (its `data-held`). */
+const heldReads = async (page: Page) => Number(await page.locator('[data-connect-page]').getAttribute('data-held'))
 const documents = (sent: Request[]) => sent.filter((r) => r.resourceType() === 'document').length
 /** The index in `sent` of the document request of the page drawn now. */
 const lastDocument = (sent: Request[]) => sent.map((r) => r.resourceType() === 'document').lastIndexOf(true)
@@ -562,10 +564,9 @@ test('the page that asks stays until a token is given, with no Cancel; the next 
     await refused
     await expect(gate, `refusal ${round}`).toBeVisible()
     await expect(gate.getByRole('button', { name: 'Cancel' }), `no Cancel ${round}`).toHaveCount(0)
-    // A read the server answers meanwhile does not end it: the refused token is still the one held.
-    const answered = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 200)
+    // Meanwhile the app's reads wait for a token (the page counts what it holds back), none sent with the refused one: it still asks.
     await shown(page)
-    await answered
+    await expect.poll(() => heldReads(page), `reads held ${round}`).toBeGreaterThan(0)
     await expect(gate, `still asking ${round}`).toBeVisible()
     // Its field holds the kept token; Connect with it, and the app is back.
     await expect(gate.locator('input'), `field ${round}`).toHaveValue(state.token)
@@ -635,10 +636,9 @@ test('the page that asks after a refusal, a page of another layout, back to the 
   await expect(gate).toBeVisible()
   await expect(gate.locator('input')).toHaveValue(state.token)
   expect(refusals).toBe(1)
-  // It was shown once and stays: still shown after a read the page sends and the server answers, and it never went meanwhile.
-  const answered = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 200)
+  // It was shown once and stays: the app's reads wait behind it for a token (the page counts what it holds back), and it never went.
   await shown(page)
-  await answered
+  await expect.poll(() => heldReads(page)).toBeGreaterThan(0)
   await expect(gate).toBeVisible()
   await expect.poll(() => gateSince(back)).toEqual(['gate open'])
   // Connected there with the kept token, the ask ends and the app is back; the next refusal shows the page again.

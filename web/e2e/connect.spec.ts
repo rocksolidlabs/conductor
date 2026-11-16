@@ -209,12 +209,55 @@ test('a refusal while Alerts or the Launch dialog is open closes it: the page to
   }
 })
 
-test('a browser that keeps no token is asked for one, never told that the server refused a token it keeps', async ({ browser, state }) => {
+test('a browser that keeps no token is asked for one, never told that the server refused a token it keeps; the reads behind it wait', async ({ browser, state }) => {
   budget(6 * STEP_MS)
-  // Brakeman's page reads at once, with no token: the server answers 401, and the store marks the refusal.
+  // Brakeman's page reads at once: with no token held the read waits for one (the page counts what it holds back), never sent.
   const page = await dayPage(browser, { ...DESK, token: false, path: '/brakeman', ready: '[data-connect-page]', server: state })
-  await expect(page.locator('[data-connect-page][data-standing="refused"]')).toBeVisible()
+  const sent: string[] = []
+  page.on('request', (r) => void (new URL(r.url()).pathname.startsWith('/api/') && sent.push(new URL(r.url()).pathname)))
+  await expect.poll(async () => Number(await page.locator('[data-connect-page]').getAttribute('data-held'))).toBeGreaterThan(0)
   await expect(tokenAsk(page)).toContainText('This server asks for its workbench token before it shows anything.')
   await expect(tokenAsk(page).locator('[data-connect-refused]')).toHaveCount(0)
+  await expect(page.locator('[data-connect-page]')).not.toHaveAttribute('data-standing', 'refused')
   await expect(field(page)).toHaveValue('')
+  expect(sent, 'no read went with no token').toEqual([])
+})
+
+/**
+ * The span requests are counted over while the page to connect shows: the longest retry cap of the app's stores (the decisions' and a
+ * run's linked reads, DECISION_RETRY_CAP_MS and RETRY_CAP_MS, 30 s) and one tick of the sessions' poll (3 s) after it.
+ */
+const QUIET_SPAN_MS = 30_000 + 3_000
+
+test('while the page to connect shows, the app behind it asks nothing with the refused token; a good token taken, the stream opens once', async ({ browser, state }) => {
+  budget(QUIET_SPAN_MS + 8 * STEP_MS)
+  const refused = 'e2e-a-token-the-server-refuses'
+  const page = await dayPage(browser, { ...DESK, path: '/yard', ready: '[data-connect-page]', server: { baseURL: state.baseURL, token: refused } })
+  // What the page asks from here on, with which token: a header's bearer, or a terminal's address.
+  const asked: Array<{ path: string; token: string }> = []
+  const tokenOf = (url: string, auth?: string) => (auth?.startsWith('Bearer ') ? auth.slice(7) : (new URL(url).searchParams.get('token') ?? ''))
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/ws/')) asked.push({ path: u.pathname, token: tokenOf(r.url(), r.headers()['authorization']) })
+  })
+  page.on('websocket', (ws) => asked.push({ path: new URL(ws.url()).pathname, token: tokenOf(ws.url()) }))
+  // The server refused the kept token: the page says so, and from then on the hidden app waits.
+  await expect(tokenAsk(page).locator('[data-connect-refused]')).toBeVisible()
+  await expect(page.locator('[data-connect-page][data-standing="refused"]')).toBeVisible()
+  const from = asked.length
+  await page.waitForTimeout(QUIET_SPAN_MS)
+  expect(asked.slice(from).filter((a) => a.token === refused), 'asked with the refused token while the page showed').toEqual([])
+  expect(asked.slice(from), 'asked with no token while the page showed').toEqual([])
+
+  // The server's token given: the app shows and its stream opens once with it, as at a first load; the refused one is never sent.
+  const field = tokenAsk(page).getByPlaceholder('paste the workbench token')
+  await field.fill(state.token)
+  await expect(field).toHaveValue(state.token)
+  const streamed = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/events' && r.request().headers()['authorization'] === `Bearer ${state.token}`, { timeout: STEP_MS })
+  await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+  expect((await streamed).status()).toBe(200)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  await expect(page.locator('#dashboard-sidebar-main nav[data-needs-read="true"], #dashboard-sidebar-main [data-needs-read="true"]').first()).toBeAttached()
+  expect(asked.filter((a) => a.path === '/api/events' && a.token === state.token), 'the stream opened once').toHaveLength(1)
+  expect(asked.slice(from).filter((a) => a.token === refused), 'the refused token after Connect').toEqual([])
 })

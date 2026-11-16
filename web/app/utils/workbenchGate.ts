@@ -38,3 +38,11 @@ export function connectShown(f: ConnectFacts): boolean {
   if (f.standing === 'trying' || f.standing === 'dropped') return false
   return !f.hasToken || f.standing === 'refused'
 }
+
+/**
+ * Whether the page to connect says the server refused a token: only when this page holds one it sent and the server refused. A page
+ * that holds none is asked for one, never told that one was refused (a read sent with none is answered 401 as well).
+ */
+export function refusedShown(f: Pick<ConnectFacts, 'hasToken' | 'standing'>): boolean {
+  return f.standing === 'refused' && f.hasToken
+}

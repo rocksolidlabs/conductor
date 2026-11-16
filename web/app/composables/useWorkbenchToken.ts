@@ -1,5 +1,6 @@
-import { computed, ref, type Ref } from 'vue'
+import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { desktopBridge } from '~/utils/desktop'
+import { connectShown } from '~/utils/workbenchGate'
 
 const STORAGE_KEY = 'conductor.workbenchToken'
 /** The key before the token was renamed; a value found there moves over once. */
@@ -35,6 +36,12 @@ interface Held {
   needsToken: Ref<boolean>
   /** Whether the desktop app's bridge has answered its token (or failed): true at once in a browser, which has no bridge. */
   bridged: Ref<boolean>
+  /** How many mounted layouts put the page to connect in place of the app while it is due (`hold`): the default layout's one. */
+  gates: Ref<number>
+  /** How many of the app's requests have waited for the page to connect to go (`waited`): what a test reads to see them held. */
+  waited: Ref<number>
+  /** The page to connect stands in for the app (`gated`): made once, with the store. */
+  gated?: ComputedRef<boolean>
 }
 
 /**
@@ -53,8 +60,16 @@ export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
   const app = useNuxtApp() as unknown as { [HELD]?: Held }
   const first = !app[HELD]
-  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false), bridged: ref(!desktop) })
+  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false), bridged: ref(!desktop), gates: ref(0), waited: ref(0) })
   const { token, standing, needsToken, bridged } = held
+  /**
+   * The page to connect stands in for the app (no token held, or the server refused the one held) under a layout that draws it: the
+   * app's reads that would carry that token wait (`connected`), so a refused tab spends nothing of the server's limit of refused
+   * requests for its address, which the next person's token tries and link joins from that address share.
+   */
+  const gated = (held.gated ??= computed(
+    () => held.gates.value > 0 && connectShown({ desktop: !!desktop, bridged: bridged.value, hasToken: token.value.length > 0, standing: standing.value }),
+  ))
   if (desktop && first)
     desktop
       .token()
@@ -158,9 +173,46 @@ export function useWorkbenchToken() {
     }
   }
 
+  /**
+   * Resolves once the page to connect is gone (a token taken), at once when it is not shown; rejects with an AbortError when `signal`
+   * aborts first, as an aborted fetch does.
+   */
+  function connected(signal?: AbortSignal): Promise<void> {
+    if (!gated.value) return Promise.resolve()
+    held.waited.value++
+    return new Promise<void>((resolve, reject) => {
+      const stop = watch(gated, (g) => {
+        if (g) return
+        stop()
+        signal?.removeEventListener('abort', aborted)
+        resolve()
+      })
+      function aborted() {
+        stop()
+        reject(new DOMException('aborted while the page to connect was shown', 'AbortError'))
+      }
+      signal?.addEventListener('abort', aborted, { once: true })
+    })
+  }
+
+  /** A layout that draws the page to connect in place of the app: the gate holds while it is mounted. Returns the release. */
+  function hold(): () => void {
+    held.gates.value++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      held.gates.value--
+    }
+  }
+
   return {
     token,
     changes: held.changes,
+    gated,
+    connected,
+    hold,
+    waited: held.waited,
     standing,
     bridged,
     desktop: !!desktop,

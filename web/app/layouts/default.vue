@@ -207,6 +207,9 @@ const connect = computed(() =>
 )
 // `?alerts` opens the Alerts panel (mounted below) and leaves the address; while the connect page shows it waits for a token.
 useAlertsFromAddress(() => connect.value)
+// While the page to connect shows, the app's reads that would go with the missing or refused token wait (useApi, the events stream,
+// a terminal's connection), and go once a token is taken: the hidden app sends nothing the server would refuse.
+onBeforeUnmount(workbench.hold())
 // Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
 // held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
 onMounted(() =>

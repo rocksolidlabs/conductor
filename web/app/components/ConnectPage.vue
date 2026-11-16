@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { refusedShown } from '~/utils/workbenchGate'
 // The page a browser sees while it holds no workbench token, or the server refused the one it holds (the UX review's P18): the mark,
 // one sentence, one field and Connect, and where the token is, in words that are true without saying where this server keeps its data.
 // There is no Cancel: the page leaves when a token is given, and comes back if the server refuses it. The app under it is hidden, not
@@ -6,7 +7,10 @@
 const admin = useWorkbenchToken()
 const draft = ref('')
 /** The server refused the token this page holds. A page that holds none is asked for one, never told that one was refused. */
-const refused = computed(() => admin.standing.value === 'refused' && admin.hasToken.value)
+const refused = computed(() => refusedShown({ standing: admin.standing.value, hasToken: admin.hasToken.value }))
+
+/** The app's reads held back before this page showed: the page counts, for a test, those it holds while it shows (`data-held`). */
+const waitedBefore = admin.waited.value
 
 // The field starts from the token this browser keeps (none in the desktop app), as the dialog's does.
 onMounted(() => (draft.value = admin.kept()))
@@ -90,7 +94,7 @@ function connect() {
 </script>
 
 <template>
-  <main ref="root" class="flex min-h-dvh items-center justify-center bg-default p-4 sm:p-8" aria-labelledby="connect-title" :data-standing="admin.standing.value || undefined" data-connect-page>
+  <main ref="root" class="flex min-h-dvh items-center justify-center bg-default p-4 sm:p-8" aria-labelledby="connect-title" :data-standing="admin.standing.value || undefined" :data-held="admin.waited.value - waitedBefore" data-connect-page>
     <div class="flex w-full max-w-md flex-col gap-6">
       <div class="flex flex-col items-center gap-3 text-center">
         <img src="/brand/conductor-mark.svg" alt="" class="size-12 dark:hidden" data-connect-mark="light" />

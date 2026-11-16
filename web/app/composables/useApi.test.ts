@@ -187,3 +187,49 @@ describe('a 401', () => {
     }
   })
 })
+
+describe('while the page to connect shows', () => {
+  it('sends nothing with the refused token, shares a read asked again, and sends it once with the token taken; a caller\'s own token goes at once', async () => {
+    const release = admin.hold()
+    admin.answered('workbench-token', false)
+    expect(admin.gated.value).toBe(true)
+    fetchFn.mockResolvedValue({ sessions: [] })
+    const { request, requestText } = useApi()
+    const first = request('/api/sessions')
+    const again = request('/api/sessions')
+    const text = requestText('/api/log')
+    await Promise.resolve()
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(raw).not.toHaveBeenCalled()
+    // A link's token, or none on purpose: the caller's own credential is never held back.
+    await request('/api/ice', { token: '' })
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    raw.mockResolvedValue({ _data: new ArrayBuffer(0), headers: new Headers() })
+    admin.set('the-right-token')
+    expect(admin.gated.value).toBe(false)
+    await Promise.all([first, again, text])
+    const reads = fetchFn.mock.calls.filter((c) => c[0] === 'http://api.test/api/sessions')
+    expect(reads).toHaveLength(1)
+    expect(reads[0]![1].headers).toEqual({ Authorization: 'Bearer the-right-token' })
+    expect(raw.mock.calls[0]![1].headers).toEqual({ Authorization: 'Bearer the-right-token' })
+    release()
+  })
+
+  it('throws as an aborted fetch does when its caller aborts while it waits', async () => {
+    const release = admin.hold()
+    admin.clear()
+    const ac = new AbortController()
+    const out = useApi().request('/api/inbox', { signal: ac.signal }).catch((e: unknown) => e)
+    ac.abort()
+    expect(await out).toMatchObject({ status: 0, code: 'network' })
+    expect(fetchFn).not.toHaveBeenCalled()
+    release()
+  })
+
+  it('holds nothing where no layout draws the page to connect', async () => {
+    admin.clear()
+    fetchFn.mockResolvedValue({})
+    await useApi().request('/api/join/x')
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+})

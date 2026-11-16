@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, effectScope, nextTick, ref } from 'vue'
 import { useWorkbenchToken } from '~/composables/useWorkbenchToken'
-import { connectShown, tokenDialog } from './workbenchGate'
+import { connectShown, refusedShown, tokenDialog } from './workbenchGate'
 
 // The gate's open state kept with the workbench token's ask (WorkbenchTokenGate.vue runs followAsk as it mounts; an effect scope
 // stands for its mount here, stopped for its unmount). The store is the app's own over a Nuxt app of this test's; tokens are invented.
@@ -67,5 +67,15 @@ describe('the connect page', () => {
     expect(connectShown({ desktop: true, bridged: true, hasToken: false, standing: '' })).toBe(true)
     expect(connectShown({ desktop: true, bridged: true, hasToken: true, standing: 'refused' })).toBe(true)
     expect(connectShown({ desktop: true, bridged: true, hasToken: true, standing: '' })).toBe(false)
+  })
+})
+
+describe("the page to connect's words", () => {
+  it('say a token was refused only when this page held one; a page that holds none is asked for one', () => {
+    expect(refusedShown({ hasToken: true, standing: 'refused' })).toBe(true)
+    // A read sent with no token is answered 401 too, and marks the standing: no token was refused.
+    expect(refusedShown({ hasToken: false, standing: 'refused' })).toBe(false)
+    expect(refusedShown({ hasToken: true, standing: '' })).toBe(false)
+    expect(refusedShown({ hasToken: false, standing: '' })).toBe(false)
   })
 })

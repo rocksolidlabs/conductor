@@ -61,10 +61,33 @@ function errorBody(data: unknown): ApiErrorBody | undefined {
   return data !== null && typeof data === 'object' ? (data as ApiErrorBody) : undefined
 }
 
+/**
+ * The reads waiting for the page to connect to go, by what they ask (a GET with no signal of its own): a store that asks the same
+ * again while it waits (a poll's tick) shares the one read, which goes once when a token is taken.
+ */
+const waiting = new Map<string, Promise<unknown>>()
+
 /** $fetch wrapper that attaches the workbench token and normalises errors. */
 export function useApi() {
   const { httpBase } = useApiBase()
   const admin = useWorkbenchToken()
+
+  /**
+   * The token a request goes with: the caller's own (`explicit`, a link's or none, never held back), else the workbench token held
+   * once the page to connect is gone. While that page shows, nothing goes with the missing or refused token: the request waits, and
+   * no store sees an error it would retry on a timer. An abort while it waits throws as an aborted fetch does.
+   */
+  async function admitted(explicit: string | undefined, signal?: AbortSignal): Promise<string> {
+    if (explicit !== undefined) return explicit
+    if (admin.gated.value) {
+      try {
+        await admin.connected(signal)
+      } catch {
+        throw new ApiError(0, 'network', 'Cannot reach the server')
+      }
+    }
+    return admin.token.value
+  }
 
   /**
    * The error a failed request throws: the server's code and message, or `network` when it could not be reached. A 401 is told to the
@@ -85,7 +108,28 @@ export function useApi() {
 
   /** `signal` aborts the request (a search overtaken by the next key): it then throws as a network error does, which its caller drops. */
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal } = {}): Promise<T> {
-    const token = opts.token ?? admin.token.value
+    if (opts.token === undefined && !opts.signal && (opts.method ?? 'GET') === 'GET' && admin.gated.value) {
+      const key = `${opts.base ?? httpBase.value}${path} ${JSON.stringify(opts.query ?? {})}`
+      let read = waiting.get(key) as Promise<T> | undefined
+      if (read) admin.waited.value++
+      if (!read) {
+        read = (async () => {
+          try {
+            await admitted(undefined)
+          } finally {
+            waiting.delete(key)
+          }
+          return send<T>(path, opts, admin.token.value)
+        })()
+        waiting.set(key, read)
+      }
+      return read
+    }
+    // Sent at once when nothing holds it back, in the caller's own tick.
+    return send<T>(path, opts, opts.token !== undefined || !admin.gated.value ? (opts.token ?? admin.token.value) : await admitted(opts.token, opts.signal))
+  }
+
+  async function send<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal }, token: string): Promise<T> {
     try {
       return await $fetch<T>((opts.base ?? httpBase.value) + path, {
         method: (opts.method ?? 'GET') as 'GET',
@@ -105,7 +149,7 @@ export function useApi() {
    * fetched, never a link the browser follows (which would carry no token); errors are normalised as `request`'s are.
    */
   async function requestText(path: string, opts: { token?: string; base?: string } = {}): Promise<TextReply> {
-    const token = opts.token ?? admin.token.value
+    const token = opts.token !== undefined || !admin.gated.value ? (opts.token ?? admin.token.value) : await admitted(opts.token)
     try {
       const res = await $fetch.raw<ArrayBuffer>((opts.base ?? httpBase.value) + path, {
         method: 'GET',
@@ -125,7 +169,7 @@ export function useApi() {
    * through an object URL, since an `img` or a link the browser follows would carry no token. Errors are normalised as `request`'s are.
    */
   async function requestBlob(path: string, opts: { token?: string; base?: string } = {}): Promise<Blob> {
-    const token = opts.token ?? admin.token.value
+    const token = opts.token !== undefined || !admin.gated.value ? (opts.token ?? admin.token.value) : await admitted(opts.token)
     try {
       return await $fetch<Blob>((opts.base ?? httpBase.value) + path, {
         method: 'GET',
