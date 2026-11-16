@@ -223,7 +223,9 @@ Starts select and the pending tile's label.
   by Vue Flow (UX1 PR-33): `RunLineDiagram.vue`, an SVG over `lineLayout`
   (`utils/lineDiagram.ts`), a task a station lit by its state's mark, every
   line in one neutral ink. Vue Flow draws the members (Members mode and the
-  crew editor) as below.
+  crew editor) as below. The same drawing, small, is the Crews table's
+  Shape column (a crew's tasks, else its members by their start rules) and
+  a live run's card (UX1 PR-34); the chips of `CrewMiniDag` are gone.
 - Graph: `@vue-flow/core` with custom node and edge components; layout by depth
   in the forest (column = depth, row = crew order), no external layout engine
   for ≤ 12 nodes; `@vue-flow/background` and `@vue-flow/controls` for the canvas

@@ -532,8 +532,13 @@ export interface CrewSummary {
   members: Array<{ name: string; agentId: string; start: CrewStart }>
   /** The crew's people with their responsibilities, never their notes; absent for a crew without. */
   people?: Array<Pick<CrewPerson, 'name' | 'responsibilities'>>
+  /** The shape of a crew with tasks, in its order (each task's id, member, kind and needs): sent only when the list is asked for it. */
+  tasks?: CrewTaskShape[]
   updatedAt: string
 }
+
+/** A task as a crew's summary lists it: where it stands in the crew's shape, never what it is told to do. */
+export type CrewTaskShape = Pick<CrewTask, 'id' | 'member' | 'kind'> & { needs?: string[] }
 
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
 export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision' | 'revision'>
@@ -935,8 +940,9 @@ export function useSessions() {
     checkCommand: (program: string, adapter?: string) =>
       request<CommandCheckReply>('/api/catalog/check', { method: 'POST', body: { command: [program], ...(adapter ? { adapter } : {}) } }),
     /** One page of the saved crews' summaries, ordered by name, and how many there are in all. `limit` is 1 to 500. */
-    listCrews: (offset = 0, limit = 100) =>
-      request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
+    /** A page of the crews' summaries; `tasks` asks for each crew's task shape (the Crews page draws it; a crew's file holds up to 128). */
+    listCrews: (offset = 0, limit = 100, o: { tasks?: boolean } = {}) =>
+      request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit), ...(o.tasks ? { tasks: '1' } : {}) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
     getCrew: (id: string, signal?: AbortSignal) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { signal }).then(crewOfReply),
     /**

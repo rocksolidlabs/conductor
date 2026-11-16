@@ -2,7 +2,8 @@
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { crewKey, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
-import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
+import { changedFields, startedClock } from '~/utils/crewWords'
+import { runItems, runStatusLine } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
@@ -84,7 +85,7 @@ async function refresh() {
   }
   loading.value = true
   try {
-    const [list, a] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE), api.catalogInfo()])
+    const [list, a] = await Promise.all([api.listCrews((page.value - 1) * PAGE_SIZE, PAGE_SIZE, { tasks: true }), api.catalogInfo()])
     // A page past the end (crews deleted elsewhere) moves back to the last one, and its watcher reads it.
     const last = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
     if (page.value > last) {
@@ -185,7 +186,9 @@ const tabItems = computed(() => [
   { label: 'Runs', value: 'runs', badge: records.runs.value.length || undefined },
 ])
 /** The live-run banner's lines, one per run going now. */
-const banners = computed(() => crewLive.value.map((r) => ({ run: r, line: liveRunLine(r, live.sessions.value) })))
+// Each live run of the crew in the run's one sentence (runStatusLine): its "need you" the run's items of the one list.
+const needsYou = useNeedsYou()
+const banners = computed(() => crewLive.value.map((r) => ({ run: r, started: startedClock(r.startedAt), line: runStatusLine(r, live.sessions.value, runItems(needsYou.items.value, r.id), now.value) })))
 
 const nameMissing = computed(() => !draft.value?.name.trim())
 /** Why the draft breaks a rule every crew is held to, saved or launched, in words; '' when it does not. */
@@ -738,15 +741,17 @@ usePalette().registerPage(() => ({
             <UButton label="Delete it" icon="i-lucide-trash-2" color="error" variant="soft" @click="deleteOpen = true" />
           </div>
           <template v-else-if="draft">
-            <div v-for="b in banners" :key="b.run.id" class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border border-warning bg-warning/10 px-3.5 py-2.5 text-[13.5px]" data-live-run-banner :data-run="b.run.id">
-              <UIcon name="i-lucide-circle-play" class="size-4 flex-none text-success" />
+            <div
+              v-for="b in banners"
+              :key="b.run.id"
+              class="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border px-3.5 py-2.5 text-[13.5px]"
+              :class="b.line.needs ? 'border-warning bg-warning/10' : 'border-default bg-elevated'"
+              data-live-run-banner
+              :data-run="b.run.id"
+            >
+              <UIcon name="i-lucide-circle-play" class="size-4 flex-none text-muted" />
               <b class="font-semibold text-highlighted">live run</b>
-              <span class="min-w-0 text-muted">
-                started {{ b.line.started }}
-                <template v-if="b.line.running"> · {{ b.line.running }} running</template>
-                <template v-if="b.line.needs.length"> · <span class="text-warning">{{ b.line.needs.join(', ') }} need{{ b.line.needs.length === 1 ? 's' : '' }} you</span></template>
-                <template v-if="b.line.waits.length"> · {{ b.line.waits.join(', ') }} wait{{ b.line.waits.length === 1 ? 's' : '' }} for Start now</template>
-              </span>
+              <span class="min-w-0 text-muted">started {{ b.started }} · <span data-live-run-line>{{ b.line.text }}</span></span>
               <NuxtLink :to="`/runs/${encodeURIComponent(b.run.id)}`" class="ml-auto flex flex-none items-center gap-1 font-medium text-highlighted hover:underline">Open run <UIcon name="i-lucide-arrow-right" class="size-3.5" /></NuxtLink>
             </div>
             <UAlert

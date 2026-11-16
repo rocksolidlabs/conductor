@@ -384,7 +384,6 @@ const STATUS_MAP = new RegExp(`(?:\\b(?:${STATE_NAMES})\\b['"]?\\s*[:?]|['"](?:$
 const STATUS_MAP_KNOWN: Record<string, { lines: number; why: string }> = {
   'components/AttentionBar.vue': { lines: 2, why: "the Yard's bar: a fill for each of its segments, by StatusSlice, until the bar draws its tones from STATUS_LOOK" },
   'components/ChatThread.vue': { lines: 1, why: "not a status: a chat post that failed to send says so in amber, a read that failed (Amber when someone must act)" },
-  'components/CrewMiniDag.vue': { lines: 1, why: "the Crews page's small graph: a member that asks is tinted amber, a chip the line diagram (PR-33's) has not replaced there" },
   'components/EventFeed.vue': { lines: 1, why: "the Events feed: a row that asks is tinted amber, until History's feed redraws it (PR-29)" },
   'utils/crews.ts': { lines: 2, why: "joinTileStatus: a run link's member tile, from what its terminal last reported, which sessionStatus does not read yet" },
 }

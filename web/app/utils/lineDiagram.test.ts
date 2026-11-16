@@ -11,6 +11,7 @@ import {
   LINE_GEOMETRY,
   cutLineLabel,
   lineLayout,
+  memberNodes,
   placeLabels,
   stepFrom,
   type LineBox,
@@ -331,6 +332,32 @@ describe('stepFrom: the keys over the Ledger', () => {
     expect(stepFrom(l, 'schema', 'up')).toBe('schema')
     expect(stepFrom(l, 'backfill', 'down')).toBe('backfill')
     expect(stepFrom(l, 'nobody', 'down')).toBe('nobody')
+  })
+})
+
+describe("memberNodes: a crew's members by their start rules", () => {
+  const todo = [
+    { name: 'lead', start: { when: 'immediately' } },
+    { name: 'core', start: { when: 'after', member: 'lead' } },
+    { name: 'cli', start: { when: 'after', member: 'lead' } },
+    { name: 'tester', start: { when: 'after', member: 'cli' } },
+  ]
+  it("the todo app's members: a member after another needs it, and the tree is lines with one split at lead", () => {
+    expect(memberNodes(todo)).toEqual([{ id: 'lead' }, { id: 'core', needs: ['lead'] }, { id: 'cli', needs: ['lead'] }, { id: 'tester', needs: ['cli'] }])
+    expect(shape(lineLayout(memberNodes(todo)))).toEqual({
+      at: { lead: [0, 0], core: [1, 0], cli: [1, 1], tester: [2, 1] },
+      lines: ['lead core', 'cli tester'],
+      connectors: ['lead>cli:branch'],
+      junctions: { lead: 'split' },
+    })
+  })
+  it('a member by hand is manual and a root; one after a member not in the crew, or after itself, is a root', () => {
+    expect(memberNodes([{ name: 'docs', start: { when: 'manual' } }, { name: 'late', start: { when: 'after', member: 'gone' } }, { name: 'self', start: { when: 'after', member: 'self' } }, { name: 'build', start: { when: 'task' } }])).toEqual([
+      { id: 'docs', manual: true },
+      { id: 'late' },
+      { id: 'self' },
+      { id: 'build' },
+    ])
   })
 })
 

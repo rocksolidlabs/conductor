@@ -8083,11 +8083,20 @@ screen. Nothing said which was the plan and which the thing running.
   changed and, while a run is live, says the run keeps the version it
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
-  (one card per live run: badge, the members as chips in the crew's shape
-  with a status mark each, a line per member that asks with Answer beside it,
-  up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
-  shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
-  alone", where it runs, the last runs as bars, Edit, Launch run).
+  (one card per live run: badge, the run drawn as lines, a line per member
+  that asks with Answer beside it, up time, Stop, Open run) above "Saved
+  crews" (a table: name and goal, the shape in miniature with words such as
+  "5 · a chain of 3, 1 by hand, 1 alone", where it runs, the last runs as
+  bars, Edit, Launch run). Since UX1 PR-34 the shape and the card are the
+  run page's line drawing (`RunLineDiagram`) at two small sizes: the Shape
+  column draws a crew with tasks by its tasks (the list's task shape, `GET
+  /api/crews?tasks=1`) and any other by its members' start rules
+  (`memberNodes`: a member after another needs it), its stations hollow
+  and a member started by hand dashed, at most 150 px wide; a live run's
+  card draws its tasks lit by their states, or its members by theirs, at
+  most 520 px wide with their names. A crew's banner for a live run says
+  the run's one sentence (`runStatusLine`), its icon neutral and its edge
+  amber only while something needs a person.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.
