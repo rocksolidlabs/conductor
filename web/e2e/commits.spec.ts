@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The Commits section (design 4e): the commits on the branch since the
 // session started, newest first, each with its subject, short id, author
@@ -33,7 +33,7 @@ test('Commits lists the commits since the session started, opens one to its file
     git(cwd, 'commit -q -am "readme: say what it is"')
     const sha = execSync('git rev-parse HEAD~1', { cwd }).toString().trim()
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await page.locator('[data-inspector] [data-rail-item="commits"]').click()

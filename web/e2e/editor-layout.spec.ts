@@ -15,7 +15,7 @@ test('the editor goes beside the terminal and back, the split drags and steps, a
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e editor layout', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const column = page.locator('[data-editor-column]')
     const area = page.locator('[data-editor-area]')
@@ -177,7 +177,7 @@ test('the strip collapses the terminal to a bar and brings it back, stacked and 
     await page.keyboard.press('Enter')
     await expect.poll(async () => (await api.session(s.id)).attention?.source, { timeout: 30_000, message: 'the dialog is asked' }).toBe('question')
 
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const column = page.locator('[data-editor-column]')
     const area = page.locator('[data-editor-area]')
@@ -352,7 +352,7 @@ test('collapsed from the palette opened in the terminal, the terminal keeps no f
     await page.goto(`/sessions/${s.id}`)
     const textarea = page.locator('.terminal-host .xterm-helper-textarea').first()
     await expect(textarea).toBeFocused({ timeout: 30_000 })
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const area = page.locator('[data-editor-area]')
     await expect(area).toHaveAttribute('data-editor-area', 'open')
@@ -452,7 +452,7 @@ test('collapsed under another viewer\'s size, the terminal offers no Fit to my w
 
     // A file open, the terminal shown: the palette offers Fit to my window.
     budget(4 * STEP_MS)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const area = page.locator('[data-editor-area]')
     await expect(area).toHaveAttribute('data-editor-area', 'open')
@@ -509,7 +509,7 @@ test('a phone offers no collapse button', async ({ page, api, state }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e terminal collapse phone', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const area = page.locator('[data-editor-area]')
     await expect(area).toHaveAttribute('data-editor-area', 'open')

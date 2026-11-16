@@ -99,6 +99,11 @@ sidebar's section lists only the questions and the decisions of running
 runs, its header says what else waits ("+3 on the page"), linked to the
 page. The Needs you row leaves the nav when nothing waits and nothing was
 decided in the last day.
+Launch's **What should it do?** takes a first message for the agent: it is
+typed once the agent is ready (after any startup question, such as trusting
+the folder, is answered; line breaks go in as spaces), the session is named
+by its first words unless you name it, and a line above the terminal says
+what it waits for. Keys you type in the terminal first withdraw it.
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your

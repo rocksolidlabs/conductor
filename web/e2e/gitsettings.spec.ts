@@ -21,7 +21,7 @@ test("git's files are for controllers; a working tree elsewhere lists no changes
   try {
     // The owner reads the file.
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await expect(page.locator(`[data-file-node="${cwd}/notes.md"]`)).toBeVisible({ timeout: 30_000 })
     const box = page.locator('[data-files-box] input, input[data-files-box]').first()
     await box.fill('.git/config')
