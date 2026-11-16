@@ -41,11 +41,15 @@ describe('the page chords', () => {
   it('name no Alt twin for what needs the list or the page focused, and no label says "in a terminal" any more', () => {
     for (const g of [GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, CAROUSEL_SHORTCUTS]) for (const r of g.rows) expect(r.label).not.toMatch(/in a terminal/)
     expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === 'J')?.terminal).toBeUndefined()
-    expect(WALL_SHORTCUTS.rows.find((r) => r.keys[0] === 'J')?.terminal).toEqual(['alt', 'J'])
+    // The Yard's rows are Escape alone: its queue is gone, and ] and [ step through what needs you on every page.
+    expect(WALL_SHORTCUTS.rows.map((r) => r.keys)).toEqual([['escape']])
   })
   it('hand their Alt twins back from a terminal, and Alt+W no longer', () => {
     for (const code of ['KeyY', 'KeyR', 'KeyC', 'KeyA', 'KeyE']) expect(ALT_PASSTHROUGH_CODES.has(code)).toBe(true)
     expect(ALT_PASSTHROUGH_CODES.has('KeyW')).toBe(false)
+    // Alt+J and Alt+K reach the terminal on every page.
+    expect(ALT_PASSTHROUGH_CODES.has('KeyJ')).toBe(false)
+    expect(ALT_PASSTHROUGH_CODES.has('KeyK')).toBe(false)
   })
 })
 
