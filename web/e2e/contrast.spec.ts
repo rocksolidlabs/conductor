@@ -182,3 +182,20 @@ for (const name of PAGES) {
     }
   }
 }
+
+// The rail (the sidebar collapsed at 1440): the one number of what needs you on its amber fill, the squares and capsules, the foot's
+// menus. Walked on the whole day, in both themes, the rail's root alone; nothing of it is a known place.
+for (const theme of THEMES) {
+  test(`the rail drawn in ${theme} at 1440: every text over its floor`, async ({ day, browser }) => {
+    budget(2 * MEASURE_WAIT_MS)
+    for (const p of PARTS) await day.part(p)
+    const page = await dayPage(browser, { path: '/crews', theme })
+    await page.keyboard.press('Alt+b')
+    const rail = page.locator('#dashboard-sidebar-main')
+    await expect(rail.locator('[data-rail]')).toBeVisible()
+    await expect(rail.locator('[data-rail-count="needs"]')).toBeVisible({ timeout: MEASURE_WAIT_MS })
+    const { judged, failures } = await walk(page, rail)
+    expect(judged, 'the walk judged some text').toBeGreaterThan(0)
+    expect(failures, `the rail, ${theme}: text under its floor (the ten worst):\n${worst(failures)}`).toEqual([])
+  })
+}

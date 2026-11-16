@@ -62,7 +62,7 @@ const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.va
     </UTooltip>
     <UDropdownMenu :items="items" :content="collapsed ? { side: 'right' } : { align: 'end' }">
       <UTooltip :text="identity.name.value ? `You are ${identity.name.value}` : 'Your menu'" :content="side">
-        <UButton ref="account" color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" :aria-label="who" data-header-account>
+        <UButton ref="account" color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" class="hover:bg-canvas-hover active:bg-canvas-hover" :aria-label="who" data-header-account>
           <UChip :show="!hasToken" color="warning" inset>
             <span v-if="identity.name.value" class="grid size-5 place-items-center rounded-full bg-default text-[10px] font-semibold text-highlighted">{{ initials(identity.name.value) }}</span>
             <UIcon v-else name="i-lucide-user-round" class="size-4" />

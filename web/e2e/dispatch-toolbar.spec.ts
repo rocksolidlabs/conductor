@@ -81,9 +81,43 @@ test('at 1280 x 720 twelve rows fit and the toolbar is one row', async ({ day, b
   expect((await page.locator('[data-dispatch-toolbar]').boundingBox())!.height).toBeLessThanOrEqual(40)
 })
 
+/**
+ * CND's page with its read answered as the server answers it but for `patch` laid over the project (its description, its tracker): a
+ * standing route set before the project's page loads, answering every read of it.
+ */
+async function patched(browser: Parameters<typeof dayPage>[0], patch: Record<string, unknown>, o: Parameters<typeof dayPage>[1] = {}): Promise<Page> {
+  const page = await dayPage(browser, { path: '/agents', ...o })
+  await page.route(
+    (u) => u.pathname === '/api/dispatch/projects/CND',
+    async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      const res = await route.fetch()
+      const body = (await res.json()) as { project: Record<string, unknown> }
+      Object.assign(body.project, patch)
+      await route.fulfill({ response: res, json: body })
+    },
+  )
+  await page.goto('/dispatch/CND')
+  await expect(page.locator('[data-list-total]')).toHaveAttribute('data-count', String(TICKETS.length))
+  return page
+}
+
+/** A tracker's address as long as a real one (an issues page under its organisation and project). */
+const TRACKER_URL = 'https://tracker.example.com/organisation/project/issues'
+const DESCRIBED = 'Ship the tracker, the board and the roadmap for every team that files its tickets here.'
+
 test("on a phone (390 x 844, touch) a row's second line lines up its priority and age, nothing scrolls sideways, and Filter's popover fits", async ({ day, browser }) => {
   await day.part('dispatch')
-  const page = await project(browser, { width: 390, height: 844, touch: true })
+  // CND tracked elsewhere, at an address as long as a real one: the description keeps most of its line, the tracker's link is its icon.
+  const page = await patched(browser, { description: DESCRIBED, tracker: 'external', trackerUrl: TRACKER_URL }, { width: 390, height: 844, touch: true })
+  const line = page.locator('[data-project-description-line]')
+  const tracker = page.getByRole('link', { name: `Its tickets are tracked at ${TRACKER_URL}`, exact: true })
+  await expect(tracker).toBeVisible()
+  await expect(tracker).toHaveAttribute('title', `Its tickets are tracked at ${TRACKER_URL}`)
+  await expect(line.locator('[data-project-description-text]')).toHaveText(DESCRIBED)
+  const [whole, text] = [await line.boundingBox(), await line.locator('[data-project-description-text]').boundingBox()]
+  expect(text!.width, `the description's ${text!.width.toFixed(0)} px of its line's ${whole!.width.toFixed(0)}`).toBeGreaterThanOrEqual(whole!.width * 0.6)
+  await noOverlap(line)
   for (const c of ['[data-row-priority]', '[data-row-updated]']) await aligned(page.locator(ROWS), c)
   const above = await page.locator(ROWS).evaluateAll((rows) => rows.filter((r) => r.querySelector('[data-row-title]')!.getBoundingClientRect().bottom <= r.querySelector('[data-row-updated]')!.getBoundingClientRect().top + 0.5).length)
   expect(above).toBe(TICKETS.length)
@@ -91,6 +125,24 @@ test("on a phone (390 x 844, touch) a row's second line lines up its priority an
   await uncut(page.locator('[data-list-total]'))
   await page.locator('[data-filter-open]').tap()
   await inside(page.locator('[data-filter-popover]'), page.locator('body'))
+})
+
+test('a description of code alone reads as its code, one with no text at all says it is there, and both open it rather than its editor', async ({ day, browser }) => {
+  await day.part('dispatch')
+  for (const [description, words] of [
+    ['```sh\nmake build\n```', 'make build'],
+    ['---', "CND's description"],
+  ] as const) {
+    const page = await patched(browser, { description })
+    const text = page.locator('[data-project-description-text]')
+    await expect(text, description).toHaveText(words)
+    await expect(text).toHaveAttribute('aria-expanded', 'false')
+    await text.click()
+    await expect(page.locator('[data-project-about]')).toBeVisible()
+    await expect(text).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('[data-project-about] [data-markdown-editor]'), `${description}: the description opened, not its editor`).toHaveCount(0)
+    await page.context().close()
+  }
 })
 
 test('Filter and its chips: a status picked shows its chip and number, its x takes it out; the search, a parent and deleted show as chips', async ({ day, browser }) => {

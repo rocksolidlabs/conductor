@@ -15,9 +15,28 @@ const made: string[] = []
 
 test.describe.configure({ mode: 'serial' })
 
+/** The stub's own prompt, "> " and what is typed after it as the last row: what the server recognises before it types a first message. */
+const STUB_PROMPT = String.raw`(?m)^> ?[^\n]*\s*\z`
+
 test.beforeAll(async () => {
-  own = await ownServer('first-message')
+  // Copies of the two stubs whose prompt the server knows; the catalog's own stubs have no prompt shape, so they take no message.
+  own = await ownServer('first-message', {
+    agents: [
+      { id: 'prompted-untrusted', from: 'codex-untrusted', env: {}, promptShape: STUB_PROMPT },
+      { id: 'prompted', from: 'claude', env: {}, promptShape: STUB_PROMPT },
+    ],
+  })
 })
+
+const UNTRUSTED = 'Codex CLI, untrusted (e2e stub), prompted-untrusted'
+const PROMPTED = 'Claude Code (e2e stub), prompted'
+
+/** Picks the agent named in the open dialog: its radio's name ends with the agent's (the avatar's letters come first). */
+async function pick(dialog: Locator, name: string) {
+  const radio = dialog.getByRole('radio', { name: new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) })
+  await radio.click()
+  await expect(radio).toHaveAttribute('aria-checked', 'true')
+}
 
 test.afterAll(async () => {
   // The sessions ended before the server and its directories go.
@@ -58,7 +77,7 @@ test('a first message waits for the trust question, is typed once after it, and 
   budget(60_000)
   const page = await dayPage(browser, { server: own.started })
   const dialog = await openLaunch(page)
-  await dialog.getByRole('radio', { name: 'Codex CLI, untrusted (e2e stub)' }).click()
+  await pick(dialog, UNTRUSTED)
   await dialog.locator('[data-launch-message] textarea').fill('say hello')
   await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'say hello')
   const s = await launchFrom(page, dialog)
@@ -87,7 +106,7 @@ test('a first message waits for the trust question, is typed once after it, and 
 test('with no question, the message is typed once the agent is ready, and its first words name the session everywhere', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started })
   const dialog = await openLaunch(page)
-  await dialog.getByRole('radio', { name: 'Claude Code (e2e stub)' }).click()
+  await pick(dialog, PROMPTED)
   const message = 'fix the flaky vim spec on the mac runner please'
   await dialog.locator('[data-launch-message] textarea').fill(message)
   await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'fix the flaky vim spec on the mac…')
@@ -101,7 +120,7 @@ test('with no question, the message is typed once the agent is ready, and its fi
 test('a message past 4,096 bytes says so under the field, and Launch sends nothing', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started })
   const dialog = await openLaunch(page)
-  await dialog.getByRole('radio', { name: 'Claude Code (e2e stub)' }).click()
+  await pick(dialog, PROMPTED)
   let posts = 0
   page.on('request', (r) => {
     if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/sessions') posts++
@@ -117,9 +136,29 @@ test('a message past 4,096 bytes says so under the field, and Launch sends nothi
   expect(posts, 'no launch was sent').toBe(0)
 })
 
+test('an agent whose prompt the server does not know is offered no message, and the dialog says why', async ({ browser }) => {
+  const page = await dayPage(browser, { server: own.started })
+  const dialog = await openLaunch(page)
+  await pick(dialog, PROMPTED)
+  await expect(dialog.locator('[data-launch-message] textarea')).toBeVisible()
+  await expect(dialog.locator('[data-launch-no-message]')).toHaveCount(0)
+  await dialog.locator('[data-launch-message] textarea').fill('say hello')
+  // The catalog's own stub has no prompt shape: no field, and one line under the agent's choice naming those that take one.
+  await pick(dialog, 'Plain (e2e stub)')
+  await expect(dialog.locator('[data-launch-message]')).toHaveCount(0)
+  const line = dialog.locator('[data-launch-no-message]')
+  await expect(line).toHaveText(`Conductor types a first message only where it knows the agent's prompt: ${UNTRUSTED} and ${PROMPTED} here.`)
+  await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveAttribute('placeholder', 'optional')
+  // Launched so, it carries no message: the server would refuse one, and the session is named as any launch is.
+  const s = await launchFrom(page, dialog)
+  expect(s.name).toMatch(/^Plain \(e2e stub\) #\d+$/)
+  expect((s as { firstMessage?: string }).firstMessage).toBeUndefined()
+})
+
 test('on a phone the field sits inside the dialog, which does not scroll sideways', async ({ browser }) => {
   const page = await dayPage(browser, { server: own.started, path: '/sessions', width: 390, height: 844, touch: true })
   const dialog = await openLaunch(page)
+  await pick(dialog, PROMPTED)
   const field = dialog.locator('[data-launch-message]')
   await expect(field).toBeVisible()
   // The dialog's body scrolls up and down on a phone: the field brought into view, then measured against the dialog's box.

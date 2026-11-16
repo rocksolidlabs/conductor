@@ -308,10 +308,14 @@ watch(aboutOpen, (o) => {
 const description = computed(() => projectRead.value?.project.description ?? '')
 /** The description's line: its first paragraph as plain text, whole (the page's CSS cuts it). */
 const line = computed(() => descriptionLine(description.value))
+/** Whether the project has a description at all: one with no text (only a rule, or images without alt text) is one, and is opened. */
+const described = computed(() => description.value.trim() !== '')
+/** What the line says: the description's line; for one with no text, that it is there; the prompt to add one only when it is empty. */
+const lineWords = computed(() => line.value || (described.value ? `${project.value}'s description` : `Add a description of ${project.value}…`))
 const about = useTemplateRef<{ edit: () => void }>('about')
 /** The line pressed: the description opened (or folded again); with none, opened in its editor. */
 function pressLine() {
-  if (line.value) {
+  if (described.value) {
     aboutOpen.value = !aboutOpen.value
     return
   }
@@ -606,26 +610,28 @@ palette.registerPage((): PageGroup => {
             <button
               type="button"
               class="min-w-0 flex-1 truncate text-left hover:text-default"
-              :class="line ? 'text-muted' : 'text-dimmed'"
+              :class="described ? 'text-muted' : 'text-dimmed'"
               :title="line || undefined"
-              :disabled="!line && archived"
-              :aria-expanded="line ? aboutOpen : undefined"
+              :disabled="!described && archived"
+              :aria-expanded="described ? aboutOpen : undefined"
               data-project-description-text
               @click="pressLine"
             >
-              {{ line || `Add a description of ${project}…` }}
+              {{ lineWords }}
             </button>
             <a
               v-if="projectRead.project.tracker === 'external' && projectRead.project.trackerUrl"
               :href="projectRead.project.trackerUrl"
               target="_blank"
               rel="noopener noreferrer"
-              class="flex min-w-0 max-w-64 flex-none items-center gap-1 text-muted hover:underline"
+              class="flex min-w-0 flex-none items-center gap-1 text-muted hover:underline sm:max-w-64"
               :title="`Its tickets are tracked at ${projectRead.project.trackerUrl}`"
+              :aria-label="`Its tickets are tracked at ${projectRead.project.trackerUrl}`"
               data-project-tracker
             >
               <UIcon :name="TRACKERS.external.icon" class="size-3.5 flex-none" />
-              <span class="truncate">{{ projectRead.project.trackerUrl }}</span>
+              <!-- On a phone the link is its icon alone (named by its label and title), so that the description keeps the line. -->
+              <span class="hidden truncate sm:block" data-project-tracker-url>{{ projectRead.project.trackerUrl }}</span>
             </a>
             <UButton :icon="aboutOpen ? 'i-lucide-chevron-up' : 'i-lucide-info'" size="xs" color="neutral" variant="ghost" class="h-5 flex-none py-0" :label="aboutOpen ? 'Fold' : 'About'" :aria-expanded="aboutOpen" :aria-label="aboutOpen ? 'Fold the description' : `About ${project}`" data-project-about-toggle @click="aboutOpen = !aboutOpen" />
           </div>

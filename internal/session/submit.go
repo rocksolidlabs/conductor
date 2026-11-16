@@ -137,6 +137,13 @@ type Submission struct {
 	// go as the hold shows. A closed channel is seen at once: nothing
 	// waits for it to be passed on.
 	Withdrawn <-chan struct{}
+	// WithdrawnByKeys says Withdrawn is closed by a person's keys at the
+	// program's text (PersonTyped: a launch's first message): withdrawn
+	// once its text is typed, its Enter is left out and the session's turn
+	// is not held (holdTyped), since the person at the keyboard has the
+	// text in front of them and their own keys already went after it; the
+	// session shows what the agent reports.
+	WithdrawnByKeys bool
 	// Hold, when set, is the sender's credential held while each of the
 	// submission's writes is under way (writeWait.hold): a decision link's,
 	// so the write of its text and of its Enter is begun only while the
@@ -239,7 +246,9 @@ func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err err
 		return false, err
 	}
 	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
-	if !stranded {
+	if !stranded || sub.WithdrawnByKeys && errors.Is(err, errWithdrawn) {
+		// Not stranded; or withdrawn by a person's keys, who deal with the
+		// text themselves: no hold.
 		return false, err
 	}
 	var claim questionClaim
@@ -668,6 +677,15 @@ func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
 		}
 	}
 	return err
+}
+
+// TurnHeld says the session's turn is held for a person after a text
+// typed without its Enter (holdTyped), or is about to be: set as the
+// submission ends, before it returns, until a person's keys end it.
+func (s *Local) TurnHeld() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holdPending || s.held != nil
 }
 
 // holdTyped holds the session's turn, which its caller holds and gives

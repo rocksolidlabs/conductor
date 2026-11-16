@@ -42,7 +42,7 @@ function openExited() {
   <div class="flex h-full min-h-0 flex-col items-center gap-2" data-rail>
     <div v-if="needsShown || rail.news" class="flex items-center gap-1" data-rail-counts>
       <UTooltip v-if="needsShown" :text="`${needsShown} ${needsShown === '1' ? 'needs' : 'need'} you`" :content="{ side: 'right' }">
-        <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-inverted" data-rail-count="needs" data-count-of="needs">{{ needsShown }}</span>
+        <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-(--ui-color-neutral-900)" data-rail-count="needs" data-count-of="needs">{{ needsShown }}</span>
       </UTooltip>
       <UTooltip v-if="rail.news" :text="`${rail.news} with new events or unread chat`" :content="{ side: 'right' }">
         <span class="rounded-full bg-default px-1.5 text-[10px] font-semibold leading-4 text-muted" data-rail-count="news">{{ rail.news }}</span>
@@ -52,7 +52,7 @@ function openExited() {
       <UButton icon="i-lucide-plus" size="sm" aria-label="Launch agent" @click="launch.show()" />
     </UTooltip>
     <UTooltip text="Filter sessions" :kbds="['/']" :content="{ side: 'right' }">
-      <UButton icon="i-lucide-search" color="neutral" variant="ghost" size="sm" aria-label="Filter sessions" @click="emit('search')" />
+      <UButton icon="i-lucide-search" color="neutral" variant="ghost" size="sm" class="hover:bg-canvas-hover active:bg-canvas-hover" aria-label="Filter sessions" @click="emit('search')" />
     </UTooltip>
     <div class="flex min-h-0 w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto py-0.5" data-rail-sessions>
       <template v-for="it in rail.items" :key="it.id">

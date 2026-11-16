@@ -148,6 +148,11 @@ export interface AgentInfo {
   trustPrompt?: string
   /** RE2 matched against its whole screen: its own prompt at rest, the one screen a Brakeman turn's line is typed into (#714). */
   promptShape?: string
+  /**
+   * A launch of the agent takes a first message (POST /api/sessions' `message`): the server knows its prompt (a prompt shape) and types
+   * one only there. Missing for an agent without one, and from an older server for every agent: then no message is offered.
+   */
+  firstMessage?: boolean
   /** That question's answers, as the choices a page offers. */
   trustAnswers?: AgentAnswer[]
   /** Its other startup questions (round 13: Codex's "Hooks need review"), held like the trust question. */

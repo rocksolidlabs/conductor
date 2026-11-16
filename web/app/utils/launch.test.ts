@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { cutAtWord, firstMessageLine, isLoopbackHost, messageProblem, namePreview, plainOffMachine, showsRunsOn } from './launch'
+import { cutAtWord, firstMessageLine, isLoopbackHost, messageProblem, namePreview, noFirstMessageLine, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -90,5 +90,23 @@ describe('a launch with a first message (P19)', () => {
     expect(firstMessageLine({ firstMessage: 'waiting', attention: { state: '' } }, 'Codex')).toBe('Your first message is typed once Codex is ready.')
     expect(firstMessageLine({ attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe('')
     expect(firstMessageLine(null, 'Codex')).toBe('')
+  })
+})
+
+describe('which agents take a first message', () => {
+  it('is the catalog\'s word alone: an older server, which says nothing, offers none', () => {
+    expect(takesFirstMessage({ firstMessage: true })).toBe(true)
+    expect(takesFirstMessage({})).toBe(false)
+    expect(takesFirstMessage({ firstMessage: false })).toBe(false)
+    expect(takesFirstMessage(undefined)).toBe(false)
+  })
+  it('says why another does not, naming those offered that do', () => {
+    const claude = { name: 'Claude Code', firstMessage: true }
+    const codex = { name: 'Codex', firstMessage: true }
+    const aider = { name: 'aider' }
+    expect(noFirstMessageLine([claude, codex, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code and Codex here.")
+    expect(noFirstMessageLine([claude, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code here.")
+    expect(noFirstMessageLine([{ name: 'A', firstMessage: true }, { name: 'B', firstMessage: true }, codex])).toBe("Conductor types a first message only where it knows the agent's prompt: A, B and Codex here.")
+    expect(noFirstMessageLine([aider])).toBe("Conductor types a first message only where it knows the agent's prompt, and knows none of these agents' prompts.")
   })
 })

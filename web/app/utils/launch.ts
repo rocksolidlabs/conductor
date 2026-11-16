@@ -112,3 +112,20 @@ export function firstMessageLine(s: { firstMessage?: string; attention?: { state
   if (s.attention?.state === 'needs_input' && s.attention.source === 'trust') return 'Your first message is typed once its question is answered.'
   return `Your first message is typed once ${agent} is ready.`
 }
+
+/** Whether a launch of the agent takes a first message: the catalog's word (`firstMessage`), which an older server never gives. */
+export function takesFirstMessage(agent: { firstMessage?: boolean } | null | undefined): boolean {
+  return agent?.firstMessage === true
+}
+
+/**
+ * The line under the agent's choice when it takes no first message: why, and which of the agents offered do (by name, as the catalog
+ * names them), so that the words stay true of the catalog as it is.
+ */
+export function noFirstMessageLine(offered: Array<{ name: string; firstMessage?: boolean }>): string {
+  const names = offered.filter(takesFirstMessage).map((a) => a.name)
+  const why = "Conductor types a first message only where it knows the agent's prompt"
+  if (names.length === 0) return `${why}, and knows none of these agents' prompts.`
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `${why}: ${list} here.`
+}

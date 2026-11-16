@@ -73,6 +73,11 @@ const short = (c?: string) => (c ? c.slice(0, 12) : '')
 const acts = (t: RunTask) => taskActions(t, live.value)
 /** A task's row in the table: its words without the attempt, the attempt and the owner said once, its actions in the row and in its menu. */
 const rowOf = (t: RunTask) => taskRow(t, live.value, { brakeman: brakeman.available.value })
+/** Whether the row draws an action (Answer, Retry, Accept, Open, Open preview or its menu): narrow, one that draws none has no line for them. */
+function hasActs(t: RunTask): boolean {
+  const a = acts(t)
+  return !!(taskAnswer(t) || a.retry || a.accept || a.open || a.preview || rowOf(t).menu.length)
+}
 // Ask Brakeman why: the Brakeman page's composer, asking it to explain the task (shown where the server has Brakeman).
 const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
@@ -237,7 +242,7 @@ async function confirm() {
     </section>
     <p v-if="!tasks.length" class="text-sm text-muted">No tasks.</p>
     <!-- The tasks as a table: state, task, who, what and actions, each read straight down (one grid template for every row, every cell
-         drawn even when empty); narrower than 48 rem a row folds into two lines, state, task and actions, then who and what. -->
+         drawn even when empty); narrower than 48 rem a row folds into state and task, then who and what, then its actions, if any. -->
     <div v-else class="task-table flex flex-col gap-1.5" data-task-table>
       <div class="task-grid task-head px-3 text-[11px] font-medium uppercase tracking-wide text-muted" aria-hidden="true" data-task-head>
         <span class="[grid-area:state]">State</span>
@@ -250,7 +255,7 @@ async function confirm() {
           <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, the menu) keeps its own keys. -->
           <div
             class="task-grid rounded-md border px-3 py-2 text-sm"
-            :class="selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30'"
+            :class="[selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30', { 'task-bare': !hasActs(t) }]"
             role="button"
             tabindex="0"
             @click="emit('select', selected === t.id ? '' : t.id)"
@@ -398,22 +403,48 @@ async function confirm() {
 }
 .task-grid {
   display: grid;
-  /* Narrow, the task's id keeps its width and the actions take what is left, wrapping under one another when they must. */
-  grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr);
+  /* Narrow, a row is its state and task, then who and what, and its actions on a line of their own at the end, wrapping there when
+     they must: sharing the first line, they had only what the id and who left them and were drawn over the id. A row with no action
+     draws no third line. The id starts after the state, whatever who's width below it, and wraps rather than being cut. */
+  grid-template-columns: auto auto minmax(0, 1fr);
   grid-template-areas:
-    'state task actions'
-    'who what what';
+    'state task task'
+    'who who what'
+    'actions actions actions';
   column-gap: 0.75rem;
   row-gap: 0.25rem;
   align-items: center;
+}
+.task-grid.task-bare {
+  grid-template-areas:
+    'state task task'
+    'who who what';
+}
+[data-task-id] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.task-grid.task-bare > [data-task-col='actions'] {
+  display: none;
+}
+/* A button wider than its line starts at the line's start rather than running out past it. */
+[data-task-col='actions'] {
+  justify-content: safe flex-end;
 }
 .task-head {
   display: none;
 }
 @container (min-width: 48rem) {
-  .task-grid {
+  .task-grid,
+  .task-grid.task-bare {
     grid-template-columns: 8.5rem minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 2fr) 17rem;
     grid-template-areas: 'state task who what actions';
+  }
+  .task-grid.task-bare > [data-task-col='actions'] {
+    display: flex;
+  }
+  [data-task-id] {
+    white-space: nowrap;
   }
   .task-head {
     display: grid;

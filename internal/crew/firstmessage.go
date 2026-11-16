@@ -10,8 +10,9 @@ import (
 )
 
 // A launch's first message (POST /api/sessions with message, P19): the
-// line a person launched a session with, typed into its agent once the
-// session is ready by the rule a crew member's prompt waits on
+// line a person launched a session with, typed into its agent only at the
+// agent's own recognised prompt (its catalog entry's prompt shape), once
+// the session is ready by the rule a crew member's prompt waits on
 // (AwaitReady), held behind every startup question, and withdrawn by a
 // person's own keys first.
 
@@ -20,9 +21,10 @@ type FirstMessage struct {
 	// Text is the line; Submit makes its line breaks and tabs spaces.
 	Text string
 	// PromptShape says the session's agent has a recognised prompt
-	// (catalog.Agent.PromptShape): past the readiness cap the line waits
-	// for that prompt, never typed into a screen not known for one. An
-	// agent without one gets it typed anyway, as a crew's prompt is.
+	// (catalog.Agent.PromptShape): the line is typed, and entered, only
+	// while that prompt is what the screen shows (OnlyAtPrompt), before
+	// the readiness cap and after it. Without one nothing is typed: the
+	// server takes no first message for such an agent.
 	PromptShape bool
 	// Wait is the readiness wait, AwaitReady when nil.
 	Wait func(ctx context.Context, l *session.Local, held func(question string)) error
@@ -52,6 +54,12 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 	note := fm.Note
 	if note == nil {
 		note = func(m string) { l.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: m}) }
+	}
+	if !fm.PromptShape {
+		// No prompt the server recognises: no screen is the one to type
+		// into.
+		note("the first message was not typed: Conductor does not know this agent's prompt")
+		return
 	}
 	wait := fm.Wait
 	if wait == nil {
@@ -90,8 +98,7 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 			})
 			switch {
 			case errors.Is(err, errNotReady):
-				// Past the cap: an agent with a known prompt gets the line
-				// only there; another, anyway.
+				// Past the cap: tried at each poll, at the prompt alone.
 				capped = true
 			case errors.Is(err, session.ErrSessionEnded):
 				ended()
@@ -101,7 +108,7 @@ func TypeFirstMessage(ctx context.Context, l *session.Local, fm FirstMessage) {
 				return
 			}
 		}
-		res, err := l.Submit(ctx, session.Submission{Text: fm.Text, ByName: FirstMessageBy, Confirm: true, OnlyAtPrompt: capped && fm.PromptShape, Withdrawn: person})
+		res, err := l.Submit(ctx, session.Submission{Text: fm.Text, ByName: FirstMessageBy, Confirm: true, OnlyAtPrompt: true, Withdrawn: person, WithdrawnByKeys: true})
 		switch {
 		case err == nil && !res.Entered && res.Typed:
 			note("the first message was typed without its Enter: answer the question, then press Enter in the terminal")

@@ -813,6 +813,9 @@ test.describe('the full sidebar\'s width', () => {
       const name = row.locator('[data-shared-name]')
       const forget = row.locator('[data-shared-forget]')
       async function shownWhole(at: string) {
+        // The section sits below Needs you, Finished and Working: on a busy server it is under the list's fold, and a person scrolls
+        // to it. Its row brought into view first, so that what is judged (and pointed at) is what a person sees.
+        await row.scrollIntoViewIfNeeded()
         await expect(title).toHaveText('Shared with you')
         expect(await whole(title), `the heading ${at}`).toBe(true)
         // One line: the count is no taller than the heading's one line beside it.
@@ -826,7 +829,9 @@ test.describe('the full sidebar\'s width', () => {
         const reached = await forget.evaluate((el) => {
           const r = el.getBoundingClientRect()
           const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
-          return hit?.closest('a') ? 'link' : hit && el.contains(hit) ? 'forget' : 'other'
+          // The row's own link, not any link that happens to be drawn there (a page's tile below the list's fold is a link too).
+          const own = el.closest('[data-shared-entry]')?.querySelector('a')
+          return own && hit?.closest('a') === own ? 'link' : hit && el.contains(hit) ? 'forget' : 'other'
         })
         expect(reached, `the hidden Forget's place ${at}`).toBe('link')
         // Forget shows over the row's corner on hover, inside the sidebar, as a session row's actions do.

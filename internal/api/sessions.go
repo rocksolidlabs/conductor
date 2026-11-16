@@ -136,6 +136,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Message) == "" {
 		req.Message = ""
 	}
+	if a, ok := s.Catalog().Get(req.AgentID); ok && req.Message != "" && !takesFirstMessage(a) {
+		// Typed only at the agent's own prompt, which the server must know.
+		writeError(w, http.StatusBadRequest, "first_message_unsupported", "this agent takes no first message: Conductor types one only where it knows the agent's prompt")
+		return
+	}
 	req.ctx = context.WithoutCancel(r.Context())
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
@@ -151,7 +156,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// the server's own, which holds its text alone.
 		local.SetFirstMessage("waiting")
 		info := local.Info()
-		fm := crew.FirstMessage{Text: req.Message, PromptShape: known && agent.PromptShape != "", Wait: s.firstWait}
+		fm := crew.FirstMessage{Text: req.Message, PromptShape: known && takesFirstMessage(agent), Wait: s.firstWait}
 		s.track(func() { crew.TypeFirstMessage(s.firstCtx, local, fm) })
 		writeJSON(w, http.StatusCreated, info)
 		return

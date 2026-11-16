@@ -1,8 +1,10 @@
 package session
 
 import (
+	"errors"
 	"regexp"
 	"testing"
+	"time"
 )
 
 // isClosed says whether c is closed, without waiting.
@@ -134,4 +136,73 @@ func TestTheFirstMessageWaitsInInfo(t *testing.T) {
 	if got := <-changes; got.FirstMessage != "" || s.Info().FirstMessage != "" {
 		t.Fatalf("told %+v", got)
 	}
+}
+
+// A line whose Enter a person's keys withdraw (WithdrawnByKeys: a launch's
+// first message) leaves its Enter out and holds nothing: the person typed
+// in the pause before the Enter, the Enter is never written, the session
+// shows no hold, and the agent's next report shows. A line withdrawn by
+// anything else (a sender let go) keeps its hold and its words. The pause
+// is longer than the test: only the withdrawal ends it.
+func TestAPersonsKeysBeforeTheEnterHoldNothing(t *testing.T) {
+	t.Run("withdrawn by a person's keys", func(t *testing.T) {
+		s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Hour}))
+		nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+		p.outW.Write([]byte("> "))
+		done := make(chan error, 1)
+		go func() {
+			res, err := s.Submit(t.Context(), Submission{Text: "fix the parser", ByName: "launch", Withdrawn: s.PersonTyped(), WithdrawnByKeys: true})
+			if res.Entered || !res.Typed {
+				err = errors.Join(err, errors.New("entered, or not typed"))
+			}
+			done <- err
+		}()
+		if w := nextWrite(t, p); w != "fix the parser" {
+			t.Fatalf("written %q", w)
+		}
+		if err := s.Input(nater, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if w := nextWrite(t, p); w != "x" {
+			t.Fatalf("written %q", w)
+		}
+		if err := <-done; !errors.Is(err, ErrRevoked) {
+			t.Fatalf("the line ended with %v", err)
+		}
+		// A hold is set before the submission returns: none is.
+		if s.TurnHeld() {
+			t.Fatal("the session's turn is held")
+		}
+		noWrite(t, p, 50*time.Millisecond)
+		if a := s.Info().Attention; a.State == AttentionNeedsInput {
+			t.Fatalf("the session shows %+v", a)
+		}
+		if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		if a := s.Info().Attention; a.State != AttentionWorking {
+			t.Fatalf("the agent's working shows %+v", a)
+		}
+	})
+	t.Run("withdrawn by its sender", func(t *testing.T) {
+		s, p := newLocalWith(t, quiet(Options{SubmitPause: time.Hour}))
+		p.outW.Write([]byte("> "))
+		gone := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.Submit(t.Context(), Submission{Text: "fix the parser", ByName: "relay", Withdrawn: gone})
+			done <- err
+		}()
+		if w := nextWrite(t, p); w != "fix the parser" {
+			t.Fatalf("written %q", w)
+		}
+		close(gone)
+		<-done
+		if !s.TurnHeld() {
+			t.Fatal("the session's turn is not held")
+		}
+		waitAttention(t, s, func(a Attention) bool {
+			return a.State == AttentionNeedsInput && a.Source == SourceSubmit && a.Message == HeldWords
+		})
+	})
 }

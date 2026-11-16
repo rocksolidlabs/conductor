@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { budget, dayPage, expect, test, useTheme } from './fixtures'
-import { aligned, noSideways, probeColour, tabTo, uncut } from './layout'
+import { aligned, noOverlap, noSideways, probeColour, tabTo, uncut } from './layout'
 import { ledgerRun, serveRun, type StubRun } from './run-fixtures'
 
 // Task rows as a table that says the state once (UX1's PR-11, docs/plans/ux-review.md): state, task, who, what and actions, each
@@ -127,12 +127,12 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await expect(page.locator('[data-task-detail-id="naming"]')).toBeVisible()
 })
 
-test('on a phone, 390 x 844 with touch, each row folds into two lines whole, and a tap on the menu copies the branch', async ({ day, browser }) => {
-  void day
-  budget(LOAD_MS)
-  const run = ledger()
-  const { page } = await opened(browser, run, { width: 390, height: 844, touch: true })
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+/**
+ * At the page's narrow width, every row of `run` whole: who below the state, the actions (when the row has any) on a line of their own
+ * below who and what, no two of the row's pieces over each other (an action over the id or the name), and the id, the state's word
+ * and every action's label uncut.
+ */
+async function narrowRowsWhole(page: Page, run: StubRun): Promise<void> {
   await expect(page.locator('[data-task-head]')).toBeHidden()
   for (const t of run.tasks) {
     const row = page.locator(`[data-task-row="${t.id}"]`)
@@ -140,17 +140,56 @@ test('on a phone, 390 x 844 with touch, each row folds into two lines whole, and
     await row.scrollIntoViewIfNeeded()
     const state = await row.locator('[data-task-col="state"]').boundingBox()
     const who = await row.locator('[data-task-col="who"]').boundingBox()
-    const actions = await row.locator('[data-task-col="actions"]').boundingBox()
+    const what = await row.locator('[data-task-col="what"]').boundingBox()
     expect(who!.y, `${t.id}: who is on the second line`).toBeGreaterThanOrEqual(state!.y + state!.height - 1)
-    expect(Math.abs(actions!.y + actions!.height / 2 - (state!.y + state!.height / 2)), `${t.id}: the actions sit on the first line`).toBeLessThan(actions!.height)
+    const actions = row.locator('[data-task-col="actions"]')
+    if (await actions.locator('button, a').count()) {
+      const box = await actions.boundingBox()
+      expect(box!.y, `${t.id}: the actions are below who and what`).toBeGreaterThanOrEqual(Math.max(who!.y + who!.height, what!.y + what!.height) - 1)
+      if (await actions.locator('[data-slot="label"]').count()) await uncut(actions.locator('[data-slot="label"]'))
+    } else await expect(actions, `${t.id}: a row with no action draws no line for them`).toBeHidden()
+    await noOverlap(row.locator('> [role="button"]'))
     await uncut(row.locator('[data-task-id]'))
     await uncut(row.locator('[data-status-word]'))
   }
+}
+
+test('on a phone, 390 x 844 with touch, each row folds into two lines whole, and a tap on the menu copies the branch', async ({ day, browser }) => {
+  void day
+  budget(LOAD_MS)
+  const run = ledger()
+  const { page } = await opened(browser, run, { width: 390, height: 844, touch: true })
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await narrowRowsWhole(page, run)
   // Measured before the toast, whose progress bar slides in from outside its own box.
   await noSideways(page)
   await page.locator('[data-task-menu="soak"]').tap()
   await page.locator('[data-task-copy-branch="soak"]').tap()
   await expect(page.getByText('Branch copied', { exact: true }).first()).toBeVisible()
+})
+
+test("narrow, a failed task's Retry and Accept anyway… lie clear of its id and name, with a short id and a 40-character one, in both themes", async ({ day, browser }) => {
+  void day
+  budget(LOAD_MS)
+  // The Ledger run with a second failed task beside migrate: the same task under the longest id a task takes.
+  const run = ledger()
+  const migrate = run.tasks.find((t) => t.id === 'migrate')!
+  const long = 'migrate-ledger-accounts-to-new-schema-v2'
+  expect(long).toHaveLength(40)
+  run.tasks.push({ ...structuredClone(migrate), id: long })
+  const { page } = await opened(browser, run, { width: 390, height: 844, touch: true })
+  for (const theme of ['dark', 'light'] as const) {
+    if (theme === 'light') {
+      await useTheme(page, 'light')
+      await expect(page.locator('[data-task-row]')).toHaveCount(run.tasks.length)
+    }
+    for (const id of ['migrate', long]) {
+      await expect(page.locator(`[data-task-row="${id}"] [data-task-retry="${id}"]`), `${theme}: ${id} draws Retry`).toBeVisible()
+      await expect(page.locator(`[data-task-row="${id}"] [data-task-accept="${id}"]`), `${theme}: ${id} draws Accept anyway…`).toBeVisible()
+    }
+    await narrowRowsWhole(page, run)
+    await noSideways(page)
+  }
 })
 
 test("a selected task's applied decision is drawn in neutral ink, never green, in both themes", async ({ day, browser }) => {

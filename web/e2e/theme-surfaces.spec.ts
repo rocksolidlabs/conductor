@@ -18,11 +18,6 @@ async function background(page: Page, l: Locator): Promise<string> {
   return probeColour(page, await l.evaluate((el) => getComputedStyle(el).backgroundColor))
 }
 
-/** The `::before` background, where Nuxt UI's nav draws a link's pill. */
-async function pill(page: Page, l: Locator): Promise<string> {
-  return probeColour(page, await l.evaluate((el) => getComputedStyle(el, '::before').backgroundColor))
-}
-
 /** The driver session's id and folder: the day's silent session, which opens a terminal and a Files pane of the day's repository. */
 async function driver(day: Day) {
   const n = await day.part('states')
@@ -55,12 +50,14 @@ for (const theme of THEMES) {
     await link.hover()
     await expect.poll(() => background(page, link), { timeout: MEASURE_WAIT_MS }).toBe(hoverTone)
 
-    // The current page's link in the nav: its pill stands apart from the canvas it sits on.
-    const nav = sidebar.locator('[data-slot="link"][aria-current="page"], [data-slot="link"][data-active]').first()
+    // The current page's tile among the sidebar's pages (PR-15's six): lit on the page's tone, apart from the canvas it sits on.
     await page.goto('/yard')
     await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
-    await expect(nav).toBeVisible()
-    expect(await pill(page, nav)).not.toBe(canvas)
+    const tiles = sidebar.locator('[data-sidebar-tiles]')
+    const lit = tiles.locator('[data-sidebar-tile="yard"]')
+    await expect(lit).toHaveAttribute('aria-current', 'page')
+    await expect.poll(() => background(page, lit), { timeout: MEASURE_WAIT_MS }).toBe(ground)
+    expect(ground).not.toBe(canvas)
     await page.goto(`/sessions/${d.id}`)
 
     // The terminal's host on the page's tone.
@@ -76,6 +73,26 @@ for (const theme of THEMES) {
     const editor = page.locator('[data-editor-area] .monaco-editor').first()
     await expect(editor.locator('.view-lines')).toContainText('e2e scratch repository', { timeout: 30_000 })
     await expect.poll(() => background(page, editor.locator('.monaco-editor-background').first()), { timeout: MEASURE_WAIT_MS }).toBe(ground)
+  })
+
+  test(`the ${theme} theme: the canvas's icon buttons, your menu's and the rail's, hover to the canvas's hover tone`, async ({ day, browser }) => {
+    await day.part('states')
+    const page = await dayPage(browser, { path: '/yard', theme })
+    const hoverTone = await probeColour(page, 'var(--ui-bg-canvas-hover)')
+    expect(hoverTone).not.toBe(await probeColour(page, 'var(--ui-bg-canvas)'))
+    const sidebar = page.locator('#dashboard-sidebar-main')
+    // Each hovered: the tone that holds once the button's transition has passed.
+    const hovers = async (l: Locator) => {
+      await l.hover()
+      await expect.poll(() => background(page, l), { timeout: MEASURE_WAIT_MS }).toBe(hoverTone)
+    }
+    await hovers(sidebar.locator('[data-slot="header"] [data-header-account]'))
+    // Folded to the rail: its filter, your menu in its foot, and Expand.
+    await page.keyboard.press('Alt+b')
+    await expect(sidebar.locator('[data-rail]')).toBeVisible()
+    await hovers(sidebar.getByRole('button', { name: 'Filter sessions' }))
+    await hovers(sidebar.locator('[data-rail-foot] [data-header-account]'))
+    await hovers(sidebar.locator('[data-rail-expand]'))
   })
 
   test(`the ${theme} theme on a phone: the page and the terminal on the brand's ground`, async ({ day, browser }) => {

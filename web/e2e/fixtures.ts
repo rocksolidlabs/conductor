@@ -267,6 +267,16 @@ export async function viaMore(page: Page, name: string): Promise<void> {
   await expect(page.getByRole('menu')).toHaveCount(0)
 }
 
+/**
+ * The address of the page of what needs you with `ref` the open item, as the router spells it (it may leave `:` and `/` unencoded).
+ * On a wide window the page opens its oldest item by itself through the address (UX1 PR-21), so a spec that means "the page is open"
+ * reads the path (`pagePath`), and one that means "this item is open" reads this.
+ */
+export const itemURL = (ref: string) => new RegExp(`/decisions\\?item=${ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/:/g, '(:|%3A)').replace(/\//g, '(/|%2F)')}$`)
+
+/** The page's path, without its query: what a poll compares where the query may carry the item a wide window opens. */
+export const pagePath = (page: Page): string => new URL(page.url()).pathname
+
 /** The count of what needs you that leads the tab's title while something does ("(3) ", "(9+) " when a store was only partly read). */
 export const TITLE_COUNT = /^\(\d+\+?\) /
 
