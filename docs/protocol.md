@@ -1660,24 +1660,51 @@ allow a tool of an MCP server (Codex 0.163.0 to 0.169.0, #716: "Field
 1/1", "Allow the <server> MCP server to run tool "<tool>"?" and up to
 three of the call's arguments, "› 1. Allow", "Allow for this session" and
 "Always allow" when the server's approval mode remembers a choice,
-"Cancel", then "enter to submit | esc to cancel" on the last row) is found
-by that whole shape, its words the message and the arguments, its answers
-read off the form (`answersFromScreen`): each its digit, which picks it
-and submits the form at once.
+"Cancel", each with its description in a column beside it, then "enter to
+submit | esc to cancel" on the last row) is found by that whole shape, at
+most 8 rows from Allow to Cancel, and asked as a form (below): its words
+every row between "Field 1/1" and its list (the message and the
+arguments), its choices read off the form, Allow and the choices that
+remember it each its digit, which picks it and submits the form at once,
+Cancel an Escape, the key the footer names, which cancels the form.
+"Allow for this session" and "Always allow" are mode answers
+(`modeAnswers`): a page gives them no number key and never offers them
+first. It is asked where Codex lays its four choices over 8 rows or fewer
+from Allow to Cancel, about 53 columns wide and wider; narrower (at 40
+columns their descriptions wrap over 14 rows) it is not, and the form is
+answered in the terminal (its two choices are asked at 40 columns too). A
+screen that is not plainly the one form (a second row that opens a form,
+a numbered row or such a row between the form's top and its list, choices
+without a description column, as a server's own form draws them) asks
+nothing of the form either; a server's own form drawn with the same choices
+and a column beside them is asked the same way, its rows its choices.
 
-A question with `answersFromScreen: true` (only with `anytime`, and no
-`answers` of its own) has its answers read off the screen each time it is
-asked: the numbered list its dialog draws at the bottom, from the last row
-numbered N up through the rows numbered N−1 to 1 at that column, at most 8
-rows apart (a choice's description, a rule, the rest of a long label), each
-choice its first row's label and its number as the key (no Enter). Its
-words, without a `words` pattern, are the rows above the list up to the
-dialog's top rule (a row of `─` alone), rules within it left out. A screen
-its prompt finds with no such list (fewer than two choices, a number out of
-turn) asks nothing. `modeAnswers`, a pattern bounded as a prompt, marks
-`mode` the answers it matches, each read whole: its label with the rows
-that follow it up to the next choice (a narrow screen wraps "switch to" and
-"BYPASS PERMISSIONS" onto two rows). `typedAnswers`, a pattern bounded the
+A question with `answersFromScreen: true` (only with `anytime`) has its
+answers read off the screen each time it is asked: the numbered list its
+dialog draws at the bottom, from the last row numbered N, at most 8 rows
+from the end (a hint, a footer, each wrapped on a narrow screen), up
+through the rows numbered N−1 to 1 at that column, at most 8 rows apart (a
+choice's description, a rule, the rest of a long label), each choice its
+first row's label, whole, and its number as the key (no Enter). Its words,
+without a `words` pattern, are the rows above the list up to the dialog's
+top rule (a row of `─` alone), 16 at most, rules within it left out. A
+screen its prompt finds with no such list (fewer than two choices, a
+number out of turn) asks nothing. With `answers` of its own (and `words`)
+it is a form: `words` matches the form's top row, which must be the only
+row of the screen it matches and stand above the list; its words are every
+row between that row and the list, 16 at most and no longer than a
+message, none of them a numbered row; each choice's label is its name, up
+to the one column at which every choice row draws its description, and a
+form without that column asks nothing; a choice whose label is one of
+`answers`' is sent as that answer's keys, the others as their numbers.
+What a reply to it is weighed against is those words and the whole list:
+the form with any row changed is another question. After an answer of
+Conductor's, the form on the screen at the first whole frame drawn since,
+the same still or the next with the same words, is a question of its own.
+`modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
+matches, each read whole: its label with the rows that follow it up to the
+next choice (a narrow screen wraps "switch to" and "BYPASS PERMISSIONS"
+onto two rows). `typedAnswers`, a pattern bounded the
 same way, matches the answers that take typed words, each read whole: while
 the dialog's highlight stands before one, its keys type into that field,
 so the question offers no choices and is answered in the terminal. A reply

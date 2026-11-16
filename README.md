@@ -1175,8 +1175,14 @@ Its form asking to allow a tool of an MCP server ("Allow the conductor MCP
 server to run tool "guide"?", Conductor's own tools in a session as much as
 your own servers') is held the same way: the session needs you with the
 form's message and its own choices (**Allow**, **Allow for this session**,
-**Always allow** and **Cancel**, or Allow and Cancel alone), each of which
-types its number.
+**Always allow** and **Cancel**, or Allow and Cancel alone): Allow and the
+two that remember it type their number, Cancel types Esc, and the two that
+remember it have no number key and are never offered first. In a terminal
+as narrow as a phone's (40 columns), where Codex wraps the four choices'
+descriptions over many rows, and on a screen that does not plainly show the
+one form, Conductor offers no choices for it: you answer the form in the
+terminal (Codex 0.167 and later say they wait on a permission, and the
+session needs you with no choices).
 Claude Code's dialogs during the work are held the same way, their choices
 read off the dialog each time it shows (the catalog's `answersFromScreen`),
 since they change with the tool, the permission mode and the release.
