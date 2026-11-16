@@ -78,7 +78,7 @@ function act(fn?: (e: Event) => void) {
         <span
           v-if="t.count"
           class="absolute -right-2.5 -top-1.5 rounded-full px-1 text-[9px] font-semibold leading-3.5"
-          :class="t.amber ? 'bg-warning text-inverted' : 'bg-elevated text-default ring ring-default'"
+          :class="t.amber ? 'bg-warning text-(--ui-color-neutral-900)' : 'bg-elevated text-default ring ring-default'"
           :data-count-of="t.amber ? 'needs' : undefined"
           data-bottom-count
           >{{ t.count }}</span

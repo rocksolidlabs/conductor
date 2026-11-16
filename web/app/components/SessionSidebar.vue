@@ -34,8 +34,7 @@ const cloneModal = useCloneModal()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
-const now = ref(Date.now())
-let tick: number | undefined
+const now = useNow()
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
@@ -54,7 +53,8 @@ const decisionsStale = computed(() => (query.value ? '' : staleNotice(decisions.
 const oneList = useNeedsYou()
 const needsHeader = computed(() => sectionHeader(model.value.counts.needs + loneDecisions.value.length, query.value ? [] : oneList.items.value))
 const needsMore = computed(() => (needsHeader.value.more ? { label: `+${needsHeader.value.more} on the page`, to: '/decisions', title: needsHeader.value.words } : undefined))
-const empty = computed(() => attention.sessions.value.length === 0 && joined.list.value.length === 0)
+// Judged once the sessions are read (P23): before the first read the store's emptiness says nothing.
+const empty = computed(() => attention.loaded.value && attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
 /** The run of the page open now: the run page, or a member's page. */
 const openRun = computed(() => sidebarRunFor(route.path, attention.sessions.value))
@@ -351,11 +351,6 @@ const sheet = computed(() => {
 })
 
 defineExpose({ focusFilter, focusList })
-
-onMounted(() => {
-  tick = window.setInterval(() => (now.value = Date.now()), 30000)
-})
-onBeforeUnmount(() => window.clearInterval(tick))
 </script>
 
 <template>
@@ -372,7 +367,7 @@ onBeforeUnmount(() => window.clearInterval(tick))
     </div>
 
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
-      <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed">No sessions yet. Launch an agent here or run <code>conductor host</code> from your machine.</p>
+      <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p>
 
       <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale || needsMore" id="needs" title="Needs you" :count="needsHeader.listed" tone="warning" :more="needsMore" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">

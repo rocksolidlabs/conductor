@@ -117,12 +117,19 @@ typing), **Explorer**, **Changes** and **Commits** (the file browser, the git
 status and the commits since the session started), **Activity** (joins,
 answers, signals and link changes, with the files the agent touched as a
 filter) and **Chat**; each item opens its view, the open one collapses the
-panel to the rail, whose count pills still read. The header names the
-agent, where it runs, the working directory and the git branch, shows a
-**yolo** badge for a session launched with its agent's yolo recipe (see
-[Yolo](#yolo)) and the agent's own session id when Conductor knows it (click
-to copy); an ended session offers **Resume** or **Relaunch** (see
-[Resume and relaunch](#resume-and-relaunch)). A reply typed in a reply bar
+panel to the rail, whose count pills still read. The panel is closed until
+you open a view, so the terminal has the room; the choice is remembered for
+every session, and the rail's toggle opens it on Explorer. The line under
+the name reads the agent (and, for a hosted session, its machine), the
+folder and the git branch, with the whole path as its tooltip; **More**
+copies the session's id and, when Conductor knows it, the agent's own. The
+header shows a **yolo** badge for a session launched with its agent's yolo
+recipe (see [Yolo](#yolo)), and the connection as an icon while it is
+healthy (its kind and round trip on hover) and in words when it is not. On
+a phone, Files, Share and Fullscreen are the first items of **More**, so the
+name stays whole. An ended session offers **Resume** or **Relaunch** (see
+[Resume and relaunch](#resume-and-relaunch)); a link to a session the server
+no longer holds opens on its name with a way to its record in History. A reply typed in a reply bar
 goes in as Conductor types a crew prompt: the text, then Enter on its own a
 quarter of a second later, so that an agent that reads a fast burst as a paste
 still runs it.
@@ -793,12 +800,13 @@ can raise a browser notification, and appear in the Yard's queue. Claude Code's
 dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
 offer their own choices wherever the prompt is shown, read off the dialog as
 it is drawn: a choice that changes the permission mode (auto mode, accept
-edits, bypass permissions) gets no number key and is never the highlighted
-one. A permission question whose dialog the screen does not show (a hosted
+edits, bypass permissions) gets no number key and is never filled. Every
+choice is drawn alike unless the agent itself recommends one, its label
+ending "(Recommended)": that one alone is filled. A permission question whose dialog the screen does not show (a hosted
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
-**The Events page** has three tabs. **Feed** (the default) lists the events
+**The Events page** has two tabs. **Feed** (the default) lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
 it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
@@ -811,10 +819,19 @@ sidebar and on its Yard tile (until the session reports `working` or
 `needs_input`, or you open it), a browser notification with the chime (as
 switched on under the sidebar's alerts), a Roundhouse jump while it follows, and
 a line in the live feed, which keeps the last 500 events in memory. Routes are
-saved in the browser. **Integrations** is a table of the agents: whether their
-hooks reach them, what they report, where an install writes, and **Install on
-this machine**, with the snippet of an agent nothing wires open below. An
-artifact's URL becomes a link only when it is `http(s)`.
+saved in the browser. An artifact's URL becomes a link only when it is
+`http(s)`.
+
+**Reporting to Conductor** is a section of the **Agents** page, under the
+cards. Each card says whether its agent reports: **Reports to Conductor** (its
+hooks are installed, or a launch from this server injects them), **Not set
+up** with a **Set up** link to its row in the section, **Experimental**, or
+**No hooks** for an agent with no adapter, which reports by the bell or a
+screen pattern. The section is a table of the hook adapters (one adapter can
+serve many agents of the catalog): whether their hooks reach them, what they
+report, where an install writes, and **Install on this machine**, with the
+snippet of an agent nothing wires open below, then the Conductor skill. An
+old link to the Events page's Integrations tab opens it.
 
 **Wired at launch.** Conductor has a hook adapter for every built-in agent but
 the shell. At startup `conductor serve` writes the hook files into `hooks/` in
@@ -843,8 +860,10 @@ waiting on a question, and an idle member is not.
 
 **Installed on demand.** The other agents read hooks only from their own
 config, and so do the agents above when something other than Conductor starts
-them. The **Events** page lists every adapter with what it reports and whether
-its hooks are installed, the snippet to paste, and **Install on this machine**,
+them. The **Agents** page's section Reporting to Conductor lists every adapter
+with what it reports and whether its hooks are installed, the snippet to
+paste, and **Install on this machine** (one install for every agent of the
+adapter),
 which adds Conductor's hooks to the agent's config in the server user's home,
 next to your own settings and hooks and never over them: entries in its hook
 lists, a marked block, or a file of Conductor's own. An entry of Conductor's
@@ -910,7 +929,7 @@ convention, for pi, Goose, Cursor, Copilot, OpenCode, oh-my-pi, Amp and
 DeepSeek Harness; aider reads none), one attempt per agent per server start,
 and a `SKILL.md` of your own there is never touched (the log says so once).
 `agents.installSkill: false` or `CONDUCTOR_AGENT_INSTALL_SKILL=0` turns that
-off; installing the hooks (`conductor hooks install`, the Events page) puts
+off; installing the hooks (`conductor hooks install`, the Agents page) puts
 the skill in place too. The server keeps its copy in
 `hooks/skills/conductor/SKILL.md`, and every session names it in
 `CONDUCTOR_SKILL`, so an agent with no skills directory can be told to read
@@ -923,7 +942,7 @@ on the `PATH`.
 <details>
 <summary>Wiring the hooks by hand</summary>
 
-`conductor hooks install` and the Events page write these for you, naming the
+`conductor hooks install` and the Agents page write these for you, naming the
 binary by its absolute path. Written by hand as below, `conductor` must be on
 the `PATH` the agent runs its hooks with. A session Conductor launches already
 gets Claude Code's hooks through `--settings`: add them to your own settings
@@ -948,7 +967,7 @@ for Claude Code started elsewhere.
   notify = ["conductor", "notify", "--codex"]
   ```
 
-- Every other agent: the snippet on its card on the Events page, which is also
+- Every other agent: the snippet of its row on the Agents page, which is also
   its file in `hooks/` in the server's data directory.
 
 </details>
@@ -1179,6 +1198,26 @@ watches: the member is in Needs you with the question, the command and the
 three choices, each of which types its own key (`y`, `p`, Esc); typed text
 is refused while it shows, since its letters are the dialog's keys and its
 Enter would approve. A catalog question marked `anytime` is held this way.
+Its form asking to allow a tool of an MCP server ("Allow the conductor MCP
+server to run tool "guide"?", Conductor's own tools in a session as much as
+your own servers') is held the same way: the session needs you with the
+form's message and its own choices (**Allow**, **Allow for this session**,
+**Always allow** and **Cancel**, or Allow and Cancel alone): Allow and the
+two that remember it type their number, and the two that remember it have
+no number key and are never offered first (Always allow remembers the
+approval for later tool calls). Cancel types Esc: Codex cancels the call
+and closes the form together with every form it had waiting behind it, a
+server's own among them; they are not asked again, and their calls keep
+waiting, as when you press Esc in the terminal. The four choices are
+offered in a terminal at least 53 columns wide (Allow and Cancel alone at
+40 too). Narrower, as a phone's 40 columns, on a screen that does not
+plainly show the one form, and on a hosted session (`conductor host`),
+Conductor offers no choices: you answer the form in the terminal (Codex
+0.167 and later say they wait on a permission, and the session needs you
+with no choices; with 0.163 it reads as working). The same form shown
+again right after you answered it is held as answered: no page shows a
+question for it and the inbox does not list it; you answer it in the
+terminal.
 Claude Code's dialogs during the work are held the same way, their choices
 read off the dialog each time it shows (the catalog's `answersFromScreen`),
 since they change with the tool, the permission mode and the release.

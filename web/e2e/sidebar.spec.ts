@@ -123,7 +123,7 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   await expect(exited).toHaveAttribute('data-folded', 'true')
   await expect(exited.locator('[data-section-count]')).toHaveText(/^· \d+$/)
   await expect(exited.locator('[data-sidebar-row]')).toHaveCount(0)
-  expect(await exited.locator('[data-section-preview] [data-state="exited"]').count()).toBeGreaterThan(0)
+  expect(await exited.locator('[data-section-preview] [data-status-mark="exited"]').count()).toBeGreaterThan(0)
   await exited.getByRole('button', { name: /^Exited/ }).click()
   await expect(exited).toHaveAttribute('data-folded', 'false')
   const row = exited.locator(`[data-sidebar-row="s:${done.id}"]`)
@@ -173,7 +173,10 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   await running.getByRole('button', { name: /^Running/ }).click()
   await expect(running).toHaveAttribute('data-folded', 'true')
   await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
-  expect(await running.locator('[data-section-preview] [data-state="running"]').count()).toBeGreaterThan(0)
+  // The squares are status marks: a live session's, working, finished or running (which the resumed stub shows is its own to say).
+  const marks = running.locator('[data-section-preview] [data-status-mark]')
+  expect(await marks.count()).toBeGreaterThan(0)
+  for (const key of await marks.evaluateAll((els) => els.map((e) => e.getAttribute('data-status-mark')))) expect(key).toMatch(/^(working|finished|running)$/)
   await expect(running.locator('[data-sidebar-row]')).toHaveCount(0)
   await page.reload()
   await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'true')
@@ -484,7 +487,9 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   const capsule = rail.locator(`[data-rail-run="${run2}"]`)
   await expect(capsule.locator('[data-rail-member]')).toHaveCount(2)
   await expect(capsule.locator('[data-rail-play="needs"]')).toBeVisible()
-  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead running$/)
+  // Each member by its status's word (utils/status.ts): lead's stub answers its prompt and ends its turn, so it has finished.
+  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead finished (just now|\d+[mh] ago)$/)
+  await expect(capsule.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'needs')
   // The corners: new events bottom right, the machine bottom left; the exited run dashed; loose exited folded into +N.
   await expect(rail.locator(`[data-rail-session="${marked.id}"] [data-rail-news]`)).toBeVisible()
   await expect(rail.locator('[data-rail-session][data-rail-tile="machine"]')).toHaveCount(1)

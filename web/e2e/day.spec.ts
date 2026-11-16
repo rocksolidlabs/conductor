@@ -19,23 +19,24 @@ function byKind(refs: Iterable<{ ref: string; kind: string }>): Record<string, s
   return out
 }
 
-/** The five sessions of `states` as the server lists them: name, status and attention. */
-async function fiveStates(day: Day): Promise<Array<[string, string, string]>> {
+/** The five sessions of `states` as the server lists them: name, status, attention and whether the agent reports its turns. */
+async function fiveStates(day: Day): Promise<Array<[string, string, string, boolean]>> {
   const n = await day.part('states')
-  const out: Array<[string, string, string]> = []
+  const out: Array<[string, string, string, boolean]> = []
   for (const name of Object.keys(STATES)) {
     const s = await day.api.session(n[name]!)
-    out.push([s.name, s.status, s.attention?.state ?? ''])
+    out.push([s.name, s.status, s.attention?.state ?? '', s.turns === true])
   }
   return out
 }
 
-const FIVE: Array<[string, string, string]> = [
-  ['mac-only-flake', 'running', 'needs_input'],
-  ['yard-tile-resize', 'running', 'working'],
-  ['flaky-vim-spec', 'running', 'done'],
-  ['driver', 'running', ''],
-  ['old-bisect', 'stopped', ''],
+// The listing's turns is what the status walk reads: working and finished are told by an agent that reports its turns.
+const FIVE: Array<[string, string, string, boolean]> = [
+  ['mac-only-flake', 'running', 'needs_input', false],
+  ['yard-tile-resize', 'running', 'working', true],
+  ['flaky-vim-spec', 'running', 'done', true],
+  ['driver', 'running', '', false],
+  ['old-bisect', 'stopped', '', false],
 ]
 
 test('each part of the day holds what it promises, read through the API by name', async ({ day }) => {

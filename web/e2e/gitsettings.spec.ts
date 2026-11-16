@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, git, test, type Session } from './fixtures'
+import { expect, git, showView, test, type Session } from './fixtures'
 
 // git's settings and credentials often hold access tokens (a remote URL with
 // one in it): a view-only guest who types .git/config, .git/HEAD or
@@ -69,7 +69,8 @@ test("git's files are for controllers; a working tree elsewhere lists no changes
   const e = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'elsewhere', cwd: folder })
   try {
     await page.goto(`/sessions/${e.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    // The panel was left open on Explorer, and is kept so across the load (P11): Explorer shown, not clicked closed.
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator(`[data-file-node="${folder}/here.txt"]`)).toBeVisible({ timeout: 30_000 })
     await page.locator('[data-inspector] [data-rail-item="changes"]').click()

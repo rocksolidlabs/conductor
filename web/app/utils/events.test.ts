@@ -178,7 +178,7 @@ describe('appendRing', () => {
 
 describe('markOf', () => {
   it('labels a session badge and colours it by severity', () => {
-    expect(markOf('done', entry('attention', { message: 'done' }))).toMatchObject({ label: 'done', color: 'success' })
+    expect(markOf('done', entry('attention', { message: 'done' }))).toMatchObject({ label: 'finished', color: 'neutral' })
     expect(markOf('tool_denied', entry('tool_denied', { tool: 'Bash' }))).toMatchObject({ label: 'denied', color: 'error' })
     expect(markOf('error', entry('error', { message: 'boom' }))).toMatchObject({ label: 'error', color: 'error' })
     expect(markOf('exit_nonzero', entry('status', { message: 'exited (exit 1)' }))).toMatchObject({ label: 'exit 1', color: 'error' })
@@ -205,7 +205,7 @@ describe('entryIcon', () => {
     expect(entryIcon(entry('artifact', { url: 'https://x' }))).toEqual({ icon: EVENT_INFO.artifact.icon, color: 'info' })
     expect(entryIcon(entry('tool_denied'))).toEqual({ icon: EVENT_INFO.tool_denied.icon, color: 'error' })
     expect(entryIcon(entry('status', { message: 'exited (exit 2)' }))).toEqual({ icon: EVENT_INFO.exit_nonzero.icon, color: 'error' })
-    expect(entryIcon(entry('attention', { message: 'done' }))).toEqual({ icon: EVENT_INFO.done.icon, color: 'success' })
+    expect(entryIcon(entry('attention', { message: 'done' }))).toEqual({ icon: EVENT_INFO.done.icon, color: 'neutral' })
     expect(entryIcon(entry('status', { message: 'exited (exit 0)' })).color).toBe('neutral')
     expect(entryIcon(entry('attention', { message: 'Approve the edit?' })).icon).toBe('i-lucide-bell')
     const roster = ['join', 'leave', 'input', 'link'].map((t) => entryIcon(entry(t as ActivityEntry['type'])).icon)
@@ -352,7 +352,7 @@ describe('routeEntry', () => {
     const progress = routeEntry(denied, 's1', entry('progress', { message: '4/7' }), undefined, routes(), 2).state
     expect(progress.marks).toBe(denied.marks)
     const done = routeEntry(progress, 's1', entry('attention', { message: 'done' }), undefined, routes(), 3).state
-    expect(done.marks.s1).toMatchObject({ type: 'done', label: 'done', color: 'success' })
+    expect(done.marks.s1).toMatchObject({ type: 'done', label: 'finished', color: 'neutral' })
   })
 
   it('clears the badge on working and needs_input, whatever their Badge route says', () => {
@@ -372,7 +372,7 @@ describe('routeEntry', () => {
 
 describe('pruneMarks', () => {
   const marks = {
-    a: { type: 'done' as const, at: 't', label: 'done', color: 'success' as const, detail: '' },
+    a: { type: 'done' as const, at: 't', label: 'finished', color: 'neutral' as const, detail: '' },
     b: { type: 'error' as const, at: 't', label: 'error', color: 'error' as const, detail: '' },
   }
   it('drops the badges of a type whose Badge route is off', () => {

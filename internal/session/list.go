@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -41,6 +42,10 @@ type dialogList struct {
 	// at is the index of the choice the highlight stands before, -1 for
 	// none.
 	at int
+	// top is the index of the row numbered 1 among text's rows, and rows
+	// each choice's row as drawn.
+	top  int
+	rows []string
 }
 
 // readList reads the numbered list a dialog draws at the bottom of text, a
@@ -94,6 +99,7 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 		}
 		l.choices = append(l.choices, Option{Label: label, Input: m[3], Mode: mode != nil && mode.MatchString(whole)})
 		l.whole = append(l.whole, m[3]+". "+whole)
+		l.rows = append(l.rows, m[0])
 		marks = append(marks, m[2] != "")
 		after = nil
 	}
@@ -120,8 +126,9 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	}
 	slices.Reverse(l.choices)
 	slices.Reverse(l.whole)
+	slices.Reverse(l.rows)
 	slices.Reverse(marks)
-	l.at = slices.Index(marks, true)
+	l.at, l.top = slices.Index(marks, true), top
 	var above []string
 	for i := top - 1; i >= 0 && len(above) < listHead; i-- {
 		row := strings.TrimSpace(rows[i])
@@ -136,6 +143,45 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	slices.Reverse(above)
 	l.words = strings.Join(above, "\n")
 	return l, true
+}
+
+// named returns l's choices with each label its name alone, for a list
+// whose rows draw each choice's description in a column of its own (a
+// form's, StartupQuestion.form: Codex's "› 1. Allow   Run the tool and
+// continue", #716). The column is found as a column: the one screen column
+// at which, on every choice row, a word begins after two spaces or more,
+// past the start of the row's label. Each label is its row from its start
+// up to that column, its ASCII spaces trimmed; the description stays in
+// the choice whole. False when the rows draw no such column, or more than
+// one, or a label holds other white space or a control character.
+func (l dialogList) named() ([]Option, bool) {
+	labelAt := func(row string) ([]rune, int) {
+		r := []rune(row)
+		return r, len(r) - utf8.RuneCountInString(listItem.FindStringSubmatch(row)[4])
+	}
+	var cols []int
+	for i, row := range l.rows {
+		r, start := labelAt(row)
+		var at []int
+		for p := start + 2; p < len(r); p++ {
+			if r[p] != ' ' && r[p-1] == ' ' && r[p-2] == ' ' && (i == 0 || slices.Contains(cols, p)) {
+				at = append(at, p)
+			}
+		}
+		cols = at
+	}
+	if len(cols) != 1 {
+		return nil, false
+	}
+	out := slices.Clone(l.choices)
+	for i, row := range l.rows {
+		r, start := labelAt(row)
+		out[i].Label = strings.Trim(string(r[start:cols[0]]), " ")
+		if strings.ContainsFunc(out[i].Label, func(c rune) bool { return c != ' ' && unicode.IsSpace(c) || unicode.IsControl(c) }) {
+			return nil, false
+		}
+	}
+	return out, true
 }
 
 // ruleRow reports whether row (trimmed) is a rule, three or more of the
