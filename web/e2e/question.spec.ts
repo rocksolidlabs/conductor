@@ -1,16 +1,18 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Locator } from '@playwright/test'
-import { expect, member, test, type Session } from './fixtures'
+import type { Locator, Page } from '@playwright/test'
+import { expect, member, rowAnswer, test, type Session } from './fixtures'
 
 // A long question (#187): an agent's permission prompt quotes the command,
 // so what it asks runs to a couple of hundred characters. It reads whole,
 // wrapped over its lines above the choices and never cut to one line with
-// an ellipsis: in the sidebar's row, in a tile expanded on the Yard and the
-// session page's reply bar (a tile on the grid says its start), on the run card of the Crews page, and in the
+// an ellipsis: in the sidebar's row at 280 px and wider, in the panel beside
+// the row in a narrower sidebar (owner decision 7: two lines in the row), in
+// a tile expanded on the Yard (a tile on the grid says its start), in the
+// session page's reply bar, on the run card of the Crews page, and in the
 // phone's list, where a choice still answers. A question at the server's
 // bound (500 bytes, the longest any surface shows) reads whole too, and the
-// row's geometry never moves under the pointer.
+// geometry never moves under the pointer.
 test.describe.configure({ mode: 'serial' })
 
 /** The asker-long stub's question (conductor.e2e.json): a Claude Code permission prompt's length, 200 characters. */
@@ -45,7 +47,19 @@ async function expectWhole(el: Locator): Promise<void> {
   expect(m.scrollHeight, `nothing cut off below: ${JSON.stringify(m)}`).toBeLessThanOrEqual(m.clientHeight + 1)
 }
 
-test('the sidebar row shows the whole question, wrapped above its choices', async ({ page, api }) => {
+/** Drags the sidebar's handle to `x` and waits for the sidebar to be drawn that wide. */
+async function sidebarAt(page: Page, x: number) {
+  const box = (await page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]').boundingBox())!
+  const y = box.y + box.height / 2
+  await page.mouse.move(box.x + box.width / 2, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y, { steps: 4 })
+  await page.mouse.up()
+  await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(x, 0)
+  await expect(page.locator('[data-session-list="sidebar"]')).toHaveAttribute('data-list-width', x < 280 ? 'narrow' : 'wide')
+}
+
+test('at 200 px the sidebar row shows two lines of the question, and the panel beside it the whole question above its choices', async ({ page, api }) => {
   expect(QUESTION).toHaveLength(200)
   asker = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker-long', name: 'e2e long question' })
   sessions.push(asker.id)
@@ -53,6 +67,23 @@ test('the sidebar row shows the whole question, wrapped above its choices', asyn
   expect((await api.session(asker.id)).attention?.options?.map((o) => o.label)).toEqual(CHOICES.map((c) => c.label))
 
   await page.goto('/crews')
+  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker.id}"]`).first()
+  await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  await expect(row.locator('[data-row-prompt]')).toHaveAttribute('data-row-clamped', '')
+  const panel = await rowAnswer(page, row)
+  const words = panel.locator('[data-panel-question]')
+  await expect(words).toHaveText(QUESTION)
+  await expectWhole(words)
+  expect((await words.boundingBox())!.height).toBeGreaterThan(30)
+  await expect(panel.locator('[data-row-choice]')).toHaveCount(3)
+  const first = (await panel.locator('[data-row-choice="1"]').boundingBox())!
+  const box = (await words.boundingBox())!
+  expect(box.y + box.height).toBeLessThanOrEqual(first.y + 1)
+})
+
+test('dragged to 300 px the sidebar row shows the whole question, wrapped above its choices', async ({ page }) => {
+  await page.goto('/crews')
+  await sidebarAt(page, 300)
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   const prompt = row.locator('[data-row-prompt]')
@@ -126,7 +157,7 @@ test("a member's question is whole on the run card of the Crews page", async ({ 
   await expectWhole(ask.locator('[data-run-ask-words]'))
 })
 
-test("a question at the server's bound reads whole in the row, and the pointer over it and onto a choice moves nothing", async ({ page, api, browser, state }) => {
+test("a question at the server's bound reads whole in the panel at 200 px and in the row at 300 px, and the pointer over it and onto a choice moves nothing", async ({ page, api, browser, state }) => {
   expect(LONGEST).toHaveLength(500)
   await api.ok('POST', `/api/sessions/${encodeURIComponent(asker.id)}/attention`, { state: 'needs_input', message: LONGEST, options: CHOICES })
   expect((await api.session(asker.id)).attention?.message).toBe(LONGEST)
@@ -134,6 +165,27 @@ test("a question at the server's bound reads whole in the row, and the pointer o
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker.id}"]`).first()
   const prompt = row.locator('[data-row-prompt]')
   await expect(prompt).toHaveText(LONGEST, { timeout: 30_000 })
+
+  // At 200 px: whole in the panel; the pointer from the panel's question onto a choice moves nothing.
+  const panel = await rowAnswer(page, row)
+  const asked = panel.locator('[data-panel-question]')
+  await expect(asked).toHaveText(LONGEST)
+  await expectWhole(asked)
+  const inPanel = panel.locator('[data-row-choice="3"]')
+  const was = (await inPanel.boundingBox())!
+  const said = (await asked.boundingBox())!
+  await page.mouse.move(said.x + said.width / 2, said.y + said.height - 6)
+  expect((await inPanel.boundingBox())!.y).toBe(was.y)
+  const at = { x: was.x + was.width / 2, y: was.y + was.height / 2 }
+  await page.mouse.move(at.x, at.y)
+  expect((await inPanel.boundingBox())!.y).toBe(was.y)
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-row-choice]')?.getAttribute('data-row-choice'), at)).toBe('3')
+  await expectWhole(asked)
+
+  // At 300 px: whole in the row, as before the narrow sidebar.
+  await page.locator('[data-session-list="sidebar"] [data-row-focused] a[href]').first().blur()
+  await sidebarAt(page, 300)
+  await expect(page.locator('[data-row-panel]')).toHaveCount(0)
   await expectWhole(prompt)
 
   // The pointer over the question and then onto a choice moves nothing: the choice is where it was, under the pointer.

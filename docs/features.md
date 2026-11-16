@@ -268,6 +268,20 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
+- **A question in the narrow sidebar (UX1 PR-8, owner decision 7).** Below
+  280 px (`NARROW_SIDEBAR_PX`, `narrowSidebar` in `web/app/utils/sidebar.ts`,
+  from the sidebar's drawn width) a row's question is clamped to two lines
+  (`data-row-clamped`) and the row shows an Answer button in place of its
+  choices; one panel for the list (`SidebarRowPanel.vue`, a popover that is
+  not modal, `data-row-panel`, `data-panel-for`) holds the name, the whole
+  question and the row's own prompt controls, labels wrapped. It is for the
+  focused row while it asks, or the row whose Answer was pressed
+  (`panelRow`); focus opens it without moving the focus, Answer moves the
+  focus into it, Escape gives the focus back to the row, and the list counts
+  the panel as its own, so typing in its field keeps the row focused (#596).
+  The phone's list, the palette, the pill, the Yard and the session page keep
+  the question whole. Specs reach a row's answer through `rowAnswer`
+  (`web/e2e/fixtures.ts`).
 - **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
   minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
   UX review's P5): its header is the mark, "Conductor" and your menu, about

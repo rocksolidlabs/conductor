@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, rowAnswer, test, type Session } from './fixtures'
 
 // Claude Code's dialogs during the work (#288): their choices are read off
 // the dialog itself, never a fixed Yes / Always / No. The plan's approval
@@ -64,7 +64,7 @@ test("the plan's approval offers its own choices, the change of mode without a n
   await expect(choices.nth(2).locator('kbd')).toHaveText('3')
 
   // The sidebar's row offers the same, the first without its number.
-  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  const row = await rowAnswer(page, page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first())
   await expect(row.locator('[data-row-choice]')).toHaveCount(3)
   await expect(row.locator('[data-row-choice="1"]')).toHaveAttribute('data-choice-mode', 'true')
   await expect(row.locator('[data-row-choice="1"] kbd')).toHaveCount(0)
@@ -98,7 +98,7 @@ test('a permission whose dialog the screen does not show is answered in the term
   const field = bar.getByRole('textbox')
   await expect(field).toBeDisabled()
   await expect(field).toHaveAttribute('placeholder', 'Answer it in the terminal')
-  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  const row = await rowAnswer(page, page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first())
   await expect(row.locator('[data-row-reply]')).toBeDisabled()
 
   // The terminal answers it.

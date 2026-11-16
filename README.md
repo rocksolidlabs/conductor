@@ -659,7 +659,13 @@ its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
 reply field where Enter sends; the answer goes over a short-lived connection
 as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
-away".
+away". In a sidebar narrower than 280 px a row shows two lines of
+its question, and the whole question with its choices or its reply field
+opens in a panel beside the row, to the right of the sidebar: while the row
+has the focus, or from its **Answer** button, which moves the focus into the
+panel; **Escape** closes it, and **1**–**9** answer the focused row as
+before. At 280 px and wider, and on the phone's list, the question is whole
+in the row.
 
 **The command palette** is the sidebar's row actions and its Needs you
 from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**

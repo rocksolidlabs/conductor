@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { endHosted, expect, hostedName, hostedSession, test } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, rowAnswer, test } from './fixtures'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // A hosted session watches what a server session of the same agent watches
@@ -50,7 +50,7 @@ test("a hosted Codex's command approval is in the sidebar's row with its choices
 
   // The sidebar's row: the question and its three choices; the first answers it.
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
-  const choices = row.locator('[data-row-choice]')
+  const choices = (await rowAnswer(page, row)).locator('[data-row-choice]')
   await expect(choices).toHaveCount(3)
   await expect(choices.nth(0)).toContainText('Yes, proceed')
   await expect(choices.nth(1)).toContainText("Yes, and don't ask again")

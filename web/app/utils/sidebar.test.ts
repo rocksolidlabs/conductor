@@ -15,6 +15,9 @@ import {
   focusRows,
   mayRefocusRow,
   moveFocus,
+  narrowSidebar,
+  NARROW_SIDEBAR_PX,
+  panelRow,
   needsDotShown,
   railModel,
   railGlyphs,
@@ -428,6 +431,43 @@ describe('blockRows', () => {
     expect(focusRows(model, [], DEFAULT_FOLDS).map((r) => r.id)).toEqual(['r:r3', 's:review', 'm:r3'])
     expect(focusRows(model, [], DEFAULT_FOLDS)[2]).toEqual({ id: 'm:r3', kind: 'more', runId: 'r3' })
     expect(focusRows(model, [], DEFAULT_FOLDS, [], new Set(['r3'])).map((r) => r.id)).toEqual(['r:r3', 's:review', 's:lead', 's:docs'])
+  })
+})
+
+describe('narrowSidebar and panelRow', () => {
+  it('is narrow below 280 px, never for the phone\'s list', () => {
+    expect(NARROW_SIDEBAR_PX).toBe(280)
+    expect(narrowSidebar(199.9)).toBe(true)
+    expect(narrowSidebar(279.9)).toBe(true)
+    expect(narrowSidebar(280)).toBe(false)
+    expect(narrowSidebar(600)).toBe(false)
+    expect(narrowSidebar(200, true)).toBe(false)
+    expect(narrowSidebar(Number.NaN)).toBe(false)
+  })
+
+  const m = sidebarModel([
+    session({ id: 'a', attention: { state: 'needs_input', message: 'Which branch?' } }),
+    session({ id: 'b', attention: { state: 'needs_input', message: 'Ship it?', options: [{ label: 'Yes', input: 'y' }] } }),
+    session({ id: 'c' }),
+    session({ id: 'm', crew: { runId: 'r1', crewId: 'c', member: 'm' } }),
+  ])
+  const rows = new Map<string, SessionRow | RunBlock>()
+  for (const it of [...m.needs, ...m.running]) {
+    if (it.kind === 'run') {
+      rows.set(`r:${it.runId}`, it)
+      for (const x of it.members) rows.set(`s:${x.id}`, x)
+    } else rows.set(`s:${it.id}`, it)
+  }
+
+  it('is the focused row while it asks, the pressed one over the focused, and none when wide or the row asks to stop', () => {
+    expect(panelRow('s:a', null, rows, true)).toBe('s:a')
+    expect(panelRow('s:c', null, rows, true)).toBeNull()
+    expect(panelRow('r:r1', null, rows, true)).toBeNull()
+    expect(panelRow('s:a', 's:b', rows, true)).toBe('s:b')
+    expect(panelRow(null, null, rows, true)).toBeNull()
+    expect(panelRow('s:a', 's:b', rows, false)).toBeNull()
+    expect(panelRow('s:a', null, rows, true, 's:a')).toBeNull()
+    expect(panelRow('s:gone', null, rows, true)).toBeNull()
   })
 })
 
