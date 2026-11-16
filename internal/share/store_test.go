@@ -854,3 +854,75 @@ func TestAnOpIDNamesOneOperation(t *testing.T) {
 		t.Fatalf("after the run's links went: %v", err)
 	}
 }
+
+// A forgotten run's links its viewers reach through a switchyard (Remote)
+// stay ended here, whatever they stood at: one standing, one revoked, one
+// past its expiry, and one whose revoke waits for an act under way when
+// the run goes; Live answers each revoked until GoneThere, and a link of
+// the run that is not Remote is forgotten as before. The ids are bounded,
+// the oldest leaving first.
+func TestAForgottenRunsSwitchyardLinksStayEnded(t *testing.T) {
+	s := NewStore()
+	s.HoldWait = time.Hour
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	for _, id := range []string{"standing", "revoked", "waiting"} {
+		if err := s.AddRemote(id, "", "r1", "", now, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddRemote("expired", "", "r1", "", now, &now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Live("expired"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("a link at its expiry: %v", err)
+	}
+	local, _, _ := s.CreateRunDecision("r1", session.RoleControl, "", 0)
+	s.RevokeRun("r1", "revoked")
+	held, err := s.Hold("waiting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := make(chan struct{})
+	go func() {
+		s.RevokeRun("r1", "waiting")
+		close(revoked)
+	}()
+	barrierBegun(t, s, "waiting", ErrRevoked)
+	s.DeleteRun("r1")
+	held.Release()
+	<-revoked
+	for _, id := range []string{"standing", "revoked", "waiting", "expired"} {
+		if _, err := s.Live(id); !errors.Is(err, ErrRevoked) {
+			t.Fatalf("the forgotten run's link %s: %v", id, err)
+		}
+	}
+	if _, err := s.Live(local.ID); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("the forgotten run's own link: %v", err)
+	}
+	s.GoneThere("standing")
+	if _, err := s.Live("standing"); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("a link gone there: %v", err)
+	}
+	if _, err := s.Live("revoked"); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("another after one went there: %v", err)
+	}
+
+	var ids []string
+	for i := range MaxEnded + 1 {
+		runID, id := "b"+strconv.Itoa(i), "l"+strconv.Itoa(i)
+		if err := s.AddRemote(id, "", runID, "", now, nil); err != nil {
+			t.Fatal(err)
+		}
+		s.DeleteRun(runID)
+		ids = append(ids, id)
+	}
+	if _, err := s.Live(ids[0]); !errors.Is(err, ErrUnknownLink) {
+		t.Fatalf("the oldest past the bound: %v", err)
+	}
+	for _, id := range []string{ids[1], ids[MaxEnded]} {
+		if _, err := s.Live(id); !errors.Is(err, ErrRevoked) {
+			t.Fatalf("one within the bound: %v", err)
+		}
+	}
+}

@@ -42,6 +42,9 @@ type Desk interface {
 	RunLink(ctx context.Context, role string, ttl time.Duration, label string, run proto.RunGroup) (proto.LinkCreated, error)
 	RunLinkUpdate(ctx context.Context, run proto.RunGroup) error
 	Revoke(ctx context.Context, linkID string) error
+	// DisconnectLink ends the desk's viewers that came with linkID, told
+	// why (revoked or expired), as a session's DisconnectLink does its own.
+	DisconnectLink(linkID string, why error)
 	Done() <-chan struct{}
 	// Stop ends it, and waits for its end (its lanes' operations under
 	// way, the rendezvous told) until ctx is done: past that its end goes
