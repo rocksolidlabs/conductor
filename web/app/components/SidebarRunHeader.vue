@@ -57,7 +57,7 @@ function confirmStop() {
       <NuxtLink
         :to="`/runs/${encodeURIComponent(block.runId)}`"
         class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="current ? 'bg-default border border-default shadow-xs' : 'hover:bg-elevated/60'"
+        :class="current ? 'bg-default border border-default shadow-xs' : 'hover:bg-canvas-hover'"
         :aria-current="current ? 'page' : undefined"
         :title="`${block.title} · ${blockSubtitle(block)}`"
         data-sidebar-run-group
