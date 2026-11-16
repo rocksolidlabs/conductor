@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -366,7 +367,8 @@ func codexToolScreen(rows ...string) string {
 // top and message, the same with the form's first row far above the list,
 // the form drawn twice, a server's own form whose choices have no
 // description column, the four choices as Codex lays them out 40 columns
-// wide. The form asked before is withdrawn, and a reply to it, with any of
+// wide, the form whose Cancel row is named otherwise (no choice its own
+// answer names). The form asked before is withdrawn, and a reply to it, with any of
 // its choices' keys, writes nothing. Each screen is judged once the
 // watcher has looked at it, told by a marker of its own (the form asked
 // before holds none of them).
@@ -384,6 +386,7 @@ func TestCodexsToolApprovalNotPlainlyOneFormIsNotAsked(t *testing.T) {
 		"the form twice":                     {screenRows(append(append([]string{}, form...), append([]string{"• Asked again"}, form[len(codexToolAbove):]...)...)...), "Asked again"},
 		"a server's own form":                {screenRows(append(append([]string{}, codexToolAbove...), "  Field 1/1", "  Pick one", "", "  Decision", "  › 1. Allow", "    2. Cancel", "", "  enter to submit | esc to cancel")...), "Decision"},
 		"40 columns":                         {screenRows(codexToolForm40...), "server to\n"},
+		"its Cancel row named otherwise":     {strings.Replace(codexToolForm, "Cancel                  Cancel", "Cancel call             Cancel", 1), "Cancel call"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if strings.Contains(codexToolForm, c.marker) || !strings.Contains(c.screen, c.marker) {
@@ -433,11 +436,87 @@ func TestTwoToolApprovalFormsThatDifferInAnArgumentAreTwoQuestions(t *testing.T)
 	}
 }
 
-// The same form again after Conductor's answer is a question of its own
-// (Codex queues a second call of the same tool with the same arguments and
-// draws it as the first is answered): asked with a new id, not answered,
-// a reply to the first refused, its own taken. Each is answered once.
-func TestTheSameToolApprovalFormAgainIsAskedAgain(t *testing.T) {
+// lookedSince returns the attention once the watcher of the questions asked
+// during the work has fed more than fed and looked at all it was fed (the
+// look takes the screen, then decides under fireMu).
+func lookedSince(t *testing.T, s *Local, fed uint64) Attention {
+	t.Helper()
+	waitAttention(t, s, func(Attention) bool {
+		return s.asked.Fed() > fed && s.asked.LookedAt() == s.asked.Fed()
+	})
+	s.asked.fireMu.Lock()
+	a := s.Info().Attention
+	s.asked.fireMu.Unlock()
+	return a
+}
+
+// A form answered from a page is not asked again while the same form stays
+// on the screen, whatever is fed or poked, as every question read off the
+// screen: after a Cancel and nothing more drawn (the answer's own poke
+// looked at), after an allowing digit and an empty frame, after a whole
+// frame of the same form. A reply to it is refused and nothing more is
+// written. So the same form Codex shows directly behind an answered one
+// (the same server, tool and arguments) is not offered with choices; it is
+// answered in the terminal. A form that differs in an argument is a new
+// question, and so is the same form drawn again once a look has seen the
+// screen without it.
+func TestAnAnsweredToolApprovalFormIsNotAskedAgain(t *testing.T) {
+	other := strings.Replace(codexToolForm, `tool "guide"?`, `tool "search"?`, 1)
+	for name, c := range map[string]struct {
+		choice string
+		then   []byte
+	}{
+		"a Cancel, nothing more drawn":        {"\x1b", nil},
+		"an allowing digit, an empty frame":   {"1", []byte("\x1b[?2026h\x1b[?2026l")},
+		"a Cancel, the same form drawn again": {"\x1b", drawn(codexToolForm)},
+		"a digit, the same form drawn again":  {"3", drawn(codexToolForm)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p, sub := newCodexToolSession(t, codexToolFormCols, codexToolFormRows)
+			p.outW.Write(drawn(codexToolForm))
+			first := waitAttention(t, s, asked)
+			fed := s.asked.Fed()
+			if err := s.AnswerInput(t.Context(), sub, first.ID, []byte(c.choice)); err != nil {
+				t.Fatal(err)
+			}
+			if got := nextWrite(t, p); got != c.choice {
+				t.Fatalf("written %q", got)
+			}
+			// The answer's own poke, looked at: the form shows answered, or
+			// not at all, never with choices to answer again.
+			ids := []string{first.ID}
+			check := func(a Attention, when string) {
+				t.Helper()
+				if asked(a) && a.Answered == "" {
+					t.Fatalf("asked %s: %+v", when, a)
+				}
+				if asked(a) {
+					ids = append(ids, a.ID)
+				}
+			}
+			check(lookedSince(t, s, fed), "after the answer")
+			if c.then != nil {
+				fed = s.asked.Fed()
+				p.outW.Write(c.then)
+				check(lookedSince(t, s, fed), "again")
+			}
+			for _, id := range ids {
+				for _, o := range first.Options {
+					if err := s.AnswerInput(t.Context(), sub, id, []byte(o.Input)); err == nil {
+						t.Fatalf("a second reply %q was taken", o.Input)
+					}
+				}
+			}
+			noWrite(t, p, 100*time.Millisecond)
+			// A form that differs in an argument: a question of its own.
+			p.outW.Write(drawn(other))
+			second := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Answered == "" && !slices.Contains(ids, a.ID) })
+			if !sameOptions(second.Options, codexToolChoices) || !strings.HasSuffix(second.Message, `tool "search"?`) {
+				t.Fatalf("the other form %+v", second)
+			}
+		})
+	}
+	// The form gone at a look, then drawn again: a question of its own.
 	s, p, sub := newCodexToolSession(t, codexToolFormCols, codexToolFormRows)
 	p.outW.Write(drawn(codexToolForm))
 	first := waitAttention(t, s, asked)
@@ -447,22 +526,12 @@ func TestTheSameToolApprovalFormAgainIsAskedAgain(t *testing.T) {
 	if got := nextWrite(t, p); got != "1" {
 		t.Fatalf("written %q", got)
 	}
-	replied(t, s, first.ID)
-	p.outW.Write(drawn(codexToolForm))
-	second := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.Answered == "" })
-	if err := s.AnswerInput(t.Context(), sub, first.ID, []byte("1")); err == nil {
-		t.Fatal("the first form's reply was taken again")
-	}
-	noWrite(t, p, 100*time.Millisecond)
-	if err := s.AnswerInput(t.Context(), sub, second.ID, []byte("1")); err != nil {
-		t.Fatal(err)
-	}
-	if got := nextWrite(t, p); got != "1" {
-		t.Fatalf("written %q", got)
-	}
-	replied(t, s, second.ID)
 	if a := formGone(t, s, p); a.State == AttentionNeedsInput {
 		t.Fatalf("once the form went: %+v", a)
+	}
+	p.outW.Write(drawn(codexToolForm))
+	if a := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.Answered == "" }); !sameOptions(a.Options, codexToolChoices) {
+		t.Fatalf("the form drawn again %+v", a)
 	}
 }
 

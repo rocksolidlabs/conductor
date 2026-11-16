@@ -440,6 +440,31 @@ func TestAClaudeCodeChoiceWithTwoSpacesKeepsItsWholeLabel(t *testing.T) {
 	}
 }
 
+// A Claude Code dialog whose choice rows carry a column aligned on every
+// row, as Codex's form draws its descriptions, keeps each label whole: only
+// a form (#716) is named at its column.
+func TestAClaudeCodeDialogWithAnAlignedColumnKeepsItsWholeLabels(t *testing.T) {
+	qs := claudeQuestions(t)
+	screen := strings.Replace(claudeBash, screenRows(
+		" ❯ 1. Yes",
+		"   2. Yes, and always allow access to /home/dev/project from this project",
+		"   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+		"   4. No",
+	), screenRows(
+		" ❯ 1. Allow                   Run it once",
+		"   2. Allow for this session  Run it from now on",
+		"   3. Always allow            Run it always",
+		"   4. Cancel                  Do not run it",
+	), 1)
+	if screen == claudeBash {
+		t.Fatal("the dialog's choices were not replaced")
+	}
+	_, answers, _ := readAsked(qs, screen)
+	if want := "1 Allow                   Run it once|2 Allow for this session  Run it from now on|3 Always allow            Run it always|4 Cancel                  Do not run it"; strings.Join(labels(answers), "|") != want {
+		t.Fatalf("the labels %q", labels(answers))
+	}
+}
+
 // A list is the dialog's when its rows are numbered 1 to N in turn at one
 // column, close together, at the bottom of the screen: a numbered list
 // above the dialog is not read into it, a label wrapped at a narrow width

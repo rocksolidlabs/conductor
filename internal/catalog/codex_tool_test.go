@@ -205,6 +205,43 @@ func TestCodexToolApprovalAt40ColumnsIsNotTheForm(t *testing.T) {
 	}
 }
 
+// The four choices are found from 53 columns wide: laid out as Codex lays
+// them (the stub's mcp_form, held to Codex's layout), they take 8 rows
+// between Allow and Cancel at 53 columns and 9 at 52, where the form is
+// answered in the terminal.
+func TestCodexToolApprovalIsFoundFrom53Columns(t *testing.T) {
+	_, prompt, _ := codexToolQuestion(t)
+	form := func(rows ...string) string {
+		head := []string{"  Field 1/1", "  Allow the conductor MCP server to run tool", `  "guide"?`, "  › 1. Allow                   Run the tool and", "                               continue"}
+		return strings.Join(append(append(head, rows...), "    4. Cancel                  Cancel this tool", "                               call", "", "  enter to submit | esc to cancel"), "\n")
+	}
+	at53 := form(
+		"    2. Allow for this session  Run the tool and",
+		"                               remember this choice",
+		"                               for this session",
+		"    3. Always allow            Run the tool and",
+		"                               remember this choice",
+		"                               for future tool",
+		"                               calls",
+	)
+	at52 := form(
+		"    2. Allow for this session  Run the tool and",
+		"                               remember this",
+		"                               choice for this",
+		"                               session",
+		"    3. Always allow            Run the tool and",
+		"                               remember this",
+		"                               choice for future",
+		"                               tool calls",
+	)
+	if !prompt.MatchString(at53) {
+		t.Errorf("the four choices at 53 columns are not found:\n%s", at53)
+	}
+	if prompt.MatchString(at52) {
+		t.Errorf("the four choices at 52 columns are taken for the form:\n%s", at52)
+	}
+}
+
 // Not the form: its words or its whole drawing in what Codex shows of a
 // file or a log, with Codex's composer below; another server's form, whose
 // choices or fields are not a tool call's approval; the form with rows

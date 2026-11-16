@@ -63,25 +63,31 @@ const codexApprovalFooter = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+
 // of fields unanswered after it once Backspace cleared the choice), Allow
 // first, nothing but Codex's choices that remember it (each an A's) and
 // their wrapped descriptions until Cancel, at most 8 rows (between Allow
-// and Cancel the four choices take 4 at 72 columns and wider, 14 at 40
-// columns, where the form is answered in the terminal),
+// and Cancel the four choices take 4 at 72 columns and wider, 8 at 53, 9
+// at 52 and 14 at 40, where the form is answered in the terminal),
 // then nothing numbered until the footer, on the screen's last row. So the
 // form's words in a file, a log or a quote on the screen are not taken for
-// it (Codex's composer is below them), nor another server's form (Deny
-// among its choices, a field to fill, more than one field).
+// it (Codex's composer is below them), nor a server's form whose choices
+// are not these (Deny among them, True and False) or that has more than
+// one field.
 //
 // The question is a form read off the screen (a question with
 // answersFromScreen and answers of its own, session.StartupQuestion): its
 // top row is codexToolApprovalTop, the only row of the screen that opens a
 // form, and its words are every row between that row and its list; its
-// choices are its rows, each its name up to the description column, which
-// every choice row of Codex's tool approval draws and a server's own form
-// does not (its choices have no description), each picked by its digit;
-// Cancel is sent as Escape, which the footer names and which cancels the
-// form; the two choices that remember the approval are mode answers. A
-// server's own form that is drawn the same way, its choices with the same
-// names and a column beside them, is asked the same way, its rows its
-// choices.
+// choices are its rows, each its name up to the description column every
+// choice row of Codex's tool approval draws, each picked by its digit;
+// Cancel is sent as Escape, which the footer names, and the form is asked
+// only where exactly one choice is named Cancel. Codex's Escape cancels
+// this call and closes the form together with any other approval forms
+// Codex had waiting behind it: those calls are not asked again and wait
+// until the agent's turn is interrupted, as when Escape is pressed in the
+// terminal. The two choices that remember the approval are mode answers. A
+// server's own one-field form whose rows carry a column aligned like the
+// tool approval's is asked the same way: a choice's label is the row's
+// name before the column, and a row named Cancel is sent as Escape, which
+// cancels the form. A host is not sent this question (agents.HostRecipe):
+// a hosted session answers the form in its terminal.
 const (
 	codexToolApproval    = `(?m)^ *Field 1/1\b.*\n(?:.*\n){1,16}? *›? *1\. Allow.*\n(?: *›? *[23]\. A.*\n| +[^\s\d›].*\n){0,8} *›? *[2-4]\. Cancel.*\n(?: *(?:[^\s\d›].*)?\n){0,16} *enter to submit\W*esc to cancel\z`
 	codexToolApprovalTop = `^ *Field \d+/\d+\b`

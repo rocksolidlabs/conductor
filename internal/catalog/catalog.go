@@ -889,9 +889,10 @@ type Question struct {
 	// must be the only row of the screen it matches, its words are every
 	// row between that row and the list, none of them numbered, each
 	// choice's label is its name up to the description column every choice
-	// row draws (a form without that column is not asked), and a choice
-	// whose label is one of Answers' is sent as that answer's keys. Codex's
-	// MCP tool approval is one.
+	// row draws (a form without that column is not asked), and each of
+	// Answers is the label of exactly one choice, which is sent as that
+	// answer's keys (a form where one is not is not asked). Codex's MCP
+	// tool approval is one. A host is not sent a form (agents.HostRecipe).
 	AnswersFromScreen bool `json:"answersFromScreen,omitempty"`
 	// ModeAnswers, when set, matches the labels of the question's answers
 	// (read off the screen, each whole) that change the session's

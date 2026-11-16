@@ -1204,7 +1204,7 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	q, words, answers, whole := s.askedIn(text, cols)
+	_, words, answers, whole := s.askedIn(text, cols)
 	if words == "" {
 		// Found, and no list to read on it (a question whose answers are
 		// read off the screen): the screen shows none of the questions.
@@ -1212,10 +1212,7 @@ func (s *Local) fireAsked(text string) {
 		return
 	}
 	s.mu.Lock()
-	// A form (Codex's tool approval, #716) on a screen settled since its
-	// answer was written is asked again, the same form still or the next
-	// Codex queued with the same words: a question of its own.
-	if settled && (q.form() || !sameWords(s.dialogAnswered, words)) {
+	if settled && !sameWords(s.dialogAnswered, words) {
 		s.dialogGone(look)
 	}
 	s.mu.Unlock()
@@ -1408,7 +1405,8 @@ type StartupQuestion struct {
 // A form's (form) are its words as formWords reads them and its choices
 // named at their description column (dialogList.named), each sent as the
 // answer of its label when q has one. "" and none when text does not show
-// it, or shows no list to read, or a form not as one.
+// it, or shows no list to read, or a form not as one, or a form where an
+// answer of q's own is not exactly one choice's label.
 func (q StartupQuestion) read(text string) (words string, answers []Option, whole string) {
 	if words = q.words(text); words == "" {
 		return "", nil, ""
@@ -1435,10 +1433,16 @@ func (q StartupQuestion) read(text string) (words string, answers []Option, whol
 		if words = q.formWords(text, l); words == "" {
 			return "", nil, ""
 		}
-		for i := range answers {
-			if k := slices.IndexFunc(q.Answers, func(a Option) bool { return a.Label == answers[i].Label }); k >= 0 {
-				answers[i].Input = q.Answers[k].Input
+		// Each answer of its own names exactly one choice, or the form is
+		// not asked: a choice it names under another name is answered in
+		// the terminal.
+		for _, a := range q.Answers {
+			same := func(o Option) bool { return o.Label == a.Label }
+			i := slices.IndexFunc(answers, same)
+			if i < 0 || slices.ContainsFunc(answers[i+1:], same) {
+				return "", nil, ""
 			}
+			answers[i].Input = a.Input
 		}
 	}
 	if q.Typed != nil && l.at >= 0 && q.Typed.MatchString(l.whole[l.at]) {
