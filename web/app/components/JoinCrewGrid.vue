@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { JoinRunMember } from '~/composables/useSessions'
-import type { Role } from '~/utils/protocol'
+import type { Attention, Role } from '~/utils/protocol'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { joinTileStatus } from '~/utils/crews'
 import { agentInitials } from '~/utils/sessions'
+import { sessionStatus } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
 
 /**
@@ -33,6 +34,11 @@ function hear(name: string, patch: { status?: string; attention?: string }) {
 function open(m: JoinRunMember) {
   if (m.sessionId) emit('open', m, latest[m.name])
 }
+/** A member that asks (sessionStatus's needs): its tile keeps the amber border. */
+function asks(m: JoinRunMember): boolean {
+  const h = heard.value[m.name]
+  return sessionStatus({ status: h?.status ?? m.status, attention: h?.attention ? { state: h.attention as Attention['state'] } : undefined }).key === 'needs'
+}
 /** A control link types into the tiles; a view link only watches them. */
 const interactive = computed(() => props.role === 'control')
 </script>
@@ -43,7 +49,7 @@ const interactive = computed(() => props.role === 'control')
       <div
         v-if="m.sessionId"
         class="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-elevated/40 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary"
-        :class="[heard[m.name]?.attention === 'needs_input' ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented', !interactive && 'cursor-pointer']"
+        :class="[asks(m) ? 'border-warning ring-2 ring-warning/60' : 'border-default hover:border-accented', !interactive && 'cursor-pointer']"
         :role="interactive ? 'group' : 'button'"
         tabindex="0"
         :aria-label="interactive ? `${m.name}: a live terminal. Enter opens it in full.` : `Open ${m.name}`"

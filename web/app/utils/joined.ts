@@ -150,12 +150,3 @@ export function joinedOpen(path: string, token: string): boolean {
   return path === `/join/${encodeURIComponent(token)}`
 }
 
-/** The dot beside an entry. */
-export function joinedDot(e: Pick<JoinedEntry, 'lastStatus' | 'sessionStatus' | 'kind'>): 'running' | 'idle' | 'ended' | 'revoked' | 'unreachable' {
-  if (e.lastStatus === 'revoked' || e.lastStatus === 'gone') return 'revoked'
-  if (e.lastStatus === 'unreachable') return 'unreachable'
-  if (e.kind === 'run') return 'running'
-  if (e.sessionStatus === 'running') return 'running'
-  if (e.sessionStatus === 'exited' || e.sessionStatus === 'stopped') return 'ended'
-  return 'idle'
-}

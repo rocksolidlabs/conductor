@@ -61,6 +61,9 @@ function edit() {
   void nextTick(() => area.value?.textareaRef?.focus())
 }
 
+/** The editor opened from outside (a Dispatch project's line, when it has no description yet). */
+defineExpose({ edit })
+
 function cancel() {
   editing.value = false
   theirs.value = null

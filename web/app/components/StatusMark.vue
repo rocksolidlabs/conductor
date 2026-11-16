@@ -1,0 +1,49 @@
+<script setup lang="ts">
+import { STATUS_LOOK, type StatusView } from '~/utils/status'
+
+/**
+ * A state's mark and, with `word`, its word (docs/design/system.md, Status): the one way every surface draws a session's state. The
+ * mark is 8 px, drawn from STATUS_LOOK alone (its shape and tone; the line diagram's station draws the same table as circles and
+ * rings), and carries the colour; the word is drawn in muted text, never in a status colour. The mark is an image named by the word,
+ * with the legend as its title. `quiet` hides the amber dot (the Events page's Badge route for needs input is off), the word stays;
+ * `badge` sets the mark on a disc of the surface with a 2 px ring, for a corner over an avatar.
+ */
+const props = withDefaults(defineProps<{ status: Pick<StatusView, 'key' | 'word' | 'legend'>; word?: boolean; quiet?: boolean; badge?: boolean }>(), { word: false, quiet: false, badge: false })
+
+const look = computed(() => STATUS_LOOK[props.status.key])
+// The mark is a dot or a ring: drawn in the status fill colours (the dots' and fills', not the text-safe tones `text-warning` and
+// `text-success` draw words with in the light theme, main.css).
+const tone: Record<string, string> = { warning: 'text-(--ui-warning)', success: 'text-(--ui-success)', neutral: 'text-muted' }
+const hidden = computed(() => props.quiet && props.status.key === 'needs')
+/** The title: the legend, after the word where the legend does not begin with it ("finished 12m ago · finished: …"). */
+const title = computed(() => (props.status.legend.startsWith(`${props.status.word}:`) ? props.status.legend : `${props.status.word} · ${props.status.legend}`))
+</script>
+
+<template>
+  <span
+    class="inline-flex min-w-0 flex-none items-center gap-1.5"
+    role="img"
+    :aria-label="status.word"
+    :title="title"
+    :data-status-mark="status.key"
+    :data-status-quiet="hidden ? '' : undefined"
+  >
+    <svg
+      viewBox="0 0 8 8"
+      class="size-2 flex-none overflow-visible"
+      :class="[tone[look.tone], badge && 'rounded-full bg-default ring-2 ring-default', hidden && 'invisible']"
+      aria-hidden="true"
+      data-status-glyph
+      :data-status-shape="look.shape"
+    >
+      <circle v-if="look.shape === 'dot'" cx="4" cy="4" r="4" fill="currentColor" />
+      <template v-else-if="look.shape === 'ringed-dot'">
+        <circle cx="4" cy="4" r="3.5" fill="none" stroke="currentColor" stroke-width="1" />
+        <circle cx="4" cy="4" r="2" fill="currentColor" />
+      </template>
+      <circle v-else-if="look.shape === 'ring'" cx="4" cy="4" r="3.25" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle v-else cx="4" cy="4" r="3.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 1.2" />
+    </svg>
+    <span v-if="word" class="truncate text-muted" data-status-word>{{ status.word }}</span>
+  </span>
+</template>

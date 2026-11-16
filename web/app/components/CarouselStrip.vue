@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import { dropIndex, keyMove, moveInOrder, type StripView } from '~/utils/carousel'
+import { sessionStatus } from '~/utils/status'
 
 /**
  * The strip at the Roundhouse's foot: one chip per session in the kept
@@ -55,11 +56,7 @@ watch(
 )
 onBeforeUnmount(() => window.clearInterval(shot))
 
-function dot(s: SessionInfo) {
-  if (s.attention?.state === 'needs_input') return 'bg-warning'
-  if (s.status === 'running') return 'bg-success'
-  return 'bg-neutral-400'
-}
+const now = useNow()
 
 function bar(s: SessionInfo, i: number): { width: string; cls: string } {
   if (s.id === props.holdingId) return { width: '100%', cls: 'bg-warning' }
@@ -192,7 +189,7 @@ watch(ids, (now) => {
         ]"
         :aria-current="i === selected ? 'true' : undefined"
         :aria-grabbed="grabbedId === s.id ? 'true' : 'false'"
-        :aria-label="`${s.name}, place ${i + 1} of ${sessions.length}`"
+        :aria-label="`${s.name}, ${sessionStatus(s, now).word}, place ${i + 1} of ${sessions.length}`"
         :data-strip-chip="s.id"
         :data-strip-grabbed="grabbedId === s.id ? '' : undefined"
         @click="emit('select', i)"
@@ -209,7 +206,7 @@ watch(ids, (now) => {
         <div class="flex items-center gap-1.5 px-2 py-1.5">
           <SessionAvatar :agent-id="s.agentId" :solid="i === selected" />
           <span class="truncate text-xs font-semibold">{{ s.name }}</span>
-          <span class="ml-auto size-1.5 flex-none rounded-full" :class="dot(s)" aria-hidden="true" />
+          <StatusMark :status="sessionStatus(s, now)" class="ml-auto" />
         </div>
         <!-- A thumbnail: a live view for a slide the Roundhouse connects, the idle mark for the rest; never a connection of its own,
              and inert: no focus, no key, no pointer reaches it. -->
@@ -217,7 +214,7 @@ watch(ids, (now) => {
           <pre v-if="screens[s.id]" class="m-0 h-full overflow-hidden whitespace-pre px-1.5 py-1 font-mono text-[6px] leading-[7px] text-muted" aria-hidden="true" data-strip-screen>{{ screens[s.id]!.join('\n') }}</pre>
           <div v-else class="flex h-full items-center justify-center gap-1.5 text-[11px] text-muted" data-strip-idle>
             <SessionAvatar :agent-id="s.agentId" />
-            <span>{{ s.attention?.state === 'needs_input' ? 'needs you' : s.status === 'running' ? 'running' : s.status }}</span>
+            <StatusMark :status="sessionStatus(s, now)" word />
           </div>
         </div>
         <div class="h-[3px] w-full bg-elevated">
