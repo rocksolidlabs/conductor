@@ -395,7 +395,7 @@ usePalette().registerPage(() => ({
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
           <USwitch v-model="settings.autoplay" label="Auto-rotate" size="sm" class="hidden md:flex" />
-          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump on the Events page: input requests and handoffs unless changed there">
+          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump in Alerts: input requests and handoffs unless changed there">
             <USwitch v-model="settings.follow" label="Follow routed events" size="sm" class="hidden lg:flex" />
           </UTooltip>
           <FullscreenButton />

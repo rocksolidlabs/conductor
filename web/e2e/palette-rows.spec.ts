@@ -225,11 +225,12 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await expect(page.locator('[data-palette]')).toBeHidden()
   await runRow(page, 'page:new')
   await expect(page).toHaveURL(/\/crews\/new/)
-  // Events: a tab row shows its tab and reads as on.
+  // Events: its tab row (Feed, its one tab: Routing went to the Alerts panel) shows its tab and reads as on.
   await page.goto('/events')
   await expect(page.locator('[data-events-tabs]')).toBeVisible({ timeout: 30_000 })
-  await runRow(page, 'page:tab:routing')
-  expect(await switchOf(page, 'page:tab:routing')).toBe('on')
+  await runRow(page, 'page:tab:feed')
+  await expect(page.locator('[data-events-feed-tab]')).toBeVisible()
+  expect(await switchOf(page, 'page:tab:feed')).toBe('on')
   // Agents: Refresh asks the server again and its section Reporting to Conductor shows the answer (the answer rewritten on the
   // way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
   await page.goto('/agents')
