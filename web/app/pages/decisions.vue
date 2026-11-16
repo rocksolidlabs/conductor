@@ -7,6 +7,7 @@ import {
   INBOX_ROW_CLASS,
   atZero,
   decisionIdOf,
+  firstToOpen,
   inboxEmpty,
   inboxSections,
   kindLook,
@@ -14,6 +15,7 @@ import {
   pickShown,
   recentBadge,
   recentFor,
+  rowLine,
   showingWords,
   trackKey,
   unknownWords,
@@ -74,6 +76,19 @@ const empty = computed(() => inboxEmpty(state.value))
 const zero = computed(() => atZero(state.value, openRef.value))
 /** "Pick an item" only while there is an item to pick. */
 const pick = computed(() => pickShown(sections.value, openRef.value))
+/**
+ * At lg the oldest open item opens by itself (UX1 PR-21), through the query, which the page's acting rests on; never below lg and
+ * never over an item already in the query. A row picked while that item is read wins: the reader drops a read for an item no longer
+ * open.
+ */
+const wide = useMedia('(min-width: 1024px)')
+watch(
+  () => firstToOpen(wide.value, openRef.value, sections.value),
+  (r) => {
+    if (r) void router.replace({ query: { ...route.query, item: r, receipt: undefined, attempt: undefined } })
+  },
+  { immediate: true },
+)
 
 /**
  * The open item's DR1 record, when it names one: read whole from DR1's route (useDecisionRecord: one read at a time, ordered by the
@@ -309,8 +324,9 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
                   <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
                   <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                 </span>
-                <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
+                <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
                 <span class="flex flex-wrap gap-1">
+                  <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
                   <UBadge v-if="s.card" label="Brakeman's brief" color="primary" variant="subtle" size="sm" />
                   <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
                   <UBadge v-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
@@ -336,8 +352,11 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
                     <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
                     <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                   </span>
-                  <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
-                  <span class="flex flex-wrap gap-1"><UBadge label="Recorded" color="neutral" variant="subtle" size="sm" /></span>
+                  <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
+                  <span class="flex flex-wrap gap-1">
+                    <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
+                    <UBadge label="Recorded" color="neutral" variant="subtle" size="sm" />
+                  </span>
                 </button>
               </li>
             </ul>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { inboxKindWords } from '~/utils/inbox'
 /**
  * The app's one decision card in a modal (Program item DR1, docs/plans/decisions.md, "web/app"): the card (DecisionCard) and its answer
  * (DecisionRespond) of the decision useDecisionModal names, opened from the run page's Answer, the session's question bar in the
@@ -28,7 +29,7 @@ const open = computed({
 </script>
 
 <template>
-  <UModal v-model:open="open" title="A decision for you" description="Answered by the operator; Yardmaster applies the answer." :ui="{ content: 'sm:max-w-2xl' }">
+  <UModal v-model:open="open" :title="inboxKindWords('decision')" description="Answered by the operator; Yardmaster applies the answer." :ui="{ content: 'sm:max-w-2xl' }">
     <template #body>
       <div class="flex flex-col gap-4" data-decision-modal :data-decision-modal-id="modal.id.value">
         <UAlert v-if="record.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="record.error.value" data-decision-modal-error>
