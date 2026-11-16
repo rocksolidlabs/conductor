@@ -21,7 +21,7 @@ import { CONTRAST_FLOORS, floorFor, parseColor, ratio, toHex, type Rgba } from '
 
 /** One drawn text as the page gave it. */
 export interface Drawn {
-  /** The element's `data-*` path, nearest last, and its tag. */
+  /** The element's `data-*` path: it and up to five ancestors that carry `data-*` attributes, nearest last. */
   path: string
   text: string
   color: string
@@ -132,7 +132,7 @@ function gather(root: Element | null): Drawn[] {
       groundOf(s.backgroundColor)
     }
     const path: string[] = []
-    for (let a: Element | null = el; a && a !== document.body && path.length < 4; a = a.parentElement) {
+    for (let a: Element | null = el; a && a !== document.body && path.length < 6; a = a.parentElement) {
       const data = Array.from(a.attributes).filter((x) => x.name.startsWith('data-') && !x.name.startsWith('data-v-') && x.name !== 'data-state')
       if (a === el || data.length) path.unshift(a.tagName.toLowerCase() + data.map((x) => (x.value ? `[${x.name}="${x.value.slice(0, 40)}"]` : `[${x.name}]`)).join(''))
     }
