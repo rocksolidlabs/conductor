@@ -1,15 +1,16 @@
 import { execFileSync } from 'node:child_process'
-import { constants, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
-import { CATALOG_PROGRAMS, renderConfig, START_WAIT_MS, startServer, stopServer, type Started } from './server'
+import { agentFreePath, CATALOG_PROGRAMS, renderConfig, repoRoot, serverPath, START_WAIT_MS, startServer, stopServer, stubBash, type Started } from './server'
 
 // #961: an e2e server ran with the caller's PATH, so on a machine with an agent CLI installed the built-in catalog found it and the
 // server ran its version probe with the test's HOME; stopped soon after it started, the server left the probe running, and it wrote
 // into the test's folder after the folder was removed. Every program the built-in catalog names is faked here on a PATH the test
 // gives: a fake writes its pid as it starts, then waits on a FIFO nothing writes, so it is still there when the server stops unless
-// the stop ends it. The real CLIs of the machine are never run: the fakes come first on that PATH.
+// the stop ends it. The real CLIs of the machine are never run: the fakes come first on that PATH, ahead of any directory stubBash
+// puts there for its bash, and the control checks that they cover every program the built-in catalog names before its server starts.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const servers: Started[] = []
@@ -74,8 +75,14 @@ function own(state: { root: string }, name: string) {
   fakes.push(marks)
   const config = join(root, 'conductor.json')
   renderConfig(join(here, 'conductor.e2e.json'), config)
-  const o = { config, home, data, allowedRoot: root, defaultCwd: root, log: join(root, 'server.log'), path: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` }
+  const o = { config, home, data, allowedRoot: root, defaultCwd: root, log: join(root, 'server.log'), first: bin }
   return { o, bin, marks, hold }
+}
+
+/** The programs the built-in catalog's source runs by a bare name, read from internal/catalog/defaults.go: nothing is run. */
+function builtInPrograms(): string[] {
+  const source = readFileSync(join(repoRoot, 'internal', 'catalog', 'defaults.go'), 'utf8')
+  return [...source.matchAll(/Command:\s*\[\]string\{"([^"]+)"/g)].map((m) => m[1]!).filter((program) => !program.includes('/'))
 }
 
 interface Entry {
@@ -136,7 +143,13 @@ test('a test server finds none of the built-in catalog\'s programs, and a fake a
 // their probes, which the test above would see; its stop ends every probe under way, so none is left to write after it.
 test('a server stopped while its probes run leaves none of them running', async ({ state }) => {
   test.setTimeout(START_WAIT_MS + 60_000)
-  const { o, marks, hold } = own(state, 'stopped')
+  const { o, bin, marks, hold } = own(state, 'stopped')
+  // Before a server is given the caller's PATH: the fakes cover every program the built-in catalog runs by name (one added later and
+  // not faked fails here, before its real CLI could be found behind them), and they come first on the PATH this server is given.
+  const named = builtInPrograms()
+  expect(named.length, 'no program read from internal/catalog/defaults.go').toBeGreaterThan(0)
+  for (const program of named) expect(CATALOG_PROGRAMS, `the built-in catalog names ${program}: add it to CATALOG_PROGRAMS in web/e2e/server.ts`).toContain(program)
+  expect(serverPath({ ...o, realAgents: true }, stubBash().path).split(':')[0]).toBe(bin)
   const s = await startServer({ ...o, realAgents: true })
   servers.push(s)
 
@@ -156,4 +169,64 @@ test('a server stopped while its probes run leaves none of them running', async 
   // Nothing reads the FIFO any more, so nothing can go on to write.
   expect(fails(() => closeSync(openSync(hold, constants.O_WRONLY | constants.O_NONBLOCK))), 'a probe still reads its FIFO after the server\'s stop').toBe('ENXIO')
   expect(readdirSync(marks).filter((f) => f.endsWith('.late'))).toEqual([])
+})
+
+// The PATH's building, with no server started.
+
+/** A folder of the test's own under the suite's root. */
+function scratch(state: { root: string }, name: string): string {
+  const dir = join(state.root, 'agent-path', `${name}-${test.info().repeatEachIndex}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+const program = (dir: string, name: string) => writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+test('the fakes come first on a server\'s PATH, ahead of a directory stubBash puts there for its bash', ({ state }) => {
+  const home = scratch(state, 'first')
+  // The shape stubBash returns on a machine whose first bash cannot run the stub: its bash's directory ahead of the caller's PATH.
+  const chosen = `${join(home, 'homebrew-bin')}:/usr/bin:/bin`
+  expect(serverPath({ home, first: '/fakes', realAgents: true }, chosen)).toBe(`/fakes:${chosen}`)
+  expect(serverPath({ home, first: '/fakes' }, chosen).split(':')[0]).toBe('/fakes')
+})
+
+test('a PATH directory changed since it was judged is judged again: an agent CLI put in it is taken off, a tool put in it is found', ({ state }) => {
+  const root = scratch(state, 'judged')
+  const dir = join(root, 'bin')
+  const into = join(root, 'links')
+  mkdirSync(dir, { recursive: true })
+  // Each change is dated well past (a judgement and its links are kept only then), each later than the one before, as changes are.
+  const at = (secondsAgo: number) => {
+    const t = new Date(Date.now() - secondsAgo * 1000)
+    utimesSync(dir, t, t)
+  }
+  program(dir, 'tool-a')
+  at(90)
+  expect(agentFreePath(dir, into), 'a clean directory is handed on as it is').toBe(dir)
+  program(dir, 'goose')
+  at(60)
+  const links = agentFreePath(dir, into)
+  expect(links).not.toBe(dir)
+  expect(readdirSync(links).sort()).toEqual(['tool-a'])
+  expect(agentFreePath(dir, into), 'the links of an unchanged directory are kept').toBe(links)
+  program(dir, 'tool-b')
+  at(30)
+  expect(readdirSync(agentFreePath(dir, into)).sort()).toEqual(['tool-a', 'tool-b'])
+  // A change dated now, within the file system's tick, is judged at every call.
+  program(dir, 'tool-c')
+  expect(readdirSync(agentFreePath(dir, into)).sort()).toEqual(['tool-a', 'tool-b', 'tool-c'])
+})
+
+test('a PATH directory that holds a catalog program and cannot be listed fails the server\'s start, naming the cause', ({ state }) => {
+  test.skip(process.getuid?.() === 0, 'root lists any directory')
+  const root = scratch(state, 'locked')
+  const dir = join(root, 'bin')
+  mkdirSync(dir, { recursive: true })
+  program(dir, 'claude')
+  chmodSync(dir, 0o311)
+  try {
+    expect(() => agentFreePath(dir, join(root, 'links'))).toThrow(/holds claude .* cannot be listed \(EACCES\)/)
+  } finally {
+    chmodSync(dir, 0o755)
+  }
 })

@@ -74,13 +74,17 @@ fi`
  */
 export const CATALOG_PROGRAMS: readonly string[] = ['claude', 'codex', 'agy', 'copilot', 'cursor-agent', 'opencode', 'pi', 'omp', 'aider', 'goose', 'amp', 'dsh']
 
-const holdsAgent = new Map<string, boolean>()
+/** Each PATH directory's judgement, with the modification time it was made at: a directory changed since is judged again. */
+const judged = new Map<string, { mtime: bigint; holds: string[] }>()
 
 /**
  * path less the built-in catalog's programs: a directory on it that holds one (a Node version manager's bin with an agent CLI in it,
  * ~/.local/bin) is replaced by a directory under into of links to everything else it holds, so git, node, nvim and the rest are found
  * as before and no agent CLI is. A directory that holds none is kept as it is: on a machine with no agent CLI the PATH is unchanged.
- * The links of one directory are made once and kept (named by the directory's path), and made whole before they are put in place.
+ * Each call stats each directory once: one changed since it was judged (an agent CLI or a tool put in it) is judged again, and its
+ * links, named by its path and that time, are made again. The time is taken before the directory is read, so a change during the
+ * read is seen by the next call. Links are made whole before they are put in place. A directory that holds a catalog program and
+ * cannot be listed fails the start: none of its other programs could be kept.
  */
 export function agentFreePath(path: string, into: string): string {
   const hidden = (name: string) => CATALOG_PROGRAMS.includes(name.toLowerCase())
@@ -89,17 +93,33 @@ export function agentFreePath(path: string, into: string): string {
     .map((entry) => {
       if (entry === '') return entry
       const dir = resolve(entry)
-      let holds = holdsAgent.get(dir)
-      if (holds === undefined) {
-        holds = CATALOG_PROGRAMS.some((name) => existsSync(join(dir, name)))
-        holdsAgent.set(dir, holds)
+      let mtime: bigint
+      try {
+        mtime = statSync(dir, { bigint: true }).mtimeNs
+      } catch {
+        return entry
       }
-      if (!holds) return entry
-      const links = join(into, createHash('sha256').update(dir).digest('hex').slice(0, 16))
-      if (existsSync(links)) return links
+      // A time within the file system's tick of now can be a later change's too: such a judgement and its links are not kept.
+      const settled = BigInt(Date.now()) * 1_000_000n - mtime > 2_000_000_000n
+      let j = judged.get(dir)
+      if (j?.mtime !== mtime || !settled) {
+        j = { mtime, holds: CATALOG_PROGRAMS.filter((name) => existsSync(join(dir, name))) }
+        if (settled) judged.set(dir, j)
+      }
+      if (j.holds.length === 0) return entry
+      const links = join(into, `${createHash('sha256').update(dir).digest('hex').slice(0, 16)}-${mtime}`)
+      if (settled && existsSync(links)) return links
+      let names: string[]
+      try {
+        names = readdirSync(dir)
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? String(e)
+        throw new Error(`${dir} on the PATH holds ${j.holds.join(', ')} (a program the built-in catalog runs) and cannot be listed (${code}): a test server cannot be given its other programs without it; take it off the PATH or make it readable`)
+      }
       mkdirSync(into, { recursive: true })
       const making = mkdtempSync(`${links}.`)
-      for (const name of readdirSync(dir)) if (!hidden(name)) symlinkSync(join(dir, name), join(making, name))
+      for (const name of names) if (!hidden(name)) symlinkSync(join(dir, name), join(making, name))
+      if (!settled) return making
       try {
         renameSync(making, links)
       } catch {
@@ -109,6 +129,15 @@ export function agentFreePath(path: string, into: string): string {
       return links
     })
     .join(':')
+}
+
+/**
+ * The PATH a server is given, from the one stubBash chose (the caller's, with a directory put ahead for its bash on a machine whose
+ * first bash cannot run the stub): o.first ahead of all of it, then the real agent CLIs taken off (agentFreePath) unless o.realAgents.
+ */
+export function serverPath(o: { home: string; first?: string; realAgents?: boolean }, bashPath: string): string {
+  const path = o.first ? `${o.first}:${bashPath}` : bashPath
+  return o.realAgents ? path : agentFreePath(path, join(o.home, '.conductor-e2e-path'))
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -197,8 +226,8 @@ export async function startServer(o: {
   hostToken?: string
   /** The first try's port instead of pickPort's (a test's seam: a port another server holds); later tries pick their own. */
   port?: number
-  /** The PATH to start from instead of the caller's (a test's seam: a fake agent CLI put on it). */
-  path?: string
+  /** A directory put first on the PATH, ahead of any stubBash puts there for its bash (a test's seam: fake agent CLIs). */
+  first?: string
   /**
    * The live check's: the PATH as it is, the real agent CLIs on it. Every other server is given agentFreePath's PATH, its links kept
    * under its HOME: it finds the stubs and never a real agent CLI (#961).
@@ -222,8 +251,7 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
   const token = randomBytes(24).toString('hex')
   const from = existsSync(o.log) ? statSync(o.log).size : 0
   const out = openSync(o.log, 'a')
-  const bash = stubBash(o.path)
-  const path = o.realAgents ? bash.path : agentFreePath(bash.path, join(o.home, '.conductor-e2e-path'))
+  const path = serverPath(o, stubBash().path)
   const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
     env: {
       PATH: path,
