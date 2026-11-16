@@ -105,7 +105,7 @@ test("an approval asked by an attempt that ended survives the server's end, is a
   const held = `waits for decision ${id}; taken up when the run is continued`
   budget(5 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=graph`)
-  const node = page.locator('[data-graph-canvas] [data-graph-task="build"]')
+  const node = page.locator('[data-graph-canvas] [data-station="build"]')
   await expect(node).toHaveAttribute('aria-label', `build: ${held}`, { timeout: 30_000 })
   await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Members' }).click()
   await expect(node).toHaveCount(0)
