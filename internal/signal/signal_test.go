@@ -1052,3 +1052,116 @@ func TestTheHostedCopyLearnsTurns(t *testing.T) {
 		t.Fatal("a frame without turns cleared it")
 	}
 }
+
+// A host's attention frame that differs from the last only in turns moves
+// nothing else of the copy: the attention it shows keeps its id and its
+// Since, and the change is told (OnChange).
+func TestAFrameThatChangesOnlyTurnsMovesNothingElse(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var told []session.Info
+	hub.OnChange = func(i session.Info) {
+		mu.Lock()
+		told = append(told, i)
+		mu.Unlock()
+	}
+	hs, _ := register(t, hub)
+	const id = "0123456789abcdef"
+	hs.HostAttentionTurns(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, id, false, "", "", nil, false)
+	first := hs.Info()
+	mu.Lock()
+	n := len(told)
+	mu.Unlock()
+	hs.HostAttentionTurns(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, id, false, "", "", nil, true)
+	info := hs.Info()
+	if !info.Turns || info.Attention.ID != id || !info.Attention.Since.Equal(*first.Attention.Since) || info.Attention.Message != first.Attention.Message {
+		t.Fatalf("after turns alone: %+v, before %+v", info.Attention, first.Attention)
+	}
+	if v := hs.HostView().Attention; !v.Since.Equal(*first.Attention.Since) {
+		t.Fatalf("the host's view restamped: %+v", v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) == n || !told[len(told)-1].Turns {
+		t.Fatalf("turns alone was not told: %d before, %+v", n, told)
+	}
+}
+
+// A done forwarded over the agent's own question (it outlasts its turn's
+// done, here as on the host) teaches the copy turns, and that change
+// alone is told (OnChange): the question still shows.
+func TestADoneOverTheAgentsQuestionTellsTurns(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var told []session.Info
+	hub.OnChange = func(i session.Info) {
+		mu.Lock()
+		told = append(told, i)
+		mu.Unlock()
+	}
+	hs, conn := register(t, hub)
+	if err := hs.Ask("Allow Bash?", session.SourceAPI, session.KindPermission, []session.Option{{Label: "Yes", Input: "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostAttention)
+	mu.Lock()
+	n := len(told)
+	mu.Unlock()
+	if err := hs.SetAttentionFull(session.AttentionDone, "done", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if a := hs.Info().Attention; a.State != session.AttentionNeedsInput {
+		t.Fatalf("the question gave way: %+v", a)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) == n || !told[len(told)-1].Turns {
+		t.Fatalf("turns was not told: %d before, %+v", n, told)
+	}
+}
+
+// A report forwarded while the host has no connection is kept, the latest
+// of them, and handed to the host first on its next connection; one kept
+// for a session that left the registry (Retire) goes with it.
+func TestAReportForwardedWhileTheHostIsAwayIsHandedOnItsReturn(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	resume := func(t *testing.T, hs *HostedSession) *HostConn {
+		t.Helper()
+		conn := NewHostConn()
+		if _, resumed, err := hub.Register(proto.Register{Proto: 1, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24},
+			Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, conn); err != nil || !resumed {
+			t.Fatalf("resume: %v %v", err, resumed)
+		}
+		return conn
+	}
+	hs, conn := register(t, hub)
+	hs.HostDisconnected(conn)
+	if err := hs.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := hs.SetAttentionFull(session.AttentionDone, "All tests pass.", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	back := resume(t, hs)
+	o, ok := takeWithin(back, time.Second)
+	if !ok || o.Text == nil {
+		t.Fatal("nothing handed to the host")
+	}
+	var m proto.HostAttentionMsg
+	if err := json.Unmarshal(o.Text, &m); err != nil || m.T != proto.HostAttention || m.State != string(session.AttentionDone) || m.Message != "All tests pass." {
+		t.Fatalf("handed %s (%v)", o.Text, err)
+	}
+	// Queued as the connection was attached: nothing else is.
+	if o, ok := takeWithin(back, 0); ok {
+		t.Fatalf("handed besides: %s", o.Text)
+	}
+
+	hs.HostDisconnected(back)
+	if err := hs.SetAttentionFull(session.AttentionDone, "Docs updated.", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	hs.Retire()
+	if o, ok := takeWithin(resume(t, hs), 0); ok {
+		t.Fatalf("a retired session's report was handed: %s", o.Text)
+	}
+}

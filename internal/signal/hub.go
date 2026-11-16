@@ -198,6 +198,14 @@ func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
 	if reg.Session.AgentToken != "" {
 		hs.setAgentToken(reg.Session.AgentToken)
 	}
+	if m := hs.untold; m != nil {
+		// The report forwarded while the host was away goes first on the
+		// connection, behind its registered alone: the host applies it by
+		// its own rules and tells back what its session then shows.
+		// None is kept for a session that ended or left the registry.
+		hs.untold = nil
+		conn.sendJSON(*m)
+	}
 	hs.mu.Unlock()
 	hs.notifyChange()
 	return true

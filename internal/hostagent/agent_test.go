@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -687,6 +688,14 @@ func untilListed(t *testing.T, d session.Driver, what string, want func(session.
 // its registration, and serve, which serves a connection.
 func hostedBy(t *testing.T, base string) (*agent, *session.Local, *websocket.Conn, proto.Registered, func(*websocket.Conn) <-chan error) {
 	t.Helper()
+	a, local, conn, registered, serve, _ := hostedOver(t, base, nil)
+	return a, local, conn, registered, serve
+}
+
+// hostedOver is hostedBy with the session's window title read by title
+// (Options.WorkingTitle, none when nil), returning its process too.
+func hostedOver(t *testing.T, base string, title *regexp.Regexp) (*agent, *session.Local, *websocket.Conn, proto.Registered, func(*websocket.Conn) <-chan error, *sessiontest.FakeProc) {
+	t.Helper()
 	a := &agent{opts: Options{ServerURL: base, Token: hostToken, Name: "turns", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: discardLog}
 	a.dir = t.TempDir()
 	wsURL, err := controlURL(base)
@@ -701,7 +710,7 @@ func hostedBy(t *testing.T, base string) (*agent, *session.Local, *websocket.Con
 	}
 	proc := sessiontest.NewFakeProc()
 	t.Cleanup(func() { proc.End(0) })
-	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog})
+	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog, WorkingTitle: title})
 	a.mu.Lock()
 	a.local = local
 	a.mu.Unlock()
@@ -710,7 +719,7 @@ func hostedBy(t *testing.T, base string) (*agent, *session.Local, *websocket.Con
 		go func() { served <- a.serveConn(ctx, c) }()
 		return served
 	}
-	return a, local, conn, registered, serve
+	return a, local, conn, registered, serve, proc
 }
 
 // enter types an Enter into the host's session as a controlling viewer
