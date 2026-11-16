@@ -381,7 +381,9 @@ describe('the preview bridge', () => {
     }
     expect(got).toEqual([null, null, null])
     expect({ listed, asked: asked < 1_000 }).toEqual({ listed: 0, asked: true })
-  })
+    // Three values of a hundred thousand members each are built and cloned before the parser sees one: seconds on a loaded machine.
+    // The bound is for a hang, not for that work.
+  }, 60_000)
 
   it('measures as Go writes: <, & and > as they are, U+2028 in six bytes, a lone surrogate as U+FFFD, a negative zero as 0', () => {
     for (const m of fixture.measures) expect({ name: m.name, bytes: measuredBytes(String.fromCharCode(...m.units)) }).toEqual({ name: m.name, bytes: m.bytes })

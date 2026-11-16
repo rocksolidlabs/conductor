@@ -132,6 +132,23 @@ describe('the choices of a dialog read off the screen (#288)', () => {
     expect(recommendedChoice([{ label: 'The (Recommended) way, or not', input: '1' }, { label: 'Squash (Recomm', input: '2' }])).toBe(-1)
   })
 
+  it("never offers first Codex's tool approval choices that remember it, and gives them no number key (#716)", () => {
+    const form = [
+      { label: 'Allow', input: '1' },
+      { label: 'Allow for this session', input: '2', mode: true },
+      { label: 'Always allow', input: '3', mode: true },
+      { label: 'Cancel', input: '\u001b' },
+    ]
+    // The form marks no choice as recommended, so none is drawn filled.
+    expect(recommendedChoice(form)).toBe(-1)
+    expect(form.map(choiceKey)).toEqual([1, undefined, undefined, 4])
+    // One that remembers the approval is never the filled one, whatever its label says or wherever it is listed.
+    expect(recommendedChoice([{ ...form[1]!, label: 'Allow for this session (Recommended)' }, form[0]!, form[3]!])).toBe(-1)
+    expect(recommendedChoice([form[0]!, { ...form[2]!, label: 'Always allow (Recommended)' }, form[3]!])).toBe(-1)
+    // Allow itself, marked by the agent, is.
+    expect(recommendedChoice([{ ...form[0]!, label: 'Allow (Recommended)' }, form[1]!, form[2]!, form[3]!])).toBe(0)
+  })
+
   it('answers a permission dialog without choices in the terminal', () => {
     expect(answersInTerminal({ state: 'needs_input', kind: 'permission' })).toBe(true)
     expect(answersInTerminal({ state: 'needs_input', kind: 'permission', options: [] })).toBe(true)

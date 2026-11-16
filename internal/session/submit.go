@@ -486,6 +486,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 				// written keeps a pending hold (startupMayShow); the guard
 				// holds the text back while one shows (textGuard).
 				s.rawKeys([]byte(data), keys, nil, s.startupMayShow(), false, sub.By != nil)
+				if sub.By != nil || sub.From != nil {
+					// A person's line at the program's text (PersonTyped).
+					s.notePersonTyped()
+				}
 			}
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)

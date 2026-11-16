@@ -62,7 +62,7 @@ function act(fn?: (e: Event) => void) {
     >
       <span class="relative">
         <UIcon :name="t.icon" class="size-5" />
-        <span v-if="t.count" class="absolute -right-2.5 -top-1.5 rounded-full bg-warning px-1 text-[9px] font-semibold leading-3.5 text-inverted" data-bottom-count>{{ t.count }}</span>
+        <span v-if="t.count" class="absolute -right-2.5 -top-1.5 rounded-full bg-warning px-1 text-[9px] font-semibold leading-3.5 text-(--ui-color-neutral-900)" data-bottom-count>{{ t.count }}</span>
       </span>
       {{ t.label }}
     </NuxtLink>

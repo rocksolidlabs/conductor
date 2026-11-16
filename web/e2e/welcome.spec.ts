@@ -39,10 +39,9 @@ async function choicesWhole(page: Page, at: string) {
   expect([1, 3], `one row or one to a row ${at}: ${[...tops].join(', ')}`).toContain(tops.size)
 }
 
-for (const [where, path, sizes] of [
-  ['the desktop app\'s first window', '/', [[1440, 900], [1024, 768]]],
-  ['a phone', '/yard', [[400, 800], [1024, 768]]],
-] as const) {
+// The Yard drew the card too, and the phone's case opened it there: the Yard draws its own empty shape now (UX1 PR-22: the welcome is
+// the home's alone), so a phone has no card to measure until the welcome is placed where a phone shows it (PR-30).
+for (const [where, path, sizes] of [['the desktop app\'s first window', '/', [[1440, 900], [1024, 768]]]] as const) {
   test(`the welcome card shows each choice's words whole, at equal widths, in ${where}, and again as the window changes`, async ({ page }) => {
     const [[w, h], ...then] = sizes
     await page.setViewportSize({ width: w, height: h })

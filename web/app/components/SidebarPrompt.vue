@@ -55,7 +55,7 @@ function send() {
         :data-choice-mode="o.mode || undefined"
         @click="emit('answer', i, prompt.question)"
       >
-        <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="opacity-70" /></template>
+        <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="text-muted" /></template>
       </UButton>
     </template>
     <UInput

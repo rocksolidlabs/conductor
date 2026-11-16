@@ -1014,8 +1014,9 @@ that matters is told to a person, never acted on alone. The usage in
 - `components/DispatchDecisions.vue` (approvals with their notes,
   acceptances, Accept anyway receipts, and `decision` links when DR1
   makes them), `DispatchPeople.vue` (the owner, assignees, approvers,
-  launchers and commenters; the plan's agents with their arguments and
-  each launch's agents with the versions they reported); DS1's delivery
+  launchers and commenters; the plan's agents by name, each with a link
+  to the Plan, where its command is printed once (UX1 PR-16), and each
+  launch's agents with the versions they reported); DS1's delivery
   link form gains the candidate it delivers (a select of the ticket's
   standing candidates, with their receipts' summary), the delivery row
   its verification, and the project dialog's close policy `verified`.

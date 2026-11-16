@@ -58,7 +58,7 @@ test("the plan's approval offers its own choices, the change of mode without a n
   const mode = bar.locator('button[data-choice-mode]')
   await expect(mode).toHaveCount(1)
   await expect(mode).toContainText('Yes, and use auto mode')
-  await expect(mode).toHaveAttribute('title', "Changes the session's permission mode")
+  await expect(mode).toHaveAttribute('title', 'Allows from now on, not this request alone')
   await expect(mode.locator('kbd')).toHaveCount(0)
   await expect(choices.nth(1).locator('kbd')).toHaveText('2')
   await expect(choices.nth(2).locator('kbd')).toHaveText('3')

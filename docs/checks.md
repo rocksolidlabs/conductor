@@ -80,6 +80,16 @@ to give it, or its doc comment states the limit. `layout.spec.ts` holds
 each check of each helper with a page that fails without it, and copies
 the app's own markup shapes with the defects seen on the built app.
 
+Contrast is held twice, by one table of floors (`web/app/utils/contrast.ts`,
+`CONTRAST_FLOORS`). `themeContrast.test.ts` (vitest) resolves every token in
+both themes from Nuxt UI's own plugin and stylesheet and `main.css`, and holds
+each text token on each surface. `web/e2e/contrast.ts` walks the text a page
+draws: each text over its real ground, tints, opacity and what is painted
+under it counted. `contrast.spec.ts` runs that walk on six pages of the
+seeded day, in both themes, at 1440 and at 390, and fails on a text under its
+floor. It also fails on an entry of `contrast-known.ts` that its walk no longer
+meets: the row that fixes a place deletes its entry.
+
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
 of a module of the `rocksolidlabs` organization other than this one
