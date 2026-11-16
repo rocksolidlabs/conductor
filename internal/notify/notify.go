@@ -76,6 +76,12 @@ type Request struct {
 	// as planFilePath, #289): the session opens it in the editor from the
 	// question. Goes with an attention state only.
 	Plan string `json:"plan,omitempty"`
+	// TurnID is the agent's own name for the turn the report belongs to,
+	// as its payload names it (Codex's turn-id and turn_id): the session
+	// records a turn's end told twice once. Goes with an attention state
+	// only, and last: a server older than it refuses it by name, and the
+	// report goes again without it alone (send).
+	TurnID string `json:"turnId,omitempty"`
 }
 
 // eventBody is what the events route reads: the same report under its own
@@ -187,11 +193,20 @@ func send(ctx context.Context, url, token string, req Request, body []byte) erro
 		if status < 300 {
 			return nil
 		}
-		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn || req.Ask || req.Plan != "") && req.Event == "" {
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && strings.Contains(msg, "turnId") && req.TurnID != "" && req.Event == "" {
+			// A server older than the turn's name: the report without it,
+			// judged there as it always was.
+			req.TurnID = ""
+			if body, err = json.Marshal(req); err != nil {
+				return err
+			}
+			continue
+		}
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn || req.Ask || req.Plan != "" || req.TurnID != "") && req.Event == "" {
 			// A server older than the agent-session fields, than ask or
 			// than plan: the state alone (an older server's question shows
 			// as any).
-			req.AgentSession, req.Turn, req.Ask, req.Plan = "", false, false, ""
+			req.AgentSession, req.Turn, req.Ask, req.Plan, req.TurnID = "", false, false, "", ""
 			if body, err = json.Marshal(req); err != nil {
 				return err
 			}

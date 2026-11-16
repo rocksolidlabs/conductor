@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { relativeTime } from '~/utils/sessions'
 import { provide } from 'vue'
-import { INBOX_ROW_CLASS, recentBadge, trackKey } from '~/utils/inbox'
+import { INBOX_ROW_CLASS, kindLook, recentBadge, rowLine, trackKey } from '~/utils/inbox'
 import { linkRefAccess, REF_ACCESS } from '~/utils/refAccess'
 import type { JoinDecideState, JoinRecent } from '~/composables/useJoinDecide'
 
@@ -35,6 +35,8 @@ async function openTerminal(ref: string) {
 // What DR1's card draws reads through the link: its chips, and whether its run runs here (not known on a link).
 provide(REF_ACCESS, linkRefAccess({ evidence: (r) => readEvidence(r), openSession: (r) => void openTerminal(r) }))
 /** The clock DR1's card reads its times by. */
+/** The open item as the list sums it up, while the list holds it: its title stands in until the item is read whole. */
+const openSummary = computed(() => items.value.find((s) => s.ref === openRef.value))
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
@@ -62,12 +64,14 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
               <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
               <span class="shrink-0 text-xs text-muted">{{ relativeTime(s.since) }}</span>
             </span>
-            <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
+            <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
             <span class="flex flex-wrap gap-1">
+              <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
               <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
-              <UBadge v-if="s.kind === 'decision'" :label="s.tracking ? 'Answered, not yet applied' : 'A durable decision'" color="neutral" variant="subtle" size="sm" data-inbox-row-durable />
-              <UBadge v-else-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
-              <UBadge v-else :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
+              <UBadge v-if="s.kind === 'decision' && s.tracking" label="Answered, not yet applied" color="neutral" variant="subtle" size="sm" data-inbox-row-durable />
+              <!-- A run's decision on a link has no action (a link cannot answer one yet): its kind says what it is. -->
+              <UBadge v-else-if="s.kind !== 'decision' && !s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
+              <UBadge v-else-if="s.kind !== 'decision'" :label="`${s.actions.length} ${s.actions.length === 1 ? 'choice' : 'choices'}`" color="neutral" variant="outline" size="sm" />
             </span>
           </button>
         </li>
@@ -110,6 +114,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         :open-terminal="openTerminal"
         no-comments
         :drawn="record?.ref === item.ref ? record.decision.request.evidence : undefined"
+        :record-shown="record?.ref === item.ref"
         @act="act"
         @reread="reread"
       >
@@ -134,7 +139,11 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
           <InboxDelivery :steps="delivery" :route-of="() => null" />
         </section>
       </div>
-      <div v-else class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</div>
+      <!-- The open item while it is read whole: the list's own title for it, when the list holds it, and that it is being read. -->
+      <div v-else class="flex flex-col gap-2" data-inbox-reading>
+        <h2 v-if="openSummary" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-reading-title>{{ openSummary.title }}</h2>
+        <p class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</p>
+      </div>
     </template>
   </div>
 </template>

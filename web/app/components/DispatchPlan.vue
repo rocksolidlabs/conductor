@@ -2,14 +2,17 @@
 import type { DispatchTicket, PlanSummary } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { approvable, launchBlockers, launchStateWords, planReasons, planRemedy, planStateWord, revisionTag, shortCommit } from '~/utils/dispatchPlans'
+import { approvable, launchBlockers, launchStateWords, planFold, planReasons, planRemedy, planStateWord, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 import { relativeTime } from '~/utils/sessions'
 
 /**
  * A ticket's Plan section (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"), after its acceptance criteria: the approved plan
- * revision in full (DispatchPlanBody: the yolo choice said plainly, the commit, the members with their agents, arguments and commands as
- * resolved, the tasks with who does each, the checks expected, the references, what is handed over, the decisions, recorded and not held
- * yet), else the newest proposed one; when its approval no longer holds, why, with the one remedy that cures it (Approve again after an
+ * revision, else the newest proposed one. An approved one whose approval holds is folded to one line of what the approval covers
+ * (planFold: its members, tasks, checks, commit and yolo) with "Show the whole plan", opened for the page and folded again when another
+ * revision is featured (UX1 PR-16); a proposed, stale or superseded one is drawn in full (DispatchPlanBody: the yolo choice said plainly,
+ * the commit, the members with their agents and the command each runs as resolved, the tasks with who does each, the checks expected, the
+ * references, what is handed over, the decisions, recorded and not held yet). The state, the approval, the reasons, Launch and the rest
+ * stay outside the fold. When its approval no longer holds, why, with the one remedy that cures it (Approve again after an
  * edit of the title, the description or the criteria; Revise after a comment handed over changed or an agent resolves otherwise); Launch
  * from it, asked first, or why Launch is not offered; the launches the ticket's history names, newest first, each with its run's link;
  * the other revisions folded below, newest first. Propose, Revise, Approve and Withdraw; every one an operation of the page. Every
@@ -33,6 +36,19 @@ const blockers = computed(() =>
   launchBlockers(props.plans.approved.value, { ticket: props.ticket, project: props.project, archived: props.archived, server: props.plans.server }),
 )
 const launchCount = computed(() => props.ticket.launchCount ?? props.plans.known.value.length)
+
+/** The featured revision's fold, once its body is read; the revision the person opened, for the page (nothing is stored). */
+const fold = computed(() => {
+  const f = featured.value
+  const body = f ? props.plans.bodies.get(f.id) : undefined
+  return f && body ? planFold(f, body) : null
+})
+const unfoldedId = ref('')
+/** The featured revision drawn as its one line: folded by planFold and not opened by the person. */
+const folded = computed(() => !!fold.value?.folded && unfoldedId.value !== featured.value?.id)
+function toggleFold() {
+  unfoldedId.value = unfoldedId.value === featured.value?.id ? '' : (featured.value?.id ?? '')
+}
 
 /** The other revisions opened, their bodies read as they open. */
 const opened = reactive(new Set<string>())
@@ -152,9 +168,24 @@ defineExpose({ propose, approve, launch })
         <UButton label="Revise" icon="i-lucide-file-pen-line" size="sm" :color="planRemedy(featured) === 'revise' ? 'primary' : 'neutral'" :variant="planRemedy(featured) === 'revise' ? 'solid' : 'outline'" data-plan-revise @click="propose(featured)" />
       </div>
 
-      <DispatchPlanBody v-if="plans.bodies.get(featured.id)" :body="plans.bodies.get(featured.id)!" :ticket="ticket" :agents="agents" />
-      <p v-else-if="plans.bodyErrors.get(featured.id)" class="text-sm text-warning">The revision could not be read: {{ plans.bodyErrors.get(featured.id) }}</p>
-      <p v-else class="text-sm text-dimmed">Reading revision {{ featured.n }}…</p>
+      <div v-if="fold?.folded" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        <p v-if="folded" class="min-w-0 text-sm text-muted" data-plan-fold>{{ fold.line }}</p>
+        <UButton
+          :label="folded ? 'Show the whole plan' : 'Fold the plan'"
+          :icon="folded ? 'i-lucide-chevron-down' : 'i-lucide-chevron-up'"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          :aria-expanded="!folded"
+          data-plan-unfold-body
+          @click="toggleFold"
+        />
+      </div>
+      <template v-if="!folded">
+        <DispatchPlanBody v-if="plans.bodies.get(featured.id)" :body="plans.bodies.get(featured.id)!" :ticket="ticket" :agents="agents" />
+        <p v-else-if="plans.bodyErrors.get(featured.id)" class="text-sm text-warning">The revision could not be read: {{ plans.bodyErrors.get(featured.id) }}</p>
+        <p v-else class="text-sm text-dimmed">Reading revision {{ featured.n }}…</p>
+      </template>
 
       <div v-if="!locked" class="flex flex-wrap items-center gap-2">
         <UButton
@@ -206,7 +237,7 @@ defineExpose({ propose, approve, launch })
       <ul class="flex flex-col gap-1.5">
         <li v-for="p in others" :key="p.id" class="flex flex-col gap-2 rounded-md p-2 ring ring-default" :data-plan-revision="p.n" :data-plan-state="p.state">
           <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <UButton :icon="opened.has(p.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" size="xs" color="neutral" variant="ghost" :aria-label="`${opened.has(p.id) ? 'Fold' : 'Open'} revision ${p.n}`" :aria-expanded="opened.has(p.id)" data-plan-unfold @click="toggle(p)" />
+            <IconButton :icon="opened.has(p.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" size="xs" color="neutral" variant="ghost" :label="`${opened.has(p.id) ? 'Fold' : 'Open'} revision ${p.n}`" :aria-expanded="opened.has(p.id)" data-plan-unfold @click="toggle(p)" />
             <span class="font-medium">Revision {{ p.n }}</span>
             <UBadge :label="planStateWord(p).label" :color="planStateWord(p).color" variant="subtle" size="sm" />
             <span class="min-w-0 truncate text-muted">{{ p.crewName }}</span>
@@ -216,7 +247,7 @@ defineExpose({ propose, approve, launch })
             <template v-if="!locked">
               <UButton v-if="approvable(p)" label="Approve" icon="i-lucide-badge-check" size="xs" color="neutral" variant="ghost" data-plan-approve @click="approve(p)" />
               <UButton label="Revise" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="ghost" data-plan-revise @click="propose(p)" />
-              <UButton v-if="p.state !== 'withdrawn'" icon="i-lucide-ban" size="xs" color="neutral" variant="ghost" :aria-label="`Withdraw revision ${p.n}`" :loading="withdrawing === p.id" data-plan-withdraw @click="withdraw(p)" />
+              <IconButton v-if="p.state !== 'withdrawn'" icon="i-lucide-ban" size="xs" color="neutral" variant="ghost" :label="`Withdraw revision ${p.n}`" :loading="withdrawing === p.id" data-plan-withdraw @click="withdraw(p)" />
             </template>
           </div>
           <template v-if="opened.has(p.id)">

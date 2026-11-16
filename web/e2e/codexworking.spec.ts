@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, member, test, type Api } from './fixtures'
+import { expect, member, rowAnswer, test, type Api } from './fixtures'
 
 // A Codex member's Needs you while Codex works (#186). Conductor launches
 // Codex with tui.terminal_title=["activity","run-state"], and the stub, so
@@ -175,15 +175,18 @@ test("a Codex member that asks and goes on shows Needs you, then Working while i
   expect((await api.session(id)).command).toEqual(expect.arrayContaining(['-c', 'tui.terminal_title=["activity","run-state"]']))
   // What a person sees while it works: the member's row runs, it is not in Needs you, and the run counts no one waiting.
   await page.goto('/crews')
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 30_000 })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 30_000 })
   await expect(row(page, id).locator('[data-row-prompt]')).toHaveCount(0)
   expect(member(await api.run(runId), 'asks').needsInput ?? false).toBe(false)
   await page.waitForTimeout(1_500)
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running')
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/)
+  // The row's mark says working, from Codex's program status (source status): the status walk's one proof from a real agent's signal.
+  await expect(row(page, id).locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'working')
   expect(stubFile(state.home, stub, 'spin')).toBe('spinning\n')
-  // Its turn ends: done.
+  // Its turn ends: done, and the mark says finished.
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  await expect(row(page, id).locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'finished')
   await expect.poll(() => watch!.of(id).map((e) => e.state)).toEqual(['working', 'needs_input', 'working', 'done'])
 })
 
@@ -203,15 +206,17 @@ test("a question the agent asks while one of Codex's async questions is pending 
   await page.goto('/crews')
   const yard = await page.context().newPage()
   await yard.goto('/yard')
-  const card = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
+  const tile = yard.locator(`[data-session-tile][data-session-id="${id}"]`)
   await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub async-ask ${ASYNC_ASK}`, members: ['asks'] })
   // Codex's title says Action Required while its question is pending, but its program status (0.164) says working: the agent's own question shows for its second, then gives way. A second is too short to assert on the row or the Yard's card under load; the entries below hold the words and the timing.
   await expect.poll(() => watch!.of(id).some((e) => e.state === 'needs_input' && e.message === ASYNC_ASK), { timeout: 45_000, message: 'the question is asked' }).toBe(true)
   const stub = stubOf(state.home, `stub async-ask ${ASYNC_ASK}`)
   expect(stub).not.toBe('')
   await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
-  await expect(card).toHaveCount(0)
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
+  // The Yard's tile, read after the server says working: its foot says working, and it asks nothing.
+  await expect(tile.locator('[data-tile-foot] [data-status-mark]')).toHaveAttribute('data-status-mark', 'working', { timeout: 15_000 })
+  await expect(tile.locator('[data-tile-ask]')).toHaveCount(0)
   // Working came a second or more after the question and before the async question resolved: the entries and the
   // stub's resolution stamp say so, whatever the pace of the polls above.
   await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
@@ -309,8 +314,9 @@ test("Codex's approval still shows with its three choices, and Working follows i
   expect(asked?.source).toBe('question')
   expect(asked?.options?.map((o) => o.label)).toEqual(['Yes, proceed', "Yes, and don't ask again", 'No, tell Codex what to do differently'])
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
-  await expect(row(page, id).locator('[data-row-choice]')).toHaveCount(3)
-  await row(page, id).locator('[data-row-choice="1"]').click()
+  const answers = await rowAnswer(page, row(page, id))
+  await expect(answers.locator('[data-row-choice]')).toHaveCount(3)
+  await answers.locator('[data-row-choice="1"]').click()
   const stub = stubOf(state.home, `stub approve ls -la ${nonce}`)
   await expect.poll(() => readFileSync(join(state.home, '.stub-sessions', `${stub}.txt`), 'utf8'), { timeout: 15_000 }).toContain('approval: approved\n')
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')

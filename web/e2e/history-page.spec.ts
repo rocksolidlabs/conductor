@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Api, expect, test, type Session } from './fixtures'
+import { Api, expect, test, type Session, tokenAsk } from './fixtures'
 import { renderConfig, scratchRepo, START_WAIT_MS, startServer, stopServer, type Started } from './server'
 
 // The History page and a record reached from the palette (Program item HS1, docs/plans/history.md, PR-7). A session ended before
@@ -170,15 +170,15 @@ test('a token replaced after its refusal shows the search: the History page is n
     budget(60_000)
     await expect.poll(async () => (await search(api, tag)).some((e) => e.key === key), { timeout: 60_000, message: 'the session is indexed' }).toBe(true)
 
-    budget(2 * 30_000 + 6 * STEP_MS) // the gate, the row; the goto, the fill, its value, Save, the gate gone, the loading gone
+    budget(2 * 30_000 + 6 * STEP_MS) // the page that asks, the row; the goto, the fill, its value, Connect, the page gone, the loading gone
     await page.addInitScript(() => localStorage.setItem('conductor.workbenchToken', 'not-the-workbench-token'))
     await page.goto(`/history?q=${tag}`)
-    const gate = page.getByRole('dialog', { name: 'Workbench token' })
+    const gate = tokenAsk(page)
     await expect(gate).toBeVisible({ timeout: 30_000 })
     const field = gate.getByPlaceholder('paste the workbench token')
     await field.fill(api.server.token)
     await expect(field).toHaveValue(api.server.token)
-    await gate.getByRole('button', { name: 'Save' }).click()
+    await gate.getByRole('button', { name: 'Connect' }).click()
     await expect(gate).toHaveCount(0)
     const pageEl = page.locator('[data-history-page]')
     await expect(pageEl.locator(`[data-history-row="${key}"]`)).toBeVisible({ timeout: 30_000 })

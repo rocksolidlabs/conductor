@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CONTRAST_FLOORS, ratio } from './contrast'
 import { buildTerminalTheme, cssColorToHex } from './terminalTheme'
 
 function channels(hex: string): number[] {
@@ -66,13 +67,30 @@ describe('buildTerminalTheme', () => {
     expect(t.red).toBe('#ff7b72')
   })
 
-  it('falls back to neutral defaults per mode when variables are missing', () => {
+  it('falls back to the ink scale per mode when variables are missing', () => {
     const dark = buildTerminalTheme(true, {})
-    expect(dark.background).toBe('#18181b')
-    expect(dark.foreground).toBe('#e4e4e7')
+    expect(dark.background).toBe('#18211c')
+    expect(dark.foreground).toBe('#dcdfd7')
     const light = buildTerminalTheme(false, { bg: 'var(--nope)' })
     expect(light.background).toBe('#ffffff')
-    expect(light.foreground).toBe('#18181b')
+    expect(light.foreground).toBe('#18211c')
     expect(light.red).toBe('#cf222e')
   })
+
+  // The sixteen ANSI colours are held by numbers on the page's own ground (ink in dark, white in light), not looked at: every base
+  // colour but black at the text floor, every bright one but bright black at the large-text floor. They pass as they are; they fail
+  // a later retune that goes too far.
+  const BASE = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const
+  const BRIGHT = ['brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'] as const
+  for (const [mode, dark, bg] of [['dark', true, '#18211c'], ['light', false, '#ffffff']] as const) {
+    it(`keeps the ANSI colours readable on the ${mode} ground`, () => {
+      const t = buildTerminalTheme(dark, { bg })
+      expect(t.background).toBe(bg)
+      const low = [
+        ...BASE.filter((k) => ratio(t[k]!, bg) < CONTRAST_FLOORS.text).map((k) => `${k} ${ratio(t[k]!, bg).toFixed(2)}`),
+        ...BRIGHT.filter((k) => ratio(t[k]!, bg) < CONTRAST_FLOORS.large).map((k) => `${k} ${ratio(t[k]!, bg).toFixed(2)}`),
+      ]
+      expect(low).toEqual([])
+    })
+  }
 })

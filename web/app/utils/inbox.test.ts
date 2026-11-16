@@ -41,6 +41,14 @@ import {
   decisionIdOf,
   inboxKindWords,
   inboxSections,
+  atZero,
+  briefLine,
+  firstToOpen,
+  rowLine,
+  INBOX_KINDS,
+  kindLook,
+  lastClosedWords,
+  pickShown,
   isDecisionRef,
   type InboxAction,
   type InboxItem,
@@ -83,7 +91,7 @@ describe('the order', () => {
 
 describe('the steps in words', () => {
   it('names the four steps apart and says each state', () => {
-    expect(Object.values(STEP_TITLES)).toEqual(['Request available', 'Response recorded', 'Received and validated by the execution owner', 'Work resumed'])
+    expect(Object.values(STEP_TITLES)).toEqual(['Asked', 'Your answer', 'Checked by its owner', 'Work resumed'])
     expect(['done', 'waiting', 'refused', 'not_applicable', 'unknown'].map(stateWords)).toEqual(['Done', 'Waiting', 'Refused', 'Does not apply', 'Unknown'])
   })
   it("says a stale refusal's words with what the item is now and that nothing was done", () => {
@@ -406,8 +414,10 @@ describe('the decision kind', () => {
       expect(isDecisionRef(r)).toBe(false)
       expect(decisionIdOf(r)).toBe('')
     }
-    expect(inboxKindWords('decision')).toBe('A durable decision')
-    expect(inboxKindWords('task')).toBe('A failed task')
+    expect(inboxKindWords('decision')).toBe('A decision for you')
+    expect(inboxKindWords('task')).toBe('A task out of attempts')
+    expect(inboxKindWords('question')).toBe('A question for you')
+    expect(inboxKindWords('plan')).toBe('A plan to approve')
   })
   it('puts the records answered and not yet applied apart, each part in the list\'s order', () => {
     const items = [s('decision:dr-1', true), s('task:crew-0000aaaa-11112222/build'), s('decision:dr-2'), s('decision:dr-3', true)]
@@ -465,5 +475,81 @@ describe("an item's time", () => {
     expect(itemTimeWords({ kind: 'task', since, now: 'run r is no longer held by the engine (it stopped and was let go): build is failed, and a command on it needs the run continued', actions: [] }, now)).toBe('')
     expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is approved', actions: [], delivery: [recorded] }, now)).toBe('answered 30m ago')
     expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is withdrawn', actions: [] }, now)).toBe('')
+  })
+})
+
+describe('the page at zero (UX1 PR-6)', () => {
+  const row = (ref: string, tracking?: boolean) => ({ ref, kind: 'decision', since: '', title: ref, brief: '', question: '', answerer: '', actions: [], ...(tracking ? { tracking } : {}) })
+  const answered = { loaded: true, total: 0, tracking: 0, unavailable: '', error: '', items: [] as ReturnType<typeof row>[] }
+
+  it('marks the four kinds four ways, and an unknown kind by its own name', () => {
+    const looks = INBOX_KINDS.map(kindLook)
+    expect([...INBOX_KINDS]).toEqual(['question', 'plan', 'task', 'decision'])
+    expect(new Set(looks.map((l) => l.icon)).size).toBe(4)
+    expect(looks.map((l) => l.word)).toEqual(['Question', 'Plan', 'Task', 'Decision'])
+    expect(kindLook('decision').icon).toBe('i-lucide-scale')
+    for (const l of looks) expect(l.line).toMatch(/^A /)
+    expect(kindLook('ticket')).toEqual({ icon: 'i-lucide-circle-help', word: 'ticket', line: 'ticket' })
+  })
+
+  it('is at zero only for a list read and answered, nothing open, nothing answered and not yet applied, no item in the query', () => {
+    expect(atZero(answered, '')).toBe(true)
+    expect(atZero({ ...answered, loaded: false }, ''), 'before the first read').toBe(false)
+    expect(atZero({ ...answered, error: 'the server could not be reached' }, ''), 'after a failed read').toBe(false)
+    expect(atZero({ ...answered, loaded: false, error: 'the server could not be reached' }, ''), 'a first read that failed').toBe(false)
+    expect(atZero({ ...answered, unavailable: 'decisions are answered where the work runs' }, ''), 'a switchyard').toBe(false)
+    expect(atZero({ ...answered, total: 1, tracking: 1, items: [row('decision:dr-1', true)] }, ''), 'one tracking row').toBe(false)
+    expect(atZero({ ...answered, total: 1, items: [row('decision:dr-1')] }, ''), 'one open row').toBe(false)
+    expect(atZero(answered, 'decision:dr-1'), 'an item in the query').toBe(false)
+  })
+
+  it('asks to pick an item only while there is one to pick', () => {
+    expect(pickShown({ open: [], tracking: [] }, '')).toBe(false)
+    expect(pickShown({ open: [row('decision:dr-1')], tracking: [] }, 'decision:dr-1')).toBe(false)
+    expect(pickShown({ open: [row('decision:dr-1')], tracking: [] }, '')).toBe(true)
+    expect(pickShown({ open: [], tracking: [row('decision:dr-2', true)] }, '')).toBe(true)
+  })
+
+  it("says when the last one closed, by the newer of the server's records and this browser's acts, and nothing it cannot know", () => {
+    const now = Date.parse('2026-11-16T12:00:00Z')
+    const twoHours = { closed: new Date(now - 2 * 3_600_000).toISOString() }
+    const oneHour = { at: now - 3_600_000 }
+    expect(lastClosedWords([twoHours], [oneHour], now)).toBe('The last one closed 1h ago.')
+    expect(lastClosedWords([twoHours], [], now)).toBe('The last one closed 2h ago.')
+    expect(lastClosedWords([{ closed: new Date(now - 3_600_000).toISOString() }], [{ at: now - 2 * 3_600_000 }], now)).toBe('The last one closed 1h ago.')
+    expect(lastClosedWords([], [], now)).toBe('')
+    expect(lastClosedWords([{}], [], now)).toBe('')
+    expect(lastClosedWords([{ closed: new Date(now + 3_600_000).toISOString() }], [], now), 'an hour ahead').toBe('')
+    expect(lastClosedWords([], [{ at: now + 3_600_000 }], now), 'an act an hour ahead').toBe('')
+    expect(lastClosedWords([{ closed: 'not a time' }], [], now)).toBe('')
+  })
+})
+
+describe('the list and the item in a person\'s words (UX1 PR-21)', () => {
+  const row = (ref: string) => ({ ref })
+  it('opens the oldest open row by itself on a wide window alone, never over an item in the query', () => {
+    const a = row('question:a/1')
+    const b = row('decision:dr-2')
+    expect(firstToOpen(true, '', { open: [a, b] })).toBe(a.ref)
+    expect(firstToOpen(false, '', { open: [a, b] }), 'below lg').toBe('')
+    expect(firstToOpen(true, 'plan:STB-1/1', { open: [a, b] }), 'an item in the query').toBe('')
+    expect(firstToOpen(true, '', { open: [] }), 'an empty list').toBe('')
+    // Rows answered and not yet applied are the tracking section's: they open nothing.
+    expect(firstToOpen(true, '', { open: [], ...{ tracking: [row('decision:dr-3')] } }), 'tracking rows alone').toBe('')
+  })
+
+  it("draws a brief that says nothing the title or the item's now says", () => {
+    const title = 'Claude Code in api-fix asks'
+    expect(briefLine({ title, brief: title }), 'a plain question').toBe('')
+    expect(briefLine({ title: 'Claude Code in api-fix asked', brief: 'no longer open: answered', now: 'no longer open: answered' }), 'its now').toBe('')
+    // A crew member's question, in the server's shape (inbox.go): the title, then "; it is attempt …".
+    expect(briefLine({ title, brief: `${title}; it is attempt build.1 of run crew-0000aaaa-11112222 for DEC-1` })).toBe('It is attempt build.1 of run crew-0000aaaa-11112222 for DEC-1')
+    expect(briefLine({ title: 'Ship it?', brief: 'A decision for you, from the plan of DEC-1' }), 'a brief of its own').toBe('A decision for you, from the plan of DEC-1')
+  })
+
+  it("gives a row's second line the question when the title is not it, else the brief", () => {
+    expect(rowLine({ title: 'Claude Code in api-fix asks', question: 'Which database?', brief: 'Claude Code in api-fix asks' })).toBe('Which database?')
+    expect(rowLine({ title: 'Ship it?', question: 'Ship it?', brief: 'A decision for you, from the plan of DEC-1' })).toBe('A decision for you, from the plan of DEC-1')
+    expect(rowLine({ title: 'build failed in run r', question: '', brief: 'Task build of run r is failed after 3 attempts' })).toBe('Task build of run r is failed after 3 attempts')
   })
 })

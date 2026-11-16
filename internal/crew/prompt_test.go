@@ -48,6 +48,31 @@ func TestADoneBeforeTheEnterDoesNotCount(t *testing.T) {
 	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
 }
 
+// A member whose agent's done carries the same words every turn (aider's
+// "aider is waiting") gives the engine each turn's end: the done it shows
+// as its prompt is typed ends at the prompt's Enter, so its next done,
+// with the same words, is recorded and starts the members after it.
+func TestADoneWithTheIdleWordsAfterThePromptCounts(t *testing.T) {
+	e, fl := newEngine(t)
+	const words = "aider is waiting"
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member == "core" {
+			l.SetAttention(session.AttentionDone, words, session.SourceAPI)
+		}
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+	if n := logCount(t, e, run.ID, "core is done"); n != 0 {
+		t.Fatalf("the done before the prompt started the members after core (%d)", n)
+	}
+	core, _ := fl.member("core")
+	core.SetAttention(session.AttentionDone, words, session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
 // A prompt accepted while the member's program takes it slowly (its text
 // still being taken when its time ran out) counts as given only with its
 // Enter: a done the agent reports before then starts nothing, one after it

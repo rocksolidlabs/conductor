@@ -40,7 +40,8 @@ async function openShare(target: NonNullable<typeof shareTarget.value>, role?: '
   shareOpen.value = true
 }
 
-const now = ref(Date.now())
+// The app's one clock (useNow) for the rows' ages and status words.
+const now = useNow()
 const rows = usePaletteRows({
   share: openShare,
   launch: (prefill) => {
@@ -159,8 +160,7 @@ function neighbour(key: string | null, delta: 1 | -1): string | null {
   return keys[Math.min(j, keys.length - 1)]!
 }
 
-// Opening: the query as show() set it, the clock fresh, the recent uses read; the two lists that need a request after the first paint.
-let tick: number | undefined
+// Opening: the query as show() set it, the recent uses read; the two lists that need a request after the first paint.
 watch(
   () => palette.open.value,
   async (open) => {
@@ -170,13 +170,8 @@ watch(
     fielding.value = null
     rows.showExited.value = false
     replies.value = {}
-    if (!open) {
-      window.clearInterval(tick)
-      return
-    }
-    now.value = Date.now()
+    if (!open) return
     rows.readRecentNow()
-    tick = window.setInterval(() => (now.value = Date.now()), 10_000)
     await nextTick()
     requestAnimationFrame(() => {
       input.value?.inputRef?.focus()
@@ -195,7 +190,6 @@ watch(
     })
   },
 )
-onBeforeUnmount(() => window.clearInterval(tick))
 
 // The Touched index (#304) is read again when a `file` event arrives while the palette is open, one read in two seconds at
 // most; closed, the feed's own entries lay over the cache until the next open reads it. The cache goes with the workbench
@@ -489,7 +483,6 @@ function pieces(text: string): [string, string, string] {
   return [text.slice(0, r[0]), text.slice(r[0], r[1]), text.slice(r[1])]
 }
 
-const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg-warning', running: 'bg-success', idle: 'bg-neutral-400', exited: 'bg-neutral-400' }
 </script>
 
 <template>
@@ -524,7 +517,11 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
               <div class="flex items-start gap-2.5">
                 <span v-if="row.agentId" class="relative mt-0.5 flex-none">
                   <SessionAvatar :agent-id="row.agentId" :solid="row.state === 'needs'" :dashed="row.state === 'exited'" />
-                  <span v-if="row.state" class="absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-default" :class="dotClass[row.state]" aria-hidden="true" />
+                  <StatusMark v-if="row.status" :status="row.status" badge class="absolute -right-0.5 -top-0.5" />
+                </span>
+                <span v-else-if="row.icon && row.status" class="relative mt-1 flex-none">
+                  <UIcon :name="row.icon" class="size-4 text-muted" aria-hidden="true" />
+                  <StatusMark :status="row.status" badge class="absolute -right-1 -top-1" />
                 </span>
                 <UIcon v-else-if="row.icon" :name="row.icon" class="mt-1 size-4 flex-none text-muted" aria-hidden="true" />
                 <span v-else class="mt-1 size-4 flex-none" />
@@ -535,7 +532,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                     <UBadge v-if="row.on !== undefined" :label="row.on ? 'on' : 'off'" :color="row.on ? 'success' : 'neutral'" variant="subtle" size="sm" :data-palette-switch="row.on ? 'on' : 'off'" />
                     <span v-if="row.kbds?.length" class="ml-auto flex flex-none items-center gap-0.5"><UKbd v-for="(k, i) in row.kbds" :key="i" :value="k" size="sm" /></span>
                   </div>
-                  <div v-if="row.detail" class="truncate font-mono text-[11.5px] text-muted" data-palette-detail>{{ row.detail }}</div>
+                  <div v-if="row.detail" class="truncate text-[11.5px] text-muted" data-palette-detail>{{ row.detail }}</div>
                   <div v-if="row.third" class="truncate text-xs text-toned" data-palette-third>{{ row.third }}</div>
                   <div v-if="row.note" class="text-xs text-warning" data-palette-note>{{ row.note }}</div>
                   <!-- A Needs-you row: its choices numbered, or a reply field; held and away as the sidebar shows them. -->
@@ -556,7 +553,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                     </div>
                     <div v-else-if="!row.prompt.held && !row.prompt.away" class="flex items-center gap-1.5" data-palette-reply @click.stop>
                       <UInput :model-value="replies[row.key]?.text ?? ''" :placeholder="row.prompt.placeholder" size="xs" class="flex-1" :aria-label="`Reply to ${row.label}`" @update:model-value="(v) => draftReply(row, String(v))" />
-                      <UButton icon="i-lucide-send" size="xs" color="neutral" variant="soft" aria-label="Send" @click="sendReply(row)" />
+                      <IconButton icon="i-lucide-send" size="xs" color="neutral" variant="soft" label="Send" @click="sendReply(row)" />
                     </div>
                     <p v-if="row.prompt.held || row.prompt.away" class="text-xs text-muted" data-palette-held>{{ row.prompt.placeholder }}</p>
                   </div>

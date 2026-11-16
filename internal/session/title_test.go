@@ -644,7 +644,9 @@ func TestATitleReadInTheEndedTurnIsItsOwn(t *testing.T) {
 	nextWrite(t, p)
 	close(look)
 	flushed(p)
-	if a := s.Info().Attention; a.State != AttentionDone {
+	// What the Enter left (the done ended: the empty state, input), not
+	// the ended turn's title.
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
 		t.Fatalf("the ended turn's title showed %+v in the next", a)
 	}
 	// Split in one turn: applied once whole.
@@ -679,7 +681,7 @@ func TestATitleReadInTheEndedTurnIsItsOwn(t *testing.T) {
 	nextWrite(t, p)
 	close(look)
 	out(p, "\xb9 Working\x07")
-	if a := s.Info().Attention; a.State != AttentionDone || a.Message != "again" {
+	if a := s.Info().Attention; a.State != AttentionNone || a.Source != SourceInput {
 		t.Fatalf("a title begun in the ended turn: %+v", a)
 	}
 	// The next title, the next turn's own, shows working.

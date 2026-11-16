@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Api, type Session } from './fixtures'
+import { expect, rowAnswer, showView, test, type Api, type Session } from './fixtures'
+import { drawnGrid, narrowedBy } from './terminal-width'
 
 // Codex's form asking to allow a tool of an MCP server (#716; drawn by the
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
@@ -46,7 +47,7 @@ async function typeLine(page: Page, line: string) {
   await page.keyboard.press('Enter')
 }
 
-// At the suite's 1440 by 900 (the terminal wider than the session's 80 columns) and at 1280 by 800 with touch (narrower: 72
+// At the suite's 1440 by 900 (the terminal wider than the session's 80 columns) and at 1280 by 800 with touch (narrower than 80
 // columns, where Codex wraps the choices' descriptions under their column, as the stub does).
 for (const size of [
   { name: '1440 by 900', use: {}, narrower: false },
@@ -63,10 +64,31 @@ for (const size of [
 async function toolApproval(page: Page, api: Api, state: { home: string }, narrower: boolean) {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e tool approval' })
   sessions.push(s.id)
+  // The narrower page opens with the sidebar at 300 px, the width a person dragged it to before (kept for the browser under the app's
+  // own key, in rem), and its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
+  // than the session's 80 columns, where Codex wraps the choices' descriptions, while the window keeps the sidebar whose row this test
+  // reads. The window is not made narrower instead (terminalColumns): the inspector is beside the terminal only from 1280 px (xl),
+  // and below lg the sidebar is not drawn. At 300 px the row holds its choices; at 1440 they are in the panel beside the 200 px row.
+  if (narrower) await page.addInitScript((rem) => localStorage.setItem('conductor.sidebar.width', rem), String(300 / 16))
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
-  // The page's window sizes the session before the form is drawn: the stub lays it out for that width.
-  await expect.poll(async () => { const c = (await api.session(s.id)).cols ?? 80; return narrower ? c < 80 : c > 80 }, { timeout: 15_000, message: 'the page sized the session' }).toBe(true)
+  // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
+  // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with. Where the
+  // inspector opens, the grid read at once after it is still the one drawn before (on CI: 109 columns with the inspector closed,
+  // already the session's): the wait is for the fit pass the inspector's opening brings (narrowedBy).
+  const sessionCols = async () => (await api.session(s.id)).cols ?? 0
+  let grid: { cols: number; cell: number }
+  if (narrower) {
+    await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBe(300)
+    grid = await narrowedBy(page, sessionCols, async () => {
+      await showView(page, 'people')
+      await expect(page.locator('[data-inspector-open="true"]')).toBeVisible()
+    })
+  } else {
+    await expect.poll(async () => { grid = await drawnGrid(page); return grid.cols !== 80 && (await sessionCols()) === grid.cols }, { timeout: 15_000, message: 'the page sized the session to its grid' }).toBe(true)
+  }
+  const cols = grid!.cols
+  expect(narrower ? cols < 80 : cols > 80, `the page's grid is ${cols} columns of ${grid!.cell.toFixed(2)} px`).toBe(true)
   await typeLine(page, 'stub mcp-allow')
 
   // The session asks: a question of the dialog's, a permission, with the form's words and its choices.
@@ -77,12 +99,14 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   expect(att?.kind).toBe('permission')
   expect(att?.options).toEqual(OPTIONS)
 
-  // The sidebar's row: needs you, the words and the four choices.
+  // The sidebar's row: needs you, the words, and the four choices where a person answers it (rowAnswer: in the panel beside the
+  // row while the sidebar is narrower than 280 px, as it opens).
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText(WORDS)
-  await expect(row.locator('[data-row-choice]')).toHaveCount(4)
-  for (const [i, label] of CHOICES.entries()) await expect(row.locator(`[data-row-choice="${i + 1}"]`)).toContainText(label)
+  const answer = await rowAnswer(page, row)
+  await expect(answer.locator('[data-row-choice]')).toHaveCount(4)
+  for (const [i, label] of CHOICES.entries()) await expect(answer.locator(`[data-row-choice="${i + 1}"]`)).toContainText(label)
 
   // The page's question bar: the words and the four choices, Allow and Cancel with their number keys, the two that remember
   // the approval marked as mode answers, with none.

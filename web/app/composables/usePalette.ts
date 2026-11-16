@@ -1,6 +1,7 @@
 import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessions'
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import type { Action } from '~/utils/actions'
+import type { MarkView } from '~/utils/status'
 import { DispatchOrder, serially, through } from '~/utils/dispatchOrder'
 import { allPages, paletteListed, withPatched } from '~/utils/dispatch'
 import { MODE_PREFIX, type PaletteMode, type PaletteRow } from '~/utils/palette'
@@ -15,9 +16,12 @@ import type { TouchedSession } from '~/utils/touchedIndex'
  */
 export interface PaletteItem extends PaletteRow {
   icon?: string
-  /** An agent chip with the status dot, in the sidebar's grammar. */
+  /** An agent chip with the status mark, in the sidebar's grammar. */
   agentId?: string
+  /** The row's place in the sidebar's sections (`data-palette-state`). */
   state?: 'needs' | 'running' | 'idle' | 'exited'
+  /** The chip's mark: a session's status (utils/status.ts), a run's busiest member's, a run's task's (taskStatus). */
+  status?: MarkView
   /** The keys that run it, shown as a hint. */
   kbds?: string[]
   /** A Needs-you row: the session and its prompt, answered in the row. */

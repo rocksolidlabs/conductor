@@ -22,13 +22,38 @@ export function useTerminalTransport() {
   const { wsBase } = useApiBase()
 
   const identity = useIdentity()
+  const admin = useWorkbenchToken()
+
+  /**
+   * A connection made with the workbench token (`token` is the one held as it is made) waits, while the page to connect shows, until
+   * a token the server took is held, and opens with the token held THEN: its address is made as it opens (`address`), never with the
+   * refused or missing one it was made under. Closed while it waited, it does not open at all; the page gone with no token taken, it
+   * closes as a connection that could not open does. A link's token is the caller's own and is never held back.
+   */
+  function held<T extends TerminalTransport>(token: string, address: (t: string) => string, make: (url: string | (() => string)) => T): T {
+    if (token !== admin.token.value) return make(address(token))
+    const t = make(() => address(admin.token.value))
+    const open = t.connect.bind(t)
+    t.connect = async (hello) => {
+      if (admin.gated.value) {
+        const taken = await admin.connected().catch(() => false)
+        if (t.state.value === 'closed') throw new Error('closed while the page to connect was shown')
+        if (!taken) {
+          t.close()
+          throw new Error('not connected to the server')
+        }
+      }
+      return open(hello)
+    }
+    return t
+  }
 
   function create(spec: TransportSpec): TerminalTransport {
     const base = spec.server ? wsBaseOf(spec.server) : wsBase.value
-    const url = `${base}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(spec.token)}`
+    const address = (token: string) => `${base}/ws/sessions/${encodeURIComponent(spec.sessionId)}?token=${encodeURIComponent(token)}`
     const name = spec.name ?? identity.name.value
-    if (spec.kind === 'hosted') return new WebRTCTransport(url, { forceRelay: spec.forceRelay, name, chatOnly: spec.chatOnly })
-    return new WebSocketTransport(url, { name, chatOnly: spec.chatOnly })
+    if (spec.kind === 'hosted') return held(spec.token, address, (url) => new WebRTCTransport(url, { forceRelay: spec.forceRelay, name, chatOnly: spec.chatOnly }))
+    return held(spec.token, address, (url) => new WebSocketTransport(url, { name, chatOnly: spec.chatOnly }))
   }
 
   /**
@@ -38,7 +63,7 @@ export function useTerminalTransport() {
    */
   function desk(runId: string, token: string, server = '', name?: string): TerminalTransport {
     const base = server ? wsBaseOf(server) : wsBase.value
-    return new WebSocketTransport(`${base}/ws/runs/${encodeURIComponent(runId)}/desk?token=${encodeURIComponent(token)}`, { name: name ?? identity.name.value })
+    return held(token, (t) => `${base}/ws/runs/${encodeURIComponent(runId)}/desk?token=${encodeURIComponent(t)}`, (url) => new WebSocketTransport(url, { name: name ?? identity.name.value }))
   }
 
   return { create, desk }

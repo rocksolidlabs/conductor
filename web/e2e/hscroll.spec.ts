@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { BrowserContext, Page } from '@playwright/test'
 import { expect, showView, test, type Session } from './fixtures'
 
 // The session page never scrolls sideways (#325): the rail's count pill
@@ -9,7 +10,9 @@ import { expect, showView, test, type Session } from './fixtures'
 // inspector clips sideways; the body keeps its own scroll (hiding it would
 // put a phone's quick-reply choices out of reach), so the row's and the
 // body's own widths are measured here and a new overhang fails.
-test('the session page is never wider than its box: with the panel open or collapsed, a file open, at a wide and a narrow window', async ({ page, api, state }) => {
+test('the session page is never wider than its box: with the panel open or collapsed, a file open, at a wide and a narrow window', async ({ browser, api, state }) => {
+  const contexts: BrowserContext[] = []
+  let page!: Page
   const cwd = join(state.root, 'hscroll')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\nbeta\n')
@@ -31,12 +34,17 @@ test('the session page is never wider than its box: with the panel open or colla
   }
   try {
     for (const [width, height] of [[2000, 820], [1280, 720]] as const) {
-      await page.setViewportSize({ width, height })
-      await page.goto(`/sessions/${s.id}`)
+      // Each width in a fresh page of its own context: the second does not inherit the panel the first one opened (P11).
+      const context = await browser.newContext({ viewport: { width, height } })
+      contexts.push(context)
+      page = await context.newPage()
+      await page.addInitScript((token) => localStorage.setItem('conductor.workbenchToken', token), state.token)
+      await page.goto(`${state.baseURL}/sessions/${s.id}`)
       await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
-      // A count on the rail: this viewer is one person here, so the People pill shows. The panel opens with the page.
+      // A count on the rail: this viewer is one person here, so the People pill shows. The panel is closed as the page opens.
       await expect(page.locator('[data-inspector] [data-rail-count="people"]')).toBeVisible()
-      await expect(page.locator('[data-inspector-panel]')).toBeVisible()
+      await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')
+      await expect(page.locator('[data-inspector-panel]')).toHaveCount(0)
       await fits(`${width} as loaded`)
       await showView(page, 'people')
       await expect(page.locator('[data-inspector-panel]')).toBeVisible()
@@ -50,6 +58,7 @@ test('the session page is never wider than its box: with the panel open or colla
       await fits(`${width} a file open`)
     }
   } finally {
+    for (const c of contexts) await c.close()
     await api.stopSession(s.id)
   }
 })

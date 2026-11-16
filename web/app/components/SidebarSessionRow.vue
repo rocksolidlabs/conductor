@@ -1,21 +1,23 @@
 <script setup lang="ts">
-import { relativeTime, sessionMeta } from '~/utils/sessions'
-import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
+import { agentInitials, sessionMeta } from '~/utils/sessions'
+import { exitLine as exitLineOf, rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
+import { sessionStatus } from '~/utils/status'
 import { sessionTarget } from '~/utils/actions'
 import { sessionResumeOffered } from '~/utils/runs'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
- * One session in the list (design 3b, 3c): the agent's initials, the name, a status dot, what it asks when it asks, and a meta
- * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
+ * One session in the list (design 3b, 3c): the name on one line across the row, its status mark (StatusMark of sessionStatus) at
+ * its end; what it asks when it asks; and a meta line: the agent's initials as a small chip, agent · where · how long, and the
+ * status's word last (cut only once the rest is). The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
  * row carries its machine with a laptop, in place of a heading. The path is the row's tooltip. An exited row says how it ended
- * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the dot; Stop
+ * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the mark; Stop
  * asks first, in the row; a right-click or a long press opens the same menu as More. A prompt is answered in the row, below the
  * link: its choices as numbered buttons, or a reply field. The list drives the keys: `focused` marks the row they act on,
  * `confirming` (a model: the hover Stop sets it too) shows the question.
  */
-const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false })
-const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
+const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean; narrow?: boolean; panelOpen?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false, narrow: false, panelOpen: false })
+const emit = defineEmits<{ answerOpen: [row: SessionRow]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
 
 // A touch long press (500 ms, design 3e) opens the row's sheet; the context menu is the mouse's and a coarse pointer's own is off.
 const coarse = useMedia('(pointer: coarse)')
@@ -32,15 +34,18 @@ const route = useRoute()
 const router = useRouter()
 
 const s = computed(() => props.row.session)
+const status = computed(() => sessionStatus(s.value, props.now))
 const current = computed(() => sessionOpen(route.path, s.value.id))
 const meta = computed(() => rowMeta(s.value, props.member, props.now))
 /** The meta line after the machine (which carries the laptop), the parts joined by middle dots as text, so it reads and copies as one line. */
 const metaText = computed(() => (props.row.machine ? meta.value.slice(1).map((p) => ` · ${p}`).join('') : meta.value.join(' · ')))
-const exitLine = computed(() => `${props.row.exitWord} · ${relativeTime(s.value.endedAt ?? s.value.createdAt, props.now, { suffix: true })}`)
+const exitLine = computed(() => exitLineOf(props.row, props.now))
 const live = computed(() => sessionLive(s.value.status))
 const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
 const prompt = computed(() => rowPrompt(props.row))
+/** In a narrow sidebar the question is two lines here and whole, with its controls, in the panel beside the row (SidebarRowPanel). */
+const clamped = computed(() => props.narrow && !!props.row.prompt)
 
 const target = computed(() => sessionTarget(s.value, live.value))
 // Rename… opens the one dialog (#318), on the session as the row shows it; Clone… and Clone with options… theirs (#434).
@@ -53,6 +58,8 @@ const resumable = computed(() => props.row.state === 'exited' && s.value.kind ==
 // a click mutes it until the pointer leaves the button (#137).
 const shareTip = ref(false)
 const shareTipMuted = ref(false)
+// More's menu is open while the list says so: a row drawn anew in another section (its turn ended, it asks) keeps it open.
+const menuOpen = useRowMenu(() => `s:${s.value.id}`)
 const menu = computed(() =>
   rowMenuItems(target.value, {
     open: () => router.push(`/sessions/${s.value.id}`),
@@ -91,45 +98,55 @@ function confirmStop() {
       <div class="flex items-center gap-1">
       <NuxtLink
         :to="`/sessions/${s.id}`"
-        class="flex min-w-0 flex-1 gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="[!current && 'hover:bg-elevated/60', row.state === 'exited' && !current && 'opacity-75']"
+        class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md px-2.5 py-1.5 transition-colors"
+        :class="!current && 'hover:bg-canvas-hover'"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >
-        <SessionAvatar :agent-id="s.agentId" :solid="row.state === 'needs'" :dashed="row.state === 'exited'" />
-        <span class="flex min-w-0 flex-1 flex-col gap-0.5">
           <span class="flex min-w-0 items-center gap-1.5">
-            <span class="truncate text-sm" :class="row.state === 'needs' ? 'font-semibold' : 'font-medium'">{{ s.name }}</span>
-            <EventMarkBadge :session-id="s.id" />
+            <!-- An exited row is drawn whole, its name muted: never faded (the UX review's P16). -->
+            <span class="truncate text-sm" :class="[row.state === 'needs' ? 'font-semibold' : 'font-medium', row.state === 'exited' && !current && 'text-muted']" data-row-name>{{ s.name }}</span>
+            <EventMarkBadge :session-id="s.id" :finished="status.key === 'finished'" />
             <YoloBadge v-if="s.yolo" icon />
             <slot name="pill" />
             <!-- Unread chat (design 2g): a neutral pill, never a status colour. -->
             <ChatUnreadPill :session-id="s.id" />
-            <!-- The dot gives way to the actions on hover. -->
-            <span v-if="row.state === 'needs' && needsDot" class="ml-auto size-2 flex-none rounded-full bg-warning group-hover:opacity-0" data-row-dot="needs" aria-hidden="true" />
-            <span v-else-if="row.state === 'running'" class="ml-auto size-2 flex-none rounded-full bg-success group-hover:opacity-0" data-row-dot="running" aria-hidden="true" />
-            <span v-else-if="row.state === 'idle'" class="ml-auto size-2 flex-none rounded-full bg-neutral-400 group-hover:opacity-0" data-row-dot="idle" aria-hidden="true" />
+            <!-- The mark gives way to the actions on hover; its word is its label and its title. -->
+            <StatusMark :status="status" :quiet="!needsDot" class="ml-auto group-hover:opacity-0" />
           </span>
           <template v-if="confirming">
             <span class="text-xs font-medium text-highlighted" data-row-stop-confirm>{{ question.title }}</span>
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
           <template v-else>
-            <!-- The question whole, never cut: wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing.
-                 No clamp: the server bounds a message at 500 bytes (session.MaxAttentionMessage), two dozen lines at the sidebar's
-                 default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
-                 would move the choices under the pointer. -->
-            <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
-            <span v-if="row.state === 'exited'" class="truncate font-mono text-[11px] text-muted">{{ exitLine }}</span>
-            <span v-else class="flex items-center overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted" data-row-meta>
-              <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
-                <UIcon name="i-lucide-laptop" class="size-3 flex-none" :aria-label="`Hosted on ${row.machine}`" />{{ meta[0] }}
-              </span>
-              <!-- Spaces kept: the text starts with the dot that follows the machine. -->
-              <span class="overflow-hidden text-ellipsis whitespace-pre">{{ metaText }}</span>
+            <!-- The question wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing (#187). In a
+                 sidebar 280 px wide and wider it is whole here, its controls below; narrower, a question at the server's bound (500
+                 bytes, session.MaxAttentionMessage) would be two dozen lines, so it is two here and whole in the panel beside the row,
+                 which focus opens and the Answer button below opens with the focus in it (owner decision 7): never a clamp without
+                 the panel, so the tail is one press away for the keyboard and a touch screen alike. -->
+            <span v-if="row.prompt" class="break-words text-xs" :class="clamped && 'line-clamp-2'" :data-row-clamped="clamped ? '' : undefined" data-row-prompt>{{ row.prompt.message }}</span>
+            <!-- The meta line: the initials as a chip, then the meta, then the status's word. The meta takes only the room the word
+                 leaves (its basis 0), so it is cut first and the word only once the meta has none. -->
+            <span class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" data-row-meta-line>
+              <span
+                class="flex-none rounded px-1 font-mono text-[10px] leading-4 font-semibold select-none"
+                :class="row.state === 'exited' ? 'border border-dashed border-accented' : 'bg-default text-toned'"
+                :title="s.agentId"
+                data-row-initials
+              >{{ agentInitials(s.agentId) }}</span>
+              <span v-if="row.state === 'exited'" class="min-w-0 truncate tabular-nums" data-row-exit-line>{{ exitLine }}</span>
+              <template v-else>
+                <span class="flex min-w-0 flex-1 basis-0 items-center overflow-hidden whitespace-nowrap font-mono" data-row-meta>
+                  <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
+                    <UIcon name="i-lucide-laptop" class="size-3 flex-none" :aria-label="`Hosted on ${row.machine}`" />{{ meta[0] }}
+                  </span>
+                  <!-- Spaces kept: the text starts with the dot that follows the machine. -->
+                  <span class="overflow-hidden text-ellipsis whitespace-pre">{{ metaText }}</span>
+                </span>
+                <span class="min-w-0 truncate" :title="status.word" data-status-word>{{ status.word }}</span>
+              </template>
             </span>
           </template>
-        </span>
       </NuxtLink>
       <ResumeButton v-if="resumable" :session="s" icon-only size="xs" class="relative z-10 mr-1.5" />
       </div>
@@ -152,11 +169,25 @@ function confirmStop() {
         <UTooltip v-if="live" text="Stop">
           <UButton icon="i-lucide-square" size="xs" color="neutral" variant="ghost" :aria-label="`Stop ${s.name}`" data-row-stop @click="confirming = true" />
         </UTooltip>
-        <UDropdownMenu :items="menu" :content="{ align: 'end' }">
-          <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
+        <UDropdownMenu v-model:open="menuOpen" :items="menu" :content="{ align: 'end' }">
+          <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
-      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
+      <div v-if="prompt && !confirming && clamped" class="px-2.5 pb-1.5">
+        <UButton
+          label="Answer"
+          icon="i-lucide-message-square-reply"
+          size="xs"
+          color="neutral"
+          variant="outline"
+          :aria-expanded="panelOpen"
+          aria-haspopup="dialog"
+          :aria-label="`Answer ${s.name}'s question`"
+          data-row-answer-open
+          @click="emit('answerOpen', row)"
+        />
+      </div>
+      <SidebarPrompt v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
     </li>
   </UContextMenu>
 </template>

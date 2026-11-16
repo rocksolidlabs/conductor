@@ -1,3 +1,9 @@
+import type { SessionInfo } from '~/composables/useSessions'
+import { isActive } from './attention'
+import { sessionRow } from './sidebar'
+import { rowPrompt } from './sidebarActions'
+import { sessionStatus } from './status'
+
 export interface GridLayout {
   cols: number
   rows: number
@@ -31,4 +37,69 @@ export function bestGrid(n: number, width: number, height: number, gap = 8, aspe
 export function lastItemSpan(n: number, layout: GridLayout): number {
   if (n <= 0) return 1
   return Math.min(layout.cols, Math.max(1, layout.cols * layout.rows - n + 1))
+}
+
+/**
+ * The Yard's chips (the UX review's P10): All, and one chip for each live state of the status table, so a chip filters the grid by one
+ * key of sessionStatus (Working is `working` alone, Finished `finished` alone, Running the agents that report no turns and the ones
+ * still starting). The grid holds the live sessions alone (isActive): an ended session and a host that is away are on no chip.
+ */
+export type YardFilter = 'all' | 'needs' | 'working' | 'finished' | 'running'
+
+/** The chips in the order the header draws them: the status table's, with Running last since it comes and goes. */
+export const YARD_FILTERS: readonly YardFilter[] = ['all', 'needs', 'working', 'finished', 'running']
+
+const CHIP_LABEL: Record<YardFilter, string> = { all: 'All', needs: 'Needs you', working: 'Working', finished: 'Finished', running: 'Running' }
+
+export type YardCounts = Record<YardFilter, number>
+
+/** The sessions on the chip `filter` names: every live one for All, else the live ones whose sessionStatus key is the chip's. */
+export function yardFilter(sessions: readonly SessionInfo[], filter: YardFilter, now: number): SessionInfo[] {
+  const live = sessions.filter(isActive)
+  return filter === 'all' ? live : live.filter((s) => sessionStatus(s, now).key === filter)
+}
+
+/** How many live sessions each chip holds. */
+export function yardCounts(sessions: readonly SessionInfo[], now: number): YardCounts {
+  const n: YardCounts = { all: 0, needs: 0, working: 0, finished: 0, running: 0 }
+  for (const s of sessions) {
+    if (!isActive(s)) continue
+    n.all++
+    const k = sessionStatus(s, now).key
+    if (k !== 'exited') n[k]++
+  }
+  return n
+}
+
+export interface YardChip {
+  key: YardFilter
+  label: string
+  count: number
+  active: boolean
+}
+
+/** The chips the header shows: All, Needs you, Working and Finished always, Running while it holds a session or is the chosen chip. */
+export function yardChips(counts: YardCounts, filter: YardFilter): YardChip[] {
+  return YARD_FILTERS.filter((k) => k !== 'running' || counts.running > 0 || filter === 'running').map((key) => ({ key, label: CHIP_LABEL[key], count: counts[key], active: key === filter }))
+}
+
+/** The chip a link's `?filter=` names, else All: an unknown word, a repeated parameter (an array) and none at all open All. */
+export function yardFilterOf(query: unknown): YardFilter {
+  return typeof query === 'string' && (YARD_FILTERS as readonly string[]).includes(query) ? (query as YardFilter) : 'all'
+}
+
+/** What the Needs you chip counts, said in its tooltip and its accessible name: the sessions on this grid, not the one number. */
+export function needsChipWords(n: number): string {
+  return `${n} ${n === 1 ? 'session on this grid asks' : 'sessions on this grid ask'} you. Plans, tasks and decisions wait in Needs you.`
+}
+
+/**
+ * What a tile that asks says at its foot, in place of the host (the UX review's P22): its question as the sidebar's row and the pill
+ * read it (rowPrompt), "dr-7 · " before one that mirrors a durable decision; null for a tile that does not ask (a working session, an
+ * ended one that still carries its question). The foot cuts it to one line; the whole is its title.
+ */
+export function tileAsk(s: SessionInfo): string | null {
+  const p = rowPrompt(sessionRow(s))
+  if (!p) return null
+  return p.decision ? `${p.decision} · ${p.message}` : p.message
 }

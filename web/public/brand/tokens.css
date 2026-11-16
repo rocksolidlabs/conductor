@@ -1,5 +1,6 @@
-/* Conductor / The Switch. Shared light-workbench tokens; dark values remain references.
-   Brand accent and operational status are deliberately different concepts. */
+/* Conductor / The Switch. The brand's tokens, light and dark: the values the workbench draws (web/app/assets/css/main.css
+   carries them as scales; web/app/utils/themeContrast.test.ts holds that the two agree). Brand accent and operational status are
+   deliberately different concepts. */
 :root {
   --conductor-forest: #263D35;
   --conductor-terracotta: #D26B3F;
@@ -17,10 +18,10 @@
   --conductor-warning: #805000;
   --conductor-error: #A1332F;
   --conductor-info: #245D85;
-  --conductor-dark-surface: #18211C;
-  --conductor-dark-panel: #263D35;
-  --conductor-dark-text: #EEF1E9;
-  --conductor-dark-muted: #C1CEC1;
+  --conductor-dark-surface: #0C1410;
+  --conductor-dark-panel: #18211C;
+  --conductor-dark-text: #DCDFD7;
+  --conductor-dark-muted: #8F948D;
   --conductor-dark-accent-text: #F3AC89;
   --conductor-font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
   --conductor-font-code: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -34,9 +35,9 @@
   --conductor-focus-width: 3px;
 }
 
-/* The values the switchyard's own pages use, dark always (the workbench's
-   zinc surfaces, forest-300 as the action colour). The workbench's own dark
-   mode is Nuxt UI's. */
+/* The values the switchyard's own pages use, dark always (zinc surfaces,
+   forest-300 as the action colour). The workbench's own dark mode is the
+   ink scale above (--conductor-dark-*). */
 [data-conductor-theme="dark"] {
   --conductor-surface: #18181B;
   --conductor-panel: #18181B;

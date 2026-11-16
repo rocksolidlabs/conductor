@@ -879,6 +879,26 @@ export interface HostAttentionKept {
 export const HOST_MAX_KEPT = 2
 
 /**
+ * host → server, on `attention`: the host's session's agent reports its turns (its `Info.turns`, from the same snapshot as the
+ * attention). The server's copy learns `true` and never clears it on a message without it; an older host sends none and an older
+ * server ignores it. A bool: the message's bound does not change.
+ */
+export interface HostAttentionTurns {
+  turns?: boolean
+}
+
+/**
+ * server → host, on `attention`: the agent's own name for the turn the report belongs to (Codex's turn id), as the
+ * attention route took it (its `turnId`). The host's session records a turn's end told twice once. At most
+ * HOST_MAX_TURN_ID bytes: a letter or a digit, then letters, digits and `._:-`; a host takes a frame whose name is out
+ * of that without the name, and an older host ignores it. The web never sends it.
+ */
+export interface HostAttentionTurnId {
+  turnId?: string
+}
+export const HOST_MAX_TURN_ID = 128
+
+/**
  * server → host, only to a host whose register said answerAs, never from a switchyard: an answer
  * a decision router or a provider holds for the question the host's session shows, applied there
  * under the question's claim, the first answer winning. The web never sends it.

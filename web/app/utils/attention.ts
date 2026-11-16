@@ -45,7 +45,7 @@ export function offeredChoices(a: Pick<Attention, 'state' | 'decision' | 'option
 
 /**
  * Why a page takes no typed reply to a, in the words its reply field shows in place of one; undefined when it takes one. Every
- * place that draws a reply field for an attention (the question bar, the sidebar's row and Needs you, the Yard's queue, the
+ * place that draws a reply field for an attention (the question bar, the sidebar's row and Needs you, the pill, the
  * command palette) asks this one function: the session waits for its terminal (waitsForTerminal), the question is answered in
  * the terminal (answersInTerminal, startupInTerminal), or it mirrors a durable decision (decisionOf), answered as that decision, where it says.
  */
@@ -87,9 +87,21 @@ export function choiceKey(o: AttentionOption, i: number): number | undefined {
   return o.mode || i >= 9 ? undefined : i + 1
 }
 
-/** The choice a page offers first, highlighted: the first that does not change the permission mode (#288); -1 for none. */
-export function firstChoice(options: AttentionOption[] | undefined): number {
-  return options?.findIndex((o) => !o.mode) ?? -1
+const RECOMMENDED = /\(recommended\)$/i
+
+/**
+ * The choice a page draws filled: the one the agent itself marks, its label (trimmed) ending "(Recommended)" in any case. Never one
+ * that changes the permission mode (#288); -1 when none says it or more than one does, so that a doubt draws every choice alike. A
+ * label cut short (the server's 60-character bound) loses the mark, and nothing is filled.
+ */
+export function recommendedChoice(options: AttentionOption[] | undefined): number {
+  let found = -1
+  for (const [i, o] of (options ?? []).entries()) {
+    if (!RECOMMENDED.test(o.label.trim())) continue
+    if (o.mode || found !== -1) return -1
+    found = i
+  }
+  return found
 }
 
 /**
@@ -98,6 +110,14 @@ export function firstChoice(options: AttentionOption[] | undefined): number {
  * and changes no permission mode.
  */
 export const MODE_CHOICE = 'Allows from now on, not this request alone'
+
+/**
+ * A choice's title: its whole label wherever a button shortens it (#906), and for a mode answer what it does as well (MODE_CHOICE),
+ * "<label> (allows from now on, not this request alone)".
+ */
+export function choiceTitle(o: Pick<AttentionOption, 'label' | 'mode'>): string {
+  return o.mode ? `${o.label} (${MODE_CHOICE.toLowerCase()})` : o.label
+}
 
 /**
  * The attention as the pages read it (#258): a question keys typed in the terminal have answered (`answered`) is no question to

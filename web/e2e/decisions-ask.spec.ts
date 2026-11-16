@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, test, tokenAsk } from './fixtures'
+import { inboxItem, stubInbox } from './inbox-stub'
 
 // Needs your decision, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
 // the address opened with no workbench token asks for it at once, the token saved shows the decision list, and a decide pass held
@@ -16,13 +17,13 @@ test('the address opened with no token asks for it at once; the token saved show
   const ctx = await browser.newContext(PHONE)
   const page = await ctx.newPage()
   await page.goto('/decisions')
-  const gate = page.getByRole('dialog', { name: GATE })
+  const gate = tokenAsk(page)
   await expect(gate).toBeVisible()
   const field = gate.getByPlaceholder('paste the workbench token')
   await field.fill(state.token)
   await expect(field).toHaveValue(state.token)
   const read = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/inbox' && r.status() === 200)
-  await gate.getByRole('button', { name: 'Save' }).click()
+  await gate.getByRole('button', { name: 'Connect' }).click()
   await read
   await expect(gate).toHaveCount(0)
   await expect(page.locator('[data-decisions-list]')).toBeVisible()
@@ -36,19 +37,16 @@ test('the address opened with no token asks for it at once; the token saved show
   await expect(passPage.getByText(ENDED)).toBeVisible()
   expect(new URL(passPage.url()).pathname).toBe('/decide')
   await expect(passPage.getByRole('dialog', { name: GATE })).toHaveCount(0)
+  await expect(tokenAsk(passPage)).toHaveCount(0)
   await passCtx.close()
 })
 
 const LONG = `${'Deploy the release candidate to every region '.repeat(5)}`.slice(0, 200)
 
-/** The list as the server shapes it: one open item and one answered and not yet applied, each with a 200-character title. */
+/** The list as the server shapes it (inbox-stub.ts): one open item and one answered and not yet applied, each with a 200-character title. */
 async function longRows(page: Page) {
-  const since = new Date(Date.now() - 5 * 60_000).toISOString()
-  const row = (ref: string, tracking: boolean) => ({ ref, kind: 'decision', since, title: LONG, brief: 'b', question: 'May it go out?', answerer: 'you', actions: ['Approve', 'Reject'], blocks: 1, ...(tracking ? { state: 'answered', tracking: true } : { state: 'open' }) })
-  await page.route(
-    (u) => u.pathname === '/api/inbox',
-    (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [row('decision:dr-901', false), row('decision:dr-902', true)], total: 2, tracking: 1, at: new Date().toISOString() }) }),
-  )
+  const row = (ref: string, answered: boolean) => inboxItem('decision', { ref, title: LONG, brief: 'b', question: 'May it go out?', answerer: 'you', state: answered ? 'answered' : 'open' })
+  await stubInbox(page, [row('decision:dr-901', false), row('decision:dr-902', true)])
 }
 
 for (const width of [360, 1440]) {
@@ -70,6 +68,11 @@ for (const width of [360, 1440]) {
       expect(await title.evaluate((e) => [getComputedStyle(e).textOverflow, e.scrollWidth > e.clientWidth])).toEqual(['ellipsis', true])
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    // At a desktop's width the oldest open item opens by itself beside the list (UX1 PR-21); below lg the list stays alone.
+    if (width >= 1024) {
+      await expect(page).toHaveURL(/\/decisions\?item=decision(:|%3A)dr-901$/)
+      await expect(page.locator('[data-inbox-item="decision:dr-901"]')).toBeVisible()
+    } else await expect(page).toHaveURL(/\/decisions$/)
   })
 }
 
@@ -81,21 +84,15 @@ test("an open item's card says how long it waits by the page's clock, with no ne
     w.skew = 0
     Date.now = () => real() + w.skew
   })
-  const ref = 'task:e2e-time-0000000a/build'
-  const since = new Date(Date.now() - 90_000).toISOString()
-  const summary = { ref, kind: 'task', since, title: 'build failed in run e2e time', brief: 'b', question: '', answerer: 'you', actions: ['Retry'] }
-  const retry = { name: 'retry', label: 'Retry', expect: '4', scope: 'Allows build one more attempt', route: 'POST /api/runs/e2e-time-0000000a/tasks/build/retry' }
-  const item = { ...summary, subject: ref, briefBy: 'conductor', revision: '4', blocking: { words: '', refs: [] }, actions: [retry], recommended: -1 }
-  // The page reads the open item again whenever it reads the list: the first read is answered and every later one held, so the
-  // card keeps the item it first drew and only the clock can move its words.
+  const it = inboxItem('task', { since: new Date(Date.now() - 90_000).toISOString() })
+  const ref = it.ref
+  await stubInbox(page, [it])
+  // The page reads the open item again whenever it reads the list: the first read is answered (by stubInbox) and every later one
+  // held, so the card keeps the item it first drew and only the clock can move its words.
   let reads = 0
   await page.route(
-    (u) => u.pathname === '/api/inbox',
-    (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [summary], total: 1, at: new Date().toISOString() }) }),
-  )
-  await page.route(
     (u) => u.pathname === '/api/inbox/item',
-    (route) => (++reads === 1 ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ item }) }) : undefined),
+    (route) => (++reads === 1 ? route.fallback() : undefined),
   )
   await page.goto(`/decisions?item=${encodeURIComponent(ref)}`)
   const time = page.locator('[data-decisions-item] [data-inbox-time]')

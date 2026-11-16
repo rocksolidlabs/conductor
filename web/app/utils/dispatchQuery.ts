@@ -1,5 +1,5 @@
 import type { DispatchSort, Horizon, TicketStatus, ViewQuery } from '~/composables/useDispatch'
-import { HORIZONS, PRIORITIES, TICKET_STATUSES, isSort, parseTicketKey, sortDesc } from './dispatch'
+import { HORIZONS, PRIORITIES, TICKET_STATUSES, assigneeOf, isSort, parseTicketKey, priorityWord, sortDesc, statusWord } from './dispatch'
 
 // A list's filter, one codec both ways (docs/plans/dispatch.md, "web/app"): to and from a page's link (?status=in_progress&label=api&q=…),
 // to and from a saved view's query, and to the list's request (GET /api/dispatch/tickets). A link says labels and the milestone by
@@ -50,6 +50,50 @@ export function emptyFilter(): DispatchFilter {
 /** Whether a filter narrows the list (a sort or a grouping does not). */
 export function filterNarrows(f: DispatchFilter): boolean {
   return !!(f.status.length || f.priority.length || f.labels.length || f.owner || f.assignees.length || f.milestone || f.horizon.length || f.parent || f.blocked || f.q.trim() || f.deleted)
+}
+
+/** A value of the filter in use, as the toolbar shows it: a chip that takes itself out. */
+export interface FilterChip {
+  /** `<field>:<value>`, the field as the link names it (status, priority, label, owner, assignee, milestone, horizon, blocked, parent, deleted, q). */
+  id: string
+  field: 'status' | 'priority' | 'label' | 'owner' | 'assignee' | 'milestone' | 'horizon' | 'blocked' | 'parent' | 'deleted' | 'q'
+  /** What it says: "Status: In progress", "Blocked", "Search: login". */
+  words: string
+  /** The filter without this one value, its sort, direction and grouping kept. */
+  without: DispatchFilter
+}
+
+/**
+ * The filter in use as chips, one a value, in the toolbar's order: the statuses, priorities, labels, owner, assignees, milestone,
+ * horizons, blocked, parent, deleted, then the search. A label or a milestone is named as the link names it (a milestone kept by its id,
+ * since another has its name, by its row's name); an agent by its catalog name. Pure.
+ */
+export function filterChips(f: DispatchFilter, names: FilterNames, agents: ReadonlyArray<{ id: string; name: string }>): FilterChip[] {
+  const out: FilterChip[] = []
+  const add = (field: FilterChip['field'], value: string, words: string, without: Partial<DispatchFilter>) => out.push({ id: `${field}:${value}`, field, words, without: { ...f, ...without } })
+  for (const s of f.status) add('status', s, `Status: ${statusWord(s).label}`, { status: f.status.filter((x) => x !== s) })
+  for (const p of f.priority) add('priority', PRIORITIES.find((x) => x.value === p)?.name ?? String(p), `Priority: ${priorityWord(p).label}`, { priority: f.priority.filter((x) => x !== p) })
+  for (const l of f.labels) add('label', l, `Label: ${l}`, { labels: f.labels.filter((x) => x !== l) })
+  if (f.owner) add('owner', f.owner, `Owner: ${f.owner}`, { owner: '' })
+  for (const a of f.assignees) {
+    const who = assigneeOf(a)
+    add('assignee', a, `Assignee: ${who.kind === 'agent' ? (agents.find((x) => x.id === who.name)?.name ?? who.name) : who.name}`, { assignees: f.assignees.filter((x) => x !== a) })
+  }
+  if (f.milestone) add('milestone', f.milestone, `Milestone: ${names.milestones.find((m) => m.id === f.milestone)?.name ?? f.milestone}`, { milestone: '' })
+  for (const h of f.horizon) {
+    const w = HORIZONS.find((x) => x.value === h)
+    add('horizon', w?.name ?? h, `Horizon: ${w?.label ?? h}`, { horizon: f.horizon.filter((x) => x !== h) })
+  }
+  if (f.blocked) add('blocked', '1', 'Blocked', { blocked: false })
+  if (f.parent) add('parent', f.parent, `Parent: ${f.parent}`, { parent: '' })
+  if (f.deleted) add('deleted', '1', 'Deleted too', { deleted: false })
+  if (f.q.trim()) add('q', f.q, `Search: ${f.q.trim()}`, { q: '' })
+  return out
+}
+
+/** Filter's number: the chips in use other than the search's, which shows in its own field. */
+export function filterCount(chips: readonly FilterChip[]): number {
+  return chips.filter((c) => c.field !== 'q').length
 }
 
 /** An assignee's actor: person:<name> or agent:<catalog id>, as the store checks one. */

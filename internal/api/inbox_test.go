@@ -300,7 +300,7 @@ func TestInboxDecisionQuestionOffersNoReply(t *testing.T) {
 		t.Fatalf("the list: %+v", page)
 	}
 	it := e.itemOf(t, ref)
-	if len(it.Actions) != 0 || !strings.Contains(it.Brief, "dr-7, a durable decision, answered on its card") || !strings.Contains(it.Blocking.Words, "Answer dr-7") {
+	if len(it.Actions) != 0 || !strings.Contains(it.Brief, "a decision for you, dr-7, answered on its card") || strings.Contains(it.Brief, "durable") || !strings.Contains(it.Blocking.Words, "Answer dr-7") {
 		t.Fatalf("the decision's question's item: %+v", it)
 	}
 	sub := fs.owner(t, "Nate")

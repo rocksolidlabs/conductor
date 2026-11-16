@@ -1,11 +1,11 @@
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, rowAnswer, test, type Session } from './fixtures'
 
 // A question that mirrors a durable decision (Program item DR1) is answered
 // only as the decision, by the operator: no page offers it a typed reply.
 // Every place that draws a reply field for an attention reads the same one
 // answer (noReply, web/app/utils/attention.ts), and says where the decision
-// is answered instead: the sidebar's row, the Yard's queue and the command
+// is answered instead: the sidebar's row, an expanded Yard tile's bar and the command
 // palette (#638, review round 1). The stub, a worker of a managed run, asks
 // the decision over its own token when its task's instructions say STUB
 // DECIDE, and submits nothing while it waits.
@@ -64,7 +64,7 @@ async function openPalette(page: Page) {
   return palette
 }
 
-test("a decision's question takes no reply in the sidebar's row, the Yard's queue or the palette: each says where it is answered", async ({ page, api }) => {
+test("a decision's question takes no reply in the sidebar's row, the Yard's tile and its bar or the palette: each says where it is answered", async ({ page, api }) => {
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   // The attempt's session, once it shows the decision's question.
@@ -86,17 +86,24 @@ test("a decision's question takes no reply in the sidebar's row, the Yard's queu
   // The sidebar's row: the words, no reply field, no choice.
   budget(4 * STEP_MS) // the page, the words, no reply, no choice
   await page.goto('/')
-  const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  const listed = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+  await expect(listed.locator('[data-row-prompt]')).toBeVisible({ timeout: 15_000 })
+  const row = await rowAnswer(page, listed)
   await expect(row.locator('[data-row-decision]')).toHaveText(words, { timeout: 15_000 })
   await expect(row.locator('[data-row-reply]')).toHaveCount(0)
   await expect(row.locator('[data-row-choice]')).toHaveCount(0)
 
-  // The Yard's queue: the card says it, and has no reply box.
-  budget(3 * STEP_MS) // the page, the words, no box
+  // The Yard: the tile says the decision and the question's start, and the grid has no reply box; expanded, its bar answers it as
+  // the decision, with no field.
+  budget(6 * STEP_MS) // two pages, the tile's words, no box, the bar's Answer, no field
   await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
-  await expect(card.locator('[data-queue-decision]')).toHaveText(words, { timeout: 15_000 })
-  await expect(card.locator('input')).toHaveCount(0)
+  const ask = page.locator(`[data-session-tile][data-session-id="${s.id}"] [data-tile-ask]`)
+  await expect(ask).toHaveText(new RegExp(`^${s.attention!.decision} · `), { timeout: 15_000 })
+  await expect(page.locator('[data-yard-grid] input')).toHaveCount(0)
+  await page.goto(`/yard?focus=${s.id}`)
+  const bar = page.locator('[data-yard-focus] [data-quick-reply]')
+  await expect(bar.locator('[data-quick-reply-answer]')).toHaveText(`Answer ${s.attention!.decision}`, { timeout: 15_000 })
+  await expect(bar.locator('input')).toHaveCount(0)
 
   // The palette's row for the session: the words where a reply field would be.
   budget(6 * STEP_MS) // the page, the sidebar, the key, the palette, the words, no reply

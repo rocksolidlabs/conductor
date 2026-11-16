@@ -55,9 +55,9 @@ test('↓ enters the list, J and K move, → and ← reveal and fold a row’s a
     const input = palette.locator('input[data-palette-input]')
     await input.fill('e2e palette keys')
     const focused = palette.locator('[data-palette-row][data-palette-focused]')
-    // Running lists the two; other groups may match the name too (Copy a view link to…), below them.
-    await expect(palette.locator('[data-palette-group="running"] [data-palette-row]')).toHaveCount(2)
-    await expect(palette.locator('[data-palette-group]').first()).toHaveAttribute('data-palette-group', 'running')
+    // Working lists the two (they send no signal); other groups may match the name too (Copy a view link to…), below them.
+    await expect(palette.locator('[data-palette-group="working"] [data-palette-row]')).toHaveCount(2)
+    await expect(palette.locator('[data-palette-group]').first()).toHaveAttribute('data-palette-group', 'working')
     await expect(focused).toHaveCount(0)
     await page.keyboard.press('ArrowDown')
     await expect(focused).toHaveCount(1)

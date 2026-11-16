@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { bestGrid, lastItemSpan } from './wall'
+import type { SessionInfo, SessionStatus } from '~/composables/useSessions'
+import type { Attention } from './protocol'
+import { liveSession } from './attention'
+import { needsYou } from './needsYou'
+import { sessionRow } from './sidebar'
+import { rowPrompt } from './sidebarActions'
+import { bestGrid, tileAsk, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
 
 describe('bestGrid', () => {
   it('handles empty and degenerate boxes', () => {
@@ -59,5 +65,100 @@ describe('lastItemSpan', () => {
       expect(span).toBeGreaterThanOrEqual(1)
       expect(span).toBeLessThanOrEqual(g.cols)
     }
+  })
+})
+
+// The Yard's chips over a table of sessions: one in each live state, a starting one, an ended session that still carries its question,
+// a host that is away and asks, a question answered in the terminal, and a question that mirrors a durable decision.
+const NOW = Date.UTC(2026, 10, 16, 10, 0)
+const AGO = (m: number) => new Date(NOW - m * 60_000).toISOString()
+
+function tile(id: string, status: SessionStatus, attention?: Attention, turns = true): SessionInfo {
+  return { id, name: id, kind: 'server', agentId: 'claude', command: [], cwd: '/w', status, cols: 80, rows: 24, viewers: 0, turns, ...(attention ? { attention } : {}) } as unknown as SessionInfo
+}
+
+const ask = (id: string, o: Partial<Attention> = {}): Attention => ({ state: 'needs_input', source: 'hook', id: `q-${id}`, since: AGO(3), message: 'Run the tests again?', ...o }) as Attention
+
+const TABLE: SessionInfo[] = [
+  tile('asks', 'running', ask('asks')),
+  tile('mirror', 'running', ask('mirror', { decision: 'dr-7' })),
+  tile('works', 'running', { state: 'working', source: 'hook', since: AGO(1) } as Attention),
+  tile('done', 'running', { state: 'done', source: 'hook', since: AGO(28) } as Attention),
+  tile('silent', 'running', undefined, false),
+  tile('starting', 'starting', undefined, false),
+  tile('ended', 'exited', ask('ended')),
+  tile('away', 'host_disconnected', ask('away')),
+  tile('answered', 'running', ask('answered', { answered: 'terminal' })),
+]
+const ids = (ss: readonly SessionInfo[]) => ss.map((s) => s.id).sort()
+
+describe("the Yard's chips", () => {
+  it('filters the grid by one state each: Working is working alone, Finished finished alone, Running the silent and the starting', () => {
+    const live = TABLE.map(liveSession)
+    expect(ids(yardFilter(live, 'all', NOW))).toEqual(['answered', 'asks', 'done', 'mirror', 'silent', 'starting', 'works'])
+    expect(ids(yardFilter(live, 'needs', NOW))).toEqual(['asks', 'mirror'])
+    expect(ids(yardFilter(live, 'working', NOW))).toEqual(['answered', 'works'])
+    expect(ids(yardFilter(live, 'finished', NOW))).toEqual(['done'])
+    expect(ids(yardFilter(live, 'running', NOW))).toEqual(['silent', 'starting'])
+    // The ended and the away session are on no chip.
+    for (const f of YARD_FILTERS) expect(ids(yardFilter(live, f, NOW)), f).not.toContain('ended')
+    for (const f of YARD_FILTERS) expect(ids(yardFilter(live, f, NOW)), f).not.toContain('away')
+    expect(yardCounts(live, NOW)).toEqual({ all: 7, needs: 2, working: 2, finished: 1, running: 2 })
+  })
+
+  it("counts on Needs you only sessions that the one list holds, as a question or as the record its question mirrors", () => {
+    const live = TABLE.map(liveSession)
+    const mirrored = { id: 'dr-7', run: 'r-1', openedIn: 'r-1', origin: 'plan', type: 'approval', gate: 'g', request: {}, policy: {}, state: 'open', rev: 1, createdAt: AGO(5) }
+    const list = needsYou({
+      sessions: { loaded: true, error: '', list: live },
+      decisions: { loaded: true, error: '', records: [mirrored] as never, cut: false },
+      inbox: { loaded: true, error: '', items: [], next: '', unavailable: '' },
+    })
+    const listed = new Set(list.items.map((it) => it.session?.id).filter(Boolean))
+    const counted = yardFilter(live, 'needs', NOW)
+    expect(counted.length).toBe(yardCounts(live, NOW).needs)
+    expect(counted.filter((s) => !listed.has(s.id)).map((s) => s.id)).toEqual([])
+    // The mirrored question is the record's one item, and the session that asks is still counted on the chip.
+    expect(list.items.find((it) => it.session?.id === 'mirror')?.decision?.id).toBe('dr-7')
+  })
+
+  it('shows the four chips always and Running only while it holds a session or is chosen', () => {
+    const none: YardCounts = { all: 3, needs: 1, working: 1, finished: 1, running: 0 }
+    expect(yardChips(none, 'all').map((c) => c.key)).toEqual(['all', 'needs', 'working', 'finished'])
+    expect(yardChips(none, 'running').map((c) => c.key)).toEqual(['all', 'needs', 'working', 'finished', 'running'])
+    expect(yardChips({ ...none, running: 2 }, 'all').map((c) => [c.key, c.label, c.count, c.active])).toEqual([
+      ['all', 'All', 3, true],
+      ['needs', 'Needs you', 1, false],
+      ['working', 'Working', 1, false],
+      ['finished', 'Finished', 1, false],
+      ['running', 'Running', 2, false],
+    ])
+  })
+
+  it("opens the chip a link's ?filter= names, else All", () => {
+    for (const f of YARD_FILTERS) expect(yardFilterOf(f)).toBe(f)
+    expect(yardFilterOf('x')).toBe('all')
+    expect(yardFilterOf(['working', 'finished'])).toBe('all')
+    expect(yardFilterOf(undefined)).toBe('all')
+    expect(yardFilterOf(null)).toBe('all')
+  })
+
+  it('says that the Needs you chip counts the sessions on this grid alone', () => {
+    expect(needsChipWords(5)).toBe('5 sessions on this grid ask you. Plans, tasks and decisions wait in Needs you.')
+    expect(needsChipWords(1)).toBe('1 session on this grid asks you. Plans, tasks and decisions wait in Needs you.')
+  })
+})
+
+describe("an asking tile's words", () => {
+  it('says the question as the sidebar row does, "dr-7 · " before a mirrored one, and nothing for a tile that does not ask', () => {
+    const live = new Map(TABLE.map(liveSession).map((s) => [s.id, s]))
+    expect(tileAsk(live.get('asks')!)).toBe('Run the tests again?')
+    expect(tileAsk(live.get('mirror')!)).toBe('dr-7 · Run the tests again?')
+    expect(tileAsk(live.get('works')!)).toBeNull()
+    expect(tileAsk(live.get('ended')!)).toBeNull()
+    expect(tileAsk(live.get('answered')!)).toBeNull()
+    // The words the row's prompt shows, never a copy made apart: a question with no words says what the row says.
+    const blank = liveSession(tile('blank', 'running', ask('blank', { message: '' })))
+    expect(tileAsk(blank)).toBe(rowPrompt(sessionRow(blank))!.message)
   })
 })

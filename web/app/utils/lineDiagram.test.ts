@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { RunTask } from '~/composables/useSessions'
 import type { GraphDirection } from './crewGraph'
-import { NODE_W } from './crewGraph'
 import {
   LINE_LABEL_CHARS,
   LINE_LABEL_CHAR_W,
@@ -12,7 +11,9 @@ import {
   LINE_GEOMETRY,
   cutLineLabel,
   lineLayout,
+  memberNodes,
   placeLabels,
+  stepFrom,
   type LineBox,
   type LineLabelSide,
   type LineLayout,
@@ -20,7 +21,7 @@ import {
   type LineSize,
   type LineStation,
 } from './lineDiagram'
-import { taskDepths, taskLayout, type DepthNode } from './taskGraph'
+import { taskDepths, type DepthNode } from './taskGraph'
 
 // lineLayout is a pure function of ids and needs: its cases are written as
 // { id: [depth, lane] } with lines, connectors as from>to:kind and junctions,
@@ -311,6 +312,55 @@ describe('lineLayout: a table of shapes', () => {
   })
 })
 
+describe('stepFrom: the keys over the Ledger', () => {
+  const l = lineLayout(ledger)
+  it('right and left go along a line; at its end the focus stays; left from a branch goes to where it leaves from', () => {
+    expect(stepFrom(l, 'schema', 'right')).toBe('naming')
+    expect(stepFrom(l, 'naming', 'right')).toBe('migrate')
+    expect(stepFrom(l, 'migrate', 'right')).toBe('migrate')
+    expect(stepFrom(l, 'migrate', 'left')).toBe('naming')
+    expect(stepFrom(l, 'schema', 'left')).toBe('schema')
+    expect(stepFrom(l, 'backfill', 'left')).toBe('schema')
+    expect(stepFrom(l, 'release-notes', 'left')).toBe('naming')
+  })
+  it('down and up go to the nearest station by depth on the lane below or above, the lower depth on a tie', () => {
+    expect(stepFrom(l, 'schema', 'down')).toBe('soak')
+    // soak (depth 0) and release-notes (depth 2) are as near to backfill (depth 1) on lane 1: the lower depth wins.
+    expect(stepFrom(l, 'backfill', 'up')).toBe('soak')
+    expect(stepFrom(l, 'migrate', 'down')).toBe('release-notes')
+    expect(stepFrom(l, 'soak', 'up')).toBe('schema')
+    expect(stepFrom(l, 'schema', 'up')).toBe('schema')
+    expect(stepFrom(l, 'backfill', 'down')).toBe('backfill')
+    expect(stepFrom(l, 'nobody', 'down')).toBe('nobody')
+  })
+})
+
+describe("memberNodes: a crew's members by their start rules", () => {
+  const todo = [
+    { name: 'lead', start: { when: 'immediately' } },
+    { name: 'core', start: { when: 'after', member: 'lead' } },
+    { name: 'cli', start: { when: 'after', member: 'lead' } },
+    { name: 'tester', start: { when: 'after', member: 'cli' } },
+  ]
+  it("the todo app's members: a member after another needs it, and the tree is lines with one split at lead", () => {
+    expect(memberNodes(todo)).toEqual([{ id: 'lead' }, { id: 'core', needs: ['lead'] }, { id: 'cli', needs: ['lead'] }, { id: 'tester', needs: ['cli'] }])
+    expect(shape(lineLayout(memberNodes(todo)))).toEqual({
+      at: { lead: [0, 0], core: [1, 0], cli: [1, 1], tester: [2, 1] },
+      lines: ['lead core', 'cli tester'],
+      connectors: ['lead>cli:branch'],
+      junctions: { lead: 'split' },
+    })
+  })
+  it('a member by hand is manual and a root; one after a member not in the crew, or after itself, is a root', () => {
+    expect(memberNodes([{ name: 'docs', start: { when: 'manual' } }, { name: 'late', start: { when: 'after', member: 'gone' } }, { name: 'self', start: { when: 'after', member: 'self' } }, { name: 'build', start: { when: 'task' } }])).toEqual([
+      { id: 'docs', manual: true },
+      { id: 'late' },
+      { id: 'self' },
+      { id: 'build' },
+    ])
+  })
+})
+
 describe("taskDepths' smallest input", () => {
   it('nodes of an id, or of an id and its needs, give the depths and warnings whole tasks give', () => {
     const small: DepthNode[] = [{ id: 'build' }, { id: 'test', needs: ['build'] }, { id: 'deploy', needs: ['test', 'zzz'] }, { id: 'b', needs: ['c'] }, { id: 'c', needs: ['b'] }]
@@ -327,15 +377,13 @@ describe("taskDepths' smallest input", () => {
 })
 
 describe('lineLayout: bounds', () => {
-  it('the forty-task shape fits 960 x 400 at full: depth 8 on six lanes (today it is printed beside it)', () => {
+  it('the forty-task shape fits 960 x 400 at full: depth 8 on six lanes', () => {
     const l = lineLayout(forty)
     expect(forty).toHaveLength(40)
     expect(Math.max(...l.stations.map((s) => s.depth))).toBe(8)
     expect(new Set(l.stations.map((s) => s.lane)).size).toBe(6)
     expect(l.width).toBeLessThanOrEqual(960)
     expect(l.height).toBeLessThanOrEqual(400)
-    const today = Math.max(...taskLayout(forty.map((t) => ({ ...t, member: 'lead', kind: 'work' as const, state: 'ready' as const, attempts: 0 }))).nodes.map((x) => x.x)) + NODE_W
-    console.log(`forty tasks: lineLayout ${l.width} x ${l.height} px; taskLayout today ${today} px wide`)
   })
   it('a chain of 128, the crew limit, is drawn with one lane', () => {
     const l = lineLayout(chain(128))

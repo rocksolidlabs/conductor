@@ -50,7 +50,8 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
 ## Working an issue
 
 GitHub Issues are the backlog; the Project board is a view of them. One
-issue, one branch, one pull request, and CI is the only gate. The
+piece of work, one branch, one pull request, and CI is the only gate: the
+piece is an issue, or a bundle of related issues (below). The
 maintainers are the owners of the `rocksolidlabs` GitHub organization
 (`CONTRIBUTING.md`, Who decides); they merge and decide. The assignment,
 branch-on-origin and Project board bullets below are the maintainers' and
@@ -59,11 +60,31 @@ follows `CONTRIBUTING.md`'s fork path, and a maintainer assigns the issue
 and moves the board for them.
 
 - Take the issue you were given, or else the top unassigned issue labelled
-  `ready`. Assign yourself. Never hold two open issues at once.
+  `ready`. Assign yourself. Never hold two open issues at once; a bundle's
+  issues count as one.
 - Work on the branch `issue-N`, cut from `main` and linked to the issue
   (`gh issue develop N --name issue-N`), in a worktree of its own. The
   branch on origin is the claim: one that already exists is someone's work,
   so ask before touching it.
+- **Related work is one pull request, a bundle.** The rows of a plan, the
+  issues of one feature, and several small features or fixes that touch no
+  boundary are built at the same time on one branch (named for the first
+  of its issues; builders in worktrees of their own feed it) and land as
+  one pull request: `Fixes #N` once for each issue, and each issue's
+  commits a series of their own, so that one can be reverted alone. No
+  pull request, no review round and no by-hand check per row. One review
+  of the whole at the end: a defect a person would hit and any security
+  defect are fixed in the pull request (a bug in the stream is fixed in
+  the stream, below); a finding that is neither is filed or dropped, not
+  chased through more rounds; a second round is for a boundary only.
+  (2026-11-16: a stream of 41 rows was cut into 41 pull requests, each
+  with review rounds and checks of its own; three had merged after a
+  night.)
+- **Kept out of a bundle:** a change at a boundary (sign-in, tokens,
+  links, who may answer or act, the host link) gets a pull request of its
+  own, or a part of a bundle that is its own with an adversarial review of
+  its own; a fix people are hitting now ships alone and at once; a ledger
+  migration ships alone, so that it can be reverted alone.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.
@@ -494,6 +515,60 @@ add its rule here.
   (`capacity-crew.spec.ts`, #281). A spec that routes the page while
   it works keeps a route that lets everything through, set before the
   page loads (its `beforeEach`), and puts its own on top of it.
+- Measure a thing at rest. A box, a colour or a place read while an
+  opening animation or a transition still runs is a state passed through:
+  a panel measured 47 ms into its 100 ms opening "moved under the pointer"
+  by two pixels, a popover's paragraph ran out of its box, a button's fill
+  was a shade between two (`question.spec.ts`, `empty-pages.spec.ts`,
+  `session-page.spec.ts`, #956). A loaded machine reads later and passes;
+  CI reads sooner and fails. Wait for the element's own animations to have
+  ended (`rowAnswer` in `web/e2e/fixtures.ts` hands a panel over only
+  then), never for a time.
+- Close what a spec opened before its server stops. Pages left open go on
+  calling whatever server next takes that port, with a token it refuses,
+  and spend its limit of refused requests for their address: a join in
+  another spec was answered 429 (`counts.spec.ts` left eight windows open;
+  `decision-page.spec.ts` ran out of its time, #956).
+- Point at the thing itself, in view. A place assumed to hold a thing holds
+  whatever the layout put there: on a builder's machine a page's tile, a
+  link too, so the check passed by luck; on CI a spot scrolled out of the
+  sidebar that nobody could see (`sidebar.spec.ts`, Shared with you,
+  #956). Scroll the thing into view and require the thing, by its own
+  mark. The same for "the first row": a list's first row is whatever the
+  day put first (`tabs.spec.ts` right-clicked an item that has no menu).
+- A spec that needs a size gets it from what the page reports. A terminal
+  "narrower than 80 columns" by a window's width held until a layout gave
+  the terminal more room (`mcp-allow.spec.ts`, `answered.spec.ts`, #956;
+  two fixes of it guessed at a cause from a builder's machine, and CI's
+  own trace named the real one: read the trace first). Set the state a person
+  can have (a saved width, an open panel), wait for the page's own measure
+  (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
+  The measure is the one made after the step: a grid read at once after
+  the inspector opened was the grid drawn before it, already the
+  session's, so the wait passed at once and judged 109 columns, cells as
+  wide on CI as on the builder's (8 px). Wait for the fit pass the step
+  brings (`narrowedBy`, data-fit-passes).
+- A redraw a test waits out is a redraw a person meets. A row's More menu
+  closed when its row moved between the sidebar's sections, an agent's
+  turn ending; a wait for the row's last state passed on a builder's
+  machine and failed on CI, where the turn ended, began and ended again
+  as the menu opened (`clone-session.spec.ts`, #929). What a person holds
+  open lives where the redraw does not destroy it (`useRowMenu`), proved
+  by a move the test causes while it is open (`sidebar-row-menu.spec.ts`).
+- A stub's ids are its own. A fake that names a thing with an id the
+  server also mints (`dr-1`) is taken for the server's once an earlier
+  spec in the same worker has made that one: a run's header counted one
+  item where its stub held two, in the dark theme only, because the light
+  case ran in a fresh worker (`run-header.spec.ts`, #956). Give a stub's
+  things ids no test server reaches (`LEDGER_HOLD` in
+  `web/e2e/run-fixtures.ts`).
+- Each builder's own specs passing is not the suite passing. When several
+  rows land on one branch, a spec of one meets the change of another, and
+  only the whole run shows it (#956: about twenty such failures over six
+  CI runs; most were a spec out of date with another row's intended
+  change, and at least one was a real defect of a page: a run's header on
+  a low window). Push for a whole run early and often, one at a time, and
+  let no push cancel the run before it.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

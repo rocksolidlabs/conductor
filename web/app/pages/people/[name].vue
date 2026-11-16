@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ApiError } from '~/composables/useApi'
-import type { PersonWork } from '~/composables/usePeople'
+import type { PersonTask, PersonWork } from '~/composables/usePeople'
+import type { RunTask } from '~/composables/useSessions'
+import { attemptSession, taskStatus, type MarkView } from '~/utils/status'
 import { SerialReads, decisionsLive } from '~/composables/useDecisions'
 import { avatarTone } from '~/utils/avatar'
 import { responsibilityWords } from '~/utils/crews'
@@ -126,18 +128,17 @@ onBeforeUnmount(() => {
   inflight?.abort()
 })
 
-function stateColor(state: string): 'success' | 'error' | 'neutral' | 'info' | 'primary' {
-  switch (state) {
-    case 'running':
-      return 'success'
-    case 'verifying':
-      return 'info'
-    case 'failed':
-      return 'error'
-    case 'succeeded':
-      return 'primary'
-  }
-  return 'neutral'
+/**
+ * A task's state in the status language (taskStatus): from the task as the live store holds its run (its holds, its commands, its
+ * attempt's session), else from the engine's word alone, as the work lists it.
+ */
+const attention = useAttention()
+const clock = useNow()
+function statusOf(t: PersonTask): MarkView {
+  const run = attention.runOf(t.run)
+  const task = run?.tasks?.find((x) => x.id === t.task)
+  if (run && task) return taskStatus(task, run, attemptSession(task, attention.sessions.value), clock.value)
+  return taskStatus({ state: t.state as RunTask['state'] }, undefined, undefined, clock.value)
 }
 const read = computed(() => (work.value ? personLists(work.value) : null))
 const decisionModal = useDecisionModal()
@@ -188,7 +189,7 @@ const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)
             <ul v-if="read.tasks.state === 'rows'" class="flex flex-col divide-y divide-default rounded-md border border-default">
               <li v-for="t in work.tasks" :key="`${t.run}/${t.task}`" class="flex min-w-0 flex-col gap-1 px-3 py-2 text-sm sm:flex-row sm:items-center sm:gap-3" :data-person-task="`${t.run}/${t.task}`" :data-person-task-from="t.ownerFrom">
                 <NuxtLink :to="taskPath(t.run, t.task)" class="font-mono font-semibold text-highlighted hover:underline">{{ t.task }}</NuxtLink>
-                <UBadge :label="t.state" :color="stateColor(t.state)" variant="subtle" size="sm" class="w-fit flex-none" />
+                <StatusMark :status="statusOf(t)" word class="w-fit flex-none" data-person-task-status />
                 <span class="min-w-0 truncate text-muted">in {{ t.runLabel }} · done by {{ t.member }}<span v-if="ownedHow(t)"> · {{ ownedHow(t) }}</span></span>
               </li>
             </ul>
