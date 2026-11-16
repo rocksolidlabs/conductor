@@ -113,7 +113,15 @@ for (const theme of ['dark', 'light'] as const) {
     await expect
       .poll(async () => Number(await chip.locator('[data-yard-count]').textContent()) - (await asking(() => day.listSessions())), { message: "the chip's number is the asking sessions on the grid" })
       .toBe(0)
-    await expect(chip).toHaveAttribute('aria-label', /^\d+ sessions? on this grid asks? you\. Plans, tasks and decisions wait in Needs you\.$/)
+    await expect(chip).toHaveAccessibleName(/^Needs you, \d+ sessions? on this grid asks? you\. Plans, tasks and decisions wait in Needs you\.$/)
+    // Every chip's accessible name starts with the label it shows (a control's name holds its visible label), its number after.
+    const chips = page.locator('[data-yard-filter]')
+    expect(await chips.count()).toBeGreaterThan(1)
+    for (const c of await chips.all()) {
+      const label = (await c.locator('[data-yard-label]').textContent())!.trim()
+      expect(label).not.toBe('')
+      await expect(c).toHaveAccessibleName(new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b.*\\d`))
+    }
     const colours = await chip.evaluate((el) => ({
       count: getComputedStyle(el.querySelector('[data-yard-count]')!).color,
       mark: getComputedStyle(el.querySelector('[data-status-glyph]')!).color,
