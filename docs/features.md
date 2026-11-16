@@ -213,9 +213,14 @@ that order.
 - **The server's side.** `POST /api/sessions` takes `message` (at most
   4,096 bytes): typed into the agent once the session is ready, by the
   wait a crew member's prompt takes, held behind every startup question
-  (each noted once in the session's activity), past the cap only at the
-  agent's known prompt when it has one. A person's own keys first
-  withdraw it; a session that ends first gets nothing; each is noted.
+  (each noted once in the session's activity), and only at the agent's
+  own recognised prompt (its catalog entry's prompt shape), before the
+  cap and after it: an agent with none takes no first message (a launch
+  with one is refused; the catalog's listing says which agents take
+  one, and the Launch dialog offers the field only for them). A person's
+  own keys first withdraw it; keys between its text and its Enter leave
+  the Enter out and hold nothing; a session that ends first gets nothing;
+  each is noted.
   `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
   server's memory until typed, then only in the activity as Conductor's
   own line by `launch`: a resume or a clone never types it again. A

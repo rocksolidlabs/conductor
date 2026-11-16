@@ -46,14 +46,22 @@ type catalogEntry struct {
 	// expired and is being looked up again: the agent is shown as it was,
 	// and GET /api/catalog/{id} reads it again (#704).
 	Recheck bool `json:"recheck,omitempty"`
+	// FirstMessage says a launch of the agent takes a first message
+	// (POST /api/sessions' message): its entry has a prompt shape, the
+	// one screen a first message is typed into (takesFirstMessage).
+	FirstMessage bool `json:"firstMessage,omitempty"`
 }
+
+// takesFirstMessage says a launch of a takes a first message: the server
+// knows its prompt (a prompt shape), and types one only there.
+func takesFirstMessage(a catalog.Agent) bool { return a.PromptShape != "" }
 
 // entry is a as the routes show it, by the effective catalog cat, the
 // configured one, base, and installed, which says whether a program could
 // start on this server (the server's lookups), and identity, what its probe
 // found (nil for none).
 func entry(a catalog.Agent, cat, base catalog.Catalog, installed func(program string) bool, identity func(a catalog.Agent) *Identity) catalogEntry {
-	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID)}
+	e := catalogEntry{Agent: a.Redacted(), Source: cat.Source(a.ID), FirstMessage: takesFirstMessage(a)}
 	if e.Source == catalog.SourceSaved {
 		e.Replaces = base.Source(a.ID)
 	}
@@ -95,7 +103,7 @@ func (s *Server) identityNow(ctx context.Context) func(a catalog.Agent) *Identit
 
 // saveAgentRequest is the body of POST /api/catalog: an agent, as a client
 // builds it or as GET /api/catalog lists it. source, replaces, available,
-// checking and recheck, which the listing adds, are taken and ignored, so an agent read there can be
+// checking, recheck and firstMessage, which the listing adds, are taken and ignored, so an agent read there can be
 // sent back as it is; any other field the agent does not have is refused.
 type saveAgentRequest struct {
 	catalog.Agent
@@ -105,6 +113,8 @@ type saveAgentRequest struct {
 	Available json.RawMessage `json:"available,omitempty"`
 	Checking  json.RawMessage `json:"checking,omitempty"`
 	Recheck   json.RawMessage `json:"recheck,omitempty"`
+	// FirstMessage, which the listing adds, is taken and ignored too.
+	FirstMessage json.RawMessage `json:"firstMessage,omitempty"`
 }
 
 // handleCatalog lists the launchable agents, env values masked, and the IDs

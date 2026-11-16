@@ -7603,11 +7603,14 @@ the cut.
   with nothing typed; `Withdrawn` covers the same event once `Submit`
   has begun. It retries as `promptWith` does when `Submit`
   finds a question first (`ErrTrustQuestion`, `ErrQuestion`, a poll
-  later) and takes `ErrSubmitPending` as typed. Past the cap, an agent
-  whose catalog entry has a `promptShape` (Claude Code, Codex) gets the
-  message only at its recognised prompt (`OnlyAtPrompt`, tried each
-  poll, as a Brakeman turn's line is); an agent without one gets it
-  typed anyway, as a crew prompt is. The loop is the first message's
+  later) and takes `ErrSubmitPending` as typed. A first message is
+  typed only at a recognised prompt: the agent's catalog entry has a
+  `promptShape` (Claude Code, Codex), and the line is typed and entered
+  only while that prompt shows (`OnlyAtPrompt`, before the cap and
+  after it, tried each poll, as a Brakeman turn's line is); a launch
+  with a message for an agent without one is refused
+  (`400 first_message_unsupported`), and the catalog's listing says
+  which agents take one (`firstMessage`). The loop is the first message's
   own, about 60 lines, because `promptWith` carries a member's state;
   the wait is shared.
 - What each startup question does: the trust question, an update
@@ -7770,11 +7773,13 @@ agents.
 
 **Defaults.**
 
-- **Past the readiness cap.** Default: an agent whose catalog entry has
-  a `promptShape` (Claude Code, Codex) gets the message only at its
-  recognised prompt; others get it typed anyway, as a crew prompt is.
-  Why: a message typed into an unknown screen can have its Enter pick a
-  dialog's highlighted choice.
+- **Where it is typed.** A first message is typed only at a recognised
+  prompt (decided after the one review; the Default that an agent
+  without one got it typed anyway is overturned): an agent whose catalog
+  entry has a `promptShape` gets it only while that prompt shows, before
+  the cap and after it; any other agent takes none, and a launch with
+  one is refused. Why: a message typed into an unknown screen can have
+  its Enter pick a dialog's highlighted choice.
 - **What withdraws it.** Default: a person's keys that reach the
   program's text first; keys that answer a startup question, the
   sign-in screen's among them, and replies do not. Why: otherwise
@@ -9521,6 +9526,9 @@ says which.
 
 55. **The name.** Default: the first words, cut at a word to 40
     characters and 120 bytes with "…"; two sessions may share it.
+    **Where it is typed** (decided after the one review): a first
+    message is typed only at a recognised prompt; an agent without one
+    takes none.
 
 #### PR-24, the marks
 
