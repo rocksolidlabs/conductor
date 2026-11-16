@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -27,6 +28,12 @@ type statusRow struct {
 	} `json:"attention"`
 	Turns  bool   `json:"turns"`
 	Status string `json:"status"`
+	// ShownAt, when given, is the step after which the attention shown at
+	// the end first showed: its id and Since are that step's.
+	ShownAt *int `json:"shownAt,omitempty"`
+	// Recorded, when given, is the entries recorded for the row's done
+	// reports, their words in order.
+	Recorded []string `json:"recorded,omitempty"`
 }
 
 // statusStep is one of: a report (an attention change from its source),
@@ -67,9 +74,11 @@ func readStatusTable(t *testing.T) statusTable {
 
 // TestTheStatusTable drives a session through each row of the table both
 // sides are held to and compares what it shows: the attention's state and
-// source (its words when the row gives them) and Info.Turns. A report goes
-// in by its source's own way: a bell rung on the terminal, a window title
-// by the title's rules, a hook's or an operator's through the API.
+// source (its words when the row gives them) and Info.Turns; and, when the
+// row gives them, the step its attention first showed at and the entries
+// its dones recorded. A report goes in by its source's own way: a bell
+// rung on the terminal, a window title by the title's rules, a hook's or
+// an operator's through the API.
 func TestTheStatusTable(t *testing.T) {
 	for _, row := range readStatusTable(t).Rows {
 		t.Run(row.Name, func(t *testing.T) {
@@ -78,7 +87,13 @@ func TestTheStatusTable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The attention shown after each step, and the dones' words.
+			var shown []Attention
+			var dones []string
 			for i, step := range row.Steps {
+				if r := step.Report; r != nil && r.State == AttentionDone && !slices.Contains(dones, r.Message) {
+					dones = append(dones, r.Message)
+				}
 				switch r := step.Report; {
 				case r != nil && r.Source == SourceBell:
 					p.outW.Write([]byte("\a"))
@@ -120,6 +135,7 @@ func TestTheStatusTable(t *testing.T) {
 				default:
 					t.Fatalf("step %d does nothing", i)
 				}
+				shown = append(shown, s.Info().Attention)
 			}
 			info := s.Info()
 			want := row.Attention
@@ -128,6 +144,24 @@ func TestTheStatusTable(t *testing.T) {
 			}
 			if info.Turns != row.Turns {
 				t.Errorf("turns %v, want %v", info.Turns, row.Turns)
+			}
+			if at := row.ShownAt; at != nil {
+				a := info.Attention
+				first := slices.IndexFunc(shown, func(b Attention) bool { return b.ID == a.ID && b.Since != nil && b.Since.Equal(*a.Since) })
+				if a.ID == "" || first != *at {
+					t.Errorf("the attention shown first showed at step %d, want %d", first, *at)
+				}
+			}
+			if row.Recorded != nil {
+				var got []string
+				for _, e := range s.Activity() {
+					if e.Type == ActivityAttention && slices.Contains(dones, e.Message) {
+						got = append(got, e.Message)
+					}
+				}
+				if !slices.Equal(got, row.Recorded) {
+					t.Errorf("recorded %q, want %q", got, row.Recorded)
+				}
 			}
 		})
 	}

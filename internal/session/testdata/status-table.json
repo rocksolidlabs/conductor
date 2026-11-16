@@ -1,5 +1,5 @@
 {
-  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side.",
+  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side. shownAt, when given, is the step (from 0) after which the attention shown at the end first showed, its id and since; recorded, when given, is the entries the row's dones recorded, in order. A done over a shown done, no other state between: the same as the last report of the shown done records nothing; for an agent that tells its turns' starts (a hook's working has shown) it is the same turn's, the shown done stays and the report is recorded; for any other agent it is a new done.",
   "rows": [
     {
       "name": "nothing reported",
@@ -33,14 +33,61 @@
       "status": "working"
     },
     {
-      "name": "done, then done with idle_prompt's words",
+      "name": "hooks: working, done, then idle_prompt's done a minute later: the same turn's",
       "steps": [
+        { "report": { "state": "working", "source": "api" } },
         { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
         { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
       ],
       "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 1,
+      "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
+    },
+    {
+      "name": "hooks: working, a prompt entered mid-turn, done, then idle_prompt's done: the same turn's",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "prompt": "and update the docs" },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
+    },
+    {
+      "name": "hooks: done, a prompt, working, the turn interrupted with no done, then idle_prompt's done: it shows",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "prompt": "now the docs" },
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Claude is waiting for your input" },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
+    },
+    {
+      "name": "hooks: done, a prompt (its Enter ends the done), working, then done with other words: a new done",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "prompt": "now the docs" },
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["Refactored the parser.", "Docs updated."]
     },
     {
       "name": "done, an Enter, working, then done with other words",
@@ -55,7 +102,7 @@
       "status": "finished"
     },
     {
-      "name": "three turns whose done words never change",
+      "name": "three turns whose done words never change, an Enter before each",
       "steps": [
         { "report": { "state": "done", "source": "api", "message": "aider is waiting" } },
         { "enter": true },
@@ -65,10 +112,36 @@
       ],
       "attention": { "state": "done", "source": "api", "message": "aider is waiting" },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["aider is waiting", "aider is waiting", "aider is waiting"]
     },
     {
-      "name": "a prompt typed during a turn of an agent that reports only its done",
+      "name": "done only: done, then done with other words: a new done",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 1,
+      "recorded": ["Refactored the parser.", "Docs updated."]
+    },
+    {
+      "name": "done only: the same done twice: the same report again",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 0,
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "done only: a prompt entered mid-turn, done, then done with other words: a new done",
       "steps": [
         { "prompt": "fix the parser" },
         { "prompt": "and update the docs" },
@@ -77,10 +150,28 @@
       ],
       "attention": { "state": "done", "source": "api", "message": "Docs updated." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 3,
+      "recorded": ["Refactored the parser.", "Docs updated."]
     },
     {
-      "name": "a crew's prompt submitted during a turn of an agent that reports only its done",
+      "name": "done only: two prompts entered mid-turn, then three dones: each a new done",
+      "steps": [
+        { "prompt": "fix the parser" },
+        { "prompt": "and update the docs" },
+        { "prompt": "then run the tests" },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } },
+        { "report": { "state": "done", "source": "api", "message": "Tests pass." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Tests pass." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 5,
+      "recorded": ["Refactored the parser.", "Docs updated.", "Tests pass."]
+    },
+    {
+      "name": "done only: a crew's prompts submitted mid-turn, then the dones: each a new done",
       "steps": [
         { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
         { "submit": "now the tests" },
@@ -90,10 +181,26 @@
       ],
       "attention": { "state": "done", "source": "api", "message": "Docs updated." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["Refactored the parser.", "Tests pass.", "Docs updated."]
     },
     {
-      "name": "a prompt typed during a turn whose status says working, kept out after the done",
+      "name": "status: working, done, working kept out over the done, then done with other words: a new done",
+      "steps": [
+        { "report": { "state": "working", "source": "status" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "working", "source": "status" } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 3,
+      "recorded": ["Refactored the parser.", "Docs updated."]
+    },
+    {
+      "name": "status: a prompt entered mid-turn, done, working kept out, then done with other words: a new done",
       "steps": [
         { "report": { "state": "working", "source": "status" } },
         { "prompt": "and update the docs" },
@@ -103,10 +210,38 @@
       ],
       "attention": { "state": "done", "source": "api", "message": "Docs updated." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["Refactored the parser.", "Docs updated."]
     },
     {
-      "name": "an Enter on a question during a turn, the done, then the done again",
+      "name": "an operator's mark of working, done, then done with other words: a new done",
+      "steps": [
+        { "report": { "state": "working", "source": "admin" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Refactored the parser.", "Docs updated."]
+    },
+    {
+      "name": "status: working, then the same turn's end told twice with the same words: one entry",
+      "steps": [
+        { "report": { "state": "working", "source": "status" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 1,
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "hooks: an Enter on a question during a turn, the done, then the done again: the same turn's",
       "steps": [
         { "report": { "state": "working", "source": "api" } },
         { "report": { "state": "needs_input", "source": "api", "message": "Allow Bash: go test ./...?", "kind": "permission", "options": [{ "label": "Yes", "input": "1" }, { "label": "No", "input": "3" }] } },
@@ -116,32 +251,47 @@
       ],
       "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 3
     },
     {
-      "name": "done, a bare Enter, a prompt, the done, then the done again",
-      "steps": [
-        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
-        { "enter": true },
-        { "prompt": "now the docs" },
-        { "report": { "state": "done", "source": "api", "message": "Docs updated." } },
-        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
-      ],
-      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
-      "turns": true,
-      "status": "finished"
-    },
-    {
-      "name": "a bare Enter during a turn, the done, then the done again",
+      "name": "limit: done only, the same words every turn, a prompt entered mid-turn: the next turn's end is the same report",
       "steps": [
         { "prompt": "fix the parser" },
-        { "enter": true },
+        { "prompt": "and update the docs" },
+        { "report": { "state": "done", "source": "api", "message": "aider is waiting" } },
+        { "report": { "state": "done", "source": "api", "message": "aider is waiting" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "aider is waiting" },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["aider is waiting"]
+    },
+    {
+      "name": "limit: hooks' working seen once, then two dones with other words and no working between: the first stays",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
         { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
-        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
       ],
       "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
       "turns": true,
-      "status": "finished"
+      "status": "finished",
+      "shownAt": 1,
+      "recorded": ["Refactored the parser.", "Docs updated."]
+    },
+    {
+      "name": "limit: the first done of a session, before its agent told a start, then idle_prompt's done: a new done",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Claude is waiting for your input" },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 1,
+      "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
     },
     {
       "name": "working, a hook's permission question, answered",

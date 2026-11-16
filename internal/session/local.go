@@ -432,14 +432,11 @@ type Local struct {
 	// one shown, then each one of its turn after it): a done the same as it
 	// records nothing (setAttentionLooked). Guarded by mu.
 	lastDone Attention
-	// lineTyped says a person's keys typed text since the last Enter, at
-	// no question (nextTurn); running that a turn runs (begun by a prompt
-	// entered, after a done too, or a working shown; ended by a done
-	// shown); queued that a prompt was entered while one ran (an
-	// Enter after text, or a submission's, while no question shows);
-	// doneQueued that the done shown ended a turn with a prompt queued, so
-	// that the next done is the next turn's. Guarded by mu.
-	lineTyped, running, queued, doneQueued bool
+	// startsTold says the session's agent tells its turns' starts: a
+	// working of its own from its hooks (api) has shown. Such an agent's
+	// next turn ends a done shown by itself, so a done over a done is its
+	// turn's again (setAttentionLooked). Never cleared. Guarded by mu.
+	startsTold bool
 	// turn counts the turns begun after a done (beginTurn), changed under
 	// mu: output read before one began, and scanned after, is the ended
 	// turn's own (scanOutput). The pump takes it as soon as a read
@@ -2240,8 +2237,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 	}
-	// A done while a done shows is weighed below against the last done of
-	// the turn, not against the one shown, which stays the turn's first.
+	// A done while a done shows is weighed below against the last report
+	// of the done shown, which may not be the one shown.
 	doneOverDone := state == AttentionDone && cur.State == AttentionDone && own.ID == ""
 	// The same question again: its words, its choices and, read off the
 	// screen, its whole list (a choice changed past what its label shows is
@@ -2289,15 +2286,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
-	if doneOverDone && !s.doneQueued {
-		// A done while a done shows, no other state shown between, is the
-		// same turn's (an Enter or a submission ends a done shown: nextTurn):
-		// Claude Code's idle_prompt a minute after its Stop. The one shown
-		// keeps its id, its Since (the turn's end) and its words (the turn's
-		// first); this one is recorded as the report it is, at its own time,
-		// unless it is the same as the turn's last (its words, source, kind
-		// and choices). With a prompt entered during the turn (doneQueued)
-		// it is the next turn's, and shows as any done.
+	if doneOverDone {
+		// A done while a done shows, no other state shown between (an Enter
+		// or a submission ends a done shown: nextTurn). The same as the last
+		// report of the done shown (its words, source, kind and choices) is
+		// that report again: nothing changes and nothing is recorded.
 		last := s.lastDone
 		if last.ID != cur.ID {
 			last = cur
@@ -2306,30 +2299,33 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.mu.Unlock()
 			return nil
 		}
-		s.lastDone = Attention{ID: cur.ID, State: state, Message: message, Source: source, Kind: kind, Options: options}
-		if rules&bellPaced != 0 {
-			s.lastBell = time.Now()
+		if s.startsTold {
+			// An agent that tells its turns' starts ends a done shown as its
+			// next turn begins: this one is the same turn's (Claude Code's
+			// idle_prompt a minute after its Stop). The one shown keeps its
+			// id, its Since (the turn's end) and its words (the turn's
+			// first); this one is recorded as the report it is, at its own
+			// time. Another agent's ends another turn: a new done, below.
+			s.lastDone = Attention{ID: cur.ID, State: state, Message: message, Source: source, Kind: kind, Options: options}
+			if rules&bellPaced != 0 {
+				s.lastBell = time.Now()
+			}
+			now := s.activity.Stamp(1)
+			s.mu.Unlock()
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
+			return nil
 		}
-		now := s.activity.Stamp(1)
-		s.mu.Unlock()
-		label := message
-		if label == "" {
-			label = string(state)
-		}
-		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
-		return nil
 	}
 	if state != AttentionDone {
 		// Another state after a done (a working report: the agent went on
 		// by itself, a question, a clear) begins the next turn, as an
 		// Enter does.
 		s.beginTurn()
-		s.doneQueued = false
-		s.running = s.running || state == AttentionWorking
-	} else {
-		// A done shows: the turn ends, and the end of the turn a prompt
-		// entered during it (queued) follows.
-		s.running, s.doneQueued, s.queued = false, s.queued, false
+		s.startsTold = s.startsTold || state == AttentionWorking && source == SourceAPI
 	}
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
@@ -3372,17 +3368,10 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 			}
 			s.trust.Reset()
 		}
-		if typed && !quiet && question == "" && onScreen == nil && shown.State != AttentionNeedsInput {
-			// Text a person types at no question (a printable key, a
-			// paste's text): an Enter after it enters a prompt (nextTurn).
-			s.mu.Lock()
-			s.lineTyped = s.lineTyped || s.keysIn.pasted || anyKey(keys, func(k []byte) bool { return len(k) == 1 && k[0] >= 0x20 && k[0] != 0x7f })
-			s.mu.Unlock()
-		}
 		if typedEnter {
 			// The turn a done ended is behind as the Enter is written (an
 			// encoded one too).
-			s.nextTurn(false)
+			s.nextTurn()
 		}
 		answering := enter || s.askedKeys[string(data)] || listKey(data)
 		if !own {
@@ -3528,28 +3517,13 @@ func listKey(data []byte) bool {
 // state records nothing (no entry, no webhook, no turn's end for a crew).
 // A done of an ended session stays. It runs as the writer takes the
 // Enter, so the change is told (OnChange) off the writer's way, as the
-// bell's wait withdrawn is. An Enter after text (prompt: a submission's
-// text typed, or lineTyped) while neither a done nor a question shows
-// enters a prompt: it begins a turn, or, while one runs, is queued: the
-// agent takes it once that turn ends, with no Enter after its done, so the
-// done after that one is the next turn's. A bare Enter, and an Enter or a
-// choice's key at a question, enters none.
-func (s *Local) nextTurn(prompt bool) {
+// bell's wait withdrawn is.
+func (s *Local) nextTurn() {
 	s.mu.Lock()
-	prompt = prompt || s.lineTyped
-	s.lineTyped = false
 	s.beginTurn()
-	state := s.info.Attention.State
-	gave := state == AttentionDone && !s.info.Status.Ended()
+	gave := s.info.Attention.State == AttentionDone && !s.info.Status.Ended()
 	if gave {
-		// A bare Enter may begin no turn (an empty line): a prompt after
-		// it begins one, and is not queued.
 		s.withdrawShownLocked(SourceInput)
-		s.running, s.queued, s.doneQueued = prompt, false, false
-	} else if prompt && state != AttentionDone && state != AttentionNeedsInput {
-		// The first prompt begins a turn; one more while it runs waits.
-		s.queued = s.queued || s.running
-		s.running = true
 	}
 	s.mu.Unlock()
 	if gave {

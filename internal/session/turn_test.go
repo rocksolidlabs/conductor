@@ -138,11 +138,16 @@ func TestAnEnterAfterADoneBeginsTheTurnShown(t *testing.T) {
 	}
 }
 
-// A done while a done shows is the same turn's (Claude Code's idle_prompt,
+// A done while a done shows, no other state between, is weighed in this
+// order. The same as the last report of the done shown (its words, source,
+// kind and choices) is that report again: nothing changes and nothing is
+// recorded. Else, for an agent that tells its turns' starts (a hook's
+// working has shown), it is the same turn's (Claude Code's idle_prompt,
 // about a minute after its Stop): the one shown keeps its id, its Since
-// and its words, and the second is still recorded, at its own time. A
-// later turn's done, after an Enter and a working, is a new one. No clock
-// is read: the stamps compared are the session's own.
+// and its words, and the second is still recorded, at its own time. Else
+// it ends another turn: a new done, recorded. A later turn's done, after
+// an Enter and a working, is a new one. No clock is read: the stamps
+// compared are the session's own.
 func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{}))
 	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
@@ -150,6 +155,9 @@ func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	const stop, idle = "Refactored the parser.", "Claude is waiting for your input"
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.TrySetAttentionFull(AttentionDone, stop, SourceAPI, KindDone, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -187,25 +195,42 @@ func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
 		t.Fatalf("the later turn's done %+v, its entries %+v", b, last)
 	}
 
-	// Within a turn a report is recorded unless it is the same as the
-	// turn's last report (its words, source and kind), never weighed
-	// against the done shown, which stays the first: A, B, B records A and
-	// B; A, B, A records all three; A, A records A.
+	// Each report is weighed against the last report of the done shown,
+	// never against the done shown alone. For an agent that tells its
+	// turns' starts the done shown stays the first (the same turn's): A, B,
+	// B records A and B; A, B, A records all three; A, A records A. For one
+	// that does not, each report that differs from the last is a new done
+	// (another turn's end), shown from its own report on, and one the same
+	// as the last is that report again: A, B, B records A and B and shows
+	// the first B; A, B, A records all three and shows the second A.
 	for _, tc := range []struct {
 		name    string
+		starts  bool
 		reports []string
 		want    []string
+		// shownAt is the report whose id and Since the done shown has.
+		shownAt int
 	}{
-		{"A B B", []string{"A", "B", "B"}, []string{"A", "B"}},
-		{"A B A", []string{"A", "B", "A"}, []string{"A", "B", "A"}},
-		{"A A", []string{"A", "A"}, []string{"A"}},
+		{"starts told: A B B", true, []string{"A", "B", "B"}, []string{"A", "B"}, 0},
+		{"starts told: A B A", true, []string{"A", "B", "A"}, []string{"A", "B", "A"}, 0},
+		{"starts told: A A", true, []string{"A", "A"}, []string{"A"}, 0},
+		{"done only: A B B", false, []string{"A", "B", "B"}, []string{"A", "B"}, 1},
+		{"done only: A B A", false, []string{"A", "B", "A"}, []string{"A", "B", "A"}, 2},
+		{"done only: A A", false, []string{"A", "A"}, []string{"A"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newLocalWith(t, quiet(Options{}))
+			if tc.starts {
+				if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var shown []Attention
 			for _, m := range tc.reports {
 				if err := s.TrySetAttentionFull(AttentionDone, m, SourceAPI, KindDone, nil); err != nil {
 					t.Fatal(err)
 				}
+				shown = append(shown, s.Info().Attention)
 			}
 			var got []string
 			for _, e := range doneEntries(s, "A", "B") {
@@ -214,51 +239,80 @@ func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("recorded %q, want %q", got, tc.want)
 			}
-			if a := s.Info().Attention; a.Message != "A" {
-				t.Fatalf("the done shown %+v, want the first", a)
+			a, at := s.Info().Attention, shown[tc.shownAt]
+			if a.ID != at.ID || !a.Since.Equal(*at.Since) || a.Message != tc.reports[tc.shownAt] {
+				t.Fatalf("the done shown %+v, want report %d's: %+v", a, tc.shownAt, at)
+			}
+			if tc.shownAt > 0 && at.ID == shown[tc.shownAt-1].ID {
+				t.Fatalf("report %d kept the id of the one before: %+v", tc.shownAt, shown)
 			}
 		})
 	}
 }
 
-// Every turn's end is recorded once, also for an agent whose done always
-// carries the same words (aider's "aider is waiting"): the Enter that
-// begins the next turn ends the done shown, so the next done is not
-// weighed against it. Three turns give three entries and three activity
-// calls (a webhook, an alert rule and a crew see each).
+// Every turn's end is recorded once, as an entry and an activity call (a
+// webhook, an alert rule and a crew see each), but for one stated limit.
+// An Enter before the next turn ends the done shown, so the next done is
+// not weighed against it: three turns of an agent whose done always
+// carries the same words (aider's "aider is waiting") give three. An agent
+// that reports only its done and whose next turns begin with no Enter
+// after its done (prompts entered during its turn) ends each with a done
+// over a done: a new done each, three. An agent whose hooks tell each
+// turn's start ends the done shown with each working: three. The limit:
+// such a done-only agent's turns that end with the same words are the
+// same report again, one.
 func TestEveryTurnsDoneIsRecordedOnce(t *testing.T) {
-	var mu sync.Mutex
-	var told []string
-	s, p := newLocalWith(t, quiet(Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
-		if e.Type == ActivityAttention && state == AttentionDone {
-			mu.Lock()
-			told = append(told, e.Message)
-			mu.Unlock()
-		}
-	}}))
-	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	const words = "aider is waiting"
-	for turn := range 3 {
-		if turn > 0 {
-			if err := s.Input(sub, []byte("\r")); err != nil {
+	for _, tc := range []struct {
+		name  string
+		enter bool // an Enter before each turn after the first
+		start bool // a hook's working at each turn's start
+		words []string
+		want  int
+	}{
+		{"an Enter before each turn, the same words", true, false, []string{"aider is waiting", "aider is waiting", "aider is waiting"}, 3},
+		{"done only, no Enter, other words", false, false, []string{"Refactored the parser.", "Docs updated.", "Tests pass."}, 3},
+		{"hooks tell each start, no Enter, the same words", false, true, []string{"Done.", "Done.", "Done."}, 3},
+		{"limit: done only, no Enter, the same words", false, false, []string{"aider is waiting", "aider is waiting", "aider is waiting"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var told []string
+			s, p := newLocalWith(t, quiet(Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+				if e.Type == ActivityAttention && state == AttentionDone {
+					mu.Lock()
+					told = append(told, e.Message)
+					mu.Unlock()
+				}
+			}}))
+			sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+			if err != nil {
 				t.Fatal(err)
 			}
-			nextWrite(t, p)
-		}
-		if err := s.TrySetAttentionFull(AttentionDone, words, SourceAPI, KindDone, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := doneEntries(s, words); len(got) != 3 {
-		t.Fatalf("%d entries for three turns: %+v", len(got), got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(told) != 3 {
-		t.Fatalf("%d activity calls for three turns: %q", len(told), told)
+			for turn, words := range tc.words {
+				if turn > 0 && tc.enter {
+					if err := s.Input(sub, []byte("\r")); err != nil {
+						t.Fatal(err)
+					}
+					nextWrite(t, p)
+				}
+				if tc.start {
+					if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := s.TrySetAttentionFull(AttentionDone, words, SourceAPI, KindDone, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := doneEntries(s, tc.words...); len(got) != tc.want {
+				t.Fatalf("%d entries for three turns, want %d: %+v", len(got), tc.want, got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(told) != tc.want {
+				t.Fatalf("%d activity calls for three turns, want %d: %q", len(told), tc.want, told)
+			}
+		})
 	}
 }
 
