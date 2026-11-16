@@ -193,6 +193,9 @@ type Attention struct {
 	// that approval names the plan for, and the one that keeps the plan of
 	// the report it takes the place of. Kept by the session, never sent.
 	approval bool
+	// form marks a dialog read off the screen as a form (StartupQuestion.form,
+	// #716). Kept by the session, never sent.
+	form bool
 }
 
 // Asked reports whether a is the agent's own question (Local.Ask): what a

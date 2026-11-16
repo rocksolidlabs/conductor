@@ -104,8 +104,12 @@ export function recommendedChoice(options: AttentionOption[] | undefined): numbe
   return found
 }
 
-/** What a choice that changes the session's permission mode says on hover. */
-export const MODE_CHOICE = "Changes the session's permission mode"
+/**
+ * What a mode answer says on hover, true of every one the catalog marks (#716): Claude Code's switch to auto mode, accept edits
+ * and bypass permissions, Codex's Allow for this session and Always allow, which remembers the approval for later tool calls
+ * and changes no permission mode.
+ */
+export const MODE_CHOICE = 'Allows from now on, not this request alone'
 
 /**
  * The attention as the pages read it (#258): a question keys typed in the terminal have answered (`answered`) is no question to
