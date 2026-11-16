@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, showView, test, type Api, type Session } from './fixtures'
+import { expect, rowAnswer, showView, test, type Api, type Session } from './fixtures'
 
 // Codex's form asking to allow a tool of an MCP server (#716; drawn by the
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
@@ -38,6 +38,18 @@ function transcript(home: string, s: Session): string {
   return existsSync(file) ? readFileSync(file, 'utf8') : ''
 }
 
+/** The sidebar dragged by its edge to `x` px wide, waited on until the list has measured its new width. */
+async function sidebarAt(page: Page, x: number) {
+  const box = (await page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]').boundingBox())!
+  const y = box.y + box.height / 2
+  await page.mouse.move(box.x + box.width / 2, y)
+  await page.mouse.down()
+  await page.mouse.move(x, y, { steps: 4 })
+  await page.mouse.up()
+  await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(x, 0)
+  await expect(page.locator('[data-session-list="sidebar"]')).toHaveAttribute('data-list-width', x < 280 ? 'narrow' : 'wide')
+}
+
 async function typeLine(page: Page, line: string) {
   const screen = page.locator('.terminal-host .xterm-screen').first()
   await expect(screen).toBeVisible()
@@ -46,7 +58,7 @@ async function typeLine(page: Page, line: string) {
   await page.keyboard.press('Enter')
 }
 
-// At the suite's 1440 by 900 (the terminal wider than the session's 80 columns) and at 1280 by 800 with touch (narrower: 72
+// At the suite's 1440 by 900 (the terminal wider than the session's 80 columns) and at 1280 by 800 with touch (narrower than 80
 // columns, where Codex wraps the choices' descriptions under their column, as the stub does).
 for (const size of [
   { name: '1440 by 900', use: {}, narrower: false },
@@ -65,10 +77,15 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   sessions.push(s.id)
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
-  // The narrower page has its inspector open: the terminal is then narrower than the session's 80 columns (72 at 1280, where Codex
-  // wraps the choices' descriptions) while the window keeps the sidebar whose row this test reads. (The window is not made
-  // narrower instead: below lg the sidebar is not drawn.) The panel starts closed, the terminal taking the room (P11).
-  if (narrower) await showView(page, 'people')
+  // The narrower page has its inspector open (it starts closed, the terminal taking the room, P11) and its sidebar dragged to 300 px,
+  // as a person widens it: the terminal is then narrower than the session's 80 columns, where Codex wraps the choices' descriptions,
+  // while the window keeps the sidebar whose row this test reads. With the sidebar at the 200 px it opens at, the terminal draws 80
+  // columns there; the window is not made narrower instead: a narrower one does not keep the inspector beside the terminal, and
+  // below lg the sidebar is not drawn. At 300 px the row holds its choices; at 1440 they are in the panel beside the 200 px row.
+  if (narrower) {
+    await showView(page, 'people')
+    await sidebarAt(page, 300)
+  }
   // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
   // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with.
   const host = page.locator('.terminal-host').first()
@@ -86,12 +103,14 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   expect(att?.kind).toBe('permission')
   expect(att?.options).toEqual(OPTIONS)
 
-  // The sidebar's row: needs you, the words and the four choices.
+  // The sidebar's row: needs you, the words, and the four choices where a person answers it (rowAnswer: in the panel beside the
+  // row while the sidebar is narrower than 280 px, as it opens).
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText(WORDS)
-  await expect(row.locator('[data-row-choice]')).toHaveCount(4)
-  for (const [i, label] of CHOICES.entries()) await expect(row.locator(`[data-row-choice="${i + 1}"]`)).toContainText(label)
+  const answer = await rowAnswer(page, row)
+  await expect(answer.locator('[data-row-choice]')).toHaveCount(4)
+  for (const [i, label] of CHOICES.entries()) await expect(answer.locator(`[data-row-choice="${i + 1}"]`)).toContainText(label)
 
   // The page's question bar: the words and the four choices, Allow and Cancel with their number keys, the two that remember
   // the approval marked as mode answers, with none.
