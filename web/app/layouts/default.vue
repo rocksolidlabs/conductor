@@ -348,7 +348,9 @@ defineShortcuts({
       </template>
 
       <template #footer="{ collapsed }">
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: collapsed ? 'justify-center' : undefined }" class="w-full">
+        <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
+             the current page's link the page's tone, as the sidebar's rows do. -->
+        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full">
           <!-- The full sidebar's label says what the page is on hover (Nuxt UI draws a tooltip only on the rail). -->
           <template #item-label="{ item }">
             <template v-if="collapsed">{{ item.label }}</template>

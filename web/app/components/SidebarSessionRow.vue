@@ -92,7 +92,7 @@ function confirmStop() {
       <NuxtLink
         :to="`/sessions/${s.id}`"
         class="flex min-w-0 flex-1 gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="[!current && 'hover:bg-elevated/60', row.state === 'exited' && !current && 'opacity-75']"
+        :class="[!current && 'hover:bg-canvas-hover', row.state === 'exited' && !current && 'opacity-75']"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >

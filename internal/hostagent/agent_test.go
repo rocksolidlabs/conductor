@@ -853,3 +853,58 @@ func TestADoneOfAnotherTurnWhileAwayReplacesTheShownDone(t *testing.T) {
 		return i.Status == session.StatusRunning && i.Attention.ID == doneB.ID && i.Attention.Message == "Docs updated."
 	})
 }
+
+// A turn's end told twice through the server, both reports naming the
+// turn (Codex's Stop hook, then its notify program), with an Enter typed
+// in the host's terminal between: the host's session records the end once
+// and the server's copy never shows a second done, keeping the empty
+// state the Enter left; the next report goes through as ever.
+func TestATurnsEndToldTwiceAroundAHostsEnterIsRecordedOnce(t *testing.T) {
+	srv, hs := startServer(t)
+	_, local, conn, registered, serve := hostedBy(t, hs.URL)
+	serve(conn)
+	d, ok := srv.Registry().Get(registered.SessionID)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	hosted, ok := d.(*signal.HostedSession)
+	if !ok {
+		t.Fatalf("listed as %T", d)
+	}
+	const turn = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	report := func() {
+		t.Helper()
+		if err := hosted.SetAttentionTurn(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, true, "", turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report()
+	untilListed(t, d, "the host's done", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionDone && i.Attention.ID != ""
+	})
+	enter(t, local)
+	untilListed(t, d, "the Enter told", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionNone && i.Attention.Source == session.SourceInput
+	})
+	report()
+	if a := d.Info().Attention; a.State != session.AttentionNone || a.Source != session.SourceInput {
+		t.Fatalf("the end told again shows %+v on the server", a)
+	}
+	// A report after it, in the same order on the host's connection: once
+	// the host tells it back, it has applied the end told again.
+	if err := hosted.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	untilListed(t, d, "the next working", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionWorking && i.Attention.ID != ""
+	})
+	n := 0
+	for _, e := range local.Activity() {
+		if e.Type == session.ActivityAttention && e.Message == "Refactored the parser." {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the host's session recorded the end %d times, want once", n)
+	}
+}

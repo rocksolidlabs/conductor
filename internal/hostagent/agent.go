@@ -1570,6 +1570,10 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			// The agent's own question (the server's Ask): the session
 			// keeps it through its turn's done.
 			a.local.Ask(m.Message, source, m.Kind, opts)
+		case m.TurnID != "" && proto.ValidTurnID(m.TurnID):
+			// The turn the report names: the session tells its end told
+			// twice from the next turn's (a name out of its bound is none).
+			a.local.SetAttentionTurn(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan, m.TurnID)
 		case m.Plan != "":
 			// The plan the question is about (#289), set with it.
 			a.local.SetAttentionPlan(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan)

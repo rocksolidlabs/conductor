@@ -691,7 +691,12 @@ field. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
-`attention{state,message?,source,kind?,options?}` (API-originated change to broadcast;
+`attention{state,message?,source,kind?,options?,turnId?}` (API-originated change to broadcast;
+`turnId` the turn the report names, as the attention route took it, at
+most 128 bytes of an agent session id's shape: the host's session weighs
+it as a server session does (see Attention, A turn's start and end), a
+host taking a frame whose name is out of that bound without the name, and
+an older host ignoring it;
 a report the agent sends while its host has no connection to the server
 does not reach the host's session: the server's copy takes it, and when
 the host returns, the listing shows what the host's session shows, until
@@ -1158,7 +1163,20 @@ does not hide the agent's end): a new `done`, with its own
 `id`, `since` and words, recorded. So no turn's end is dropped but for
 the first limit below, and within a turn each report that differs from
 the last is recorded (an agent's idle reminder is a second entry, as
-before). The limits: an agent whose `done` always carries the same words,
+before). A report that names its turn (`turnId`, Codex's) is weighed by
+that name before all this. The session keeps the name of the last turn
+whose end it recorded; an Enter, a submission, an operator's mark, a bell,
+a title, a status sequence and the screen leave it. A `done` that names
+that turn is that end told again (Codex with its hooks on tells each end
+twice, by its `Stop` hook and then by its notify program, with the same
+name), whatever was written or shown between the two: nothing changes,
+nothing is recorded, and no webhook, events feed or crew hears of it. A
+report of the agent's own that is not a `done` and names that turn says
+the turn went on (Codex runs its `Stop` hooks again under the same name
+when another `Stop` hook makes it continue): the name is forgotten, and
+that turn's next `done` is recorded and shown as a new one. A report that
+names another turn, or none, forgets nothing; one that names none is
+weighed by the rules above alone. The limits: an agent whose `done` always carries the same words,
 when a prompt was entered while its turn ran, ends the next turn with a
 `done` equal to the last report, which is not recorded. An agent that
 reports its turns' starts, when it takes a turn by itself right after
@@ -1167,14 +1185,16 @@ report `working` only for a tool; or the report was lost, as one sent
 while a host has no connection is), keeps the earlier done's words and
 time; the later end is recorded. The first `done` of a session, before
 its agent has told a start, is weighed as an agent's that reports only
-its `done`, so a reminder after it shows as a new `done`. An agent that
-reports one turn's end twice with the same words (Codex with its hooks
-on, whose hook and whose notify program each report it) has that end
-shown again as a new done and recorded twice when an Enter is written
-between the two reports (a person's, or the Enter of a submission the
-first report woke, which follows its text by 250 ms). An older server
-recorded it once. A change of its own is to give a turn's end one
-identity, so that it is told once.
+its `done`, so a reminder after it shows as a new `done`. A turn's end told twice
+by reports that name no turn, with an Enter written between them (a
+person's, or the Enter of a submission the first report woke, which
+follows its text by 250 ms), is shown again as a new `done` and recorded
+twice. With the built-in agents that is one case: Codex whose `Stop` hook
+was installed by an earlier release, whose hook file names that release's
+binary, which sends no `turnId`, so its report and its notify program's
+do not match. Installing the hooks again (`conductor hooks install`) ends
+it. A host of an earlier release ignores the frame's `turnId`, and its
+session records such an end twice too.
 `turns` in the session's `Info` (absent when false)
 says the session's agent reports its turns: it has reported a `working`
 or a `done` of its own, with source `api`, `title` or `status`; a bell,
@@ -1460,7 +1480,7 @@ Codex 0.159.0 (`Trust this folder?`). It exists for crew runs: a member's
 prompt is never typed while it shows (see Crew runs).
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
-`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?, ask?, plan?}` (`ask`
+`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?, ask?, plan?, turnId?}` (`ask`
 a boolean: with `needs_input`, the agent's own question, see above; a value
 that is no boolean is `400 invalid_request`; `plan`, with `needs_input`, the
 path of the plan the question asks approval for, at most 1,024 bytes, #289:
@@ -1507,6 +1527,21 @@ conversation, whose first input begins `Generate a concise, single-line task
 title`, is not reported at all), Copilot's `sessionId`, Cursor's
 `conversation_id` and Antigravity's `conversationId`. A server that refuses
 the two fields as unknown (an older one) gets the report again without them.
+
+`turnId` is the agent's own name for the turn the report belongs to, as its
+payload names it: `conductor notify` fills it from Codex's notify `turn-id`
+and from the `turn_id` of every Codex hook it maps to a state (`Stop`,
+`PreToolUse`, `PermissionRequest`), the same value for one turn; no other
+built-in agent's payload names a turn. At most 128 bytes of an agent
+session id's shape (a letter or a digit, then letters, digits and `._:-`);
+a name out of that is left out and the report applied without it, never
+refused, since a refusal would lose the report. Only the agent's own
+reports (the agent token, source `api`) name a turn: an operator's mark
+names none. It changes how a `done` is weighed (see Attention, A turn's
+start and end), on a server session and on a hosted one, whose copy weighs
+it too and sends it to the host on `attention`. A server that refuses
+`turnId` as unknown (an older one) gets the report again once without it
+alone, `agentSession` and `turn` kept.
 
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
