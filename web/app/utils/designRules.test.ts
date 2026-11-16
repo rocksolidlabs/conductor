@@ -168,7 +168,7 @@ describe('the design rules', () => {
       'the code font on words that are not evidence: set them in the app\'s face, or mark an id, path, commit, command, key, log or measure with data-mono="<kind>"',
     ).toEqual(Object.fromEntries(grown.map(([path]) => [path, MONO_COUNTS[path] ?? 0])))
     const fallen = Object.entries(MONO_COUNTS).filter(([path, n]) => (counts[path] ?? 0) < n)
-    expect(Object.fromEntries(fallen), 'fewer unmarked uses than designRules.mono.ts allows: lower its entry (the list only shrinks)').toEqual(
+    expect(Object.fromEntries(fallen), 'fewer unmarked uses than designRules.mono.json allows: lower its entry (the list only shrinks)').toEqual(
       Object.fromEntries(fallen.map(([path]) => [path, counts[path] ?? 0])),
     )
   })

@@ -227,7 +227,7 @@ export async function filledPrimaries(area: Locator): Promise<string[]> {
     probe.remove()
     const out: string[] = []
     for (const root of roots) {
-      for (const b of root.querySelectorAll('button, a')) {
+      for (const b of Array.from(root.querySelectorAll('button, a'))) {
         if (!(b as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue
         const box = b.getBoundingClientRect()
         if (box.width < 1 || box.height < 1) continue
