@@ -1,0 +1,299 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Page, Route } from '@playwright/test'
+import type { Run, RunAttempt, RunMember, RunTask } from './fixtures'
+import { repoRoot } from './server'
+
+// A managed run answered in the browser (UX1's PR-1, docs/plans/ux-review.md, "Stubs in the browser"): the shapes the day cannot make
+// cheaply (a run of 40 or 128 tasks, every task state at once, a task checking, which the day cannot hold: a check's hold is capped
+// at 3,600 s). A stub proves how a shape is drawn, never that the server sends it. It answers as the server does: each task carries
+// the commands the engine gives its state, a member with an attempt runs with its session, an attempt says where it ran, and the
+// run carries what the server's does. stubs.spec.ts holds every key of it to the day's real runs, so that a field the server gains,
+// or a read the run page gains, fails there, not in a layout spec. Modelled on GET /api/runs/{run} and its reads (internal/api,
+// internal/crew).
+
+/** Every state a task of a managed run can be in (internal/crew/ledger/rows.go); `verifying` is a task checking. Each blocked task of a
+ * default run needs the ready one before it, so the order keeps a blocked task from being first. */
+export const TASK_STATES = ['succeeded', 'running', 'verifying', 'failed', 'cancelled', 'ready', 'blocked'] as const
+export type TaskState = (typeof TASK_STATES)[number]
+
+/** An attempt as the run's read gives it, with when and where it ran. */
+export type StubAttempt = RunAttempt & { startedAt: string; endedAt?: string; where: string }
+
+/** A task as the run's read gives it, with the commands the engine allows it now. */
+export type StubTask = RunTask & { commands?: string[]; attempt?: StubAttempt }
+
+/** A member as the run's read gives it: one with an attempt runs it in its session. */
+export type StubMember = RunMember & {
+  start: { when: string }
+  task?: string
+  attempt?: number
+  worktree?: string
+  base?: string
+  agentSession?: { id: string; resumable: boolean; source: string }
+  diff?: { added: number; removed: number }
+}
+
+/** The run, as GET /api/runs/{run} gives it. */
+export type StubRun = Omit<Run, 'tasks' | 'members'> & {
+  label: string
+  goal: string
+  cwd: string
+  isolation: string
+  startedAt: string
+  yolo: boolean
+  needsInput: number
+  managed: { revision: number }
+  members: StubMember[]
+  tasks: StubTask[]
+}
+
+/**
+ * The engine's table of the commands a task's state allows (internal/crew/testdata/task-commands.json, which the engine's
+ * TaskCommands and the app's taskActions are held to): for each state, its first row in a live run, with the attempts that row
+ * names (each of which submitted a commit, or not).
+ */
+const COMMAND_ROWS = (
+  JSON.parse(readFileSync(join(repoRoot, 'internal/crew/testdata/task-commands.json'), 'utf8')) as {
+    rows: Array<{ state: string; kind: string; run: string; attempts: Array<{ commit: string }>; commands: string[] }>
+  }
+).rows
+
+function commandRow(state: TaskState) {
+  const row = COMMAND_ROWS.find((r) => r.state === state && r.run === 'live' && r.kind === 'work')
+  if (!row) throw new Error(`run-fixtures: the engine's table has no live row for a ${state} task`)
+  return row
+}
+
+let made = 0
+const MEMBERS = ['builder', 'reviewer', 'writer', 'tester']
+const COMMIT = (n: number) => n.toString(16).padStart(40, 'a')
+const hex = (n: number, width: number) => n.toString(16).padStart(width, '0')
+
+/** One task of `id` in `state` of the run `run`, with what a task in that state carries: its attempts as the engine's table names
+ * them (each ended attempt with its times, the last with its session, branch and worktree), its result, its reason, its commands. */
+function stubTask(run: string, n: number, id: string, i: number, state: TaskState, prev?: string): StubTask {
+  const member = MEMBERS[i % MEMBERS.length]!
+  const row = commandRow(state)
+  const base: StubTask = { id, member, kind: 'work', state, attempts: row.attempts.length }
+  const commands = row.commands.length ? { commands: [...row.commands] } : {}
+  const started = new Date(Date.now() - (10 - (i % 5)) * 60_000).toISOString()
+  const ended = new Date(Date.now() - (5 - (i % 5)) * 60_000).toISOString()
+  const last = row.attempts.length
+  const attempt = (s: string, done: boolean): StubAttempt => ({
+    n: last,
+    sessionId: hex(n * 0x10000 + i * 16 + last, 16),
+    worktree: `/stub/.conductor/worktrees/${run}/${id}.${last}`,
+    branch: `crew/${run}/${id}.${last}`,
+    start: COMMIT(1),
+    ...(row.attempts[last - 1]?.commit ? { result: COMMIT(i + 2) } : {}),
+    state: s,
+    startedAt: started,
+    ...(done ? { endedAt: ended } : {}),
+    where: 'native',
+  })
+  switch (state) {
+    case 'blocked':
+      return { ...base, needs: prev ? [prev] : [], reason: prev ? `needs ${prev}` : 'needs nothing yet', ...commands }
+    case 'ready':
+      return { ...base, reason: `${id} needs ${member}`, ...commands }
+    case 'running':
+      return { ...base, attempt: attempt('running', false), ...commands }
+    case 'verifying':
+      return { ...base, attempt: { ...attempt('verifying', false), stage: 'check never' }, ...commands }
+    case 'succeeded':
+      return { ...base, attempt: attempt('succeeded', true), result: { attempt: last, commit: COMMIT(i + 2), summary: `${id} done`, issues: ['none'], at: ended }, ...commands }
+    case 'failed':
+      return { ...base, reason: `attempt ${last} failed at check never: exited 1`, attempt: { ...attempt('failed', true), stage: 'check never', error: 'exited 1' }, ...commands }
+    case 'cancelled':
+      return { ...base, reason: 'cancelled', attempt: attempt('cancelled', true), ...commands }
+  }
+}
+
+/** The run's members: one that has worked an attempt runs in that attempt's session (the latest of a running or checking task, else
+ * its latest), with its branch and the agent's own session; one that has not is pending, started by its task. */
+function stubMembers(run: string, tasks: StubTask[]): StubMember[] {
+  return MEMBERS.map((name, k) => {
+    const mine = tasks.filter((t) => t.member === name && t.attempt)
+    const at = mine.filter((t) => t.state === 'running' || t.state === 'verifying').at(-1) ?? mine.at(-1)
+    const m: StubMember = { name, agentId: 'worker-cli', start: { when: 'task' }, status: 'pending' }
+    if (!at?.attempt) return m
+    const a = at.attempt
+    return {
+      ...m,
+      sessionId: a.sessionId,
+      branch: a.branch,
+      worktree: a.worktree,
+      status: 'running',
+      startedAt: a.startedAt,
+      task: at.id,
+      attempt: a.n,
+      agentSession: { id: `${hex(k + 1, 8)}-0000-4000-8000-${hex(made, 12)}`, resumable: false, source: 'set' },
+      base: COMMIT(1),
+      diff: { added: 0, removed: 0 },
+    }
+  })
+}
+
+/**
+ * A managed run of `tasks` tasks (6, 40 or 128: a crew's bound), each in its state from `states` in turn (every state at once, in
+ * TASK_STATES' order, when not given), ids t01, t02…, its members four stubs of the catalog's worker-cli. Its id is a run id of its
+ * own. Nothing of it is on the server: serveRun answers its reads.
+ */
+export function runInfo(o: { tasks: 6 | 40 | 128; states?: TaskState[] }): StubRun {
+  const n = ++made
+  const states = o.states ?? [...TASK_STATES]
+  const width = String(o.tasks).length
+  const id = `stub-run-${(0x1000_0000 + n).toString(16)}`
+  const ids = Array.from({ length: o.tasks }, (_, i) => `t${String(i + 1).padStart(Math.max(2, width), '0')}`)
+  const tasks = ids.map((t, i) => stubTask(id, n, t, i, states[i % states.length]!, ids[i - 1]))
+  const name = `Stub run of ${o.tasks}`
+  return {
+    id,
+    crewId: 'stub-run',
+    name,
+    label: name,
+    goal: 'draw every task',
+    cwd: '/stub',
+    isolation: 'worktree',
+    startedAt: new Date(Date.now() - 15 * 60_000).toISOString(),
+    yolo: false,
+    state: 'running',
+    needsInput: 0,
+    members: stubMembers(id, tasks),
+    log: [{ at: new Date().toISOString(), type: 'status', message: `launched ${name}: ${MEMBERS.length} members, 0 starting now` }],
+    managed: { revision: 1 },
+    tasks,
+  }
+}
+
+/** The run as GET /api/runs lists it: the read's own parts (its chat, each member's diff) left out. */
+export function listedRun(run: StubRun): Record<string, unknown> {
+  const { chat: _chat, ...rest } = run
+  return { ...rest, members: run.members.map(({ diff: _diff, ...m }) => m) }
+}
+
+/** The decisions that hold the run's tasks (task `holds`), as GET /api/runs/{run} and a task's read list them: none when none does. */
+function heldBy(run: StubRun, task?: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = []
+  for (const t of run.tasks) {
+    if (task && t.id !== task) continue
+    for (const h of t.holds ?? []) {
+      if (out.some((d) => d.id === h.id)) continue
+      const agent = t.state === 'running'
+      out.push({ id: h.id, ...(agent ? { requestId: `stub-${t.id}-1` } : {}), type: h.type, origin: agent ? 'agent' : 'plan', ...(agent ? { task: t.id } : { gate: 'gate' }), state: h.state, rev: 1, question: h.question, createdAt: run.startedAt })
+    }
+  }
+  return out
+}
+
+/** A task's read: the task, every attempt it has made (the last as the run has it; the ones before it ended, each failed), the checks a
+ * failed attempt ran, and what each attempt with a commit submitted. */
+function taskRead(run: StubRun, t: StubTask): Record<string, unknown> {
+  const a = t.attempt
+  const attempts: Array<Record<string, unknown>> = []
+  if (a) {
+    for (let k = 1; k <= a.n; k++) {
+      const one: Record<string, unknown> = k === a.n ? { ...a } : { ...a, n: k, sessionId: a.sessionId!.slice(0, -1) + hex(k, 1), branch: `crew/${run.id}/${t.id}.${k}`, worktree: a.worktree!.replace(/\.\d+$/, `.${k}`), state: 'failed', stage: 'check never', error: 'exited 1', endedAt: a.startedAt }
+      if (one.result) one.submitted = { summary: `${t.id}, attempt ${k}`, issues: ['none'] }
+      if (one.state === 'failed') {
+        const at = (one.endedAt as string | undefined) ?? a.startedAt
+        one.steps = [{ phase: 'check', id: 'never', k: 1, state: 'finished', argv: ['sh', '-c', 'exit 1'], dir: `${one.worktree as string}.check`, subject: one.result, exit: 1, duration: 120, error: 'exited 1', tries: 1, startedAt: at, finishedAt: at, logBytes: 0, logSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', where: 'native' }]
+      }
+      attempts.push(one)
+    }
+  }
+  const decisions = heldBy(run, t.id)
+  return { task: t, attempts, ...(decisions.length ? { decisions } : {}) }
+}
+
+/** The candidates' page size: GET /api/runs/{run}/candidates reads at most 8 tasks a page, in the crew's order. */
+const CANDIDATE_PAGE = 8
+
+export interface ServedRun {
+  /** Every read the module answered, by method, path and query. */
+  readonly answered: string[]
+  /** Every /api/ request the page made that the module did not answer (a read under a run answered 404 is among them). */
+  readonly unanswered: string[]
+}
+
+const fulfil = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+const refusal = (code: string, message: string) => ({ error: { code, message } })
+
+/**
+ * Answers the run page's reads of `runs` (one run, or several) as the server does: GET /api/runs (the server's list, each stub run
+ * first in the list's form: the live store keeps only the runs it lists), GET /api/runs/<id> (the run, and the decisions that hold its
+ * tasks), its candidates (paged by eight tasks; a task or an `after` that names none refused 400 as the server refuses them), its
+ * links (none), a task (with its attempts), and GET /api/dispatch/links?run=<id> (no ticket). Any other request under /api/runs/<id>
+ * is answered 404 and recorded; every other /api/ request it does not answer is recorded and goes on (to an earlier route, stubInbox's
+ * for the decisions, or the server). Set before the page loads.
+ */
+export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<ServedRun> {
+  const all = Array.isArray(runs) ? runs : [runs]
+  const answered: string[] = []
+  const unanswered: string[] = []
+  const candidates = (t: StubTask) => ({
+    task: t.id,
+    kind: t.kind,
+    candidates: t.result ? [{ task: t.id, kind: t.kind, attempt: t.result.attempt, commit: t.result.commit, start: COMMIT(1), state: 'succeeded', standing: true, withdrawn: false, receipts: [] }] : [],
+    more: 0,
+    withdrawn: 0,
+    acceptedOlder: 0,
+  })
+  await page.route(
+    (u) => u.pathname.startsWith('/api/'),
+    async (route) => {
+      const req = route.request()
+      const u = new URL(req.url())
+      const path = u.pathname
+      const answer = (status: number, body: unknown) => {
+        answered.push(`${req.method()} ${path}${u.search}`)
+        return fulfil(route, status, body)
+      }
+      const run = all.find((r) => path === `/api/runs/${r.id}` || path.startsWith(`/api/runs/${r.id}/`))
+      const under = run ? `/api/runs/${run.id}` : ''
+      if (req.method() === 'GET') {
+        if (path === '/api/runs') {
+          // The runs list, the live store's: the server's, with the stub's runs first (it would drop a run the list leaves out).
+          const real = await route.fetch()
+          const body = (await real.json().catch(() => ({ runs: [] }))) as { runs?: Array<{ id: string }> }
+          const theirs = (body.runs ?? []).filter((r) => !all.some((s) => s.id === r.id))
+          return answer(real.status(), { ...body, runs: [...all.map(listedRun), ...theirs] })
+        }
+        if (path === '/api/dispatch/links') {
+          const of = all.find((r) => r.id === u.searchParams.get('run'))
+          if (of) return answer(200, { ticket: null })
+        }
+        if (run) {
+          if (path === under) {
+            const decisions = heldBy(run)
+            return answer(200, { run, ...(decisions.length ? { decisions } : {}) })
+          }
+          if (path === `${under}/links`) return answer(200, { links: [] })
+          if (path === `${under}/candidates`) {
+            const task = u.searchParams.get('task')
+            if (task) {
+              const t = run.tasks.find((x) => x.id === task)
+              return t ? answer(200, { base: COMMIT(1), candidates: [candidates(t)], managed: true, run: run.id }) : answer(400, refusal('invalid_request', 'task names no task of the run'))
+            }
+            const after = u.searchParams.get('after')
+            const from = after ? run.tasks.findIndex((t) => t.id === after) + 1 : 0
+            if (after && from === 0) return answer(400, refusal('invalid_request', 'after names no task of the run'))
+            const tasks = run.tasks.slice(from, from + CANDIDATE_PAGE)
+            const next = from + CANDIDATE_PAGE < run.tasks.length ? tasks[tasks.length - 1]!.id : undefined
+            return answer(200, { base: COMMIT(1), candidates: tasks.map(candidates), managed: true, run: run.id, ...(next ? { next } : {}) })
+          }
+          const task = path.startsWith(`${under}/tasks/`) ? decodeURIComponent(path.slice(`${under}/tasks/`.length)) : ''
+          if (task && !task.includes('/')) {
+            const t = run.tasks.find((x) => x.id === task)
+            if (t) return answer(200, taskRead(run, t))
+          }
+        }
+      }
+      unanswered.push(`${req.method()} ${path}${u.search}`)
+      if (run) return fulfil(route, 404, refusal('not_found', 'not answered by serveRun'))
+      return route.fallback()
+    },
+  )
+  return { answered, unanswered }
+}
