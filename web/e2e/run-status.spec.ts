@@ -84,11 +84,17 @@ async function readRows(page: Page, run: StubRun): Promise<void> {
   await expect(page.locator('[data-task-row="t01"] [data-task-words]')).toContainText('waits for decision')
 }
 
-/** The Graph view's Tasks mode: each node's mark, and the legend listing exactly the keys drawn, in the table's order. */
+/** The Graph view's Tasks mode: each station's mark (the line diagram, UX1 PR-33), and the legend listing exactly the keys drawn, in the table's order. */
 async function readGraph(page: Page): Promise<void> {
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   const canvas = page.locator('[data-graph-canvas]')
-  for (const id of TASKS) await check(page, canvas.locator(`[data-graph-task="${id}"] [data-status-mark]`), `${id}'s node`, WANT[id]!)
+  for (const id of TASKS) {
+    // A station is named by its task's id and words, so its mark is read by its key and its colour.
+    const station = canvas.locator(`[data-station="${id}"]`)
+    await expect(station, `${id}'s station`).toHaveAttribute('data-status-mark', WANT[id]!.key)
+    const colour = await station.locator('[data-status-glyph]').evaluate((el) => getComputedStyle(el).color)
+    expect(await probeColour(page, colour), `${id}'s station is drawn in ${WANT[id]!.tone}`).toBe(await probeColour(page, `var(${WANT[id]!.tone})`))
+  }
   await page.locator('[data-graph-legend-open]').click()
   const legend = page.locator('[data-graph-legend-list]')
   await expect(legend.locator('[data-graph-legend]')).toHaveCount(LEGEND.length)

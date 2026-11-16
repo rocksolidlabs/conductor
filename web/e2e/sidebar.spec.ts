@@ -444,7 +444,7 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(header.locator('[data-header-alerts]')).toHaveCount(0)
   await expect(header.locator('[data-sidebar-collapse]')).toHaveCount(0)
   await account.click()
-  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
   // Alerts opens its panel with the switches; Escape closes it and gives the focus back to your menu's button.
   await page.getByRole('menuitem', { name: /^Alerts/ }).click()
   await expect(page.getByRole('menu')).toHaveCount(0)
@@ -483,7 +483,7 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
   // The foot: the pages as six tiles, nothing else, Needs you first; More holds the rest (this server has Brakeman: its slot fills).
   const foot = page.getByRole('navigation', { name: 'Pages' })
-  await expect(foot.locator('[data-sidebar-tile]')).toHaveText([/^(Needs you|Decide)/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
+  await expect(foot.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
   await foot.locator('[data-sidebar-tile="more"]').click()
   await expect(page.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
   await page.keyboard.press('Escape')
@@ -1131,6 +1131,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   const sidebar = page.locator('#dashboard-sidebar-main')
   const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text}$`) })
   const yardTip = 'Yard: every live terminal on one screen'
+  // Needs you's row shows until every store of the one list is read, then leaves when nothing waits: hover once it is in its place.
+  await expect(sidebar.locator('nav[data-needs-read="true"]')).toHaveCount(1)
   await sidebar.locator('[data-nav-label]').filter({ hasText: /^Yard$/ }).hover()
   await expect(tip(yardTip)).toBeVisible()
   // Folded to the rail by its key, pressed once the layout that listens for it is drawn (dayPage waits for it).
@@ -1138,7 +1140,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   await page.keyboard.press('Alt+b')
   await expect(sidebar.locator('[data-rail]')).toBeVisible()
   const nav = sidebar.getByRole('navigation').last()
-  await tabTo(page, nav.locator('a[href="/yard"]'), 2, nav.locator('a[href="/decisions"]'))
+  // From the rail's search button, down its squares and past Needs you's row when it shows (it leaves when nothing waits).
+  await tabTo(page, nav.locator('a[href="/yard"]'), 80, sidebar.locator('[data-rail] button[aria-label="Filter sessions"]'))
   await expect(tip(yardTip)).toBeVisible()
   await expect(nav.locator('a[href="/yard"]')).toHaveAttribute('aria-label', /^Yard/)
   // The palette: "terminal" finds the Yard by its sentence.
@@ -1163,7 +1166,7 @@ test('the pages as six tiles', async ({ day, browser }) => {
     const tiles = page.getByRole('navigation', { name: 'Pages' })
     const tile = (id: string) => tiles.locator(`[data-sidebar-tile="${id}"]`)
     // Six tiles in order, once the server has said it has Brakeman (its slot is held until then).
-    await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^(Needs you|Decide)/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
+    await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
     // Two rows: the foot is at most 120 px tall; each label whole, each tile inside the sidebar, none over another.
     const foot = await root.locator('[data-slot="footer"]').boundingBox()
     expect(foot!.height, `the foot at ${size.width}x${size.height}`).toBeLessThanOrEqual(120)
@@ -1259,7 +1262,7 @@ test("Brakeman's slot is held", async ({ day, browser }) => {
     (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'store_unavailable', message: 'Brakeman needs a data directory' } }) }),
   )
   await page.reload()
-  await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^(Needs you|Decide)/, /^Yard/, /^Crews/, /^Dispatch/, /^More$/])
+  await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^More$/])
   await expect(cell).toHaveCount(0)
   expect(await box(more)).toEqual(slot)
 })

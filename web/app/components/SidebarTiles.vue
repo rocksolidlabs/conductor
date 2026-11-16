@@ -54,7 +54,7 @@ function tileClass(on: boolean): string {
         >
           <UIcon :name="t.page.icon" class="size-5 shrink-0" />
           <span class="block max-w-full truncate" data-nav-label>{{ t.page.label }}</span>
-          <UBadge v-if="badge(t.page.id)" v-bind="badge(t.page.id)" size="sm" class="absolute right-0.5 top-0.5 min-w-4 justify-center px-1 py-0 text-[10px] leading-4" />
+          <UBadge v-if="badge(t.page.id)" v-bind="badge(t.page.id)" size="sm" data-tile-badge class="absolute right-0.5 top-0.5 min-w-4 justify-center px-1 py-0 text-[10px] leading-4" />
         </UButton>
       </UTooltip>
       <UDropdownMenu v-else :items="moreItems" :content="{ side: 'top', align: i % 3 === 2 ? 'end' : 'start' }">

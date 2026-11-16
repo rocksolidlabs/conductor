@@ -34,8 +34,8 @@ export interface PageEntry {
 export const PAGES: readonly PageEntry[] = [
   {
     id: 'decisions',
-    label: 'Decide',
-    title: 'Needs your decision',
+    label: 'Needs you',
+    title: 'Needs you',
     to: '/decisions',
     icon: 'i-lucide-gavel',
     chord: ['G', 'N'],
@@ -110,6 +110,8 @@ export const PAGES: readonly PageEntry[] = [
 export interface PageScope {
   desktop?: boolean
   brakeman?: boolean
+  /** Whether Needs you's row shows in the nav (needsRowShown): it leaves when nothing waits and nothing was decided that day. */
+  needs?: boolean
 }
 
 function offered(p: PageEntry, s: PageScope): boolean {
@@ -126,9 +128,9 @@ export function pageById(id: PageId): PageEntry {
   return PAGES.find((p) => p.id === id)!
 }
 
-/** The rail: Decide, the Yard, …, History, then Brakeman while the server has it and Settings in the desktop app. */
+/** The rail: Needs you while its row shows, the Yard, …, History, then Brakeman while the server has it and Settings in the desktop app. */
 export function navPages(s: PageScope = {}): PageEntry[] {
-  return placed('nav', s)
+  return placed('nav', s).filter((p) => p.id !== 'decisions' || s.needs !== false)
 }
 
 /** The phone's bar: its four tabs, in order (More is the bar's own). */
