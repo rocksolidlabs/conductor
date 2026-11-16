@@ -581,7 +581,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// A run the engine forgets takes its links: under the engine's lock only
 	// the share store's maps change (the store never calls the engine); the
 	// viewers attached through them are closed as on a revoke, on a goroutine
-	// of the server's own (track), which Shutdown waits for. Its links minted
+	// of the server's own (walk), which Shutdown waits for. Its links minted
 	// at the switchyard are revoked there the same way, over a member's
 	// publication still up, else any of this server's (liveCarriers,
 	// revokeRemoteRunLinks); with none up nothing can carry the revoke, and
@@ -602,7 +602,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// (forgetRemote), their revokes carried once more below.
 		s.forgetRemote("", run.ID, "", true)
 		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
-			s.track(func() { s.disconnectLinks(live) })
+			// Not done here once the stop has made its last wait: this
+			// hook runs under the engine's lock and may not wait (walk).
+			s.walk(func() { s.disconnectLinks(live) }, false)
 		}
 		if (len(carriers) > 0 && len(remote) > 0) || desk != nil {
 			s.track(func() {
@@ -819,12 +821,13 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// Its viewers, through the switchyard too, are on this server's
 		// sessions and its runs' desks: disconnectLinks starts ending them
 		// all at once, with neither the store's lock nor the publications'
-		// held, on a goroutine of the server's own (track), and the hook
-		// returns: the revoke is answered, and the sweep tells its next
-		// link, without waiting for this link's viewers' closes. Shutdown
-		// waits, within its bound, for one begun before its last wait
-		// (bgDone); one begun after is not waited for.
-		s.track(func() { s.disconnectLinks([]string{linkID}) })
+		// held, on a goroutine of the server's own (walk), and the hook
+		// returns: the revoke is answered without waiting for this link's
+		// viewers' closes. Shutdown waits, within its bound, for one begun
+		// before its last wait (bgDone); one begun after is done here,
+		// before the hook returns (no caller of the hook holds the store's
+		// lock, the publications' or the engine's).
+		s.walk(func() { s.disconnectLinks([]string{linkID}) }, true)
 	}
 	// Nothing fails past here: the queues of the providers that are no
 	// Starter drain from now on (a Starter's once its Start has succeeded).
@@ -873,10 +876,11 @@ func (s *Server) closeLinkViewers(l *share.Link) {
 // asked, all at once, since each session's close waits for its viewer's
 // reply (a desk there tells its viewers and does not wait). A desk's
 // viewers are told why as the store holds it (linkEndedWhy). The runs'
-// desks on this server (closeDesks) are closed once the sessions' closes
-// are done.
+// desks on this server (closeDesks) are closed beside the sessions' closes,
+// inside the same wait.
 func (s *Server) disconnectLinks(linkIDs []string) {
 	var wg sync.WaitGroup
+	wg.Go(func() { s.closeDesks(nil, linkIDs...) })
 	s.registry.Each(func(d session.Driver) {
 		wg.Go(func() {
 			for _, id := range linkIDs {
@@ -895,7 +899,27 @@ func (s *Server) disconnectLinks(linkIDs []string) {
 	}
 	s.pubMu.Unlock()
 	wg.Wait()
-	s.closeDesks(nil, linkIDs...)
+}
+
+// walk runs f, a walk that ends the viewers of links that ended, on a
+// goroutine of its own that Shutdown waits for (track), until the stop has
+// made its last wait (bgDone): from then on nothing would wait for such a
+// goroutine. Then, with inline, f is done in its caller before the caller
+// returns; without (a caller that may not wait: the engine's forget,
+// under the engine's lock), f is not begun, for Shutdown has closed every
+// viewer the server held, and the store refuses the ended links from
+// their mark on.
+func (s *Server) walk(f func(), inline bool) {
+	s.bgMu.Lock()
+	if !s.bgDone {
+		s.bg.Go(f)
+		s.bgMu.Unlock()
+		return
+	}
+	s.bgMu.Unlock()
+	if inline {
+		f()
+	}
 }
 
 // track runs f on a goroutine of its own that Shutdown waits for.

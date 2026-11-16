@@ -2475,31 +2475,33 @@ credential there was lost, the attach is refused as before
 run link's end (a revoke, an expiry) the server starts ending the link's
 viewers on every session it holds and on every run desk it keeps at the
 switchyard, all at once, and waits for none of them: the revoke is
-answered meanwhile. The run's desk on this server is ended once those
-sessions' closes are done, each bounded by its viewer's close wait. A
+answered meanwhile. The run's desk on this server is ended beside those
+sessions' closes, inside the same wait. A
 session link's end waits for its viewers' closes, as before. The
 server's stop waits, within its bound, for an end of a run link's
 viewers begun before its last wait, which comes once its sessions and
-connections are closed; one begun after that is not waited for (the
-process ends, and its connections with it). Past a link's expiry on
+connections are closed; one a revoke or an expiry begins after that is
+done before the revoke or the expiry returns, and one a run's forget
+begins after it is not begun (the stop has closed every viewer it held).
+Past a link's expiry on
 this server's clock, an attach and every act but a resize are refused
 at once (`expired`);
 output can still reach a viewer attached until it is ended. The
 server's expiry sweep, every 30 s, ends every link that is due through
 its barrier, all at once, waiting at most the store's wait (5 s) for the
-acts under way, and then tells the links one at a time: a session
-link's viewers' closes are waited for, so a run link due in the same
-sweep can be told only after them, its viewers refused from its expiry
-all the same. The switchyard closes a viewer at the link's deadline on
+acts under way, and then tells the links all at once, so a session
+link's wait for its viewers' closes holds no other link due in the same
+sweep, and returns once each is told. The switchyard closes a viewer at the link's deadline on
 its own clock, which is what usually ends it. A run desk's viewer of the
-expired link is told `expired` while another decision link of the run
-stands; when it was the run's last, the run's desk ends as well, and a
-desk viewer the desk's end reaches before the server's end of the link
-is told that the session ended (`session_ended`). A viewer that opens a
-run's desk with a revoked or expired link is refused at its hello
-(`not_decision_link`), as before: `revoked` and `expired` are what a
-session's viewer is told at its attach, and what an attached desk
-viewer is told when it is ended. When a run is forgotten, the store
+expired link is told `expired`, also when it was the run's last and the
+run's desk ends as well: the desk's end tells each of its viewers whose
+link the store holds as ended that link's word before the switchyard
+hears of the end, which tells the rest that the session ended
+(`session_ended`). A viewer that opens a run's desk with a link the store
+holds as revoked or expired is refused at its hello with the store's
+word (`revoked`, `expired`), in the words a session's viewer is told at
+its attach; one with a link that is no decision link of the run is
+refused `not_decision_link`. When a run is forgotten, the store
 keeps the id of each of its links minted at the switchyard as ended,
 whatever it stood at (a viewer with one is refused `revoked`), until the
 switchyard confirms it is gone there (the forget's one revoke there
