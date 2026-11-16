@@ -219,6 +219,11 @@ Starts select and the pending tile's label.
 
 ## What the implementation will use
 
+- A managed run's tasks (the Graph view's Tasks mode) are drawn as lines, not
+  by Vue Flow (UX1 PR-33): `RunLineDiagram.vue`, an SVG over `lineLayout`
+  (`utils/lineDiagram.ts`), a task a station lit by its state's mark, every
+  line in one neutral ink. Vue Flow draws the members (Members mode and the
+  crew editor) as below.
 - Graph: `@vue-flow/core` with custom node and edge components; layout by depth
   in the forest (column = depth, row = crew order), no external layout engine
   for ≤ 12 nodes; `@vue-flow/background` and `@vue-flow/controls` for the canvas

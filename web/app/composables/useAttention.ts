@@ -13,6 +13,7 @@ import { asBrakemanEvent, brakemanLive } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
+import { needsCount } from '~/utils/needsYou'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
@@ -432,24 +433,32 @@ export function useAttention() {
   return { sessions, needsInput, count, connected, loaded, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
 }
 
-/** Tab title prefix and favicon dot while sessions need input. Call once, in app.vue. */
+/**
+ * The tab title's "(N)" and the favicon's dot: the one number of what needs you (useNeedsYou), the nav's, "(9+)" past a store cut short,
+ * none while it is not known. Call once, in app.vue.
+ */
 export function useAttentionHead() {
-  const { count } = useAttention()
+  const needs = useNeedsYou()
+  const shown = computed(() => (needs.number.value ? needsCount(needs.list.value) : ''))
   const faviconHref = ref('/brand/conductor-favicon.svg')
   if (import.meta.client) {
     watch(
-      count,
-      async (n) => {
-        faviconHref.value = await attentionFavicon(n > 0)
+      () => !!shown.value,
+      async (on) => {
+        faviconHref.value = await attentionFavicon(on)
       },
       { immediate: true },
     )
   }
-  useHead({
-    titleTemplate: (t) => {
-      const base = t ? `${t} · Conductor` : 'Conductor'
-      return count.value > 0 ? `(${count.value}) ${base}` : base
-    },
-    link: [{ key: 'icon', rel: 'icon', type: computed(() => (faviconHref.value.startsWith('data:') ? 'image/png' : 'image/svg+xml')), href: faviconHref }],
+  // A getter, so that the number read here is the head's dependency: the title follows it as it changes, not at the next page's title.
+  useHead(() => {
+    const n = shown.value
+    return {
+      titleTemplate: (t?: string) => {
+        const base = t ? `${t} · Conductor` : 'Conductor'
+        return n ? `(${n}) ${base}` : base
+      },
+      link: [{ key: 'icon', rel: 'icon', type: faviconHref.value.startsWith('data:') ? 'image/png' : 'image/svg+xml', href: faviconHref.value }],
+    }
   })
 }

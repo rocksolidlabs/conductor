@@ -40,7 +40,7 @@ onMounted(() => {
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
         </template>
         <template #right>
-          <SidebarHeaderMenus @token="admin.needsToken.value = true" />
+          <SidebarHeaderMenus page @token="admin.needsToken.value = true" />
         </template>
       </UDashboardNavbar>
     </template>
