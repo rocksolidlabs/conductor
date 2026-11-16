@@ -184,6 +184,9 @@ function namedTask(run: string, n: number, i: number, id: string, state: TaskSta
   return t
 }
 
+/** The decision that holds the Ledger run's release-notes, by default. */
+export const LEDGER_HOLD = 'dr-990'
+
 /**
  * The Ledger run: six tasks in this order: schema (done); naming (done) and backfill (checking, on attempt 2), which need schema; soak
  * (running on attempt 1, its attempt's session `soak`, a session the spec starts), which needs nothing; migrate (failed out of its
@@ -195,7 +198,8 @@ export function ledgerRun(o: { name?: string; startedAt?: string; soak?: string;
   const run = runInfo({ tasks: 6 })
   const n = made
   const own = { owner: 'ana', ownerFrom: 'acceptance' }
-  const hold = o.hold ?? { id: 'dr-1', question: 'May release-notes ship?' }
+  // An id no server of the suite issues (they count from dr-1): a page on the seeded day lists the day's own decisions beside the stub's.
+  const hold = o.hold ?? { id: LEDGER_HOLD, question: 'May release-notes ship?' }
   const notes = namedTask(run.id, n, 5, 'release-notes', 'ready', { needs: ['naming'], ...own })
   notes.reason = `waits for decision ${hold.id}`
   notes.holds = [{ id: hold.id, type: 'approval', state: 'open', question: hold.question }]
