@@ -237,7 +237,7 @@ defineExpose({ propose, approve, launch })
       <ul class="flex flex-col gap-1.5">
         <li v-for="p in others" :key="p.id" class="flex flex-col gap-2 rounded-md p-2 ring ring-default" :data-plan-revision="p.n" :data-plan-state="p.state">
           <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <UButton :icon="opened.has(p.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" size="xs" color="neutral" variant="ghost" :aria-label="`${opened.has(p.id) ? 'Fold' : 'Open'} revision ${p.n}`" :aria-expanded="opened.has(p.id)" data-plan-unfold @click="toggle(p)" />
+            <IconButton :icon="opened.has(p.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" size="xs" color="neutral" variant="ghost" :label="`${opened.has(p.id) ? 'Fold' : 'Open'} revision ${p.n}`" :aria-expanded="opened.has(p.id)" data-plan-unfold @click="toggle(p)" />
             <span class="font-medium">Revision {{ p.n }}</span>
             <UBadge :label="planStateWord(p).label" :color="planStateWord(p).color" variant="subtle" size="sm" />
             <span class="min-w-0 truncate text-muted">{{ p.crewName }}</span>
@@ -247,7 +247,7 @@ defineExpose({ propose, approve, launch })
             <template v-if="!locked">
               <UButton v-if="approvable(p)" label="Approve" icon="i-lucide-badge-check" size="xs" color="neutral" variant="ghost" data-plan-approve @click="approve(p)" />
               <UButton label="Revise" icon="i-lucide-file-pen-line" size="xs" color="neutral" variant="ghost" data-plan-revise @click="propose(p)" />
-              <UButton v-if="p.state !== 'withdrawn'" icon="i-lucide-ban" size="xs" color="neutral" variant="ghost" :aria-label="`Withdraw revision ${p.n}`" :loading="withdrawing === p.id" data-plan-withdraw @click="withdraw(p)" />
+              <IconButton v-if="p.state !== 'withdrawn'" icon="i-lucide-ban" size="xs" color="neutral" variant="ghost" :label="`Withdraw revision ${p.n}`" :loading="withdrawing === p.id" data-plan-withdraw @click="withdraw(p)" />
             </template>
           </div>
           <template v-if="opened.has(p.id)">

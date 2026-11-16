@@ -872,7 +872,7 @@ const askBrakeman = computed(() =>
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ left: 'min-w-0 flex-1' }" data-ticket-header>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" :aria-label="`Back to ${project}`" :to="projectPath(project)" data-back-to-project />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" :label="`Back to ${project}`" :to="projectPath(project)" data-back-to-project />
         </template>
         <template #title>
           <span class="flex min-w-0 items-baseline gap-2">
@@ -930,7 +930,7 @@ const askBrakeman = computed(() =>
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
             <span class="min-w-0 break-words" data-ticket-title>{{ ticket.title }}</span>
-            <UButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
+            <IconButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
           </h1>
           <p v-if="editingTitle && titleTheirs !== null" class="flex items-start gap-1.5 text-xs text-warning" data-title-theirs>
             <UIcon name="i-lucide-triangle-alert" class="mt-px size-3.5 flex-none" />
@@ -1028,7 +1028,7 @@ const askBrakeman = computed(() =>
                 <span v-if="!ticket.parent.deletedAt" class="flex flex-none items-center gap-1 text-xs text-dimmed" :data-parent-status="ticket.parent.status">
                   <UIcon :name="statusWord(ticket.parent.status).icon" class="size-3.5" />{{ statusWord(ticket.parent.status).label }}
                 </span>
-                <UButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" aria-label="No parent" data-parent-clear @click="setParent('')" />
+                <IconButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto flex-none" label="No parent" data-parent-clear @click="setParent('')" />
               </div>
               <TicketPicker v-if="!locked" :project="project" :exclude="parentExclude" :placeholder="ticket.parent ? 'Another parent…' : 'A parent ticket…'" data-parent-picker @pick="(t: TicketSummary) => setParent(t.key)" />
               <span v-else-if="!ticket.parent" class="text-dimmed">None</span>

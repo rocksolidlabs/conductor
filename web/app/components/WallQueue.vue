@@ -107,7 +107,7 @@ defineExpose({ focusSelected })
           @click.stop
           @focus="emit('select', i)"
         />
-        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="noReply(s.attention) !== undefined || !(drafts[s.id] ?? '').trim()" />
+        <IconButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" label="Send" :disabled="noReply(s.attention) !== undefined || !(drafts[s.id] ?? '').trim()" />
       </form>
     </div>
 

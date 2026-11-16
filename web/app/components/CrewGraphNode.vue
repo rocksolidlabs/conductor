@@ -72,7 +72,7 @@ const menu = computed(() => [
       <span class="min-w-0 truncate text-[11px] text-muted">{{ data.agentName || n.member.agentId }}</span>
       <StatusMark v-if="data.mark" :status="data.mark" word class="ml-auto" />
       <UDropdownMenu v-else-if="data.editable" :items="menu" :content="{ align: 'end' }" class="ml-auto">
-        <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`${n.id}: start rule`" class="nodrag" />
+        <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`${n.id}: start rule`" class="nodrag" />
       </UDropdownMenu>
     </div>
     <div class="flex min-w-0 items-center gap-2 text-[11.5px] text-muted" :class="!n.warning && !n.member.branch && !n.member.diff && 'font-normal'">

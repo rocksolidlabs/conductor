@@ -116,7 +116,7 @@ watch(
   <section class="flex min-w-0 flex-col gap-2" :data-ticket-markdown="name">
     <div class="flex items-center gap-2">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ label }}</h3>
-      <UButton v-if="!editing && !disabled" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Edit the ${label.toLowerCase()}`" class="ml-auto" data-markdown-edit @click="edit" />
+      <IconButton v-if="!editing && !disabled" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :label="`Edit the ${label.toLowerCase()}`" class="ml-auto" data-markdown-edit @click="edit" />
     </div>
 
     <template v-if="!editing">

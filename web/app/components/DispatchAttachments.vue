@@ -160,7 +160,7 @@ function fileIcon(a: TicketAttachment): string {
           <template v-else>
             <span class="ml-auto text-xs" :class="u.state === 'expired' ? 'text-warning' : 'text-error'">{{ u.state === 'expired' ? 'The upload took too long and was let go' : 'Not attached' }}</span>
             <UButton label="Upload again" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-upload-again @click="again(u)" />
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" aria-label="Dismiss" @click="dismiss(u)" />
+            <IconButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" label="Dismiss" @click="dismiss(u)" />
           </template>
         </div>
         <UProgress v-if="u.state === 'sending' || u.state === 'waiting'" :model-value="u.file.size ? Math.min(100, (u.sent / u.file.size) * 100) : 0" size="xs" />
@@ -175,9 +175,9 @@ function fileIcon(a: TicketAttachment): string {
           <span class="flex-none text-xs text-dimmed tabular-nums">{{ sizeWords(a.size) }}</span>
           <span class="hidden flex-none text-xs text-dimmed sm:inline">· {{ a.createdBy || 'admin' }} {{ relativeTime(a.createdAt, now, { suffix: true }) }}</span>
           <span class="ml-auto flex flex-none gap-0.5">
-            <UButton icon="i-lucide-download" size="xs" color="neutral" variant="ghost" :aria-label="`Download ${a.name}`" data-attachment-download @click="save(a)" />
-            <UButton v-if="!locked && inlineImage(a.contentType)" icon="i-lucide-image-plus" size="xs" color="neutral" variant="ghost" :aria-label="`Show ${a.name} in a comment`" title="Put it in the comment being written" data-attachment-insert @click="emit('insert', attachmentMarkdown(a))" />
-            <UButton v-if="!locked" icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Remove ${a.name}`" data-attachment-remove @click="confirming = a.id" />
+            <IconButton icon="i-lucide-download" size="xs" color="neutral" variant="ghost" :label="`Download ${a.name}`" data-attachment-download @click="save(a)" />
+            <IconButton v-if="!locked && inlineImage(a.contentType)" icon="i-lucide-image-plus" size="xs" color="neutral" variant="ghost" :label="`Show ${a.name} in a comment`" data-attachment-insert @click="emit('insert', attachmentMarkdown(a))" />
+            <IconButton v-if="!locked" icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :label="`Remove ${a.name}`" data-attachment-remove @click="confirming = a.id" />
           </span>
         </div>
         <img v-if="images.get(a.id)" :src="images.get(a.id)" :alt="a.name" class="max-h-64 w-fit max-w-full rounded object-contain ring ring-default" data-attachment-image />

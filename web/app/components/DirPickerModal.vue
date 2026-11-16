@@ -108,8 +108,8 @@ function onListKey(e: KeyboardEvent) {
     <template #body>
       <div class="flex flex-col gap-3">
         <div class="flex items-center gap-1.5">
-          <UButton icon="i-lucide-arrow-up" color="neutral" variant="outline" size="sm" aria-label="Up one folder" :disabled="!dir || dir === '/'" data-dir-picker-up @click="go(parentDir(dir))" />
-          <UButton v-if="anywhere && serverHost.home.value" icon="i-lucide-house" color="neutral" variant="outline" size="sm" aria-label="Home" data-dir-picker-home @click="go(serverHost.home.value)" />
+          <IconButton icon="i-lucide-arrow-up" color="neutral" variant="outline" size="sm" label="Up one folder" :disabled="!dir || dir === '/'" data-dir-picker-up @click="go(parentDir(dir))" />
+          <IconButton v-if="anywhere && serverHost.home.value" icon="i-lucide-house" color="neutral" variant="outline" size="sm" label="Home" data-dir-picker-home @click="go(serverHost.home.value)" />
           <UInput v-model="typed" class="flex-1" size="sm" :ui="{ base: 'font-mono text-xs' }" aria-label="Folder" data-dir-picker-path @update:model-value="onTyped" @keydown.enter.prevent="go(typed)" />
         </div>
         <nav class="flex flex-wrap items-center gap-0.5 font-mono text-xs" aria-label="Folders above">

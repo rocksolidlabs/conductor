@@ -275,7 +275,7 @@ usePalette().registerPage(() => {
             </div>
             <ResumeButton v-if="!isActive(focused) && focused.kind === 'server'" :session="focused" icon-only class="sm:hidden" />
             <UDropdownMenu :items="focusMenu" :content="{ align: 'end' }" class="sm:hidden">
-              <UButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" aria-label="Session actions" data-yard-focus-menu />
+              <IconButton icon="i-lucide-ellipsis-vertical" color="neutral" variant="ghost" label="Session actions" data-yard-focus-menu />
             </UDropdownMenu>
           </template>
           <FullscreenButton />
