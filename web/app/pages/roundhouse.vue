@@ -5,8 +5,11 @@ import { isActive } from '~/utils/attention'
 import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } from '~/utils/carousel'
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
+import { pageState } from '~/utils/pageState'
+import { sessionStatus } from '~/utils/status'
 
-useHead({ title: 'Roundhouse' })
+// The Roundhouse is the Yard's second view (the UX review's P12): its header says Yard, its tab names the view.
+useHead({ title: 'Yard · Roundhouse' })
 
 const attention = useAttention()
 const events = useEvents()
@@ -48,6 +51,8 @@ const intervalItems = [
 // The active sessions in the strip's kept order (#310): the slides, stepping, "Next up" and follow mode all go by it. A session
 // started since goes at the end, one that ended leaves it; what shows is what is kept.
 const active = computed(() => orderSessions(attention.sessions.value.filter(isActive), settings.value.order))
+/** What the page shows when nothing is live (P23): judged once the sessions are read, never before. */
+const shownState = computed(() => pageState({ read: attention.loaded.value, error: attention.error.value, count: active.value.length }))
 // Written back at once too: the first list shown is the order a session started afterwards is appended to (Codex's round on #310).
 watch(
   active,
@@ -73,7 +78,7 @@ async function reorder(ids: string[]) {
 // The waiting sessions in the strip's order too (whole-batch round): follow mode's cycle and "Next up" go by it.
 const waitingIds = computed(() => new Set(attention.needsInput.value.map((s) => s.id)))
 const waiting = computed(() => active.value.filter((s) => waitingIds.value.has(s.id)))
-// Follow mode follows input requests while the Events page routes needs_input
+// Follow mode follows input requests while the Alerts rules route needs_input
 // to Roundhouse jump; other events routed there jump too (followEvent below).
 const followInput = computed(() => settings.value.follow && events.routes.value.needs_input.wall)
 interface AutoplayPlugin {
@@ -119,6 +124,8 @@ function terminalRef(id: string) {
 // at least 20 s) so one stray prompt never freezes the rotation; the waiting
 // session stays in the rotation and the hold repeats for each new prompt.
 const now = ref(Date.now())
+/** The status words' clock (useNow); `now` above is the hold's, by the second. */
+const clock = useNow()
 const holdUntil = ref(0)
 const holdMs = computed(() => Math.max(2 * settings.value.intervalMs, 20000))
 const holding = computed(() => followInput.value && waiting.value.length > 0 && now.value < holdUntil.value)
@@ -265,7 +272,7 @@ watch(
   { immediate: true },
 )
 
-// Any other event the Events page routes to Roundhouse jump moves the Roundhouse to
+// Any other event the Alerts rules route to Roundhouse jump moves the Roundhouse to
 // its session, once, without a hold of its own; never while someone is typing
 // or while follow mode holds on a session that needs input (followJump).
 function followEvent(e: RoutedEvent) {
@@ -370,24 +377,25 @@ usePalette().registerPage(() => ({
 <template>
   <UDashboardPanel id="carousel" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :toggle="false" title="Roundhouse" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" title="Yard" :ui="{ root: 'h-14' }" data-roundhouse-header>
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
-            <span v-if="active.length" class="font-mono text-xs text-muted">{{ selected + 1 }} / {{ active.length }}</span>
+            <YardViews current="roundhouse" />
+            <span v-if="active.length" class="text-xs text-muted tabular-nums">{{ selected + 1 }} / {{ active.length }}</span>
             <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
           </div>
         </template>
         <template #right>
           <div class="flex items-center gap-0.5 rounded-md border border-default p-0.5">
-            <UButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" aria-label="Previous session" @click="prev" />
+            <IconButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" label="Previous session" @click="prev" />
             <UTooltip :text="holding ? 'Release the hold and keep rotating' : paused ? 'Resume rotation' : 'Pause rotation'" :kbds="['space']">
               <UButton :label="stateLabel" :icon="rotating ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
             </UTooltip>
-            <UButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" aria-label="Next session" @click="next" />
+            <IconButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" label="Next session" @click="next" />
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
           <USwitch v-model="settings.autoplay" label="Auto-rotate" size="sm" class="hidden md:flex" />
-          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump on the Events page: input requests and handoffs unless changed there">
+          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump in Alerts: input requests and handoffs unless changed there">
             <USwitch v-model="settings.follow" label="Follow routed events" size="sm" class="hidden lg:flex" />
           </UTooltip>
           <FullscreenButton />
@@ -396,13 +404,18 @@ usePalette().registerPage(() => ({
     </template>
 
     <template #body>
-      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
+      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
-      <div v-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
-        <UIcon name="i-lucide-gallery-horizontal" class="size-10" />
-        <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>
-        <UButton label="Launch agent" icon="i-lucide-play" @click="useLaunchModal().show()" />
-      </div>
+      <PageEmpty
+        v-if="shownState !== 'content'"
+        page="roundhouse"
+        :state="shownState"
+        words="Nothing is running. The first agent you launch shows here."
+        thing="sessions"
+        :error="attention.error.value"
+        :actions="[{ label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => useLaunchModal().show() }]"
+        @again="attention.refresh()"
+      />
 
       <div v-else class="flex-1 min-h-0 flex flex-col" @focusin="onFocusIn" @focusout="onFocusOut">
         <div class="flex-1 min-h-0 px-4 pt-3">
@@ -421,8 +434,8 @@ usePalette().registerPage(() => ({
               <div class="flex items-center gap-3">
                 <SessionAvatar :agent-id="item.agentId" size="md" solid />
                 <div class="flex min-w-0 flex-col">
-                  <div class="flex items-center gap-2"><span class="truncate text-base font-semibold">{{ item.name }}</span><AttentionBadge :attention="item.attention" /></div>
-                  <span class="truncate font-mono text-[11.5px] text-muted">{{ meta(item) }}</span>
+                  <div class="flex items-center gap-2"><span class="truncate text-base font-semibold">{{ item.name }}</span><StatusMark :status="sessionStatus(item, clock)" word class="text-xs" :data-roundhouse-status="item.id" /></div>
+                  <span class="truncate text-[11.5px] text-muted tabular-nums">{{ meta(item) }}</span>
                 </div>
                 <div class="ml-auto flex items-center gap-2">
                   <UBadge v-if="holdingId === item.id && jumpedAt" color="warning" variant="subtle" size="sm" icon="i-lucide-hand" :label="`Jumped here ${relativeTime(jumpedAt, now)} ago · holding ${holdLeft}s more`" />

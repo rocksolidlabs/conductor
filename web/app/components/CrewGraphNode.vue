@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection, GraphNode } from '~/utils/crewGraph'
-import { memberDotClass, memberWords, startWords } from '~/utils/crewWords'
+import { memberWords, startWords } from '~/utils/crewWords'
+import type { MarkView } from '~/utils/status'
 import { memberOffer, type OfferRun } from '~/utils/runs'
 
 /**
- * One member on the crew graph: its agent, name, status dot and needs-input
- * badge, its first prompt in the editor (its branch and diff in a run), a
+ * One member on the crew graph: its agent, name and status mark (memberStatusOf), its first prompt in the editor (its branch and diff in a run), a
  * warning when its start rule could not be drawn, and its last line: when
  * it starts (the editor), or what it does now and what can be done with it
  * (Start now, Resume, Open). A member started by hand is drawn dashed. The
@@ -24,6 +24,8 @@ export interface MemberNodeData {
   run?: OfferRun | null
   /** The agent's name from the catalog; its id when unknown. */
   agentName: string
+  /** Its state in the status language (memberStatusOf); absent for a saved crew. */
+  mark?: MarkView
 }
 
 const props = defineProps<NodeProps<MemberNodeData>>()
@@ -68,10 +70,9 @@ const menu = computed(() => [
       <SessionAvatar :agent-id="n.member.agentId" :solid="state === 'needs_input'" :dashed="state === 'ended' || state === 'pending'" />
       <span class="max-w-[8.5rem] flex-none truncate font-mono text-[13px] font-semibold text-highlighted">{{ n.id }}</span>
       <span class="min-w-0 truncate text-[11px] text-muted">{{ data.agentName || n.member.agentId }}</span>
-      <span v-if="state" class="size-2 flex-none rounded-full" :class="memberDotClass(state, n.member)" :title="words?.text" aria-hidden="true" />
-      <UBadge v-if="state === 'needs_input'" label="needs input" color="warning" variant="subtle" size="sm" class="ml-auto flex-none" />
+      <StatusMark v-if="data.mark" :status="data.mark" word class="ml-auto" />
       <UDropdownMenu v-else-if="data.editable" :items="menu" :content="{ align: 'end' }" class="ml-auto">
-        <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`${n.id}: start rule`" class="nodrag" />
+        <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`${n.id}: start rule`" class="nodrag" />
       </UDropdownMenu>
     </div>
     <div class="flex min-w-0 items-center gap-2 text-[11.5px] text-muted" :class="!n.warning && !n.member.branch && !n.member.diff && 'font-normal'">

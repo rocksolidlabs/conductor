@@ -29,6 +29,8 @@ function transcript(home: string, s: Session): string {
   return existsSync(file) ? readFileSync(file, 'utf8') : ''
 }
 
+// Needs you leads whenever anything waits (on the shared server, what other specs left: a plan, a task, a stopped run's decision, UX1
+// PR-13); the page's own group comes first after it.
 test("Ctrl+K opens the palette and Escape closes it; the page's own group comes first, named after the page", async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e palette page' })
   sessions.push(s.id)
@@ -38,7 +40,7 @@ test("Ctrl+K opens the palette and Escape closes it; the page's own group comes 
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   await expect(palette.locator('input[data-palette-input]')).toBeFocused()
-  await expect(palette.locator('[data-palette-group]').first()).toHaveAttribute('data-palette-group', 'page')
+  await expect(palette.locator('[data-palette-group]:not([data-palette-group="needs"])').first()).toHaveAttribute('data-palette-group', 'page')
   await expect(palette.locator('[data-palette-group="page"] h3')).toContainText('Agents')
   await expect(palette.locator('[data-palette-group="goto"]')).toBeVisible()
   await page.keyboard.press('Escape')
@@ -48,7 +50,7 @@ test("Ctrl+K opens the palette and Escape closes it; the page's own group comes 
   await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
   await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
-  await expect(palette.locator('[data-palette-group]').first()).toHaveAttribute('data-palette-group', 'page')
+  await expect(palette.locator('[data-palette-group]:not([data-palette-group="needs"])').first()).toHaveAttribute('data-palette-group', 'page')
   await expect(palette.locator('[data-palette-group="page"] h3')).toContainText('e2e palette page')
   await expect(palette.locator('[data-palette-row="page:stop"]')).toBeVisible()
   await page.keyboard.press('Escape')

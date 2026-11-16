@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { refRoute } from '~/utils/brakeman'
+import { pageState } from '~/utils/pageState'
 import { relativeTime } from '~/utils/sessions'
-import { qrSvg } from '~/utils/qr'
 import {
+  INBOX_KINDS,
   INBOX_ROW_CLASS,
+  atZero,
   decisionIdOf,
-  decisionLinkTargets,
+  firstToOpen,
   inboxEmpty,
   inboxSections,
-  phoneOffer,
+  kindLook,
+  lastClosedWords,
+  pickShown,
   recentBadge,
   recentFor,
+  rowLine,
   showingWords,
   trackKey,
   unknownWords,
@@ -30,7 +35,7 @@ import {
 // DecisionRespond) inside the item, its brief, what waits and its evidence around it; one answered and not yet applied stays under
 // "Answered, not yet applied" from the server's list, and the records closed in the last day are the server's Recent, the same for
 // every viewer. This browser's Recent keeps only its actions on the items DR1 does not hold.
-useHead({ title: 'Needs your decision' })
+useHead({ title: 'Needs you' })
 
 const inbox = useInbox()
 const live = useAttention()
@@ -67,6 +72,25 @@ const openAction = computed(() => ({
   attempt: typeof route.query.attempt === 'string' ? route.query.attempt : '',
 }))
 const empty = computed(() => inboxEmpty(state.value))
+/** Before the first answer the page says it reads; a first read that failed says so with Read again (PageEmpty, UX1 PR-23). */
+const shape = computed(() => (state.value.unavailable ? 'content' : pageState({ read: state.value.loaded, error: state.value.error, count: 0 })))
+/** Nothing needs the person and nothing is open: the page is one column that says so (UX1 PR-6). */
+const zero = computed(() => atZero(state.value, openRef.value))
+/** "Pick an item" only while there is an item to pick. */
+const pick = computed(() => pickShown(sections.value, openRef.value))
+/**
+ * At lg the oldest open item opens by itself (UX1 PR-21), through the query, which the page's acting rests on; never below lg and
+ * never over an item already in the query. A row picked while that item is read wins: the reader drops a read for an item no longer
+ * open.
+ */
+const wide = useMedia('(min-width: 1024px)')
+watch(
+  () => firstToOpen(wide.value, openRef.value, sections.value),
+  (r) => {
+    if (r) void router.replace({ query: { ...route.query, item: r, receipt: undefined, attempt: undefined } })
+  },
+  { immediate: true },
+)
 
 /**
  * The open item's DR1 record, when it names one: read whole from DR1's route (useDecisionRecord: one read at a time, ordered by the
@@ -90,6 +114,8 @@ let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
 onBeforeUnmount(() => window.clearInterval(tick))
 
+/** The open item as the list sums it up, while the list holds it: its title stands in the pane until the item is read whole. */
+const openSummary = computed(() => state.value.items.find((s) => s.ref === openRef.value))
 /** The open item as last read whole; null before it is read, or when it names nothing the server holds (`missing`). */
 const item = ref<InboxItem | null>(null)
 const missing = ref('')
@@ -236,87 +262,64 @@ async function comment(ref: string, ticket: string, body: string, taken?: (sent:
   await acts.comment(it, ticket, body)
 }
 
-/** Open on your phone (at lg and up): the page's address as a QR code, the address alone; on a loopback origin, the words why not. */
-const phoneOpen = ref(false)
-const offer = computed(() => (import.meta.client ? phoneOffer(location.origin) : null))
-const qr = computed(() => (offer.value?.kind === 'qr' ? qrSvg(offer.value.url) : null))
-/** The dialog's line: the code's, only where there is a code. */
-const phoneWords = computed(() =>
-  offer.value?.kind === 'qr'
-    ? "Scan the code with a phone on the same network. It holds the page's address alone: the phone asks for the workbench token once, as any browser does."
-    : "This page's address is this computer's own.",
-)
-
-/**
- * On a loopback origin, a decision link in place of the page's address (MB0's PR-7): for a run or a session the person picks, a
- * control link that answers decisions, made for two hours and shown as a QR code. Its address is the one the server gives its links
- * (the switchyard it publishes to, or its public address); one that is this computer's own too is said to be so.
- */
-const targets = computed(() => decisionLinkTargets(live.sessions.value, live.runs.value))
-const target = ref('')
-watch(targets, (t) => {
-  if (!t.some((x) => x.value === target.value)) target.value = t[0]?.value ?? ''
-}, { immediate: true })
-const making = ref(false)
-const linkError = ref('')
-const madeLink = ref<{ url: string; loopback: boolean } | null>(null)
-const madeQr = computed(() => (madeLink.value ? qrSvg(madeLink.value.url) : null))
-async function makeDecisionLink() {
-  const [kind, id] = [target.value.slice(0, target.value.indexOf(':')), target.value.slice(target.value.indexOf(':') + 1)]
-  if (!id) return
-  making.value = true
-  linkError.value = ''
-  madeLink.value = null
-  try {
-    const body = { role: 'control' as const, decide: true, label: 'Decisions on a phone', ttlSeconds: 7200 }
-    const res = kind === 'run' ? await api.createRunLink(id, body) : await api.createLink(id, body)
-    madeLink.value = { url: res.url, loopback: phoneOffer(new URL(res.url).origin).kind === 'loopback' }
-  } catch (e) {
-    linkError.value = (e as Error).message
-  } finally {
-    making.value = false
-  }
-}
-watch(phoneOpen, (o) => {
-  if (!o) {
-    madeLink.value = null
-    linkError.value = ''
-  }
-})
+/** Open on your phone: the dialog the layout mounts once (OpenOnPhone), opened here as from your menu. */
+const phone = useOpenOnPhone()
 
 const recent = computed(() => state.value.recent)
 /** A Recent row's word (recentBadge: Not confirmed before any word of success). */
 const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKey(e)], out(e))
+/** When the last thing closed, by the server's records and this browser's own acts. */
+const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.value, now.value))
 </script>
 
 <template>
   <UDashboardPanel id="decisions">
     <template #header>
-      <UDashboardNavbar title="Needs your decision" :toggle="false">
+      <UDashboardNavbar title="Needs you" :toggle="false">
         <template #right>
-          <UButton label="Open on your phone" icon="i-lucide-smartphone" color="neutral" variant="outline" size="sm" class="hidden lg:inline-flex" data-open-on-phone @click="phoneOpen = true" />
+          <UButton label="Open on your phone" icon="i-lucide-smartphone" color="neutral" variant="outline" size="sm" class="hidden lg:inline-flex" data-open-on-phone @click="phone.show()" />
         </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
-      <div class="grid min-h-0 gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]" data-decisions>
+      <div class="grid min-h-0 gap-6" :class="zero ? 'mx-auto w-full max-w-2xl' : 'lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]'" :data-decisions-zero="zero ? '' : undefined" data-decisions>
         <!-- The list: the open items oldest first, then this browser's recent actions. Below lg it gives way to the open item. -->
         <section class="flex min-w-0 flex-col gap-4" :class="openRef && 'max-lg:hidden'" data-decisions-list>
           <UAlert v-if="state.unavailable" color="neutral" variant="subtle" icon="i-lucide-info" :title="state.unavailable" data-decisions-unavailable />
           <UAlert
-            v-else-if="state.error"
+            v-else-if="state.error && state.loaded"
             color="warning"
             variant="subtle"
             icon="i-lucide-triangle-alert"
             :title="state.error"
-            :description="state.loaded ? 'What needs your decision is not known now: the list below is as it was last read.' : undefined"
+            description="What needs you is not known now: the list below is as it was last read."
             data-decisions-error
           />
-          <div v-if="empty" class="flex flex-col items-center gap-2 py-8 text-center text-muted" data-decisions-empty>
-            <UIcon name="i-lucide-circle-check" class="size-8" />
-            <p class="text-sm">Nothing needs your decision now.</p>
-          </div>
+          <!-- Before the first answer, and when it failed: the one shape of a page that has nothing to show yet (PageEmpty). -->
+          <PageEmpty v-if="shape === 'reading'" page="decisions" state="reading" thing="list of what needs you" />
+          <PageEmpty v-else-if="shape === 'failed'" page="decisions" state="failed" :error="state.error" data-decisions-error @again="inbox.changed()" />
+          <!-- Nothing needs you: the empty shape, with what shows up here and what was decided in the last day. -->
+          <PageEmpty v-else-if="zero" page="decisions" state="empty" words="Nothing needs you now." data-decisions-empty>
+            <div class="flex w-full flex-col gap-6">
+              <p v-if="lastClosed" class="text-center text-xs text-muted" data-decisions-last>{{ lastClosed }}</p>
+              <section class="flex flex-col gap-2 text-left" data-decisions-kinds>
+                <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">What shows up here</h2>
+                <ul class="flex flex-col gap-2">
+                  <li v-for="k in INBOX_KINDS" :key="k" class="flex items-center gap-3 rounded-md border border-default px-3 py-2" :data-decisions-kind="k">
+                    <UIcon :name="kindLook(k).icon" class="size-5 shrink-0 text-muted" />
+                    <span class="min-w-0">
+                      <span class="block text-sm font-medium text-highlighted">{{ kindLook(k).word }}</span>
+                      <span class="block text-xs text-muted">{{ kindLook(k).line }}</span>
+                    </span>
+                  </li>
+                </ul>
+              </section>
+              <DecisionsRecent :closed="state.closed" :recent="recent" :word="recentWord" zero @open="open" @open-recent="openRecent" />
+            </div>
+          </PageEmpty>
+          <!-- Only records answered and not yet applied: nothing needs a person, and they are listed below. -->
+          <p v-else-if="empty" class="py-2 text-sm text-muted" data-decisions-empty>Nothing needs you now.</p>
           <ul v-else-if="sections.open.length" class="flex flex-col gap-2">
             <li v-for="s in sections.open" :key="s.ref">
               <button
@@ -330,8 +333,9 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
                   <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
                   <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                 </span>
-                <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
+                <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
                 <span class="flex flex-wrap gap-1">
+                  <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
                   <UBadge v-if="s.card" label="Brakeman's brief" color="primary" variant="subtle" size="sm" />
                   <UBadge v-if="s.blocks" :label="`${s.blocks} waiting on it`" color="neutral" variant="subtle" size="sm" />
                   <UBadge v-if="!s.actions.length" label="Open the terminal" color="warning" variant="subtle" size="sm" />
@@ -357,8 +361,11 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
                     <span class="truncate text-sm font-medium text-highlighted" data-inbox-row-title>{{ s.title }}</span>
                     <span class="shrink-0 text-xs text-muted" data-inbox-row-since>{{ relativeTime(s.since) }}</span>
                   </span>
-                  <span class="line-clamp-2 text-xs text-muted">{{ s.question || s.brief }}</span>
-                  <span class="flex flex-wrap gap-1"><UBadge label="Recorded" color="neutral" variant="subtle" size="sm" /></span>
+                  <span class="line-clamp-2 text-xs text-muted" data-inbox-row-line>{{ rowLine(s) }}</span>
+                  <span class="flex flex-wrap gap-1">
+                    <UBadge :label="kindLook(s.kind).word" :icon="kindLook(s.kind).icon" color="neutral" variant="outline" size="sm" :data-inbox-row-kind="s.kind" />
+                    <UBadge label="Recorded" color="neutral" variant="subtle" size="sm" />
+                  </span>
                 </button>
               </li>
             </ul>
@@ -368,40 +375,11 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             <UButton v-if="state.next" label="More" color="neutral" variant="outline" size="sm" class="min-h-11" data-decisions-more @click="inbox.more()" />
           </div>
 
-          <section v-if="recent.length || state.closed.length" class="flex flex-col gap-2" data-decisions-recent>
-            <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">Recent</h2>
-            <!-- DR1's records closed in the last day: the server's, the same for every viewer. -->
-            <template v-if="state.closed.length">
-              <p class="text-xs text-muted">Durable decisions closed in the last day</p>
-              <ul class="flex flex-col gap-1">
-                <li v-for="s in state.closed" :key="s.ref">
-                  <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-decision="s.ref" @click="open(s.ref)">
-                    <span class="min-w-0">
-                      <span class="block truncate text-sm">{{ s.title || s.ref }}</span>
-                      <span class="block truncate text-xs text-muted">{{ s.closed ? `${relativeTime(s.closed)} ago` : '' }}</span>
-                    </span>
-                    <UBadge :label="s.state || 'closed'" :color="s.state === 'applied' ? 'success' : 'neutral'" variant="subtle" size="sm" data-recent-word />
-                  </button>
-                </li>
-              </ul>
-            </template>
-            <p v-if="recent.length" class="text-xs text-muted">Acted on from this browser, the last day</p>
-            <ul v-if="recent.length" class="flex flex-col gap-1">
-              <li v-for="e in recent" :key="trackKey(e)">
-                <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-row="e.ref" :data-recent-receipt="e.receipt" @click="openRecent(e)">
-                  <span class="min-w-0">
-                    <span class="block truncate text-sm">{{ e.title || e.ref }}</span>
-                    <span class="block truncate text-xs text-muted">{{ e.label }} · {{ relativeTime(new Date(e.at).toISOString()) }} ago</span>
-                  </span>
-                  <UBadge :label="recentWord(e).text" :color="recentWord(e).color" variant="subtle" size="sm" data-recent-word />
-                </button>
-              </li>
-            </ul>
-          </section>
+          <DecisionsRecent v-if="!zero" :closed="state.closed" :recent="recent" :word="recentWord" @open="open" @open-recent="openRecent" />
         </section>
 
         <!-- The open item, whole. Below lg it takes the page, with the way back to the list. -->
-        <section class="min-w-0" :class="!openRef && 'max-lg:hidden'" data-decisions-item>
+        <section v-if="!zero" class="min-w-0" :class="!openRef && 'max-lg:hidden'" data-decisions-item>
           <UButton v-if="openRef" label="Back to the list" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="lg" class="mb-3 min-h-11 lg:hidden" data-inbox-back @click="back" />
           <InboxItem
             v-if="item"
@@ -416,6 +394,7 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
             :ask-brakeman="askBrakeman"
             :confirm-question="confirmQuestion"
             :drawn="record.decision.value?.request.evidence"
+            :record-shown="!!record.decision.value && record.decision.value.id === decisionIdOf(item.ref)"
             @act="act"
             @comment="comment"
             @reread="reread"
@@ -439,43 +418,15 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
               <InboxDelivery :steps="delivery" :route-of="routeOf" />
             </section>
           </div>
-          <p v-else-if="!openRef" class="hidden py-8 text-center text-sm text-muted lg:block">Pick an item to see its brief, its choices and what each authorizes.</p>
+          <!-- The open item while it is read whole: the list's own title for it, when the list holds it, and that it is being read. -->
+          <div v-else-if="openRef" class="flex flex-col gap-2" data-inbox-reading>
+            <h2 v-if="openSummary" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-reading-title>{{ openSummary.title }}</h2>
+            <p class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</p>
+          </div>
+          <p v-else-if="pick" class="hidden py-8 text-center text-sm text-muted lg:block">Pick an item to see its brief, its choices and what each authorizes.</p>
         </section>
       </div>
 
-      <UModal
-        v-model:open="phoneOpen"
-        title="Open on your phone"
-        :description="phoneWords"
-      >
-        <template #body>
-          <div v-if="offer?.kind === 'qr' && qr" class="flex flex-col items-center gap-3" data-phone-offer="qr" :data-phone-url="offer.url">
-            <svg :viewBox="qr.viewBox" class="size-48 rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="offer.url" data-phone-qr>
-              <path :d="qr.path" fill="currentColor" />
-            </svg>
-            <code class="break-all text-sm">{{ offer.url }}</code>
-          </div>
-          <div v-else-if="offer?.kind === 'loopback'" class="flex flex-col gap-3" data-phone-offer="loopback">
-            <p class="text-sm text-pretty">{{ offer.words }}</p>
-            <template v-if="targets.length">
-              <p class="text-sm text-pretty text-muted">A decision link opens on a phone instead: what it covers is answered there, through the switchyard this server publishes to or its public address. Pick a run or a session.</p>
-              <div class="flex flex-wrap items-center gap-2">
-                <USelect v-model="target" :items="targets" class="min-w-0 flex-1" aria-label="What the decision link covers" data-phone-target />
-                <UButton label="Make a decision link" icon="i-lucide-link" :loading="making" :disabled="!target" class="min-h-11" data-phone-make-link @click="makeDecisionLink" />
-              </div>
-            </template>
-            <UAlert v-if="linkError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="linkError" data-phone-link-error />
-            <div v-if="madeLink && madeQr" class="flex flex-col items-center gap-3" data-phone-link :data-phone-url="madeLink.url">
-              <svg :viewBox="madeQr.viewBox" class="size-48 rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="madeLink.url" data-phone-link-qr>
-                <path :d="madeQr.path" fill="currentColor" />
-              </svg>
-              <code class="break-all text-sm">{{ madeLink.url }}</code>
-              <p v-if="madeLink.loopback" class="text-xs text-warning text-pretty">This link's address is this computer's own too: a phone reaches a decision link where this server publishes to a switchyard or has a public address.</p>
-              <p v-else class="text-xs text-muted text-pretty">The code holds the link: anyone who scans it answers what it covers, for two hours, until you revoke it from Share.</p>
-            </div>
-          </div>
-        </template>
-      </UModal>
     </template>
   </UDashboardPanel>
 </template>

@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The Files tab serves the folder its session started in, which the server
 // keeps open: when the session's path comes to name another folder (the
@@ -19,7 +19,7 @@ test('the Files tab keeps to the folder the session started in', async ({ page, 
     renameSync(cwd, `${cwd}.moved`)
     symlinkSync(other, cwd)
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     const error = pane.locator('[data-files-error]')
     await expect(error).toContainText('the session\'s folder is no longer at its path', { timeout: 30_000 })

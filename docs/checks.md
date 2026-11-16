@@ -29,8 +29,28 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py)
 ```
+
+`npm --prefix web test` runs the design system's rule checks among the
+app's tests: `web/app/utils/designRules.test.ts` reads the app's sources
+and `docs/design/system.md` and fails when a rule is broken (an icon-only
+button with no tooltip, a cut whose box does not set its width, a state
+mapped to a status colour outside `utils/status.ts`, a zinc grey) or when
+the file and the code disagree (a rule with no mark, the Status table
+against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each rule of
+`system.md` names its checks.
+
+`make design-capture` is not a check: it is a maintainer's step at a
+release, on the draft release's checklist. It builds the app and the
+server, runs `web/e2e/look.spec.ts` with `CONDUCTOR_E2E_LOOK=1` (skipped
+otherwise, as `live.spec.ts` is; `typecheck:e2e` still checks it), which
+writes every screen of the seeded day in both themes and sizes to
+`web/test-results/look/` with the computed values in `look.json`, then
+prints what drifted against `docs/design/system.json`
+(`scripts/design_drift.py`; `--check` exits 1 on drift, `--write` writes
+the new baseline). The screens are never committed; the baseline is,
+values only (`docs/design/system.md`, What a pull request cannot do).
 
 The race tests' `-timeout 60m` catches a hang; it is not a speed target.
 go test's default, ten minutes a package, is less than `internal/api` takes
@@ -62,6 +82,33 @@ either shard does; `scripts/preflight_test.py` holds the matrix to the shard cou
 longest whole-suite run (67, on 2026-11-15) together. On the pull request that cut the
 shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34 and 29
 for each job), where the whole suite of 564 had taken one job 67.
+
+A spec asserts layout by measures, never by pixels: `web/e2e/layout.ts`'s
+helpers say the measure in the failure. What a person can see of an
+element is the browser's answer, read by one function the helpers share:
+drawn by `checkVisibility`, the visible box by an `IntersectionObserver`,
+text by a `Range`, one box per line, what covers it by hit-testing.
+`uncut`, `inside`, `noOverlap`, `aligned`, `rowsInView`, `topAtMost`,
+`lines`, `noSideways` and `tapTarget` wait until one match is drawn
+(failing with how many matched), measure after the fonts load and fail
+when none is drawn at the measure; `atWidths` waits for the layout's
+root at each size and names the size in a failure; `tabTo` waits for its
+target and its start and fails when either matched nothing; `ageBy` and
+`probeColour` wait for nothing, and `probeColour` fails on a value that
+is no colour. Where the browser cannot say, a helper fails, saying what
+to give it, or its doc comment states the limit. `layout.spec.ts` holds
+each check of each helper with a page that fails without it, and copies
+the app's own markup shapes with the defects seen on the built app.
+
+Contrast is held twice, by one table of floors (`web/app/utils/contrast.ts`,
+`CONTRAST_FLOORS`). `themeContrast.test.ts` (vitest) resolves every token in
+both themes from Nuxt UI's own plugin and stylesheet and `main.css`, and holds
+each text token on each surface. `web/e2e/contrast.ts` walks the text a page
+draws: each text over its real ground, tints, opacity and what is painted
+under it counted. `contrast.spec.ts` runs that walk on six pages of the
+seeded day, in both themes, at 1440 and at 390, and fails on a text under its
+floor. It also fails on an entry of `contrast-known.ts` that its walk no longer
+meets: the row that fixes a place deletes its entry.
 
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
@@ -96,3 +143,55 @@ the full set for affected surfaces before finishing. Every harness that launches
 a server publishes its sessions to the public switchyard by default, and a
 test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
+
+The seeded day (`web/e2e/day.ts`, the plan `docs/plans/ux-review.md`) is a
+day of work on a server of its own, started at a worker's first test that
+asks for the `day` fixture and built in named parts on demand: `states` (a
+session in each state: asking, working, finished, running with no hooks,
+exited), `dispatch` (projects CND and OPS, fourteen tickets), `waiting`
+(an item of each kind the inbox holds), `runs` (Ledger migration's six
+tasks, Release notes succeeded), `long` (a name, a label and a title at
+their bounds) and `busy` (all of them, and eighteen live sessions). The stub
+holds its states with no timer (`STUB_TURN`, a question, a check that exits
+1). Two rules: the day is read-only, and a measure of how much fits is made
+on `busy`, so that it measures the same page whatever ran before it. The
+`day` fixture holds the first at each test's end (`guard` in `day.ts`) by
+one rule: what the day's server lists is the same as the day's start and
+its parts' builds left it. One snapshot holds every session (name, status,
+exit code, agent, folder, run and member, its attention whole), every run
+(name, label, state, outcome, each member's status and session, each
+task's state, attempts and the decisions that hold it), the inbox's items,
+Dispatch (people, projects, labels, milestones, saved views, every
+project's tickets with their status, labels, owner, priority, assignees and
+revision, each plan's state), the crews and the share links. The guard
+names each item added or gone and each field changed, from what to what,
+and ends the sessions and runs a test added. Left out, as what moves by
+itself: every time and a run's log; a session's viewers and size, which
+every page attached moves; a member's diff, which the server counts again
+in the background (it moved within a minute on an idle day); and what
+follows a field compared (a run's needsInput and ledger revision, a
+member's attempt, branch and worktree). Not guarded: a browser context opened by hand (not `dayPage`) and left
+attached, which views until the worker ends (viewers come and go with
+every page, so the guard counts none; `dayPage`'s are closed before it);
+what is typed into a day session's terminal and its screen, which the API
+does not list (a line into a finished session starts a turn, which is
+named); a ticket's comments, attachments and links, which the ticket list
+does not carry (one that moves the ticket's revision is named); the
+activity log and history, which every test that looks at the day appends
+to; and the server's settings, catalog, webhooks and alert rules and the
+day's repository's files and branches, which no spec on the day may
+write (a spec that must starts a server of its own, `ownServer`).
+`dayPage` opens the day only in a test that asked for `day`. A shard that asks for the day builds its own (a shard is a run
+with a worker of its own): on CI's runner `busy` takes about 17 s
+(2026-11-16), `waiting` alone about 8 s (2026-11-15, when a spec last
+asked for it alone). On a 64-core development machine (2026-11-16):
+`day.spec.ts`'s proofs of the guard start ten days of their own, about
+33 s in all (two of them build `runs` or `waiting`, about 10 s each),
+and one guard, one snapshot of the busy day, is 53 reads in 0.1 to
+0.15 s at a load average of 4 to 20. To look at it by hand,
+`CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
+`web/`, after `make web-build build-go`) prints its address and the path of
+a file only its owner reads that holds its token, and holds it until Ctrl+C.
+`dayPage` and `useTheme` (`web/e2e/fixtures.ts`) set the colour mode the way
+the app keeps it (`conductor-color-mode`): a `colorScheme` context does not
+switch this app, which opens dark whatever the system prefers.

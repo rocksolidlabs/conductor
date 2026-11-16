@@ -6,7 +6,9 @@ import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
-import { shortCwd } from '~/utils/sessions'
+import { firstMessageLine } from '~/utils/launch'
+import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
+import { sessionStatus, statusOfKey } from '~/utils/status'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
@@ -42,8 +44,9 @@ const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
 const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 useShortcutsModal().registerPage(SESSION_SHORTCUTS)
-// The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail.
-const tab = ref<InspectorView>('people')
+// The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail. With no view
+// chosen the panel opens on Explorer (P11): People would show the person to themselves.
+const tab = ref<InspectorView>('explorer')
 const attention = ref<Attention>({ state: '' })
 
 // The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
@@ -127,10 +130,12 @@ function onRequestError(err: { code: string; message: string; requestId: string 
   toast.add({ title: 'Not sent to the agent', description: err.message, color: 'warning' })
 }
 
-const INSPECTOR_KEY = 'conductor.inspector'
-const inspector = ref(true)
+// The panel is closed until a person opens it (P11): the terminal has its room. One choice for every session, kept under a key of its
+// own, so that the old key's stored "1" (the panel open by default) keeps nobody's panel open.
+const INSPECTOR_KEY = 'conductor.inspectorOpen'
+const inspector = ref(false)
 try {
-  inspector.value = localStorage.getItem(INSPECTOR_KEY) !== '0'
+  inspector.value = localStorage.getItem(INSPECTOR_KEY) === '1'
 } catch {
   /* ignore */
 }
@@ -158,6 +163,12 @@ watch(
 const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))
 /** The session as the live store has it, else as read: its yolo badge and its agent session follow the stream. */
 const current = computed(() => stored.value ?? session.value)
+const clock = useNow()
+/** The header's state (sessionStatus): the live store's session, else the one read with the attention the page holds. */
+const status = computed(() => {
+  const s = stored.value ?? (session.value && { ...session.value, attention: attention.value })
+  return s ? sessionStatus(s, clock.value) : undefined
+})
 const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
@@ -171,20 +182,16 @@ watch(
   { deep: true },
 )
 
-const agentLabel = computed(() => {
-  const a = session.value?.agentId ?? ''
-  const names: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity' }
-  return names[a] ?? a
-})
-const meta = computed(() => {
-  const s = session.value
-  if (!s) return ''
-  const parts = [agentLabel.value]
-  parts.push(s.kind === 'hosted' ? `hosted by ${s.hostUser || '?'} on ${s.hostName || 'dev machine'}` : 'server')
-  parts.push(shortCwd(s.cwd))
-  if (s.branch) parts.push(s.branch)
-  return parts.join(' · ')
-})
+const agentLabel = computed(() => agentName(session.value?.agentId ?? ''))
+// The first message waiting to be typed (P19): what it waits for, in one line above the terminal, until the listing clears it.
+const firstLine = computed(() => firstMessageLine(current.value, agentLabel.value))
+// Agent · folder · branch under the name (P11), the whole path its tooltip; the ids are in the More menu.
+const headline = computed(() => (current.value ? sessionHeadline(current.value) : null))
+
+// Below sm the bar keeps Back, the name with its state, Chat and More (D9): Files, Share and Fullscreen go first into More.
+const sm = useMedia('(min-width: 40rem)')
+const fullscreen = useFullscreenToggle()
+const canFullscreen = import.meta.client && document.fullscreenEnabled === true
 
 // Rename… (#318): a server session, running or ended, through the one dialog; a hosted session's host names it.
 const renameModal = useRenameModal()
@@ -194,12 +201,27 @@ function renameSession() {
 }
 
 const menu = computed(() => [
+  ...(sm.value
+    ? []
+    : [
+        [
+          { label: 'Files', icon: 'i-lucide-folder-open', onSelect: showFiles },
+          { label: 'Share', icon: 'i-lucide-share-2', onSelect: () => (share.value = true) },
+          ...(canFullscreen ? [{ label: fullscreen.fullscreen.value ? 'Exit fullscreen' : 'Enter fullscreen', icon: fullscreen.fullscreen.value ? 'i-lucide-minimize' : 'i-lucide-maximize', onSelect: fullscreen.toggle }] : []),
+        ],
+      ]),
   [
     { label: 'Mark as needs input', icon: 'i-lucide-hand', onSelect: () => signal('needs_input') },
     { label: 'Mark as working', icon: 'i-lucide-loader-circle', onSelect: () => signal('working') },
     { label: 'Clear signal', icon: 'i-lucide-x', onSelect: () => signal('clear') },
   ],
   ...(renamable.value ? [[{ label: 'Rename…', icon: 'i-lucide-pencil', onSelect: renameSession }]] : []),
+  [
+    { label: 'Copy session id', icon: 'i-lucide-copy', onSelect: () => void copy(id.value, 'Session id copied') },
+    ...(current.value?.agentSession
+      ? [{ label: "Copy the agent's session id", icon: 'i-lucide-copy', onSelect: () => void copy(current.value!.agentSession!.id, "The agent's session id copied", `Its own session (${current.value!.agentSession!.source})`) }]
+      : []),
+  ],
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
@@ -234,8 +256,13 @@ const typingLine = computed(() => {
   return `${n[0]}, ${n[1]} and ${n.length - 2} more are typing…`
 })
 
+// A link to a session the server no longer holds (D7): its record's name and a way to the record, read once as the page loads.
+const gone = ref<GonePage | null>(null)
+const history = useHistory()
+const goneTitle = computed(() => (gone.value?.kind === 'record' ? gone.value.name : 'An ended session'))
+
 // The name as the live store has it: a rename, here or anywhere, shows at once.
-useHead({ title: computed(() => current.value?.name || 'Session') })
+useHead({ title: computed(() => (gone.value ? goneTitle.value : current.value?.name || 'Session')) })
 
 async function load() {
   if (!admin.hasToken.value) {
@@ -249,7 +276,19 @@ async function load() {
     links.value = res.links ?? []
     error.value = ''
     ready.value = true
+    gone.value = null
   } catch (e) {
+    if (sessionGone(e)) {
+      const read = await history.record(id.value).then(
+        (r) => ({ ok: r.record }),
+        (failed: unknown) => ({ failed }),
+      )
+      gone.value = gonePage(e, read)
+      if (gone.value) {
+        error.value = ''
+        return
+      }
+    }
     error.value = (e as Error).message
   }
 }
@@ -372,6 +411,7 @@ watch(() => admin.token.value, load)
 watch(id, () => {
   ready.value = false
   session.value = null
+  gone.value = null
   viewers.value = []
   activity.value = []
   fileTarget.value = null
@@ -545,75 +585,88 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
     <template #header>
-      <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
+      <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
-          <div class="flex min-w-0 flex-col">
+          <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
+            <span class="truncate text-[15px] font-semibold" data-session-title>{{ goneTitle }}</span>
+            <StatusMark :status="statusOfKey('exited')" word class="text-xs" data-session-status="gone" />
+          </div>
+          <div v-else class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
               <span class="truncate text-[15px] font-semibold" data-session-title>{{ current?.name || 'Session' }}</span>
-              <AttentionBadge :attention="attention" />
-              <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
+              <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
             </div>
-            <span class="flex min-w-0 items-center gap-2 font-mono text-[11.5px] text-muted">
-              <span class="truncate">{{ meta }}</span>
-              <button
-                v-if="current?.agentSession"
-                type="button"
-                class="hidden max-w-40 flex-none truncate hover:text-default md:inline"
-                :title="`The agent's own session (${current.agentSession.source}): ${current.agentSession.id}. Click to copy.`"
-                data-agent-session
-                @click="copy(current.agentSession.id, 'Agent session copied')"
-              >
-                {{ current.agentSession.id }}
-              </button>
-            </span>
+            <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>
           </div>
         </template>
         <template #right>
-          <ResumeButton v-if="ended && current" :session="current" />
-          <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
-          <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
-          <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
-          <!-- Files and Chat only below xl (#329): at xl the inspector rail has both, with the chat's count; here they said it twice. -->
-          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
-          <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
-          <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
-            <span class="hidden sm:inline">Chat</span>
-            <ChatUnreadPill :count="chatUnread" />
-          </UButton>
-          <UDropdownMenu :items="menu">
-            <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
-          </UDropdownMenu>
-          <FullscreenButton />
+          <template v-if="!gone">
+            <ResumeButton v-if="ended && current" :session="current" />
+            <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" compact class="hidden md:inline-flex" />
+            <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
+            <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. Below sm Files, Share and
+                 Fullscreen are the first items of More (D9), so that the name keeps its room. -->
+            <!-- Files and Chat only below xl (#329): at xl the inspector rail has both, with the chat's count; here they said it twice. -->
+            <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
+            <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" class="hidden sm:inline-flex" data-share-button @click="share = true">Share</UButton>
+            <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
+            <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+              <span class="hidden sm:inline">Chat</span>
+              <ChatUnreadPill :count="chatUnread" />
+            </IconButton>
+            <UDropdownMenu :items="menu">
+              <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" data-more-button />
+            </UDropdownMenu>
+          </template>
+          <div class="hidden sm:flex"><FullscreenButton /></div>
         </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
-      <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
+      <!-- A session the server no longer holds (D7): what became of it, and the one way on, its record or History. -->
+      <UEmpty
+        v-if="gone"
+        icon="i-lucide-history"
+        :title="gone.kind === 'forgotten' ? 'Nothing of this session is kept.' : 'This session ended, and this server no longer holds it.'"
+        :description="gone.kind === 'unread' ? gone.words : undefined"
+        :actions="gone.kind === 'record' ? [{ label: 'Open its record', to: `/history/sessions/${encodeURIComponent(id)}`, color: 'neutral', variant: 'outline' }] : gone.history ? [{ label: 'Open History', to: '/history', color: 'neutral', variant: 'outline' }] : []"
+        class="m-auto"
+        :data-session-gone="gone.kind"
+      />
+      <UAlert v-else-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
         <EditorColumn ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
-          <TerminalView
-            ref="terminal"
-            :create-transport="createTransport"
-            @nvim="editor.onNvim"
-            @welcome="onWelcome"
-            @status="onStatus"
-            @attention="onAttention"
-            @viewers="onViewers"
-            @activity="onActivity"
-            @transport="transport = $event"
-            @closed="onClosed"
-            @chat="onChat"
-            @chat-history="onChatHistory"
-            @request-error="onRequestError"
-            @open-file="openFile"
-            @open-url="openUrl"
-          />
+          <!-- The first message's wait (P19), said above the terminal: the inspector, where Activity says it too, starts closed. -->
+          <div class="flex h-full min-h-0 flex-col gap-2">
+            <p v-if="firstLine" class="flex flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 py-1.5 text-xs text-muted" data-first-message>
+              <UIcon name="i-lucide-message-square-text" class="size-3.5 flex-none" aria-hidden="true" />
+              <span class="min-w-0 truncate" :title="firstLine">{{ firstLine }}</span>
+            </p>
+            <div class="relative min-h-0 flex-1">
+              <TerminalView
+                ref="terminal"
+                :create-transport="createTransport"
+                @nvim="editor.onNvim"
+                @welcome="onWelcome"
+                @status="onStatus"
+                @attention="onAttention"
+                @viewers="onViewers"
+                @activity="onActivity"
+                @transport="transport = $event"
+                @closed="onClosed"
+                @chat="onChat"
+                @chat-history="onChatHistory"
+                @request-error="onRequestError"
+                @open-file="openFile"
+                @open-url="openUrl"
+              />
+            </div>
+          </div>
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
             <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" answers pastes @answer="decisionModal.open" @paste="terminal?.openPaste()" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />

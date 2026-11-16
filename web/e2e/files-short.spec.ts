@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The Files pane on a very short window (#203). The inspector gets what is
 // left under the page's header, and the pane's header rows took it all: the
@@ -18,7 +18,7 @@ test('on a very short window a folder row in the Explorer takes its click and ex
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'files-short', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     const tree = pane.locator('[data-files-tree]')
     await expect(tree.locator('[data-file-node]')).toHaveCount(3, { timeout: 30_000 })

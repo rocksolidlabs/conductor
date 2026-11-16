@@ -100,7 +100,7 @@ function remove(key: number) {
             @update:model-value="update(p.key, { note: String($event) || undefined })"
           />
           <div class="col-start-2 row-start-1 flex h-8 items-center justify-end @min-[48rem]:col-start-auto @min-[48rem]:row-start-auto">
-            <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${who(p, i)}`" data-person-remove @click="remove(p.key)" />
+            <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :label="`Remove ${who(p, i)}`" data-person-remove @click="remove(p.key)" />
           </div>
         </div>
         <span v-if="problem(i)" class="text-xs leading-snug text-error" data-person-error>{{ problem(i) }}</span>

@@ -477,14 +477,14 @@ usePalette().registerPage(() => {
             <UFormField label="Allowed roots" description="Directories server sessions may run in, one per line. The agents can read and change everything under them." :ui="fieldUi">
               <div class="flex gap-2">
                 <UTextarea v-model="rootsText" :rows="3" class="min-w-0 flex-1 font-mono text-xs" />
-                <UButton icon="i-lucide-folder-plus" color="neutral" variant="outline" aria-label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
+                <IconButton icon="i-lucide-folder-plus" color="neutral" variant="outline" label="Add a root" data-pick-dir="root" @click="openPicker('root')" />
               </div>
             </UFormField>
             <UFormField label="Default working directory" description="Where a launch runs when it names no directory; under an allowed root." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.defaultCwd" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the default working directory" data-pick-dir="defaultCwd" @click="openPicker('defaultCwd')" /></div>
             </UFormField>
             <UFormField label="Data directory" description="The server's catalog, crews, hooks and certificates. Keep it outside the allowed roots." :ui="fieldUi">
-              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><UButton icon="i-lucide-folder" color="neutral" variant="outline" aria-label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
+              <div class="flex gap-2"><UInput v-model="form.dataDir" class="min-w-0 flex-1 font-mono text-xs" /><IconButton icon="i-lucide-folder" color="neutral" variant="outline" label="Pick the data directory" data-pick-dir="dataDir" @click="openPicker('dataDir')" /></div>
             </UFormField>
           </div>
         </UCard>
@@ -511,7 +511,12 @@ usePalette().registerPage(() => {
         </UCard>
 
         <UCard v-if="agents.length" :ui="cardUi" :class="sectionClass" data-settings-section="agents">
-          <template #header><SettingsCardTitle title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." /></template>
+          <template #header>
+            <div class="flex items-start gap-3">
+              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." />
+              <UButton label="Open Agents" to="/agents" icon="i-lucide-bot" size="xs" color="neutral" variant="outline" class="flex-none" data-settings-agents-link />
+            </div>
+          </template>
           <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). -->
           <ul class="grid gap-x-8 gap-y-1.5 text-sm @3xl:grid-cols-2">
             <li v-for="a in agents" :key="a.id" class="flex min-w-0 items-center gap-2" :data-agent="a.id">

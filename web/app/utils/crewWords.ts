@@ -1,9 +1,11 @@
-import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { RelatedTicket } from '~/composables/useDispatch'
+import type { CrewInput, CrewMember, CrewStart, RunInfo, RunMember, RunTicket, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { runLength } from './charts'
-import { memberStatus, toCrewInput, type MemberStatus } from './crews'
+import { ownError, STOPPED_ERROR, toCrewInput, type MemberStatus } from './crews'
 import { runState, type RunState } from './runs'
 import { relativeTime } from './sessions'
+import { memberStatusOf } from './status'
 
 /**
  * The words of the Crews pages. Two nouns, said every time: a crew is a saved
@@ -13,13 +15,7 @@ import { relativeTime } from './sessions'
  * or "stopped" in grey, and red is kept for an error of its own.
  */
 
-/** The error the server gives a member a stop caught before it ran (internal/crew ErrRunStopped). */
-export const STOPPED_ERROR = 'the run is stopped'
-
-/** A member's own error: one that is not the run being stopped. */
-export function ownError(m: Pick<RunMember, 'error'>): string {
-  return m.error && m.error !== STOPPED_ERROR ? m.error : ''
-}
+// A member's own error (ownError) and the stop's (STOPPED_ERROR) are crews.ts's, beside memberStatus, which the status language reads too.
 
 /** A start rule in words, with its icon: the table's Starts column, a graph node's last line. A member started by hand is muted. */
 export function startWords(start: CrewStart): { icon: string; text: string; muted: boolean } {
@@ -129,8 +125,8 @@ export function startSentence(members: readonly ShapeMember[]): string {
   return parts.join('; ')
 }
 
-/** The ways a run can be, as a badge says them. */
-export type RunOutcome = 'needs you' | 'running' | 'finished' | 'stopped' | 'failed' | 'interrupted'
+/** The ways a run can be, as a badge says them: a run that has ended says "ended", never "finished" (a session's word). */
+export type RunOutcome = 'needs you' | 'running' | 'ended' | 'stopped' | 'failed' | 'interrupted'
 
 /** A run's outcome from its live state: failed when a member ended with an error of its own, whether the run was then stopped or not. */
 export function runOutcome(run: Pick<RunInfo, 'members'>, state: RunState): RunOutcome {
@@ -138,7 +134,7 @@ export function runOutcome(run: Pick<RunInfo, 'members'>, state: RunState): RunO
   if (state === 'running') return 'running'
   if (state === 'interrupted') return 'interrupted'
   if (run.members.some((m) => ownError(m))) return 'failed'
-  return state === 'stopped' ? 'stopped' : 'finished'
+  return state === 'stopped' ? 'stopped' : 'ended'
 }
 
 /** The badge of an outcome: its colour, and whether it is drawn solid-ish (the ones to act on) or as an outline. */
@@ -155,7 +151,7 @@ export function outcomeBadge(o: RunOutcome): { label: string; color: 'warning' |
     case 'interrupted':
       return { label: 'interrupted', color: 'warning', variant: 'outline' }
   }
-  return { label: 'finished', color: 'neutral', variant: 'outline' }
+  return { label: 'ended', color: 'neutral', variant: 'outline' }
 }
 
 /** How many times a member asked a question in a run: the "asks" lines of its log. */
@@ -178,6 +174,15 @@ export function startedClock(iso: string): string {
 /** The part after the crew's name: the run's own name when it was given one at launch, else "run started 08:31". */
 export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
   return run.label || `run started ${startedClock(run.startedAt)}`
+}
+
+/**
+ * The ticket chips a run's header draws: "Launched from CND-12 · plan r3" for a run launched from a ticket's revision, and the
+ * ticket the run is linked to, which is dropped when it names the ticket the run was launched from (one chip for one ticket; both
+ * only when they name two, so a different linked ticket is never hidden).
+ */
+export function runTicketChips(launched: RunTicket | null | undefined, linked: RelatedTicket | null | undefined): { launched: RunTicket | null; linked: RelatedTicket | null } {
+  return { launched: launched ?? null, linked: linked && linked.key !== launched?.key ? linked : null }
 }
 
 /** How a run is named where one line must do (a tab title, the sidebar): its own name, else its crew's. */
@@ -235,26 +240,11 @@ export function memberWords(run: Pick<RunInfo, 'stoppedAt'>, m: Pick<RunMember, 
   return { text: 'waiting to start', tone: 'muted' }
 }
 
-/** The dot on a member's tile: amber needs you, green runs, blue starts, grey ended, red ended with its own error, an outline for pending. */
-export function memberDotClass(status: MemberStatus, m: Pick<RunMember, 'error'>): string {
-  switch (status) {
-    case 'needs_input':
-      return 'bg-warning'
-    case 'running':
-      return 'bg-success'
-    case 'starting':
-      return 'bg-info'
-    case 'ended':
-      return ownError(m) ? 'bg-error' : 'bg-neutral-400'
-  }
-  return 'bg-transparent ring-1 ring-neutral-400'
-}
-
-/** The members of a run as the rows and cards draw them: each with its live status, its dot and its words. */
-export function memberTiles(run: RunInfo, sessions: readonly SessionInfo[]) {
+/** The members of a run as the rows and cards draw them: each with its live status (memberStatus), its mark (memberStatusOf) and its words. */
+export function memberTiles(run: RunInfo, sessions: readonly SessionInfo[], now = Date.now()) {
   return run.members.map((m) => {
-    const status = memberStatus(run, m, sessions)
-    return { m, status, dot: memberDotClass(status, m), words: memberWords(run, m, status) }
+    const { status, mark } = memberStatusOf(run, m, sessions, now)
+    return { m, status, mark, words: memberWords(run, m, status) }
   })
 }
 
@@ -313,17 +303,22 @@ export function runBars(runs: readonly RunInfo[], sessions: readonly SessionInfo
     .reverse()
 }
 
-/** The bars' colours: finished green, stopped grey, failed red, still going the brand's primary. */
+/**
+ * The bars' colours: a run still going the working green (green is for what is live), an ended run neutral, a stopped one lighter, a
+ * failed one red.
+ */
 export function barClass(o: RunOutcome): string {
   switch (o) {
-    case 'finished':
+    case 'needs you':
+    case 'running':
       return 'bg-success'
     case 'failed':
       return 'bg-error'
     case 'stopped':
-      return 'bg-neutral-400'
+    case 'interrupted':
+      return 'bg-accented'
   }
-  return 'bg-primary'
+  return 'bg-(--ui-text-muted)'
 }
 
 /** The median of the bars' lengths in minutes, 0 without bars. */
@@ -353,17 +348,6 @@ export function barsSummary(bars: readonly RunBar[]): string {
   return parts.join(' · ')
 }
 
-/** The live-run banner's words: when it started, how many run, who needs you, who waits for Start now. */
-export function liveRunLine(run: RunInfo, sessions: readonly SessionInfo[]): { started: string; running: number; needs: string[]; waits: string[] } {
-  const tiles = memberTiles(run, sessions)
-  return {
-    started: startedClock(run.startedAt),
-    running: tiles.filter((t) => t.status === 'running' || t.status === 'starting').length,
-    needs: tiles.filter((t) => t.status === 'needs_input').map((t) => t.m.name),
-    waits: tiles.filter((t) => t.status === 'pending' && t.m.start.when === 'manual').map((t) => t.m.name),
-  }
-}
-
 /** The fields of a draft that differ from the crew as saved, as the unsaved-changes bar names them: "Goal, Members". */
 export function changedFields(draft: CrewInput, saved: CrewInput | undefined): string[] {
   if (!saved) return []
@@ -380,7 +364,7 @@ export function changedFields(draft: CrewInput, saved: CrewInput | undefined): s
 }
 
 /** The Runs tab's filter: by how runs ended (live is running or needing you) and by when they started. */
-export type RunFilterState = 'all' | 'live' | 'finished' | 'stopped' | 'failed'
+export type RunFilterState = 'all' | 'live' | 'ended' | 'stopped' | 'failed'
 export type RunFilterSince = 'today' | '7d' | '30d' | 'all'
 export interface RunFilter {
   state: RunFilterState
@@ -420,7 +404,7 @@ export function filterRuns<T extends { run: Pick<RunInfo, 'startedAt'>; outcome:
 
 /** Each chip's count within the time window; All counts the window. */
 export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; outcome: RunOutcome }>(rows: readonly T[], since: RunFilterSince, now: number): Record<RunFilterState, number> {
-  const out: Record<RunFilterState, number> = { all: 0, live: 0, finished: 0, stopped: 0, failed: 0 }
+  const out: Record<RunFilterState, number> = { all: 0, live: 0, ended: 0, stopped: 0, failed: 0 }
   for (const r of rows) {
     if (!inWindow(r.run.startedAt, since, now)) continue
     out.all++
@@ -433,10 +417,12 @@ export function filterCounts<T extends { run: Pick<RunInfo, 'startedAt'>; outcom
 export function readRunFilter(raw: string | null): RunFilter {
   try {
     const v = JSON.parse(raw ?? '') as Partial<RunFilter>
-    const states: RunFilterState[] = ['all', 'live', 'finished', 'stopped', 'failed']
+    const states: RunFilterState[] = ['all', 'live', 'ended', 'stopped', 'failed']
     const sinces: RunFilterSince[] = ['today', '7d', '30d', 'all']
+    // "finished" is what this browser kept before the chip was named Ended.
+    const state = (v.state as string) === 'finished' ? 'ended' : v.state
     return {
-      state: states.includes(v.state as RunFilterState) ? (v.state as RunFilterState) : 'all',
+      state: states.includes(state as RunFilterState) ? (state as RunFilterState) : 'all',
       since: sinces.includes(v.since as RunFilterSince) ? (v.since as RunFilterSince) : 'all',
     }
   } catch {

@@ -34,7 +34,9 @@ GitHub Issues are the backlog. One issue, one branch `issue-N` cut from
 the template lays it out, with who made it (a person or an agent, with a
 session link when there is one); every review comment answered, fixed or
 declined with why, and its thread resolved. Never two open issues at once.
-The `ready` label is the go-ahead for everyone.
+The `ready` label is the go-ahead for everyone. The maintainers and the
+agents they run also ship related issues as one pull request, a bundle
+(`AGENTS.md`, Working an issue).
 
 With write access, which the maintainers and the agents they run have,
 `AGENTS.md`'s bullets apply as written: assign yourself, cut the branch on

@@ -426,6 +426,10 @@ type agent struct {
 	// (Info.Kept, to the owner's own server alone: toServerKept), the pair
 	// sent and resent together. Guarded by mu.
 	lastKept []string
+	// lastTurns is the session's Info.Turns as lastAttention was told,
+	// sent with it (proto.HostAttentionMsg.Turns): a change of it alone is
+	// told, as a change of what the session keeps is. Guarded by mu.
+	lastTurns bool
 	// attentionUntold says the last attention change was not sent for want
 	// of a connection, or a connection has started since the last was told
 	// (retellAttention): the next change sends it, whatever it is.
@@ -959,20 +963,20 @@ func (a *agent) onLocalChange(info session.Info) {
 	// a change of either is told, the two together.
 	kept := a.toServerKept(info.Kept)
 	a.mu.Lock()
-	changed := a.attentionUntold || !sameAttention(att, a.lastAttention) || !slices.Equal(kept, a.lastKept)
+	changed := a.attentionUntold || !sameAttention(att, a.lastAttention) || !slices.Equal(kept, a.lastKept) || info.Turns != a.lastTurns
 	// The mark is taken here, under the lock that set it, not after the
 	// send: one set while a send was under way would be cleared by that
 	// send's end and its re-tell lost; taken here, it makes the next
 	// change tell, at worst the same attention once more.
 	a.attentionUntold = false
-	a.lastAttention, a.lastKept, a.attentionOf = att, kept, info.ID
+	a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf = att, kept, info.Turns, info.ID
 	retrying := a.attentionRetry
 	a.mu.Unlock()
 	if !changed || retrying {
 		// A retry under way sends the latest when its turn comes.
 		return
 	}
-	err := a.send(hostAttentionMsg(info.ID, att, kept))
+	err := a.send(hostAttentionMsg(info.ID, att, kept, info.Turns))
 	switch {
 	case err == nil:
 	case errors.Is(err, errConnDown):
@@ -1028,9 +1032,9 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, kept, id, on := a.lastAttention, a.lastKept, a.attentionOf, a.out
+			att, kept, turns, id, on := a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf, a.out
 			a.mu.Unlock()
-			err := a.tell(hostAttentionMsg(id, att, kept), nil)
+			err := a.tell(hostAttentionMsg(id, att, kept, turns), nil)
 			a.mu.Lock()
 			if a.out != on {
 				// The connection the attention went on is not the host's
@@ -1045,7 +1049,7 @@ func (a *agent) retryAttention() {
 				a.mu.Unlock()
 				return
 			}
-			if err != nil || sameAttention(att, a.lastAttention) && slices.Equal(kept, a.lastKept) {
+			if err != nil || sameAttention(att, a.lastAttention) && slices.Equal(kept, a.lastKept) && turns == a.lastTurns {
 				a.attentionRetry = false
 				a.attentionUntold = err != nil
 				a.mu.Unlock()
@@ -1085,10 +1089,12 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 
 // hostAttentionMsg encodes an attention change for the control connection,
 // with its mark as the agent's own question, which the server's copy keeps
-// through a done it forwards (signal.HostedSession.Ask), and what the
-// session keeps without showing it, read with it (toServerKept).
-func hostAttentionMsg(sessionID string, att session.Attention, kept []string) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan, Kept: kept}
+// through a done it forwards (signal.HostedSession.Ask), what the session
+// keeps without showing it, read with it (toServerKept), and whether its
+// agent reports its turns (Info.Turns, from the same Info), which a
+// switchyard is told too: it says no more than the state does.
+func hostAttentionMsg(sessionID string, att session.Attention, kept []string, turns bool) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan, Kept: kept, Turns: turns}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -1564,6 +1570,10 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			// The agent's own question (the server's Ask): the session
 			// keeps it through its turn's done.
 			a.local.Ask(m.Message, source, m.Kind, opts)
+		case m.TurnID != "" && proto.ValidTurnID(m.TurnID):
+			// The turn the report names: the session tells its end told
+			// twice from the next turn's (a name out of its bound is none).
+			a.local.SetAttentionTurn(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan, m.TurnID)
 		case m.Plan != "":
 			// The plan the question is about (#289), set with it.
 			a.local.SetAttentionPlan(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan)

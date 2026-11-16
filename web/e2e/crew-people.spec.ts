@@ -207,7 +207,8 @@ test("launched from the approved revision: the run's people and owners, a sessio
   await expect(page.locator('[data-run-people] [data-run-person="ana"]')).toContainText('acceptance owner')
   await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveText('owner nate')
   await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveAttribute('data-task-owner-from', 'task')
-  await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveText('owner ana, the acceptance owner')
+  // The acceptance owner is said once, in the people above and the task's detail, never on each row (UX1 PR-11).
+  await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveCount(0)
   await page.locator('[data-task-row="docs"] [role="button"]').click()
   await expect(page.locator('[data-task-detail-id="docs"] [data-task-detail-owner]')).toContainText('owner ana, the acceptance owner')
 
@@ -507,8 +508,10 @@ test("a live run's Add an agent marks a person's name and holds the button, as t
   await page.goto(`/runs/${encodeURIComponent(run.id)}`)
   budget(30_000)
   await expect(page.locator('[data-run-people] [data-run-person="nate"]')).toBeVisible({ timeout: 30_000 })
-  const addAgent = page.getByRole('button', { name: 'Add agent', exact: true })
-  await expect(addAgent).toBeEnabled()
+  // Add agent is in the run's menu.
+  await page.locator('[data-crew-run-header] [data-run-menu]').click()
+  const addAgent = page.locator('[role="menuitem"][data-run-add]')
+  await expect(addAgent).not.toHaveAttribute('data-disabled', '')
   await addAgent.click()
   const dialog = page.getByRole('dialog', { name: 'Add an agent' })
   // The member's name field, by its placeholder exactly: the Model field's "no model named" has the word too.

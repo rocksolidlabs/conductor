@@ -153,6 +153,18 @@ export function yoloWords(yolo: boolean | undefined): { label: string; words: st
     : { label: 'Yolo off', words: 'The agents ask before they act, as they do on their own.', tone: 'neutral' }
 }
 
+/**
+ * Whether a revision folds on the ticket's page, and its line when it does (UX1 PR-16): folded only while it is approved and its approval
+ * holds (planRemedy null: no reason that blocks), since a proposed, stale or superseded revision is what a person reads before acting on
+ * it. The line says what the approval covers: "2 members · 3 tasks · 4 checks · from 1a2b3c4d5e6f · Yolo off", one of each in the
+ * singular.
+ */
+export function planFold(revision: Pick<PlanSummary, 'n' | 'state' | 'stale' | 'agentsChanged' | 'crewChanged' | 'crewName'>, body: Pick<PlanBody, 'base' | 'crew' | 'manifestFile'>): { folded: boolean; line: string } {
+  const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+  const line = [count(body.crew.members?.length ?? 0, 'member'), count(body.crew.tasks?.length ?? 0, 'task'), count(expectedChecks(body).length, 'check'), `from ${shortCommit(body.base)}`, yoloWords(body.crew.yolo).label].join(' · ')
+  return { folded: revision.state === 'approved' && planRemedy(revision) === null, line }
+}
+
 /** What the server is known to refuse a launch for, learned from its replies (no read says it beforehand): managed runs off, no ledger. */
 export interface LaunchServer {
   /** The words of a `managed_off` refusal. */

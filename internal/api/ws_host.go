@@ -551,8 +551,9 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			break
 		}
 		// The host's own report is not forwarded, so it is never limited;
-		// its question keeps the host's id, and its mark as the agent's own.
-		hs.HostAttentionKept(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept)
+		// its question keeps the host's id, and its mark as the agent's own;
+		// its turns, once true, is learned (an older host sends none).
+		hs.HostAttentionTurns(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept, m.Turns)
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {
@@ -873,9 +874,11 @@ func registeredMessage(m proto.Registered) (b []byte, dropped bool) {
 
 // hostRecipe is what a hosted session of the agent agentID watches on its
 // screen (#293): the catalog's recipe for it, as a server session of the
-// agent is started with (agents.Recipe); nil when the catalog has no such
-// agent, when it has nothing to watch, and when its encoding is past
-// proto.MaxHostRecipe, which the built-in entries are far under.
+// agent is started with, but its forms (agents.HostRecipe: a hosted
+// session answers Codex's MCP tool approval in its terminal, #716); nil
+// when the catalog has no such agent, when it has nothing to watch, and
+// when its encoding is past proto.MaxHostRecipe, which the built-in
+// entries are far under.
 func (s *Server) hostRecipe(agentID string) *proto.HostRecipe {
 	if agentID == "" {
 		return nil
@@ -884,7 +887,7 @@ func (s *Server) hostRecipe(agentID string) *proto.HostRecipe {
 	if !ok {
 		return nil
 	}
-	r := agents.Recipe(agent)
+	r := agents.HostRecipe(agent)
 	if r == nil {
 		return nil
 	}

@@ -726,20 +726,26 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := d.Info()
+	joined := map[string]any{
+		"id":       info.ID,
+		"name":     info.Name,
+		"agentId":  info.AgentID,
+		"kind":     info.Kind,
+		"status":   info.Status,
+		"cols":     info.Cols,
+		"rows":     info.Rows,
+		"hostName": info.HostName,
+		"hostUser": info.HostUser,
+		// The working directory roots the guest's Files pane (design 4g); reads are still the session's to allow.
+		"cwd": info.Cwd,
+	}
+	if info.Turns {
+		// The session's agent reports its turns (Info.Turns): the guest page
+		// tells working from finished by it, as the listings do.
+		joined["turns"] = true
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session": map[string]any{
-			"id":       info.ID,
-			"name":     info.Name,
-			"agentId":  info.AgentID,
-			"kind":     info.Kind,
-			"status":   info.Status,
-			"cols":     info.Cols,
-			"rows":     info.Rows,
-			"hostName": info.HostName,
-			"hostUser": info.HostUser,
-			// The working directory roots the guest's Files pane (design 4g); reads are still the session's to allow.
-			"cwd": info.Cwd,
-		},
+		"session":    joined,
 		"role":       link.Role,
 		"label":      link.Label,
 		"switchyard": s.cfg.Switchyard.Enabled,

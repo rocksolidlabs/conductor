@@ -152,6 +152,19 @@ async function answerPaste() {
     paste.busy = false
   }
 }
+/** Whether the "Another link" fold is open. */
+const anotherOpen = ref(false)
+/**
+ * The dialog's one filled button (the UX review's P16): the step the person is on. A paste answer made is copied next; a pasted
+ * invite is answered; an open "Another link" fold is created; else the link just made is copied. The others are outlined.
+ */
+const step = computed<'copy' | 'create' | 'answer' | 'copy-answer'>(() =>
+  paste.answer ? 'copy-answer' : paste.offer.trim() ? 'answer' : anotherOpen.value || !created.value ? 'create' : 'copy',
+)
+function look(s: typeof step.value): { color: 'primary' | 'neutral'; variant: 'solid' | 'outline' } {
+  return step.value === s ? { color: 'primary', variant: 'solid' } : { color: 'neutral', variant: 'outline' }
+}
+
 const roles: Array<{ value: Role; label: string; description: string }> = [
   { value: 'view', label: 'View', description: "Watch output, open files. Can't type." },
   { value: 'control', label: 'Control', description: 'Types into the agent, answers prompts.' },
@@ -283,7 +296,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
         <div v-if="created" class="flex flex-col gap-2 rounded-md bg-elevated px-3.5 py-3" data-share-created>
           <div class="flex items-center gap-2.5">
             <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
-            <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
+            <UButton label="Copy link" size="sm" v-bind="look('copy')" data-share-copy @click="copy(created!.url)" />
           </div>
           <div v-if="qr" class="flex items-center gap-3" data-share-qr-row>
             <svg :viewBox="qr.viewBox" class="size-28 flex-none rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="created.url" data-share-qr>
@@ -331,7 +344,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           />
         </div>
 
-        <details class="rounded-md border border-default px-3.5 py-2" data-another-link>
+        <details class="rounded-md border border-default px-3.5 py-2" data-another-link @toggle="anotherOpen = ($event.target as HTMLDetailsElement).open">
           <summary class="cursor-pointer text-sm font-semibold">Another link</summary>
           <form class="mt-3 flex flex-col gap-4" @submit.prevent="createAnother">
             <div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Role">
@@ -361,7 +374,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
                 <USelect v-model="form.ttl" :items="ttlItems" class="w-full" />
               </UFormField>
             </div>
-            <UButton label="Create link" type="submit" icon="i-lucide-link" :loading="creating" class="self-end" />
+            <UButton label="Create link" type="submit" icon="i-lucide-link" v-bind="look('create')" :loading="creating" class="self-end" />
           </form>
         </details>
 
@@ -372,12 +385,12 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
             <UTextarea v-model="paste.offer" :rows="3" placeholder="cpi1.…" class="w-full font-mono text-[11px]" data-paste-offer-in />
             <div class="flex items-center gap-2">
               <USelect v-model="paste.role" :items="roles.map((r) => ({ label: r.label, value: r.value }))" class="w-36" />
-              <UButton label="Answer" icon="i-lucide-reply" size="sm" :loading="paste.busy" :disabled="!paste.offer.trim()" data-paste-answer-make @click="answerPaste" />
+              <UButton label="Answer" icon="i-lucide-reply" size="sm" v-bind="look('answer')" :loading="paste.busy" :disabled="!paste.offer.trim()" data-paste-answer-make @click="answerPaste" />
             </div>
             <UAlert v-if="paste.error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="paste.error" />
             <template v-if="paste.answer">
               <UTextarea :model-value="paste.answer" :rows="3" readonly class="w-full font-mono text-[11px]" data-paste-answer-out />
-              <UButton label="Copy answer" icon="i-lucide-clipboard" size="sm" class="self-start" @click="copyText(paste.answer, 'Answer copied')" />
+              <UButton label="Copy answer" icon="i-lucide-clipboard" size="sm" v-bind="look('copy-answer')" class="self-start" @click="copyText(paste.answer, 'Answer copied')" />
             </template>
           </div>
         </details>
@@ -385,7 +398,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
         <div>
           <div class="flex items-center justify-between mb-2">
             <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Links</h3>
-            <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" aria-label="Refresh" @click="refresh" />
+            <IconButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="loading" label="Refresh" @click="refresh" />
           </div>
           <p v-if="!live.length && !loading" class="text-sm text-muted">No links yet.</p>
           <ul v-else class="flex flex-col gap-2">

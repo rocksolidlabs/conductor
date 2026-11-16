@@ -20,6 +20,7 @@ import {
   machineOf,
   withFilter,
   historyDetail,
+  historyNoneWords,
   historyDetailParts,
   historyQuestions,
   linkLine,
@@ -61,6 +62,15 @@ function entry(p: Partial<HistoryItem> = {}): HistoryItem {
     ...p,
   }
 }
+
+describe('historyNoneWords', () => {
+  it('says none is kept with nothing typed, and that nothing matches a query', () => {
+    expect(historyNoneWords('')).toBe('No session is kept yet.')
+    expect(historyNoneWords('  ')).toBe('No session is kept yet.')
+    expect(historyNoneWords('zzz')).toBe('Nothing in the history matches.')
+    expect(historyNoneWords('class:said')).toBe('Nothing in the history matches.')
+  })
+})
 
 describe('historyDetail', () => {
   it('says the six fields in their order: source, host, project, revision, when, availability', () => {

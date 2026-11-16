@@ -32,6 +32,16 @@ export interface SessionInfo {
    */
   crew?: { runId: string; crewId: string; member: string; brakeman?: { request: string; quiet: boolean }; task?: string; attempt?: number }
   attention?: Attention
+  /**
+   * The session's agent reports its turns: it has reported a working or a done of its own (its hooks, its window title, its program
+   * status), never cleared. Missing when it has not, and from an older server.
+   */
+  turns?: boolean
+  /**
+   * "waiting" while the message the session was launched with waits to be typed; "typed" once it sits in the agent's input with its
+   * Enter left out, until a person's key; absent otherwise. A word this page does not know shows nothing.
+   */
+  firstMessage?: 'waiting' | 'typed'
   /** Who last answered a needs-input prompt (server-reported). */
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
   createdAt: string
@@ -141,6 +151,11 @@ export interface AgentInfo {
   trustPrompt?: string
   /** RE2 matched against its whole screen: its own prompt at rest, the one screen a Brakeman turn's line is typed into (#714). */
   promptShape?: string
+  /**
+   * A launch of the agent takes a first message (POST /api/sessions' `message`): the server knows its prompt (a prompt shape) and types
+   * one only there. Missing for an agent without one, and from an older server for every agent: then no message is offered.
+   */
+  firstMessage?: boolean
   /** That question's answers, as the choices a page offers. */
   trustAnswers?: AgentAnswer[]
   /** Its other startup questions (round 13: Codex's "Hooks need review"), held like the trust question. */
@@ -327,7 +342,7 @@ export interface JoinRunMember {
 
 export interface JoinInfo {
   /** The session a session link opens; missing for a run link, whose reply has `run` in its place. */
-  session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser'> & { cwd?: string }
+  session?: Pick<SessionInfo, 'id' | 'name' | 'agentId' | 'kind' | 'status' | 'cols' | 'rows' | 'hostName' | 'hostUser' | 'turns'> & { cwd?: string }
   /** The run a run link opens, with every member in the run's order; `desk`, at a switchyard, the run's desk a decision link's Decide joins. */
   run?: { id: string; name: string; members: JoinRunMember[]; desk?: string }
   role: Role
@@ -525,8 +540,13 @@ export interface CrewSummary {
   members: Array<{ name: string; agentId: string; start: CrewStart }>
   /** The crew's people with their responsibilities, never their notes; absent for a crew without. */
   people?: Array<Pick<CrewPerson, 'name' | 'responsibilities'>>
+  /** The shape of a crew with tasks, in its order (each task's id, member, kind and needs): sent only when the list is asked for it. */
+  tasks?: CrewTaskShape[]
   updatedAt: string
 }
+
+/** A task as a crew's summary lists it: where it stands in the crew's shape, never what it is told to do. */
+export type CrewTaskShape = Pick<CrewTask, 'id' | 'member' | 'kind'> & { needs?: string[] }
 
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
 export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision' | 'revision'>
@@ -883,7 +903,7 @@ export function useSessions() {
     /** Starts a new session like a server session (#434): what the body leaves out is the source's launch; the name must be no listed session's. */
     clone: (id: string, body: CloneRequest) => request<SessionInfo>(`/api/sessions/${encodeURIComponent(id)}/clone`, { method: 'POST', body }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
-    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string }) =>
+    create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean; account?: string; model?: string; message?: string }) =>
       request<SessionInfo>('/api/sessions', { method: 'POST', body }),
     /** Starts an ended session again: resumed with its agent's recipe when it has had a turn, else relaunched (`notice` says why). */
     resumeSession: (id: string) => request<ResumeResult>(`/api/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
@@ -928,8 +948,9 @@ export function useSessions() {
     checkCommand: (program: string, adapter?: string) =>
       request<CommandCheckReply>('/api/catalog/check', { method: 'POST', body: { command: [program], ...(adapter ? { adapter } : {}) } }),
     /** One page of the saved crews' summaries, ordered by name, and how many there are in all. `limit` is 1 to 500. */
-    listCrews: (offset = 0, limit = 100) =>
-      request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
+    /** A page of the crews' summaries; `tasks` asks for each crew's task shape (the Crews page draws it; a crew's file holds up to 128). */
+    listCrews: (offset = 0, limit = 100, o: { tasks?: boolean } = {}) =>
+      request<{ crews: CrewSummary[]; total: number }>('/api/crews', { query: { offset: String(offset), limit: String(limit), ...(o.tasks ? { tasks: '1' } : {}) } }).then((r) => ({ crews: r.crews ?? [], total: r.total ?? 0 })),
     /** One crew in full, for the editor. 404 for an unknown id; 409 `crew_unreadable` for a file the server cannot use, with why. */
     getCrew: (id: string, signal?: AbortSignal) => request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { signal }).then(crewOfReply),
     /**
@@ -1093,24 +1114,4 @@ export function useSessions() {
     sendEvent: (id: string, body: EventInput) =>
       request<{ accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/events`, { method: 'POST', body }),
   }
-}
-
-export function statusColor(status: SessionStatus): 'success' | 'neutral' | 'warning' | 'error' | 'info' {
-  switch (status) {
-    case 'running':
-      return 'success'
-    case 'starting':
-      return 'info'
-    case 'host_disconnected':
-      return 'warning'
-    case 'exited':
-      return 'neutral'
-    case 'stopped':
-      return 'neutral'
-  }
-  return 'neutral'
-}
-
-export function statusLabel(status: SessionStatus): string {
-  return status.replace('_', ' ')
 }

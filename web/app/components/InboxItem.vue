@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inboxKindWords, itemTimeWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
+import { briefLine, inboxKindWords, itemTimeWords, ticketOf, type DeliveryStep, type InboxAction, type InboxItem } from '~/utils/inbox'
 import type { LaneEvidence } from '~/utils/transport/decide'
 
 /**
@@ -43,6 +43,11 @@ const props = defineProps<{
   noComments?: boolean
   /** A DR1 record's evidence refs its card draws (its request's): left out of the inbox's evidence, never drawn twice. */
   drawn?: readonly string[]
+  /**
+   * A DR1 record's card is drawn in the `record` slot: its question heads the item. Until it is (the record still read, or its read
+   * failed) the item's own title, the question as the server words it, heads the item, so the question is never shown nowhere.
+   */
+  recordShown?: boolean
 }>()
 const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
@@ -53,6 +58,15 @@ const timeWords = computed(() => itemTimeWords(props.item, props.now))
 const durable = computed(() => props.item.kind === 'decision')
 const evidence = computed(() => (props.drawn?.length ? (props.item.evidence ?? []).filter((e) => !props.drawn!.includes(e.ref)) : (props.item.evidence ?? [])))
 const steps = computed(() => (props.delivery?.length ? props.delivery : props.item.delivery) ?? [])
+/** The brief under the title, never the title or the item's `now` again (briefLine, D12). */
+const brief = computed(() => briefLine(props.item))
+/**
+ * A question's fine print (each choice's and the line's scope) folds under Details, as the evidence folds; a plan's and a task's
+ * stay in view: they say what an approval or a retry authorizes.
+ */
+const folds = computed(() => props.item.kind === 'question')
+const scopesOpen = ref(false)
+const scopesShown = computed(() => !folds.value || scopesOpen.value)
 const answers = computed(() => props.item.actions.filter((a) => a.name === 'answer' && !a.text))
 const line = computed(() => props.item.actions.find((a) => a.name === 'answer' && a.text))
 const commands = computed(() => props.item.actions.filter((a) => a.name !== 'answer'))
@@ -115,7 +129,8 @@ function sendComment() {
 <template>
   <article class="flex flex-col gap-4" :data-inbox-item="item.ref" :data-inbox-kind="item.kind">
     <header class="flex flex-col gap-1">
-      <h2 class="text-base font-semibold text-highlighted text-pretty" data-inbox-title>{{ item.title }}</h2>
+      <!-- A run's decision: its card's question heads it once the card is drawn, so no title says it again. -->
+      <h2 v-if="!durable || !recordShown" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-title>{{ item.title }}</h2>
       <p class="text-xs text-muted">
         <span>{{ inboxKindWords(item.kind) }}</span>
         <span v-if="timeWords" data-inbox-time> · {{ timeWords }}</span>
@@ -131,8 +146,8 @@ function sendComment() {
       <BrakemanDecisionText :happened="item.brief" :why-human="item.whyHuman" :answerer="item.answerer" :authorizes="item.authorizes" :alternatives="item.considered ?? []" :recommended="item.recommended" :uncertainty="item.uncertainty" />
       <p v-if="item.cardNote" class="text-xs text-warning" data-inbox-card-note>{{ item.cardNote }}</p>
     </section>
-    <section v-else class="flex flex-col gap-1" data-inbox-brief="conductor">
-      <p class="text-sm text-pretty" data-inbox-brief-text>{{ item.brief }}</p>
+    <section v-else-if="brief || !durable" class="flex flex-col gap-1" data-inbox-brief="conductor">
+      <p v-if="brief" class="text-sm text-pretty" data-inbox-brief-text>{{ brief }}</p>
       <p v-if="!durable" class="text-xs text-muted" data-inbox-recommendation>No recommendation</p>
     </section>
 
@@ -170,19 +185,31 @@ function sendComment() {
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ item.actions.length ? 'Your choices' : 'Nothing to choose here' }}</h3>
       <div v-for="a in answers" :key="`${a.name}:${a.input}`" class="flex flex-col gap-1">
         <UButton :label="a.label" color="primary" variant="soft" size="lg" block class="min-h-11 justify-start text-left" :loading="busy === a.label" :disabled="!!busy" :data-inbox-action="a.name" :data-action-label="a.label" @click="press(a)" />
-        <p class="text-xs text-muted text-pretty" data-action-scope>{{ a.scope }}</p>
+        <p v-if="scopesShown" class="text-xs text-muted text-pretty" data-action-scope>{{ a.scope }}</p>
       </div>
       <form v-if="line" class="flex flex-col gap-1" data-inbox-line @submit.prevent="sendLine">
         <div class="flex gap-2">
           <UInput v-model="text" :placeholder="line.label" size="lg" class="min-w-0 flex-1" :disabled="!!busy" data-inbox-line-input />
           <UButton type="submit" label="Send" icon="i-lucide-send" size="lg" class="min-h-11" :loading="busy === line.label" :disabled="!!busy || !text.trim()" data-inbox-line-send />
         </div>
-        <p class="text-xs text-muted text-pretty" data-action-scope>{{ line.scope }}</p>
+        <p v-if="scopesShown" class="text-xs text-muted text-pretty" data-action-scope>{{ line.scope }}</p>
       </form>
+      <UButton
+        v-if="folds && (answers.length || line)"
+        label="Details"
+        :icon="scopesOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        class="min-h-11 self-start"
+        :aria-expanded="scopesOpen"
+        data-inbox-scopes-toggle
+        @click="scopesOpen = !scopesOpen"
+      />
       <div v-for="a in commands" :key="a.name + a.label" class="flex flex-col gap-1">
         <UButton
           :label="a.confirm ? `${a.label}…` : a.label"
-          :color="a.name === 'cancel' || a.name === 'withdraw' ? 'error' : a.name === 'accept' ? 'warning' : 'neutral'"
+          :color="a.name === 'cancel' || a.name === 'withdraw' ? 'error' : a.name === 'accept' ? 'warning' : a.name === 'approve' || a.name === 'retry' ? 'primary' : 'neutral'"
           :variant="a.name === 'approve' || a.name === 'retry' ? 'solid' : 'outline'"
           size="lg"
           block

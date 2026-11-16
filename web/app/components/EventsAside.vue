@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import type { Integration } from '~/composables/useSessions'
 import { enough } from '~/utils/charts'
+import { reportStatus } from '~/utils/integrations'
 import { routeSummary, sparkBuckets, type EventType, type FeedEntry, type RouteRow, type SparkKind } from '~/utils/events'
 import { tickLabel } from '~/utils/timeline'
 
 /**
  * Beside the feed: the last hour as bars per minute (what needs you,
  * handoffs, errors and the rest, as this tab saw them), where each kind of
- * event goes now, and whether each agent reports.
+ * event goes now (Edit routing opens the Alerts panel, where the rules are),
+ * and whether each agent reports.
  */
 const props = defineProps<{ entries: FeedEntry[]; now: number; routes: Record<EventType, RouteRow>; integrations: Integration[] }>()
-const emit = defineEmits<{ editRouting: [] }>()
+const alertsPanel = useAlertsPanel()
 
 const spark = computed(() => sparkBuckets(props.entries, props.now, 60))
 const total = computed(() => Object.values(spark.value.totals).reduce((a, b) => a + b, 0))
@@ -30,11 +32,17 @@ const axis = computed(() => {
 })
 const where = computed(() => routeSummary(props.routes))
 
+/** Whether the agent reports, by reportStatus (the one rule), in this list's own words; installed and injected neutral: green is for a live agent. */
 function reporting(it: Integration): { dot: string; text: string; tone: string } {
-  if (it.installed) return { dot: 'bg-success', text: `${it.events.length} hooks installed`, tone: 'text-muted' }
-  if (it.launchInjection) return { dot: 'bg-success', text: 'injected at launch', tone: 'text-muted' }
-  if (it.experimental) return { dot: 'bg-neutral-400', text: 'experimental', tone: 'text-muted' }
-  return { dot: 'bg-warning', text: 'not configured', tone: 'text-warning' }
+  switch (reportStatus(it).key) {
+    case 'reports':
+      return { dot: 'bg-neutral-400', text: it.installed ? `${it.events.length} hooks installed` : 'injected at launch', tone: 'text-muted' }
+    case 'experimental':
+      return { dot: 'bg-neutral-400', text: 'experimental', tone: 'text-muted' }
+    default:
+      // A standing fact that asks nothing: a neutral dot and muted words (amber is for what someone must act on).
+      return { dot: 'bg-neutral-400', text: 'not configured', tone: 'text-muted' }
+  }
 }
 </script>
 
@@ -66,7 +74,7 @@ function reporting(it: Integration): { dot: string; text: string; tone: string }
     <section class="flex flex-col gap-2" data-routing-readout>
       <div class="flex items-baseline">
         <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Where they go</h3>
-        <UButton label="Edit routing" size="xs" color="secondary" variant="link" class="ml-auto px-0" @click="emit('editRouting')" />
+        <UButton label="Edit routing" size="xs" color="secondary" variant="link" class="ml-auto px-0" @click="(e: MouseEvent) => alertsPanel.show(e.currentTarget as HTMLElement | null)" />
       </div>
       <p v-if="!where.length" class="text-[12.5px] text-muted">Nothing interrupts: every event goes to the feed only.</p>
       <div v-for="r in where" :key="r.key" class="flex flex-col gap-0.5 text-[12.5px]">
@@ -76,7 +84,10 @@ function reporting(it: Integration): { dot: string; text: string; tone: string }
     </section>
 
     <section v-if="integrations.length" class="flex flex-col gap-2" data-reporting>
-      <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Reporting</h3>
+      <div class="flex items-baseline">
+        <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Reporting</h3>
+        <UButton label="Set up on Agents" to="/agents#reporting" size="xs" color="secondary" variant="link" class="ml-auto px-0" data-reporting-link />
+      </div>
       <div v-for="it in integrations" :key="it.id" class="flex items-center gap-2 text-[12.5px]" :data-reporting-agent="it.id">
         <span class="size-[7px] flex-none rounded-full" :class="reporting(it).dot" />
         <span class="truncate font-medium text-highlighted">{{ it.name }}</span>

@@ -89,7 +89,10 @@ func (in crewInput) crew() crew.Crew {
 
 // handleListCrews lists one page of the saved crews' summaries, ordered by
 // name: GET /api/crews?offset=0&limit=100. total counts every crew. Without a
-// data directory there are none.
+// data directory there are none. A summary carries its crew's task shape
+// (crew.TaskShape) only when asked with tasks=1: a crew's file holds up to
+// 128 tasks (crew.MaxEncoded), far past the summaries of a few hundred bytes
+// a page of conductor up is sized on, which never asks.
 func (s *Server) handleListCrews(w http.ResponseWriter, r *http.Request) {
 	q, ok := queryValues(w, r)
 	if !ok {
@@ -98,6 +101,11 @@ func (s *Server) handleListCrews(w http.ResponseWriter, r *http.Request) {
 	offset, limit, err := pageParams(q)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	withTasks := q.Has("tasks")
+	if withTasks && (len(q["tasks"]) != 1 || q["tasks"][0] != "1") {
+		writeError(w, http.StatusBadRequest, "invalid_request", "tasks must be 1")
 		return
 	}
 	list, total := []crew.Summary{}, 0
@@ -109,6 +117,11 @@ func (s *Server) handleListCrews(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		list, total = page, n
+	}
+	if !withTasks {
+		for i := range list {
+			list[i].Tasks = nil
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"crews": list, "total": total})
 }

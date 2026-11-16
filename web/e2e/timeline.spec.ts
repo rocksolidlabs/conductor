@@ -2,7 +2,7 @@ import { expect, logged, member, test, type Run } from './fixtures'
 
 // The run timeline and the charts: a member held with a trust question shows
 // an amber segment on its row; the Crews list charts a crew's runs once two
-// ended; the Events page charts the stub's activity.
+// ended; History's feed charts the stub's activity.
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -54,7 +54,7 @@ test('a member held with a trust question shows an amber segment on its row, and
   await expect(tl.locator('[data-timeline-row="held"]')).toHaveAttribute('data-status', 'ended')
 })
 
-test('the crew\'s Runs tab charts the runs once there are two, and the Events page charts the activity', async ({ page, api }) => {
+test('the crew\'s Runs tab charts the runs once there are two, and the feed in History charts the activity', async ({ page, api }) => {
   await page.goto(`/crews/${encodeURIComponent(crewId)}?tab=runs`)
   const runsChart = page.locator('[data-runs-chart]')
   await expect(runsChart).toHaveAttribute('data-runs', '1', { timeout: 15_000 })
@@ -79,7 +79,8 @@ test('the crew\'s Runs tab charts the runs once there are two, and the Events pa
   await expect(page.locator(`[data-crew-runs] [data-run="${second.id}"] [data-run-resume]`)).toHaveText(/Resume as new run/)
 
   // The feed holds what arrives while the page is open: the chart fills as a run reports.
-  await page.goto('/events')
+  await page.goto('/history?view=feed')
+  await expect(page.locator('[data-event-feed]')).toBeVisible()
   const chart = page.locator('[data-activity-chart]')
   await expect(chart).toBeVisible()
   await expect(chart.locator('[data-activity-chart-empty]')).toBeVisible()

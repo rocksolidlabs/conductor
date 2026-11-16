@@ -45,9 +45,14 @@ async function startOffered(page: Page, runId: string, name: string, managed: bo
   const tile = page.locator(`[data-run-grid] [data-member="${name}"]`)
   await expect(tile.locator('[data-member-words]')).toBeVisible()
   await expect(tile.getByRole('button', { name: 'Start now' })).toHaveCount(offered ? 1 : 0)
-  const add = page.getByRole('button', { name: 'Add agent' })
-  if (offered) await expect(add).toBeEnabled()
-  else await expect(add).toBeDisabled()
+  // The header's Add agent, in the run's menu: offered or disabled; the menu closed and gone before the next click.
+  await page.locator('[data-crew-run-header] [data-run-menu]').click()
+  const add = page.locator('[role="menuitem"][data-run-add]')
+  await expect(add).toBeVisible()
+  if (offered) await expect(add).not.toHaveAttribute('data-disabled', '')
+  else await expect(add).toHaveAttribute('data-disabled', '')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[role="menu"]')).toHaveCount(0)
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   if (managed) await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Members' }).click()
   const node = page.locator(`[data-graph-canvas] [data-graph-node="${name}"]`)
@@ -111,7 +116,8 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-header]`)
-  await expect(header).toContainText(/exited|stopped/)
+  // The state's word is at the tile's foot, the header keeps the name and the actions.
+  await expect(page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })
 
@@ -132,7 +138,7 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-header]`)
-  await expect(header).toContainText(/exited|stopped/)
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(1)
 
   // The run as the server answers a run it no longer holds: its read marked a record, and absent from the live runs.
@@ -149,6 +155,6 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the record's badge, the header's words
   await page.reload()
   await expect(page.locator('[data-run-record]')).toBeVisible()
-  await expect(header).toContainText(/exited|stopped/)
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })

@@ -1,12 +1,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 import { scratchRepo } from './server'
 
 // Touched (design 4e): the files the agent read, edited, wrote or deleted,
 // newest first, each with the tool, the agent and the time, from the file
 // events its hooks report; a dot on a touched file in the Explorer; the
-// same events in the Activity tab and on the Events page, quiet there.
+// same events in the Activity tab and in History's feed, quiet there.
 test('Touched lists the files the agent touched, newest first, marks them in the Explorer, and the feeds carry them quietly', async ({ page, api, state }) => {
   const cwd = join(state.root, 'files-touched')
   mkdirSync(join(cwd, 'internal', 'api'), { recursive: true })
@@ -16,7 +16,7 @@ test('Touched lists the files the agent touched, newest first, marks them in the
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'touched', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // The agent's hooks report, in order: a read, an edit, a repeat of the edit (one line), a write.
@@ -40,17 +40,17 @@ test('Touched lists the files the agent touched, newest first, marks them in the
     // A touched row opens the file; the Explorer marks the touched files with a dot.
     await rows.nth(1).click()
     await expect(page.locator('[data-editor-area] [data-editor-crumbs]')).toContainText('users.go', { timeout: 30_000 })
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await expect(pane.locator(`[data-file-node="${cwd}/README.md"] [data-file-touched]`)).toBeVisible()
     await pane.locator(`[data-file-node="${cwd}/internal"]`).click()
     await pane.locator(`[data-file-node="${cwd}/internal/api"]`).click()
     await expect(pane.locator(`[data-file-node="${cwd}/internal/api/users.go"] [data-file-touched]`)).toBeVisible()
-    // The Activity tab words it; the Events page lists what arrives in the feed (a page load starts the feed afresh) without a badge on the session.
+    // The Activity tab words it; History's feed lists what arrives (a page load starts the feed afresh) without a badge on the session.
     await page.locator('[data-inspector] [data-rail-item="activity"]').click()
     await page.locator('[data-inspector] [data-activity-filter="all"]').click()
     await expect(page.locator('[data-inspector] [data-activity="file"]').first()).toContainText('wrote README.md · Write')
-    await page.goto('/events')
-    await expect(page.locator('[data-events-feed-tab]')).toBeVisible()
+    await page.goto('/history?view=feed')
+    await expect(page.locator('[data-event-feed]')).toBeVisible()
     await post({ type: 'file', op: 'delete', path: 'internal/api/router.go', tool: 'Bash' })
     const row = page.locator('[data-event-feed] [data-event="file"]').filter({ hasText: 'router.go' }).first()
     await expect(row).toBeVisible({ timeout: 15_000 })
@@ -79,7 +79,7 @@ test('Touched lists every file of the session, past the activity replay, one row
       await page.waitForTimeout(70)
     }
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator('[data-inspector] [data-rail-item="activity"]').click()
     await page.locator('[data-inspector] [data-activity-filter="files"]').click()
     await expect(page.locator('[data-inspector] [data-files-touched-count]')).toHaveText('61', { timeout: 30_000 })
@@ -105,7 +105,7 @@ test('a file written with no hook naming it shows in Touched as seen by git', as
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'git seen', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // What the agent's shell did: no file event, only the tool call.
@@ -141,7 +141,8 @@ for (const agent of ['codex', 'copilot', 'agy', 'goose'] as const) {
       await screen.click()
       await page.keyboard.type(`stub tools ${agent}`)
       await page.keyboard.press('Enter')
-      await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+      // The panel was left open on Explorer, and is kept so across the load (P11): Explorer shown, not clicked closed.
+      await showView(page, 'explorer')
       await page.locator('[data-inspector] [data-rail-item="activity"]').click()
       await page.locator('[data-inspector] [data-activity-filter="files"]').click()
       const readme = page.locator(`[data-inspector] [data-files-touched] [data-touched="${cwd}/README.md"]`)

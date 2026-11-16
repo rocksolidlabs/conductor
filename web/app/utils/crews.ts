@@ -4,6 +4,9 @@ import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
 import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from './events'
 
+/** What loading the example crews does, in the words every place that offers it says (the welcome, Crews, the palette's rows). */
+export const EXAMPLES_LINE = 'Adds five ready-made crews to Crews; nothing starts until you launch one.'
+
 /**
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
@@ -1074,14 +1077,24 @@ export function pageAfterDelete(page: number, left: number): number {
 export function summaryOf(c: CrewInfo): CrewSummary {
   const out: CrewSummary = { id: c.id, name: c.name, goal: c.goal, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
   if (c.people?.length) out.people = c.people.map((p) => (p.responsibilities?.length ? { name: p.name, responsibilities: [...p.responsibilities] } : { name: p.name }))
+  // The task shape, as the server's summary has it: id, member, kind and needs alone, so a crew saved here draws what a read would.
+  if (c.tasks?.length) out.tasks = c.tasks.map((t) => ({ id: t.id, member: t.member, kind: t.kind, ...(t.needs?.length ? { needs: [...t.needs] } : {}) }))
   return out
 }
 
 /** A member's state as the run view shows it (memberStatus). */
 export type MemberStatus = RunMember['status'] | 'needs_input'
 
+/** The error the server gives a member a stop caught before it ran (internal/crew ErrRunStopped). */
+export const STOPPED_ERROR = 'the run is stopped'
+
+/** A member's own error: one that is not the run being stopped. */
+export function ownError(m: Pick<RunMember, 'error'>): string {
+  return m.error && m.error !== STOPPED_ERROR ? m.error : ''
+}
+
 /** The live session of a member: by its id once the run names it, else by the crew tag the session carries. */
-function memberSession(run: RunInfo, member: RunMember, sessions: readonly SessionInfo[]): SessionInfo | undefined {
+export function memberSession(run: RunInfo, member: RunMember, sessions: readonly SessionInfo[]): SessionInfo | undefined {
   if (member.sessionId) {
     const s = sessions.find((x) => x.id === member.sessionId)
     if (s) return s
