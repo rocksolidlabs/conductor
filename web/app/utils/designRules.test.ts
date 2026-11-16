@@ -79,10 +79,12 @@ function slotOf(el: TNode): string | undefined {
   return el.props?.find((p) => p.type === 7 && p.name === 'slot')?.arg?.content ?? (el.props?.some((p) => p.type === 7 && p.name === 'slot') ? 'default' : undefined)
 }
 
-/** True for a class list that hides its element at some width (`hidden sm:inline`) or always (`sr-only`, `hidden`). */
+/**
+ * True for a class list that hides its element at some width or always: `hidden`, `sr-only`, and either behind any variant
+ * (`hidden sm:inline`, `max-sm:sr-only`, `max-lg:hidden`, `pointer-coarse:hidden`).
+ */
 function hiddenSomewhere(cls: string): boolean {
-  const words = cls.split(/\s+/)
-  return words.includes('sr-only') || words.some((w) => /^([a-z0-9]+:)*hidden$/.test(w))
+  return cls.split(/\s+/).some((w) => /^([\w-]+:)*(hidden|sr-only)$/.test(w))
 }
 
 /** True when the children draw a label a person can read at every width: text, an interpolation, or an element holding one. */
@@ -226,12 +228,14 @@ describe("the design system's rules", () => {
     const found = bareIconButtons(undefined, sample(`<template><div>
       <UButton icon="i-lucide-x" aria-label="Close" />
       <UButton icon="i-lucide-share"><span class="hidden sm:inline">Share</span></UButton>
+      <UButton icon="i-lucide-plus"><span class="max-sm:sr-only">Add agent</span></UButton>
+      <UButton icon="i-lucide-x"><span class="max-lg:hidden">Close</span></UButton>
       <UButton icon="i-lucide-copy" label="Copy" />
       <UButton icon="i-lucide-copy">Copy {{ what }}</UButton>
       <UTooltip text="Stop"><UButton icon="i-lucide-square" aria-label="Stop" /></UTooltip>
       <IconButton icon="i-lucide-x" label="Close" />
     </div></template>`))
-    expect(found).toEqual(['components/Sample.vue:2', 'components/Sample.vue:3'])
+    expect(found).toEqual(['components/Sample.vue:2', 'components/Sample.vue:3', 'components/Sample.vue:4', 'components/Sample.vue:5'])
   })
 
   it('cut a text only inside a box whose width comes from outside it, no new place breaking the rule', () => {

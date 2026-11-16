@@ -301,10 +301,14 @@ Decided 2026-11-15 by the maintainers, #374.
 An icon-only button is an `IconButton` (`web/app/components/IconButton.vue`):
 a `UTooltip` over a `UButton`, whose `label` is the tooltip's text and the
 button's accessible name, with an optional `kbd` for the key that does the
-same. The tooltip shows on hover and on keyboard focus; on a touch screen
-the label stays the button's name. A label hidden at some width (`hidden
-sm:inline`) counts as none, so such a button is an `IconButton` too, its
-label inside it for the widths that show it. An icon-only button already
+same. The tooltip shows while a mouse rests on the button and when Tab
+brings the focus to it; never for a focus the app hands back to the button
+when a menu, a popover or a dialog it opened closes (after an Escape, a
+chosen item or a tap), and never at a touch, where the label stays the
+button's name. A label hidden at some width (`hidden sm:inline`,
+`max-sm:sr-only`, any variant of `hidden` or `sr-only`) counts as none, so
+such a button is an `IconButton` too, its label inside it for the widths
+that show it. An icon-only button already
 inside a `UTooltip` of its own (a key in its tooltip, a side of its own)
 may stay so.
 
@@ -315,8 +319,10 @@ decided.
 Checks: `designRules.test.ts`, the tooltip rule (a `UButton` with an icon
 and no label a person reads at every width is inside a `UTooltip`; none is
 allowed outside one); `web/e2e/tooltips.spec.ts` (the session page's More:
-its tooltip on hover and on focus by Tab, in both themes, and its name and
-menu at a tap on a phone).
+its tooltip on hover and on focus by Tab, in both themes, its menu by
+Enter and by a click with no tooltip when the menu hands the focus back,
+and its name and menu at a tap on a phone, no tooltip after; a Dispatch
+project's Views, a popover's trigger, the same by click and by Enter).
 
 ### What a pull request cannot do
 
