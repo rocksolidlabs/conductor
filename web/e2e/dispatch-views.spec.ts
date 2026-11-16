@@ -16,7 +16,11 @@ let other: BrowserContext | null = null
 
 /** The Views menu opened, its rows drawn (they draw in the popover's portal, outside the bar). */
 async function openViews(page: Page) {
-  if (!(await page.locator('[data-views-menu]').count())) await page.locator('[data-views-open]').click()
+  // Whether the menu is open is the button's to say (aria-expanded): a menu just closed (applying a view closes it) is still drawn
+  // through its closing animation, and a check of the drawn menu alone would take it for open and lose the next click to its going.
+  const button = page.locator('[data-views-open]')
+  if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click()
+  await expect(button).toHaveAttribute('aria-expanded', 'true')
   await expect(page.locator('[data-views-menu]')).toBeVisible()
   return page.locator('[data-views-menu]')
 }
