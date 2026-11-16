@@ -111,6 +111,40 @@ func TestProbeEndEndsTheRunNow(t *testing.T) {
 	}
 }
 
+// A watch of the program's exit that fails under way (its error on the
+// watch's channel, as a waitid without the call on this kernel) is no
+// answer: the program, alive and silent, is ended and reaped, and the run
+// says it did not run, with the watch's error, to be asked again. The seam
+// is the probe's own (watchProbe): the real watch, its channel replaced by
+// one that holds the failure.
+func TestProbeAWatchThatFailsUnderWayIsNoAnswer(t *testing.T) {
+	failure := errors.New("waitid: function not implemented")
+	real := watchProbe
+	pid := make(chan int, 1)
+	watchProbe = func(cmd *exec.Cmd) (<-chan error, func() error, error) {
+		_, reap, err := real(cmd)
+		if err != nil {
+			return nil, nil, err
+		}
+		pid <- cmd.Process.Pid
+		failed := make(chan error, 1)
+		failed <- failure
+		return failed, reap, nil
+	}
+	t.Cleanup(func() { watchProbe = real })
+	_, late, wait := heldHelper(t)
+	res := (&ProbeProcess{Timeout: time.Hour}).Run(context.Background(), []string{script(t, wait)}, claudeProbe, nil)
+	if res.Ran || !res.Retry || !strings.Contains(res.Error, failure.Error()) {
+		t.Fatalf("a failed watch was taken for an answer: %+v", res)
+	}
+	if err := syscall.Kill(<-pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the program is still there, or not reaped: kill 0 said %v", err)
+	}
+	if _, err := os.Stat(late); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the program went on: %v", err)
+	}
+}
+
 // The limit, stated: a helper that leaves the probe's process group (a
 // session of its own) is not ended by the run, nor by End. The test ends it.
 func TestProbeLeavesAHelperInASessionOfItsOwn(t *testing.T) {

@@ -229,8 +229,9 @@ func (c *probeCache) probe(key string, command []string, p agents.Probe, env map
 	if c.inflight[key] == call {
 		delete(c.inflight, key)
 	}
-	if c.closed {
-		// Ended by the stop, or not run: not an answer to keep.
+	if c.closed || res.Retry {
+		// Ended by the stop, or not run, or failed on the run's own side
+		// (a watch that failed): not an answer to keep.
 		c.mu.Unlock()
 		close(call.done)
 		return

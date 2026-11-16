@@ -279,6 +279,32 @@ func TestProbeCacheKeysByEnvironment(t *testing.T) {
 	}
 }
 
+// A run that failed on its own side (the exit watch failed under way: the
+// result agents' ProbeProcess gives, TestProbeAWatchThatFailsUnderWayIsNoAnswer)
+// is not kept: nothing is cached, and the next ask probes again.
+func TestProbeCacheKeepsNoFailedWatch(t *testing.T) {
+	c := newProbeCache()
+	c.wait = time.Hour
+	var runs atomic.Int32
+	c.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+		if runs.Add(1) == 1 {
+			return agents.ProbeResult{Error: "the exit of x could not be watched: waitid: function not implemented", Retry: true}
+		}
+		return agents.ProbeResult{Ran: true, Identified: true, Version: "1.0.0"}
+	}
+	p := agents.Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`x`), Verified: true}
+	cmd := []string{"/bin/x"}
+	if id := c.identity(context.Background(), cmd, "claude", "Claude Code", p, nil, false); id.Ran || id.Error == "" {
+		t.Fatalf("a failed watch answered: %+v", id)
+	}
+	if id, ok := c.cached(cmd, "claude", "Claude Code", p, nil); ok {
+		t.Fatalf("a failed watch was kept: %+v", id)
+	}
+	if id := c.identity(context.Background(), cmd, "claude", "Claude Code", p, nil, false); !id.Identified || runs.Load() != 2 {
+		t.Fatalf("the next ask did not probe again: %+v after %d runs", id, runs.Load())
+	}
+}
+
 func TestProbeCacheWaitBound(t *testing.T) {
 	c := newProbeCache()
 	c.wait = 20 * time.Millisecond

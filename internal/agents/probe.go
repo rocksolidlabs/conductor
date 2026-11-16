@@ -46,6 +46,10 @@ type ProbeResult struct {
 	// there.
 	Output string
 	Error  string
+	// Retry says the run failed on its own side, not the program's: the
+	// watch of its exit failed, and the program was ended. It says nothing
+	// of the program, so it is not kept: the next ask probes again.
+	Retry bool
 }
 
 const (
@@ -58,6 +62,10 @@ const (
 // (a shell, a pipe and a sort take longer to start under the race
 // detector on a busy Mac than the 3 s a real probe gets; #281).
 var probeTimeout = 3 * time.Second
+
+// watchProbe is the watch of a probe's exit (proc.WatchExit); a variable
+// so that a test can make it fail under way.
+var watchProbe = proc.WatchExit
 
 // RunProbe runs the agent's command (its program resolved, then the rest
 // of its argv: an agent run as `npx codex` or `bash stub.sh` keeps those)
@@ -153,10 +161,12 @@ func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env m
 	if err != nil {
 		return ProbeResult{Error: err.Error()}
 	}
-	exited, reap, werr := proc.WatchExit(cmd)
+	exited, reap, werr := watchProbe(cmd)
 	if werr == nil {
 		select {
-		case <-exited:
+		case werr = <-exited:
+			// nil: the exit seen; an error: the watch failed under way while
+			// the program may run still.
 		case <-ctx.Done():
 		}
 	}
@@ -167,9 +177,13 @@ func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env m
 	r.mu.Unlock()
 	if werr != nil {
 		// As a usage read: an exit that cannot be watched is not guessed
-		// at; the program was ended above, while its group was its own.
-		_ = cmd.Wait()
-		return ProbeResult{Error: fmt.Sprintf("the exit of %s could not be watched", filepath.Base(command[0]))}
+		// at, and the kill's exit is no answer; the program was ended above,
+		// while its group was its own, and is reaped now.
+		if reap == nil {
+			reap = cmd.Wait
+		}
+		_ = reap()
+		return ProbeResult{Error: fmt.Sprintf("the exit of %s could not be watched: %v", filepath.Base(command[0]), werr), Retry: true}
 	}
 	err = reap()
 	res := ProbeResult{Ran: true}
