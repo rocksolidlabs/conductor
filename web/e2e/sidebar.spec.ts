@@ -440,11 +440,13 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(header.locator('[data-sidebar-collapse]')).toHaveCount(0)
   await account.click()
   await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
-  // Alerts opens its panel with the switches; Escape closes it and gives the focus back to your menu's button.
+  // Alerts opens its panel with the switches and, under them, the rules; Escape closes it and gives the focus back to your menu's
+  // button.
   await page.getByRole('menuitem', { name: /^Alerts/ }).click()
   await expect(page.getByRole('menu')).toHaveCount(0)
   const panel = page.getByRole('dialog', { name: 'Alerts' })
   await expect(panel.getByText('Browser notification')).toBeVisible()
+  await expect(panel.locator('[data-alert-switches] ~ [data-alerts-rules] [data-routing-matrix]')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(panel).toHaveCount(0)
   await expect(account).toBeFocused()
