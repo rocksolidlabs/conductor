@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { dayPage, endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { tabTo } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
@@ -936,6 +937,34 @@ test.describe('the full sidebar\'s width', () => {
     await expect(header.locator('[data-header-update]')).toBeVisible()
     for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
   })
+})
+
+// The pages' one table (utils/pages.ts): a page's sentence is its tooltip in the full sidebar (on hover over its label) and on the rail
+// (on hover and on focus, in place of the label alone), and the second line of its row in the palette, which a search reads.
+test("a page's tooltip says what it is", async ({ day, browser }) => {
+  void day
+  const page = await dayPage(browser, { width: 1440, height: 900 })
+  const sidebar = page.locator('#dashboard-sidebar-main')
+  const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text}$`) })
+  const yardTip = 'Yard: every live terminal on one screen'
+  await sidebar.locator('[data-nav-label]').filter({ hasText: /^Yard$/ }).hover()
+  await expect(tip(yardTip)).toBeVisible()
+  // Folded to the rail by its key, pressed once the layout that listens for it is drawn (dayPage waits for it).
+  await page.mouse.move(1000, 450)
+  await page.keyboard.press('Alt+b')
+  await expect(sidebar.locator('[data-rail]')).toBeVisible()
+  const nav = sidebar.getByRole('navigation').last()
+  await tabTo(page, nav.locator('a[href="/yard"]'), 2, nav.locator('a[href="/decisions"]'))
+  await expect(tip(yardTip)).toBeVisible()
+  await expect(nav.locator('a[href="/yard"]')).toHaveAttribute('aria-label', /^Yard/)
+  // The palette: "terminal" finds the Yard by its sentence.
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('terminal')
+  const row = palette.locator('[data-palette-row="go:yard"]')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-palette-detail]')).toHaveText('Every live terminal on one screen.')
 })
 
 /** Nothing of the sidebar spills sideways, and `part` sits whole inside it: at the minimum width every spec runs at (#437). */

@@ -11,6 +11,7 @@ import JsonWorker from 'monaco-editor/language/json/json.worker.js?worker'
 import CssWorker from 'monaco-editor/language/css/css.worker.js?worker'
 import HtmlWorker from 'monaco-editor/language/html/html.worker.js?worker'
 import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker'
+import { MONACO_COLORS } from './monacoColors'
 
 export type Monaco = typeof monaco
 
@@ -59,7 +60,8 @@ export function loadMonaco(): Monaco {
       }
     },
   }
-  // The brand palette (docs/design/brand.md): forest, sage, terracotta, the zinc surfaces of the app.
+  // The brand palette (docs/design/brand.md): forest, terracotta and harbor for the tokens, the app's ink scale for the surfaces
+  // (monacoColors.ts).
   monaco.editor.defineTheme('conductor-dark', {
     base: 'vs-dark',
     inherit: true,
@@ -71,23 +73,7 @@ export function loadMonaco(): Monaco {
       { token: 'type', foreground: '75a4ca' },
       { token: 'type.identifier', foreground: '75a4ca' },
     ],
-    colors: {
-      'editor.background': '#18181b',
-      'editor.foreground': '#e4e4e7',
-      'editorLineNumber.foreground': '#52525b',
-      'editorLineNumber.activeForeground': '#a1a1aa',
-      'editor.lineHighlightBackground': '#27272a',
-      'editor.selectionBackground': '#35514a',
-      'editorCursor.foreground': '#d26b3f',
-      'editorIndentGuide.background1': '#27272a',
-      'editorGutter.background': '#18181b',
-      'minimap.background': '#18181b',
-      'scrollbarSlider.background': '#3f3f4680',
-      'editorWidget.background': '#1f1f22',
-      'editorWidget.border': '#3f3f46',
-      'input.background': '#27272a',
-      'focusBorder': '#9bb3a3',
-    },
+    colors: { ...MONACO_COLORS.dark },
   })
   monaco.editor.defineTheme('conductor-light', {
     base: 'vs',
@@ -100,20 +86,7 @@ export function loadMonaco(): Monaco {
       { token: 'type', foreground: '245d85' },
       { token: 'type.identifier', foreground: '245d85' },
     ],
-    colors: {
-      'editor.background': '#ffffff',
-      'editor.foreground': '#18181b',
-      'editorLineNumber.foreground': '#a1a1aa',
-      'editorLineNumber.activeForeground': '#52525b',
-      'editor.lineHighlightBackground': '#f4f4f5',
-      'editor.selectionBackground': '#c3d2c7',
-      'editorCursor.foreground': '#d26b3f',
-      'editorIndentGuide.background1': '#e4e4e7',
-      'minimap.background': '#ffffff',
-      'editorWidget.background': '#fafafa',
-      'editorWidget.border': '#e4e4e7',
-      'focusBorder': '#263d35',
-    },
+    colors: { ...MONACO_COLORS.light },
   })
   return monaco
 }
