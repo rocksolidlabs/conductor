@@ -381,3 +381,36 @@ func TestPeekType(t *testing.T) {
 		}
 	}
 }
+
+// The host's `attention` carries turns, host to server: true is sent as
+// "turns":true and read back; false leaves the key out; a frame an older
+// host sends, with no turns, decodes with Turns false; a turns that is not
+// a bool fails the frame's decode, as any malformed field does.
+func TestHostAttentionCarriesTurns(t *testing.T) {
+	on, err := json.Marshal(HostAttentionMsg{T: HostAttention, SessionID: "s1", State: "", Source: "input", Turns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(on), `"turns":true`) {
+		t.Fatalf("encoded %s", on)
+	}
+	var back HostAttentionMsg
+	if err := json.Unmarshal(on, &back); err != nil || !back.Turns {
+		t.Fatalf("decoded %+v %v", back, err)
+	}
+	off, err := json.Marshal(HostAttentionMsg{T: HostAttention, SessionID: "s1", State: "working", Source: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(off), "turns") {
+		t.Fatalf("encoded %s", off)
+	}
+	var older HostAttentionMsg
+	if err := json.Unmarshal([]byte(`{"t":"attention","sessionId":"s1","state":"done","source":"api","id":"0123456789abcdef"}`), &older); err != nil || older.Turns || older.State != "done" {
+		t.Fatalf("an older host's frame: %+v %v", older, err)
+	}
+	var bad HostAttentionMsg
+	if err := json.Unmarshal([]byte(`{"t":"attention","state":"done","turns":"yes"}`), &bad); err == nil {
+		t.Fatalf("a turns that is no bool decoded: %+v", bad)
+	}
+}

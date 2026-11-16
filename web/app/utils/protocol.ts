@@ -876,6 +876,15 @@ export interface HostAttentionKept {
 export const HOST_MAX_KEPT = 2
 
 /**
+ * host → server, on `attention`: the host's session's agent reports its turns (its `Info.turns`, from the same snapshot as the
+ * attention). The server's copy learns `true` and never clears it on a message without it; an older host sends none and an older
+ * server ignores it. A bool: the message's bound does not change.
+ */
+export interface HostAttentionTurns {
+  turns?: boolean
+}
+
+/**
  * server → host, only to a host whose register said answerAs, never from a switchyard: an answer
  * a decision router or a provider holds for the question the host's session shows, applied there
  * under the question's claim, the first answer winning. The web never sends it.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -960,5 +961,196 @@ func TestAHostedQuestionKeepsItsHostsAnsweredMark(t *testing.T) {
 	b.Answered = session.AnsweredTerminal
 	if !sameAttention(a, a) || sameAttention(a, b) {
 		t.Fatal("the mark tells two attentions apart")
+	}
+}
+
+// A done of the same turn keeps the copy's shown done: a host's done with
+// the shown one's id (its session telling the same done again, after a
+// report the server forwarded), and a done the server forwards (it carries
+// no id: the host applies it by its own rule and reports back what its
+// session shows). The shown one keeps its Since and its words; the
+// forwarded done still goes on to the host.
+func TestTheHostedCopyKeepsTheSameDone(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	const id = "0123456789abcdef"
+	hs.HostAttention(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, id, false, "", "")
+	first := hs.Info().Attention
+	if first.State != session.AttentionDone || first.ID != id || first.Since == nil {
+		t.Fatalf("the host's done: %+v", first)
+	}
+	hs.HostAttention(session.AttentionDone, "Claude is waiting for your input", session.SourceAPI, session.KindDone, nil, id, false, "", "")
+	if a := hs.Info().Attention; a.ID != id || !a.Since.Equal(*first.Since) || a.Message != first.Message {
+		t.Fatalf("the same done told again: %+v, the first %+v", a, first)
+	}
+	if v := hs.HostView().Attention; v.ID != id || !v.Since.Equal(*first.Since) || v.Message != first.Message {
+		t.Fatalf("the host's view: %+v", v)
+	}
+	if err := hs.SetAttentionFull(session.AttentionDone, "Claude is waiting for your input", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if a := hs.Info().Attention; a.ID != id || !a.Since.Equal(*first.Since) || a.Message != first.Message {
+		t.Fatalf("a forwarded done over the shown one: %+v, the first %+v", a, first)
+	}
+	drainText(t, conn, proto.HostAttention)
+}
+
+// A host's done with another id is another turn's (one the host finished
+// while it was away, told as its connection came back): it replaces the
+// shown one, with its own id and words, stamped as it is received.
+func TestAHostedDoneOfAnotherTurnReplacesTheShownOne(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, _ := register(t, hub)
+	hs.HostAttention(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, "0123456789abcdef", false, "", "")
+	a := hs.Info().Attention
+	hs.HostAttention(session.AttentionDone, "Docs updated.", session.SourceAPI, session.KindDone, nil, "fedcba9876543210", false, "", "")
+	b := hs.Info().Attention
+	if b.ID != "fedcba9876543210" || b.Message != "Docs updated." || b.Since == nil || b.Since.Before(*a.Since) {
+		t.Fatalf("the other turn's done: %+v after %+v", b, a)
+	}
+}
+
+// The copy learns Info.Turns as a session does: from a working or a done
+// of the agent's own, the host's or forwarded, never from a bell or an
+// operator's mark; and from the host's word (the attention frame's turns)
+// on a copy that saw no such report, which a later frame without it does
+// not clear.
+func TestTheHostedCopyLearnsTurns(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, _ := register(t, hub)
+	hs.HostAttention(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, "0123456789abcdef", false, "", "")
+	if err := hs.SetAttentionFull(session.AttentionWorking, "", session.SourceAdmin, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	hs.HostAttention(session.AttentionWorking, "", session.SourceAdmin, "", nil, "0123456789abcdef", false, "", "")
+	if hs.Info().Turns {
+		t.Fatal("learned from a bell or an operator's mark")
+	}
+	hs.HostAttention(session.AttentionWorking, "", session.SourceAPI, "", nil, "fedcba9876543210", false, "", "")
+	if !hs.Info().Turns {
+		t.Fatal("a host's working from the agent's hooks taught nothing")
+	}
+	hs.HostAttention(session.AttentionNone, "", session.SourceInput, "", nil, "", false, "", "")
+	if !hs.Info().Turns {
+		t.Fatal("the empty state cleared it")
+	}
+
+	forwarded, _ := register(t, hub)
+	if err := forwarded.SetAttentionFull(session.AttentionDone, "done", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if !forwarded.Info().Turns {
+		t.Fatal("a forwarded done from the agent's hooks taught nothing")
+	}
+
+	told, _ := register(t, hub)
+	told.HostAttentionTurns(session.AttentionNone, "", session.SourceInput, "", nil, "", false, "", "", nil, true)
+	if info := told.Info(); !info.Turns || info.Attention.Source != session.SourceInput {
+		t.Fatalf("the host's word: %+v", info)
+	}
+	told.HostAttentionTurns(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, "0123456789abcdef", false, "", "", nil, false)
+	if !told.Info().Turns {
+		t.Fatal("a frame without turns cleared it")
+	}
+}
+
+// A host's attention frame that differs from the last only in turns moves
+// nothing else of the copy: the attention it shows keeps its id and its
+// Since, and the change is told (OnChange).
+func TestAFrameThatChangesOnlyTurnsMovesNothingElse(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var told []session.Info
+	hub.OnChange = func(i session.Info) {
+		mu.Lock()
+		told = append(told, i)
+		mu.Unlock()
+	}
+	hs, _ := register(t, hub)
+	const id = "0123456789abcdef"
+	hs.HostAttentionTurns(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, id, false, "", "", nil, false)
+	first := hs.Info()
+	mu.Lock()
+	n := len(told)
+	mu.Unlock()
+	hs.HostAttentionTurns(session.AttentionNeedsInput, "terminal bell", session.SourceBell, "", nil, id, false, "", "", nil, true)
+	info := hs.Info()
+	if !info.Turns || info.Attention.ID != id || !info.Attention.Since.Equal(*first.Attention.Since) || info.Attention.Message != first.Attention.Message {
+		t.Fatalf("after turns alone: %+v, before %+v", info.Attention, first.Attention)
+	}
+	if v := hs.HostView().Attention; !v.Since.Equal(*first.Attention.Since) {
+		t.Fatalf("the host's view restamped: %+v", v)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) == n || !told[len(told)-1].Turns {
+		t.Fatalf("turns alone was not told: %d before, %+v", n, told)
+	}
+}
+
+// A done forwarded over the agent's own question (it outlasts its turn's
+// done, here as on the host) teaches the copy turns, and that change
+// alone is told (OnChange): the question still shows.
+func TestADoneOverTheAgentsQuestionTellsTurns(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	var mu sync.Mutex
+	var told []session.Info
+	hub.OnChange = func(i session.Info) {
+		mu.Lock()
+		told = append(told, i)
+		mu.Unlock()
+	}
+	hs, conn := register(t, hub)
+	if err := hs.Ask("Allow Bash?", session.SourceAPI, session.KindPermission, []session.Option{{Label: "Yes", Input: "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostAttention)
+	mu.Lock()
+	n := len(told)
+	mu.Unlock()
+	if err := hs.SetAttentionFull(session.AttentionDone, "done", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if a := hs.Info().Attention; a.State != session.AttentionNeedsInput {
+		t.Fatalf("the question gave way: %+v", a)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) == n || !told[len(told)-1].Turns {
+		t.Fatalf("turns was not told: %d before, %+v", n, told)
+	}
+}
+
+// A copy that learned turns before its host (a report of the agent's own
+// it took while the host had not yet told it) keeps the attention the
+// host shows when the host's next frame adds only turns: an operator's
+// working, without turns, then the same working with it keeps its id,
+// its Since and its words.
+func TestATurnsOnlyFrameKeepsTheStampWhenTheCopyKnewTurns(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	if err := hs.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostAttention)
+	if !hs.Info().Turns {
+		t.Fatal("the forwarded working taught nothing")
+	}
+	const id = "0123456789abcdef"
+	hs.HostAttentionTurns(session.AttentionWorking, "on it", session.SourceAdmin, "", nil, id, false, "", "", nil, false)
+	first := hs.Info().Attention
+	if first.ID != id || first.Since == nil {
+		t.Fatalf("the operator's working: %+v", first)
+	}
+	// The clock moves past the first stamp, so that a restamp shows.
+	for !time.Now().After(*first.Since) {
+		runtime.Gosched()
+	}
+	hs.HostAttentionTurns(session.AttentionWorking, "on it", session.SourceAdmin, "", nil, id, false, "", "", nil, true)
+	if a := hs.Info().Attention; a.ID != id || !a.Since.Equal(*first.Since) || a.Message != first.Message || a.Source != session.SourceAdmin {
+		t.Fatalf("after turns alone: %+v, before %+v", a, first)
+	}
+	if v := hs.HostView().Attention; !v.Since.Equal(*first.Since) {
+		t.Fatalf("the host's view restamped: %+v", v)
 	}
 }

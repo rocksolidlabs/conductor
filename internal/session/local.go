@@ -428,6 +428,15 @@ type Local struct {
 	// ended is still the last one, and a bell or OSC notification now is
 	// that turn's own (unlessTurnEnded). Guarded by mu.
 	turnEnded bool
+	// lastDone is the last done reported while the done shown stands (the
+	// one shown, then each one of its turn after it): a done the same as it
+	// records nothing (setAttentionLooked). Guarded by mu.
+	lastDone Attention
+	// startsTold says the session's agent tells its turns' starts: a
+	// working of its own from its hooks (api) has shown. Such an agent's
+	// next turn ends a done shown by itself, so a done over a done is its
+	// turn's again (setAttentionLooked). Never cleared. Guarded by mu.
+	startsTold bool
 	// turn counts the turns begun after a done (beginTurn), changed under
 	// mu: output read before one began, and scanned after, is the ended
 	// turn's own (scanOutput). The pump takes it as soon as a read
@@ -1989,6 +1998,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	// The agent's own word on its turn (ReportsTurn), past the bucket,
+	// whatever the rules below make of it: the session's agent reports its
+	// turns (Info.Turns), told (OnChange) once the change is through.
+	if ReportsTurn(state, source) && !s.info.Turns {
+		s.info.Turns = true
+		defer s.notifyChange()
+	}
 	// The plan the change names (#289), learnt now, past the bucket, under
 	// the lock the change takes: a question's alone, and nothing when the
 	// path is not a plan's.
@@ -2221,10 +2237,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 	}
+	// A done while a done shows is weighed below against the last report
+	// of the done shown, which may not be the one shown.
+	doneOverDone := state == AttentionDone && cur.State == AttentionDone && own.ID == ""
 	// The same question again: its words, its choices and, read off the
 	// screen, its whole list (a choice changed past what its label shows is
 	// another question, whose reply is weighed against the list now).
-	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list &&
+	if !doneOverDone && cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list &&
 		opt.decision == "" && cur.Decision == "" {
 		if rows != "" && rows != cur.rows {
 			// The same question read at another width (the window
@@ -2267,11 +2286,48 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	if doneOverDone {
+		// A done while a done shows, no other state shown between (an Enter
+		// or a submission ends a done shown: nextTurn). The same as the last
+		// report of the done shown (its words, source, kind and choices) is
+		// that report again: nothing changes and nothing is recorded.
+		last := s.lastDone
+		if last.ID != cur.ID {
+			last = cur
+		}
+		if sameWords(last.Message, message) && last.Source == source && last.Kind == kind && sameOptions(last.Options, options) {
+			s.mu.Unlock()
+			return nil
+		}
+		if s.startsTold && ReportsTurn(state, source) && ReportsTurn(cur.State, cur.Source) {
+			// An agent that tells its turns' starts ends a done shown as its
+			// next turn begins: a done of its own over its own is the same
+			// turn's (Claude Code's idle_prompt a minute after its Stop). The
+			// one shown keeps its id, its Since (the turn's end) and its
+			// words (the turn's first); this one is recorded as the report
+			// it is, at its own time. Another agent's ends another turn, and
+			// an operator's mark over the agent's done or under it is
+			// another done: a new done, below.
+			s.lastDone = Attention{ID: cur.ID, State: state, Message: message, Source: source, Kind: kind, Options: options}
+			if rules&bellPaced != 0 {
+				s.lastBell = time.Now()
+			}
+			now := s.activity.Stamp(1)
+			s.mu.Unlock()
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
+			return nil
+		}
+	}
 	if state != AttentionDone {
 		// Another state after a done (a working report: the agent went on
 		// by itself, a question, a clear) begins the next turn, as an
 		// Enter does.
 		s.beginTurn()
+		s.startsTold = s.startsTold || state == AttentionWorking && source == SourceAPI
 	}
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
@@ -2317,6 +2373,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.consumeLocked(att.ID)
 			s.holdAskedAgain(att.ID, words, heldAsked, startupStill)
 		}
+	}
+	if state == AttentionDone {
+		// The turn's last done so far, by the id of the one shown.
+		s.lastDone = att
 	}
 	if cur.ID != "" && cur.ID != att.ID && source != SourceSubmit {
 		// The question showing leaves (withdrawn, or replaced by the next):
@@ -3452,11 +3512,25 @@ func listKey(data []byte) bool {
 }
 
 // nextTurn says an Enter is about to be written: the turn a done ended is
-// behind, and a bell is a question again (unlessTurnEnded).
+// behind, and a bell is a question again (unlessTurnEnded). A done that
+// shows gives way to the empty state with source input, as an Enter
+// withdraws a bell's wait (rawKeys): the agent works on what the Enter
+// gave it, and its done no longer says where its turn stands. The empty
+// state records nothing (no entry, no webhook, no turn's end for a crew).
+// A done of an ended session stays. It runs as the writer takes the
+// Enter, so the change is told (OnChange) off the writer's way, as the
+// bell's wait withdrawn is.
 func (s *Local) nextTurn() {
 	s.mu.Lock()
 	s.beginTurn()
+	gave := s.info.Attention.State == AttentionDone && !s.info.Status.Ended()
+	if gave {
+		s.withdrawShownLocked(SourceInput)
+	}
 	s.mu.Unlock()
+	if gave {
+		go s.notifyChange()
+	}
 }
 
 // beginTurn begins the next turn after a done, whichever comes first: an

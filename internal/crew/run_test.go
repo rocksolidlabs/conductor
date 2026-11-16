@@ -1137,6 +1137,47 @@ func TestReadiness(t *testing.T) {
 	}
 }
 
+// A member whose session shows a done is ready at once; an Enter after it
+// begins the agent's next turn, and the session shows the empty state:
+// not ready at once, the member waits for its output to go quiet. The
+// rule is TestReadiness's; what the session shows is not.
+func TestAnEnterAfterADoneIsNotReadyAtOnce(t *testing.T) {
+	p := sessiontest.NewFakeProc()
+	t.Cleanup(func() { p.End(0) })
+	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "lead", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, session.Options{Log: quietLog})
+	shown := func() readiness {
+		att := l.Info().Attention
+		seen, on := l.BracketedPaste()
+		return readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}
+	}
+	l.SetAttentionFull(session.AttentionDone, "All tests pass.", session.SourceAPI, session.KindDone, nil)
+	start := time.Now()
+	if ready, _, _ := readyAt(shown(), start, start); !ready {
+		t.Fatalf("a done is not ready: %+v", shown())
+	}
+	sub, err := l.Attach("", session.RoleControl, "", 0, 0, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Input
+	if rd := shown(); rd.state != session.AttentionNone {
+		t.Fatalf("after the Enter the session shows %+v", rd)
+	} else if ready, _, _ := readyAt(rd, start, start); ready {
+		t.Fatalf("ready at once after the Enter: %+v", rd)
+	}
+	// Quiet output makes it ready, by the test's fast bounds.
+	if err := p.Print("lead> "); err != nil {
+		t.Fatal(err)
+	}
+	w := readyWait{poll: 5 * time.Millisecond, quiet: 20 * time.Millisecond}
+	if err := w.await(t.Context(), l, func(q string) { t.Errorf("held for %q", q) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A run keeps the newest maxRunLog entries of its log.
 func TestRunLogKeepsTheNewest(t *testing.T) {
 	r := &run{}
