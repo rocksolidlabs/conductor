@@ -18,11 +18,6 @@ async function background(page: Page, l: Locator): Promise<string> {
   return probeColour(page, await l.evaluate((el) => getComputedStyle(el).backgroundColor))
 }
 
-/** The `::before` background, where Nuxt UI's nav draws a link's pill. */
-async function pill(page: Page, l: Locator): Promise<string> {
-  return probeColour(page, await l.evaluate((el) => getComputedStyle(el, '::before').backgroundColor))
-}
-
 /** The driver session's id and folder: the day's silent session, which opens a terminal and a Files pane of the day's repository. */
 async function driver(day: Day) {
   const n = await day.part('states')
@@ -55,12 +50,14 @@ for (const theme of THEMES) {
     await link.hover()
     await expect.poll(() => background(page, link), { timeout: MEASURE_WAIT_MS }).toBe(hoverTone)
 
-    // The current page's link in the nav: its pill stands apart from the canvas it sits on.
-    const nav = sidebar.locator('[data-slot="link"][aria-current="page"], [data-slot="link"][data-active]').first()
+    // The current page's tile among the sidebar's pages (PR-15's six): lit on the page's tone, apart from the canvas it sits on.
     await page.goto('/yard')
     await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
-    await expect(nav).toBeVisible()
-    expect(await pill(page, nav)).not.toBe(canvas)
+    const tiles = sidebar.locator('[data-sidebar-tiles]')
+    const lit = tiles.locator('[data-sidebar-tile="yard"]')
+    await expect(lit).toHaveAttribute('aria-current', 'page')
+    await expect.poll(() => background(page, lit), { timeout: MEASURE_WAIT_MS }).toBe(ground)
+    expect(ground).not.toBe(canvas)
     await page.goto(`/sessions/${d.id}`)
 
     // The terminal's host on the page's tone.
