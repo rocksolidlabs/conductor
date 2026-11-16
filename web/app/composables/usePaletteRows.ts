@@ -53,9 +53,8 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-/** The Go to rows that are no page of their own (utils/pages.ts): Events' Routing tab, Agents' Reporting section and the paste invite, after the pages. */
+/** The Go to rows that are no page of their own (utils/pages.ts): Agents' Reporting section and the paste invite, after the pages. */
 const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
-  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', icon: 'i-lucide-route' },
   { id: 'agents-reporting', label: 'Agents · Reporting', to: '/agents#reporting', icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
 ]
@@ -100,6 +99,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const desktop = useDesktop()
   const update = useDesktopUpdate()
   const settings = useAttentionSettings()
+  const alertsPanel = useAlertsPanel()
   const sidebar = useSidebar()
   const folds = useSidebarFolds()
   const colorMode = useColorMode()
@@ -557,6 +557,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     })
     const marked = Object.keys(events.marks.value)
     out.push({ key: 'action:clear-marks', label: `Clear the new-event badges${marked.length ? ` · ${marked.length}` : ''}`, icon: 'i-lucide-bell-off', disabled: !marked.length, keepOpen: true, run: () => marked.forEach((id) => events.clearMark(id)) })
+    out.push({ key: 'action:alerts', label: 'Alerts…', detail: 'The switches and where each kind of event goes', icon: 'i-lucide-bell', run: () => alertsPanel.show() })
     out.push({ key: 'action:notifications', label: 'Browser notifications', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input
