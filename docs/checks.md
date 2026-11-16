@@ -63,6 +63,13 @@ longest whole-suite run (67, on 2026-11-15) together. On the pull request that c
 shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34 and 29
 for each job), where the whole suite of 564 had taken one job 67.
 
+A spec asserts layout by measures, never by pixels: `web/e2e/layout.ts`'s
+helpers (`uncut`, `inside`, `noOverlap`, `aligned`, `rowsInView`,
+`topAtMost`, `lines`, `noSideways`, `tapTarget`, `tabTo`, `atWidths`,
+`ageBy`, `probeColour`) each wait for what they measure, fail when nothing
+matched, measure after the fonts load and say the measure in the failure;
+`layout.spec.ts` proves each on a good page and a bad one.
+
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
 of a module of the `rocksolidlabs` organization other than this one
