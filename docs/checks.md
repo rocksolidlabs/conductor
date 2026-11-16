@@ -64,11 +64,15 @@ shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34
 for each job), where the whole suite of 564 had taken one job 67.
 
 A spec asserts layout by measures, never by pixels: `web/e2e/layout.ts`'s
-helpers (`uncut`, `inside`, `noOverlap`, `aligned`, `rowsInView`,
-`topAtMost`, `lines`, `noSideways`, `tapTarget`, `tabTo`, `atWidths`,
-`ageBy`, `probeColour`) each wait for what they measure, fail when nothing
-matched, measure after the fonts load and say the measure in the failure;
-`layout.spec.ts` proves each on a good page and a bad one.
+helpers say the measure in the failure. `uncut`, `inside`, `noOverlap`,
+`aligned`, `rowsInView`, `topAtMost`, `lines`, `noSideways`,
+`tapTarget` and `atWidths` wait for what they measure to be drawn, fail
+when nothing matched and measure after the fonts load; `tabTo` waits for
+its target and its start and fails when either matched nothing; `ageBy`
+and `probeColour` wait for nothing, and `probeColour` fails on a value
+that is no colour. Each helper's doc comment names its wait, its slack
+and its limits; `layout.spec.ts` proves each half of each on a good page
+and a bad one.
 
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
