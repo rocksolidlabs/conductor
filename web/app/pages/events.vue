@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import type { Integration, WebhookInfo } from '~/composables/useSessions'
 
+// The Integrations tab moved to the Agents page's section Reporting to Conductor: an old link lands there.
+definePageMeta({ middleware: (to) => (to.query.tab === 'integrations' ? navigateTo('/agents#reporting', { replace: true }) : undefined) })
+
 useHead({ title: 'Events' })
 
 const api = useSessions()
 const admin = useWorkbenchToken()
 const attention = useAttention()
 const events = useEvents()
-const { httpBase } = useApiBase()
 
 const integrations = ref<Integration[]>([])
-const serverHost = ref('')
 const webhooks = ref<WebhookInfo[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -27,7 +28,6 @@ async function refresh() {
   try {
     const r = await api.integrations()
     integrations.value = r.integrations
-    serverHost.value = r.host
     webhooks.value = r.webhooks
     error.value = ''
   } catch (e) {
@@ -46,70 +46,25 @@ onMounted(() => {
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, refresh)
 
-/**
- * Whether the server knows its user's home directory: it lists where each
- * adapter it can install goes, and lists none of them without one.
- */
-const homeKnown = computed(() => integrations.value.some((i) => i.where))
-
-/**
- * The machine the server runs on, where Install on this machine writes: the
- * name the server gives itself, else the host this browser reaches it by.
- */
-const host = computed(() => {
-  if (serverHost.value) return serverHost.value
-  try {
-    return new URL(httpBase.value || location.origin).hostname || 'this server'
-  } catch {
-    return 'this server'
-  }
-})
-
-// The skill has no install of its own: a launch puts it in place, and so do the hooks of the agents that read skills.
-const skillReaders = computed(() => integrations.value.filter((i) => i.installsSkill))
-/** Their names as prose: "Claude Code, Codex, pi and Goose". */
-const skillReaderNames = computed(() => {
-  const names = skillReaders.value.map((i) => i.name)
-  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? 'the agents that read skills')
-})
-// The notify commands as the skill writes them: the binary the session names in CONDUCTOR_BIN, else the conductor on PATH.
-/** The page's tab, in the URL so a link can open Routing or Integrations. */
+/** The page's tab, in the URL so a link can open Routing. */
 const route = useRoute()
 const router = useRouter()
-type EventsTab = 'feed' | 'routing' | 'integrations'
+type EventsTab = 'feed' | 'routing'
 const tab = computed<EventsTab>({
-  get: () => (route.query.tab === 'routing' || route.query.tab === 'integrations' ? route.query.tab : 'feed'),
+  get: () => (route.query.tab === 'routing' ? 'routing' : 'feed'),
   set: (t) => router.replace({ query: { ...route.query, tab: t === 'feed' ? undefined : t } }),
 })
 const tabs = [
   { label: 'Feed', value: 'feed' },
   { label: 'Routing', value: 'routing' },
-  { label: 'Integrations', value: 'integrations' },
-]
-const skillCommands = [
-  '"${CONDUCTOR_BIN:-conductor}" notify --event progress --message "4/7 handlers"',
-  '"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url https://github.com/acme/api/pull/212',
-  '"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to tests --message "/v1/users done"',
-  'conductor skill',
 ]
 
-// This page's group in the command palette (#302): the tabs, a refresh, the hooks not installed yet.
-const toast = useToast()
-async function installHooks(i: Integration) {
-  try {
-    const changed = await api.installIntegration(i.id)
-    toast.add({ title: changed.length ? `Installed ${i.name} hooks` : 'Nothing to change', description: changed.length ? changed.join('\n') : `${i.name} already has Conductor's hooks.`, icon: 'i-lucide-download', color: changed.length ? 'success' : 'neutral' })
-    await refresh()
-  } catch (e) {
-    toast.add({ title: `Installing ${i.name} failed`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
-  }
-}
+// This page's group in the command palette (#302): the tabs and a refresh. The hooks are installed on the Agents page.
 usePalette().registerPage(() => ({
   label: 'Events',
   rows: [
-    ...tabs.map((t) => ({ key: `page:tab:${t.value}`, label: t.label, icon: t.value === 'feed' ? 'i-lucide-radio-tower' : t.value === 'routing' ? 'i-lucide-route' : 'i-lucide-plug', on: tab.value === t.value, run: () => (tab.value = t.value as EventsTab) })),
+    ...tabs.map((t) => ({ key: `page:tab:${t.value}`, label: t.label, icon: t.value === 'feed' ? 'i-lucide-radio-tower' : 'i-lucide-route', on: tab.value === t.value, run: () => (tab.value = t.value as EventsTab) })),
     { key: 'page:refresh', label: 'Refresh', icon: 'i-lucide-refresh-cw', run: refresh },
-    ...integrations.value.filter((i) => i.installable && !i.installed).map((i) => ({ key: `page:install:${i.id}`, label: `Install hooks for ${i.name}`, detail: i.where, icon: 'i-lucide-plug', run: () => installHooks(i) })),
   ],
 }))
 </script>
@@ -147,37 +102,6 @@ usePalette().registerPage(() => ({
       <div v-else-if="tab === 'routing'" class="flex flex-col gap-4 px-4 py-5 sm:px-6" data-events-routing-tab>
         <p class="max-w-4xl text-[13.5px] text-muted">Where each kind of event goes in this browser. The routing is kept here, not on the server; webhooks are set in <code>conductor.json</code>.</p>
         <RoutingRows :routes="events.routes.value" :webhooks="webhooks" @update="events.setRoute" />
-      </div>
-
-      <div v-else class="flex flex-col gap-4 px-4 py-5 sm:px-6" data-events-integrations-tab>
-        <p class="max-w-4xl text-[13.5px] leading-normal text-muted">
-          Every session gets <code>CONDUCTOR_NOTIFY_URL</code> and <code>CONDUCTOR_NOTIFY_TOKEN</code>. An agent with hooks reports through them; one without falls back to
-          the terminal bell and screen patterns, which only know "needs input".
-        </p>
-        <IntegrationsTable :integrations="integrations" :host="host" :home-known="homeKnown" @changed="refresh" />
-
-        <section class="flex flex-col gap-3 rounded-lg p-4 ring ring-default" data-skill-card>
-          <div class="flex items-center gap-2.5">
-            <UIcon name="i-lucide-book-open-text" class="size-5 flex-none text-primary" />
-            <span class="font-semibold text-highlighted">Conductor skill</span>
-            <span class="ml-auto text-xs text-muted">any SKILL.md reader</span>
-          </div>
-          <p class="text-sm">
-            Teaches agents to report progress, artifacts, blockers and handoffs to named crew members, not just "needs input". Every agent that reads skills gets it at its
-            first launch ({{ skillReaderNames }}); <b class="text-default">Install on this machine</b> puts it there with the hooks.
-          </p>
-          <CodeBlock :commands="skillCommands" />
-          <div v-if="skillReaders.length" class="flex flex-wrap gap-1.5">
-            <UBadge
-              v-for="i in skillReaders"
-              :key="i.id"
-              :label="`${i.name}: ${i.installed ? 'installed' : 'not installed'}`"
-              :color="i.installed ? 'success' : 'neutral'"
-              :variant="i.installed ? 'subtle' : 'outline'"
-              size="sm"
-            />
-          </div>
-        </section>
       </div>
     </template>
   </UDashboardPanel>

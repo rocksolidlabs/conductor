@@ -19,23 +19,24 @@ function byKind(refs: Iterable<{ ref: string; kind: string }>): Record<string, s
   return out
 }
 
-/** The five sessions of `states` as the server lists them: name, status and attention. */
-async function fiveStates(day: Day): Promise<Array<[string, string, string]>> {
+/** The five sessions of `states` as the server lists them: name, status, attention and whether the agent reports its turns. */
+async function fiveStates(day: Day): Promise<Array<[string, string, string, boolean]>> {
   const n = await day.part('states')
-  const out: Array<[string, string, string]> = []
+  const out: Array<[string, string, string, boolean]> = []
   for (const name of Object.keys(STATES)) {
     const s = await day.api.session(n[name]!)
-    out.push([s.name, s.status, s.attention?.state ?? ''])
+    out.push([s.name, s.status, s.attention?.state ?? '', s.turns === true])
   }
   return out
 }
 
-const FIVE: Array<[string, string, string]> = [
-  ['mac-only-flake', 'running', 'needs_input'],
-  ['yard-tile-resize', 'running', 'working'],
-  ['flaky-vim-spec', 'running', 'done'],
-  ['driver', 'running', ''],
-  ['old-bisect', 'stopped', ''],
+// The listing's turns is what the status walk reads: working and finished are told by an agent that reports its turns.
+const FIVE: Array<[string, string, string, boolean]> = [
+  ['mac-only-flake', 'running', 'needs_input', false],
+  ['yard-tile-resize', 'running', 'working', true],
+  ['flaky-vim-spec', 'running', 'done', true],
+  ['driver', 'running', '', false],
+  ['old-bisect', 'stopped', '', false],
 ]
 
 test('each part of the day holds what it promises, read through the API by name', async ({ day }) => {
@@ -58,8 +59,8 @@ test('each part of the day holds what it promises, read through the API by name'
   expect((await day.api.run(n['Release notes']!)).outcome).toBe('succeeded')
 
   // dispatch: the fourteen tickets by key with their owners.
-  const tickets = (await day.api.ok<{ tickets: Array<{ key: string; owner: string }> }>('GET', '/api/dispatch/tickets?project=CND')).tickets
-  expect(tickets.map((t) => [t.key, t.owner]).sort((a, b) => Number(a[0]!.slice(4)) - Number(b[0]!.slice(4)))).toEqual(TICKETS.map((t, i) => [`CND-${i + 1}`, t.owner]))
+  const tickets = (await day.api.ok<{ tickets: Array<{ key: string; owner?: string }> }>('GET', '/api/dispatch/tickets?project=CND')).tickets
+  expect(tickets.map((t) => [t.key, t.owner ?? '']).sort((a, b) => Number(a[0]!.slice(4)) - Number(b[0]!.slice(4)))).toEqual(TICKETS.map((t, i) => [`CND-${i + 1}`, t.owner]))
 
   // long: the session's name 120 bytes, the run's label exactly 60 characters (the bound a launch accepts), the ticket's title 200.
   expect((await day.api.session(n.long!)).name).toBe(LONG_NAME)

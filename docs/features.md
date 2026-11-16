@@ -39,10 +39,11 @@ for the wire details.
 
 ### Client only (no protocol change)
 
-- **Status colours.** Needs-input is amber, running is green, idle and exited
-  are grey. Terracotta stays on the brand mark only, per
-  [design/brand.md](design/brand.md). JetBrains Mono for code and terminal
-  chrome.
+- **Status marks.** Every surface draws a session's state with one of five
+  marks and its word, as the status section of
+  [design/system.md](design/system.md#status) says. Terracotta stays on the
+  brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
+  code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
   you, Running and Exited, with a filter box. The selected session fills the
   main pane. A right-hand inspector has People, Files and Activity tabs; Files
@@ -256,6 +257,21 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **A session page where the terminal has the room (the UX review, P11, D7,
+  D9; #934).** The inspector is closed until a view is opened, one choice for
+  every session under `conductor.inspectorOpen` (the old `conductor.inspector`
+  is no longer read), and the rail's toggle opens it on Explorer. The line
+  under the name is agent · folder · branch (`sessionHeadline`), the whole
+  path its tooltip, the ids in More. Share is an outline button like Files and
+  More. The connection badge is its icon alone while open, its words as label
+  and tooltip (`transportLook`, the session page only). A reply choice is
+  filled only when its label ends "(Recommended)" (`recommendedChoice`; none
+  when two say it, never a mode choice). A session the server answers 404
+  for opens on its record's name with Open its record, or says nothing is
+  kept, with no control that cannot work (`gonePage`). Below `sm` Files,
+  Share and Fullscreen move into More. Tests: `attention.test.ts`,
+  `sessions.test.ts`, `transport/look.test.ts`; `session-page.spec.ts`,
+  `inspector-rail.spec.ts`, `hscroll.spec.ts`.
 - **The app's screens: eight defects the owner met (#702, #706, #906,
   2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
   wait for the open pull requests that hold their files.
@@ -300,6 +316,28 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
+  #927, 2026-11-16).** A project's page opens with its description as one
+  line (its first paragraph as text, `descriptionLine` in
+  `web/app/utils/markdown.ts`; "Add a description of CND…" opens the
+  editor), the tracker's link and About at its end, the whole description
+  opened in place under it and remembered per browser
+  (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
+  "shown" starts at the line). Then one toolbar: the List, Board and
+  Roadmap tabs, the search, Filter (the eight filters in a popover, its
+  number the values in use besides the search), a chip per value in use
+  (`filterChips`, a parent and deleted among them) that takes itself out,
+  Clear, the count, Views (the saved views in a menu, the button naming
+  the view applied) and the sort. From a 48 rem list every row is one grid
+  (`TICKET_ROW_TRACKS`), each cell drawn on every row, empty when the
+  ticket has none, so the milestone, priority, owner, assignees and age
+  read straight down; on a phone a row's second line is a grid too. The
+  palette's project group gains "Filter the tickets…". Tests:
+  `dispatch-toolbar.spec.ts` on the seeded day (the first ticket within
+  160 px of the top at 1440 x 900, all fourteen in view, the columns
+  aligned before and after a selection, a phone's lines, the chips and
+  the address, the keys paused while Filter is open);
+  `dispatchQuery.test.ts` and `markdown.test.ts`.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
@@ -7700,6 +7738,13 @@ picked.
   it the last hour as bars, where events go, who reports), Routing (the ten
   events grouped by how loud they are, destinations as switches) and
   Integrations (a table, the snippet of an agent nothing wires open below).
+  Since the UX review's P12 (PR-27) the table and the Conductor skill are
+  the Agents page's section Reporting to Conductor: each card there says
+  whether its agent reports (Reports to Conductor, Not set up with a Set up
+  link to its adapter's row, Experimental, No hooks), by one rule
+  (`reportStatus`) that the table and the feed's Reporting list read too,
+  with installed and injected drawn neutral; `/events?tab=integrations`
+  opens the section, and the palette's row is "Agents · Reporting".
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers

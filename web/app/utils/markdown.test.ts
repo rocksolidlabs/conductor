@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dirOf, headingId, isMarkdownPath, localPath, renderMarkdown, resolveRelative } from './markdown'
+import { descriptionLine, dirOf, headingId, isMarkdownPath, localPath, renderMarkdown, resolveRelative } from './markdown'
 
 const dir = '/repo/docs'
 const rawUrl = (p: string) => `/api/sessions/s1/files?path=${encodeURIComponent(p)}&raw=1`
@@ -125,5 +125,25 @@ describe('the Markdown preview', () => {
     expect(mermaid).toBe(2)
     expect(html).toContain('<pre class="md-mermaid" data-mermaid>flowchart LR\n  A --&gt; B\n</pre>')
     expect(html).not.toContain('<svg')
+  })
+})
+
+describe("a project's description as one line", () => {
+  it('is the first paragraph of prose as plain text, a heading only when there is no paragraph, and nothing for none', () => {
+    expect(descriptionLine('## Goals\n\nShip the **tracker**.')).toBe('Ship the tracker.')
+    expect(descriptionLine('## Goals\n')).toBe('Goals')
+    expect(descriptionLine('[the spec](https://example.com) first')).toBe('the spec first')
+    expect(descriptionLine('![a diagram](https://example.com/a.png)\n\nThen the words, with `code` and _emphasis_.')).toBe('Then the words, with code and emphasis.')
+    expect(descriptionLine('\n\n\nAfter blank lines,\nover two lines.\n\nThe second paragraph.')).toBe('After blank lines, over two lines.')
+    expect(descriptionLine('')).toBe('')
+    expect(descriptionLine('   \n\n')).toBe('')
+    expect(descriptionLine('<b>raw</b> HTML stays words')).toBe('<b>raw</b> HTML stays words')
+  })
+  it('takes prose before a list item, a list item before a heading, and gives a long paragraph whole', () => {
+    expect(descriptionLine('# Plan\n\n- one\n- two\n\nThe prose.')).toBe('The prose.')
+    expect(descriptionLine('# Plan\n\n- one\n- two')).toBe('one')
+    const long = `${'word '.repeat(59)}words`
+    expect(long).toHaveLength(300)
+    expect(descriptionLine(`${long}\n\nmore`)).toBe(long)
   })
 })

@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import type { RowState, SectionKey } from '~/utils/sidebar'
+import type { SectionKey } from '~/utils/sidebar'
+import { statusOfKey, type StatusKey } from '~/utils/status'
 
 /**
  * A section of the sidebar's list (design 3c): a header that folds it, with the count and, while folded, a preview of what is
- * inside as status squares. The choice is the list's to keep (useSidebarFolds); this only draws it.
+ * inside as status marks (StatusMark, the keys of sectionPreview). The choice is the list's to keep (useSidebarFolds); this only draws it.
  */
-const props = withDefaults(defineProps<{ id: SectionKey; title: string; count: number; tone?: 'warning' | 'neutral'; preview?: RowState[] }>(), { tone: 'neutral', preview: () => [] })
+const props = withDefaults(defineProps<{ id: SectionKey; title: string; count: number; tone?: 'warning' | 'neutral'; preview?: StatusKey[] }>(), { tone: 'neutral', preview: () => [] })
 const folded = defineModel<boolean>('folded', { default: false })
 
-const square: Record<RowState, string> = { needs: 'bg-warning', running: 'bg-success', idle: 'bg-neutral-400', exited: 'border border-dashed border-accented' }
 const bodyId = computed(() => `sidebar-section-${props.id}`)
 </script>
 
@@ -29,7 +29,7 @@ const bodyId = computed(() => `sidebar-section-${props.id}`)
       <span v-if="tone === 'warning'" class="flex-none whitespace-nowrap rounded-full bg-warning/20 px-1.5 text-warning tracking-normal" data-section-count>{{ count }}</span>
       <span v-else class="flex-none whitespace-nowrap tracking-normal" data-section-count>· {{ count }}</span>
       <span v-if="folded && preview.length" class="ml-auto flex items-center gap-0.5" data-section-preview aria-hidden="true">
-        <span v-for="(p, i) in preview" :key="i" class="size-1.5 rounded-[2px]" :class="square[p]" :data-state="p" />
+        <StatusMark v-for="(p, i) in preview" :key="i" :status="statusOfKey(p)" />
       </span>
     </button>
     <!-- A folded section renders nothing: its rows are not in the page, for keys and tests alike. -->
