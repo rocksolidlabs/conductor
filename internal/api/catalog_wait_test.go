@@ -63,12 +63,12 @@ func TestTheCatalogListsAtOnceWhileAProbeIsHeld(t *testing.T) {
 	var startOnce sync.Once
 	e.srv.probes.wait = time.Hour
 	e.srv.lookups.wait = time.Hour
-	e.srv.probes.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	e.srv.probes.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		if command[0] == held {
 			startOnce.Do(func() { close(started) })
 			<-gate
 		}
-		return agents.RunProbe(ctx, command, p, env)
+		return r.Run(ctx, command, p, env)
 	}
 
 	// The quick read lists both, whatever is known yet.

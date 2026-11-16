@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/proc"
 )
 
 // Probe says how an adapter's agent identifies itself: the program is run
@@ -61,13 +65,60 @@ var probeTimeout = 3 * time.Second
 // from nothing, in a temporary directory of its own, a spartan environment
 // (PATH, HOME, LANG, TMPDIR, TERM=dumb, NO_COLOR=1) plus the agent's own
 // env, at most probeMaxOutput bytes of stdout and stderr together, within
-// probeTimeout (the process group is killed past it). A non-zero exit still
-// counts: the output is what matters.
+// probeTimeout. A non-zero exit still counts: the output is what matters.
 func RunProbe(ctx context.Context, command []string, p Probe, env map[string]string) ProbeResult {
+	return new(ProbeProcess).Run(ctx, command, p, env)
+}
+
+// ProbeProcess is one run of a probe (RunProbe) that its caller can end at
+// any moment (End): the server's stop ends its probes so (#961). The
+// program runs in a process group of its own. Its exit, or the run's end
+// (its timeout, ctx), is seen before it is reaped (proc.WatchExit), and the
+// group, its id still the program's, is killed then, whatever the program
+// answered: a run hands back no group with members. A descendant that left
+// the group (a session of its own) is reached by neither.
+type ProbeProcess struct {
+	// Timeout bounds the run in place of probeTimeout when set: the tests'
+	// way to a probe that only its caller ends.
+	Timeout time.Duration
+
+	mu    sync.Mutex
+	ended bool
+	cmd   *exec.Cmd // started and not reaped yet
+}
+
+// errProbeEnded is the answer of a run its caller ended (End).
+const errProbeEnded = "the probe was ended"
+
+// End ends the run now, on the caller's goroutine: a program not started
+// yet is not started, and one started has its process group, and itself,
+// sent SIGKILL, unless it is reaped already.
+func (r *ProbeProcess) End() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = true
+	if r.cmd != nil {
+		endProbe(r.cmd)
+	}
+}
+
+// endProbe kills cmd's process group and cmd itself (should it have left
+// the group); called under the run's lock, before the reaping.
+func endProbe(cmd *exec.Cmd) {
+	endGroup(cmd)
+	_ = cmd.Process.Kill()
+}
+
+// Run runs the probe once (RunProbe).
+func (r *ProbeProcess) Run(ctx context.Context, command []string, p Probe, env map[string]string) ProbeResult {
 	if len(command) == 0 {
 		return ProbeResult{Error: "no command"}
 	}
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	timeout := probeTimeout
+	if r.Timeout > 0 {
+		timeout = r.Timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	dir, err := os.MkdirTemp("", "conductor-probe-")
 	if err != nil {
@@ -75,7 +126,7 @@ func RunProbe(ctx context.Context, command []string, p Probe, env map[string]str
 	}
 	defer os.RemoveAll(dir)
 	args := append(append([]string{}, command[1:]...), p.Args...)
-	cmd := exec.CommandContext(ctx, command[0], args...)
+	cmd := exec.Command(command[0], args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.Env = probeEnv(env)
@@ -84,14 +135,51 @@ func RunProbe(ctx context.Context, command []string, p Probe, env map[string]str
 	out.max = probeMaxOutput
 	cmd.Stdout, cmd.Stderr = &out, &out
 	probeAttr(cmd)
-	err = cmd.Run()
+	timedOut := ProbeResult{Error: fmt.Sprintf("timeout: the program did not answer within %d s", int(timeout/time.Second))}
+	r.mu.Lock()
+	switch {
+	case r.ended:
+		r.mu.Unlock()
+		return ProbeResult{Error: errProbeEnded}
+	case ctx.Err() != nil:
+		r.mu.Unlock()
+		return timedOut
+	}
+	err = cmd.Start()
+	if err == nil {
+		r.cmd = cmd
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return ProbeResult{Error: err.Error()}
+	}
+	exited, reap, werr := proc.WatchExit(cmd)
+	if werr == nil {
+		select {
+		case <-exited:
+		case <-ctx.Done():
+		}
+	}
+	r.mu.Lock()
+	endProbe(cmd)
+	r.cmd = nil
+	ended := r.ended
+	r.mu.Unlock()
+	if werr != nil {
+		// As a usage read: an exit that cannot be watched is not guessed
+		// at; the program was ended above, while its group was its own.
+		_ = cmd.Wait()
+		return ProbeResult{Error: fmt.Sprintf("the exit of %s could not be watched", filepath.Base(command[0]))}
+	}
+	err = reap()
 	res := ProbeResult{Ran: true}
 	var exit *exec.ExitError
 	switch {
+	case ended:
+		return ProbeResult{Error: errProbeEnded}
 	case ctx.Err() != nil:
 		// Killed at the deadline (or the asker's), whatever the exit says.
-		res.Ran, res.Error = false, fmt.Sprintf("timeout: the program did not answer within %d s", int(probeTimeout/time.Second))
-		return res
+		return timedOut
 	case err == nil, errors.As(err, &exit):
 		// A non-zero exit is still an answer.
 	default:

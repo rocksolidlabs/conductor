@@ -64,22 +64,25 @@ type probeCall struct {
 // the way lookupCache keeps the lookups: a probe runs in a goroutine of its
 // own, at most probeWorkers at once, askers wait at most probeWait and get
 // Pending otherwise, and askers of a probe under way join it. A probe
-// outlives its asker's request but not the server: close ends every probe
-// under way and waits for it, and none starts after (#961).
+// outlives its asker's request but not the server's stop (stop, close;
+// #961).
 type probeCache struct {
 	mu       sync.Mutex
 	entries  map[string]probeEntry
 	inflight map[string]*probeCall
-	run      func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
-	now      func() time.Time
-	wait     time.Duration
-	sem      chan struct{}
-	// life is the probes' context, ended by close (end): a probe's program
-	// is killed with its process group then (agents.RunProbe). closed and
-	// probing change under mu, so close waits for every probe started.
+	// run runs one probe as r (r.Run): stop ends it through r.End.
+	run     func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult
+	now     func() time.Time
+	wait    time.Duration
+	timeout time.Duration // a probe's bound, agents' own when zero
+	sem     chan struct{}
+	// life is the probes' context, ended by stop (end). closed, running
+	// (the probes whose program may run) and probing change under mu, so
+	// stop ends every probe that runs and close waits for every one begun.
 	life    context.Context
 	end     context.CancelFunc
 	closed  bool
+	running map[*agents.ProbeProcess]struct{}
 	probing sync.WaitGroup
 }
 
@@ -88,12 +91,15 @@ func newProbeCache() *probeCache {
 	return &probeCache{
 		entries:  map[string]probeEntry{},
 		inflight: map[string]*probeCall{},
-		run:      agents.RunProbe,
-		now:      time.Now,
-		wait:     probeWait,
-		sem:      make(chan struct{}, probeWorkers),
-		life:     life,
-		end:      end,
+		run: func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+			return r.Run(ctx, command, p, env)
+		},
+		now:     time.Now,
+		wait:    probeWait,
+		sem:     make(chan struct{}, probeWorkers),
+		life:    life,
+		end:     end,
+		running: map[*agents.ProbeProcess]struct{}{},
 	}
 }
 
@@ -101,16 +107,28 @@ func newProbeCache() *probeCache {
 // not run, or was ended.
 const errProbeStopping = "the server is stopping"
 
-// close ends the probes: none starts from now on, and every one under way
-// has its program killed (by its process group) and is waited for, as long
-// as ctx allows, so that no probe of this server still runs, or writes in
-// its temporary folder or the HOME it was given, once the stop returns. A
-// second call waits the same way.
-func (c *probeCache) close(ctx context.Context) {
+// stop is the first thing a server's stop does: no probe starts from now
+// on, and every one under way is sent its end here, on the caller's
+// goroutine (agents.ProbeProcess.End: its process group and its program
+// killed), without waiting for it. A descendant that left the probe's
+// process group (a session of its own) is not reached.
+func (c *probeCache) stop() {
 	c.mu.Lock()
 	c.closed = true
+	for r := range c.running {
+		r.End()
+	}
 	c.mu.Unlock()
 	c.end()
+}
+
+// close stops the probes (stop) and waits, as long as ctx allows, for
+// every probe begun: when it returns with ctx not done, each probe's
+// program has been killed and reaped and its temporary folder removed.
+// With ctx done first the probes have been sent their end and are not
+// waited for. A second call waits the same way.
+func (c *probeCache) close(ctx context.Context) {
+	c.stop()
 	done := make(chan struct{})
 	go func() {
 		c.probing.Wait()
@@ -188,8 +206,20 @@ func (c *probeCache) probe(key string, command []string, p agents.Probe, env map
 	res := agents.ProbeResult{Error: errProbeStopping}
 	select {
 	case c.sem <- struct{}{}:
-		if c.life.Err() == nil {
-			res = c.run(c.life, command, p, env)
+		// Counted under mu, where stop ends every probe counted: one begun
+		// after stop is not run.
+		r := &agents.ProbeProcess{Timeout: c.timeout}
+		c.mu.Lock()
+		run := !c.closed
+		if run {
+			c.running[r] = struct{}{}
+		}
+		c.mu.Unlock()
+		if run {
+			res = c.run(c.life, r, command, p, env)
+			c.mu.Lock()
+			delete(c.running, r)
+			c.mu.Unlock()
 		}
 		<-c.sem
 	case <-c.life.Done():

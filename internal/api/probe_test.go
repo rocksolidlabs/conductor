@@ -167,9 +167,9 @@ func TestLaunchAllowsAPendingOrUnverifiedProbe(t *testing.T) {
 	}
 	// A probe still under way refuses nothing.
 	e.srv.probes.wait = 10 * time.Millisecond
-	e.srv.probes.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	e.srv.probes.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		time.Sleep(300 * time.Millisecond)
-		return agents.RunProbe(ctx, command, p, env)
+		return r.Run(ctx, command, p, env)
 	}
 	e.srv.probes.entries = map[string]probeEntry{}
 	slow := versionScript(t, "goose-slow", "goose version: v3.22.1")
@@ -223,7 +223,7 @@ func TestProbeCacheExpiresAndJoinsInflight(t *testing.T) {
 	var runs atomic.Int32
 	now := time.Now()
 	c.now = func() time.Time { return now }
-	c.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	c.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		runs.Add(1)
 		time.Sleep(50 * time.Millisecond)
 		return agents.ProbeResult{Ran: true, Identified: true, Version: "1.0.0"}
@@ -263,7 +263,7 @@ func TestProbeCacheExpiresAndJoinsInflight(t *testing.T) {
 // one never poisons the other.
 func TestProbeCacheKeysByEnvironment(t *testing.T) {
 	c := newProbeCache()
-	c.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	c.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		return agents.ProbeResult{Ran: true, Identified: env["WHO"] == "claude", Output: env["WHO"]}
 	}
 	p := agents.Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`x`), Verified: true}
@@ -282,7 +282,7 @@ func TestProbeCacheKeysByEnvironment(t *testing.T) {
 func TestProbeCacheWaitBound(t *testing.T) {
 	c := newProbeCache()
 	c.wait = 20 * time.Millisecond
-	c.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	c.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		time.Sleep(200 * time.Millisecond)
 		return agents.ProbeResult{Ran: true, Identified: true}
 	}
@@ -304,7 +304,7 @@ func TestProbeNeverRunsForMissingOrRelativePrograms(t *testing.T) {
 		{ID: "rel", Name: "Relative", Command: []string{"./agent.sh"}, Adapter: "claude"},
 	})
 	var runs atomic.Int32
-	e.srv.probes.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	e.srv.probes.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		runs.Add(1)
 		return agents.ProbeResult{}
 	}
@@ -357,10 +357,10 @@ func TestCatalogWaitsForItsProbesTogether(t *testing.T) {
 	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), list)
 	var ran atomic.Int32
 	e.srv.probes.wait = time.Second
-	e.srv.probes.run = func(ctx context.Context, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
+	e.srv.probes.run = func(ctx context.Context, r *agents.ProbeProcess, command []string, p agents.Probe, env map[string]string) agents.ProbeResult {
 		time.Sleep(700 * time.Millisecond)
 		ran.Add(1)
-		return agents.RunProbe(ctx, command, p, env)
+		return r.Run(ctx, command, p, env)
 	}
 	pending := func(out map[string]any) int {
 		n := 0
