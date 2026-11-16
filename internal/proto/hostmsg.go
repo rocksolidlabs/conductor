@@ -619,6 +619,35 @@ type HostAttentionMsg struct {
 	// and an older server ignores it. A bool: the message's bound
 	// (MaxHostMessage) does not change.
 	Turns bool `json:"turns,omitempty"`
+	// TurnID goes server to host only: the agent's own name for the turn
+	// the report belongs to, as the attention route took it (its
+	// turnId), so that the host's session tells a turn's end told twice
+	// from the next turn's. At most MaxTurnID bytes of the shape
+	// ValidTurnID checks; the host takes a report whose name is out of
+	// them without the name. An older host ignores it.
+	TurnID string `json:"turnId,omitempty"`
+}
+
+// MaxTurnID bounds the name an agent gives a turn (HostAttentionMsg.TurnID,
+// the attention route's turnId), in bytes: an agent session id's bound.
+const MaxTurnID = 128
+
+// ValidTurnID reports whether id is a turn's name within its bound: at
+// most MaxTurnID bytes, a letter or a digit, then letters, digits and
+// . _ : - (an agent session id's shape; a UUID fits). "" is no name, and
+// not valid.
+func ValidTurnID(id string) bool {
+	if id == "" || len(id) > MaxTurnID {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		alnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || c != '.' && c != '_' && c != ':' && c != '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // MaxKept bounds HostAttentionMsg.Kept (session.MaxKept).
