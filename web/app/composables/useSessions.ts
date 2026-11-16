@@ -1097,23 +1097,3 @@ export function useSessions() {
       request<{ accepted: boolean }>(`/api/sessions/${encodeURIComponent(id)}/events`, { method: 'POST', body }),
   }
 }
-
-export function statusColor(status: SessionStatus): 'success' | 'neutral' | 'warning' | 'error' | 'info' {
-  switch (status) {
-    case 'running':
-      return 'success'
-    case 'starting':
-      return 'info'
-    case 'host_disconnected':
-      return 'warning'
-    case 'exited':
-      return 'neutral'
-    case 'stopped':
-      return 'neutral'
-  }
-  return 'neutral'
-}
-
-export function statusLabel(status: SessionStatus): string {
-  return status.replace('_', ' ')
-}

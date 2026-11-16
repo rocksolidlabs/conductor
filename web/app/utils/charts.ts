@@ -1,8 +1,9 @@
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
+import { sessionStatus } from './status'
 
 /**
  * The numbers behind the charts: how long a crew's runs lasted (runLength,
- * which the Crews pages draw as bars) and sessions by attention state for the
+ * which the Crews pages draw as bars) and live sessions by status for the
  * Yard; the Events page counts its own (sparkBuckets in utils/events.ts).
  * Each is drawn only when it says something: a chart needs at least two
  * points (enough), and the empty state says what will appear.
@@ -29,18 +30,25 @@ export function runLength(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'member
   return Math.max(0, (end ?? now) - start)
 }
 
-export type AttentionSlice = 'needs_input' | 'working' | 'done' | 'idle'
+/** The Yard's bar's slices: the live states of utils/status.ts, in the table's order. */
+export type StatusSlice = 'needs' | 'working' | 'finished' | 'running'
+export const STATUS_SLICES: readonly StatusSlice[] = ['needs', 'working', 'finished', 'running']
 
-/** Sessions by attention state, for the Yard's attention bar: active sessions only, in a fixed order. */
-export function attentionSlices(sessions: readonly SessionInfo[], active: (s: SessionInfo) => boolean): Record<AttentionSlice, number> {
-  const out: Record<AttentionSlice, number> = { needs_input: 0, working: 0, done: 0, idle: 0 }
+/** Live sessions by status key (sessionStatus), for the Yard's bar: active sessions only, one that reads exited (a host away) left out. */
+export function statusSlices(sessions: readonly SessionInfo[], active: (s: SessionInfo) => boolean): Record<StatusSlice, number> {
+  const out: Record<StatusSlice, number> = { needs: 0, working: 0, finished: 0, running: 0 }
   for (const s of sessions) {
     if (!active(s)) continue
-    const st = s.attention?.state
-    if (st === 'needs_input' || st === 'working' || st === 'done') out[st]++
-    else out.idle++
+    const k = sessionStatus(s).key
+    if (k !== 'exited') out[k]++
   }
   return out
+}
+
+/** The bar's sentence: "18 sessions: 5 need you, 4 working, 8 finished, 1 running". */
+export function statusSlicesLabel(n: Readonly<Record<StatusSlice, number>>): string {
+  const total = STATUS_SLICES.reduce((t, k) => t + n[k], 0)
+  return `${total} ${total === 1 ? 'session' : 'sessions'}: ${n.needs} ${n.needs === 1 ? 'needs' : 'need'} you, ${n.working} working, ${n.finished} finished, ${n.running} running`
 }
 
 /** The role colours the charts draw with, read from the theme's variables at runtime (brand.md anchors as the fallback). */

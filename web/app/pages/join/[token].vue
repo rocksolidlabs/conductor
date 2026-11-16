@@ -12,6 +12,7 @@ import { skipWords, type MemberStatus } from '~/utils/crews'
 import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
 import { newestRead } from '~/composables/useRunDesk'
+import { sessionStatus } from '~/utils/status'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -57,8 +58,15 @@ const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEd
 const filesPanel = ref(true)
 const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
 const attention = ref<Attention>({ state: '' })
+/**
+ * Whether the session's agent reports its turns: the join's (read again at each reconnect), held true from the first working or done
+ * of the agent's own (its hooks, its title, its program status) the attention frames carry.
+ */
+const turns = ref(false)
+const TURN_SOURCES = new Set(['api', 'title', 'status'])
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
+  if ((msg.state === 'working' || msg.state === 'done') && TURN_SOURCES.has(msg.source ?? '')) turns.value = true
   hearFocused({ attention: msg.state })
 }
 function onStatus(s: string) {
@@ -110,6 +118,15 @@ const unread = useChatUnread()
 const chatUnread = computed(() => unread.count(chatKey.value))
 const chatOffline = computed(() => transport.value.state !== 'open')
 const ended = computed(() => status.value === 'exited' || status.value === 'stopped')
+/**
+ * The header's state (sessionStatus) from the status and attention frames and the join's turns. The attention frame carries no time
+ * (this page stamps each with its arrival), so finished says no age; a run member's own words (ended, pending) read as a session's.
+ */
+const guestStatus = computed(() => {
+  if (!status.value) return undefined
+  const st = status.value === 'ended' ? 'exited' : status.value === 'pending' ? 'starting' : status.value
+  return sessionStatus({ status: st, attention: { ...attention.value, since: undefined }, turns: turns.value })
+})
 const chatNote = computed(() => (info.value?.role === 'control' ? '' : 'You are view only: what you write reaches the people here, not the agent.'))
 const wide = useMedia('(min-width: 48rem)')
 const chatPanel = ref(true)
@@ -286,7 +303,10 @@ async function fetchInfo(signal?: AbortSignal) {
     const got = await api.join(token.value, server.value, signal)
     if (signal?.aborted || !read.land()) return
     info.value = got
-    if (info.value.session) status.value = info.value.session.status
+    if (info.value.session) {
+      status.value = info.value.session.status
+      turns.value = info.value.session.turns === true || turns.value
+    }
     error.value = ''
     kept.noteInfo(server.value, token.value, info.value)
   } catch (e) {
@@ -363,6 +383,7 @@ function openMember(m: JoinRunMember, heard?: { status?: string; attention?: str
   if (!m.sessionId) return
   status.value = heard?.status ?? m.status
   attention.value = { state: '' }
+  turns.value = false
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
   tabs.value = emptyTabs()
@@ -507,8 +528,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       </template>
       <span class="truncate"><template v-if="run">{{ run.name }} · </template>{{ current.name }}</span>
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
-      <SessionStatusBadge v-if="status" :status="status as any" />
-      <AttentionBadge :attention="attention" />
+      <StatusMark v-if="guestStatus" :status="guestStatus" word class="text-xs" data-join-status />
       <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />

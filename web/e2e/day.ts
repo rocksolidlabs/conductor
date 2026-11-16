@@ -48,16 +48,21 @@ export const DAY_AGENTS: AgentCopy[] = [
   { id: 'day-approver', from: 'worker-cli', env: { STUB_DECISION: 'approval' } },
 ]
 
-/** What a session of the day promises: its status and its attention's state ('' for none). */
+/**
+ * What a session of the day promises: its status, its attention's state ('' for none), and whether its agent reports its turns (the
+ * listing's `turns`, which the status walk reads: working and finished need it, running is an agent that reports none; not held
+ * for a question, which needs you whatever its agent tells).
+ */
 interface Promised {
   status: string
   attention: string
+  turns?: boolean
 }
 const ASKS: Promised = { status: 'running', attention: 'needs_input' }
-const WORKING: Promised = { status: 'running', attention: 'working' }
-const FINISHED: Promised = { status: 'running', attention: 'done' }
-const SILENT: Promised = { status: 'running', attention: '' }
-const EXITED: Promised = { status: 'stopped', attention: '' }
+const WORKING: Promised = { status: 'running', attention: 'working', turns: true }
+const FINISHED: Promised = { status: 'running', attention: 'done', turns: true }
+const SILENT: Promised = { status: 'running', attention: '', turns: false }
+const EXITED: Promised = { status: 'stopped', attention: '', turns: false }
 
 /** The `states` part's five loose sessions, one in each state of the plan's status table. */
 export const STATES: Record<string, { agent: string; promise: Promised }> = {
@@ -414,7 +419,7 @@ export class Day {
   async sessionIs(id: string, what: string, p: Promised): Promise<Session> {
     budget(DAY_STEP_MS)
     let s = await this.api.session(id)
-    await expect.poll(async () => promised((s = await this.api.session(id)), p), { timeout: DAY_STEP_MS, message: `${what} is to be ${p.status} with attention ${p.attention || 'none'}` }).toBe('')
+    await expect.poll(async () => promised((s = await this.api.session(id)), p), { timeout: DAY_STEP_MS, message: `${what} is to be ${p.status} with attention ${p.attention || 'none'}${p.turns ? ', its turns told' : ''}` }).toBe('')
     return s
   }
 
@@ -476,7 +481,8 @@ export class Day {
 /** '' when the session is as promised, else what it is. */
 function promised(s: Session, p: Promised): string {
   const att = s.attention?.state ?? ''
-  return s.status === p.status && att === p.attention ? '' : `${s.status} with attention ${att || 'none'}`
+  const turns = s.turns === true
+  return s.status === p.status && att === p.attention && (p.turns === undefined || turns === p.turns) ? '' : `${s.status} with attention ${att || 'none'}, turns ${turns}`
 }
 
 const PARTS: Record<PartName, Part> = {

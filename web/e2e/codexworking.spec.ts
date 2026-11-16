@@ -180,10 +180,13 @@ test("a Codex member that asks and goes on shows Needs you, then Working while i
   expect(member(await api.run(runId), 'asks').needsInput ?? false).toBe(false)
   await page.waitForTimeout(1_500)
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'running')
+  // The row's mark says working, from Codex's program status (source status): the status walk's one proof from a real agent's signal.
+  await expect(row(page, id).locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'working')
   expect(stubFile(state.home, stub, 'spin')).toBe('spinning\n')
-  // Its turn ends: done.
+  // Its turn ends: done, and the mark says finished.
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  await expect(row(page, id).locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'finished')
   await expect.poll(() => watch!.of(id).map((e) => e.state)).toEqual(['working', 'needs_input', 'working', 'done'])
 })
 

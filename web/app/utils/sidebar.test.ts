@@ -310,14 +310,17 @@ describe('blockSubtitle', () => {
 })
 
 describe('sectionPreview', () => {
-  it('lists the states of a section, a run by its members, six at most', () => {
+  it('lists the status keys of a section, a run by its members, six at most', () => {
     const m = sidebarModel([
       session({ id: 'a', attention: { state: 'needs_input' } }),
       session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' }, attention: { state: 'needs_input' } }),
-      session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' } }),
+      session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' }, attention: { state: 'working', source: 'api' }, turns: true }),
+      session({ id: 'e', crew: { runId: 'r1', crewId: 'c', member: 'e' }, attention: { state: 'done', source: 'api' }, turns: true }),
+      session({ id: 'f', crew: { runId: 'r1', crewId: 'c', member: 'f' } }),
       session({ id: 'd', crew: { runId: 'r1', crewId: 'c', member: 'd' }, status: 'exited' }),
     ])
-    expect(sectionPreview(m.needs)).toEqual(['needs', 'needs', 'running', 'exited'])
+    // Each state of the status table gives its own key: the folded squares are StatusMarks of these.
+    expect(sectionPreview(m.needs).sort()).toEqual(['exited', 'finished', 'needs', 'needs', 'running', 'working'])
     expect(sectionPreview(Array.from({ length: 9 }, (_, i) => sidebarModel([session({ id: String(i) })]).running[0]!))).toHaveLength(6)
   })
 })
@@ -419,7 +422,7 @@ describe('mayRefocusRow (#596)', () => {
 describe('railModel', () => {
   it('draws the list in order: squares, a capsule holding its members, the shared squares, exited runs dashed and loose exited folded into +N', () => {
     const list = [
-      session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z' }),
+      session({ id: 'a', name: 'alone', createdAt: '2026-10-01T09:05:00Z', turns: true, attention: { state: 'done', source: 'api', since: '2026-10-01T09:06:00Z' } }),
       session({ id: 'b', name: 'core', crew: { runId: 'r1', crewId: 'api-sweep', member: 'core' }, createdAt: '2026-10-01T09:04:00Z' }),
       session({ id: 'c', name: 'waits', attention: { state: 'needs_input', since: '2026-10-01T09:06:00Z', message: 'Allow?' } }),
       session({ id: 'd', name: 'lead', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' }, attention: { state: 'needs_input', since: '2026-10-01T09:07:00Z', message: 'Trust this folder?' }, createdAt: '2026-10-01T09:03:00Z' }),
@@ -428,9 +431,10 @@ describe('railModel', () => {
       session({ id: 'x', name: 'old', status: 'exited', endedAt: '2026-10-01T09:01:00Z' }),
       session({ id: 'y', name: 'older', status: 'stopped', endedAt: '2026-10-01T09:00:00Z' }),
     ]
-    const marks = { a: { type: 'done' as const, at: '2026-10-01T09:08:00Z', label: 'done', color: 'success' as const, detail: '' }, x: { type: 'error' as const, at: '2026-10-01T09:08:00Z', label: 'error', color: 'error' as const, detail: '' } }
+    const marks = { a: { type: 'done' as const, at: '2026-10-01T09:08:00Z', label: 'finished', color: 'neutral' as const, detail: '' }, x: { type: 'error' as const, at: '2026-10-01T09:08:00Z', label: 'error', color: 'error' as const, detail: '' } }
     const shared = [{ id: 'j1', token: 't', server: '', kind: 'session' as const, name: 'api-review', role: 'view' as const, host: 'switchyard.example.net', agentId: 'codex', addedAt: '2026-10-01T09:00:00Z' }]
-    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ startedAt: '2026-10-01T08:31:00Z', members: [member('lead'), member('core')] }) : undefined)), shared, marks)
+    const now = Date.parse('2026-10-01T09:08:30Z')
+    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ startedAt: '2026-10-01T08:31:00Z', members: [member('lead'), member('core')] }) : undefined)), shared, marks, {}, now)
     expect(rail.needs).toBe(2)
     expect(rail.news).toBe(2)
     expect(rail.exitedFolded).toBe(2)
@@ -446,16 +450,19 @@ describe('railModel', () => {
     expect(capsule.amber).toBe(true)
     expect(capsule.members!.map((m) => `${m.id}:${m.state}`)).toEqual(['d:needs', 'b:running'])
     expect(capsule.label).toMatch(/^API sweep · run started \d\d:\d\d · lead needs you · core running$/)
+    // The corner marks: each square's status, the capsule its busiest member's, a share's what the entry knows (here nothing).
+    expect(rail.items.map((i) => i.status?.key ?? '-')).toEqual(['needs', 'needs', 'finished', 'running', '-', 'exited'])
     expect(rail.items[0]!.label).toBe('waits · needs you · Allow?')
-    expect(rail.items[2]!.label).toBe('alone · running · done')
-    expect(rail.items[3]!.label).toBe('laptop one · idle · on laptop')
+    // alone's finished turn is counted in its number, and said once: by its status's word, not again by its done mark's.
+    expect(rail.items[2]!.label).toBe('alone · finished 2m ago')
+    expect(rail.items[3]!.label).toBe('laptop one · starting · on laptop')
     expect(rail.items[4]!.label).toBe('api-review · view only · through switchyard.example.net')
     expect(rail.items[5]!.members![0]!.dashed).toBe(true)
     // Unread chat joins the bottom-right number and the words; a run counts its own chat beside its members'.
-    const withChat = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ startedAt: '2026-10-01T08:31:00Z', members: [member('lead'), member('core')] }) : undefined)), shared, marks, { 'session:a': 3, 'session:b': 1, 'run:r1': 2 })
+    const withChat = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ startedAt: '2026-10-01T08:31:00Z', members: [member('lead'), member('core')] }) : undefined)), shared, marks, { 'session:a': 3, 'session:b': 1, 'run:r1': 2 }, now)
     expect(withChat.news).toBe(4)
     expect(withChat.items[2]!.news).toBe(4)
-    expect(withChat.items[2]!.label).toBe('alone · running · done · 3 unread in chat')
+    expect(withChat.items[2]!.label).toBe('alone · finished 2m ago · 3 unread in chat')
     expect(withChat.items[1]!.news).toBe(3)
     expect(withChat.items[1]!.chat).toBe(2)
     expect(withChat.items[1]!.label).toMatch(/· core running · 2 unread in chat$/)

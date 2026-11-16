@@ -20,8 +20,9 @@ const joined = useJoined()
 const sidebar = useSidebar()
 const folds = useSidebarFolds()
 const unread = useChatUnread()
+const now = useNow()
 
-const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf), joined.list.value, events.marks.value, unread.counts.value))
+const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf), joined.list.value, events.marks.value, unread.counts.value, now.value))
 const needsDot = computed(() => needsDotShown(events.routes.value))
 
 /** +N: the full sidebar, its Exited open. */
@@ -58,6 +59,8 @@ function openExited() {
           >
             <NuxtLink :to="it.to" class="relative grid size-5 place-items-center rounded-full hover:bg-elevated" :aria-label="it.label" :aria-current="$route.path === it.to ? 'page' : undefined">
               <UIcon name="i-lucide-play" class="size-3.5" :class="it.amber && needsDot ? 'text-warning' : 'text-muted'" :data-rail-play="it.amber && needsDot ? 'needs' : undefined" />
+              <!-- The run's state: its busiest member's (blockStatus). -->
+              <StatusMark v-if="it.status" :status="it.status" :quiet="!needsDot" badge class="absolute -right-1 -top-1" />
               <!-- The run's own unread chat (design 2g), bottom right of the play icon. -->
               <span v-if="it.chat" class="absolute -bottom-1 -right-1.5 grid min-w-3.5 place-items-center rounded-full bg-elevated px-0.5 text-[8px] font-semibold leading-3.5 text-highlighted ring-2 ring-default" :data-rail-news="it.chat" aria-hidden="true">{{ it.chat }}</span>
             </NuxtLink>
