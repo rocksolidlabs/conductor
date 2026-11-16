@@ -182,9 +182,16 @@ test("build's approval waits while docs finishes, is answered in its card from t
   budget(10 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=tasks`)
   const row = page.locator('[data-task-row="build"]')
-  await expect(row.locator('[data-task-words]')).toHaveText(`attempt 1 waits for decision ${id}`, { timeout: 30_000 })
+  // The row says the attempt once: attempt 1 is the norm, so the words alone (UX1 PR-11).
+  await expect(row.locator('[data-task-words]')).toHaveText(`waits for decision ${id}`, { timeout: 30_000 })
+  // Held by an open decision, it waits on a person: the status language's needs (UX1 PR-10), never the running green.
+  await expect(row.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
   await expect(page.locator('[data-task-row="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
-  await expect(page.locator('[data-crew-run-header]')).toContainText('1 decision open')
+  await expect(page.locator('[data-task-row="docs"] [data-status-mark]')).toHaveAttribute('data-status-mark', 'done')
+  // The header (UX1 PR-10): the bar's needs segment holds build, and the sentence's one item is the decision its question mirrors.
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="needs"]')).toHaveAttribute('data-count', '1')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveAttribute('data-needs', '1')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toContainText('1 needs you')
 
   // The run page's Answer, reached by the keyboard, opens the card on Enter and on Space; Enter on the row itself selects the row
   // (UX1 PR-20 fixed main here: the row's own Enter took the key as it came up from the button, and selected the row instead).

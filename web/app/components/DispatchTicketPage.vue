@@ -15,7 +15,8 @@ import { heldRuns } from '~/composables/useTicketCandidates'
 import { REVIEW_ENTRY, openFindingsOf, openFindingsOfTask, useReview, type ReviewSummary } from '~/composables/useReview'
 import { firstReviewCandidate, latestReviewable } from '~/utils/review'
 import { entryRunId } from '~/utils/dispatchEvidence'
-import { summaryDoneWords, ticketSections, ticketWaits } from '~/utils/ticketSections'
+import { ticketSections, ticketWaits } from '~/utils/ticketSections'
+import { summaryStatusLine } from '~/utils/status'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -320,7 +321,8 @@ const strip = computed(() => {
     plan: plan.featured.value,
     waits: ticketWaits(needs.items.value, { key: t.key, runs: runIds.value }),
     runs: runIds.value.length,
-    runDone: newestRun.value ? summaryDoneWords(newestRun.value) : '',
+    // The newest run's done part, in the status language's words (summaryStatusLine): what a summary carries; its need-you is the strip's.
+    runDone: newestRun.value ? summaryStatusLine(newestRun.value, []).done : '',
     decisions: decisionRecords.decisions.value ?? [],
     close: closeCard(t),
     comments: t.comments ?? [],
@@ -894,11 +896,7 @@ const askBrakeman = computed(() =>
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
 
-      <div v-if="missing" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted" data-ticket-missing>
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No ticket has the key <code>{{ ticketKey }}</code>.</p>
-        <UButton :label="`Back to ${project}`" icon="i-lucide-arrow-left" color="neutral" variant="soft" :to="projectPath(project)" />
-      </div>
+      <PageEmpty v-if="missing" state="missing" :words="`No ticket has the key ${ticketKey}.`" :actions="[{ label: `Back to ${project}`, icon: 'i-lucide-arrow-left', to: projectPath(project) }]" data-ticket-missing />
 
       <div v-else-if="ticket" class="flex flex-col gap-5 px-4 py-5 sm:px-6" :data-ticket="ticket.key" :data-ticket-rev="ticket.rev">
         <UAlert

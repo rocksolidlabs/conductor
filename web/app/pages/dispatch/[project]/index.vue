@@ -592,15 +592,11 @@ palette.registerPage((): PageGroup => {
     </template>
 
     <template #body>
-      <div v-if="error" class="flex-none px-4 pt-3 sm:px-6">
+      <div v-if="error && listed" class="flex-none px-4 pt-3 sm:px-6">
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
 
-      <div v-if="projectMissing" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted" data-project-missing>
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No project has the key <code>{{ project }}</code>.</p>
-        <UButton label="Dispatch" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/dispatch" />
-      </div>
+      <PageEmpty v-if="projectMissing" state="missing" :words="`No project has the key ${project}.`" :actions="[{ label: 'Dispatch', icon: 'i-lucide-arrow-left', to: '/dispatch' }]" data-project-missing />
 
       <template v-else>
         <div class="flex min-w-0 flex-none flex-col gap-2.5 px-4 pt-3 pb-2 sm:px-6">
@@ -655,14 +651,20 @@ palette.registerPage((): PageGroup => {
           </div>
         </div>
 
-        <div v-if="!listed" class="flex flex-1 items-center justify-center p-8 text-sm text-muted">Reading the tickets…</div>
+        <!-- The project's description has its own About: no first line. Read before it judges, on the list, the Board and the Roadmap. -->
+        <PageEmpty v-if="!listed" :state="error ? 'failed' : 'reading'" thing="tickets" :error="error" icon="i-lucide-ticket" @again="load" />
+        <!-- A filter's answer is a plain line; a project with no ticket draws the one shape, in place of the list or the columns. -->
+        <p v-else-if="!tickets.length && narrows" class="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted" data-list-empty>No ticket matches the filter.</p>
+        <PageEmpty
+          v-else-if="!tickets.length"
+          state="empty"
+          icon="i-lucide-ticket"
+          :words="`${project} has no tickets yet.`"
+          :actions="archived ? [] : [{ label: 'New ticket', icon: 'i-lucide-plus', kbd: 'C', onClick: () => (newOpen = true) }]"
+          data-list-empty
+        />
         <template v-else-if="view === 'list'">
-          <div v-if="!tickets.length" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-muted" data-list-empty>
-            <UIcon name="i-lucide-ticket" class="size-8" />
-            <p class="text-sm">{{ narrows ? 'No ticket matches the filter.' : `${project} has no tickets yet.` }}</p>
-            <UButton v-if="!narrows && !archived" label="New ticket" icon="i-lucide-plus" @click="newOpen = true" />
-          </div>
-          <div v-else class="min-h-0 flex-1 overflow-y-auto border-t border-default">
+          <div class="min-h-0 flex-1 overflow-y-auto border-t border-default">
             <DispatchTicketList ref="list" :tickets="shown" :labels="labelsById" :milestones="milestonesById" :agents="agents" :now="now" :selected="selected" @toggle="toggleSelected" />
             <div v-if="next" class="flex justify-center p-3">
               <UButton :label="`More (${tickets.length} of ${total})`" icon="i-lucide-chevrons-down" color="neutral" variant="soft" size="sm" :loading="loading" data-list-more @click="more" />

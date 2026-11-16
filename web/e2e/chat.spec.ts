@@ -363,7 +363,8 @@ test('unread elsewhere: the sidebar row, the rail and a run header count what ot
   // Nate's own sidebar counts nothing of his own, nor while his thread is open.
   await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"] [data-chat-unread]`)).toHaveCount(0)
   // The rail's corner carries the same number; a reload keeps it.
-  await priya.locator('[data-sidebar-collapse]').click()
+  // Folded by its key (the sidebar's list is drawn: the row above is in it).
+  await priya.keyboard.press('Alt+b')
   await expect(priya.locator(`[data-rail-session="${s.id}"] [data-rail-news="2"]`)).toBeVisible()
   await priya.locator('[data-rail-expand]').click()
   await priya.reload()

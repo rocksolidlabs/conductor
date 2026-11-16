@@ -86,5 +86,7 @@ const shown = computed(() => {
         <template v-if="a.kbd" #trailing><UKbd :value="a.kbd" size="sm" class="opacity-70" data-page-kbd /></template>
       </UButton>
     </template>
+    <!-- What a page shows besides, under its shape (the page of what needs you: what shows up there, what was decided). -->
+    <template v-if="$slots.default" #footer><slot /></template>
   </UEmpty>
 </template>

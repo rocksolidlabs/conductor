@@ -101,7 +101,7 @@ test('a task read by the admin is the attempt\'s task file, and a task of an unk
 })
 
 // The run page (#334, row 7): the Tasks view with its rows, the selected task's attempts, the header's task badges, the graph's
-// Tasks mode with its needs edges, the grid tile's task, and the palette's task rows.
+// Tasks mode with its tasks as lines, the grid tile's task, and the palette's task rows.
 test('the run page shows the tasks, their attempts and results, the task graph, and the tasks in the palette', async ({ page, api, state }) => {
   const run = await api.run(runs[0]!)
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=tasks`)
@@ -111,11 +111,15 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   const rows = page.locator('[data-task-row]')
   await expect(rows).toHaveCount(2)
   await expect(page.locator('[data-task-row="build"]')).toHaveAttribute('data-task-state', 'succeeded')
-  await expect(page.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('attempt 2')
+  // The attempt is said once: the words name it, so the who column does not (UX1 PR-11).
+  await expect(page.locator('[data-task-row="build"] [data-task-words]')).toContainText('succeeded by attempt 2')
+  await expect(page.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('')
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('succeeded by attempt 1')
   const commit = git(state.repo, 'rev-parse', `crew/${run.id}/build.2`)
   await expect(page.locator('[data-task-row="build"] [data-task-commit]')).toHaveText(commit.slice(0, 12))
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').first()).toHaveText('2/2 tasks')
+  // The header's bar (UX1 PR-10): both tasks done.
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
   // The selected task, in the URL: its result and both attempts, the first failed at its check with what it submitted.
   await page.locator('[data-task-row="build"] [role="button"]').click()
   await expect(page).toHaveURL(/task=build/)
@@ -132,17 +136,18 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   await expect(page.locator('[data-member="builder"] [data-branch]')).toContainText('build #2')
   await page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' }).click()
   const canvas = page.locator('[data-graph-canvas]')
-  const needs = canvas.locator('[data-graph-edge="build-docs"][data-graph-edge-kind="needs"]')
+  // The tasks drawn as lines (UX1 PR-33): a station a task, one line from build to docs.
+  const needs = canvas.locator('[data-line-stations="build docs"]')
   await expect(page.locator('[data-graph-mode-switch]')).toBeVisible()
-  await expect(canvas.locator('[data-graph-task]')).toHaveCount(2)
-  await expect(canvas.locator('[data-graph-task="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
+  await expect(canvas.locator('[data-station]')).toHaveCount(2)
+  await expect(canvas.locator('[data-station="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
   await expect(needs).toHaveCount(1)
   await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Members' }).click()
   await expect(canvas.locator('[data-graph-node]')).toHaveCount(2)
-  await expect(canvas.locator('[data-graph-task]')).toHaveCount(0)
-  // Drawn again, the tasks keep their needs edge (#281): every drawing after the first dropped it, at the page's 5 s clock tick as at this switch.
+  await expect(canvas.locator('[data-station]')).toHaveCount(0)
+  // Drawn again, the tasks keep their line (#281): Vue Flow dropped the needs edge at every drawing after the first.
   await page.locator('[data-graph-mode-switch]').getByRole('tab', { name: 'Tasks' }).click()
-  await expect(canvas.locator('[data-graph-task]')).toHaveCount(2)
+  await expect(canvas.locator('[data-station]')).toHaveCount(2)
   await expect(needs).toHaveCount(1)
   // The palette lists the tasks under the page's group.
   const palette = await openPalette(page)
@@ -186,7 +191,15 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   // The first check after the navigation, the same first-paint bound (#281).
   await expect(build).toHaveAttribute('data-task-state', 'failed', { timeout: 30_000 })
   await expect(build.locator('[data-task-words]')).toContainText('attempt 3 failed at check never')
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').nth(1)).toHaveText('1 failed')
+  // Out of its attempts with Retry and Accept anyway named, it waits on a person: the status language's needs, as the inbox lists it
+  // (UX1 PR-10), the engine's sentence beside it.
+  await expect(build.locator('[data-task-retry="build"]')).toBeVisible()
+  await expect(build.locator('[data-task-accept="build"]')).toBeVisible()
+  await expect(build.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
+  await expect(build.locator('[data-status-word]')).toHaveText('needs you')
+  // The task out of its attempts waits on a person: the bar's needs segment, one task held, and the sentence's one item (UX1 PR-10).
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="needs"]')).toHaveAttribute('data-count', '1')
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="failed"]')).toHaveCount(0)
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('will not succeed')
   // Pause and resume the dispatch: a receipt each, the header's note following.
   await page.locator('[data-run-pause]').click()
@@ -207,7 +220,9 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   expect(task(after, 'build').result?.commit).toBe(before.attempt?.result)
   expect(task(after, 'docs').attempt?.start).toBe(before.attempt?.result)
   expect(logged(after, "task build: attempt 3's result accepted by admin")).toBe(true)
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').first()).toHaveText('2/2 tasks')
+  // The header's bar (UX1 PR-10): both tasks done.
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
 })
 
 /** Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares), else Ctrl+K where no terminal has the focus. */

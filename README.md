@@ -93,6 +93,18 @@ sessions do (see the Files tab).
 The sidebar is the session list, grouped into **Needs you**, **Running** and
 **Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
 **Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
+Its foot holds the pages, each with a tooltip that says what it is. The one
+amber number there is on **Needs you**: every question, decision, plan and
+task that waits on you, each once; the same number is on the folded
+sidebar, the phone's first tab, the palette and the tab's title. The
+sidebar's Needs you section lists every one of them with its kind's mark,
+a run that waits with its item under its header. The Needs you row leaves
+the nav when nothing waits and nothing was decided in the last day.
+Launch's **What should it do?** takes a first message for the agent: it is
+typed once the agent is ready (after any startup question, such as trusting
+the folder, is answered; line breaks go in as spaces), the session is named
+by its first words unless you name it, and a line above the terminal says
+what it waits for. Keys you type in the terminal first withdraw it.
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your
@@ -590,10 +602,14 @@ session open in two windows at once keeps the first one's size, the other
 showing it scaled until **Fit to my window**. Click into a
 tile and type: the keys go to that session, the plain-key shortcuts pause
 while the tile has focus and the **Alt** chords still work. The chips in the
-header filter tiles (**All**, **Needs you**, **Running**). A queue on the left
-lists every session waiting for input with its prompt: answer from there
-(**J**/**K** select, **Enter** types a reply) without opening the session,
-and see who answered what under **Answered**. The expand button in a tile's
+header filter tiles by state (**All**, **Needs you**, **Working**, **Finished**,
+and **Running** while an agent that reports no turns, or one still starting,
+is on the grid); **Needs you** counts the sessions on this grid that ask. A
+tile's header is its name; its state is at its foot, and a tile that asks
+says the start of its question there, the whole of it in its tooltip. The
+grid takes the page at every width: answer a question from **Needs you** in
+the sidebar, from the pill that **]** brings up (its **Enter** expands the
+tile in place on the Yard), or in the expanded tile's own reply bar. The expand button in a tile's
 header, a double-click on the header, or **Enter** on a tile whose frame has
 keyboard focus expands it in place to a full-size terminal (`/yard?focus=<id>`,
 so the view is linkable); **Esc**, the back arrow or the browser's Back button
@@ -602,11 +618,13 @@ fullscreen button turns a spare monitor into a status board.
 
 ## The Roundhouse
 
-`/roundhouse` (`/carousel` still lands there) rotates through the active sessions one at a time, full size and
+The Yard's second view: **Grid** and **Roundhouse** in the Yard's header switch
+between the two, and the Yard's row in the sidebar stays current on both.
+`/roundhouse` (`/carousel` still lands there, and **G R** opens it) rotates through the active sessions one at a time, full size and
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow routed events** on, the
-Roundhouse follows what the **Roundhouse jump** switch on the Events page's Routing tab routes to
+Roundhouse follows what the **Roundhouse jump** switch in **Alerts** routes to
 it, input requests and handoffs unless you change it. It jumps to a session
 that needs input and holds there for two intervals (at least 20 s) before
 rotating on; click **Holding** to release it sooner. Any other routed event
@@ -628,11 +646,16 @@ needs you: **Needs you**, then **Running**. Sessions launched together are a
 run, listed once as one block where its most urgent member is, never split:
 the crew's name (or the run's own) and its start time on top, which open the
 run page, and its sessions beneath, joined by a line, the one asking first;
-an exited member stays inside with its **Resume**. The crew itself, the plan
+an exited member stays inside with its **Resume**. In Needs you a run shows
+only the members that ask and one line for the rest ("and 2 more · 1 working
+· 1 finished"), which shows them all for the visit (a click, or **Enter**
+once **J** reaches it). The crew itself, the plan
 the run came from, is not listed (it lives on the Crews page). A session
 another machine hosts here (`conductor host`) says so on its row, a laptop
-and the machine's name; this server's own say `server`. Rows say agent ·
-where · how long; the path is the row's tooltip and the session page's. The
+and the machine's name; this server's own say `server`. A row puts its name
+on one line across the row with its status mark at the end, and below it
+the agent's initials as a small chip, agent · where · how long, and the
+status's word last ("finished 12m ago"); the path is the row's tooltip and the session page's. The
 links shared with you (see Sharing) sit below your own sessions, and
 **Exited** folds to one line. Every section folds from its header, which keeps
 its count and a preview of what is inside; the choice is remembered per
@@ -650,9 +673,15 @@ its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
 reply field where Enter sends; the answer goes over a short-lived connection
 as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
-away".
+away". In a sidebar narrower than 280 px a row shows two lines of
+its question, and the whole question with its choices or its reply field
+opens in a panel beside the row, to the right of the sidebar: while the row
+has the focus, or from its **Answer** button, which moves the focus into the
+panel; **Escape** closes it, and **1**–**9** answer the focused row as
+before. At 280 px and wider, and on the phone's list, the question is whole
+in the row.
 
-**The command palette** is the sidebar's row actions and the Yard's queue
+**The command palette** is the sidebar's row actions and its Needs you
 from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
 while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
 kill-line), and the rail's search button. It opens over the page on what
@@ -706,8 +735,8 @@ Windows, which keeps that one for its windows); the shortcuts modal
 system or its browser takes before the app sees it (Firefox's Ctrl+B, the
 browser's Ctrl+Tab and Ctrl+W, the Mac's Option+letter).
 
-The sidebar collapses to an icon rail with the panel button in its header or
-**Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
+The sidebar collapses to an icon rail with **Collapse to the rail** in your
+menu, the divider, or **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
 initials, solid while it needs you, dashed once exited), a capsule is a run
 with its sessions inside (the play icon amber while one needs you), and the
 corners say the rest: top right the state (amber needs you, green running,
@@ -725,15 +754,14 @@ the full sidebar on Exited. Every shape has a tooltip naming it in words
 ("users api · run started 08:31 · review needs you · core running · lead
 exited"). The rail keeps the mark, Launch, a search button that opens the
 command palette, the pages (the Yard's count as an amber chip) and
-the header's two menus. The panel button at the bottom of the rail brings the
+your menu. The panel button at the bottom of the rail brings the
 full sidebar back, as does **Ctrl+B**. The full sidebar opens at its
-narrowest, 16.75 rem (268 px) on every screen, wide enough for its header
-whole with room to spare (a wider font shortens the name first); drag its
+narrowest, 12.5 rem (200 px) on every screen, its header the mark,
+"Conductor" and your menu (a wider font shortens the name first); drag its
 right edge to widen it, up to 26 % of the window but never less than
-21.75 rem (348 px), and on to the window's left edge for the rail; a
-double-click on the edge returns it to 268 px, and a narrower window keeps
-it within that window's bounds. A width an earlier version saved below
-268 px opens at 268 px; the saved value stays until the next drag. The mode and the full sidebar's width are
+17.5 rem (280 px), and on to the window's left edge for the rail; a
+double-click on the edge returns it to 200 px, and a narrower window keeps
+it within that window's bounds. A width you dragged is kept as you left it. The mode and the full sidebar's width are
 remembered per browser (localStorage keys `conductor.sidebar.mode` and
 `conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
 becomes the rail, and a width an earlier version saved, under
@@ -743,14 +771,16 @@ opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
 swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
-count), Crews, Events, and under More: Roundhouse, Agents, Settings, Alerts
+count), Crews, Events, and under More: Agents, Settings, Alerts (the two
+switches, ending with **All alert rules**, which opens the Alerts panel)
 and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
 behind your initials beside the sidebar's name, with **Your name…**, **Toggle
-theme**, **Workbench token…** and **Forget token**; **Alerts** sits beside it,
-so the foot holds only the pages) for the list of shortcuts on the current
+theme**, **Workbench token…** and **Forget token**, and in the sidebar
+**Alerts…**, which opens the Alerts panel, and **Collapse to the
+rail**; the foot holds only the pages) for the list of shortcuts on the current
 screen. The list itself takes keys once
 a row has the focus (**↓** from the filter puts the first there; a click or
 Tab, any): **↑ ↓** or **J K** move, **Enter** opens the session or the run
@@ -790,7 +820,7 @@ an attention word, or a hook mapped to one) that the server answers `429` is
 tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
 at most; an event is tried once. Sessions that need a human show an amber
 **needs input** badge, move to the top of the sidebar, count in the tab title,
-can raise a browser notification, and appear in the Yard's queue. Claude Code's
+can raise a browser notification, and say their question at their tile's foot on the Yard. Claude Code's
 dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
 offer their own choices wherever the prompt is shown, read off the dialog as
 it is drawn: a choice that changes the permission mode (auto mode, accept
@@ -800,21 +830,28 @@ ending "(Recommended)": that one alone is filled. A permission question whose di
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
-**The Events page** has two tabs. **Feed** (the default) lists the events
+**The Events page** is the feed. It lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
 it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
 artifact). Beside it: the last hour as bars per minute (what needs you,
 handoffs, errors and the rest, as the tab saw them), where each kind of event
-goes now, and whether each agent reports. **Routing** lists the ten events
+goes now (**Edit routing** opens Alerts), and whether each agent reports. The
+live feed keeps the last 500 events in memory. An artifact's URL becomes a
+link only when it is `http(s)`.
+
+**Alerts** is one panel at the right of the window, opened by **Alerts…** in
+your menu or the command palette, by **All alert rules** in the phone's More,
+or by `?alerts` on any page's address (an old link to the Events page's
+Routing tab opens it over the feed). On top are the two switches, a browser
+notification and a chime, for when a session needs input and for the events
+routed to Browser. Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
 sidebar and on its Yard tile (until the session reports `working` or
 `needs_input`, or you open it), a browser notification with the chime (as
-switched on under the sidebar's alerts), a Roundhouse jump while it follows, and
-a line in the live feed, which keeps the last 500 events in memory. Routes are
-saved in the browser. An artifact's URL becomes a link only when it is
-`http(s)`.
+switched on above), a Roundhouse jump while it follows, and a line in the
+live feed. Routes are saved in the browser.
 
 **Reporting to Conductor** is a section of the **Agents** page, under the
 cards. Each card says whether its agent reports: **Reports to Conductor** (its
@@ -902,7 +939,7 @@ as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 --state needs_input --message "approve?"` from a script for anything else;
 `--state clear` resets it. A question with a few answers takes them as
 `--choices "Postgres|SQLite|Keep both"` (at most 6, each at most 40 bytes):
-the session tile, the Yard's queue and the run page show them as buttons, and
+the session's reply bar, the sidebar's row, the pill and the run page show them as buttons, and
 a click types the choice into the session as a line, so an agent names the
 choices in its terminal first and gets the same words back.
 
@@ -970,8 +1007,9 @@ for Claude Code started elsewhere.
 
 The server can also pass events on to other services. A webhook in the
 config is a URL the server POSTs to for every entry, from any session, of
-the event types the webhook lists. The **Events** page shows the webhooks,
-read-only, as the **Webhook** switch of each event on the Routing tab.
+the event types the webhook lists. The **Alerts** panel shows the webhooks,
+read-only, as the **Webhook** switch of each event under **Where each event
+goes**.
 
 ```json
 {
@@ -985,7 +1023,7 @@ read-only, as the **Webhook** switch of each event on the Routing tab.
 }
 ```
 
-`events` takes the Events page's names (`needs_input`, `done`, `working`,
+`events` takes the events' names as Alerts lists them (`needs_input`, `done`, `working`,
 `tool_denied`, `progress`, `artifact`, `handoff`, `error`, `exit_nonzero`,
 `tool_use`) and the entry types (`attention`, which covers all three
 attention states, `status`, `join`, `leave`, `input` and `link`).

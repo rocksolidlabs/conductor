@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { cutNotice, runRuns, staleNotice, unmirrored } from '~/utils/decisions'
+import { cutNotice, staleNotice } from '~/utils/decisions'
 import type { SessionInfo } from '~/composables/useSessions'
 import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
-import { blockSubtitle, focusRows, mayRefocusRow, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { blockSubtitle, filterNeeds, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
+import { needsCount } from '~/utils/needsYou'
+import { showingWords } from '~/utils/inbox'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
- * loose sessions and run blocks side by side; a run is one block, placed where its most urgent member is. Then the links shared with
+ * loose sessions and run blocks side by side; a run is one block, placed where its most urgent member is, or in Needs you while an
+ * item of it waits. Needs you lists every kind that waits on a person (SidebarInboxRow). Then the links shared with
  * you, below your own sessions, and Exited, folded to one line. Every section folds from its header (useSidebarFolds). The run of
  * the page open now is marked and scrolled to; nothing is filtered out for it.
  */
@@ -35,18 +38,31 @@ const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
 const now = useNow()
 
-const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
+// Needs you lists every item of the one list of what needs you (useNeedsYou, the UX review's P3): the sessions' questions as their
+// rows, a run's decisions and tasks under its header, a plan (and an item of a run the store does not hold) as a loose row. Its header
+// counts the one number, the nav's.
+const oneList = useNeedsYou()
+const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf, filterNeeds(oneList.items.value, query.value)))
+const needsWords = computed(() => needsCount(oneList.list.value))
 const needsDot = computed(() => needsDotShown(events.routes.value))
-// The open durable decisions no shown session question mirrors (a gate's, Program item DR1), of runs that run: Needs you counts and lists each once,
-// and its row opens the decision's card.
 const decisions = useDecisions()
 const decisionModal = useDecisionModal()
-const loneDecisions = computed(() => (query.value ? [] : unmirrored(decisions.open.value, attention.sessions.value, (id) => runRuns(attention.runOf(id)))))
-// The list read is cut: said even when none of what was read is listed (every one of them mirrored or of a stopped run), so Needs you
-// never reads as whole when it is not.
-const decisionsCut = computed(() => (query.value ? '' : cutNotice(decisions.cut.value, loneDecisions.value.length)))
+/** The decisions Needs you lists, a run's among them. */
+const decisionRows = computed(() => {
+  let n = 0
+  for (const it of model.value.needs) n += it.kind === 'run' ? it.items.filter((x) => x.item.kind === 'decision').length : it.kind === 'item' && it.item.kind === 'decision' ? 1 : 0
+  return n
+})
+// The list read is cut: said even when none of what was read is listed (every one of them mirrored), so Needs you never reads as
+// whole when it is not.
+const decisionsCut = computed(() => (query.value ? '' : cutNotice(decisions.cut.value, decisionRows.value)))
 // The list's last read failed (Codex's round 3 on #719): said, with Read again, until a read succeeds; the store reads again by itself.
 const decisionsStale = computed(() => (query.value ? '' : staleNotice(decisions.stale.value.since, decisions.stale.value.error)))
+// The inbox (plans, tasks) holds a next page: "Showing 150 of 212 · all on Needs you"; its read failed: said, with Read again, the
+// questions still listed.
+const inbox = useInbox()
+const inboxShowing = computed(() => (query.value || !inbox.state.value.next ? '' : showingWords(inbox.state.value.items.length, inbox.state.value.total)))
+const inboxFailed = computed(() => !query.value && !!inbox.state.value.error && !inbox.state.value.unavailable)
 // Judged once the sessions are read (P23): before the first read the store's emptiness says nothing.
 const empty = computed(() => attention.loaded.value && attention.sessions.value.length === 0 && joined.list.value.length === 0)
 const folds = foldState.folds
@@ -172,7 +188,19 @@ const listEl = useTemplateRef<HTMLElement>('listEl')
 const focused = ref<string | null>(null)
 /** The row asking whether to stop (`s:<id>`, `r:<runId>`): one at a time, from the keys or a hover Stop. */
 const confirmingId = ref<string | null>(null)
-const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, loneDecisions.value.map((d) => d.id)))
+/** The runs whose "and 2 more" line was pressed: every member shows, for the visit (kept here, never stored). */
+const unfolded = ref<Set<string>>(new Set())
+const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, unfolded.value))
+/** Unfolds a run's members; the focus, when it was on the line, goes to the first member the line held. */
+async function unfoldRun(runId: string) {
+  const had = focused.value === `m:${runId}`
+  const before = new Set(rows.value.map((r) => r.id))
+  unfolded.value = new Set([...unfolded.value, runId])
+  if (!had) return
+  await nextTick()
+  const next = rows.value.find((r) => r.kind === 'session' && r.runId === runId && !before.has(r.id))
+  focusRow(next?.id ?? `r:${runId}`)
+}
 const byId = computed(() => {
   const m = new Map<string, SessionRow | RunBlock>()
   for (const key of ['needs', 'running', 'exited'] as const) {
@@ -180,14 +208,15 @@ const byId = computed(() => {
       if (it.kind === 'run') {
         m.set(`r:${it.runId}`, it)
         for (const member of it.members) m.set(`s:${member.id}`, member)
-      } else m.set(`s:${it.id}`, it)
+      } else if (it.kind === 'session') m.set(`s:${it.id}`, it)
     }
   }
   return m
 })
 function rowEl(id: string, within = 'a[href]'): HTMLElement | null {
-  // A decision's row is a button: the card opens in place, nothing navigates.
-  const what = id.startsWith('d:') && within === 'a[href]' ? 'button' : within
+  // An item's row (a decision's, a plan's, a task's) and a run's "and 2 more" line are buttons: a card opens, the run unfolds, in
+  // place, or the item opens on the page.
+  const what = (id.startsWith('d:') || id.startsWith('i:') || id.startsWith('m:')) && within === 'a[href]' ? 'button' : within
   return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${what}`) ?? null
 }
 function focusRow(id: string | null) {
@@ -202,13 +231,17 @@ function onFocusIn(e: FocusEvent) {
   const row = (e.target as HTMLElement).closest('[data-sidebar-row]')
   if (row) focused.value = row.getAttribute('data-sidebar-row')
 }
+/** Whether `node` is in the list or in the question's panel beside it (a portal of its own): the panel counts as the list's. */
+function inList(node: EventTarget | null): boolean {
+  return !!listEl.value?.contains(node as Node | null) || !!(node as Element | null)?.closest?.('[data-row-panel]')
+}
 function onFocusOut(e: FocusEvent) {
   // The focus left the list; the question, if one shows, stays until answered (a hover Stop's button unmounts under the click).
   // A row that re-renders under the focus (it moved sections after an answer) gets it back by id first (the watch below), so
-  // the focus counts as gone only once nothing in the list has it after that.
-  if (listEl.value?.contains(e.relatedTarget as Node | null)) return
+  // the focus counts as gone only once nothing in the list has it after that. Typing in the panel's field keeps the row focused.
+  if (inList(e.relatedTarget)) return
   window.setTimeout(() => {
-    if (!listEl.value?.contains(document.activeElement)) focused.value = null
+    if (!inList(document.activeElement)) focused.value = null
   }, 0)
 }
 watch(rows, async () => {
@@ -226,6 +259,8 @@ function openRow(id: string) {
   if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
   else if (f.kind === 'decision') decisionModal.open(f.decision)
+  else if (f.kind === 'item') router.push(`/decisions?item=${encodeURIComponent(f.ref)}`)
+  else if (f.kind === 'more') void unfoldRun(f.runId)
   else {
     const e = joined.list.value.find((x) => x.id === f.entryId)
     if (e) router.push(joinedPath(e))
@@ -241,6 +276,26 @@ async function askStop(id: string) {
 }
 function onKey(e: KeyboardEvent) {
   const target = e.target as HTMLElement
+  // From the question's panel: Escape closes it and gives the focus back to the row; a digit answers the row as from the row (a
+  // field keeps its keys); every other key works the control it is on.
+  if (target.closest('[data-row-panel]')) {
+    const id = focused.value
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      dismissPanel()
+      if (id) focusRow(id)
+      return
+    }
+    const n = Number(e.key)
+    if (target.closest('input, textarea') || !id || e.metaKey || e.ctrlKey || e.altKey || !(Number.isInteger(n) && n >= 1 && n <= 9)) return
+    e.preventDefault()
+    e.stopPropagation()
+    const row = byId.value.get(id)
+    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
+    return
+  }
   if (e.key === 'Escape') {
     e.preventDefault()
     e.stopPropagation()
@@ -344,6 +399,74 @@ const sheet = computed(() => {
   }
 })
 
+// The question's panel (the UX review's P5, owner decision 7): in a sidebar narrower than 280 px (narrowSidebar, from the sidebar's
+// drawn width) a row shows two lines of its question, and one panel beside the list holds it whole with its controls, for the
+// focused row while it asks or the one whose Answer was pressed (panelRow). Focus opens it without moving the focus; Answer moves
+// the focus into it; Escape closes it until the focus moves to another row. `data-list-width` says the width is known.
+const listWidth = ref<'narrow' | 'wide' | undefined>(props.page ? 'wide' : undefined)
+const narrow = computed(() => listWidth.value === 'narrow')
+let widthObserver: ResizeObserver | undefined
+onMounted(() => {
+  if (props.page) return
+  const root = document.getElementById('dashboard-sidebar-main')
+  if (!root) {
+    listWidth.value = 'wide'
+    return
+  }
+  const measure = () => (listWidth.value = narrowSidebar(root.getBoundingClientRect().width) ? 'narrow' : 'wide')
+  measure()
+  widthObserver = new ResizeObserver(measure)
+  widthObserver.observe(root)
+})
+onBeforeUnmount(() => widthObserver?.disconnect())
+/** The row whose Answer was pressed; the row whose panel Escape closed. Both give way when the focus moves to another row. */
+const pressed = ref<string | null>(null)
+const dismissed = ref<string | null>(null)
+watch(focused, (id) => {
+  if (pressed.value && pressed.value !== id) pressed.value = null
+  if (dismissed.value && dismissed.value !== id) dismissed.value = null
+})
+const panelFor = computed(() => {
+  const id = panelRow(focused.value, pressed.value, byId.value, narrow.value, confirmingId.value)
+  return id && id !== dismissed.value ? id : null
+})
+const panelSession = computed(() => (panelFor.value ? (byId.value.get(panelFor.value) as SessionRow | undefined) : undefined))
+/** The row the panel is anchored to, found once the list has drawn it. */
+const panelAnchor = ref<HTMLElement | null>(null)
+watch(
+  panelFor,
+  (id) => {
+    panelAnchor.value = id ? (listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"]`) ?? null) : null
+  },
+  { flush: 'post' },
+)
+// A row that moves sections is drawn again: the panel follows it to its new element.
+watch(rows, async () => {
+  if (!panelFor.value) return
+  await nextTick()
+  const el = listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(panelFor.value)}"]`) ?? null
+  if (el !== panelAnchor.value) panelAnchor.value = el
+})
+const panel = useTemplateRef<{ focusFirst: () => void }>('panel')
+/** The row whose Answer was pressed waits for its panel to show, then the focus moves to the panel's first control. */
+let focusWhenShown: string | null = null
+function openAnswer(row: SessionRow) {
+  const id = `s:${row.id}`
+  dismissed.value = null
+  focused.value = id
+  pressed.value = id
+  focusWhenShown = id
+  if (panelFor.value === id && panelAnchor.value) void nextTick(() => panelShown())
+}
+function panelShown() {
+  if (focusWhenShown && focusWhenShown === panelFor.value) panel.value?.focusFirst()
+  focusWhenShown = null
+}
+function dismissPanel() {
+  dismissed.value = panelFor.value
+  pressed.value = null
+}
+
 defineExpose({ focusFilter, focusList })
 </script>
 
@@ -360,11 +483,11 @@ defineExpose({ focusFilter, focusList })
       </div>
     </div>
 
-    <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
+    <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" :data-list-width="listWidth" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
       <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
       <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
 
-      <SidebarSection v-if="model.needs.length || loneDecisions.length || decisionsCut || decisionsStale" id="needs" title="Needs you" :count="model.counts.needs + loneDecisions.length" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
+      <SidebarSection v-if="model.needs.length || decisionsCut || decisionsStale || inboxShowing || inboxFailed" id="needs" title="Needs you" :count="needsWords" count-of="needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
           <template v-for="it in model.needs" :key="it.id">
             <SidebarRunBlock
@@ -377,6 +500,12 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="needs"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
+              :narrow="narrow"
+              :panel-for="panelFor"
+              @answer-open="openAnswer"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"
@@ -388,6 +517,7 @@ defineExpose({ focusFilter, focusList })
               @answer="answer"
               @reply="reply"
             />
+            <SidebarInboxRow v-else-if="it.kind === 'item'" :row="it as ItemRow" :focused="focused === it.id" :big="props.page" />
             <SidebarSessionRow
               v-else
               :row="it as SessionRow"
@@ -398,6 +528,9 @@ defineExpose({ focusFilter, focusList })
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              :narrow="narrow"
+              :panel-open="panelFor === `s:${(it as SessionRow).id}`"
+              @answer-open="openAnswer"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
@@ -407,22 +540,17 @@ defineExpose({ focusFilter, focusList })
               @sheet="openSheet"
             />
           </template>
-          <li v-for="d in loneDecisions" :key="d.id" :data-sidebar-row="`d:${d.id}`">
-            <button
-              type="button"
-              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-canvas-hover focus-visible:ring-2 focus-visible:ring-primary"
-              :class="focused === `d:${d.id}` ? 'bg-canvas-hover' : ''"
-              :data-sidebar-decision="d.id"
-              @click="decisionModal.open(d.id)"
-            >
-              <UIcon name="i-lucide-scale" class="size-4 flex-none text-warning" />
-              <span class="min-w-0 flex-1 truncate"><span class="font-mono text-xs">{{ d.id }}</span> {{ d.request.question }}</span>
-            </button>
-          </li>
           <li v-if="decisionsCut" class="px-2 py-1 text-xs text-muted" data-sidebar-decisions-cut>{{ decisionsCut }}</li>
           <li v-if="decisionsStale" class="flex items-center gap-2 px-2 py-1 text-xs text-warning" data-sidebar-decisions-stale>
             <span class="min-w-0 flex-1">{{ decisionsStale }}</span>
             <UButton label="Read again" size="xs" color="neutral" variant="outline" class="flex-none" data-sidebar-decisions-read @click="decisions.read()" />
+          </li>
+          <li v-if="inboxFailed" class="flex items-center gap-2 px-2 py-1 text-xs text-warning" data-sidebar-inbox-failed>
+            <span class="min-w-0 flex-1">Plans and tasks could not be read</span>
+            <UButton label="Read again" size="xs" color="neutral" variant="outline" class="flex-none" data-sidebar-inbox-read @click="inbox.changed()" />
+          </li>
+          <li v-if="inboxShowing" class="px-2 py-1 text-xs text-muted" data-sidebar-inbox-showing>
+            {{ inboxShowing }} · <NuxtLink to="/decisions" class="underline hover:text-default" data-sidebar-inbox-all>all on Needs you</NuxtLink>
           </li>
         </ol>
       </SidebarSection>
@@ -440,6 +568,12 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="running"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
+              :narrow="narrow"
+              :panel-for="panelFor"
+              @answer-open="openAnswer"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"
@@ -461,6 +595,9 @@ defineExpose({ focusFilter, focusList })
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              :narrow="narrow"
+              :panel-open="panelFor === `s:${(it as SessionRow).id}`"
+              @answer-open="openAnswer"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
@@ -491,6 +628,12 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="exited"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
+              :narrow="narrow"
+              :panel-for="panelFor"
+              @answer-open="openAnswer"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"
@@ -512,6 +655,9 @@ defineExpose({ focusFilter, focusList })
               :focused="focused === `s:${(it as SessionRow).id}`"
               :confirming="confirmingId === `s:${(it as SessionRow).id}`"
               @update:confirming="confirmingId = $event ? `s:${(it as SessionRow).id}` : null"
+              :narrow="narrow"
+              :panel-open="panelFor === `s:${(it as SessionRow).id}`"
+              @answer-open="openAnswer"
               @share="shareSession"
               @stop="stopSession"
               @yard="showInYard"
@@ -525,6 +671,20 @@ defineExpose({ focusFilter, focusList })
       </SidebarSection>
     </div>
 
+    <!-- One panel for the list: the question whole beside its row, in a narrow sidebar. -->
+    <SidebarRowPanel
+      v-if="panelSession"
+      :key="panelSession.id"
+      ref="panel"
+      :row="panelSession"
+      :anchor="panelAnchor"
+      :busy="busyAll.has(panelSession.id)"
+      @answer="answer"
+      @reply="reply"
+      @keys="onKey"
+      @leave="onFocusOut"
+      @shown="panelShown"
+    />
     <SidebarRowSheet v-if="sheet" v-model:open="sheetOpen" :title="sheet.title" :meta="sheet.meta" :items="sheet.items" />
     <!-- One Share dialog for every row: made afresh for each target (the dialog mints its link on open). -->
     <ShareLinksModal v-if="shareTarget" :key="'sessionId' in shareTarget ? shareTarget.sessionId : shareTarget.runId" v-model:open="shareOpen" v-bind="shareTarget" />

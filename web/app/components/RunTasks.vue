@@ -5,20 +5,22 @@ import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
-import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
+import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskRow } from '~/utils/tasks'
+import { attemptSession, taskStatus } from '~/utils/status'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
 
 /**
- * The tasks of a managed run (#334, row 7): one row per task in the crew's
- * order with its state, member, owner (the person accountable for its
- * outcome as the crew was launched: "owner ana, the acceptance owner" when
- * the task names none), attempt, what it does in words, its result
- * commit, and what can be done with it (Open the attempt's session, Open
- * preview while the attempt's worktree answers behind its project
- * manifest's preview, Retry, Accept anyway, Cancel, Ask Brakeman why,
- * Copy branch). The
+ * The tasks of a managed run (#334, row 7), as a table (the UX review's
+ * P7): one row per task in the crew's order, its state said once (the
+ * status language's mark and word, taskStatus), the task, who (its member,
+ * the attempt when it is past the first and its words do not say it, and
+ * the owner only when the task names one: the crew's acceptance owner is
+ * said in the header's people and the task's detail), what it does in
+ * words with its result commit, and what can be done with it: Answer,
+ * Retry, Accept anyway, Open and Open preview in the row, Cancel, Copy
+ * branch and Ask Brakeman why behind its menu (taskRow). The
  * selected task (`?task=`) opens its result and its attempts under the rows,
  * each attempt with what it submitted and its receipts (RunAttemptSteps).
  * A run with a project manifest shows its prerequisites' receipts above the
@@ -68,26 +70,25 @@ function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }
 const short = (c?: string) => (c ? c.slice(0, 12) : '')
-const words = (t: RunTask) => taskWords(t, live.value)
 const acts = (t: RunTask) => taskActions(t, live.value)
+/** A task's row in the table: its words without the attempt, the attempt and the owner said once, its actions in the row and in its menu. */
+const rowOf = (t: RunTask) => taskRow(t, live.value, { brakeman: brakeman.available.value })
 // Ask Brakeman why: the Brakeman page's composer, asking it to explain the task (shown where the server has Brakeman).
 const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
 const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
-const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
-function stateColor(state: RunTask['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' | 'primary' {
-  switch (state) {
-    case 'running':
-      return 'success'
-    case 'verifying':
-      return 'info'
-    case 'failed':
-      return 'error'
-    case 'succeeded':
-      return 'primary'
-  }
-  return 'neutral'
+/** The row's menu: Cancel… (red inside the menu alone), Copy branch, Ask Brakeman why, each with its hook on its element. */
+function menuOf(t: RunTask) {
+  return rowOf(t).menu.map((k) => {
+    if (k === 'cancel') return { label: 'Cancel…', icon: 'i-lucide-x', color: 'error' as const, 'data-task-cancel': t.id, onSelect: () => (asking.value = { task: t, command: 'cancel' }) }
+    if (k === 'copyBranch') return { label: 'Copy branch', icon: 'i-lucide-git-branch', 'data-task-copy-branch': t.id, onSelect: () => copy(t.attempt!.branch!, 'Branch copied') }
+    return { label: 'Ask Brakeman why', icon: 'i-lucide-message-circle-question', to: askWhy(t), 'data-task-ask-brakeman': t.id }
+  })
 }
+// Each task's state in the status language (utils/status.ts, taskStatus): its attempt's session read from the live store.
+const attention = useAttention()
+const clock = useNow()
+const statusOf = (t: RunTask) => taskStatus(t, props.run, attemptSession(t, attention.sessions.value), clock.value)
 function attemptColor(state: RunAttempt['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' {
   switch (state) {
     case 'running':
@@ -235,39 +236,55 @@ async function confirm() {
       </template>
     </section>
     <p v-if="!tasks.length" class="text-sm text-muted">No tasks.</p>
-    <ol v-else class="flex flex-col gap-1.5" data-task-rows>
-      <li v-for="t in tasks" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
-        <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, a link) keeps its own key. -->
-        <div
-          class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm"
-          :class="selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30'"
-          role="button"
-          tabindex="0"
-          @click="emit('select', selected === t.id ? '' : t.id)"
-          @keydown.enter.self.prevent="emit('select', t.id)"
-        >
-          <span class="size-2 flex-none rounded-full" :class="taskDot(t.state)" aria-hidden="true" />
-          <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />
-          <span class="font-mono font-semibold text-highlighted" data-task-id>{{ t.id }}</span>
-          <UBadge :label="t.state" :color="stateColor(t.state)" variant="subtle" size="sm" class="flex-none" data-task-state-badge />
-          <span class="flex flex-none items-center gap-1.5 text-muted"><SessionAvatar :agent-id="agentOf(t.member)" /><span>{{ t.member }}</span></span>
-          <span v-if="t.owner" class="flex flex-none items-center gap-1 text-xs text-muted" :data-task-owner="t.owner" :data-task-owner-from="t.ownerFrom"><UIcon name="i-lucide-user" class="size-3.5" />{{ ownerWords(t) }}</span>
-          <span v-if="t.attempts" class="flex-none font-mono text-xs text-muted" data-task-attempt>attempt {{ t.attempt?.n ?? t.attempts }}</span>
-          <span class="min-w-[12rem] flex-1 truncate" :class="tone[words(t).tone]" :title="words(t).text" data-task-words>{{ words(t).text }}</span>
-          <span v-if="t.result?.commit" class="flex-none font-mono text-xs text-muted" :title="t.result.commit" data-task-commit>{{ short(t.result.commit) }}</span>
-          <div class="ml-auto flex flex-none items-center gap-1" @click.stop>
-            <UButton v-if="taskAnswer(t)" :label="`Answer ${taskAnswer(t)}`" icon="i-lucide-scale" size="xs" color="warning" variant="soft" :data-task-answer="t.id" :data-decision="taskAnswer(t)" @click="decisionModal.open(taskAnswer(t)!)" />
-            <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
-            <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
-            <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
-            <UButton v-if="acts(t).accept" label="Accept anyway…" icon="i-lucide-check" size="xs" color="warning" variant="outline" :data-task-accept="t.id" @click="asking = { task: t, command: 'accept' }" />
-            <UButton v-if="acts(t).cancel" icon="i-lucide-x" size="xs" color="error" variant="ghost" aria-label="Cancel the task" :data-task-cancel="t.id" @click="asking = { task: t, command: 'cancel' }" />
-            <UButton v-if="acts(t).askWhy && brakeman.available.value" label="Ask Brakeman why" icon="i-lucide-message-circle-question" size="xs" color="neutral" variant="ghost" :to="askWhy(t)" :data-task-ask-brakeman="t.id" />
-            <UButton v-if="acts(t).copyBranch" icon="i-lucide-git-branch" size="xs" color="neutral" variant="ghost" aria-label="Copy branch" :data-task-copy-branch="t.id" @click="copy(t.attempt!.branch!, 'Branch copied')" />
+    <!-- The tasks as a table: state, task, who, what and actions, each read straight down (one grid template for every row, every cell
+         drawn even when empty); narrower than 48 rem a row folds into two lines, state, task and actions, then who and what. -->
+    <div v-else class="task-table flex flex-col gap-1.5" data-task-table>
+      <div class="task-grid task-head px-3 text-[11px] font-medium uppercase tracking-wide text-muted" aria-hidden="true" data-task-head>
+        <span class="[grid-area:state]">State</span>
+        <span class="[grid-area:task]">Task</span>
+        <span class="[grid-area:who]">Who</span>
+        <span class="[grid-area:what]">What</span>
+      </div>
+      <ol class="flex flex-col gap-1.5" data-task-rows>
+        <li v-for="t in tasks" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
+          <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, the menu) keeps its own keys. -->
+          <div
+            class="task-grid rounded-md border px-3 py-2 text-sm"
+            :class="selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30'"
+            role="button"
+            tabindex="0"
+            @click="emit('select', selected === t.id ? '' : t.id)"
+            @keydown.enter.self.prevent="emit('select', t.id)"
+          >
+            <span class="flex min-w-0 items-center [grid-area:state]" data-task-col="state"><StatusMark :status="statusOf(t)" word data-task-status /></span>
+            <span class="flex min-w-0 items-center gap-2 [grid-area:task]" data-task-col="task">
+              <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />
+              <span class="min-w-0 truncate font-mono font-semibold text-highlighted" :title="t.id" data-task-id>{{ t.id }}</span>
+            </span>
+            <span class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted [grid-area:who]" data-task-col="who">
+              <SessionAvatar :agent-id="agentOf(t.member)" />
+              <span class="truncate">{{ t.member }}</span>
+              <span class="flex-none font-mono text-xs" data-task-attempt>{{ rowOf(t).attempt }}</span>
+              <span v-if="rowOf(t).owner" class="flex flex-none items-center gap-1 text-xs" :data-task-owner="t.owner" :data-task-owner-from="t.ownerFrom"><UIcon name="i-lucide-user" class="size-3.5" />{{ rowOf(t).owner }}</span>
+            </span>
+            <span class="flex min-w-0 items-center gap-2 [grid-area:what]" data-task-col="what">
+              <span class="min-w-0 flex-1 truncate text-default" :title="rowOf(t).words" data-task-words>{{ rowOf(t).words }}</span>
+              <span v-if="t.result?.commit" class="flex-none font-mono text-xs text-muted" :title="t.result.commit" data-task-commit>{{ short(t.result.commit) }}</span>
+            </span>
+            <div class="flex min-w-0 flex-wrap items-center justify-end gap-1 [grid-area:actions]" data-task-col="actions" @click.stop>
+              <UButton v-if="taskAnswer(t)" :label="`Answer ${taskAnswer(t)}`" icon="i-lucide-scale" size="xs" color="warning" variant="soft" :data-task-answer="t.id" :data-decision="taskAnswer(t)" @click="decisionModal.open(taskAnswer(t)!)" />
+              <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
+              <UButton v-if="acts(t).accept" label="Accept anyway…" icon="i-lucide-check" size="xs" color="warning" variant="outline" :data-task-accept="t.id" @click="asking = { task: t, command: 'accept' }" />
+              <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
+              <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
+              <UDropdownMenu v-if="rowOf(t).menu.length" :items="menuOf(t)" :content="{ align: 'end' }">
+                <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${t.id}`" :data-task-menu="t.id" />
+              </UDropdownMenu>
+            </div>
           </div>
-        </div>
-      </li>
-    </ol>
+        </li>
+      </ol>
+    </div>
 
     <!-- The selected task: its result, then its attempts with what each submitted. -->
     <section v-if="selectedTask" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" data-task-detail :data-task-detail-id="selectedTask.id">
@@ -290,7 +307,8 @@ async function confirm() {
       <ul v-if="taskDecisions.length" class="flex flex-col gap-1" data-task-decisions>
         <li v-for="d in taskDecisions" :key="d.id" class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md px-2.5 py-1.5 ring ring-default" :data-task-decision="d.id" :data-decision-state="d.state">
           <span class="font-mono text-xs font-semibold">{{ d.id }}</span>
-          <UBadge :label="d.state" :color="d.state === 'open' ? 'warning' : d.state === 'applied' ? 'success' : 'neutral'" variant="subtle" size="sm" />
+          <!-- Amber while it waits on a person; every other state, an applied one among them, in neutral ink (green is a live agent's). -->
+          <UBadge :label="d.state" :color="d.state === 'open' ? 'warning' : 'neutral'" variant="subtle" size="sm" :data-task-decision-badge="d.state" />
           <span class="min-w-0 flex-1 break-words">{{ d.question }}</span>
           <span v-if="d.answer" class="text-xs text-muted">answered: {{ d.answer }}</span>
           <span v-else-if="d.why" class="text-xs text-muted">{{ d.why }}</span>
@@ -372,3 +390,33 @@ async function confirm() {
     </UModal>
   </div>
 </template>
+
+<style scoped>
+/* The task table (the UX review's P7): one template for the header and every row, so each column reads straight down. */
+.task-table {
+  container-type: inline-size;
+}
+.task-grid {
+  display: grid;
+  /* Narrow, the task's id keeps its width and the actions take what is left, wrapping under one another when they must. */
+  grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr);
+  grid-template-areas:
+    'state task actions'
+    'who what what';
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  align-items: center;
+}
+.task-head {
+  display: none;
+}
+@container (min-width: 48rem) {
+  .task-grid {
+    grid-template-columns: 8.5rem minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 2fr) 17rem;
+    grid-template-areas: 'state task who what actions';
+  }
+  .task-head {
+    display: grid;
+  }
+}
+</style>

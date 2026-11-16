@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, rowAnswer, test, type Session } from './fixtures'
 
 // The phone (design 3e): the list is a page of its own, not a drawer; the
 // pages sit in a bar at the foot, Decide first; a prompt is answered in the row with
@@ -51,7 +51,7 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'phone asker' })
   sessions.push(s.id)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
-  // The list itself (the first load of / in a tab lands on Needs your decision while an item waits: decision-page.spec.ts).
+  // The list itself (the first load of / in a tab lands on Needs you while an item waits: decision-page.spec.ts).
   await phone.goto('/sessions')
   await expect(phone).toHaveURL(/\/sessions$/)
   const list = phone.locator('[data-session-list="page"]')
@@ -60,12 +60,12 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   // No hamburger, no slideover: the sidebar's own list is not even rendered below lg.
   await expect(phone.locator('[data-session-list="sidebar"]')).toHaveCount(0)
   await expect(phone.locator('[data-slot="toggle"]')).toHaveCount(0)
-  // The bar: five targets of at least 44 px, Decide first (Needs your decision, with its count), then Sessions, the Yard (with its
-  // count), Crews and More; Events is under More.
+  // The bar: five targets of at least 44 px, Needs you first (with the one number), then Sessions, the Yard (with its grid's asking
+  // sessions), Crews and More; Events is under More.
   const bar = phone.locator('[data-bottom-bar]')
   const tabs = bar.locator('[data-bottom-tab]')
   await expect(tabs).toHaveCount(5)
-  await expect(tabs).toHaveText([/Decide/, /Sessions/, /Yard/, /Crews/, /More/])
+  await expect(tabs).toHaveText([/Needs you/, /Sessions/, /Yard/, /Crews/, /More/])
   await expect(bar.locator('[data-bottom-tab="decide"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)
   for (let i = 0; i < 5; i++) expect((await tabs.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(44)
   await expect(bar.locator('[data-bottom-tab="yard"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)
@@ -73,7 +73,8 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   // The prompt in the row: full-width 44 px buttons; one answers.
   const row = list.locator(`[data-sidebar-row="s:${s.id}"]`).first()
   await expect(row.locator('[data-row-prompt]')).toHaveText('Which database?')
-  const choice = row.locator('[data-row-choice="2"]')
+  // The phone's list keeps its choices in the row, whole across its width (rowAnswer gives the row there).
+  const choice = (await rowAnswer(list.page(), row)).locator('[data-row-choice="2"]')
   const box = (await choice.boundingBox())!
   expect(box.height).toBeGreaterThanOrEqual(44)
   expect(box.width).toBeGreaterThanOrEqual(300)
@@ -151,9 +152,9 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/, /Events/, /History/])
+  await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Events/, /History/])
   await expect(more.getByText('Browser notification')).toBeVisible()
-  await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(more.getByRole('button')).toHaveText([/All alert rules/, /Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()
   await expect(phone.locator('[data-name-dialog]')).toBeVisible()
 })
@@ -172,7 +173,7 @@ async function choicesOnScreen(bar: Locator) {
   expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth)).toBe(true)
 }
 
-test("a plan approval's three choices wrap inside the window, on the session page and the Yard's card", async ({ page, api }) => {
+test("a plan approval's three choices wrap inside the window, on the session page and an expanded Yard tile's bar", async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'phone plan' })
   sessions.push(s.id)
   // Typed from the desktop's page: the phone only reads the bar.

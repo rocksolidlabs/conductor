@@ -2,9 +2,10 @@
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
+import { attemptSession, markSection, memberStatusOf, sessionStatus, taskStatus } from '~/utils/status'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
@@ -147,7 +148,6 @@ const tiles = computed<Tile[]>(() => {
   return out
 })
 
-const counts = computed(() => (run.value ? runCounts(run.value, live.sessions.value) : { needs: 0, running: 0 }))
 
 // Broadcast selection: every member whose session runs, unless the person
 // unticked it; a member that starts later is selected as it appears. Only the
@@ -271,6 +271,9 @@ function openTask(id: string) {
 }
 const taskCommands = useTaskCommands(() => runId.value)
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
+// The members' and the tasks' states in the status language (utils/status.ts): the graph, its legend and the palette's rows draw these.
+const memberMarks = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatusOf(run.value!, m, live.sessions.value, now.value).mark])))
+const taskMarks = computed(() => new Map((run.value?.tasks ?? []).map((t) => [t.id, taskStatus(t, run.value!, attemptSession(t, live.sessions.value), now.value)])))
 
 // The run's chat (design 2e): one thread for everyone on the run, over a quiet connection to a live member; a message may also
 // be typed into a member, as the broadcast bar types, a member waiting on a prompt skipped. Counted while the drawer is closed.
@@ -433,7 +436,8 @@ palette.registerPage(() => {
       label: t.id,
       detail: `${t.kind} · ${t.member} · ${taskWords(t, r).text}`,
       icon: t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer',
-      state: t.state === 'running' || t.state === 'verifying' ? ('running' as const) : t.state === 'failed' ? ('needs' as const) : t.state === 'succeeded' || t.state === 'cancelled' ? ('exited' as const) : ('idle' as const),
+      state: markSection(taskMarks.value.get(t.id)?.key ?? 'waiting'),
+      status: taskMarks.value.get(t.id),
       run: () => selectTask(t.id, true),
       actions,
     }
@@ -445,7 +449,9 @@ palette.registerPage(() => {
       const m = t.member
       const pending = m?.status === 'pending'
       const ended = m?.status === 'ended' || (s && (s.status === 'exited' || s.status === 'stopped'))
-      const state = s?.attention?.state === 'needs_input' ? ('needs' as const) : ended ? ('exited' as const) : s ? ('running' as const) : ('idle' as const)
+      // The member's state in the status language (memberStatusOf), else, for a session the last read did not know yet, its session's.
+      const mark = m ? memberMarks.value.get(m.name) : s ? sessionStatus(s, now.value) : undefined
+      const state = mark ? markSection(mark.key) : ('idle' as const)
       // What the member's tile offers, and nothing else (memberOffer).
       const offer = memberOffer(ended ? 'ended' : m?.status, r)
       return {
@@ -454,6 +460,7 @@ palette.registerPage(() => {
         detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? `${m.start.when === 'manual' ? 'waiting for a hand' : 'waiting to start'}${offer === 'start' ? ' · Enter starts it' : ''}` : (m?.error ?? m?.status ?? ''),
         agentId: m?.agentId ?? s?.agentId,
         state,
+        status: mark,
         session: s,
         prompt: s ? rowPrompt(sessionRow(s)) : null,
         run: () => {
@@ -495,7 +502,7 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
+      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>
@@ -521,11 +528,7 @@ palette.registerPage(() => {
         />
       </div>
 
-      <div v-if="gone" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted">
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No run has the id <code>{{ runId }}</code>. The server forgets runs when it restarts.</p>
-        <UButton label="Crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
-      </div>
+      <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
         <div class="flex flex-none items-center px-3 pt-3">
@@ -535,6 +538,8 @@ palette.registerPage(() => {
           <CrewGraph
             :members="run?.members ?? []"
             :states="states"
+            :marks="memberMarks"
+            :task-marks="taskMarks"
             :handoffs="handoffs"
             :run-id="runId"
             :stopped="!!run?.stoppedAt"
@@ -552,6 +557,7 @@ palette.registerPage(() => {
             @start="startMember"
             @select-task="selectTask($event)"
             @open-task="openTask"
+            @show-task="selectTask($event, true)"
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>

@@ -1083,8 +1083,16 @@ export function summaryOf(c: CrewInfo): CrewSummary {
 /** A member's state as the run view shows it (memberStatus). */
 export type MemberStatus = RunMember['status'] | 'needs_input'
 
+/** The error the server gives a member a stop caught before it ran (internal/crew ErrRunStopped). */
+export const STOPPED_ERROR = 'the run is stopped'
+
+/** A member's own error: one that is not the run being stopped. */
+export function ownError(m: Pick<RunMember, 'error'>): string {
+  return m.error && m.error !== STOPPED_ERROR ? m.error : ''
+}
+
 /** The live session of a member: by its id once the run names it, else by the crew tag the session carries. */
-function memberSession(run: RunInfo, member: RunMember, sessions: readonly SessionInfo[]): SessionInfo | undefined {
+export function memberSession(run: RunInfo, member: RunMember, sessions: readonly SessionInfo[]): SessionInfo | undefined {
   if (member.sessionId) {
     const s = sessions.find((x) => x.id === member.sessionId)
     if (s) return s

@@ -8,7 +8,7 @@ import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { sessionStatus } from '~/utils/status'
-import { bestGrid } from '~/utils/wall'
+import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 import { pageState } from '~/utils/pageState'
 import { QUICK_START_URL } from '~/utils/about'
@@ -29,38 +29,20 @@ const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
 usePageAltCodes().register(['KeyQ'])
 
-type Filter = 'all' | 'needs' | 'running'
-function isFilter(v: unknown): v is Filter {
-  return v === 'all' || v === 'needs' || v === 'running'
-}
-// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes.
-const filter = ref<Filter>(isFilter(route.query.filter) ? route.query.filter : 'all')
+// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes; an unknown word opens All.
+const filter = ref<YardFilter>(yardFilterOf(route.query.filter))
 watch(
   () => route.query.filter,
-  (q) => {
-    if (isFilter(q)) filter.value = q
-  },
+  (q) => (filter.value = yardFilterOf(q)),
 )
+// The chips filter the live sessions by one state each (utils/wall.ts, on sessionStatus).
+const now = useNow()
 const active = computed(() => attention.sessions.value.filter(isActive))
-const waiting = computed(() => attention.needsInput.value.filter(isActive))
-const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
-const tiles = computed(() => (filter.value === 'needs' ? waiting.value : filter.value === 'running' ? running.value : active.value))
-const answered = computed(() =>
-  attention.sessions.value
-    .filter((s) => s.lastAnswer)
-    .sort((a, b) => (b.lastAnswer?.at ?? '').localeCompare(a.lastAnswer?.at ?? ''))
-    .slice(0, 8),
-)
-// The queue shows only while something needs input (#360); the answered rows ride along inside it then.
-const showQueue = computed(() => waiting.value.length > 0)
-
-// Queue keyboard selection (J / K, Enter to type a reply).
-const queueSel = ref(0)
-const queue = useTemplateRef<{ focusSelected: () => void }>('queue')
-watch(waiting, (list) => {
-  queueSel.value = Math.min(queueSel.value, Math.max(0, list.length - 1))
-})
-
+const counts = computed(() => yardCounts(attention.sessions.value, now.value))
+const chips = computed(() => yardChips(counts.value, filter.value))
+const tiles = computed(() => yardFilter(attention.sessions.value, filter.value, now.value))
+// Below sm the chips and the polling badge leave the header for a row of their own under it (the bar shows from sm up).
+const phone = useIsPhone()
 // Focus mode: /yard?focus=<id> expands one session in place. The grid is one
 // Esc, one click or one browser Back away; the URL stays shareable.
 const focusId = computed(() => (typeof route.query.focus === 'string' ? route.query.focus : ''))
@@ -78,7 +60,6 @@ const missingActions = computed(() => [
   { label: 'Back to the grid', icon: 'i-lucide-arrow-left', onClick: backToGrid },
   { label: 'Its record', icon: 'i-lucide-history', to: `/history/sessions/${encodeURIComponent(focusId.value)}` },
 ])
-const now = useNow()
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
@@ -107,25 +88,12 @@ function leaveFocus() {
   }
   backToGrid()
 }
-function queueNext() {
-  if (waiting.value.length) queueSel.value = (queueSel.value + 1) % waiting.value.length
-}
-function queuePrev() {
-  if (waiting.value.length) queueSel.value = (queueSel.value - 1 + waiting.value.length) % waiting.value.length
-}
 const inTerminal = { usingInput: true }
 defineShortcuts({
   escape: leaveFocus,
-  j: queueNext,
-  k: queuePrev,
-  enter: () => {
-    if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
-  },
   alt_escape: { ...inTerminal, handler: leaveFocus },
   // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
   alt_q: { ...inTerminal, handler: leaveFocus },
-  alt_j: { ...inTerminal, handler: queueNext },
-  alt_k: { ...inTerminal, handler: queuePrev },
 })
 
 // Grid: every active session fits on screen; tiles shrink as sessions are added.
@@ -158,7 +126,7 @@ function fail(title: string) {
   return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
 }
 
-/** A reply names the question the card or the bar showed (its id): one answered meanwhile takes nothing, and says so. */
+/** A reply names the question the bar showed (its id): one answered meanwhile takes nothing, and says so. */
 function reply(s: SessionInfo, text: string, question?: string) {
   quick.reply(s, text, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
 }
@@ -224,23 +192,16 @@ onMounted(() => {
 // The focused tile's editor column: its rows in the palette (#321) read its state through this.
 const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 
-// This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid; the focused
+// This page's group in the command palette (#302): the chips, the grid; the focused
 // tile's editor rows (#321).
 usePalette().registerPage(() => {
-  const chips: Array<[Filter, string, number]> = [
-    ['all', 'All', active.value.length],
-    ['needs', 'Needs you', waiting.value.length],
-    ['running', 'Running', running.value.length],
-  ]
-  const sel = waiting.value[queueSel.value]
   return {
     label: focused.value ? focused.value.name : 'Yard',
     sessionId: focused.value?.id,
     cwd: focused.value?.cwd,
     openFile: focused.value ? openFile : undefined,
     rows: [
-      ...chips.map(([f, label, n]) => ({ key: `page:filter:${f}`, label: `${label} · ${n}`, icon: 'i-lucide-filter', on: filter.value === f, run: () => (filter.value = f) })),
-      ...(sel && !focused.value ? [{ key: 'page:expand', label: `Expand ${sel.name}`, detail: 'The queue’s selected session, in place', icon: 'i-lucide-maximize-2', agentId: sel.agentId, run: () => focusSession(sel) }] : []),
+      ...chips.value.map((c) => ({ key: `page:filter:${c.key}`, label: `${c.label} · ${c.count}`, icon: 'i-lucide-filter', on: c.active, run: () => (filter.value = c.key) })),
       ...(focused.value ? [{ key: 'page:grid', label: 'Back to the grid', icon: 'i-lucide-layout-grid', kbds: ['escape'], run: backToGrid }] : []),
       ...(focused.value ? editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }) : []),
     ],
@@ -266,12 +227,10 @@ usePalette().registerPage(() => {
               <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden sm:inline-flex" />
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>
-            <div v-else class="flex items-center gap-1.5 text-xs">
-              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" data-yard-filter="all" :data-active="filter === 'all' ? '' : undefined" @click="filter = 'all'" />
-              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
-              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" data-yard-filter="running" :data-active="filter === 'running' ? '' : undefined" @click="filter = 'running'" />
-              <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
-              <AttentionBar :sessions="attention.sessions.value" />
+            <div v-else class="flex min-w-0 items-center gap-1.5 text-xs">
+              <YardViews current="grid" />
+              <YardChips v-if="!phone" :chips="chips" :connected="attention.connected.value" @pick="filter = $event" />
+              <AttentionBar v-if="!phone" :sessions="attention.sessions.value" />
             </div>
           </div>
         </template>
@@ -290,6 +249,11 @@ usePalette().registerPage(() => {
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
+      <UDashboardToolbar v-if="phone && !focusId" :ui="{ root: 'h-auto py-1.5', left: 'flex-wrap' }" data-yard-toolbar>
+        <template #left>
+          <YardChips :chips="chips" :connected="attention.connected.value" wrap @pick="filter = $event" />
+        </template>
+      </UDashboardToolbar>
     </template>
 
     <template #body>
@@ -336,13 +300,12 @@ usePalette().registerPage(() => {
         @again="attention.refresh()"
       />
 
-      <div v-else class="flex flex-1 min-h-0">
-        <WallQueue v-if="showQueue" ref="queue" :sessions="waiting" :answered="answered" :selected="queueSel" :sending="quick.sending.value" @reply="reply" @option="option" @open="focusSession" @select="queueSel = $event" />
-        <div ref="grid" class="flex-1 min-h-0 p-3">
-          <div v-if="!tiles.length" class="h-full flex items-center justify-center text-sm text-muted">Nothing matches this filter.</div>
-          <div v-else class="grid h-full w-full gap-3" :style="gridStyle">
-            <SessionTile v-for="s in tiles" :key="s.id" :session="s" :create-transport="transportFor(s)" @select="focusSession(s)" />
-          </div>
+      <!-- The grid takes the body at every width (the UX review's P22): a question is answered in the sidebar's Needs you, the pill
+           (] and [) or the expanded tile's own bar, never in a column beside the grid that shrinks every tile while it waits. -->
+      <div v-else ref="grid" class="flex-1 min-h-0 p-3">
+        <div v-if="!tiles.length" class="h-full flex items-center justify-center text-sm text-muted">Nothing matches this filter.</div>
+        <div v-else class="grid h-full w-full gap-3" :style="gridStyle" data-yard-grid>
+          <SessionTile v-for="s in tiles" :key="s.id" :session="s" :create-transport="transportFor(s)" @select="focusSession(s)" />
         </div>
       </div>
     </template>

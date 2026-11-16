@@ -375,7 +375,9 @@ test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, 
   await stepIn(api, runId, 1, 'setup:hold:1', 'running')
   await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks&task=build`)
   const row = page.locator('[data-task-row="build"]')
-  await row.locator('[data-task-cancel="build"]').click()
+  // Cancel… is behind the row's menu (UX1 PR-11).
+  await row.locator('[data-task-menu="build"]').click()
+  await page.locator('[data-task-cancel="build"]').click()
   await page.locator('[data-task-confirm]').click()
   await expect(row).toHaveAttribute('data-task-state', 'cancelled')
   const tidy = await stepIn(api, runId, 1, 'cleanup:tidy:1', 'finished')

@@ -6,7 +6,7 @@ import { EVENT_INFO, ROUTE_GROUPS, ROUTE_KEYS, type EventType, type RouteRow, we
  * Where each kind of event goes in this browser: the ten events grouped by
  * how loud they are, each with its destinations as pills (Badge, Browser,
  * Roundhouse jump, Feed) and the webhooks of conductor.json beside them, read-only.
- * `working` never sets a badge: it clears one.
+ * `working` never sets a badge: it clears one. Below lg every pill is a 44 px touch target.
  */
 const props = defineProps<{
   routes: Record<EventType, RouteRow>
@@ -35,7 +35,7 @@ const off = 'text-muted ring-accented hover:text-default'
   <div class="flex flex-col gap-3.5" data-routing-matrix>
     <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
       <UPopover v-for="c in [...ROUTE_KEYS, { key: 'webhook', label: 'Webhook', icon: 'i-lucide-webhook', hint: 'What the server POSTs to the webhooks in conductor.json: set there, not here' }]" :key="c.key" :content="{ side: 'top' }" arrow>
-        <button type="button" class="flex cursor-help items-center gap-1 underline decoration-dotted underline-offset-4 hover:text-default" :data-hint="c.key">
+        <button type="button" class="flex cursor-help items-center gap-1 max-lg:min-h-11 underline decoration-dotted underline-offset-4 hover:text-default" :data-hint="c.key">
           <UIcon :name="c.icon" class="size-3.5" />{{ c.label }}
         </button>
         <template #content>
@@ -58,7 +58,7 @@ const off = 'text-muted ring-accented hover:text-default'
         <div class="flex flex-wrap gap-1.5">
           <template v-for="c in ROUTE_KEYS" :key="c.key">
             <UTooltip v-if="fixed(t, c.key)" :text="fixed(t, c.key)!">
-              <span class="flex h-[26px] items-center gap-1 rounded-full px-2.5 text-xs font-medium text-dimmed ring-1 ring-inset ring-default" :data-cell="`${t}.${c.key}`" data-fixed-cell aria-disabled="true">
+              <span class="flex h-[26px] items-center max-lg:h-11 max-lg:px-3.5 gap-1 rounded-full px-2.5 text-xs font-medium text-dimmed ring-1 ring-inset ring-default" :data-cell="`${t}.${c.key}`" data-fixed-cell aria-disabled="true">
                 <UIcon :name="c.icon" class="size-3.5" />{{ c.label }}
               </span>
             </UTooltip>
@@ -68,7 +68,7 @@ const off = 'text-muted ring-accented hover:text-default'
               role="switch"
               :aria-checked="routes[t][c.key]"
               :aria-label="`${EVENT_INFO[t].title}: ${c.label}`"
-              class="flex h-[26px] items-center gap-1 rounded-full px-2.5 text-xs font-medium ring-1 ring-inset transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              class="flex h-[26px] items-center max-lg:h-11 max-lg:px-3.5 gap-1 rounded-full px-2.5 text-xs font-medium ring-1 ring-inset transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
               :class="routes[t][c.key] ? on : off"
               :data-cell="`${t}.${c.key}`"
               @click="emit('update', t, c.key, !routes[t][c.key])"
@@ -77,7 +77,7 @@ const off = 'text-muted ring-accented hover:text-default'
             </button>
           </template>
           <UTooltip :text="webhook(t).hint">
-            <span class="flex h-[26px] items-center gap-1 rounded-full px-2.5 text-xs font-medium ring-1 ring-inset" :class="webhook(t).on ? on : 'text-dimmed ring-default'" :aria-label="`${EVENT_INFO[t].title}: Webhook (${webhook(t).hint})`" data-webhook-cell>
+            <span class="flex h-[26px] items-center max-lg:h-11 max-lg:px-3.5 gap-1 rounded-full px-2.5 text-xs font-medium ring-1 ring-inset" :class="webhook(t).on ? on : 'text-dimmed ring-default'" :aria-label="`${EVENT_INFO[t].title}: Webhook (${webhook(t).hint})`" data-webhook-cell>
               <UIcon name="i-lucide-webhook" class="size-3.5" />Webhook
             </span>
           </UTooltip>

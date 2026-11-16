@@ -1,0 +1,15 @@
+{
+  "about": "The one rule for a text cut at a word (session.CutAtWord, dispatch's cutAtWord, the app's copy): s whole when it fits chars characters (and bytes bytes, when bytes is not 0); else cut to chars - 1 characters (and bytes - 3 bytes) at the last space after keep characters, trailing spaces trimmed, and an ellipsis (U+2026) added; a first word past the bound is cut at a character.",
+  "cases": [
+    { "name": "fits whole", "s": "fix the parser", "keep": 0, "chars": 40, "bytes": 120, "want": "fix the parser" },
+    { "name": "exactly at the bound", "s": "aaaa bbbb", "keep": 0, "chars": 9, "bytes": 0, "want": "aaaa bbbb" },
+    { "name": "one over the bound, cut at a word", "s": "aaaa bbbbb", "keep": 0, "chars": 9, "bytes": 0, "want": "aaaa…" },
+    { "name": "cut at the last space that fits", "s": "fix the flaky vim spec on the mac runner please", "keep": 0, "chars": 40, "bytes": 120, "want": "fix the flaky vim spec on the mac…" },
+    { "name": "a first word past the bound is cut at a character", "s": "abcdefghijklmnop qr", "keep": 0, "chars": 10, "bytes": 0, "want": "abcdefghi…" },
+    { "name": "never inside a kept key", "s": "CND-12 Averyveryverylongwordthatdoesnotfit", "keep": 6, "chars": 20, "bytes": 0, "want": "CND-12 Averyveryver…" },
+    { "name": "a ticket's key and title", "s": "CND-12 Make the login loop stop when the session token expires mid-request", "keep": 6, "chars": 60, "bytes": 0, "want": "CND-12 Make the login loop stop when the session token…" },
+    { "name": "trailing spaces trimmed before the ellipsis", "s": "aaaa    bbbbbbbb", "keep": 0, "chars": 9, "bytes": 0, "want": "aaaa…" },
+    { "name": "four-byte characters past the byte bound, the ellipsis kept inside it", "s": "😀😀😀😀😀😀😀😀😀😀", "keep": 0, "chars": 40, "bytes": 20, "want": "😀😀😀😀…" },
+    { "name": "words of four-byte characters past the byte bound, cut at a word", "s": "😀😀 😀😀 😀😀", "keep": 0, "chars": 40, "bytes": 24, "want": "😀😀 😀😀…" }
+  ]
+}

@@ -65,3 +65,13 @@ export function sameQuestions(sessions: readonly SessionInfo[]): SameQuestion[] 
   }
   return [...groups.values()].filter((g) => g.sessions.length > 1)
 }
+
+/**
+ * Where the pill's Enter opens a session (the UX review's P22): on the Yard, the session's tile expanded in place
+ * (`/yard?focus=<id>`), where its bar takes a typed reply; everywhere else, the Roundhouse included (it has no focus mode), the
+ * session's page.
+ */
+export function pillTarget(path: string, id: string): string {
+  const bare = path.replace(/[?#].*$/, '')
+  return bare === '/yard' ? `/yard?focus=${encodeURIComponent(id)}` : `/sessions/${encodeURIComponent(id)}`
+}

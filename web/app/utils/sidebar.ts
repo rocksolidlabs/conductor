@@ -4,8 +4,10 @@ import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
 import { questionOf } from './reply'
+import { askedWhere } from './decisions'
+import type { NeedsItem } from './needsYou'
 import { agentInitials, relativeTime } from './sessions'
-import { blockStatus, joinedStatus, sessionStatus, statusOfKey, type StatusKey, type StatusView } from './status'
+import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusKey, type StatusView } from './status'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
 export type SidebarMode = 'full' | 'rail'
@@ -56,14 +58,15 @@ export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): voi
 
 /**
  * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum on every screen, and a
- * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 16.75 rem (268 px), shows the header's
- * every part whole, the name too, with 10 px to spare (#706): the mark, "Conductor", Alerts, your menu and the collapse button
- * take 225 px of the row with the bundled font, and the header's padding and border 33 px more. A wider font shortens the name
- * first, its whole text in its title. The maximum is never less than the minimum plus `range` rem, so the handle widens it in a
- * window 1024 px wide too, where 26 % is barely the minimum. Nuxt UI clamps only during a drag: `sidebarBounds` gives the
- * bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window changes.
+ * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 12.5 rem (200 px), shows the header
+ * whole: the mark, "Conductor" and your menu (Alerts and the collapse to the rail are in your menu), about 186 px with the
+ * header's padding and border. A wider font shortens the name first, its whole text in its title. The maximum is never less
+ * than the minimum plus `range` rem (280 px), so the handle widens it in a window 1024 px wide too, where 26 % is barely more
+ * than the minimum, and there reaches the width at which a row shows its question whole. Nuxt UI clamps only during a drag:
+ * `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window
+ * changes. A width saved at an earlier minimum is kept as saved.
  */
-export const SIDEBAR_SIZE = { min: 16.75, maxShare: 0.26, range: 5 } as const
+export const SIDEBAR_SIZE = { min: 12.5, maxShare: 0.26, range: 5 } as const
 /** The full sidebar's bounds in a window, in rem. */
 export interface SidebarBounds {
   min: number
@@ -81,6 +84,29 @@ export function sidebarBounds(windowWidth: number, remPx = 16): SidebarBounds {
 
 /** The full sidebar's drawn width: the width Nuxt UI holds (`--width`), within the bounds of the window as it is now. */
 export const SIDEBAR_WIDTH = `clamp(${SIDEBAR_SIZE.min}rem, var(--width), max(${SIDEBAR_SIZE.min + SIDEBAR_SIZE.range}rem, ${SIDEBAR_SIZE.maxShare * 100}vw))`
+
+/**
+ * Below this drawn width (px) a row's question is two lines and whole in the panel beside the row (owner decision 7): at 200 px a
+ * question at the server's bound is two dozen lines. At 280 px and wider, and on the phone's list, it stays whole in the row.
+ */
+export const NARROW_SIDEBAR_PX = 280
+
+/** Whether the list drawn `px` wide is narrow: one answer decides both the clamp and the panel. Never for the phone's list (`page`). */
+export function narrowSidebar(px: number, page = false): boolean {
+  return !page && Number.isFinite(px) && px < NARROW_SIDEBAR_PX
+}
+
+/**
+ * The row the question's panel is for (`s:<id>`), or null: in a narrow sidebar, the row whose Answer was pressed, else the focused
+ * row, while it asks (it has a prompt) and does not show its Stop question (`confirming`); none in a wide one.
+ */
+export function panelRow(focused: string | null, pressed: string | null, rows: ReadonlyMap<string, SessionRow | RunBlock>, narrow: boolean, confirming: string | null = null): string | null {
+  if (!narrow) return null
+  const id = pressed ?? focused
+  if (!id || id === confirming) return null
+  const row = rows.get(id)
+  return row?.kind === 'session' && row.prompt ? id : null
+}
 
 /** The width a drag left, in rem, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
 export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.width'
@@ -148,6 +174,8 @@ export type RowState = 'needs' | 'running' | 'idle' | 'exited'
 /** The list's sections, in order; `shared` holds the links joined from here. */
 export type SectionKey = 'needs' | 'running' | 'shared' | 'exited'
 export const SECTION_KEYS: readonly SectionKey[] = ['needs', 'running', 'shared', 'exited']
+/** Each section's title, as its header, the palette's groups and its fold actions say it. */
+export const SECTION_TITLES: Readonly<Record<SectionKey, string>> = { needs: 'Needs you', running: 'Running', shared: 'Shared with you', exited: 'Exited' }
 /** The sections holding sessions (every one but shared). */
 export type ListSection = 'needs' | 'running' | 'exited'
 
@@ -176,23 +204,63 @@ export interface RunBlock {
   stoppedAt?: string
   /** The run's member count (pending ones included), else the sessions seen. */
   agents: number
-  /** The most urgent member's. */
+  /** The most urgent member's; `needs` while one of its items waits on you. */
   state: RowState
-  /** How many members need you. */
+  /** How many members need you, and how many of its items wait on you. */
   needs: number
   /** The members with a session, the most urgent first, then the crew's order. */
   members: SessionRow[]
+  /** What of the run waits on you that is no member's question: its decisions and its tasks out of their attempts, oldest first. */
+  items: ItemRow[]
 }
 
-export type SidebarItem = SessionRow | RunBlock
+/**
+ * A row of Needs you for what waits on a person that is no session's question (the UX review's P3): a plan waiting for approval, a
+ * task out of its attempts, a run's decision. A decision is `d:<id>` (its card opens from the row), a plan or a task `i:<ref>`.
+ */
+export interface ItemRow {
+  kind: 'item'
+  id: string
+  item: NeedsItem
+}
+
+export type SidebarItem = SessionRow | RunBlock | ItemRow
 
 export interface SidebarModel {
+  /** Loose sessions that ask, the loose items (a plan, a decision or a task whose run the store does not hold), and the runs that wait. */
   needs: SidebarItem[]
   running: SidebarItem[]
   /** Loose exited sessions and wholly exited runs. */
   exited: SidebarItem[]
-  /** For the headers: sessions needing you (anywhere); the Running section's sessions that are not exited; the Exited section's. */
+  /** For the headers: what needs you that the list holds (sessions anywhere, items); the Running section's sessions that are not exited; the Exited section's. */
   counts: Record<ListSection, number>
+}
+
+/** An item's row id: `d:<id>` for a decision, `i:<ref>` for a plan or a task. */
+export function itemRowId(item: Pick<NeedsItem, 'kind' | 'ref' | 'decision'>): string {
+  return item.kind === 'decision' && item.decision ? `d:${item.decision.id}` : `i:${item.ref}`
+}
+
+/** The items a filter leaves: those whose words, ref or decision id hold the query (case folded); the questions, whose sessions are filtered as sessions. */
+export function filterNeeds(items: readonly NeedsItem[], query: string): readonly NeedsItem[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return items
+  return items.filter((it) => {
+    if (it.kind === 'question') return true
+    const w = itemWords(it)
+    return [w.title, w.detail, it.ref].some((v) => v.toLowerCase().includes(q))
+  })
+}
+
+/**
+ * An item's two lines: its title, and its question or brief. A decision is its question, then its id and where it was asked (or that
+ * its run no longer runs: it is answered from its card all the same).
+ */
+export function itemWords(item: NeedsItem): { title: string; detail: string } {
+  const d = item.decision
+  if (item.kind === 'decision' && d) return { title: d.request.question, detail: `${d.id} · ${item.stopped ? 'its run has stopped' : `asked by ${askedWhere(d)}`}` }
+  const s = item.summary
+  return { title: s?.title || item.ref, detail: s?.question || s?.brief || '' }
 }
 
 const RANK: Record<RowState, number> = { needs: 0, running: 1, idle: 2, exited: 3 }
@@ -220,12 +288,19 @@ export function blockState(members: readonly SessionRow[]): RowState {
   return best
 }
 
-/** When a row last signalled, for the order within a section: the prompt's time, the end, else the start. */
-function signalTime(row: SessionRow): string {
+/** When a row last signalled, for the order within a section: the prompt's time, the end, else the start; an item's, since when it waits. */
+function signalTime(row: SessionRow | ItemRow): string {
+  if (row.kind === 'item') return row.item.since
   const s = row.session
   if (row.state === 'needs') return s.attention?.since ?? s.createdAt
   if (row.state === 'exited') return s.endedAt ?? s.createdAt
   return s.createdAt
+}
+
+/** A block's signal: its first member's, or the newest of its items' when they wait on you. */
+function blockTime(b: RunBlock): string {
+  const times = [...(b.members[0] ? [signalTime(b.members[0])] : []), ...b.items.map((it) => it.item.since)]
+  return times.reduce((a, t) => (t > a ? t : a), '')
 }
 
 function sectionOf(state: RowState): ListSection {
@@ -236,8 +311,15 @@ function sectionOf(state: RowState): ListSection {
  * The list: every run as one block where its most urgent member belongs, never split; loose sessions by their own state. In a
  * section the loose rows come first, then the blocks, each newest signal first. `runOf` is the live store's run (its name, start,
  * members and their order); a run it does not know is named by its crew's id.
+ *
+ * `needs` is the one list of what needs you (useNeedsYou's items): its questions are the sessions' own rows; every other item gets a
+ * row of its own (the UX review's P3). An item of a run the store holds or a session names (a decision, a task) sits under that run's
+ * header, before its members, and puts the run in Needs you in the same call, whatever its members do: a run whose task failed while
+ * its members work, a stopped run with an open decision. A run that waits with no session listed (a gate held before any attempt,
+ * sessions aged out of the listing) gets a block of its own, its header and its items. A plan, and an item whose run the store does
+ * not hold, is a loose row of Needs you.
  */
-export function sidebarModel(sessions: readonly SessionInfo[], runOf: (runId: string) => RunInfo | undefined = () => undefined): SidebarModel {
+export function sidebarModel(sessions: readonly SessionInfo[], runOf: (runId: string) => RunInfo | undefined = () => undefined, needs: readonly NeedsItem[] = []): SidebarModel {
   const loose: SessionRow[] = []
   const byRun = new Map<string, SessionRow[]>()
   for (const s of sessions) {
@@ -248,12 +330,24 @@ export function sidebarModel(sessions: readonly SessionInfo[], runOf: (runId: st
       byRun.set(s.crew.runId, list)
     } else loose.push(row)
   }
+  const looseItems: ItemRow[] = []
+  const itemsByRun = new Map<string, ItemRow[]>()
+  for (const item of needs) {
+    if (item.kind === 'question') continue
+    const row: ItemRow = { kind: 'item', id: itemRowId(item), item }
+    const run = item.kind === 'plan' ? undefined : item.run
+    if (run && (byRun.has(run) || runOf(run))) {
+      itemsByRun.set(run, [...(itemsByRun.get(run) ?? []), row])
+      if (!byRun.has(run)) byRun.set(run, [])
+    } else looseItems.push(row)
+  }
   const blocks: RunBlock[] = []
   for (const [runId, rows] of byRun) {
     const run = runOf(runId)
     const order = new Map((run?.members ?? []).map((m, i) => [m.name, i]))
     const place = (r: SessionRow) => order.get(r.session.crew?.member ?? '') ?? Number.MAX_SAFE_INTEGER
     const members = [...rows].sort((a, b) => RANK[a.state] - RANK[b.state] || place(a) - place(b) || b.session.createdAt.localeCompare(a.session.createdAt))
+    const items = itemsByRun.get(runId) ?? []
     blocks.push({
       kind: 'run',
       id: `run:${runId}`,
@@ -262,19 +356,20 @@ export function sidebarModel(sessions: readonly SessionInfo[], runOf: (runId: st
       startedAt: run?.startedAt,
       stoppedAt: run?.stoppedAt,
       agents: run ? run.members.length : rows.length,
-      state: blockState(members),
-      needs: members.filter((m) => m.state === 'needs').length,
+      state: items.length ? 'needs' : blockState(members),
+      needs: members.filter((m) => m.state === 'needs').length + items.length,
       members,
+      items,
     })
   }
   const newestFirst = (a: string, b: string) => b.localeCompare(a)
   const out: SidebarModel = { needs: [], running: [], exited: [], counts: { needs: 0, running: 0, exited: 0 } }
   for (const key of ['needs', 'running', 'exited'] as const) {
-    const rows = loose.filter((r) => sectionOf(r.state) === key).sort((a, b) => newestFirst(signalTime(a), signalTime(b)))
-    const bs = blocks.filter((b) => sectionOf(b.state) === key).sort((a, b) => newestFirst(signalTime(a.members[0]!), signalTime(b.members[0]!)))
+    const rows: Array<SessionRow | ItemRow> = [...loose.filter((r) => sectionOf(r.state) === key), ...(key === 'needs' ? looseItems : [])].sort((a, b) => newestFirst(signalTime(a), signalTime(b)))
+    const bs = blocks.filter((b) => sectionOf(b.state) === key).sort((a, b) => newestFirst(blockTime(a), blockTime(b)))
     out[key] = [...rows, ...bs]
   }
-  out.counts.needs = loose.filter((r) => r.state === 'needs').length + blocks.reduce((n, b) => n + b.needs, 0)
+  out.counts.needs = loose.filter((r) => r.state === 'needs').length + looseItems.length + blocks.reduce((n, b) => n + b.needs, 0)
   out.counts.running = out.running.reduce((n, it) => n + (it.kind === 'run' ? it.members.filter((m) => m.state !== 'exited').length : 1), 0)
   out.counts.exited = out.exited.reduce((n, it) => n + (it.kind === 'run' ? it.members.length : 1), 0)
   return out
@@ -305,11 +400,34 @@ export function blockSubtitle(block: Pick<RunBlock, 'startedAt' | 'stoppedAt' | 
   return agents
 }
 
-/** The status keys a folded section shows as marks (utils/status.ts, sessionStatus): a run contributes its members'. At most six. */
+/** What a run block draws under its header: its member rows, and the line that stands for the members it folds away. */
+export interface BlockRows {
+  members: SessionRow[]
+  /** "and 2 more · 1 working · 1 finished": the members not shown, counted and told by their status's words (statusTally). */
+  more?: { count: number; words: string }
+}
+
+/**
+ * The rows of a run block in `section`: in Needs you, the members that ask and one line for the rest ("and 2 more · 1 working ·
+ * 1 finished"), so that a crew of six with one question takes two rows; elsewhere, or once `unfolded` (the line pressed, held for
+ * the visit), every member. A run whose members all ask, or none while no item of it waits, shows them all.
+ */
+export function blockRows(block: Pick<RunBlock, 'members'> & Partial<Pick<RunBlock, 'items'>>, section: ListSection, unfolded = false): BlockRows {
+  if (section !== 'needs' || unfolded) return { members: block.members }
+  const asking = block.members.filter((m) => m.state === 'needs')
+  const rest = block.members.filter((m) => m.state !== 'needs')
+  // A run that waits on an item folds its members that do not ask, so the item under its header is what the block shows.
+  if (!rest.length || (!asking.length && !block.items?.length)) return { members: block.members }
+  const tally = statusTally(rest.map((m) => sessionStatus(m.session).key))
+  return { members: asking, more: { count: rest.length, words: [`and ${rest.length} more`, tally].filter(Boolean).join(' · ') } }
+}
+
+/** The status keys a folded section shows as marks (utils/status.ts, sessionStatus): a run contributes its items' and its members'; an item is `needs`. At most six. */
 export function sectionPreview(items: readonly SidebarItem[]): StatusKey[] {
   const out: StatusKey[] = []
   for (const it of items) {
-    if (it.kind === 'run') out.push(...it.members.map((m) => sessionStatus(m.session).key))
+    if (it.kind === 'run') out.push(...it.items.map((): StatusKey => 'needs'), ...it.members.map((m) => sessionStatus(m.session).key))
+    else if (it.kind === 'item') out.push('needs')
     else out.push(sessionStatus(it.session).key)
     if (out.length >= 6) break
   }
@@ -367,32 +485,41 @@ export type FocusRow =
   | { id: string; kind: 'run'; runId: string }
   | { id: string; kind: 'shared'; entryId: string }
   | { id: string; kind: 'decision'; decision: string }
+  | { id: string; kind: 'item'; ref: string }
+  | { id: string; kind: 'more'; runId: string }
 
 function sessionFocus(row: SessionRow, runId?: string): FocusRow {
   return { id: `s:${row.id}`, kind: 'session', sessionId: row.id, runId, options: row.prompt?.options.length ?? 0 }
 }
 
+function itemFocus(row: ItemRow): FocusRow {
+  return row.item.kind === 'decision' && row.item.decision ? { id: row.id, kind: 'decision', decision: row.item.decision.id } : { id: row.id, kind: 'item', ref: row.item.ref }
+}
+
 /**
- * The rows a key can land on, in the list's order. `decisions` are Needs you's open durable decisions no shown question mirrors
- * (Program item DR1), drawn after its sessions: a row each (`d:dr-7`), which Enter opens the card of (Codex's round 1 on #719).
+ * The rows a key can land on, in the list's order. Needs you's items are rows (`d:dr-7` a decision, which Enter opens the card of;
+ * `i:<ref>` a plan or a task, which Enter opens on the page), a run's after its header and before its members. A run's members are
+ * those `blockRows` shows, then its "and 2 more" line (`m:<runId>`), which Enter unfolds; `unfolded` holds the runs whose line was
+ * pressed.
  */
-export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds, decisions: readonly string[] = []): FocusRow[] {
+export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds, unfolded: ReadonlySet<string> = new Set()): FocusRow[] {
   const out: FocusRow[] = []
-  const add = (items: readonly SidebarItem[]) => {
+  const add = (items: readonly SidebarItem[], section: ListSection) => {
     for (const it of items) {
       if (it.kind === 'run') {
         out.push({ id: `r:${it.runId}`, kind: 'run', runId: it.runId })
-        for (const m of it.members) out.push(sessionFocus(m, it.runId))
-      } else out.push(sessionFocus(it))
+        for (const item of it.items) out.push(itemFocus(item))
+        const shown = blockRows(it, section, unfolded.has(it.runId))
+        for (const m of shown.members) out.push(sessionFocus(m, it.runId))
+        if (shown.more) out.push({ id: `m:${it.runId}`, kind: 'more', runId: it.runId })
+      } else if (it.kind === 'item') out.push(itemFocus(it))
+      else out.push(sessionFocus(it))
     }
   }
-  if (!folds.needs) {
-    add(model.needs)
-    for (const d of decisions) out.push({ id: `d:${d}`, kind: 'decision', decision: d })
-  }
-  if (!folds.running) add(model.running)
+  if (!folds.needs) add(model.needs, 'needs')
+  if (!folds.running) add(model.running, 'running')
   if (!folds.shared) for (const e of shared) out.push({ id: `j:${e.id}`, kind: 'shared', entryId: e.id })
-  if (!folds.exited) add(model.exited)
+  if (!folds.exited) add(model.exited, 'exited')
   return out
 }
 
@@ -490,7 +617,7 @@ function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>,
 export function railRunLabel(block: RunBlock, unread = 0, now = Date.now()): string {
   const sub = blockSubtitle(block).split(' · ')[0]!
   const when = /^(started|stopped) /.test(sub) ? `run ${sub}` : sub
-  const parts = [block.title, when, ...block.members.map((m) => `${m.session.name} ${sessionStatus(m.session, now).word}`)]
+  const parts = [block.title, when, ...block.items.map((it) => `${it.item.kind} needs you`), ...block.members.map((m) => `${m.session.name} ${sessionStatus(m.session, now).word}`)]
   if (unread) parts.push(unreadWords(unread))
   return parts.join(' · ')
 }
@@ -504,7 +631,8 @@ function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>
     to: `/runs/${encodeURIComponent(block.runId)}`,
     label: railRunLabel(block, chat, now),
     state: block.state,
-    status: statusOfKey(blockStatus(members.map((m) => m.status!.key))),
+    // A run that waits on an item is amber whatever its members do: the list put it in Needs you.
+    status: statusOfKey(blockStatus([...(block.items.length ? (['needs'] as StatusKey[]) : []), ...members.map((m) => m.status!.key)])),
     dashed: block.state === 'exited',
     agentId: '',
     kind: 'run',
@@ -528,6 +656,8 @@ export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], m
     if (sq.news) news++
   }
   const add = (it: SidebarItem) => {
+    // A loose item (a plan) is no session and no run: the rail draws sessions and runs, and counts it on top.
+    if (it.kind === 'item') return
     if (it.kind === 'run') {
       const c = railCapsule(it, marks, unread, now)
       c.members!.forEach(count)
@@ -560,7 +690,7 @@ export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], m
   let exitedFolded = 0
   for (const it of model.exited) {
     if (it.kind === 'run') add(it)
-    else {
+    else if (it.kind === 'session') {
       if (marks[it.id] || unread[`session:${it.id}`]) news++
       exitedFolded++
     }

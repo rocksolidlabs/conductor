@@ -64,7 +64,7 @@ const counts = computed(() => filterCounts(outcomes.value, filter.value.since, p
 const stateChips: Array<{ value: RunFilterState; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'live', label: 'Live' },
-  { value: 'finished', label: 'Finished' },
+  { value: 'ended', label: 'Ended' },
   { value: 'stopped', label: 'Stopped' },
   { value: 'failed', label: 'Failed' },
 ]
@@ -84,7 +84,7 @@ const rows = computed(() =>
       state: st.state,
       live: isLive,
       badge: outcomeBadge(outcome),
-      tiles: memberTiles(r, props.sessions),
+      tiles: memberTiles(r, props.sessions, props.now),
       took: runTook(r, isLive, props.now),
       note: runNote(r, props.sessions),
       resumable: runResumable(r, isLive),
@@ -204,7 +204,7 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[10rem_7rem_
               :data-status="t.status"
             >
               {{ agentInitials(t.m.agentId) }}
-              <span class="absolute -right-[3px] -top-[3px] box-border size-[7px] rounded-full ring-2 ring-default" :class="t.dot" aria-hidden="true" />
+              <StatusMark :status="t.mark" badge class="absolute -right-1 -top-1" />
             </span>
           </div>
           <span class="font-mono text-xs @min-[64rem]:col-start-4 @min-[64rem]:row-start-1" data-run-took>{{ row.took }}</span>

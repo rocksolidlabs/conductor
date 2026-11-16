@@ -51,6 +51,19 @@ test('the run page draws the members and their start rules, and a handoff as it 
   await expect(canvas.locator('[data-graph-node]')).toHaveCount(4)
   await expect(canvas.locator('[data-graph-node="lead"]')).toHaveAttribute('data-status', 'running')
   await expect(canvas.locator('[data-graph-node="docs"]')).toHaveAttribute('data-status', 'pending')
+  // Each node draws its state in the status language (UX1 PR-10): lead its session's key, docs, not started, the waiting mark.
+  // lead's mark is its session's, the one the sidebar's row draws for that session: both read at once, the state may move.
+  const leadSession = r.members.find((m) => m.name === 'lead')?.sessionId ?? ''
+  expect(leadSession, "lead's session").not.toBe('')
+  const keys = () =>
+    page.evaluate((id) => {
+      const node = document.querySelector('[data-graph-canvas] [data-graph-node="lead"] [data-status-mark]')?.getAttribute('data-status-mark') ?? ''
+      const row = document.querySelector(`[data-sidebar-row="s:${id}"] [data-status-mark]`)?.getAttribute('data-status-mark') ?? ''
+      return node && node === row ? node : `${node} against ${row}`
+    }, leadSession)
+  await expect.poll(keys, { message: "lead's node draws its session's mark" }).toMatch(/^(working|finished|running|needs)$/)
+  await expect(canvas.locator('[data-graph-node="docs"] [data-status-mark]')).toHaveAttribute('data-status-mark', 'waiting')
+  await expect(canvas.locator('[data-graph-node="docs"] [data-status-word]')).toHaveText('waiting to start')
   await expect(canvas.locator('[data-graph-edge-kind="after"]')).toHaveCount(2)
   await expect(canvas.locator('[data-graph-edge="lead-core"][data-graph-edge-kind="after"]')).toHaveCount(1)
   await expect(canvas.locator('[data-graph-edge="core-tests"][data-graph-edge-kind="after"]')).toHaveCount(1)
@@ -118,6 +131,28 @@ test('the editor sets a start rule by drawing an edge, and refuses a second pare
   await expect(canvas.locator('[data-graph-edge="tests-docs"]')).toHaveCount(0)
   await page.getByRole('button', { name: 'Save' }).click()
   await expect.poll(async () => (await api.crew(crewId)).members.find((m) => m.name === 'docs')?.start, { timeout: 15_000 }).toEqual({ when: 'immediately' })
+})
+
+test('two graphs, two stores: the crew editor’s and its run’s, reached without a reload, read different Vue Flow stores (#449)', async ({ page }) => {
+  // The run page opens on its Graph view: a run of members draws Members mode (it has no tasks).
+  await page.addInitScript(() => localStorage.setItem('conductor.runView', 'graph'))
+  await page.goto(`/crews/${encodeURIComponent(crewId)}`)
+  await page.locator('[data-members-view]').getByRole('tab', { name: 'Graph' }).click()
+  const canvas = page.locator('[data-graph-canvas]')
+  await expect(canvas.locator('[data-graph-node]')).toHaveCount(4)
+  const editor = await canvas.getAttribute('data-graph-store')
+  expect(editor).toMatch(/^crew-graph-\d+$/)
+  // To the crew's run by its link in the Runs tab: a change of route in the page, never a load (a load would count from 1 again).
+  await page.evaluate(() => ((window as unknown as { loadedOnce: boolean }).loadedOnce = true))
+  await page.locator('[data-crew-tabs]').getByRole('tab', { name: /^Runs/ }).click()
+  await page.locator(`[data-run="${runId}"] [data-run-open]`).click()
+  await expect(page).toHaveURL(new RegExp(`/runs/${encodeURIComponent(runId)}`))
+  await expect(page.locator('[data-run-view]').getByRole('tab', { name: 'Graph' })).toHaveAttribute('aria-selected', 'true')
+  await expect(canvas.locator('[data-graph-node]')).toHaveCount(4)
+  const run = await canvas.getAttribute('data-graph-store')
+  expect(run).toMatch(/^crew-graph-\d+$/)
+  expect(run).not.toBe(editor)
+  expect(await page.evaluate(() => (window as unknown as { loadedOnce?: boolean }).loadedOnce)).toBe(true)
 })
 
 test('a phone gets the list, indented by depth', async ({ browser, state }) => {

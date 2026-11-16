@@ -19,6 +19,7 @@ import {
   taskActions,
   taskBadges,
   taskCounts,
+  taskRow,
   taskWords,
   type CommandBody,
   type Receipt,
@@ -41,23 +42,24 @@ describe('taskCounts and taskBadges', () => {
     expect(taskCounts(tasks)).toEqual({ total: 7, done: 1, failed: 1, cancelled: 1, running: 1, checking: 1, waiting: 2 })
     expect(taskCounts(undefined).total).toBe(0)
   })
-  it('says the counts as badges, the wrong and the moving ones only when there are any', () => {
+  it('says the counts as badges, the wrong and the moving ones only when there are any, neutral but for what waits on a person and what failed', () => {
     expect(taskBadges({ tasks, paused: true })).toEqual([
       { label: '1/7 tasks', color: 'neutral' },
       { label: '1 failed', color: 'error' },
       { label: '1 cancelled', color: 'neutral' },
-      { label: '1 running', color: 'success' },
-      { label: '1 checking', color: 'info' },
+      { label: '1 running', color: 'neutral' },
+      { label: '1 checking', color: 'neutral' },
       { label: 'paused', color: 'warning', title: 'Paused by a person' },
     ])
-    expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded' })).toEqual([{ label: '1/1 tasks', color: 'success' }])
+    // Green is for a live agent alone: a run's done tasks are counted in neutral ink.
+    expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded' })).toEqual([{ label: '1/1 tasks', color: 'neutral' }])
   })
   it("titles a pause the run made itself with its words, and says cleaning up while trees are being ended (EN1)", () => {
     const why = 'the prerequisite node failed: exited 127: node: not found'
     expect(taskBadges({ tasks: [task({})], paused: true, pausedWhy: why })).toContainEqual({ label: 'paused', color: 'warning', title: `Paused: ${why}` })
     expect(taskBadges({ tasks: [task({ state: 'succeeded' })], outcome: 'succeeded', cleaning: 2 })).toEqual([
-      { label: '1/1 tasks', color: 'success' },
-      { label: 'cleaning up', color: 'info', title: '2 trees are being ended: services stopped, cleanup steps run' },
+      { label: '1/1 tasks', color: 'neutral' },
+      { label: 'cleaning up', color: 'neutral', title: '2 trees are being ended: services stopped, cleanup steps run' },
     ])
     expect(taskBadges({ tasks: [], cleaning: 1 }).at(-1)?.title).toBe('1 tree is being ended: services stopped, cleanup steps run')
     expect(taskBadges({ tasks: [], cleaning: 0 }).map((b) => b.label)).toEqual(['0/0 tasks'])
@@ -392,5 +394,56 @@ describe('a task a durable decision holds (Program item DR1)', () => {
     expect(openDecisions(tasks, ['dr-1', 'dr-4'])).toBe(2)
     expect(openDecisions(tasks, [])).toBe(1)
     expect(taskBadges({ tasks }, ['dr-1', 'dr-4']).map((b) => b.label)).toContain('2 decisions open')
+  })
+})
+
+describe("taskWords without the attempt (the task table's words)", () => {
+  const hold = (id: string) => ({ id, type: 'approval', state: 'open', question: 'May it?' }) as unknown as NonNullable<RunTask['holds']>[number]
+  it.each([
+    [task({ state: 'running', attempts: 2, attempt: { n: 2, state: 'running' } }), 'attempt 2 running', 'running'],
+    [task({ state: 'running', attempts: 1, attempt: { n: 1, state: 'running' }, holds: [hold('dr-7')] }), 'attempt 1 waits for decision dr-7', 'waits for decision dr-7'],
+    [task({ state: 'verifying', attempts: 2, attempt: { n: 2, state: 'verifying' } }), 'attempt 2: checking the result', 'checking the result'],
+    [task({ state: 'running', attempts: 1, attempt: { n: 1, state: 'running' }, blocker: { reason: 'no token', by: 'core', at: '' } }), 'attempt 1 blocked by core: no token', 'blocked by core: no token'],
+  ] as const)('%#: "%s" becomes "%s", and the default is unchanged', (t, whole, without) => {
+    expect(taskWords(t, {}).text).toBe(whole)
+    expect(taskWords(t, {}, { attempt: false }).text).toBe(without)
+  })
+})
+
+describe('taskRow: a task as the table draws it, each part said once', () => {
+  const live = {}
+  const hold = (id: string) => ({ id, type: 'approval', state: 'open', question: 'May it?' }) as unknown as NonNullable<RunTask['holds']>[number]
+  const attempt = (n: number, over: Partial<NonNullable<RunTask['attempt']>> = {}) => ({ n, state: 'running' as const, sessionId: `s${n}`, branch: `crew/r/build.${n}`, ...over })
+  /** The attempt said in the row's two places at once, which taskRow never does. */
+  const twice = (r: ReturnType<typeof taskRow>) => !!r.attempt && r.words.includes(r.attempt)
+  it('says the attempt once: in the who column past the first, never where the words say it', () => {
+    const running2 = taskRow(task({ state: 'running', attempts: 2, attempt: attempt(2) }), live)
+    expect([running2.attempt, running2.words]).toEqual(['attempt 2', 'running'])
+    expect(taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1) }), live).attempt).toBe('')
+    const succeeded = taskRow(task({ state: 'succeeded', attempts: 2, attempt: attempt(2, { state: 'succeeded' }), result: { attempt: 2, commit: 'abc', at: '' } }), live)
+    expect([succeeded.attempt, succeeded.words]).toEqual(['', 'succeeded by attempt 2'])
+    const failed = taskRow(task({ state: 'failed', attempts: 3, attempt: attempt(3, { state: 'failed' }), reason: 'attempt 3 failed at check never: exited 1' }), live)
+    expect(failed.attempt).toBe('')
+    expect(taskRow(task({ state: 'ready', attempts: 3, attempt: attempt(3, { state: 'failed' }), reason: 'attempt 3 failed at check never' }), live).attempt).toBe('')
+    expect(taskRow(task({ state: 'ready', attempts: 3 }), live).attempt).toBe('attempt 3')
+    for (const r of [running2, succeeded, failed]) expect(twice(r)).toBe(false)
+  })
+  it("names the owner only when the task names one: the acceptance owner is the header's", () => {
+    expect(taskRow(task({ owner: 'nate', ownerFrom: 'task' }), live).owner).toBe('owner nate')
+    expect(taskRow(task({ owner: 'ana', ownerFrom: 'acceptance' }), live).owner).toBe('')
+    expect(taskRow(task({}), live).owner).toBe('')
+  })
+  it('keeps in the row what a waiting state asks for, and the rest behind the menu', () => {
+    const held = taskRow(task({ state: 'running', attempts: 1, attempt: attempt(1), holds: [hold('dr-7')], commands: ['cancel'] }), live)
+    expect([held.shown, held.menu]).toEqual([['answer', 'open'], ['cancel', 'copyBranch']])
+    const out = task({ state: 'failed', attempts: 3, attempt: attempt(3, { state: 'failed', sessionId: undefined }), commands: ['retry', 'accept'], reason: 'attempt 3 failed at check never' })
+    expect(taskRow(out, live, { brakeman: true })).toMatchObject({ shown: ['retry', 'accept'], menu: ['copyBranch', 'askWhy'] })
+    expect(taskRow(out, live).menu).toEqual(['copyBranch'])
+    // A record offers no command: no Retry, Accept anyway or Cancel.
+    const record = taskRow({ ...out, commands: ['retry', 'accept', 'cancel'] }, { record: true }, { brakeman: true })
+    expect(record.shown).toEqual([])
+    expect(record.menu).toEqual(['copyBranch', 'askWhy'])
+    // Cancel is never in the row.
+    for (const r of [held, record, taskRow(out, live)]) expect(r.shown).not.toContain('cancel')
   })
 })

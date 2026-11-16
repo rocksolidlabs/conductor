@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionInfo, SessionStatus } from '~/composables/useSessions'
 import type { Decision, DecisionState } from './decisions'
 import type { InboxSummary } from './inbox'
-import { needsYou, type NeedsInput } from './needsYou'
+import { needsCount, needsRowShown, needsYou, pillWords, unanswerable, type NeedsInput } from './needsYou'
 
 // The shape of the UX review's day and its edges: six sessions that ask (one a host away, one mirroring an open record), one that
 // is starting, one ended that still shows a question; a gate no question mirrors, a stopped run's open record, a record answered and
@@ -159,5 +159,49 @@ describe('needsYou: the one list of what needs you', () => {
   it('knows a zero: every store read, nothing waits', () => {
     const n = needsYou({ sessions: { list: [session('idle')], loaded: true, error: '' }, decisions: { records: [], loaded: true, error: '', cut: false }, inbox: { items: [], loaded: true, error: '', next: '', unavailable: '' } })
     expect([n.number, n.known, n.more, n.runs]).toEqual([0, true, false, []])
+  })
+})
+
+describe('needsCount: the one number as a reader draws it', () => {
+  it('draws the count, a floor with "+", and nothing while unknown', () => {
+    expect([needsCount({ number: 9, known: true, more: false }), needsCount({ number: 9, known: false, more: true }), needsCount({ number: 9, known: false, more: false }), needsCount({ number: 0, known: true, more: false })]).toEqual(['9', '9+', '', '0'])
+  })
+})
+
+describe("needsRowShown: Needs you's row in the nav", () => {
+  const NOW = Date.UTC(2026, 10, 16, 12)
+  const H = 60 * 60 * 1000
+  const quiet = { unavailable: '', tracking: 0, closed: [] as Array<{ closed?: string; since: string }>, recent: [] as Array<{ at: number }> }
+  const zero = needsYou(day({ sessions: { list: [] }, decisions: { records: [] }, inbox: { items: [] } }))
+  const cases: Array<[string, Parameters<typeof needsRowShown>[0], Parameters<typeof day>[0] | 'zero', string, boolean]> = [
+    ['nothing waits, nothing decided', quiet, 'zero', '/yard', false],
+    ['an item waits', quiet, {}, '/yard', true],
+    ['the sessions unread', quiet, { sessions: { list: [], loaded: false }, decisions: { records: [] }, inbox: { items: [] } }, '/yard', true],
+    ['the decisions failed', quiet, { sessions: { list: [] }, decisions: { records: [], error: 'decisions 500' }, inbox: { items: [] } }, '/yard', true],
+    ['the decisions cut short', quiet, { sessions: { list: [] }, decisions: { records: [], cut: true }, inbox: { items: [] } }, '/yard', true],
+    ['the inbox unread', quiet, { sessions: { list: [] }, decisions: { records: [] }, inbox: { items: [], loaded: false } }, '/yard', true],
+    ['the inbox failed', quiet, { sessions: { list: [] }, decisions: { records: [] }, inbox: { items: [], error: 'inbox 500' } }, '/yard', true],
+    ['the inbox cut short', quiet, { sessions: { list: [] }, decisions: { records: [] }, inbox: { items: [], next: 'c' } }, '/yard', true],
+    ['zero items, one record answered and not yet applied', { ...quiet, tracking: 1 }, 'zero', '/yard', true],
+    ['closed 23 hours ago', { ...quiet, closed: [{ since: T(0), closed: new Date(NOW - 23 * H).toISOString() }] }, 'zero', '/yard', true],
+    ['closed 25 hours ago', { ...quiet, closed: [{ since: T(0), closed: new Date(NOW - 25 * H).toISOString() }] }, 'zero', '/yard', false],
+    ["this browser's answer 23 hours ago", { ...quiet, recent: [{ at: NOW - 23 * H }] }, 'zero', '/yard', true],
+    ["this browser's answer 25 hours ago", { ...quiet, recent: [{ at: NOW - 25 * H }] }, 'zero', '/yard', false],
+    ['its page open at zero', quiet, 'zero', '/decisions', true],
+    ['a switchyard, its stores unread', { ...quiet, unavailable: 'switchyard' }, { sessions: { list: [], loaded: false } }, '/yard', false],
+    ['a switchyard with a question waiting', { ...quiet, unavailable: 'switchyard' }, {}, '/yard', false],
+  ]
+  for (const [what, state, over, path, want] of cases) {
+    it(`${want ? 'shows' : 'leaves'}: ${what}`, () => {
+      expect(needsRowShown(state, over === 'zero' ? zero : needsYou(day(over)), path, NOW)).toBe(want)
+    })
+  }
+})
+
+describe("the pill's words", () => {
+  it("gives the pill's count and what it cannot answer", () => {
+    const items = needsYou(day()).items
+    expect(unanswerable(items)).toBe(3)
+    expect([pillWords(2, 8, 3), pillWords(1, 2, 0)]).toEqual(['2 of 8 · 3 more in Needs you', '1 of 2'])
   })
 })

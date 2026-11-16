@@ -237,7 +237,7 @@ func TestAResumedMemberIsRunningOnceItsSessionIsReady(t *testing.T) {
 	var gating atomic.Bool
 	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
 		if !gating.Load() {
-			return awaitReady(ctx, l, held)
+			return AwaitReady(ctx, l, held)
 		}
 		select {
 		case <-ready:
@@ -350,7 +350,7 @@ func TestAStopDuringAResumedMembersReadinessWaitEndsIt(t *testing.T) {
 	var gating atomic.Bool
 	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
 		if !gating.Load() {
-			return awaitReady(ctx, l, held)
+			return AwaitReady(ctx, l, held)
 		}
 		select {
 		case <-l.Ended():

@@ -8,7 +8,8 @@ import { relativeTime, shortCwd } from '~/utils/sessions'
 import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
 
-useHead({ title: 'Roundhouse' })
+// The Roundhouse is the Yard's second view (the UX review's P12): its header says Yard, its tab names the view.
+useHead({ title: 'Yard · Roundhouse' })
 
 const attention = useAttention()
 const events = useEvents()
@@ -376,9 +377,10 @@ usePalette().registerPage(() => ({
 <template>
   <UDashboardPanel id="carousel" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :toggle="false" title="Roundhouse" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" title="Yard" :ui="{ root: 'h-14' }" data-roundhouse-header>
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
+            <YardViews current="roundhouse" />
             <span v-if="active.length" class="font-mono text-xs text-muted">{{ selected + 1 }} / {{ active.length }}</span>
             <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
           </div>
@@ -393,7 +395,7 @@ usePalette().registerPage(() => ({
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
           <USwitch v-model="settings.autoplay" label="Auto-rotate" size="sm" class="hidden md:flex" />
-          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump on the Events page: input requests and handoffs unless changed there">
+          <UTooltip text="Jump to sessions whose events are routed to Roundhouse jump in Alerts: input requests and handoffs unless changed there">
             <USwitch v-model="settings.follow" label="Follow routed events" size="sm" class="hidden lg:flex" />
           </UTooltip>
           <FullscreenButton />

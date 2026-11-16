@@ -21,13 +21,18 @@ export interface PageEntry {
   when: 'always' | 'desktop' | 'brakeman'
   /** Its place on each surface, in order; a surface it has no place on leaves it out. */
   place: { nav?: number; tab?: number; more?: number; palette?: number }
+  /**
+   * The page this one is a view of (the Roundhouse is the Yard's second view): the nav, the rail and the phone's bar and More leave it
+   * out, the palette keeps its row and key, and the page it is a view of is current on its route (pageActive).
+   */
+  viewOf?: PageId
 }
 
 export const PAGES: readonly PageEntry[] = [
   {
     id: 'decisions',
-    label: 'Decide',
-    title: 'Needs your decision',
+    label: 'Needs you',
+    title: 'Needs you',
     to: '/decisions',
     icon: 'i-lucide-gavel',
     chord: ['G', 'N'],
@@ -44,9 +49,10 @@ export const PAGES: readonly PageEntry[] = [
     to: '/roundhouse',
     icon: 'i-lucide-gallery-horizontal',
     chord: ['G', 'R'],
-    about: 'One terminal at a time, on rotation.',
+    about: "The Yard's second view: one terminal at a time, on rotation.",
     when: 'always',
-    place: { nav: 3, more: 1, palette: 3 },
+    place: { palette: 3 },
+    viewOf: 'yard',
   },
   {
     id: 'agents',
@@ -101,6 +107,8 @@ export const PAGES: readonly PageEntry[] = [
 export interface PageScope {
   desktop?: boolean
   brakeman?: boolean
+  /** Whether Needs you's row shows in the nav (needsRowShown): it leaves when nothing waits and nothing was decided that day. */
+  needs?: boolean
 }
 
 function offered(p: PageEntry, s: PageScope): boolean {
@@ -108,7 +116,8 @@ function offered(p: PageEntry, s: PageScope): boolean {
 }
 
 function placed(where: keyof PageEntry['place'], s: PageScope): PageEntry[] {
-  return PAGES.filter((p) => p.place[where] !== undefined && offered(p, s)).sort((a, b) => a.place[where]! - b.place[where]!)
+  // A view of another page is reached from that page's own switch, never from the nav or the phone's bar.
+  return PAGES.filter((p) => p.place[where] !== undefined && offered(p, s) && (where === 'palette' || !p.viewOf)).sort((a, b) => a.place[where]! - b.place[where]!)
 }
 
 /** The entry of a page by its id. */
@@ -116,9 +125,12 @@ export function pageById(id: PageId): PageEntry {
   return PAGES.find((p) => p.id === id)!
 }
 
-/** The sidebar's foot (and the rail): Decide, the Yard, …, History, then Brakeman while the server has it and Settings in the desktop app. */
+/**
+ * The sidebar's foot (and the rail): Needs you while its row shows, the Yard, …, History, then Brakeman while the server has it and
+ * Settings in the desktop app.
+ */
 export function navPages(s: PageScope = {}): PageEntry[] {
-  return placed('nav', s)
+  return placed('nav', s).filter((p) => p.id !== 'decisions' || s.needs !== false)
 }
 
 /** The phone's bar: its four tabs, in order (More is the bar's own). */
@@ -141,11 +153,18 @@ function under(path: string, to: string): boolean {
   return path === to || path.startsWith(`${to}/`)
 }
 
+/** Whether `path` (a query or hash may follow) is one of the Yard's views: its grid at `/yard` or the Roundhouse at `/roundhouse`. */
+export function yardRoute(path: string): boolean {
+  const bare = path.replace(/[?#].*$/, '')
+  return PAGES.some((p) => (p.id === 'yard' || p.viewOf === 'yard') && under(bare, p.to))
+}
+
 /**
  * Whether the page is the one open at `path`: a run's page keeps Crews lit (a run is the Crews page's), Dispatch's projects and tickets
- * keep Dispatch lit, a record keeps History lit, and the home and a session's page keep Sessions lit.
+ * keep Dispatch lit, a record keeps History lit, the home and a session's page keep Sessions lit, and the Yard is lit on both its views.
  */
 export function pageActive(id: PageId, path: string): boolean {
+  if (id === 'yard') return yardRoute(path)
   if (id === 'crews') return under(path, '/crews') || path.startsWith('/runs/')
   if (id === 'sessions') return path === '/' || under(path, '/sessions')
   return under(path, pageById(id).to)
