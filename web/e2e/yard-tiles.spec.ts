@@ -148,6 +148,13 @@ test('on a phone the chips sit in a row under the header, and Finished shows the
     await expect(page.locator('[data-yard-filter="finished"]')).toHaveAttribute('data-active', '')
     await expect(tileOf(page, n['flaky-vim-spec']!)).toBeVisible()
     await expect(tileOf(page, n['yard-tile-resize']!)).toHaveCount(0)
+    // The finished tile at the phone's width, now that the grid has it (no queue beside it): its name whole, its state at its foot.
+    const tile = tileOf(page, n['flaky-vim-spec']!)
+    await expect(tile.locator('[data-tile-foot] [data-status-mark]')).toHaveAttribute('data-status-mark', 'finished')
+    await expect(tile.locator('[data-tile-header] [data-status-mark]')).toHaveCount(0)
+    await uncut(tile.locator('[data-tile-name]'))
+    await noOverlap(tile.locator('[data-tile-foot]'))
+    await inside(tile.locator('[data-tile-foot] > *'), tile)
   }
   await pick()
   // The theme switched as the app keeps it, a redraw the test causes, and the same again.

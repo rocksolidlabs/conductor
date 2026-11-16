@@ -3,7 +3,9 @@ import type { SessionInfo, SessionStatus } from '~/composables/useSessions'
 import type { Attention } from './protocol'
 import { liveSession } from './attention'
 import { needsYou } from './needsYou'
-import { bestGrid, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
+import { sessionRow } from './sidebar'
+import { rowPrompt } from './sidebarActions'
+import { bestGrid, tileAsk, yardFilterOf, lastItemSpan, needsChipWords, yardChips, yardCounts, yardFilter, YARD_FILTERS, type YardCounts } from './wall'
 
 describe('bestGrid', () => {
   it('handles empty and degenerate boxes', () => {
@@ -144,5 +146,19 @@ describe("the Yard's chips", () => {
   it('says that the Needs you chip counts the sessions on this grid alone', () => {
     expect(needsChipWords(5)).toBe('5 sessions on this grid ask you. Plans, tasks and decisions wait in Needs you.')
     expect(needsChipWords(1)).toBe('1 session on this grid asks you. Plans, tasks and decisions wait in Needs you.')
+  })
+})
+
+describe("an asking tile's words", () => {
+  it('says the question as the sidebar row does, "dr-7 · " before a mirrored one, and nothing for a tile that does not ask', () => {
+    const live = new Map(TABLE.map(liveSession).map((s) => [s.id, s]))
+    expect(tileAsk(live.get('asks')!)).toBe('Run the tests again?')
+    expect(tileAsk(live.get('mirror')!)).toBe('dr-7 · Run the tests again?')
+    expect(tileAsk(live.get('works')!)).toBeNull()
+    expect(tileAsk(live.get('ended')!)).toBeNull()
+    expect(tileAsk(live.get('answered')!)).toBeNull()
+    // The words the row's prompt shows, never a copy made apart: a question with no words says what the row says.
+    const blank = liveSession(tile('blank', 'running', ask('blank', { message: '' })))
+    expect(tileAsk(blank)).toBe(rowPrompt(sessionRow(blank))!.message)
   })
 })

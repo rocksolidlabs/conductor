@@ -83,13 +83,28 @@ test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse
     await expect(rail).toBeVisible()
     await page.keyboard.press('Control+b')
     await expect(rail).toBeHidden()
-    // On a session page, which takes no Alt+Q, the chord is the shell's: it lands in the line as Escape then q (Codex's round).
+    // On a session page, which takes no Alt+Q, the chord is the shell's: it lands in the line as Escape then q (Codex's round). Alt+J
+    // and Alt+K are the terminal's on every page (the Yard's queue that took them is gone): Escape then j, Escape then k.
     await session.focus()
     await page.keyboard.type('a')
+    await page.keyboard.press('Alt+j')
+    await page.keyboard.press('Alt+k')
     await page.keyboard.press('Alt+q')
     await page.keyboard.type('b')
     await page.keyboard.press('Enter')
-    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line with the chord was typed' }).toContain('a\u001bqb\n')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line with the chords was typed' }).toContain('a\u001bj\u001bk\u001bqb\n')
+    // In a tile expanded on the Yard the same: Alt+J and Alt+K reach the terminal (Alt+Q stays the Yard's, and leaves the tile).
+    await page.goto(`/yard?focus=${s.id}`)
+    const tile = page.locator('[data-yard-focus] .terminal-host .xterm-helper-textarea').first()
+    await expect(tile).toBeVisible({ timeout: 30_000 })
+    await tile.focus()
+    await page.keyboard.type('c')
+    await page.keyboard.press('Alt+j')
+    await page.keyboard.press('Alt+k')
+    await page.keyboard.type('d')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line typed in the expanded tile' }).toContain('c\u001bj\u001bkd\n')
+    await expect(page).toHaveURL(new RegExp(`/yard\\?focus=${s.id}$`))
   } finally {
     await api.stopSession(s.id)
   }

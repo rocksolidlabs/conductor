@@ -7,11 +7,12 @@ import { expect, member, rowAnswer, test, type Session } from './fixtures'
 // so what it asks runs to a couple of hundred characters. It reads whole,
 // wrapped over its lines above the choices and never cut to one line with
 // an ellipsis: in the sidebar's row at 280 px and wider, in the panel beside
-// the row in a narrower sidebar (owner decision 7: two lines in the row), on
-// the Yard's queue card, in the session page's reply bar, on the run card of
-// the Crews page, and in the phone's list, where a choice still answers. A
-// question at the server's bound (500 bytes, the longest any surface shows)
-// reads whole too, and the geometry never moves under the pointer.
+// the row in a narrower sidebar (owner decision 7: two lines in the row), in
+// a tile expanded on the Yard (a tile on the grid says its start), in the
+// session page's reply bar, on the run card of the Crews page, and in the
+// phone's list, where a choice still answers. A question at the server's
+// bound (500 bytes, the longest any surface shows) reads whole too, and the
+// geometry never moves under the pointer.
 test.describe.configure({ mode: 'serial' })
 
 /** The asker-long stub's question (conductor.e2e.json): a Claude Code permission prompt's length, 200 characters. */
@@ -96,11 +97,16 @@ test('dragged to 300 px the sidebar row shows the whole question, wrapped above 
   expect(box.y + box.height).toBeLessThanOrEqual(first.y + 1)
 })
 
-test("the Yard's queue card and the session page's reply bar show it whole", async ({ page }) => {
+test("a tile expanded on the Yard and the session page's reply bar show it whole; the tile on the grid says its start", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${asker.id}"]`)
+  const ask = page.locator(`[data-session-tile][data-session-id="${asker.id}"] [data-tile-ask]`)
+  await expect(ask).toHaveAttribute('title', QUESTION, { timeout: 30_000 })
+  expect(QUESTION.startsWith((await ask.textContent()) ?? 'x')).toBe(true)
+  await page.goto(`/yard?focus=${asker.id}`)
+  const card = page.locator('[data-yard-focus] [data-quick-reply]')
   await expect(card).toBeVisible({ timeout: 30_000 })
-  const words = card.locator('[data-queue-message]')
+  const words = card.locator('[data-quick-reply-message]')
   await expect(words).toHaveText(QUESTION)
   await expectWhole(words)
   await expect(card.getByRole('button', { name: "Yes, and don't ask again" })).toBeVisible()
