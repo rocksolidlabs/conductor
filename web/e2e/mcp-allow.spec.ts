@@ -38,18 +38,6 @@ function transcript(home: string, s: Session): string {
   return existsSync(file) ? readFileSync(file, 'utf8') : ''
 }
 
-/** The sidebar dragged by its edge to `x` px wide, waited on until the list has measured its new width. */
-async function sidebarAt(page: Page, x: number) {
-  const box = (await page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]').boundingBox())!
-  const y = box.y + box.height / 2
-  await page.mouse.move(box.x + box.width / 2, y)
-  await page.mouse.down()
-  await page.mouse.move(x, y, { steps: 4 })
-  await page.mouse.up()
-  await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(x, 0)
-  await expect(page.locator('[data-session-list="sidebar"]')).toHaveAttribute('data-list-width', x < 280 ? 'narrow' : 'wide')
-}
-
 async function typeLine(page: Page, line: string) {
   const screen = page.locator('.terminal-host .xterm-screen').first()
   await expect(screen).toBeVisible()
@@ -75,16 +63,19 @@ for (const size of [
 async function toolApproval(page: Page, api: Api, state: { home: string }, narrower: boolean) {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e tool approval' })
   sessions.push(s.id)
+  // The narrower page opens with the sidebar at 300 px, the width a person dragged it to before (kept for the browser under the app's
+  // own key, in rem), and its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
+  // than the session's 80 columns, where Codex wraps the choices' descriptions, while the window keeps the sidebar whose row this test
+  // reads. At the 200 px the sidebar opens at, the terminal there draws 80 columns; the window is not made narrower instead: a
+  // narrower one does not keep the inspector beside the terminal, and below lg the sidebar is not drawn. At 300 px the row holds its
+  // choices; at 1440 they are in the panel beside the 200 px row.
+  if (narrower) await page.addInitScript((rem) => localStorage.setItem('conductor.sidebar.width', rem), String(300 / 16))
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
-  // The narrower page has its inspector open (it starts closed, the terminal taking the room, P11) and its sidebar dragged to 300 px,
-  // as a person widens it: the terminal is then narrower than the session's 80 columns, where Codex wraps the choices' descriptions,
-  // while the window keeps the sidebar whose row this test reads. With the sidebar at the 200 px it opens at, the terminal draws 80
-  // columns there; the window is not made narrower instead: a narrower one does not keep the inspector beside the terminal, and
-  // below lg the sidebar is not drawn. At 300 px the row holds its choices; at 1440 they are in the panel beside the 200 px row.
   if (narrower) {
+    await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBe(300)
     await showView(page, 'people')
-    await sidebarAt(page, 300)
+    await expect(page.locator('[data-inspector-open="true"]')).toBeVisible()
   }
   // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
   // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with.
