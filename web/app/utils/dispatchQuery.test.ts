@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { apiQuery, emptyFilter, filterFromURL, filterFromView, filterNarrows, filterToURL, filterToView, MAX_SEARCH, milestoneChoices, type DispatchFilter } from './dispatchQuery'
+import { apiQuery, emptyFilter, filterChips, filterCount, filterFromURL, filterFromView, filterNarrows, filterToURL, filterToView, MAX_SEARCH, milestoneChoices, type DispatchFilter } from './dispatchQuery'
 import { sameFilter } from './dispatchQuery'
 import type { TicketStatus } from '~/composables/useDispatch'
 
@@ -206,5 +206,84 @@ describe('the filter a saved view applies (PR-9)', () => {
     const f = { ...emptyFilter(), status: ['in_review'] as TicketStatus[], labels: ['api'], milestone: 'v1', sort: 'priority' as const, desc: true }
     const q = filterToView(f, names)!
     expect(sameFilter(filterFromView(q, names), f)).toBe(true)
+  })
+})
+
+describe("the toolbar's chips: one a value of the filter in use", () => {
+  const project = {
+    labels: [{ id: '00000000000000a1', name: 'api' }],
+    milestones: [
+      { id: '00000000000000b1', name: 'v1' },
+      { id: '00000000000000b2', name: 'v1' },
+    ],
+  }
+  const agents = [{ id: 'claude', name: 'Claude Code' }]
+  /** A filter every field of which is in use, sorted, turned and grouped, so that a chip taken out shows what it keeps. */
+  const full: DispatchFilter = {
+    ...emptyFilter(),
+    status: ['in_progress', 'ready'],
+    priority: [4],
+    labels: ['api', 'gone'],
+    owner: 'Ann',
+    assignees: ['person:Ann', 'agent:claude'],
+    milestone: '00000000000000b2',
+    horizon: ['next', ''],
+    blocked: true,
+    parent: 'CND-4',
+    deleted: true,
+    q: 'login',
+    sort: 'priority',
+    desc: false,
+    group: 'status',
+  }
+
+  it('gives one chip a value, in the words the toolbar shows, for the eight filters, the search, the parent and deleted', () => {
+    expect(filterChips(full, project, agents).map((c) => [c.id, c.words])).toEqual([
+      ['status:in_progress', 'Status: In progress'],
+      ['status:ready', 'Status: Ready'],
+      ['priority:urgent', 'Priority: Urgent'],
+      ['label:api', 'Label: api'],
+      ['label:gone', 'Label: gone'],
+      ['owner:Ann', 'Owner: Ann'],
+      ['assignee:person:Ann', 'Assignee: Ann'],
+      ['assignee:agent:claude', 'Assignee: Claude Code'],
+      ['milestone:00000000000000b2', 'Milestone: v1'],
+      ['horizon:next', 'Horizon: Next'],
+      ['horizon:none', 'Horizon: Not planned'],
+      ['blocked:1', 'Blocked'],
+      ['parent:CND-4', 'Parent: CND-4'],
+      ['deleted:1', 'Deleted too'],
+      ['q:login', 'Search: login'],
+    ])
+  })
+
+  it("takes out one value alone, keeping the sort, its direction and the grouping", () => {
+    const chips = new Map(filterChips(full, project, agents).map((c) => [c.id, c.without]))
+    expect(chips.get('status:in_progress')).toEqual({ ...full, status: ['ready'] })
+    expect(chips.get('priority:urgent')).toEqual({ ...full, priority: [] })
+    expect(chips.get('label:gone')).toEqual({ ...full, labels: ['api'] })
+    expect(chips.get('owner:Ann')).toEqual({ ...full, owner: '' })
+    expect(chips.get('assignee:agent:claude')).toEqual({ ...full, assignees: ['person:Ann'] })
+    expect(chips.get('milestone:00000000000000b2')).toEqual({ ...full, milestone: '' })
+    expect(chips.get('horizon:none')).toEqual({ ...full, horizon: ['next'] })
+    expect(chips.get('blocked:1')).toEqual({ ...full, blocked: false })
+    expect(chips.get('parent:CND-4')).toEqual({ ...full, parent: '' })
+    expect(chips.get('deleted:1')).toEqual({ ...full, deleted: false })
+    expect(chips.get('q:login')).toEqual({ ...full, q: '' })
+    for (const without of chips.values()) expect([without.sort, without.desc, without.group]).toEqual(['priority', false, 'status'])
+  })
+
+  it('names a label or a milestone the project lacks as the address names it, and an agent the catalog lacks by its id', () => {
+    const f = { ...emptyFilter(), labels: ['nowhere'], milestone: 'v9', assignees: ['agent:gone'] }
+    expect(filterChips(f, project, agents).map((c) => c.words)).toEqual(['Label: nowhere', 'Assignee: gone', 'Milestone: v9'])
+  })
+
+  it("counts Filter's number without the search: a filter of the search, the parent and deleted alone is 2, and none is 0", () => {
+    const f = { ...emptyFilter(), q: 'login', parent: 'CND-4', deleted: true }
+    expect(filterCount(filterChips(f, project, agents))).toBe(2)
+    expect(filterCount(filterChips(full, project, agents))).toBe(14)
+    expect(filterChips(emptyFilter(), project, agents)).toEqual([])
+    // A search of spaces alone narrows nothing, and gives no chip.
+    expect(filterChips({ ...emptyFilter(), q: '  ' }, project, agents)).toEqual([])
   })
 })

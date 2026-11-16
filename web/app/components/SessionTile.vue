@@ -3,6 +3,7 @@ import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
+import { sessionStatus } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
 
 /**
@@ -17,14 +18,11 @@ const props = defineProps<{
 const emit = defineEmits<{ select: [] }>()
 
 const events = useEvents()
-// An ended session may still carry the prompt it was waiting on: it waits no more (as in the sidebar).
-const needsInput = computed(() => props.session.attention?.state === 'needs_input' && !isEnded(props.session.status))
-const status = computed(() => {
-  // The amber dot follows the Events page's Badge route for needs_input; the label stays.
-  if (needsInput.value) return { label: 'Needs input', cls: 'text-warning', dot: events.routes.value.needs_input.badge ? 'bg-warning' : '' }
-  if (props.session.status === 'running') return { label: 'Running', cls: 'text-success', dot: 'bg-success' }
-  return { label: props.session.status.replace('_', ' '), cls: 'text-muted', dot: 'bg-neutral-400' }
-})
+const now = useNow()
+// The tile's state (sessionStatus): its mark and word in the header; a tile that asks has the amber border. An ended session may still
+// carry the prompt it was waiting on: it waits no more (as in the sidebar).
+const status = computed(() => sessionStatus(props.session, now.value))
+const needsInput = computed(() => status.value.key === 'needs')
 const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${props.session.hostName || 'dev machine'}` : 'server'))
 </script>
 
@@ -48,9 +46,10 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
       <div class="flex cursor-pointer items-center gap-2 border-b border-default px-2.5 py-1 text-xs shrink-0 select-none" :class="$slots.leading && 'pl-8'" data-tile-header @dblclick="emit('select')">
         <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(props.session.agentId) }}</span>
         <span class="font-semibold truncate flex-1 text-[13px]">{{ props.session.name }}</span>
-        <EventMarkBadge :session-id="props.session.id" />
+        <EventMarkBadge :session-id="props.session.id" :finished="status.key === 'finished'" />
         <YoloBadge v-if="props.session.yolo" icon />
-        <span class="flex items-center gap-1.5 text-[11.5px]" :class="status.cls"><span v-if="status.dot" class="size-[7px] rounded-full" :class="status.dot" aria-hidden="true" />{{ status.label }}</span>
+        <!-- The amber dot follows the Events page's Badge route for needs_input; the word stays. -->
+        <StatusMark :status="status" word :quiet="!events.routes.value.needs_input.badge" class="text-[11.5px]" />
         <ResumeButton v-if="isEnded(props.session.status)" :session="props.session" stay icon-only size="xs" />
         <UTooltip text="Open in full (or double-click here)">
           <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${props.session.name}`" data-tile-open @click.stop="emit('select')" />

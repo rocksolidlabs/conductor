@@ -6,6 +6,7 @@ import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } fr
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 import { pageState } from '~/utils/pageState'
+import { sessionStatus } from '~/utils/status'
 
 useHead({ title: 'Roundhouse' })
 
@@ -122,6 +123,8 @@ function terminalRef(id: string) {
 // at least 20 s) so one stray prompt never freezes the rotation; the waiting
 // session stays in the rotation and the hold repeats for each new prompt.
 const now = ref(Date.now())
+/** The status words' clock (useNow); `now` above is the hold's, by the second. */
+const clock = useNow()
 const holdUntil = ref(0)
 const holdMs = computed(() => Math.max(2 * settings.value.intervalMs, 20000))
 const holding = computed(() => followInput.value && waiting.value.length > 0 && now.value < holdUntil.value)
@@ -429,7 +432,7 @@ usePalette().registerPage(() => ({
               <div class="flex items-center gap-3">
                 <SessionAvatar :agent-id="item.agentId" size="md" solid />
                 <div class="flex min-w-0 flex-col">
-                  <div class="flex items-center gap-2"><span class="truncate text-base font-semibold">{{ item.name }}</span><AttentionBadge :attention="item.attention" /></div>
+                  <div class="flex items-center gap-2"><span class="truncate text-base font-semibold">{{ item.name }}</span><StatusMark :status="sessionStatus(item, clock)" word class="text-xs" :data-roundhouse-status="item.id" /></div>
                   <span class="truncate font-mono text-[11.5px] text-muted">{{ meta(item) }}</span>
                 </div>
                 <div class="ml-auto flex items-center gap-2">

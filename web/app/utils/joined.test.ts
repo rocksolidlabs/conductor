@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { JoinInfo } from '~/composables/useSessions'
-import { filesRoot, JOINED_KEY, JOINED_MAX, joinedDot, joinedFromInfo, joinedOpen, joinedPath, joinedStatusOf, patchJoined, readJoined, removeJoined, upsertJoined, writeJoined, type JoinedEntry } from './joined'
+import { filesRoot, JOINED_KEY, JOINED_MAX, joinedFromInfo, joinedOpen, joinedPath, joinedStatusOf, patchJoined, readJoined, removeJoined, upsertJoined, writeJoined, type JoinedEntry } from './joined'
 
 const memory = (init: Record<string, string> = {}) => {
   const data = new Map(Object.entries(init))
@@ -58,15 +58,11 @@ describe('the joined links', () => {
     expect(joinedStatusOf({ status: 429, code: 'rate_limited' })).toBeUndefined()
   })
 
-  it('opens an entry at its join page and says its state', () => {
+  it('opens an entry at its join page', () => {
     expect(joinedPath({ token: TOKEN, server: '' })).toBe(`/join/${TOKEN}`)
     expect(joinedPath({ token: TOKEN, server: 'https://s.example' })).toBe(`/join/${TOKEN}?server=https%3A%2F%2Fs.example`)
     expect(joinedOpen(`/join/${TOKEN}`, TOKEN)).toBe(true)
     expect(joinedOpen('/yard', TOKEN)).toBe(false)
-    expect(joinedDot({ kind: 'session', sessionStatus: 'running' })).toBe('running')
-    expect(joinedDot({ kind: 'session', sessionStatus: 'exited' })).toBe('ended')
-    expect(joinedDot({ kind: 'session', lastStatus: 'gone' })).toBe('revoked')
-    expect(joinedDot({ kind: 'run', lastStatus: 'unreachable' })).toBe('unreachable')
   })
 })
 

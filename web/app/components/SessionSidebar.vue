@@ -33,8 +33,7 @@ const cloneModal = useCloneModal()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
-const now = ref(Date.now())
-let tick: number | undefined
+const now = useNow()
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
@@ -346,11 +345,6 @@ const sheet = computed(() => {
 })
 
 defineExpose({ focusFilter, focusList })
-
-onMounted(() => {
-  tick = window.setInterval(() => (now.value = Date.now()), 30000)
-})
-onBeforeUnmount(() => window.clearInterval(tick))
 </script>
 
 <template>

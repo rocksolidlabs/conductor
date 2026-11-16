@@ -1,31 +1,31 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
 import { isActive } from '~/utils/attention'
-import { attentionSlices, enough, type AttentionSlice } from '~/utils/charts'
+import { enough, STATUS_SLICES, statusSlices, statusSlicesLabel, type StatusSlice } from '~/utils/charts'
 
 /**
- * The Yard's sessions by attention state, as one slim stacked bar in its
- * header: needs input (amber), working (green), done (blue) and no state yet
- * (grey), each as wide as its share. The header's buttons carry the counts;
- * the bar is the proportion. Drawn only with two sessions or more.
+ * The Yard's live sessions by status (utils/status.ts), as one slim stacked bar in its header: needs you (amber), working (green),
+ * finished (neutral) and running, no turns reported (green at 40 % with a hatch, told from working by the hatch as the ring tells
+ * them apart in a mark), each as wide as its share. The header's buttons carry the counts; the bar is the proportion. Drawn only
+ * with two sessions or more.
  */
 const props = defineProps<{ sessions: SessionInfo[] }>()
 
-const slices = computed(() => attentionSlices(props.sessions, isActive))
-const total = computed(() => slices.value.needs_input + slices.value.working + slices.value.done + slices.value.idle)
-const parts: Array<{ key: AttentionSlice; cls: string }> = [
-  { key: 'needs_input', cls: 'bg-warning' },
-  { key: 'working', cls: 'bg-success' },
-  { key: 'done', cls: 'bg-info' },
-  { key: 'idle', cls: 'bg-neutral-400' },
-]
-const label = computed(() => `${total.value} sessions: ${slices.value.needs_input} need input, ${slices.value.working} working, ${slices.value.done} done, ${slices.value.idle} with no state yet`)
+const slices = computed(() => statusSlices(props.sessions, isActive))
+const total = computed(() => STATUS_SLICES.reduce((t, k) => t + slices.value[k], 0))
+const cls: Record<StatusSlice, string> = {
+  needs: 'bg-warning',
+  working: 'bg-success',
+  finished: 'bg-[var(--ui-text-muted)]',
+  running: 'bg-success/40 bg-[repeating-linear-gradient(135deg,transparent_0_2px,var(--ui-bg)_2px_3px)]',
+}
+const label = computed(() => statusSlicesLabel(slices.value))
 </script>
 
 <template>
   <UTooltip v-if="enough(total)" :text="label">
     <div class="flex h-1.5 w-24 flex-none overflow-hidden rounded-full bg-elevated" role="img" :aria-label="label" data-attention-bar :data-total="total">
-      <span v-for="p in parts" :key="p.key" :class="p.cls" :style="{ width: `${(slices[p.key] / total) * 100}%` }" :data-attention-slice="p.key" :data-count="slices[p.key]" />
+      <span v-for="k in STATUS_SLICES" :key="k" :class="cls[k]" :style="{ width: `${(slices[k] / total) * 100}%` }" :data-attention-slice="k" :data-count="slices[k]" />
     </div>
   </UTooltip>
 </template>

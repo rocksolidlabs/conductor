@@ -33,8 +33,8 @@ Facts to design against
 - A run is running, needs_input, stopped or finished; it has a goal, a cwd, a log of up to
   200 timestamped lines, and a count of members needing input.
 - Brand: roles primary=forest (green), secondary=terracotta, neutral=ink, warning=signal
-  (amber), success=active (green), info=harbor (blue), error=brick. Status colours: amber for
-  needs input, green for running, grey for idle/ended; terracotta is used ONLY on the brand
+  (amber), success=active (green), info=harbor (blue), error=brick. Status marks and words: as the status
+  section of [the design system](system.md#status) says; terracotta is used ONLY on the brand
   mark, never as a status. One system-wide dark/light theme. Nuxt UI 4 components only;
   Lucide icons; JetBrains Mono for anything terminal-like.
 - The graph will be built with Vue Flow (nodes are Vue components, edges are SVG paths,
