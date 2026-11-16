@@ -1,9 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { closeSync, existsSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -65,6 +65,50 @@ fi`
     if (command) return { command, path: candidatePath }
   }
   throw new Error('the stub agent (web/e2e/stub-agent.sh) needs bash 5 or bash 4 with GNU date (a numeric microsecond clock); none works on PATH or at /opt/homebrew/bin, /usr/local/bin or ~/.local/bin (macOS ships bash 3.2): install one and run the suite again')
+}
+
+/**
+ * The programs the built-in catalog (internal/catalog/defaults.go) runs by a bare name: the real agent CLIs. A test server never
+ * finds one (agentFreePath), so it never runs one, not even its version probe (#961); the suite's agents are the stubs of
+ * conductor.e2e.json. agent-path.spec.ts fails when the built-in catalog names a program this list does not.
+ */
+export const CATALOG_PROGRAMS: readonly string[] = ['claude', 'codex', 'agy', 'copilot', 'cursor-agent', 'opencode', 'pi', 'omp', 'aider', 'goose', 'amp', 'dsh']
+
+const holdsAgent = new Map<string, boolean>()
+
+/**
+ * path less the built-in catalog's programs: a directory on it that holds one (a Node version manager's bin with an agent CLI in it,
+ * ~/.local/bin) is replaced by a directory under into of links to everything else it holds, so git, node, nvim and the rest are found
+ * as before and no agent CLI is. A directory that holds none is kept as it is: on a machine with no agent CLI the PATH is unchanged.
+ * The links of one directory are made once and kept (named by the directory's path), and made whole before they are put in place.
+ */
+export function agentFreePath(path: string, into: string): string {
+  const hidden = (name: string) => CATALOG_PROGRAMS.includes(name.toLowerCase())
+  return path
+    .split(':')
+    .map((entry) => {
+      if (entry === '') return entry
+      const dir = resolve(entry)
+      let holds = holdsAgent.get(dir)
+      if (holds === undefined) {
+        holds = CATALOG_PROGRAMS.some((name) => existsSync(join(dir, name)))
+        holdsAgent.set(dir, holds)
+      }
+      if (!holds) return entry
+      const links = join(into, createHash('sha256').update(dir).digest('hex').slice(0, 16))
+      if (existsSync(links)) return links
+      mkdirSync(into, { recursive: true })
+      const making = mkdtempSync(`${links}.`)
+      for (const name of readdirSync(dir)) if (!hidden(name)) symlinkSync(join(dir, name), join(making, name))
+      try {
+        renameSync(making, links)
+      } catch {
+        // Another server of this HOME put the same links there first.
+        rmSync(making, { recursive: true, force: true })
+      }
+      return links
+    })
+    .join(':')
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -130,7 +174,7 @@ export const PORT_TRIES = 5
 export const START_WAIT_MS = PORT_TRIES * (HEALTH_WAIT_MS + STOP_WAIT_MS)
 
 /**
- * Starts `conductor serve` with config and a clean environment: PATH, LANG, the HOME given, and the CONDUCTOR_* values that place it
+ * Starts `conductor serve` with config and a clean environment: PATH (less the real agent CLIs, agentFreePath), LANG, the HOME given, and the CONDUCTOR_* values that place it
  * (data directory, public URL, allowed root, default working directory, workbench token); of the caller's own variables only the ones
  * passEnv names, never a CONDUCTOR_* one, so a CONDUCTOR_YOLO or a token set in the shell cannot reach it. It returns once the server
  * at the port is the child: /api/health answers and so does an authenticated /api/whoami with the child's own token. A port probed
@@ -153,6 +197,13 @@ export async function startServer(o: {
   hostToken?: string
   /** The first try's port instead of pickPort's (a test's seam: a port another server holds); later tries pick their own. */
   port?: number
+  /** The PATH to start from instead of the caller's (a test's seam: a fake agent CLI put on it). */
+  path?: string
+  /**
+   * The live check's: the PATH as it is, the real agent CLIs on it. Every other server is given agentFreePath's PATH, its links kept
+   * under its HOME: it finds the stubs and never a real agent CLI (#961).
+   */
+  realAgents?: boolean
 }): Promise<Started> {
   const lost: string[] = []
   for (let i = 0; i < PORT_TRIES; i++) {
@@ -171,10 +222,11 @@ async function startOn(o: Parameters<typeof startServer>[0], port: number): Prom
   const token = randomBytes(24).toString('hex')
   const from = existsSync(o.log) ? statSync(o.log).size : 0
   const out = openSync(o.log, 'a')
-  const bash = stubBash()
+  const bash = stubBash(o.path)
+  const path = o.realAgents ? bash.path : agentFreePath(bash.path, join(o.home, '.conductor-e2e-path'))
   const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
     env: {
-      PATH: bash.path,
+      PATH: path,
       LANG: 'C.UTF-8',
       HOME: o.home,
       CONDUCTOR_DATA_DIR: o.data,
