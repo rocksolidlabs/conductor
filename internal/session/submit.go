@@ -1051,7 +1051,8 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			// does not hold it back from such a dialog yet (#263).
 			s.rawKeys([]byte{'\r'}, keys, nil, s.startupMayShow(), true, sub.By != nil)
 		}
-		s.nextTurn()
+		// A submission's text typed, naming no question, is a prompt.
+		s.nextTurn(res.Typed && sub.Question == "")
 	}
 	enterAt := time.Now().UTC()
 	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)

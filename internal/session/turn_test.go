@@ -186,6 +186,80 @@ func TestADoneAfterADoneKeepsTheFirst(t *testing.T) {
 	if b.State != AttentionDone || b.Message != next || b.ID == first.ID || len(last) != 1 || !b.Since.Equal(last[0].At) || b.Since.Before(entries[1].At) {
 		t.Fatalf("the later turn's done %+v, its entries %+v", b, last)
 	}
+
+	// Within a turn a report is recorded unless it is the same as the
+	// turn's last report (its words, source and kind), never weighed
+	// against the done shown, which stays the first: A, B, B records A and
+	// B; A, B, A records all three; A, A records A.
+	for _, tc := range []struct {
+		name    string
+		reports []string
+		want    []string
+	}{
+		{"A B B", []string{"A", "B", "B"}, []string{"A", "B"}},
+		{"A B A", []string{"A", "B", "A"}, []string{"A", "B", "A"}},
+		{"A A", []string{"A", "A"}, []string{"A"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newLocalWith(t, quiet(Options{}))
+			for _, m := range tc.reports {
+				if err := s.TrySetAttentionFull(AttentionDone, m, SourceAPI, KindDone, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var got []string
+			for _, e := range doneEntries(s, "A", "B") {
+				got = append(got, e.Message)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("recorded %q, want %q", got, tc.want)
+			}
+			if a := s.Info().Attention; a.Message != "A" {
+				t.Fatalf("the done shown %+v, want the first", a)
+			}
+		})
+	}
+}
+
+// Every turn's end is recorded once, also for an agent whose done always
+// carries the same words (aider's "aider is waiting"): the Enter that
+// begins the next turn ends the done shown, so the next done is not
+// weighed against it. Three turns give three entries and three activity
+// calls (a webhook, an alert rule and a crew see each).
+func TestEveryTurnsDoneIsRecordedOnce(t *testing.T) {
+	var mu sync.Mutex
+	var told []string
+	s, p := newLocalWith(t, quiet(Options{OnActivity: func(_ string, e ActivityEntry, state AttentionState) {
+		if e.Type == ActivityAttention && state == AttentionDone {
+			mu.Lock()
+			told = append(told, e.Message)
+			mu.Unlock()
+		}
+	}}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const words = "aider is waiting"
+	for turn := range 3 {
+		if turn > 0 {
+			if err := s.Input(sub, []byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+		}
+		if err := s.TrySetAttentionFull(AttentionDone, words, SourceAPI, KindDone, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := doneEntries(s, words); len(got) != 3 {
+		t.Fatalf("%d entries for three turns: %+v", len(got), got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) != 3 {
+		t.Fatalf("%d activity calls for three turns: %q", len(told), told)
+	}
 }
 
 // Info.Turns says that the session's agent reports its turns: learned from
@@ -242,6 +316,39 @@ func TestTurnsIsLearnedFromTheAgentsOwnReports(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A report the rules keep out still teaches Info.Turns (a window title's
+// working while an operator's working shows), and that change alone is
+// told (OnChange): nothing else of the session changes.
+func TestTurnsLearnedAloneIsTold(t *testing.T) {
+	var mu sync.Mutex
+	var told []Info
+	s, _ := newLocalWith(t, quiet(Options{OnChange: func(i Info) {
+		mu.Lock()
+		told = append(told, i)
+		mu.Unlock()
+	}}))
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAdmin, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Info().Attention
+	mu.Lock()
+	n := len(told)
+	mu.Unlock()
+	if err := s.setAttention(AttentionWorking, "", SourceTitle, "", nil, titleRules); err != nil {
+		t.Fatal(err)
+	}
+	info := s.Info()
+	if !info.Turns || info.Attention.Source != SourceAdmin || !info.Attention.Since.Equal(*before.Since) {
+		t.Fatalf("after the title: %+v, before %+v", info, before)
+	}
+	// Told in the step that learned it, before it returned.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(told) == n || !told[len(told)-1].Turns {
+		t.Fatalf("the change was not told: %d calls before, %+v", n, told)
 	}
 }
 

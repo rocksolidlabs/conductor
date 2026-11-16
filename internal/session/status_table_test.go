@@ -30,8 +30,9 @@ type statusRow struct {
 }
 
 // statusStep is one of: a report (an attention change from its source),
-// an Enter typed by a viewer, or the answer (a choice's input) to the
-// question shown.
+// an Enter typed by a viewer, the answer (a choice's input) to the
+// question shown, a prompt a viewer types (its text, then its Enter, two
+// writes as a terminal sends them) or a submission's (a page's, a crew's).
 type statusStep struct {
 	Report *struct {
 		State   AttentionState `json:"state"`
@@ -42,6 +43,8 @@ type statusStep struct {
 	} `json:"report,omitempty"`
 	Enter  bool   `json:"enter,omitempty"`
 	Answer string `json:"answer,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	Submit string `json:"submit,omitempty"`
 }
 
 func readStatusTable(t *testing.T) statusTable {
@@ -80,7 +83,8 @@ func TestTheStatusTable(t *testing.T) {
 				case r != nil && r.Source == SourceBell:
 					p.outW.Write([]byte("\a"))
 					waitAttention(t, s, isBell)
-				case r != nil && r.Source == SourceTitle:
+				case r != nil && (r.Source == SourceTitle || r.Source == SourceStatus):
+					// A program status's working is weighed as a title's (readStatus).
 					if err := s.setAttention(r.State, r.Message, r.Source, r.Kind, r.Options, titleRules); err != nil {
 						t.Fatal(err)
 					}
@@ -92,6 +96,19 @@ func TestTheStatusTable(t *testing.T) {
 					if err := s.Input(sub, []byte("\r")); err != nil {
 						t.Fatal(err)
 					}
+					nextWrite(t, p)
+				case step.Prompt != "":
+					for _, keys := range []string{step.Prompt, "\r"} {
+						if err := s.Input(sub, []byte(keys)); err != nil {
+							t.Fatal(err)
+						}
+						nextWrite(t, p)
+					}
+				case step.Submit != "":
+					if res, err := s.Submit(t.Context(), Submission{Text: step.Submit, ByName: "crew"}); err != nil || !res.Entered {
+						t.Fatalf("step %d: %+v %v", i, res, err)
+					}
+					nextWrite(t, p)
 					nextWrite(t, p)
 				case step.Answer != "":
 					q := s.Info().Attention

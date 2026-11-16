@@ -55,6 +55,95 @@
       "status": "finished"
     },
     {
+      "name": "three turns whose done words never change",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "aider is waiting" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "aider is waiting" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "aider is waiting" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "aider is waiting" },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "a prompt typed during a turn of an agent that reports only its done",
+      "steps": [
+        { "prompt": "fix the parser" },
+        { "prompt": "and update the docs" },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "a crew's prompt submitted during a turn of an agent that reports only its done",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "submit": "now the tests" },
+        { "submit": "and update the docs" },
+        { "report": { "state": "done", "source": "api", "message": "Tests pass." } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "a prompt typed during a turn whose status says working, kept out after the done",
+      "steps": [
+        { "report": { "state": "working", "source": "status" } },
+        { "prompt": "and update the docs" },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "working", "source": "status" } },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "an Enter on a question during a turn, the done, then the done again",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "needs_input", "source": "api", "message": "Allow Bash: go test ./...?", "kind": "permission", "options": [{ "label": "Yes", "input": "1" }, { "label": "No", "input": "3" }] } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "done, a bare Enter, a prompt, the done, then the done again",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "enter": true },
+        { "prompt": "now the docs" },
+        { "report": { "state": "done", "source": "api", "message": "Docs updated." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Docs updated." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
+      "name": "a bare Enter during a turn, the done, then the done again",
+      "steps": [
+        { "prompt": "fix the parser" },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "api", "message": "Claude is waiting for your input" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished"
+    },
+    {
       "name": "working, a hook's permission question, answered",
       "steps": [
         { "report": { "state": "working", "source": "api" } },
