@@ -877,6 +877,8 @@ test("in the desktop app with a bridge that answers no token, and with one that 
     const gate = tokenAsk(page)
     await page.goto(`/#token=${UNKNOWN}`)
     // The bridge answered none: the page that asks shows by itself, the app hidden under it.
+    await expect(gate, answer).toBeVisible()
+    await expect(page.locator('[data-sidebar-brand]').first(), answer).toBeHidden()
     // The bridge asked and its answer settled: a read made after it, in a task of its own, sees what the store did with it.
     await expect.poll(() => page.evaluate(() => (window as unknown as { __bridgeAsked: number }).__bridgeAsked), answer).toBeGreaterThan(0)
     expect(await held(page), answer).toBe('')

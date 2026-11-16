@@ -393,10 +393,13 @@ test('a make kept before it is sent is finished after the page is read again wit
   // Refused before the route ran: still kept, and the page to connect asks for the token.
   await d.locator('[data-draft-finish]').click()
   await expect(d.locator('[data-draft-error]')).toContainText('workbench token required')
-  await expect(d.locator('[data-draft-finish]')).toBeVisible()
+  // The page that asks stands in for the app, which is hidden under it, not unmounted: the card keeps its Finish.
   const gate = tokenAsk(page)
+  await expect(gate).toBeVisible()
+  await expect(d.locator('[data-draft-finish]')).toBeAttached()
   await gate.getByRole('button', { name: 'Connect' }).click()
   await expect(gate).toHaveCount(0)
+  await expect(d.locator('[data-draft-finish]')).toBeVisible()
   await d.locator('[data-draft-finish]').click()
   await expect(d).toHaveAttribute('data-made-state', 'made')
   // The held ask, the refused finish and the finish that made it: one id and one content throughout.

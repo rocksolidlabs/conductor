@@ -33,7 +33,7 @@ const shown = (page: Page) => page.evaluate(() => document.dispatchEvent(new Eve
 /** A refusal met on `page`: the next request with the token refused, a read made, and the page that asks drawn. */
 async function refusedOn(page: Page, refuser: { refuse: (n?: number) => void }) {
   refuser.refuse()
-  const refused = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 401)
+  const refused = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/api/') && r.status() === 401, { timeout: STEP_MS })
   await shown(page)
   await refused
   await expect(tokenAsk(page)).toBeVisible()
@@ -65,11 +65,11 @@ test('with no token, the page to connect stands in for the app at the desktop an
         await tapTarget(ask.locator('[data-connect-submit]'))
         await noSideways(page)
       }
-      // The server's token given: the app shows, and the home reads the sessions with it.
+      // The server's token given: the app shows, and the home reads the sessions with it (their stream, or the list).
       const field = ask.getByPlaceholder('paste the workbench token')
       await field.fill(state.token)
       await expect(field).toHaveValue(state.token)
-      const read = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/sessions' && r.headers()['authorization'] === `Bearer ${state.token}`)
+      const read = page.waitForRequest((r) => ['/api/events', '/api/sessions'].includes(new URL(r.url()).pathname) && r.headers()['authorization'] === `Bearer ${state.token}`, { timeout: STEP_MS })
       await ask.getByRole('button', { name: 'Connect' }).click()
       await read
       await expect(ask, at).toHaveCount(0)
