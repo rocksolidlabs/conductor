@@ -139,6 +139,33 @@ test('the section lists every adapter with its status, opens a snippet and shows
   await expect(page.locator('#reporting [data-integration]').first()).toBeInViewport()
 })
 
+test("the palette's Agents · Reporting row opens the section, from another page and from the top of Agents itself", async ({ browser, state }) => {
+  const page = await dayPage(browser, { server: state, path: '/events' })
+  const go = async () => {
+    // The layout's keys: pressed once its sidebar is drawn.
+    await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+    await page.keyboard.press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette).toBeVisible()
+    await palette.locator('input[data-palette-input]').fill('Reporting')
+    const row = palette.locator('[data-palette-row="go:agents-reporting"]')
+    await expect(row).toHaveText(/Agents · Reporting/)
+    await row.click()
+    await expect(palette).toBeHidden()
+  }
+  const title = page.locator('#reporting-title')
+  await go()
+  await expect(page).toHaveURL(/\/agents#reporting$/)
+  await expect(title).toBeInViewport()
+  // On Agents at its top, with the section below the cards: the row moves the page to it.
+  await page.goto('/agents')
+  await expect(page.locator('#reporting [data-integration]').first()).toBeAttached()
+  await expect(title).not.toBeInViewport()
+  await go()
+  await expect(page).toHaveURL(/\/agents#reporting$/)
+  await expect(title).toBeInViewport()
+})
+
 test.describe('on a server of its own', () => {
   let srv: OwnServer | undefined
   test.afterAll(async () => {

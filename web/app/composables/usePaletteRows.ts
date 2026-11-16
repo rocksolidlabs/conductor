@@ -51,10 +51,10 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-/** The Go to rows that are no page of their own (utils/pages.ts): two tabs of Events and the paste invite, after the pages. */
+/** The Go to rows that are no page of their own (utils/pages.ts): Events' Routing tab, Agents' Reporting section and the paste invite, after the pages. */
 const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
   { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', icon: 'i-lucide-route' },
-  { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', icon: 'i-lucide-plug' },
+  { id: 'agents-reporting', label: 'Agents · Reporting', to: '/agents#reporting', icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
 ]
 
