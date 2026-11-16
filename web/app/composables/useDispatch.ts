@@ -920,8 +920,8 @@ export function useDispatchApi() {
     runTicket: (run: string) => request<{ ticket: RelatedTicket | null }>(`/api/dispatch/links?run=${enc(run)}`).then((r) => r.ticket ?? null),
     /** A ticket's plan revisions' summaries, newest first, never a body. */
     plans: (key: string) => request<{ plans: PlanSummary[] }>(`/api/dispatch/tickets/${enc(key)}/plans`).then((r) => r.plans ?? []),
-    /** A plan revision whole, by its id. */
-    plan: (id: string) => request<{ plan: PlanRead }>(`/api/dispatch/plans/${enc(id)}`).then((r) => r.plan),
+    /** A plan revision whole, by its id; `signal` ends the request. */
+    plan: (id: string, signal?: AbortSignal) => request<{ plan: PlanRead }>(`/api/dispatch/plans/${enc(id)}`, { signal }).then((r) => r.plan),
     proposePlan: (key: string, body: OpBody & NewPlan) => request<PlanReply>(`/api/dispatch/tickets/${enc(key)}/plans`, { method: 'POST', body }),
     /** The operator's approval of a revision: `expectedRev` the revision's, `ticketRev` the ticket's as shown, with a note. */
     approvePlan: (id: string, body: OpBody & { ticketRev?: number; note?: string }) => request<PlanReply>(`/api/dispatch/plans/${enc(id)}/approve`, { method: 'POST', body }),

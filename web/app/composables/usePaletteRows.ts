@@ -266,15 +266,11 @@ export function usePaletteRows(ctx: PaletteContext) {
       fail('Broadcast')(e)
     }
   }
-  async function launchCrew(c: CrewSummary, label?: string) {
-    try {
-      const r = await api.launchCrew(c.id, label ? { label } : undefined)
-      attention.applyRun(r.run)
-      toast.add({ title: `${r.run.label || r.run.name} launched`, icon: 'i-lucide-play', color: 'success' })
-      go(`/runs/${encodeURIComponent(r.run.id)}`)
-    } catch (e) {
-      fail(`Launch ${c.name}`)(e)
-    }
+  // A crew's launch opens its sheet on the crew's page (useCrewLaunch): only the sheet's Launch starts the run.
+  const crewLaunch = useCrewLaunch()
+  function launchCrew(c: CrewSummary, label?: string) {
+    ctx.close()
+    void crewLaunch.ask(c.id, label ?? '')
   }
   async function startMember(r: RunInfo, name: string) {
     try {
