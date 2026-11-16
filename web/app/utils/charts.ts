@@ -4,7 +4,7 @@ import { sessionStatus } from './status'
 /**
  * The numbers behind the charts: how long a crew's runs lasted (runLength,
  * which the Crews pages draw as bars) and live sessions by status for the
- * Yard; the Events page counts its own (sparkBuckets in utils/events.ts).
+ * Yard; History's feed counts its own (sparkBuckets in utils/events.ts).
  * Each is drawn only when it says something: a chart needs at least two
  * points (enough), and the empty state says what will appear.
  */

@@ -36,7 +36,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },
     { keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] },
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
-    { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
+    { keys: ['G', 'E'], label: "Go to History's feed", terminal: ['alt', 'E'] },
     // No terminal twin: Alt+H is the shortcuts' own (chords.ts), so History has the plain chord alone.
     { keys: ['G', 'H'], label: 'Go to History' },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },

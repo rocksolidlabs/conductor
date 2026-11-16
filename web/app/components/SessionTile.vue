@@ -65,7 +65,7 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
       </div>
       <!-- The foot: the state's cell first, outside the slot, so a run page's tiles keep their branch and diff after it. -->
       <div class="flex min-w-0 items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted shrink-0" data-tile-foot>
-        <!-- The amber dot follows the Events page's Badge route for needs_input; the word stays. -->
+        <!-- The amber dot follows the Alerts rules' Badge route for needs_input; the word stays. -->
         <!-- The host gives way first, then the question down to its first letters, then the state's word (cut with "…", the whole
              in the mark's title): a phone's tile 114 px wide keeps the question's start and its viewers in view. -->
         <span class="flex min-w-0 shrink items-center font-sans text-[11.5px]" data-tile-state>

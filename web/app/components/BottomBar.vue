@@ -7,8 +7,8 @@ import { isActive } from '~/utils/attention'
 /**
  * The phone's bar at the foot (design 3e): Needs you first (with the one
  * number of what waits), Sessions, Yard (the asking sessions on its grid,
- * in neutral ink), Crews; Agents, Dispatch, Brakeman (while the server has
- * it), Events, History, Settings, Alerts and your menu under More; the
+ * in neutral ink), Crews; Dispatch, Brakeman (while the server has it),
+ * Agents, History, Settings, Alerts and your menu under More; the
  * alerts end with "All alert rules", the Alerts panel. Every target is at
  * least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself

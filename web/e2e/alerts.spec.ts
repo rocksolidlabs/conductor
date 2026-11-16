@@ -87,15 +87,14 @@ for (const theme of ['dark', 'light'] as const) {
   })
 }
 
-test("an old link to the Events page's Routing tab opens the panel over the feed, and ?alerts opens it on any page", async ({ page }) => {
+test("an old link to the Events page's Routing tab opens the panel over History's feed, and ?alerts opens it on any page", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/events?tab=routing')
   await expect(panelOf(page).locator('[data-routing-matrix]')).toBeVisible()
-  await expect(page.locator('[data-events-feed-tab]')).toBeAttached()
-  await expect(page).toHaveURL(/\/events$/)
+  await expect(page.locator('[data-event-feed]')).toBeAttached()
+  await expect(page).toHaveURL(/\/history\?view=feed$/)
   await page.keyboard.press('Escape')
   await expect(panelOf(page)).toHaveCount(0)
-  await expect(page.locator('[data-events-tabs]').getByRole('tab')).toHaveText(['Feed'])
   // The feed's Edit routing opens the panel, and closed it gives the focus back to the button.
   const edit = page.locator('[data-routing-readout]').getByRole('button', { name: 'Edit routing' })
   await edit.click()
@@ -117,9 +116,10 @@ test("the palette's Alerts… opens the panel, and its Events · Routing row is 
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const input = palette.locator('input[data-palette-input]')
-  // Go to lists Events, and no longer its Routing tab.
-  await input.fill('events')
-  await expect(palette.locator('[data-palette-row="go:events"]')).toBeVisible()
+  // Go to lists History's Feed, and no longer the Events page or its Routing tab.
+  await input.fill('feed')
+  await expect(palette.locator('[data-palette-row="go:history-feed"]')).toBeVisible()
+  await expect(palette.locator('[data-palette-row="go:events"]')).toHaveCount(0)
   await expect(palette.locator('[data-palette-row="go:events-routing"]')).toHaveCount(0)
   await input.fill('> alerts')
   const row = palette.locator('[data-palette-row="action:alerts"]')

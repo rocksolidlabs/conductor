@@ -78,7 +78,7 @@ async function reorder(ids: string[]) {
 // The waiting sessions in the strip's order too (whole-batch round): follow mode's cycle and "Next up" go by it.
 const waitingIds = computed(() => new Set(attention.needsInput.value.map((s) => s.id)))
 const waiting = computed(() => active.value.filter((s) => waitingIds.value.has(s.id)))
-// Follow mode follows input requests while the Events page routes needs_input
+// Follow mode follows input requests while the Alerts rules route needs_input
 // to Roundhouse jump; other events routed there jump too (followEvent below).
 const followInput = computed(() => settings.value.follow && events.routes.value.needs_input.wall)
 interface AutoplayPlugin {
@@ -272,7 +272,7 @@ watch(
   { immediate: true },
 )
 
-// Any other event the Events page routes to Roundhouse jump moves the Roundhouse to
+// Any other event the Alerts rules route to Roundhouse jump moves the Roundhouse to
 // its session, once, without a hold of its own; never while someone is typing
 // or while follow mode holds on a session that needs input (followJump).
 function followEvent(e: RoutedEvent) {

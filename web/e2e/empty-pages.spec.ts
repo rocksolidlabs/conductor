@@ -19,7 +19,7 @@ const ABOUT = {
   history: 'What was said, decided and checked, kept after the work ends.',
   crews: 'Saved teams of agents, and each run of one.',
   dispatch: 'Tickets, the plans you approve, the runs they start.',
-  events: 'What your agents report, as it happens.',
+  feed: 'What your agents report, as it happens.',
   brakeman: 'A sidekick that reads all of it and briefs you.',
   agents: 'The agents this machine can launch, and how each reports to Conductor.',
 }
@@ -289,17 +289,17 @@ const EVENTS_WHY = 'Nothing yet since this tab opened. An agent reports when it 
 const BRAKEMAN_WHY = 'No brief yet. Ask for the first one above.'
 const AGENTS_WHY = "The catalog has no agent. Add one here, or in the config file's catalog."
 
-test('a server with nothing on it: Crews, Dispatch, Brakeman and the Events feed draw the one empty shape, at the desktop and the phone, in both themes', async ({ browser }) => {
+test("a server with nothing on it: Crews, Dispatch, Brakeman and History's feed draw the one empty shape, at the desktop and the phone, in both themes", async ({ browser }) => {
   const srv = await empty()
   const pages = [
     ['/crews', { panel: '#dashboard-panel-crews', about: ABOUT.crews, why: CREWS_WHY, action: 'New crew' }],
     ['/dispatch', { panel: '#dashboard-panel-dispatch', about: ABOUT.dispatch, why: DISPATCH_WHY, action: 'New project' }],
     ['/brakeman', { panel: '#dashboard-panel-brakeman', about: ABOUT.brakeman, why: BRAKEMAN_WHY }],
-    ['/events', { panel: '#dashboard-panel-events', about: ABOUT.events, why: EVENTS_WHY, action: 'Which agents report' }],
+    ['/history?view=feed', { panel: '#dashboard-panel-history', about: ABOUT.feed, why: EVENTS_WHY, action: 'Which agents report' }],
   ] as const
   // The feed's way to the agents that report: Agents' Reporting section.
   {
-    const page = await dayPage(browser, { ...DESK, path: '/events', server: srv.started })
+    const page = await dayPage(browser, { ...DESK, path: '/history?view=feed', server: srv.started })
     await expect(shape(page).locator('[data-page-action]')).toHaveAttribute('href', '/agents#reporting')
     await page.context().close()
   }

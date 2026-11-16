@@ -156,7 +156,7 @@ export function runOpen(path: string, runId: string): boolean {
   return path === `/runs/${runId}`
 }
 
-/** The amber dot on a session needing input follows the Events page's Badge route for needs_input; the group and its text stay. */
+/** The amber dot on a session needing input follows the Alerts rules' Badge route for needs_input; the group and its text stay. */
 export function needsDotShown(routes: Readonly<Record<EventType, RouteRow>>): boolean {
   return routes.needs_input.badge
 }
@@ -567,7 +567,7 @@ export interface RailShape {
   cwd?: string
   /** Bottom left: where it comes from. */
   tile?: 'machine' | 'share'
-  /** Bottom right: new events on it (the badges the Events page routes here). */
+  /** Bottom right: new events on it (the badges the Alerts rules route here). */
   news: number
   /** A capsule's sessions, the one needing you first. */
   members?: RailShape[]

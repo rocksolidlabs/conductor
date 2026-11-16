@@ -2,7 +2,7 @@ import type { SessionInfo, WebhookInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
 
 /**
- * Something a session reported, as the Events page routes it: the six event
+ * Something a session reported, as the Alerts rules route it: the six event
  * types agents report, the three attention states (an `attention` entry counts
  * as the state it recorded) and `exit_nonzero`, a process that exited on its
  * own with a non-zero code.
@@ -603,4 +603,23 @@ export function sparkBuckets(entries: ReadonlyArray<Pick<FeedEntry, 'at' | 'even
     totals[k]++
   }
   return { buckets, totals }
+}
+
+/** Where an old link to the retired Events page lands (`/events`, `?tab=`): the feed in History, the rules in Alerts, Agents' Reporting. */
+export interface EventsLanding {
+  path: string
+  query?: Record<string, string | null>
+  hash?: string
+}
+
+/**
+ * The Events page is retired (the UX review's P12): its feed is History's Feed view, its Routing the rules in the Alerts panel (opened
+ * over History's Feed by `alerts` in the address), and its Integrations tab Agents' section Reporting to Conductor. Any other tab, or
+ * none, lands on the feed.
+ */
+export function eventsRedirect(query: Record<string, unknown>): EventsLanding {
+  const tab = typeof query.tab === 'string' ? query.tab : ''
+  if (tab === 'integrations') return { path: '/agents', hash: '#reporting' }
+  if (tab === 'routing') return { path: '/history', query: { view: 'feed', alerts: null } }
+  return { path: '/history', query: { view: 'feed' } }
 }

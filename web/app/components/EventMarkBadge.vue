@@ -3,7 +3,7 @@ import { EVENT_INFO } from '~/utils/events'
 
 /**
  * The labelled badge a session carries in the sidebar and on its wall tile
- * for its newest event routed to Badge on the Events page (see useEvents).
+ * for its newest event routed to Badge in the Alerts rules (see useEvents).
  * A finished turn's mark is not drawn while the session's status says
  * finished (`finished`): its status mark says it. `icon` draws the event's
  * icon alone, its label and detail in its title and accessible name, as

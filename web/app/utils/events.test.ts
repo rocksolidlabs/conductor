@@ -9,6 +9,7 @@ import {
   appendRing,
   attentionSettled,
   entryIcon,
+  eventsRedirect,
   eventAlert,
   eventDetail,
   eventTypeOf,
@@ -465,5 +466,16 @@ describe('a note that the session is not shared', () => {
     for (const message of ['not shared through the switchyard yet: the switchyard refused it (429 open_host_limit): …; trying again', 'not shared through the switchyard: dial tcp: connection refused', 'shared through the switchyard after 3 tries']) {
       expect(eventTypeOf({ at: '2026-10-09T12:00:00Z', type: 'status', message })).toBe(null)
     }
+  })
+})
+
+describe('eventsRedirect', () => {
+  it('lands every old link to the Events page where its tab lives now', () => {
+    expect(eventsRedirect({})).toEqual({ path: '/history', query: { view: 'feed' } })
+    expect(eventsRedirect({ tab: 'feed' })).toEqual({ path: '/history', query: { view: 'feed' } })
+    expect(eventsRedirect({ tab: 'routing' })).toEqual({ path: '/history', query: { view: 'feed', alerts: null } })
+    expect(eventsRedirect({ tab: 'integrations' })).toEqual({ path: '/agents', hash: '#reporting' })
+    expect(eventsRedirect({ tab: 'nonsense' })).toEqual({ path: '/history', query: { view: 'feed' } })
+    expect(eventsRedirect({ tab: ['routing', 'feed'] })).toEqual({ path: '/history', query: { view: 'feed' } })
   })
 })

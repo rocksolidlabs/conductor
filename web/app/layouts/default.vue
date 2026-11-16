@@ -289,7 +289,7 @@ defineShortcuts({
   'g-y': chord(() => router.push('/yard')),
   'g-r': chord(() => router.push('/roundhouse')),
   'g-a': chord(() => router.push('/agents')),
-  'g-e': chord(() => router.push('/events')),
+  'g-e': chord(() => router.push('/history?view=feed')),
   'g-h': chord(() => router.push('/history')),
   'g-c': chord(() => router.push('/crews')),
   'g-d': chord(() => router.push('/dispatch')),
@@ -303,7 +303,7 @@ defineShortcuts({
   alt_y: { ...inTerminal, handler: () => router.push('/yard') },
   alt_r: { ...inTerminal, handler: () => router.push('/roundhouse') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
-  alt_e: { ...inTerminal, handler: () => router.push('/events') },
+  alt_e: { ...inTerminal, handler: () => router.push('/history?view=feed') },
   alt_c: { ...inTerminal, handler: () => router.push('/crews') },
   alt_d: { ...inTerminal, handler: () => router.push('/dispatch') },
 })

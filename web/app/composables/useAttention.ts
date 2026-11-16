@@ -108,7 +108,7 @@ export function useAttentionStore() {
  * Live session state for the whole app: one streaming fetch of
  * /api/events (workbench token in the Authorization header, never in the URL)
  * with polling as a fallback. Drives badges, counters, the tab title, the
- * favicon, browser notifications and the chime, as the Events page routes
+ * favicon, browser notifications and the chime, as the Alerts rules route
  * them, and hands every activity entry to useEvents.
  */
 export function useAttention() {
@@ -201,7 +201,7 @@ export function useAttention() {
   }
 
   /**
-   * Alerts for sessions that newly need input, when the Events page routes
+   * Alerts for sessions that newly need input, when the Alerts rules route
    * needs_input to Browser. They come from the session state, so each prompt
    * alerts once. A quiet session's question (a background Brakeman turn's)
    * stays in Needs you and alerts no one (alerting).
@@ -229,7 +229,7 @@ export function useAttention() {
     })
   }
 
-  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
+  /** Alerts for any other event the Alerts rules route to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
   function reactToEvent(e: RoutedEvent) {
     const alert = eventAlert(e, events.routes.value)
     if (!alert) return

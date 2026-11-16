@@ -153,8 +153,8 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  // Brakeman after Dispatch (this server has it), so every page of the sidebar is reached from the phone; each a 44 px target.
-  await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Brakeman/, /Events/, /History/])
+  // Its pages, in order, are destinations.spec.ts's (every list of the pages); each is a 44 px target.
+  await expect(more.getByRole('link').first()).toBeVisible()
   await tapTarget(more.getByRole('link'))
   await expect(more.getByText('Browser notification')).toBeVisible()
   await expect(more.getByRole('button')).toHaveText([/All alert rules/, /Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])

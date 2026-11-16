@@ -469,7 +469,7 @@ a generator, an agent whose hooks report no paths) still shows: in a git
 repository the session compares `git status` after each tool call and
 lists what moved as "seen by git" (writes, edits and deletes; reads cannot
 be seen this way, and what was changed before the session started is left
-out). The same events are in the Activity tab and on the Events page, in
+out). The same events are in the Activity tab and in History's feed, in
 the feed only by default.
 
 The **Commits** section lists the commits on the branch since the session
@@ -689,7 +689,7 @@ inspector's views and the open tabs on a session page, and with a file open
 the editor's Keys → Neovim, Save, Close file and Ask the agent about the
 selection; the broadcast, the
 view, the chat and the members on a run page; the chips on the Yard, the
-rotation on the Roundhouse, Launch on Crews, the hooks on Events, Save on
+rotation on the Roundhouse, Launch on Crews, History's Search and Feed, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
 Artifacts, Go to and every other action. Typing filters the rows, the match
 marked; **↓** moves into the list, where the sidebar's keys work on the
@@ -738,7 +738,7 @@ menu, the divider, or **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a 
 initials, solid while it needs you, dashed once exited), a capsule is a run
 with its sessions inside (the play icon amber while one needs you), and the
 corners say the rest: top right the state (amber needs you, green running,
-grey idle), bottom right new events on it (the badges the Events page routes
+grey idle), bottom right new events on it (the badges the Alerts rules route
 to the sidebar), bottom left where it comes from (a laptop for another
 machine, a globe for a link shared with you). The session open on the page
 carries a primary bar down the rail's edge beside its square, and two
@@ -762,8 +762,8 @@ double-click on the edge returns it to 200 px, and a narrower window keeps
 it within that window's bounds. The full sidebar's foot is the pages as six
 tiles in two rows, an icon over each name: **Needs you** (its number on the
 corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
-and **More**, which holds **Agents**, **Events**, **History** and, in the
-desktop app, **Settings**. A tile's tooltip, on hover and on keyboard focus,
+and **More**, which holds **Agents**, **History** and, in the desktop app,
+**Settings**. A tile's tooltip, on hover and on keyboard focus,
 says what the page is and its key. Until the server has said whether it has
 Brakeman its tile's place is held empty, so nothing moves when it fills; a
 server without Brakeman puts More in its place, and a switchyard, which keeps
@@ -777,8 +777,8 @@ opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
 swipe actions. The pages sit in a bar at the foot: Needs you, Sessions, Yard
-(with the count), Crews, and under More: Agents, Dispatch, Brakeman (where the
-server has it), Events, History, Settings (in the desktop app), Alerts (the two
+(with the count), Crews, and under More: Dispatch, Brakeman (where the server
+has it), Agents, History, Settings (in the desktop app), Alerts (the two
 switches, ending with **All alert rules**, which opens the Alerts panel) and
 your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
@@ -835,22 +835,27 @@ edits, bypass permissions) gets no number key and is never filled. Every
 choice is drawn alike unless the agent itself recommends one, its label
 ending "(Recommended)": that one alone is filled. A permission question whose dialog the screen does not show (a hosted
 session's) is answered in the terminal. Every report also lands in the session's
-activity log and in the live feed of the **Events** page.
+activity log and in the live feed, **History**'s second view.
 
-**The Events page** is the feed. It lists the events
+**History's Feed** (`/history?view=feed`, **G E**, **Alt+E** in a terminal) is
+the live feed; History opens on its Search, and its view switch, under the
+title, holds both. The feed lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
 it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
 artifact). Beside it: the last hour as bars per minute (what needs you,
 handoffs, errors and the rest, as the tab saw them), where each kind of event
 goes now (**Edit routing** opens Alerts), and whether each agent reports. The
-live feed keeps the last 500 events in memory. An artifact's URL becomes a
-link only when it is `http(s)`.
+feed is this browser tab's: it says "Since this tab opened", keeps the last
+500 events in memory and starts empty at each load. An artifact's URL becomes
+a link only when it is `http(s)`. The Events page is retired: an old link to
+`/events` lands on History's Feed, its Routing tab on the Alerts panel over
+the feed, and its Integrations tab on Agents' Reporting to Conductor.
 
 **Alerts** is one panel at the right of the window, opened by **Alerts…** in
 your menu or the command palette, by **All alert rules** in the phone's More,
-or by `?alerts` on any page's address (an old link to the Events page's
-Routing tab opens it over the feed). On top are the two switches, a browser
+or by `?alerts` on any page's address (an old link to the retired Events
+page's Routing tab opens it over History's feed). On top are the two switches, a browser
 notification and a chime, for when a session needs input and for the events
 routed to Browser. Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
@@ -869,7 +874,7 @@ screen pattern. The section is a table of the hook adapters (one adapter can
 serve many agents of the catalog): whether their hooks reach them, what they
 report, where an install writes, and **Install on this machine**, with the
 snippet of an agent nothing wires open below, then the Conductor skill. An
-old link to the Events page's Integrations tab opens it.
+old link to the retired Events page's Integrations tab opens it.
 
 **Wired at launch.** Conductor has a hook adapter for every built-in agent but
 the shell. At startup `conductor serve` writes the hook files into `hooks/` in
@@ -1040,7 +1045,7 @@ never one an admin stopped. There are at most 16 webhooks, and a URL is
 array as JSON and replaces the config file's.
 
 Each entry is one request, naming its session and carrying the entry as the
-Events feed streams it, without `state` (an attention entry's state is the
+live feed streams it, without `state` (an attention entry's state is the
 request's `X-Conductor-Event`):
 
 ```http
@@ -1055,7 +1060,7 @@ X-Conductor-Signature: sha256=<hex HMAC-SHA256 of the body, keyed with the secre
 `X-Conductor-Event` is the event type the webhook listed that the entry is:
 an attention entry is the attention state it records, the `status` entry of
 a failed process is `exit_nonzero`, and when a webhook lists both, the
-Events page's name wins. `X-Conductor-Signature` is sent only when the
+feed's name wins. `X-Conductor-Signature` is sent only when the
 webhook has a `secret`. Check it against the body as received, before
 parsing it:
 
@@ -1080,7 +1085,7 @@ answer; redirects are not followed, and an answer other than 2xx is logged as
 a warning. When the server shuts down it stops the webhooks first, so the
 `stopped` statuses of the sessions it stops then are not delivered. User info
 in a URL (`https://user:password@host/…`) is sent as `Authorization: Basic`,
-as Go's HTTP client does. The Events page shows each webhook by its host.
+as Go's HTTP client does. The Alerts panel shows each webhook by its host.
 `GET /api/integrations` returns its URL without its user info, query string and
 fragment, and never its secret, but with its path: for a service that puts its
 credential in the path (Slack, Discord), an admin reading that route sees it.
@@ -1444,7 +1449,7 @@ a terminal's contents; at most 500 kept) and read back after a restart, so
 a crew's Runs tab lists them and charts the last twelve as bars (minutes,
 coloured by outcome, an amber edge when someone had to answer), once there
 are two, and the Crews table draws the same bars beside each crew.
-The Events page's feed draws the last hour's events per minute (what needs
+History's feed draws the last hour's events per minute (what needs
 you, handoffs, errors, the rest) once two are in it, and the Yard's header shows its sessions by attention state as a slim
 stacked bar from two sessions on. Nothing is charted with fewer than two points.
 
@@ -2000,9 +2005,11 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 `since:` and `until:` (`since:7d`). A search of common words is bounded:
 it reads at most the 10,000 matches indexed most recently and ranks at
 most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
-opens `/history`: the same search with filter chips that write those
-filters, every result paged with Show more, the query in the URL so a
-search is a link, one column on a phone.
+opens `/history` on its Search: the same search with filter chips that write
+those filters, every result paged with Show more, the query in the URL so a
+search is a link, one column on a phone. Its second view, **Feed**
+(`?view=feed`, **G E**), is the live feed of what agents report (Events and
+hooks).
 
 **What a row says.** A badge for what kind of evidence it is, and the
 kinds never mix: **Conversation** (something said: a session's line, a

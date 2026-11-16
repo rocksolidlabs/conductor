@@ -655,10 +655,10 @@ test('the launch sheet closes for another token and for a crew gone, and an ask 
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await page.evaluate((id) => {
     const router = (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { beforeEach: (g: (to: { path: string }) => string | boolean) => () => void } } } } }).__vue_app__.config.globalProperties.$router
-    ;(window as unknown as { e2eGuardOff: () => void }).e2eGuardOff = router.beforeEach((to) => (to.path === `/crews/${id}` ? '/events' : true))
+    ;(window as unknown as { e2eGuardOff: () => void }).e2eGuardOff = router.beforeEach((to) => (to.path === `/crews/${id}` ? '/history' : true))
   }, a.id)
   await paletteLaunch(page, a)
-  await expect(page).toHaveURL(/\/events$/, { timeout: 15_000 })
+  await expect(page).toHaveURL(/\/history$/, { timeout: 15_000 })
   await page.evaluate(() => (window as unknown as { e2eGuardOff: () => void }).e2eGuardOff())
   await navigate(page, `/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(a.name, { timeout: 30_000 })
