@@ -574,8 +574,8 @@ palette.registerPage(() => {
                   <UCheckbox :model-value="isSelected(t.name)" :aria-label="`Select ${t.name} for the broadcast`" data-broadcast-pick @update:model-value="toggle(t.name, $event)" />
                 </template>
                 <template #footer>
-                  <span class="truncate" data-branch>{{ footer(t).where }}</span>
-                  <span class="ml-auto flex-none" data-diff>{{ footer(t).diff }}</span>
+                  <span class="truncate font-mono" data-mono="commit" data-branch>{{ footer(t).where }}</span>
+                  <span class="ml-auto flex-none font-mono" data-mono="measure" data-diff>{{ footer(t).diff }}</span>
                 </template>
               </SessionTile>
               <div v-else class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-dashed border-accented" :data-member="t.name">

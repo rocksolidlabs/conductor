@@ -40,7 +40,8 @@ function reporting(it: Integration): { dot: string; text: string; tone: string }
     case 'experimental':
       return { dot: 'bg-neutral-400', text: 'experimental', tone: 'text-muted' }
     default:
-      return { dot: 'bg-warning', text: 'not configured', tone: 'text-warning' }
+      // A standing fact that asks nothing: a neutral dot and muted words (amber is for what someone must act on).
+      return { dot: 'bg-neutral-400', text: 'not configured', tone: 'text-muted' }
   }
 }
 </script>

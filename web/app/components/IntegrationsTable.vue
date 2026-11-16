@@ -30,8 +30,8 @@ function wired(it: Integration): boolean {
 }
 
 /**
- * The status in the table, in its own longer words; the snippet's header names the host. Installed and injected are drawn neutral:
- * green is for a live agent.
+ * The status in the table, in its own longer words; the snippet's header names the host. Every status is drawn neutral: green is for
+ * a live agent, and amber for what someone must act on.
  */
 function status(it: Integration, long = false): { label: string; cls: string; dot: string } {
   switch (reportStatus(it).key) {
@@ -42,7 +42,8 @@ function status(it: Integration, long = false): { label: string; cls: string; do
     case 'experimental':
       return { label: 'experimental', cls: 'text-muted', dot: 'bg-neutral-400' }
     default:
-      return { label: long ? `not configured on ${props.host}` : 'not configured', cls: 'text-warning', dot: 'bg-warning' }
+      // A standing fact that asks nothing (P16): a neutral dot and muted words, as the others.
+      return { label: long ? `not configured on ${props.host}` : 'not configured', cls: 'text-muted', dot: 'bg-neutral-400' }
   }
 }
 

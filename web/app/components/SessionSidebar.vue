@@ -485,7 +485,8 @@ defineExpose({ focusFilter, focusList })
     </div>
 
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" :data-list-width="listWidth" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
-      <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p>
+      <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
+      <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
 
       <SidebarSection v-if="model.needs.length || decisionsCut || decisionsStale || inboxShowing || inboxFailed" id="needs" title="Needs you" :count="needsWords" count-of="needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">

@@ -103,12 +103,17 @@ test('a server with nothing on it: the Yard and the Roundhouse draw the one empt
       await page.context().close()
     }
   }
-  // The phone's Sessions page: the sidebar's line alone, Launch agent standing above it.
+  // The phone's Sessions page: the welcome in place of the list's empty line (the UX review's P17), Launch agent standing above it.
   const page = await dayPage(browser, { ...PHONE, path: '/sessions', server: srv.started })
-  const line = page.locator('[data-sidebar-empty]')
+  await expect(page.locator('[data-welcome]')).toBeVisible()
+  await expect(page.locator('[data-sidebar-empty]')).toHaveCount(0)
+  await expect(page.locator('[data-page-empty]')).toHaveCount(0)
+  await page.context().close()
+  // At the desktop the line stays the sidebar's: the welcome is the home's, and the Yard's sidebar says the list is empty.
+  const desk = await dayPage(browser, { ...DESK, path: '/yard', server: srv.started })
+  const line = desk.locator('#dashboard-sidebar-main [data-sidebar-empty]')
   await expect(line).toHaveText('No sessions yet.')
   await uncut(line)
-  await expect(page.locator('[data-page-empty]')).toHaveCount(0)
 })
 
 test('a server whose one session has exited: the home says to resume it from Exited, the Yard is empty, the sidebar lists it', async ({ browser }) => {

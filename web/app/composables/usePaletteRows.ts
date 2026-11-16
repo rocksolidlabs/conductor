@@ -21,7 +21,7 @@ import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
-import { skipWords } from '~/utils/crews'
+import { EXAMPLES_LINE, skipWords } from '~/utils/crews'
 import { memberOffer, runOffer, sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
@@ -697,7 +697,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     })
     const more: PaletteItem[] = [
       { key: 'crews:new', label: 'New crew', icon: 'i-lucide-plus', run: () => go('/crews/new') },
-      { key: 'crews:examples', label: 'Load the example crews', icon: 'i-lucide-package-open', run: () => void api.loadExampleCrews().then((r) => { toast.add({ title: `${r.added.length} added${r.skipped.length ? `, ${r.skipped.length} already there` : ''}`, icon: 'i-lucide-package-open', color: 'success' }); void palette.loadLists(true) }).catch(fail('Load the examples')) },
+      { key: 'crews:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: () => void api.loadExampleCrews().then((r) => { toast.add({ title: `${r.added.length} added${r.skipped.length ? `, ${r.skipped.length} already there` : ''}`, icon: 'i-lucide-package-open', color: 'success' }); void palette.loadLists(true) }).catch(fail('Load the examples')) },
     ]
     void now
     return [

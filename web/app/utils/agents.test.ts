@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks } from './agents'
+import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks, welcomeAgents } from './agents'
 import type { After } from './capacity'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
@@ -267,5 +267,39 @@ describe('agents still being checked (#704)', () => {
     refuse(new Error('refused'))
     await tick()
     expect(settled).toEqual([])
+  })
+})
+
+describe('the agents the welcome offers (the UX review, P17)', () => {
+  const found = (version?: string) => ({ ran: true, identified: true, verified: true, name: 'Agent', version })
+  it('offers the agents the server can launch and those still checked, in catalog order, never one not installed', () => {
+    const list = [
+      agent({ id: 'one', name: 'One', available: true, identity: found('2.1.318') }),
+      agent({ id: 'two', name: 'Two', available: true }),
+      agent({ id: 'three', name: 'Three', available: false }),
+      agent({ id: 'four', name: 'Four', available: false, checking: true }),
+    ]
+    expect(welcomeAgents(list)).toEqual({
+      agents: [
+        { id: 'one', name: 'One', icon: undefined, version: '2.1.318', checking: false },
+        { id: 'two', name: 'Two', icon: undefined, version: undefined, checking: false },
+        { id: 'four', name: 'Four', icon: undefined, version: undefined, checking: true },
+      ],
+      rest: 0,
+    })
+  })
+
+  it('gives no version for a program its check did not identify, and none while its version is still asked', () => {
+    const odd = { ran: true, identified: false, verified: false, output: 'v9', version: '9' }
+    expect(welcomeAgents([agent({ id: 'x', available: true, identity: odd })]).agents[0]!.version).toBeUndefined()
+    expect(welcomeAgents([agent({ id: 'y', available: true, checking: true, identity: { ...found('1.0'), pending: true } })]).agents[0]).toMatchObject({ version: undefined, checking: true })
+  })
+
+  it('offers at most max, and counts the rest', () => {
+    const six = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => agent({ id, available: true }))
+    const w = welcomeAgents(six, 4)
+    expect(w.agents.map((a) => a.id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(w.rest).toBe(2)
+    expect(welcomeAgents(six.slice(0, 2), 4).rest).toBe(0)
   })
 })

@@ -64,17 +64,17 @@ const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.val
         <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="TILE_SCROLLBACK" />
       </div>
       <!-- The foot: the state's cell first, outside the slot, so a run page's tiles keep their branch and diff after it. -->
-      <div class="flex min-w-0 items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted shrink-0" data-tile-foot>
+      <div class="flex min-w-0 items-center gap-2 border-t border-default px-2.5 py-1 text-[11px] text-muted shrink-0" data-tile-foot>
         <!-- The amber dot follows the Events page's Badge route for needs_input; the word stays. -->
         <!-- The host gives way first, then the question down to its first letters, then the state's word (cut with "…", the whole
              in the mark's title): a phone's tile 114 px wide keeps the question's start and its viewers in view. -->
-        <span class="flex min-w-0 shrink items-center font-sans text-[11.5px]" data-tile-state>
+        <span class="flex min-w-0 shrink items-center text-[11.5px]" data-tile-state>
           <StatusMark :status="status" word :quiet="!events.routes.value.needs_input.badge" class="shrink" />
         </span>
         <slot name="footer">
-          <span v-if="ask" class="min-w-8 shrink-[100] truncate font-sans text-[11.5px] text-default" :title="ask" data-tile-ask>{{ ask }}</span>
+          <span v-if="ask" class="min-w-8 shrink-[100] truncate text-[11.5px] text-default" :title="ask" data-tile-ask>{{ ask }}</span>
           <span v-else class="min-w-0 shrink-[100] truncate" :title="hostTitle" data-tile-host>{{ host }}</span>
-          <span class="ml-auto flex-none" data-tile-viewers>{{ props.session.viewers ? `${props.session.viewers} here` : '—' }}</span>
+          <span class="ml-auto flex-none tabular-nums" data-tile-viewers>{{ props.session.viewers ? `${props.session.viewers} here` : '—' }}</span>
         </slot>
       </div>
     </div>
