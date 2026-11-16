@@ -792,6 +792,8 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # each `{run}` in them the run's id and `{session}` the attempt's session's.
 # STUB_DECISION_FROM=N asks it only from attempt N on: the attempts before
 # commit and submit as a worker does, so a check of theirs can be cited.
+# STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
+# two the type asks with (the first stays the recommended one).
 
 # mcp_call runs one tool through conductor mcp and prints its reply line.
 mcp_call() {
@@ -989,12 +991,12 @@ stub_decision() {
 	done
 	case $STUB_DECISION in
 	approval)
-		options='[{"label":"Approve","tradeoffs":"the change goes in as it is"},{"label":"Reject","tradeoffs":"nothing is committed"}]'
+		options=${STUB_DECISION_OPTIONS:-'[{"label":"Approve","tradeoffs":"the change goes in as it is"},{"label":"Reject","tradeoffs":"nothing is committed"}]'}
 		body="{\"requestId\":\"stub-$task-$n\",\"type\":\"approval\",\"question\":$(json_str "May $task commit its change?"),\"context\":$(json_str "The stub is about to commit stub-$member.txt for **$task**.")"
 		body+=",\"options\":$options,\"recommendation\":0,\"uncertainty\":\"none: it is a stub\",\"authorizes\":$(json_str "$task commits stub-$member.txt and submits it")"
 		;;
 	*)
-		options='[{"label":"stub-a","tradeoffs":"the short name"},{"label":"stub-b"}]'
+		options=${STUB_DECISION_OPTIONS:-'[{"label":"stub-a","tradeoffs":"the short name"},{"label":"stub-b"}]'}
 		body="{\"requestId\":\"stub-$task-$n\",\"type\":\"clarification\",\"question\":$(json_str "Which name should $task take?"),\"options\":$options,\"recommendation\":0"
 		;;
 	esac

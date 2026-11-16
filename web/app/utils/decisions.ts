@@ -3,7 +3,7 @@ import type { RefState } from './brakeman'
 import { RESPONSIBILITY_WORDS } from './crews'
 
 // Durable decisions (Program item DR1, docs/plans/decisions.md, "web/app"; docs/protocol.md, "Decisions"): the record as the operator's
-// routes give it, its four states in words (open, response recorded, validated by Yardmaster, applied or why not), and the operator's
+// routes give it, its four states in words (asked, the answer, checked by Yardmaster, applied or why not), and the operator's
 // writes (respond, cancel, comment) with the id minted here and a lost reply asked once more with the same id, as a run command is
 // (utils/tasks.ts). The card (DecisionCard.vue) and its answer (DecisionRespond.vue) read these; so do the run page, the session's
 // question bar, Needs you, the palette and the ticket page.
@@ -346,37 +346,43 @@ export interface DecisionStep {
   receipt?: string
 }
 
+/** The third step's name: Yardmaster checks the answer against the subject, the policy and the asker before it applies it. */
+const CHECKED = 'Checked by Yardmaster'
+
 /**
- * The state in words, and the four states shown apart (docs/plans/decisions.md, "web/app"): open; the response recorded (its receipt
- * and time); validated by Yardmaster; applied, or why not (superseded, cancelled, expired: the record's `why`). `runHeld` false says the
- * run that holds it is not running (stopped, interrupted, not continued): an answer recorded then waits for the run to be continued.
+ * The state in words, and the four states shown apart (docs/plans/decisions.md, "web/app"; UX1 PR-20 named them): Asked; the answer
+ * (its receipt and time), "Your answer" on a card drawn with the controls that answer it (`controls`) and "The answer" on one that
+ * cannot (a decision link's, a person's page); checked by Yardmaster; applied, or why not (superseded, cancelled, expired: the record's
+ * `why`). `runHeld` false says the run that holds it is not running (stopped, interrupted, not continued): an answer recorded then
+ * waits for the run to be continued.
  */
-export function decisionWords(d: Decision, o: { runHeld?: boolean } = {}): { state: string; tone: 'warning' | 'success' | 'muted' | 'error' | 'default'; steps: DecisionStep[] } {
+export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: boolean } = {}): { state: string; tone: 'warning' | 'muted' | 'error' | 'default'; steps: DecisionStep[] } {
   const rc = acceptedReceipt(d)
   const app = d.applied
   const recordedAt = rc?.at ?? d.answeredAt
   const answered = d.state === 'answered' || d.state === 'applied' || !!recordedAt
   const why = d.why ? `: ${d.why}` : ''
-  const steps: DecisionStep[] = [{ key: 'open', label: 'Open', status: 'done', words: `asked by ${askedWhere(d)}`, at: d.createdAt }]
+  const answer = o.controls ? 'Your answer' : 'The answer'
+  const steps: DecisionStep[] = [{ key: 'open', label: 'Asked', status: 'done', words: `asked by ${askedWhere(d)}`, at: d.createdAt }]
   const ended = d.state === 'superseded' || d.state === 'cancelled' || d.state === 'expired'
   if (answered) {
     const by = rc ? rc.byName || rc.actor : ''
-    steps.push({ key: 'recorded', label: 'Response recorded', status: 'done', words: rc ? rc.words : `answered${by ? ` by ${by}` : ''}`, at: recordedAt, receipt: rc?.k ? `${d.id}/${rc.k}` : undefined })
+    steps.push({ key: 'recorded', label: answer, status: 'done', words: rc ? rc.words : `answered${by ? ` by ${by}` : ''}`, at: recordedAt, receipt: rc?.k ? `${d.id}/${rc.k}` : undefined })
   } else {
-    steps.push({ key: 'recorded', label: 'Response recorded', status: ended ? 'ended' : 'waiting', words: ended ? 'no response was recorded' : `waits for ${approverWords(d)}'s answer` })
+    steps.push({ key: 'recorded', label: answer, status: ended ? 'ended' : 'waiting', words: ended ? 'no response was recorded' : `waits for ${approverWords(d)}'s answer` })
   }
   if (app?.validated) {
-    steps.push({ key: 'validated', label: 'Validated by Yardmaster', status: 'done', words: 'the subject, the policy and the asker checked again', at: app.at, receipt: `${d.id}/${app.response}` })
+    steps.push({ key: 'validated', label: CHECKED, status: 'done', words: 'the subject, the policy and the asker checked again', at: app.at, receipt: `${d.id}/${app.response}` })
     steps.push({ key: 'applied', label: 'Applied', status: 'done', words: app.words, at: app.at, receipt: `${d.id}/${app.response} applied` })
   } else if (ended) {
-    steps.push({ key: 'validated', label: 'Validated by Yardmaster', status: 'ended', words: answered ? 'not validated' : 'nothing to validate' })
+    steps.push({ key: 'validated', label: CHECKED, status: 'ended', words: answered ? 'not validated' : 'nothing to validate' })
     steps.push({ key: 'applied', label: `Not applied: ${d.state}`, status: 'ended', words: (d.why || d.state) + (d.supersededBy ? `; ${d.supersededBy} takes its place` : ''), at: d.closedAt })
   } else if (answered) {
     const waits = o.runHeld === false ? 'waiting for the run to be continued' : 'Yardmaster validates it next'
-    steps.push({ key: 'validated', label: 'Validated by Yardmaster', status: 'waiting', words: waits })
+    steps.push({ key: 'validated', label: CHECKED, status: 'waiting', words: waits })
     steps.push({ key: 'applied', label: 'Applied', status: 'pending', words: 'not yet' })
   } else {
-    steps.push({ key: 'validated', label: 'Validated by Yardmaster', status: 'pending', words: 'not yet' })
+    steps.push({ key: 'validated', label: CHECKED, status: 'pending', words: 'not yet' })
     steps.push({ key: 'applied', label: 'Applied', status: 'pending', words: 'not yet' })
   }
   // An approval applied and later superseded (its subject moved): the application stays in the steps, the state says what moved.
@@ -387,7 +393,8 @@ export function decisionWords(d: Decision, o: { runHeld?: boolean } = {}): { sta
     case 'answered':
       return { state: o.runHeld === false ? 'Recorded: waiting for the run to be continued' : 'Recorded: Yardmaster applies it next', tone: 'default', steps }
     case 'applied':
-      return { state: `Applied: ${app?.words ?? 'done'}`, tone: 'success', steps }
+      // Done, in neutral ink as a done step is (UX1 PR-20, the plan's invariant 7: green is a live agent's alone).
+      return { state: `Applied: ${app?.words ?? 'done'}`, tone: 'default', steps }
     case 'superseded':
       return { state: `Superseded${why}${d.supersededBy ? ` (${d.supersededBy} takes its place)` : ''}`, tone: 'muted', steps }
     case 'cancelled':
@@ -396,6 +403,40 @@ export function decisionWords(d: Decision, o: { runHeld?: boolean } = {}): { sta
       return { state: `Expired${why}`, tone: 'muted', steps }
   }
   return { state: d.state, tone: 'muted', steps }
+}
+
+/**
+ * How a step is drawn (UX1 PR-20; the plan's invariant 7, colour means one thing): a step reached is a check in neutral ink, as a
+ * task's done is, never green; the answer a person still owes is a still amber dot (someone must act); a step Yardmaster still owes
+ * is a muted hourglass, the mark the inbox's own steps wait with; a step not reached yet is a dimmed ring, one that never will be a
+ * slashed ring. Nothing is drawn as a loader: no step spins before anyone has begun it.
+ */
+export function stepLook(step: Pick<DecisionStep, 'key' | 'status'>): { icon: string; tone: 'default' | 'warning' | 'muted' | 'dimmed' } {
+  switch (step.status) {
+    case 'done':
+      return { icon: 'i-lucide-circle-check', tone: 'default' }
+    case 'waiting':
+      return step.key === 'recorded' ? { icon: 'i-lucide-circle-dot', tone: 'warning' } : { icon: 'i-lucide-hourglass', tone: 'muted' }
+    case 'ended':
+      return { icon: 'i-lucide-circle-slash', tone: 'muted' }
+  }
+  return { icon: 'i-lucide-circle', tone: 'dimmed' }
+}
+
+/** Whether the card's Details start open: for a plan's approval, whose plan revision is what a yes approves; folded for every other. */
+export function detailsOpen(d: Pick<Decision, 'type' | 'origin'>): boolean {
+  return d.type === 'approval' && d.origin === 'plan'
+}
+
+/**
+ * What a yes lets happen, as one line under the question (UX1 PR-20): a plan's gate says its own sentence as the server wrote it
+ * ("Approve lets deploy start; Reject cancels it."); an agent's request is led by "A yes authorizes: " before its own words, which the
+ * card keeps in a span of their own. Null when the request says nothing.
+ */
+export function authorizesLine(d: Pick<Decision, 'origin'> & { request: Pick<DecisionRequest, 'authorizes'> }): { lead: string; words: string } | null {
+  const a = d.request.authorizes?.trim()
+  if (!a) return null
+  return { lead: d.origin === 'plan' ? '' : 'A yes authorizes: ', words: a }
 }
 
 /**
