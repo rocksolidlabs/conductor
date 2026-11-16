@@ -91,8 +91,10 @@ sessions do (see the Files tab).
 
 ## The workbench
 
-The sidebar is the session list, grouped into **Needs you**, **Running** and
-**Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
+The sidebar is the session list, grouped by how hard each waits on you:
+**Needs you**, **Finished** (an agent that ended its turn and waits for your
+next word, "finished 12m ago"), **Working** (an agent in a turn, or one that
+sends no signal) and **Exited**, a run once where its busiest member is, with a filter box and a **Launch agent** button (**N**); **/** or
 **Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
 Its foot holds the pages, each with a tooltip that says what it is. The one
 amber number there is on **Needs you**: every question, decision, plan and

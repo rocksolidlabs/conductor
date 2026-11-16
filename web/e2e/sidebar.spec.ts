@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
 import { inside, noOverlap, tabTo, uncut } from './layout'
+import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
@@ -83,8 +84,9 @@ test('a run of two in Needs you shows its asking member, the rest folded', async
   const needs = page.locator('[data-sidebar-section="needs"]').first()
   const block = needs.locator(`[data-sidebar-run-block="${runId}"]`)
   await expect(block).toBeVisible()
-  // Whole, in one section: nothing of it in Running.
-  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(0)
+  // Whole, in one section: found once in the whole sidebar, inside Needs you.
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(1)
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-section="needs"] [data-sidebar-run-block="${runId}"]`)).toHaveCount(1)
   await expect(block).toHaveAttribute('data-row-state', 'needs')
   const header = block.locator('[data-sidebar-run-group]')
   await expect(header).toContainText('e2e sidebar crew')
@@ -116,11 +118,11 @@ test('a run of two in Needs you shows its asking member, the rest folded', async
   await expect(members.nth(1).locator('[data-row-meta]')).toHaveText(/^claude · \d+[smh]/)
   // Other specs leave sessions behind: the counts are checked by shape, not by number.
   await expect(needs.locator('[data-section-count]')).toHaveText(/^\d+$/)
-  // The loose session runs on the server: it says so, and nothing says the path.
-  const running = page.locator('[data-sidebar-section="running"]').first()
-  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"] [data-row-meta]`)).toHaveText(/^claude · server · \d+[smh]/)
-  await expect(running.locator(`[data-sidebar-row="s:${alive.id}"]`)).not.toContainText('/tmp/')
-  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  // The loose session runs on the server, sending no signal: it is in Working, says so, and nothing says the path.
+  const working = page.locator('[data-sidebar-section="working"]').first()
+  await expect(working.locator(`[data-sidebar-row="s:${alive.id}"] [data-row-meta]`)).toHaveText(/^claude · server · \d+[smh]/)
+  await expect(working.locator(`[data-sidebar-row="s:${alive.id}"]`)).not.toContainText('/tmp/')
+  await expect(working.locator('[data-section-count]')).toHaveText(/^· \d+$/)
 })
 
 test('Exited starts folded with its count; opened, its session has Resume; a fold outlives a reload with a preview', async ({ page, api }) => {
@@ -179,21 +181,21 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
     .toMatch(/^(starting|running)$/)
   sessions.push(fresh!.id)
 
-  // Running folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload.
-  const running = page.locator('[data-sidebar-section="running"]').first()
-  await running.getByRole('button', { name: /^Running/ }).click()
-  await expect(running).toHaveAttribute('data-folded', 'true')
-  await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
-  // The squares are status marks: a live session's, working, finished or running (which the resumed stub shows is its own to say).
-  const marks = running.locator('[data-section-preview] [data-status-mark]')
+  // Working folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload. The resumed
+  // stub sends no signal (running) or its own turn (working): either is Working's.
+  const working = page.locator('[data-sidebar-section="working"]').first()
+  await working.getByRole('button', { name: /^Working/ }).click()
+  await expect(working).toHaveAttribute('data-folded', 'true')
+  await expect(working.locator('[data-section-count]')).toHaveText(/^· \d+$/)
+  const marks = working.locator('[data-section-preview] [data-status-mark]')
   expect(await marks.count()).toBeGreaterThan(0)
-  for (const key of await marks.evaluateAll((els) => els.map((e) => e.getAttribute('data-status-mark')))) expect(key).toMatch(/^(working|finished|running)$/)
-  await expect(running.locator('[data-sidebar-row]')).toHaveCount(0)
+  for (const key of await marks.evaluateAll((els) => els.map((e) => e.getAttribute('data-status-mark')))) expect(key).toMatch(/^(working|running)$/)
+  await expect(working.locator('[data-sidebar-row]')).toHaveCount(0)
   await page.reload()
-  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'true')
+  await expect(page.locator('[data-sidebar-section="working"]').first()).toHaveAttribute('data-folded', 'true')
   await expect(page.locator('[data-sidebar-section="exited"]').first()).toHaveAttribute('data-folded', 'false')
-  await page.locator('[data-sidebar-section="running"]').first().getByRole('button', { name: /^Running/ }).click()
-  await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'false')
+  await page.locator('[data-sidebar-section="working"]').first().getByRole('button', { name: /^Working/ }).click()
+  await expect(page.locator('[data-sidebar-section="working"]').first()).toHaveAttribute('data-folded', 'false')
 })
 
 test('a new prompt opens a folded Needs you by itself', async ({ page, api }) => {
@@ -212,7 +214,9 @@ test('a new prompt opens a folded Needs you by itself', async ({ page, api }) =>
   await expect(after.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-prompt]`)).toHaveText('Which branch?')
   await expect(after.locator('[data-section-count]')).toHaveText(String(before + 1))
   await api.ok('POST', `/api/sessions/${alive!.id}/attention`, { state: 'working' })
-  await expect(page.locator(`[data-sidebar-section="running"] [data-sidebar-row="s:${alive!.id}"]`).first()).toBeVisible({ timeout: 15_000 })
+  const back = page.locator(`[data-sidebar-section="working"] [data-sidebar-row="s:${alive!.id}"]`).first()
+  await expect(back).toBeVisible({ timeout: 15_000 })
+  await expect(back.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'working')
 })
 
 test('a session hosted on another machine carries its machine on the row, under no heading', async ({ page, api, state }) => {
@@ -334,7 +338,7 @@ test('a free-text prompt gets a reply field, in the panel beside the row at 200 
   await field.fill('main')
   await field.press('Enter')
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('main\n')
-  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
   await expect(row.locator('[data-row-reply]')).toHaveCount(0)
   await expect(page.locator('[data-row-panel]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/crews$/)
@@ -407,7 +411,7 @@ test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a d
   await expect.poll(() => transcript(state.home, b), { timeout: 15_000, message: 'b got the choice' }).toContain('Postgres\n')
   expect(transcript(state.home, a)).not.toContain('Postgres')
   expect((await api.session(a.id)).attention?.state).toBe('needs_input')
-  await expect(rowB).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(rowB).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
   // The row kept the focus as it moved sections.
   await expect(rowB).toHaveAttribute('data-row-focused', '')
 
@@ -1154,6 +1158,122 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   const row = palette.locator('[data-palette-row="go:yard"]')
   await expect(row).toBeVisible()
   await expect(row.locator('[data-palette-detail]')).toHaveText('Every live terminal on one screen.')
+})
+
+// The UX review's P4: Running splits in two. Finished (an agent that ended its turn waits for your next word) sits above Working (an
+// agent in a turn, or one that sends no signal), each with its own mark; a run sits once, where its busiest member is.
+test('finished and working apart: Finished above Working, each with its own mark, a run once where its busiest member is', async ({ page, api, browser, state }) => {
+  test.setTimeout(test.info().timeout + 120_000)
+  const w = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e split working' })
+  const f = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e split finished' })
+  sessions.push(w.id, f.id)
+  for (const s of [w, f]) await expect.poll(async () => (await api.session(s.id)).status, { timeout: 30_000 }).toBe('running')
+  await api.ok('POST', `/api/sessions/${w.id}/attention`, { state: 'working' })
+  await api.ok('POST', `/api/sessions/${f.id}/attention`, { state: 'done' })
+  for (const [s, want] of [[w, 'working'], [f, 'done']] as const) await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe(want)
+
+  /** The two rows in their sections of `list` (the sidebar's, or the phone's page), each with its own mark, Finished above Working. */
+  const apart = async (p: Page, list: 'sidebar' | 'page') => {
+    const section = (key: string) => p.locator(`[data-session-list="${list}"] [data-sidebar-section="${key}"]`)
+    const wRow = section('working').locator(`[data-sidebar-row="s:${w.id}"]`)
+    const fRow = section('finished').locator(`[data-sidebar-row="s:${f.id}"]`)
+    await expect(wRow.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'working', { timeout: 15_000 })
+    await expect(fRow.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'finished')
+    await expect(fRow.locator('[data-status-word]').first()).toHaveText(/^finished( just now| \d+[mhd] ago)?$/)
+    await expect(wRow).toHaveAttribute('data-row-state', 'working')
+    await expect(fRow).toHaveAttribute('data-row-state', 'finished')
+    const [fBox, wBox] = await Promise.all([section('finished').boundingBox(), section('working').boundingBox()])
+    expect(fBox!.y, 'Finished is above Working').toBeLessThan(wBox!.y)
+  }
+  await page.goto('/crews')
+  await apart(page, 'sidebar')
+  const phone = await dayPage(browser, { server: state, width: 390, height: 844, touch: true, path: '/sessions' })
+  await apart(phone, 'page')
+
+  // The working one ends its turn: it moves to Finished, found there by its id (a state that holds).
+  await api.ok('POST', `/api/sessions/${w.id}/attention`, { state: 'done' })
+  const finished = page.locator('[data-session-list="sidebar"] [data-sidebar-section="finished"]')
+  await expect(finished.locator(`[data-sidebar-row="s:${w.id}"]`)).toHaveAttribute('data-row-state', 'finished', { timeout: 15_000 })
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-section="working"] [data-sidebar-row="s:${w.id}"]`)).toHaveCount(0)
+  // A fold of Finished survives a reload.
+  await finished.getByRole('button', { name: /^Finished/ }).click()
+  await expect(finished).toHaveAttribute('data-folded', 'true')
+  await page.reload()
+  await expect(page.locator('[data-session-list="sidebar"] [data-sidebar-section="finished"]')).toHaveAttribute('data-folded', 'true')
+  await page.locator('[data-session-list="sidebar"] [data-sidebar-section="finished"]').getByRole('button', { name: /^Finished/ }).click()
+  await expect(page.locator('[data-session-list="sidebar"] [data-sidebar-section="finished"]')).toHaveAttribute('data-folded', 'false')
+
+  // A crew of two, one working and one finished: the run sits in Working once, saying "1 working · 1 finished", nothing of it in Finished.
+  const pair = (
+    await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+      name: 'e2e split crew',
+      goal: 'split',
+      cwd: '',
+      where: 'server',
+      isolation: 'none',
+      openAfterLaunch: false,
+      members: [
+        { name: 'one', agentId: 'claude', prompt: 'work', start: { when: 'immediately' } },
+        { name: 'two', agentId: 'claude', prompt: 'rest', start: { when: 'immediately' } },
+      ],
+    })
+  ).crew.id
+  let pairRun = ''
+  try {
+    pairRun = (await api.launchCrew(pair)).id
+    const ids: Record<string, string> = {}
+    await expect
+      .poll(
+        async () => {
+          const run = await api.run(pairRun)
+          for (const m of run.members) if (m.sessionId) ids[m.name] = m.sessionId
+          const [a, b] = await Promise.all([ids.one, ids.two].map((id) => (id ? api.session(id).then((s) => s.status) : Promise.resolve(''))))
+          return `${a},${b}`
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('running,running')
+    await api.ok('POST', `/api/sessions/${ids.one}/attention`, { state: 'working' })
+    await api.ok('POST', `/api/sessions/${ids.two}/attention`, { state: 'done' })
+    for (const [id, want] of [[ids.one!, 'working'], [ids.two!, 'done']] as const) await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe(want)
+    const list = page.locator('[data-session-list="sidebar"]')
+    const block = list.locator(`[data-sidebar-section="working"] [data-sidebar-run-block="${pairRun}"]`)
+    await expect(block.locator('[data-sidebar-run-group]')).toContainText('1 working · 1 finished', { timeout: 15_000 })
+    await expect(list.locator(`[data-sidebar-run-block="${pairRun}"]`)).toHaveCount(1)
+    await expect(list.locator(`[data-sidebar-section="finished"] [data-sidebar-run-block="${pairRun}"]`)).toHaveCount(0)
+  } finally {
+    if (pairRun) await api.stopRun(pairRun)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(pair)}`)
+  }
+})
+
+test.describe('on a server of its own', () => {
+  let own: OwnServer
+  test.beforeAll(async () => {
+    own = await ownServer('sidebar-split')
+  })
+  test.afterAll(async () => {
+    await own?.stop()
+  })
+
+  test('Working and Finished are each drawn only while they have rows', async ({ browser }) => {
+    const s = await own.api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e split alone' })
+    try {
+      await expect.poll(async () => (await own.api.session(s.id)).status, { timeout: 30_000 }).toBe('running')
+      await own.api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
+      await expect.poll(async () => (await own.api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
+      const page = await dayPage(browser, { server: own.started, path: '/crews' })
+      const list = page.locator('[data-session-list="sidebar"]')
+      await expect(list.locator(`[data-sidebar-section="working"] [data-sidebar-row="s:${s.id}"]`)).toBeVisible()
+      await expect(list.locator('[data-sidebar-section="finished"]')).toHaveCount(0)
+      await own.api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'done' })
+      await expect.poll(async () => (await own.api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('done')
+      await expect(list.locator(`[data-sidebar-section="finished"] [data-sidebar-row="s:${s.id}"]`)).toBeVisible()
+      await expect(list.locator('[data-sidebar-section="working"]')).toHaveCount(0)
+    } finally {
+      await own.api.stopSession(s.id)
+    }
+  })
 })
 
 // The pages as six tiles (the UX review's P6): the full sidebar's foot is Needs you, Yard, Crews, Dispatch, Brakeman and More in two

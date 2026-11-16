@@ -488,6 +488,19 @@ open deferred item from rounds 1 and 2, then the features below.
   read, the questions still listed. The palette's two groups of what waits
   are one, "Needs you": answer-all, the questions, the decisions as "Answer
   dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
+- **Finished apart from working (UX1 PR-14, #929).** Running splits in two.
+  The sidebar's sections are Needs you, Finished, Working, Shared with you
+  and Exited, in the order of how hard a thing waits on you. Finished holds
+  the agents that ended their turn and wait for your next word, grey,
+  "finished 12m ago", the latest finished first; Working holds the agents in
+  a turn and the agents that send no signal (running, starting), each with
+  its own mark. A host away that asks stays in Needs you; one that does not
+  ask sits in Exited, "host away". A run sits once, in the section of its
+  busiest member, and its line says "started 08:31 · 4 agents · 2 working ·
+  2 finished"; its capsule on the rail reads the same state. Each section is
+  drawn only while it has rows; a fold saved for Running folds Working, and
+  Finished starts unfolded. The palette's Running group is Finished then
+  Working, and its fold actions name the five sections.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -3001,7 +3014,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
 - The counts: Needs you is the one number of what needs you (UX1 PR-13);
-  Running is that section's live sessions; Exited is that section's.
+  Finished and Working are their sections' live sessions; Exited is that
+  section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run
   header offers Share run, Stop run and Open run; a member has its own Share
@@ -8083,11 +8097,20 @@ screen. Nothing said which was the plan and which the thing running.
   changed and, while a run is live, says the run keeps the version it
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
-  (one card per live run: badge, the members as chips in the crew's shape
-  with a status mark each, a line per member that asks with Answer beside it,
-  up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
-  shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
-  alone", where it runs, the last runs as bars, Edit, Launch run).
+  (one card per live run: badge, the run drawn as lines, a line per member
+  that asks with Answer beside it, up time, Stop, Open run) above "Saved
+  crews" (a table: name and goal, the shape in miniature with words such as
+  "5 · a chain of 3, 1 by hand, 1 alone", where it runs, the last runs as
+  bars, Edit, Launch run). Since UX1 PR-34 the shape and the card are the
+  run page's line drawing (`RunLineDiagram`) at two small sizes: the Shape
+  column draws a crew with tasks by its tasks (the list's task shape, `GET
+  /api/crews?tasks=1`) and any other by its members' start rules
+  (`memberNodes`: a member after another needs it), its stations hollow
+  and a member started by hand dashed, at most 150 px wide; a live run's
+  card draws its tasks lit by their states, or its members by theirs, at
+  most 520 px wide with their names. A crew's banner for a live run says
+  the run's one sentence (`runStatusLine`), its icon neutral and its edge
+  amber only while something needs a person.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.

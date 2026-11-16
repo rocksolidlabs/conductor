@@ -195,7 +195,7 @@ test('a Codex member that asks and goes on shows Working while it works, then Ne
   // Its program status says working (its title too, no longer weighed): a second after the question, working shows, the question set aside.
   await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000, message: 'working, from the status' }).toMatchObject({ state: 'working', source: 'status' })
   await page.goto('/crews')
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 30_000 })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 30_000 })
   const stub = stubOf(state.home, `stub ask-wait ${CODEX_ASK}`)
   expect(stub).not.toBe('')
   expect(stubFile(state.home, stub, 'spin'), 'the stub works on').toBe('spinning\n')

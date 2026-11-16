@@ -244,6 +244,16 @@ export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
   else await r.locator('a[href]').first().focus()
   const panel = page.locator(`[data-row-panel][data-panel-for="${id}"]`)
   await expect(panel).toBeVisible()
+  // The panel scales in as it opens (the popover's 100 ms): it is returned at rest, its opening animations ended, so that a spec
+  // that measures it does not measure a panel still moving.
+  await panel.evaluate((el) =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect instanceof KeyframeEffect && a.effect.target instanceof Element && a.effect.target.contains(el))
+        .map((a) => a.finished.catch(() => undefined)),
+    ).then(() => undefined),
+  )
   return panel
 }
 
