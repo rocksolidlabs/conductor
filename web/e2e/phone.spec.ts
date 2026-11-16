@@ -51,7 +51,7 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'phone asker' })
   sessions.push(s.id)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
-  // The list itself (the first load of / in a tab lands on Needs your decision while an item waits: decision-page.spec.ts).
+  // The list itself (the first load of / in a tab lands on Needs you while an item waits: decision-page.spec.ts).
   await phone.goto('/sessions')
   await expect(phone).toHaveURL(/\/sessions$/)
   const list = phone.locator('[data-session-list="page"]')
@@ -60,12 +60,12 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   // No hamburger, no slideover: the sidebar's own list is not even rendered below lg.
   await expect(phone.locator('[data-session-list="sidebar"]')).toHaveCount(0)
   await expect(phone.locator('[data-slot="toggle"]')).toHaveCount(0)
-  // The bar: five targets of at least 44 px, Decide first (Needs your decision, with its count), then Sessions, the Yard (with its
-  // count), Crews and More; Events is under More.
+  // The bar: five targets of at least 44 px, Needs you first (with the one number), then Sessions, the Yard (with its grid's asking
+  // sessions), Crews and More; Events is under More.
   const bar = phone.locator('[data-bottom-bar]')
   const tabs = bar.locator('[data-bottom-tab]')
   await expect(tabs).toHaveCount(5)
-  await expect(tabs).toHaveText([/Decide/, /Sessions/, /Yard/, /Crews/, /More/])
+  await expect(tabs).toHaveText([/Needs you/, /Sessions/, /Yard/, /Crews/, /More/])
   await expect(bar.locator('[data-bottom-tab="decide"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)
   for (let i = 0; i < 5; i++) expect((await tabs.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(44)
   await expect(bar.locator('[data-bottom-tab="yard"] [data-bottom-count]')).toHaveText(/^[1-9]\d*$/)

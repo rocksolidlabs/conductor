@@ -15,6 +15,7 @@ import { joinedPath } from '~/utils/joined'
 import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
 import { PAGES, palettePages } from '~/utils/pages'
+import { needsCount } from '~/utils/needsYou'
 import { capGroup, parsePrefix, parseVerb, placeAfter, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
@@ -121,6 +122,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
   const decisions = useDecisions()
+  const oneList = useNeedsYou()
   const decisionModal = useDecisionModal()
   const route = useRoute()
   const people = usePeople()
@@ -465,11 +467,11 @@ export function usePaletteRows(ctx: PaletteContext) {
 
   /** Go to: the pages of the one table (utils/pages.ts), each with its sentence as its second line (so searched), then OTHER_ROWS. */
   function pageItems(): PaletteItem[] {
-    const n = attention.count.value
-    const d = inbox.count.value
+    // Needs you's row carries the one number (useNeedsYou), the nav's; no other row counts what needs you.
+    const d = oneList.number.value ? needsCount(oneList.list.value) : ''
     const pages: PaletteItem[] = palettePages({ desktop: desktop.isDesktop.value }).map((p) => ({
       key: `go:${p.id}`,
-      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `${p.title} · ${d} waiting` : p.title,
+      label: p.id === 'decisions' && d ? `${p.title} · ${d} waiting` : p.title,
       detail: p.about,
       icon: p.icon,
       kbds: [...(p.chord ?? [])],

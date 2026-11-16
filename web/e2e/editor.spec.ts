@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The editor area (design 4b, 4c, 4f): a file chosen in the Files pane opens
 // in Monaco above a shrunk terminal, with a tab strip, the breadcrumb, the
@@ -18,7 +18,7 @@ test('a file opens in the editor above the terminal; tabs, folding, closing, a l
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'editor', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const tree = page.locator('[data-files-tree]')
     await expect(tree.locator(`[data-file-node="${cwd}/internal"]`)).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-editor-area]')).toHaveCount(0)

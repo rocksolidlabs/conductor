@@ -2,7 +2,7 @@ import type { SessionInfo } from '~/composables/useSessions'
 import type { Decision } from '~/utils/decisions'
 import { runRuns } from '~/utils/decisions'
 import { isEnded } from '~/utils/attention'
-import { inboxOrder, questionRef, refParts, type InboxSummary } from '~/utils/inbox'
+import { inboxOrder, questionRef, RECENT_MS, refParts, type InboxSummary, type RecentEntry } from '~/utils/inbox'
 
 /**
  * What needs a person, as one list (the UX review's X-needs-model): every count of it on the desktop reads this, never a number made
@@ -111,4 +111,49 @@ export function needsYou(input: NeedsInput): NeedsYou {
     known: read && !cut,
     more: read && cut,
   }
+}
+
+/** The one number as a reader draws it: "9", "9+" past a store cut short, and nothing while it is not known (unknown is not zero). */
+export function needsCount(n: Pick<NeedsYou, 'number' | 'known' | 'more'>): string {
+  if (n.known) return String(n.number)
+  return n.more ? `${n.number}+` : ''
+}
+
+/**
+ * Whether Needs you's row shows in the nav. It shows while the one number is not known (a store unread, failed or cut short), while an
+ * item waits, while a record is answered and not yet applied (`tracking`), while something was decided in the last day (the server's
+ * `closed`, or this browser's `recent`), and while its page is open; it leaves when nothing waits and nothing was decided that day. On
+ * a switchyard, which serves no inbox, it is hidden.
+ */
+export function needsRowShown(
+  state: { unavailable: string; tracking: number; closed: ReadonlyArray<Pick<InboxSummary, 'closed' | 'since'>>; recent: ReadonlyArray<Pick<RecentEntry, 'at'>> },
+  needs: Pick<NeedsYou, 'number' | 'known'>,
+  path: string,
+  now: number,
+): boolean {
+  if (state.unavailable) return false
+  if (path === '/decisions' || path.startsWith('/decisions/')) return true
+  if (!needs.known || needs.number > 0 || state.tracking > 0) return true
+  const within = (t: number) => !Number.isNaN(t) && now - t < RECENT_MS
+  return state.closed.some((c) => within(Date.parse(c.closed ?? c.since))) || state.recent.some((e) => within(e.at))
+}
+
+/**
+ * The sidebar section's header, while it lists fewer kinds than the page (questions and the decisions of runs that run): its own count
+ * and the items of the one list it does not list (plans, tasks, the open decisions of stopped runs), counted from the list, never as a
+ * difference of two stores. "Needs you 6 · +3 on the page"; "Needs you 6" when it lists them all.
+ */
+export function sectionHeader(listed: number, items: readonly NeedsItem[]): { listed: number; more: number; words: string } {
+  const more = items.filter((it) => it.kind === 'plan' || it.kind === 'task' || (it.kind === 'decision' && it.stopped)).length
+  return { listed, more, words: more ? `Needs you ${listed} · +${more} on the page` : `Needs you ${listed}` }
+}
+
+/** The items the pill cannot answer (plans and tasks, answered on the page). */
+export function unanswerable(items: readonly NeedsItem[]): number {
+  return items.filter((it) => it.kind === 'plan' || it.kind === 'task').length
+}
+
+/** The pill's count: "2 of 4", and " · 2 more in Needs you" for the items it cannot answer. */
+export function pillWords(n: number, of: number, more: number): string {
+  return `${n} of ${of}${more ? ` · ${more} more in Needs you` : ''}`
 }

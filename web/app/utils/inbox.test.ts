@@ -41,6 +41,11 @@ import {
   decisionIdOf,
   inboxKindWords,
   inboxSections,
+  atZero,
+  INBOX_KINDS,
+  kindLook,
+  lastClosedWords,
+  pickShown,
   isDecisionRef,
   type InboxAction,
   type InboxItem,
@@ -465,5 +470,52 @@ describe("an item's time", () => {
     expect(itemTimeWords({ kind: 'task', since, now: 'run r is no longer held by the engine (it stopped and was let go): build is failed, and a command on it needs the run continued', actions: [] }, now)).toBe('')
     expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is approved', actions: [], delivery: [recorded] }, now)).toBe('answered 30m ago')
     expect(itemTimeWords({ kind: 'plan', since, now: 'revision 3 is withdrawn', actions: [] }, now)).toBe('')
+  })
+})
+
+describe('the page at zero (UX1 PR-6)', () => {
+  const row = (ref: string, tracking?: boolean) => ({ ref, kind: 'decision', since: '', title: ref, brief: '', question: '', answerer: '', actions: [], ...(tracking ? { tracking } : {}) })
+  const answered = { loaded: true, total: 0, tracking: 0, unavailable: '', error: '', items: [] as ReturnType<typeof row>[] }
+
+  it('marks the four kinds four ways, and an unknown kind by its own name', () => {
+    const looks = INBOX_KINDS.map(kindLook)
+    expect([...INBOX_KINDS]).toEqual(['question', 'plan', 'task', 'decision'])
+    expect(new Set(looks.map((l) => l.icon)).size).toBe(4)
+    expect(looks.map((l) => l.word)).toEqual(['Question', 'Plan', 'Task', 'Decision'])
+    expect(kindLook('decision').icon).toBe('i-lucide-scale')
+    for (const l of looks) expect(l.line).toMatch(/^A /)
+    expect(kindLook('ticket')).toEqual({ icon: 'i-lucide-circle-help', word: 'ticket', line: 'ticket' })
+  })
+
+  it('is at zero only for a list read and answered, nothing open, nothing answered and not yet applied, no item in the query', () => {
+    expect(atZero(answered, '')).toBe(true)
+    expect(atZero({ ...answered, loaded: false }, ''), 'before the first read').toBe(false)
+    expect(atZero({ ...answered, error: 'the server could not be reached' }, ''), 'after a failed read').toBe(false)
+    expect(atZero({ ...answered, loaded: false, error: 'the server could not be reached' }, ''), 'a first read that failed').toBe(false)
+    expect(atZero({ ...answered, unavailable: 'decisions are answered where the work runs' }, ''), 'a switchyard').toBe(false)
+    expect(atZero({ ...answered, total: 1, tracking: 1, items: [row('decision:dr-1', true)] }, ''), 'one tracking row').toBe(false)
+    expect(atZero({ ...answered, total: 1, items: [row('decision:dr-1')] }, ''), 'one open row').toBe(false)
+    expect(atZero(answered, 'decision:dr-1'), 'an item in the query').toBe(false)
+  })
+
+  it('asks to pick an item only while there is one to pick', () => {
+    expect(pickShown({ open: [], tracking: [] }, '')).toBe(false)
+    expect(pickShown({ open: [row('decision:dr-1')], tracking: [] }, 'decision:dr-1')).toBe(false)
+    expect(pickShown({ open: [row('decision:dr-1')], tracking: [] }, '')).toBe(true)
+    expect(pickShown({ open: [], tracking: [row('decision:dr-2', true)] }, '')).toBe(true)
+  })
+
+  it("says when the last one closed, by the newer of the server's records and this browser's acts, and nothing it cannot know", () => {
+    const now = Date.parse('2026-11-16T12:00:00Z')
+    const twoHours = { closed: new Date(now - 2 * 3_600_000).toISOString() }
+    const oneHour = { at: now - 3_600_000 }
+    expect(lastClosedWords([twoHours], [oneHour], now)).toBe('The last one closed 1h ago.')
+    expect(lastClosedWords([twoHours], [], now)).toBe('The last one closed 2h ago.')
+    expect(lastClosedWords([{ closed: new Date(now - 3_600_000).toISOString() }], [{ at: now - 2 * 3_600_000 }], now)).toBe('The last one closed 1h ago.')
+    expect(lastClosedWords([], [], now)).toBe('')
+    expect(lastClosedWords([{}], [], now)).toBe('')
+    expect(lastClosedWords([{ closed: new Date(now + 3_600_000).toISOString() }], [], now), 'an hour ahead').toBe('')
+    expect(lastClosedWords([], [{ at: now + 3_600_000 }], now), 'an act an hour ahead').toBe('')
+    expect(lastClosedWords([{ closed: 'not a time' }], [], now)).toBe('')
   })
 })

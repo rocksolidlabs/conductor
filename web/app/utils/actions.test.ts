@@ -21,6 +21,11 @@ describe('the action descriptors', () => {
     }
     expect(accountItems(true, account)).toEqual(toMenuItems(accountActions(true, account)))
     expect(accountItems(false, account)).toEqual(toMenuItems(accountActions(false, account)))
+    const withPhone = { ...account, phone: () => {} }
+    expect(accountItems(true, withPhone)).toEqual(toMenuItems(accountActions(true, withPhone)))
+    const tools = accountActions(true, withPhone)[1]!
+    expect(tools.map((a) => a.id)).toEqual(['shortcuts', 'theme', 'phone'])
+    expect(tools[2]).toMatchObject({ kind: 'account', label: 'Open on your phone', icon: 'i-lucide-smartphone' })
   })
 
   it('name their kind, their target and the question a destructive one asks', () => {

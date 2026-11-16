@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Request } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The Markdown preview (#166): a `.md` file in the editor shown rendered by
 // the header's Preview, a Mermaid block drawn, raw HTML shown as text, a
@@ -104,7 +104,7 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     // A mark on the window: a navigation of the page would lose it.
     await page.evaluate(() => ((window as unknown as { __alive: boolean }).__alive = true))
     const alive = () => page.evaluate(() => (window as unknown as { __alive?: boolean }).__alive === true)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     const box = pane.locator('[data-files-box] input, input[data-files-box]').first()
     await box.fill('README.md')
