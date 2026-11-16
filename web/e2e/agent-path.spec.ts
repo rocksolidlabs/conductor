@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, constants, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
@@ -8,9 +8,13 @@ import { agentFreePath, CATALOG_PROGRAMS, renderConfig, repoRoot, serverPath, ST
 // #961: an e2e server ran with the caller's PATH, so on a machine with an agent CLI installed the built-in catalog found it and the
 // server ran its version probe with the test's HOME; stopped soon after it started, the server left the probe running, and it wrote
 // into the test's folder after the folder was removed. Every program the built-in catalog names is faked here on a PATH the test
-// gives: a fake writes its pid as it starts, then waits on a FIFO nothing writes, so it is still there when the server stops unless
-// the stop ends it. The real CLIs of the machine are never run: the fakes come first on that PATH, ahead of any directory stubBash
-// puts there for its bash, and the control checks that they cover every program the built-in catalog names before its server starts.
+// gives: a fake writes its pid as it starts, then waits on a FIFO nothing writes; the test ends what is left by its process group.
+// This spec proves that a test server's PATH holds no agent CLI, and the control that a server given the agent CLIs finds the fakes,
+// runs their probes, and never runs a program of a catalog name behind them, so the machine's real CLIs are never run: the fakes come
+// first on that PATH, ahead of any directory stubBash puts there for its bash, and cover every program the built-in catalog names
+// before its server starts. It does not prove that a server's stop ends its probes: a probe ends by itself at the product's own bound
+// (3 s), which a spec cannot move, so a probe gone after the stop says nothing of the stop. The Go tests prove that
+// (internal/api/probe_stop_test.go, internal/agents/probe_group_test.go), with a probe whose bound is an hour.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const servers: Started[] = []
@@ -36,16 +40,6 @@ function ranPids(marks: string): number[] {
     .filter((f) => CATALOG_PROGRAMS.includes(f))
     .map((f) => Number(readFileSync(join(marks, f), 'utf8').trim()))
     .filter((pid) => pid > 0)
-}
-
-/** The code of the error f throws, or 'no error'. */
-function fails(f: () => unknown): string {
-  try {
-    f()
-    return 'no error'
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code ?? String(e)
-  }
 }
 
 const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`
@@ -139,48 +133,41 @@ test('a test server finds none of the built-in catalog\'s programs, and a fake a
   expect(readdirSync(marks), 'a fake agent CLI was run').toEqual([])
 })
 
-// The control, and the stop's own rule: with the agent CLIs on its PATH (the live check's server) the server finds the fakes and runs
-// their probes, which the test above would see; its stop ends every probe under way, so none is left to write after it.
-test('a server stopped while its probes run leaves none of them running', async ({ state }) => {
+// The control: with the agent CLIs on its PATH (the live check's server) the server finds the fakes and runs their probes, which the
+// test above would see. A program of each catalog name put behind the fakes stands for the machine's real CLI: none is ever found or run.
+test('a server given the agent CLIs finds the fakes ahead of them, runs their probes, and never runs a program behind them', async ({ state }) => {
   // The start, the two polls' bounds and the stop's: each bounds a hang.
-  test.setTimeout(START_WAIT_MS + 30_000 + 60_000 + 30_000)
-  const { o, bin, marks, hold } = own(state, 'stopped')
+  test.setTimeout(START_WAIT_MS + 30_000 + 30_000 + 30_000)
+  const { o, bin, marks } = own(state, 'control')
+  const behind = join(dirname(bin), 'behind')
+  const behindMarks = join(dirname(bin), 'behind-marks')
+  for (const d of [behind, behindMarks]) mkdirSync(d, { recursive: true })
+  for (const program of CATALOG_PROGRAMS) writeFileSync(join(behind, program), `#!/bin/sh\ntouch ${quote(join(behindMarks, program))}\n`, { mode: 0o755 })
+  const first = `${bin}:${behind}`
   // Before a server is given the caller's PATH: the fakes cover every program the built-in catalog runs by name (one added later and
   // not faked fails here, before its real CLI could be found behind them), and they come first on the PATH this server is given.
   const named = builtInPrograms()
   expect(named.length, 'no program read from internal/catalog/defaults.go').toBeGreaterThan(0)
   for (const program of named) expect(CATALOG_PROGRAMS, `the built-in catalog names ${program}: add it to CATALOG_PROGRAMS in web/e2e/server.ts`).toContain(program)
-  expect(serverPath({ ...o, realAgents: true }, stubBash().path).split(':')[0]).toBe(bin)
-  const s = await startServer({ ...o, realAgents: true })
+  expect(serverPath({ ...o, first, realAgents: true }, stubBash().path).split(':').slice(0, 2)).toEqual([bin, behind])
+  const s = await startServer({ ...o, first, realAgents: true })
   servers.push(s)
 
-  // The quick read starts the lookups and the probes and waits for none; Copilot's probe is the fake's, which waits on the FIFO.
+  // Every catalog name is found among the fakes, none behind them.
+  for (const program of CATALOG_PROGRAMS) {
+    const found = await call<{ found: boolean; path?: string }>(s, 'POST', '/api/catalog/check', { command: [program] })
+    expect(found.path, `${program} is not found among the fakes`).toBe(join(bin, program))
+  }
+  // The quick read starts the lookups and the probes and waits for none; Copilot's probe is the fake's.
   await call(s, 'GET', '/api/catalog?wait=0')
   const mark = join(marks, 'copilot')
   await expect.poll(async () => {
     if (!existsSync(mark)) await call(s, 'GET', '/api/catalog?wait=0')
     return existsSync(mark)
   }, { timeout: 30_000 }).toBe(true)
-  // The stop must be what ends a probe: one ends by itself 3 s after it starts (the product's bound, which an e2e server cannot
-  // change), and its end then says nothing of the stop's. The server is stopped once a fake is seen running, a probe forced (a check
-  // with the adapter) for as long as none is.
-  const runningFake = () => ranPids(marks).some((pid) => fails(() => process.kill(pid, 0)) === 'no error')
-  let forcing: Promise<unknown> | undefined
-  await expect.poll(() => {
-    if (runningFake()) return true
-    forcing ??= call(s, 'POST', '/api/catalog/check', { command: ['copilot'], adapter: 'copilot' }).catch(() => undefined).finally(() => (forcing = undefined))
-    return false
-  }, { timeout: 60_000, intervals: [50] }).toBe(true)
 
   await stopServer(servers.pop()!.pid)
-  await forcing
-
-  const ran = ranPids(marks)
-  expect(ran.length).toBeGreaterThan(0)
-  for (const pid of ran) expect(fails(() => process.kill(pid, 0)), `a probe (pid ${pid}) is still running after the server's stop`).toBe('ESRCH')
-  // Nothing reads the FIFO any more, so nothing can go on to write.
-  expect(fails(() => closeSync(openSync(hold, constants.O_WRONLY | constants.O_NONBLOCK))), 'a probe still reads its FIFO after the server\'s stop').toBe('ENXIO')
-  expect(readdirSync(marks).filter((f) => f.endsWith('.late'))).toEqual([])
+  expect(readdirSync(behindMarks), 'a program behind the fakes was run').toEqual([])
 })
 
 // The PATH's building, with no server started.
@@ -227,6 +214,31 @@ test('a PATH directory changed since it was judged is judged again: an agent CLI
   // A change dated now, within the file system's tick, is judged at every call.
   program(dir, 'tool-c')
   expect(readdirSync(agentFreePath(dir, into)).sort()).toEqual(['tool-a', 'tool-b', 'tool-c'])
+})
+
+test('a PATH directory is judged by its entries: a catalog program\'s link whose target is missing takes it off from the first call', ({ state }) => {
+  const root = scratch(state, 'dangling')
+  const dir = join(root, 'bin')
+  const targets = join(root, 'targets')
+  const into = join(root, 'links')
+  for (const d of [dir, targets]) mkdirSync(d, { recursive: true })
+  program(dir, 'tool-a')
+  // A tool the suite needs, reached by a link: kept. The catalog program's link points at nothing just now.
+  program(targets, 'needed')
+  symlinkSync(join(targets, 'needed'), join(dir, 'needed'))
+  symlinkSync(join(targets, 'copilot'), join(dir, 'copilot'))
+  // Dated well past, so the judgement and its links are kept.
+  const t = new Date(Date.now() - 90_000)
+  utimesSync(dir, t, t)
+  const mtime = statSync(dir, { bigint: true }).mtimeNs
+  const links = agentFreePath(dir, into)
+  expect(links, 'a directory with a dangling catalog link is handed on as it is').not.toBe(dir)
+  expect(readdirSync(links).sort()).toEqual(['needed', 'tool-a'])
+  // The target comes back elsewhere: the directory itself is unchanged, and still filtered.
+  program(targets, 'copilot')
+  expect(statSync(dir, { bigint: true }).mtimeNs).toBe(mtime)
+  expect(agentFreePath(dir, into)).toBe(links)
+  expect(readdirSync(links).sort()).toEqual(['needed', 'tool-a'])
 })
 
 test('a PATH directory that holds a catalog program and cannot be listed fails the server\'s start, naming the cause', ({ state }) => {

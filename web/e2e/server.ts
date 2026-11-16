@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -74,6 +74,16 @@ fi`
  */
 export const CATALOG_PROGRAMS: readonly string[] = ['claude', 'codex', 'agy', 'copilot', 'cursor-agent', 'opencode', 'pi', 'omp', 'aider', 'goose', 'amp', 'dsh']
 
+/** Whether path is an entry of its directory, of any kind (a file, a link, a link whose target is missing), its link not followed. */
+function isEntry(path: string): boolean {
+  try {
+    lstatSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Each PATH directory's judgement, with the modification time it was made at: a directory changed since is judged again. */
 const judged = new Map<string, { mtime: bigint; holds: string[] }>()
 
@@ -103,7 +113,8 @@ export function agentFreePath(path: string, into: string): string {
       const settled = BigInt(Date.now()) * 1_000_000n - mtime > 2_000_000_000n
       let j = judged.get(dir)
       if (j?.mtime !== mtime || !settled) {
-        j = { mtime, holds: CATALOG_PROGRAMS.filter((name) => existsSync(join(dir, name))) }
+        // By the entry itself (lstat), never what it points to: a link whose target is missing just now is a program once it is back.
+        j = { mtime, holds: CATALOG_PROGRAMS.filter((name) => isEntry(join(dir, name))) }
         if (settled) judged.set(dir, j)
       }
       if (j.holds.length === 0) return entry
