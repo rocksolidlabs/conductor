@@ -486,6 +486,14 @@ add its rule here.
   aborts the connection (`panic(http.ErrAbortHandler)` in `githubtest`),
   proved with the client's close_notify sent and its socket left open to
   read (`CloseWrite`).
+- Switching a page's interception on or off (its first route added, its
+  last removed) while the page has requests on their way can leave one
+  unanswered. Seen with Playwright 1.44: the launch sheet's capacity
+  GET, asked as `page.unroute` ended, was never answered until the
+  store's 30 s deadline aborted it, and the line stayed `never_read`
+  (`capacity-crew.spec.ts`, #281). A spec that routes the page while
+  it works keeps a route that lets everything through, set before the
+  page loads (its `beforeEach`), and puts its own on top of it.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
