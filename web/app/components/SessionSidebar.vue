@@ -172,7 +172,19 @@ const listEl = useTemplateRef<HTMLElement>('listEl')
 const focused = ref<string | null>(null)
 /** The row asking whether to stop (`s:<id>`, `r:<runId>`): one at a time, from the keys or a hover Stop. */
 const confirmingId = ref<string | null>(null)
-const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, loneDecisions.value.map((d) => d.id)))
+/** The runs whose "and 2 more" line was pressed: every member shows, for the visit (kept here, never stored). */
+const unfolded = ref<Set<string>>(new Set())
+const rows = computed(() => focusRows(model.value, joined.list.value, folds.value, loneDecisions.value.map((d) => d.id), unfolded.value))
+/** Unfolds a run's members; the focus, when it was on the line, goes to the first member the line held. */
+async function unfoldRun(runId: string) {
+  const had = focused.value === `m:${runId}`
+  const before = new Set(rows.value.map((r) => r.id))
+  unfolded.value = new Set([...unfolded.value, runId])
+  if (!had) return
+  await nextTick()
+  const next = rows.value.find((r) => r.kind === 'session' && r.runId === runId && !before.has(r.id))
+  focusRow(next?.id ?? `r:${runId}`)
+}
 const byId = computed(() => {
   const m = new Map<string, SessionRow | RunBlock>()
   for (const key of ['needs', 'running', 'exited'] as const) {
@@ -186,8 +198,8 @@ const byId = computed(() => {
   return m
 })
 function rowEl(id: string, within = 'a[href]'): HTMLElement | null {
-  // A decision's row is a button: the card opens in place, nothing navigates.
-  const what = id.startsWith('d:') && within === 'a[href]' ? 'button' : within
+  // A decision's row and a run's "and 2 more" line are buttons: the card opens, the run unfolds, in place; nothing navigates.
+  const what = (id.startsWith('d:') || id.startsWith('m:')) && within === 'a[href]' ? 'button' : within
   return listEl.value?.querySelector<HTMLElement>(`[data-sidebar-row="${CSS.escape(id)}"] ${what}`) ?? null
 }
 function focusRow(id: string | null) {
@@ -226,6 +238,7 @@ function openRow(id: string) {
   if (f.kind === 'session') router.push(`/sessions/${f.sessionId}`)
   else if (f.kind === 'run') router.push(`/runs/${encodeURIComponent(f.runId)}`)
   else if (f.kind === 'decision') decisionModal.open(f.decision)
+  else if (f.kind === 'more') void unfoldRun(f.runId)
   else {
     const e = joined.list.value.find((x) => x.id === f.entryId)
     if (e) router.push(joinedPath(e))
@@ -376,6 +389,9 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="needs"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"
@@ -439,6 +455,9 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="running"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"
@@ -490,6 +509,9 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
+              section="exited"
+              :unfolded="unfolded.has((it as RunBlock).runId)"
+              @unfold="unfoldRun"
               @confirm="confirmingId = $event"
               @sheet="openSheet"
               @share-run="shareRun"

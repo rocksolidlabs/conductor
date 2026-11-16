@@ -67,3 +67,46 @@ The rules:
   end"). The table of what a session shows after each step, and the key
   the app gives it, is `internal/session/testdata/status-table.json`,
   which the server's and the app's tests both read.
+
+### Runs and tasks
+
+Decided 2026-11-16 by the maintainers, #925.
+
+A run's tasks, its members, its graph, its cards and Dispatch's card for
+it speak the same language. A task's attempt that works takes its
+session's mark; a task's own states have marks of their own, none of the
+five:
+
+| State | Key | Mark | Word | Means |
+|---|---|---|---|---|
+| Waiting | `waiting` | hollow grey square | waiting, or ready | It waits for the tasks it needs (blocked), or can start when a member is free (ready). |
+| Done | `done` | check in neutral ink | done | It succeeded and its result stands. The forest fill is for the main action alone. |
+| Failed | `failed` | red cross | failed | It ended without a result, and nothing is left to do on it. |
+| Cancelled | `cancelled` | grey dash | cancelled | A person, or a decision, called it off. |
+
+- A task held by a decision still open, and a failed task on which the
+  engine names a command (Retry, Accept anyway: the inbox's own rule),
+  is `needs`. A decision answered and not yet applied is Yardmaster's to
+  apply, not a person's.
+- A running task is its attempt's session's state: working, finished,
+  needs or running; running while no session is known. A task checking
+  its result takes the working mark with the word "checking".
+- A member takes its session's state; a member starting takes the
+  running mark with "starting", one not started the waiting mark with
+  "waiting to start", one that ended `exited`, and one that ended with
+  an error of its own the failed mark.
+- A run says one sentence: "2 of 6 done · 1 working · 1 checking · 2
+  need you" for a run with tasks, "1 working · 2 finished · 1 needs you"
+  for a run of members, and an ended run its outcome: "Succeeded",
+  "Failed", "Cancelled", "Stopped", "Interrupted", or "Ended" for a run
+  of members that all ended. "N need you" counts the things a person can
+  act on in the run, each once: a decision that holds two tasks is one.
+  A ticket's card for a run the page holds only as the ticket's summary
+  says what a summary carries: "2 of 6 done · 2 need you".
+- Every surface gets these from `taskStatus`, `memberStatusOf`,
+  `runStatusLine` and `summaryStatusLine` in `web/app/utils/status.ts`,
+  and draws a mark with `StatusMark.vue`; the marks are `TASK_LOOK`
+  beside `STATUS_LOOK`. A count of a run's tasks is neutral but for what
+  waits on a person (amber) and what failed (red). A run that ended is
+  never green: on the Crews page its bar is neutral (stopped lighter,
+  failed red) and only a live run's bar is the working green.

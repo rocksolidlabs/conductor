@@ -36,21 +36,6 @@ export function runLive(state: RunState): boolean {
   return state === 'running' || state === 'needs_input'
 }
 
-/** A run's state as a badge: its words and its colour. */
-export function runBadge(state: RunState, needs: number): { label: string; color: 'success' | 'warning' | 'neutral' } {
-  switch (state) {
-    case 'needs_input':
-      return { label: `Needs input ${needs}`, color: 'warning' }
-    case 'stopped':
-      return { label: 'Stopped', color: 'neutral' }
-    case 'finished':
-      return { label: 'Finished', color: 'neutral' }
-    case 'interrupted':
-      return { label: 'Interrupted', color: 'warning' }
-  }
-  return { label: 'Running', color: 'success' }
-}
-
 /** What runOffer and memberOffer read of a run. */
 export type OfferRun = Pick<RunInfo, 'stoppedAt' | 'managed' | 'class' | 'record'>
 
@@ -84,21 +69,6 @@ export function memberOffer(status: MemberStatus | undefined, run: OfferRun | nu
  */
 export function sessionResumeOffered(s: Pick<SessionInfo, 'crew'>, runOf: (id: string) => OfferRun | null | undefined): boolean {
   return !s.crew || memberOffer('ended', runOf(s.crew.runId)) === 'resume'
-}
-
-/** A member's status as a dot beside its avatar, and in words. */
-export function memberDot(status: MemberStatus): { label: string; dot: string } {
-  switch (status) {
-    case 'needs_input':
-      return { label: 'needs input', dot: 'bg-warning' }
-    case 'running':
-      return { label: 'running', dot: 'bg-success' }
-    case 'starting':
-      return { label: 'starting', dot: 'bg-info' }
-    case 'ended':
-      return { label: 'ended', dot: 'bg-neutral-400' }
-  }
-  return { label: 'pending', dot: 'bg-transparent ring-1 ring-neutral-400' }
 }
 
 /** How the store reads runs: one (null when the server does not have it), or every run. */

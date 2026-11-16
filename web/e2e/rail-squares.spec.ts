@@ -35,7 +35,9 @@ test('the open session is marked on the rail, and two squares of one agent diffe
   const y = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e rail codex 2', cwd: q3 })
   try {
     await page.goto(`/sessions/${a.id}`)
-    await page.locator('[data-sidebar-collapse]').click()
+    // Folded by its key, pressed once the layout that listens for it has drawn the list.
+    await expect(page.locator('[data-session-list="sidebar"]')).toBeVisible()
+    await page.keyboard.press('Alt+b')
     const rail = page.locator('[data-rail]')
     await expect(rail).toBeVisible()
     const square = (id: string) => rail.locator(`[data-rail-session="${id}"]`)

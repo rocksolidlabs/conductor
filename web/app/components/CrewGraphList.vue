@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { listRows, type CrewGraphData, type GraphNode } from '~/utils/crewGraph'
 import { startWords } from '~/utils/crewWords'
-import { memberDot, memberOffer, type OfferRun } from '~/utils/runs'
+import { memberOffer, type OfferRun } from '~/utils/runs'
+import type { MarkView } from '~/utils/status'
 
 /**
  * The graph on a phone: the members as a list, parents before children,
- * each indented by its depth, with the same status dot, badges and actions
+ * each indented by its depth, with the same status mark, badges and actions
  * as a node. Handoffs are listed under the member that sent them.
  */
-const props = defineProps<{ graph: CrewGraphData; editable?: boolean; run?: OfferRun | null; runId?: string; selected?: string }>()
+const props = defineProps<{ graph: CrewGraphData; marks?: Map<string, MarkView>; editable?: boolean; run?: OfferRun | null; runId?: string; selected?: string }>()
 const emit = defineEmits<{ open: [name: string]; start: [name: string]; select: [name: string] }>()
 
 const rows = computed(() => listRows(props.graph))
@@ -39,8 +40,7 @@ function startLabel(n: GraphNode): string {
         <div class="flex items-center gap-2">
           <SessionAvatar :agent-id="n.member.agentId" :solid="n.state === 'needs_input'" :dashed="n.state === 'ended' || n.state === 'pending'" />
           <span class="truncate text-sm font-semibold">{{ n.id }}</span>
-          <span v-if="n.state" class="size-2 flex-none rounded-full" :class="memberDot(n.state).dot" :title="memberDot(n.state).label" aria-hidden="true" />
-          <UBadge v-if="n.state === 'needs_input'" label="needs input" color="warning" variant="subtle" size="sm" class="flex-none" />
+          <StatusMark v-if="marks?.get(n.id)" :status="marks.get(n.id)!" word class="flex-none" />
           <span class="ml-auto truncate text-[11px] text-muted" :class="n.warning && 'text-warning'">{{ startLabel(n) }}</span>
         </div>
         <div v-if="n.member.branch || n.member.diff || n.member.error" class="flex items-center gap-2 font-mono text-[11px] text-muted">

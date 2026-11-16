@@ -5,7 +5,7 @@ import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
 import { questionOf } from './reply'
 import { agentInitials, relativeTime } from './sessions'
-import { blockStatus, joinedStatus, sessionStatus, statusOfKey, type StatusKey, type StatusView } from './status'
+import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusKey, type StatusView } from './status'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
 export type SidebarMode = 'full' | 'rail'
@@ -56,14 +56,15 @@ export function writeSidebarMode(storage: KeyValueStore, mode: SidebarMode): voi
 
 /**
  * The full sidebar's width, in rem (the unit of the layout's UDashboardGroup): it opens at its minimum on every screen, and a
- * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 16.75 rem (268 px), shows the header's
- * every part whole, the name too, with 10 px to spare (#706): the mark, "Conductor", Alerts, your menu and the collapse button
- * take 225 px of the row with the bundled font, and the header's padding and border 33 px more. A wider font shortens the name
- * first, its whole text in its title. The maximum is never less than the minimum plus `range` rem, so the handle widens it in a
- * window 1024 px wide too, where 26 % is barely the minimum. Nuxt UI clamps only during a drag: `sidebarBounds` gives the
- * bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window changes.
+ * drag widens it up to 26 % of the window, never below the minimum (#437). The minimum, 12.5 rem (200 px), shows the header
+ * whole: the mark, "Conductor" and your menu (Alerts and the collapse to the rail are in your menu), about 186 px with the
+ * header's padding and border. A wider font shortens the name first, its whole text in its title. The maximum is never less
+ * than the minimum plus `range` rem (280 px), so the handle widens it in a window 1024 px wide too, where 26 % is barely more
+ * than the minimum, and there reaches the width at which a row shows its question whole. Nuxt UI clamps only during a drag:
+ * `sidebarBounds` gives the bounds of a window for the drag, and `SIDEBAR_WIDTH` keeps the drawn width within them as the window
+ * changes. A width saved at an earlier minimum is kept as saved.
  */
-export const SIDEBAR_SIZE = { min: 16.75, maxShare: 0.26, range: 5 } as const
+export const SIDEBAR_SIZE = { min: 12.5, maxShare: 0.26, range: 5 } as const
 /** The full sidebar's bounds in a window, in rem. */
 export interface SidebarBounds {
   min: number
@@ -305,6 +306,27 @@ export function blockSubtitle(block: Pick<RunBlock, 'startedAt' | 'stoppedAt' | 
   return agents
 }
 
+/** What a run block draws under its header: its member rows, and the line that stands for the members it folds away. */
+export interface BlockRows {
+  members: SessionRow[]
+  /** "and 2 more · 1 working · 1 finished": the members not shown, counted and told by their status's words (statusTally). */
+  more?: { count: number; words: string }
+}
+
+/**
+ * The rows of a run block in `section`: in Needs you, the members that ask and one line for the rest ("and 2 more · 1 working ·
+ * 1 finished"), so that a crew of six with one question takes two rows; elsewhere, or once `unfolded` (the line pressed, held for
+ * the visit), every member. A run whose members all ask, or none, shows them all.
+ */
+export function blockRows(block: Pick<RunBlock, 'members'>, section: ListSection, unfolded = false): BlockRows {
+  if (section !== 'needs' || unfolded) return { members: block.members }
+  const asking = block.members.filter((m) => m.state === 'needs')
+  const rest = block.members.filter((m) => m.state !== 'needs')
+  if (!asking.length || !rest.length) return { members: block.members }
+  const tally = statusTally(rest.map((m) => sessionStatus(m.session).key))
+  return { members: asking, more: { count: rest.length, words: [`and ${rest.length} more`, tally].filter(Boolean).join(' · ') } }
+}
+
 /** The status keys a folded section shows as marks (utils/status.ts, sessionStatus): a run contributes its members'. At most six. */
 export function sectionPreview(items: readonly SidebarItem[]): StatusKey[] {
   const out: StatusKey[] = []
@@ -367,6 +389,7 @@ export type FocusRow =
   | { id: string; kind: 'run'; runId: string }
   | { id: string; kind: 'shared'; entryId: string }
   | { id: string; kind: 'decision'; decision: string }
+  | { id: string; kind: 'more'; runId: string }
 
 function sessionFocus(row: SessionRow, runId?: string): FocusRow {
   return { id: `s:${row.id}`, kind: 'session', sessionId: row.id, runId, options: row.prompt?.options.length ?? 0 }
@@ -375,24 +398,28 @@ function sessionFocus(row: SessionRow, runId?: string): FocusRow {
 /**
  * The rows a key can land on, in the list's order. `decisions` are Needs you's open durable decisions no shown question mirrors
  * (Program item DR1), drawn after its sessions: a row each (`d:dr-7`), which Enter opens the card of (Codex's round 1 on #719).
+ * A run's members are those `blockRows` shows, then its "and 2 more" line (`m:<runId>`), which Enter unfolds; `unfolded` holds
+ * the runs whose line was pressed.
  */
-export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds, decisions: readonly string[] = []): FocusRow[] {
+export function focusRows(model: SidebarModel, shared: readonly Pick<JoinedEntry, 'id'>[], folds: Folds, decisions: readonly string[] = [], unfolded: ReadonlySet<string> = new Set()): FocusRow[] {
   const out: FocusRow[] = []
-  const add = (items: readonly SidebarItem[]) => {
+  const add = (items: readonly SidebarItem[], section: ListSection) => {
     for (const it of items) {
       if (it.kind === 'run') {
         out.push({ id: `r:${it.runId}`, kind: 'run', runId: it.runId })
-        for (const m of it.members) out.push(sessionFocus(m, it.runId))
+        const shown = blockRows(it, section, unfolded.has(it.runId))
+        for (const m of shown.members) out.push(sessionFocus(m, it.runId))
+        if (shown.more) out.push({ id: `m:${it.runId}`, kind: 'more', runId: it.runId })
       } else out.push(sessionFocus(it))
     }
   }
   if (!folds.needs) {
-    add(model.needs)
+    add(model.needs, 'needs')
     for (const d of decisions) out.push({ id: `d:${d}`, kind: 'decision', decision: d })
   }
-  if (!folds.running) add(model.running)
+  if (!folds.running) add(model.running, 'running')
   if (!folds.shared) for (const e of shared) out.push({ id: `j:${e.id}`, kind: 'shared', entryId: e.id })
-  if (!folds.exited) add(model.exited)
+  if (!folds.exited) add(model.exited, 'exited')
   return out
 }
 
