@@ -565,11 +565,12 @@ describe("a crew launch's revision", () => {
     for (const bad of [rev + 'a', rev.slice(1), rev.toUpperCase(), '']) expect(CREW_REVISION.test(bad)).toBe(false)
     expect(CREW_CHANGED).toBe('crew_changed')
   })
-  it('goes in the body as it was read, beside the name when one was typed', () => {
+  it('goes in the body as it was read, beside the name when one was typed; without one the sheet sends no launch', () => {
     const rev = 'b'.repeat(64)
     expect(crewLaunchBody('  fix login ', rev)).toEqual({ label: 'fix login', revision: rev })
     expect(crewLaunchBody('', rev)).toEqual({ revision: rev })
-    expect(crewLaunchBody(' ', undefined)).toBeUndefined()
-    expect(crewLaunchBody('named', undefined)).toEqual({ label: 'named' })
+    expect(crewLaunchBody(' ', undefined)).toBeNull()
+    expect(crewLaunchBody('named', undefined)).toBeNull()
+    expect(crewLaunchBody('named', '')).toBeNull()
   })
 })

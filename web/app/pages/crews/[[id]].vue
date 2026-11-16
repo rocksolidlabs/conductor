@@ -5,7 +5,7 @@ import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAf
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
-import { SheetConfirmation, targetAfterChanged, type SheetTarget } from '~/utils/crewLaunch'
+import { SheetConfirmation, refusedTarget, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 import { CREW_CHANGED, crewLaunchBody } from '~/utils/protocol'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
@@ -446,18 +446,18 @@ function launchNamed() {
  * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
  * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
  * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most. The launch names
- * the revision of the copy it starts (the one the sheet read, or the draft's save answered): a crew saved since is refused by the server
- * (`crew_changed`, #957), and the sheet, still open, reads it again (`changed`) as a new opening.
+ * the revision of the copy it starts (the one the sheet read, or the draft's save answered), and none is sent without one: a crew saved
+ * since is refused by the server (`crew_changed`, #957), and the sheet, still open, reads it again as a new opening (`refused` says why).
  */
 const crewLaunch = useCrewLaunch()
-const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string; changed?: boolean }>({ open: false, target: null })
+const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string; refused?: SheetRefusal | null }>({ open: false, target: null })
 const confirmation = new SheetConfirmation()
 function openSheet(id: string, label: string) {
   const key = selectedKey.value
   if (!id && (key === undefined || !draft.value)) return
   const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
   confirmation.opened()
-  Object.assign(sheet, { open: true, target, at: key, changed: false })
+  Object.assign(sheet, { open: true, target, at: key, refused: null })
 }
 /** The crew the sheet read is gone: the sheet closes, and the page says so. */
 function sheetGone() {
@@ -531,11 +531,13 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
       toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
       return
     }
+    const body = crewLaunchBody(t.label, c.revision)
+    if (!body) return startedNothing(t, c, 'unrevised', confirmed())
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      launched = await api.launchCrew(c.id, crewLaunchBody(t.label, c.revision))
+      launched = await api.launchCrew(c.id, body)
     } catch (e) {
-      if (e instanceof ApiError && e.code === CREW_CHANGED) changedSinceRead(t, c, confirmed())
+      if (e instanceof ApiError && e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())
       else if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
       return
@@ -573,17 +575,15 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
 }
 
 /**
- * The server refused the launch: the crew was saved since the copy it named (`crew_changed`), and nothing was started. A sheet still open
- * on that opening reads the crew again as a new opening and says why (`changed`); otherwise the page says so.
+ * The launch started nothing (`why`): the server refused it, the crew saved since the copy it named (`crew_changed`), or the crew came
+ * without a revision and no launch was sent. A sheet still open on that opening stays open and says why (refusedTarget: it reads the crew
+ * again, or holds Launch); otherwise the page says so.
  */
-function changedSinceRead(t: SheetTarget, c: CrewInfo, current: boolean) {
-  const again = targetAfterChanged(t, c.id, current && sheet.open && sheet.at === selectedKey.value)
-  if (again) {
-    confirmation.opened()
-    Object.assign(sheet, { target: again, changed: true })
-    return
-  }
-  toast.add({ title: 'The launch was not started', description: `${c.name} was saved since the launch sheet read it: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
+function startedNothing(t: SheetTarget, c: CrewInfo, why: SheetRefusal, current: boolean) {
+  const again = refusedTarget(t, c.id, why, current && sheet.open && sheet.at === selectedKey.value, confirmation)
+  if (again) return void Object.assign(sheet, { target: again, refused: why })
+  const what = why === 'changed' ? 'was saved since the launch sheet read it' : 'came without a revision from this server'
+  toast.add({ title: 'The launch was not started', description: `${c.name} ${what}: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
 }
 
 let tick: number | undefined
@@ -833,7 +833,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
-      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :changed="sheet.changed" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
+      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :refused="sheet.refused" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">
