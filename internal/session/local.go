@@ -432,6 +432,10 @@ type Local struct {
 	// one shown, then each one of its turn after it): a done the same as it
 	// records nothing (setAttentionLooked). Guarded by mu.
 	lastDone Attention
+	// personTyped is closed at the first keys a person writes that reach
+	// the program's text (PersonTyped), once (personOnce).
+	personTyped chan struct{}
+	personOnce  sync.Once
 	// endedTurn is the agent's name for the last turn whose end was
 	// recorded (a done whose report named its turn): a done naming it
 	// again is the same report, however much has happened since, and a
@@ -585,6 +589,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		ended:  make(chan struct{}),
 
 		submitting:  make(chan struct{}, 1),
+		personTyped: make(chan struct{}),
 		attnChanged: make(chan struct{}),
 		nvimEndWait: nvimEndWait,
 	}
@@ -1713,6 +1718,34 @@ func (s *Local) SetAttentionPlan(state AttentionState, message, source, kind str
 // left ErrRateLimited, nothing changed and no plan learnt.
 func (s *Local) TrySetAttentionPlan(state AttentionState, message, source, kind string, options []Option, plan string) error {
 	return s.setAttentionWith(state, message, source, kind, options, spendToken|fromReport, plan)
+}
+
+// PersonTyped is closed at the first keys a person writes that reach the
+// program's text: a viewer's keys (Input, InputContext, InputWaiting)
+// written while no startup question shows or may show (startupMayShow)
+// and no dialog asked during the work shows, a terminal's own report
+// aside; and a person's
+// line (Submission.By or From) naming no question, as its text is
+// written. Keys that answer a startup question or a dialog, a reply to a
+// question and Conductor's own text leave it open. A launch's first
+// message is withdrawn by it (crew.TypeFirstMessage).
+func (s *Local) PersonTyped() <-chan struct{} { return s.personTyped }
+
+// notePersonTyped closes PersonTyped, once.
+func (s *Local) notePersonTyped() {
+	s.personOnce.Do(func() { close(s.personTyped) })
+}
+
+// SetFirstMessage sets Info.FirstMessage ("waiting", or ""), told to
+// OnChange as a rename is when it changes.
+func (s *Local) SetFirstMessage(v string) {
+	s.mu.Lock()
+	changed := s.info.FirstMessage != v
+	s.info.FirstMessage = v
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
 }
 
 // SetAttentionTurn is SetAttentionPlan for a report that names its turn
@@ -3333,6 +3366,13 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		// not yet, read off the screen (startupMayShow): then they did not
 		// enter a stranded line's text, and its hold is kept (rawKeys, #224).
 		startup := s.startupMayShow()
+		if typed && !quiet && question == "" && !isTerminalReport(data) && !startup &&
+			!(shown.State == AttentionNeedsInput && (shown.Source == SourceTrust || shown.Source == SourceQuestion)) {
+			// A person's keys at the program's text, no dialog on show:
+			// a launch's first message, still waiting, is theirs to type
+			// now (PersonTyped).
+			s.notePersonTyped()
+		}
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
 		ownAnswer := question != "" && shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && shown.ID == question

@@ -44,6 +44,13 @@ type createSessionRequest struct {
 	// adapter's flag ("" for the agent's default).
 	Account string `json:"account,omitempty"`
 	Model   string `json:"model,omitempty"`
+	// Message is the launch's first message (P19): typed into the agent
+	// once the session is ready (crew.TypeFirstMessage), at most
+	// proto.MaxSubmit bytes; spaces alone are none. A session launched
+	// with one and no name is named by its first words
+	// (session.NameFromMessage). Kept in memory only, never in Info, the
+	// launch or a record: a resume or a clone never types it again.
+	Message string `json:"message,omitempty"`
 	// login, set by a resume or a Brakeman turn's launch, is the binding
 	// the launch must get again, or Brakeman's folder.
 	login loginWant
@@ -120,14 +127,34 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The first message is weighed before anything starts: past its bound
+	// no process is made.
+	if len(req.Message) > proto.MaxSubmit {
+		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("message: at most %d bytes", proto.MaxSubmit))
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		req.Message = ""
+	}
 	req.ctx = context.WithoutCancel(r.Context())
 	local, aerr := s.createLocalSession(req, nil)
 	if aerr != nil {
 		writeAPIError(w, aerr)
 		return
 	}
-	if agent, ok := s.Catalog().Get(req.AgentID); ok {
+	agent, known := s.Catalog().Get(req.AgentID)
+	if known {
 		s.noteIdentity(local, agent)
+	}
+	if req.Message != "" {
+		// The reply says the message waits; it is typed on a goroutine of
+		// the server's own, which holds its text alone.
+		local.SetFirstMessage("waiting")
+		info := local.Info()
+		fm := crew.FirstMessage{Text: req.Message, PromptShape: known && agent.PromptShape != "", Wait: s.firstWait}
+		s.track(func() { crew.TypeFirstMessage(s.firstCtx, local, fm) })
+		writeJSON(w, http.StatusCreated, info)
+		return
 	}
 	writeJSON(w, http.StatusCreated, local.Info())
 }
@@ -218,6 +245,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}()
 	cwd := folder.Path()
 	name := session.CutSessionName(req.Name)
+	if name == "" && req.Message != "" {
+		// Named by its first message's first words.
+		name = session.NameFromMessage(req.Message)
+	}
 	if name == "" {
 		name = fmt.Sprintf("%s #%d", agent.Name, s.nextCounter())
 	}

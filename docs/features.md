@@ -201,6 +201,24 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
+
+- **The server's side.** `POST /api/sessions` takes `message` (at most
+  4,096 bytes): typed into the agent once the session is ready, by the
+  wait a crew member's prompt takes, held behind every startup question
+  (each noted once in the session's activity), past the cap only at the
+  agent's known prompt when it has one. A person's own keys first
+  withdraw it; a session that ends first gets nothing; each is noted.
+  `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
+  server's memory until typed, then only in the activity as Conductor's
+  own line by `launch`: a resume or a clone never types it again. A
+  nameless launch with a message is named by its first words, cut at a
+  word with "…". The Launch dialog's field is PR-36.
+- **A ticket's launch label (D11).** Cut at a word after the key to 60
+  characters, it ends with "…" now; labels stored before keep their
+  text. One cut rule, `internal/session/testdata/cut-at-word.json`, holds
+  the session's copy and Dispatch's (and the app's, PR-36).
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.
