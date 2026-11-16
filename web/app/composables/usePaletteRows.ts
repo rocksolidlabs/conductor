@@ -3,7 +3,7 @@ import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
-import { kindLook } from '~/utils/inbox'
+import { kindLook, rowLine } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
@@ -66,7 +66,7 @@ const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }>
 export function needsItemRow(it: Pick<NeedsItem, 'kind' | 'ref' | 'summary'>, go: (to: string) => void): PaletteItem {
   const to = `/decisions?item=${encodeURIComponent(it.ref)}`
   const look = kindLook(it.kind)
-  return { key: `needs:${it.ref}`, label: `${look.word}: ${it.summary?.title || it.ref}`, detail: it.summary?.question || it.summary?.brief || undefined, icon: look.icon, state: 'needs', run: () => go(to), href: to }
+  return { key: `needs:${it.ref}`, label: `${look.word}: ${it.summary?.title || it.ref}`, detail: (it.summary && rowLine(it.summary)) || undefined, icon: look.icon, state: 'needs', run: () => go(to), href: to }
 }
 
 /**
