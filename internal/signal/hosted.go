@@ -891,16 +891,6 @@ type HostedSession struct {
 	// it and tells it back: with info.Kept, the host's one snapshot
 	// (HostView). Guarded by mu.
 	reported session.Attention
-	// untold is the latest report forwarded while the host had no
-	// connection to take it (keepLocked), handed to the host as its next
-	// connection starts (attach), before anything the host sends on it is
-	// read; nil for none. One report, of a report's bound; it goes with the
-	// session, and at its end or retirement. forwards numbers the
-	// reports forwarded and untoldAt is untold's, so that a later report is
-	// never put back behind an earlier one. Guarded by mu.
-	untold   *proto.HostAttentionMsg
-	untoldAt uint64
-	forwards uint64
 	// desk is the run a desk carries (desk.go), "" for a session; place
 	// its place among the registry's sessions while it lives.
 	desk  string
@@ -1280,9 +1270,7 @@ func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, 
 // its session then shows) or when the host gives it the shown one's id:
 // the shown one keeps its id, Since and words. A host's done with another
 // id is another turn's (one it finished while it was away) and replaces
-// it, stamped as it is received, as every host report is. A forwarded
-// change is handed to the host on its connection, or kept for its next
-// one while it has none (handTo).
+// it, stamped as it is received, as every host report is.
 func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string, kept []string, turns bool) error {
 	if !state.Valid() {
 		return nil
@@ -1308,11 +1296,6 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		h.mu.Unlock()
 		return ErrRateLimited
 	}
-	var seq uint64
-	if forward {
-		h.forwards++
-		seq = h.forwards
-	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
 	learned := !h.info.Turns && (session.ReportsTurn(state, source) || turns && !forward)
 	if learned {
@@ -1337,12 +1320,10 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 	if forward && state == session.AttentionDone && h.asked && h.info.Attention.State == session.AttentionNeedsInput {
 		// The agent's own question outlasts its turn's done, here as on the
 		// host, which is told the done and tells its attention back.
-		m := hostAttentionMsg("", att, false)
-		if conn == nil {
-			h.keepLocked(m, seq)
-		}
 		h.mu.Unlock()
-		h.handTo(conn, m, seq)
+		if conn != nil {
+			conn.sendJSON(hostAttentionMsg("", att, false))
+		}
 		if learned {
 			h.notifyChange()
 		}
@@ -1351,16 +1332,13 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 	if cur := h.info.Attention; state == session.AttentionDone && cur.State == session.AttentionDone && (forward || id != "" && cur.ID == id) {
 		// The same turn's done: the one shown stays, its id, Since and
 		// words. A forwarded one goes on to the host all the same.
-		m := hostAttentionMsg("", att, false)
 		if !forward {
 			h.reported = cur
 			h.asked = false
-		} else if conn == nil {
-			h.keepLocked(m, seq)
 		}
 		h.mu.Unlock()
-		if forward {
-			h.handTo(conn, m, seq)
+		if forward && conn != nil {
+			conn.sendJSON(hostAttentionMsg("", att, false))
 		}
 		h.notifyChange()
 		return nil
@@ -1382,43 +1360,12 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		h.reported = att
 	}
 	h.asked = ask
-	m := hostAttentionMsg("", att, ask)
-	if forward && conn == nil {
-		h.keepLocked(m, seq)
-	}
 	h.mu.Unlock()
-	if forward {
-		h.handTo(conn, m, seq)
+	if forward && conn != nil {
+		conn.sendJSON(hostAttentionMsg("", att, ask))
 	}
 	h.notifyChange()
 	return nil
-}
-
-// keepLocked keeps m, the report forwarded as seq, for the host's next
-// connection (untold), unless a later report is kept already or the
-// session has ended or left the registry. The caller holds h.mu.
-func (h *HostedSession) keepLocked(m proto.HostAttentionMsg, seq uint64) {
-	if seq > h.untoldAt && !h.retired && !h.info.Status.Ended() {
-		h.untold, h.untoldAt = &m, seq
-	}
-}
-
-// handTo hands m, the report forwarded as seq, to the host on conn, the
-// connection its change found. One conn did not take (it was closing) is
-// sent on the connection that has taken its place, or kept for the next
-// (keepLocked).
-func (h *HostedSession) handTo(conn *HostConn, m proto.HostAttentionMsg, seq uint64) {
-	if conn == nil || conn.sendJSON(m) {
-		return
-	}
-	h.mu.Lock()
-	if now := h.conn; now != nil && now != conn {
-		h.mu.Unlock()
-		now.sendJSON(m)
-		return
-	}
-	h.keepLocked(m, seq)
-	h.mu.Unlock()
 }
 
 // sameAttention says whether a and b show the same, as a session takes a
@@ -2121,7 +2068,7 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 		// host that only went away (host_disconnected) may come back: its
 		// session keeps its state.
 		h.info.Attention = session.Attention{}
-		h.asked, h.untold = false, nil
+		h.asked = false
 	}
 	h.mu.Unlock()
 	h.notifyChange()
@@ -2177,7 +2124,7 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 // would stop it.
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
-	h.retired, h.untold = true, nil
+	h.retired = true
 	for id := range h.linkLapse {
 		h.forgetLink(id)
 	}
