@@ -141,7 +141,8 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // Launch launches a run from the plan revision with the id of the live
 // ticket with the key (ticket.launch), label the run's own name (at most
 // MaxLaunchLabel characters; empty for the ticket's key and title, cut at
-// a word). The expected revision is the ticket's, so what launches is what
+// a word, or its key alone when its title is quoted: readWrote). The
+// expected revision is the ticket's, so what launches is what
 // the person saw (stale_revision otherwise). In the transaction: the
 // ticket live (not_found) and open (invalid: "CND-12 is done: reopen it to
 // launch"), its project not archived (archived); the revision the
@@ -149,7 +150,8 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // approval holding, its intent the ticket's now (stale_plan, naming what
 // changed, the remedy an approval again or a new revision); every
 // attachment and comment it hands over still live and each comment's body
-// the one recorded (stale_plan, naming the first gone or edited, the
+// the one recorded, the steps to reproduce it pins the snapshot's now and
+// each evidence link live (stale_plan, naming the first gone or edited, the
 // remedy a new revision, since the recorded digest is the immutable
 // body's); at most MaxLaunches launches (bound). Then the package is built
 // from the rows (buildPackage, bound past MaxPackage), the run id minted
@@ -222,7 +224,7 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 		if err != nil {
 			return err
 		}
-		if words, stale, err := commentsStale(t.ctx, t.tx, tk, p, body.Comments); err != nil {
+		if words, stale, err := handedStale(t.ctx, t.tx, tk, p, planHanded{Comments: body.Comments, Source: body.Source}); err != nil {
 			return err
 		} else if stale {
 			return refuse(RefusalStalePlan, "%s: revise it", words)
@@ -239,7 +241,15 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 			return err
 		}
 		if label == "" {
-			label = defaultLabel(tk.Key, tk.Title)
+			// A quoted title (readWrote) is not the run's name: the key
+			// alone is.
+			if w, _, err := readWrote(t.ctx, t.tx, tk, FieldTitle); err != nil {
+				return err
+			} else if w {
+				label = tk.Key
+			} else {
+				label = defaultLabel(tk.Key, tk.Title)
+			}
 		}
 		if err := checkField("launch.label", "the label", label); err != nil {
 			return err

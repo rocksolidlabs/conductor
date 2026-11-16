@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -175,5 +175,28 @@ describe("a durable decision's question (Program item DR1)", () => {
     expect(noReply({ state: 'needs_input', source: 'api', kind: 'prompt', options: yesNo })).toBeUndefined()
     expect(noReply({ state: 'needs_input', source: 'api' })).toBeUndefined()
     expect(noReply(undefined)).toBeUndefined()
+  })
+})
+
+describe('a startup question with no choices (#902)', () => {
+  const signIn: Attention = { state: 'needs_input', source: 'trust', kind: 'prompt', id: 'q1', message: "Browser didn't open? Use the url below to sign in" }
+  const trust: Attention = { state: 'needs_input', source: 'trust', kind: 'prompt', id: 'q2', message: 'Is this a project you created or one you trust?', options: [{ label: 'Yes, I trust this folder', input: '\x1b[B\r' }, { label: 'No, exit', input: '\r' }] }
+
+  it('is answered in the terminal, and takes no typed reply anywhere', () => {
+    expect(startupInTerminal(signIn)).toBe(true)
+    expect(noReply(signIn)).toBe(ANSWER_IN_TERMINAL)
+    for (const role of ['control', 'view'] as Role[]) expect(takesReply(signIn, role)).toBe(false)
+    expect(startupInTerminal({ ...signIn, options: [] })).toBe(true)
+  })
+
+  it('is none of the others: one with choices is answered with them, and a question of any other source is as before', () => {
+    expect(startupInTerminal(trust)).toBe(false)
+    expect(noReply(trust)).toBeUndefined()
+    expect(offeredChoices(trust)).toEqual(trust.options)
+    expect(startupInTerminal({ ...signIn, source: 'question' })).toBe(false)
+    expect(startupInTerminal({ ...signIn, source: 'api' })).toBe(false)
+    expect(noReply({ ...signIn, source: 'api' })).toBeUndefined()
+    expect(startupInTerminal({ ...signIn, state: '' })).toBe(false)
+    expect(startupInTerminal(undefined)).toBe(false)
   })
 })

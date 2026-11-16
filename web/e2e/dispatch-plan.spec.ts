@@ -152,7 +152,9 @@ test("a revision proposed from a crew, approved with a note and launched; a seco
   await expect(launch).toHaveAttribute('data-launch-revision', '1')
   await expect(launch.locator('[data-launch-base]')).toHaveText(head.slice(0, 12))
   await expect(launch.locator('[data-launch-yolo]')).toHaveAttribute('data-launch-yolo', yolo ? 'on' : 'off')
-  await expect(launch.locator('[data-launch-label]')).toHaveAttribute('placeholder', `${ticketKey} Plan the login loop`)
+  // The dialog names no run it cannot know: a name may be given, and one left out is the server's, after the ticket.
+  await expect(launch.locator('[data-launch-label]')).toHaveAttribute('placeholder', 'A name for the run, if you want one')
+  await expect(launch.getByText('A run left unnamed is named after the ticket.')).toBeVisible()
   await launch.locator('[data-launch-confirm]').click()
   // The route answers once the run's first ledger transaction is committed and the launch recorded: the launch's own bound, 2 minutes.
   const link = launch.locator('[data-launch-run-link]')

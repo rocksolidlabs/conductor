@@ -207,6 +207,9 @@ type lookupAnswer struct {
 	// onWindows is the path when it is a Windows program seen from inside
 	// WSL, which does not count as installed.
 	onWindows string
+	// known says the lookup answered (or needs none: a relative path); a
+	// lookup still under way is not known yet.
+	known bool
 }
 
 // warmPaths is warm with the resolved paths: what the identity probes run.
@@ -221,10 +224,10 @@ func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[stri
 		}
 		seen[p] = true
 		wg.Go(func() {
-			a := lookupAnswer{installed: true}
+			a := lookupAnswer{installed: true, known: true}
 			if !relativePath(p) {
 				path, ok, known := c.found(ctx, p)
-				a.installed = ok || !known
+				a.installed, a.known = ok || !known, known
 				if ok && known {
 					a.path = path
 					if c.onWindows(path) {
@@ -245,12 +248,15 @@ func (c *lookupCache) warmPaths(ctx context.Context, programs []string) map[stri
 // the shape warmPaths answers: it starts no lookup and waits for none (a
 // turn's read of capacity asks it; warmPaths itself looks programs up). A program
 // it holds nothing of counts as installed, as for a lookup that did not
-// answer in time, with no path.
+// answer in time, with no path, and is not known.
 func (c *lookupCache) held(program string) lookupAnswer {
 	c.mu.Lock()
 	e, had := c.entries[program]
 	c.mu.Unlock()
-	a := lookupAnswer{installed: !had || e.ok}
+	if relativePath(program) {
+		return lookupAnswer{installed: true, known: true}
+	}
+	a := lookupAnswer{installed: !had || e.ok, known: had}
 	if had && e.ok {
 		a.path = e.path
 		if c.onWindows(e.path) {
