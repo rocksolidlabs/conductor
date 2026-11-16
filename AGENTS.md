@@ -203,7 +203,10 @@ add its rule here.
   the thing itself (attempt 2, running) and assert how it got there. A
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
-  broken.
+  broken. A goroutine that has signalled its end (closed its done
+  channel) has not yet returned, so a count of goroutines read once after
+  a stop counts it: poll the count
+  (`TestTheFixtureEndsWhatItsServersStarted`).
 - A starting value is not a result. A threshold the starting state
   already meets (cols above 60 on a session born 80 x 24) passes before
   anything happened, and a settle that compares a read with one made a

@@ -52,4 +52,12 @@ type Decisions interface {
 	// (PR-6), so a viewer of any other link, or a link of the server's
 	// own, has no lane through the switchyard.
 	DecisionLink(linkID, sessionID, runID string) bool
+	// LinkEnded is why the publisher's own link store no longer opens
+	// linkID (session.ErrRevoked from its mark, session.ErrExpired once past
+	// its expiry), nil while it stands. Every viewer that came with a link
+	// asks it beside the switchyard's word, at its attach and at each act
+	// but a resize (peer.authorize), so a link ended here is refused from
+	// then on. A link the publisher does not hold is not
+	// ended. It must not call the session and must not wait.
+	LinkEnded(linkID string) error
 }
