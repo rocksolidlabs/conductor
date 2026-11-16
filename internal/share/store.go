@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -156,7 +157,16 @@ type Store struct {
 	// Log, when set, is told of a revoke or an expiry that returned with
 	// acts still under way, and how many. Set before the store is used.
 	Log *slog.Logger
+
+	// ended are the ids of the Remote links of runs forgotten here
+	// (DeleteRun), which Live answers revoked: oldest first, at most
+	// MaxEnded, each until GoneThere. The id alone, in memory alone.
+	ended []string
 }
+
+// MaxEnded bounds the ids of a forgotten run's links the store keeps as
+// ended (DeleteRun); past it the oldest goes.
+const MaxEnded = 256
 
 // NewStore creates an empty store.
 func NewStore() *Store {
@@ -419,13 +429,17 @@ func (s *Store) Resolve(tok string) (*Link, error) {
 
 // Live returns the link with linkID while it still opens what it was made
 // for: ErrUnknownLink once it is forgotten (its session or run gone, or
-// dropped), ErrRevoked once revoked, ErrExpired once expired. A viewer's
-// attach asks it under the session's lock (session.AttachOptions.Authorize).
+// dropped), ErrRevoked once revoked or kept as ended with its forgotten run
+// (DeleteRun), ErrExpired once expired. A viewer's attach asks it under the
+// session's lock (session.AttachOptions.Authorize).
 func (s *Store) Live(linkID string) (*Link, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	link, ok := s.byID[linkID]
 	if !ok {
+		if slices.Contains(s.ended, linkID) {
+			return nil, ErrRevoked
+		}
 		return nil, ErrUnknownLink
 	}
 	if link.Revoked {
@@ -435,6 +449,14 @@ func (s *Store) Live(linkID string) (*Link, error) {
 		return nil, ErrExpired
 	}
 	return copyLink(link), nil
+}
+
+// GoneThere forgets linkID as ended (DeleteRun): the switchyard has
+// confirmed it holds the link no more.
+func (s *Store) GoneThere(linkID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended = slices.DeleteFunc(s.ended, func(id string) bool { return id == linkID })
 }
 
 // Get returns a link by ID.
@@ -710,7 +732,9 @@ func (s *Store) Count() int {
 
 // DeleteRun forgets every link of a run, as DeleteSession does a session's,
 // and returns the IDs of those that were not revoked: viewers may still be
-// attached through them.
+// attached through them. The id of each Remote one, its viewers coming
+// through a switchyard, whatever it stands at, is kept as ended (Live
+// answers revoked) until GoneThere or MaxEnded newer ones.
 func (s *Store) DeleteRun(runID string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -718,6 +742,12 @@ func (s *Store) DeleteRun(runID string) []string {
 	for id, l := range s.byRun[runID] {
 		if !l.Revoked {
 			live = append(live, id)
+		}
+		if l.Remote {
+			s.ended = append(s.ended, id)
+			if len(s.ended) > MaxEnded {
+				s.ended = slices.Delete(s.ended, 0, len(s.ended)-MaxEnded)
+			}
 		}
 		delete(s.byHash, l.hash)
 		delete(s.byID, id)
