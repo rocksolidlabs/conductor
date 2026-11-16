@@ -42,3 +42,29 @@ func TestARateLimiterForgetsAnIdleClient(t *testing.T) {
 		}
 	}
 }
+
+// A rate limiter looks for idle clients at most once a minute: a client
+// idle for five minutes and more, less than a minute after the last look,
+// is kept until the minute has passed, and forgotten at the next look.
+func TestARateLimiterLooksForIdleClientsOnceAMinute(t *testing.T) {
+	rl := newRateLimiter(1, 2)
+	start := time.Unix(1_000_000, 0)
+	at := start
+	rl.now = func() time.Time { return at }
+	rl.allow("idle")
+	// A look, the idle client idle for less than five minutes.
+	at = start.Add(4*time.Minute + 30*time.Second)
+	rl.allow("other")
+	for _, after := range []time.Duration{5*time.Minute + 10*time.Second, 5*time.Minute + 29*time.Second} {
+		at = start.Add(after)
+		rl.allow("other")
+		if _, ok := rl.buckets["idle"]; !ok {
+			t.Fatalf("a client idle for %v was forgotten %v after the last look", after, after-4*time.Minute-30*time.Second)
+		}
+	}
+	at = start.Add(5*time.Minute + 30*time.Second)
+	rl.allow("other")
+	if _, ok := rl.buckets["idle"]; ok {
+		t.Fatal("a client idle for more than five minutes was kept a minute after the last look")
+	}
+}

@@ -435,10 +435,12 @@ func TestExpireDue(t *testing.T) {
 	}
 }
 
-// A sweep tells its due links' hooks at once: a session link's hook that
-// waits (for its viewers' closes, held here at a gate) holds no other
-// link's, so a run link due in the same sweep is told meanwhile; the sweep
-// returns once both hooks have returned.
+// A sweep tells its due links' hooks at once: a hook that waits (a session
+// link's, for its viewers' closes) holds no other link's. Both hooks here
+// say they are inside and then wait at one gate, which is let go only once
+// both are inside together, so a sweep that told one link after the other
+// fails whichever it told first; the sweep returns once both hooks have
+// returned.
 func TestASweepTellsItsDueLinksTogether(t *testing.T) {
 	s := NewStore()
 	if _, _, err := s.Create("sess", session.RoleControl, "phone", time.Minute); err != nil {
@@ -447,28 +449,30 @@ func TestASweepTellsItsDueLinksTogether(t *testing.T) {
 	if _, _, err := s.CreateRunLink("run", session.RoleControl, "tablet", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	held, gate, told := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	inside, gate := make(chan string, 2), make(chan struct{})
 	s.OnRevoke = func(string, string) {
-		close(held)
+		inside <- "the session link's"
 		<-gate
 	}
-	s.OnRevokeRun = func(string, string) { close(told) }
+	s.OnRevokeRun = func(string, string) {
+		inside <- "the run link's"
+		<-gate
+	}
 	swept := make(chan int, 1)
 	go func() { swept <- s.ExpireDue(time.Now().Add(time.Hour)) }()
-	bound := time.After(20 * time.Second)
-	select {
-	case <-held:
-	case <-bound:
-		t.Fatal("the session link's hook was never told")
+	// A bound on a hang: what the hooks wait for is the gate alone.
+	bound := time.After(10 * time.Second)
+	var in []string
+	for len(in) < 2 {
+		select {
+		case who := <-inside:
+			in = append(in, who)
+		case <-bound:
+			close(gate)
+			t.Fatalf("only %v hook was told while it was held: the sweep tells one link after another", in)
+		}
 	}
-	select {
-	case <-told:
-	case <-bound:
-		close(gate)
-		t.Fatal("the run link's hook waits for the session link's hook")
-	}
-	// The session link's hook is held at its gate: the sweep cannot have
-	// returned.
+	// Both hooks are held at the gate: the sweep cannot have returned.
 	select {
 	case n := <-swept:
 		t.Fatalf("the sweep returned (told %d) with a hook held", n)
@@ -480,7 +484,7 @@ func TestASweepTellsItsDueLinksTogether(t *testing.T) {
 		if n != 2 {
 			t.Fatalf("the sweep told %d links, want 2", n)
 		}
-	case <-bound:
+	case <-time.After(10 * time.Second):
 		t.Fatal("the sweep never returned once its hooks had")
 	}
 }
