@@ -4,6 +4,9 @@ import { agentIcon } from '~/utils/agentIcons'
 import { agentItem } from '~/utils/agents'
 import { argsFrom, memberNameError, startFrom, startValue, type DraftMember } from '~/utils/crews'
 import { startWords } from '~/utils/crewWords'
+import type { AccountsDoc } from '~/composables/useAccounts'
+import { accountChoices, modelProblem, type CapacityQuery } from '~/utils/capacity'
+import { AT_LAUNCH, accountName, memberAccountItems, memberAccountProblem, withAgent } from '~/utils/crewLaunch'
 
 /**
  * The members of a crew, one row each: name, agent, first prompt and when it
@@ -13,15 +16,19 @@ import { startWords } from '~/utils/crewWords'
  * adding a member to a run; `others` are the names outside the table (the
  * run's members), which a row may not take and may start after; `people`
  * the run's people, whose names a row may not take (a person is never a
- * member) and never starts after.
+ * member) and never starts after. A member of an agent whose tool's login Conductor can move (the
+ * adapters `accounts` lists) has a second line: its account (the default at launch, its default login or
+ * an account added in Settings) and its model (empty for none named: the agent, or its arguments, choose).
  */
 const members = defineModel<DraftMember[]>({ required: true })
-const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean }>(), {
+const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; people?: string[]; single?: boolean; host?: string; managed?: boolean; accounts?: AccountsDoc | null; /** The crew's yolo as its launch takes it; undefined for the server's own. */ yolo?: boolean }>(), {
   others: () => [],
   people: () => [],
   single: false,
   host: '',
   managed: false,
+  accounts: null,
+  yolo: undefined,
 })
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
@@ -105,7 +112,42 @@ function rename(key: number, name: string) {
 function setAgent(key: number, agentId: string) {
   // An agent that takes no extra arguments is refused at launch with some: they go with the switch.
   const takesArgs = agentOf(agentId)?.allowArgs ?? true
-  update(key, takesArgs ? { agentId } : { agentId, args: undefined, argsText: '' })
+  // An account and a model are their tool's: another tool's agent names neither (withAgent).
+  members.value = members.value.map((m) => (m.key === key ? { ...withAgent(m, agentId, (id) => agentOf(id)?.adapter), ...(takesArgs ? {} : { args: undefined, argsText: '' }) } : m))
+}
+
+// The server's view of each member's agent with no account named, asked as its launch will be (the run's kind, the crew's yolo), for an
+// agent whose tool's login Conductor moves: the default it resolves, and whether its entry or its launch sets the login, which no account
+// chosen here moves. Until it has answered, nothing is named that the page would have worked out.
+const cap = useCapacity()
+const ask = (agent: string): CapacityQuery => ({ agent, launch: props.managed ? 'managed' : 'legacy', ...(props.yolo === undefined ? {} : { yolo: props.yolo }) })
+const viewed = computed(() => JSON.stringify([...new Set(members.value.map((m) => m.agentId).filter((id) => accountChoices(props.accounts, agentOf(id)?.adapter).length))].map(ask)))
+watch(
+  viewed,
+  (key, _, onCleanup) => {
+    const qs = JSON.parse(key) as CapacityQuery[]
+    for (const q of qs) void cap.store.watch(q)
+    onCleanup(() => qs.forEach((q) => cap.store.unwatch(q)))
+  },
+  { immediate: true },
+)
+const viewOf = (m: DraftMember) => cap.entry(ask(m.agentId)).view
+
+/** A member's Account choice, [] for an agent whose login is not one Conductor moves: such a member names none. */
+function accountItems(m: DraftMember) {
+  return memberAccountItems(props.accounts, agentOf(m.agentId)?.adapter, m.account, viewOf(m))
+}
+/** Why the launch refuses the account a member names, as the field marks it. */
+const accountProblem = (m: DraftMember) => memberAccountProblem(m.account, viewOf(m))
+defineExpose({ accountProblem: computed(() => members.value.map(accountProblem).find(Boolean) ?? '') })
+
+// The accounts cannot be read (a failed read, a token that may not read them, a server that keeps none): a member's saved account is
+// shown, read only, with the reason, and kept as it is; its model stays a field, since a model does not depend on the accounts.
+const accountsRead = useAccounts()
+const unread = computed(() => (props.accounts ? '' : accountsRead.problem.value || accountsRead.unavailable.value))
+
+function setAccount(key: number, value: string) {
+  update(key, { account: value === AT_LAUNCH ? undefined : value })
 }
 
 function setArgs(key: number, text: string) {
@@ -235,6 +277,44 @@ const focusedPrompt = ref<number | null>(null)
           <UDropdownMenu v-if="!single" :items="menu(m, i)" :content="{ align: 'end' }">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${who(m, i)}: more`" data-member-menu />
           </UDropdownMenu>
+        </div>
+      </div>
+
+      <div v-if="(unread && agentOf(m.agentId)?.adapter) || accountItems(m).length" class="flex flex-wrap items-start gap-2 pl-0 @min-[52rem]:pl-[18.5rem]" data-member-login>
+        <p v-if="unread" class="w-full max-w-64 text-xs text-muted [overflow-wrap:anywhere]" data-member-login-unread>
+          Account: {{ m.account ? accountName(null, m.account) : 'the default at launch' }}, kept as saved: none can be chosen while the accounts cannot be read ({{ unread }}).
+        </p>
+        <div v-else class="flex w-full max-w-64 flex-col gap-1">
+          <USelect
+            :model-value="m.account || AT_LAUNCH"
+            :items="accountItems(m)"
+            icon="i-lucide-key-round"
+            size="sm"
+            :color="accountProblem(m) ? 'error' : undefined"
+            :highlight="!!accountProblem(m)"
+            :aria-label="`Account for ${who(m, i)}`"
+            class="w-full"
+            data-member-account
+            @update:model-value="setAccount(m.key, String($event))"
+          />
+          <span v-if="accountProblem(m)" class="text-xs leading-snug text-error" data-member-account-error>{{ accountProblem(m) }}</span>
+        </div>
+        <div class="flex w-full max-w-64 flex-col gap-1">
+          <UInput
+            :model-value="m.model ?? ''"
+            placeholder="no model named"
+            maxlength="100"
+            autocapitalize="off"
+            spellcheck="false"
+            size="sm"
+            :color="modelProblem(m.model ?? '') ? 'error' : undefined"
+            :highlight="!!modelProblem(m.model ?? '')"
+            :aria-label="`Model for ${who(m, i)}`"
+            :ui="{ base: 'font-mono text-xs' }"
+            data-member-model
+            @update:model-value="update(m.key, { model: String($event) || undefined })"
+          />
+          <span v-if="modelProblem(m.model ?? '')" class="text-xs leading-snug text-error" data-member-model-error>{{ modelProblem(m.model ?? '') }}</span>
         </div>
       </div>
 

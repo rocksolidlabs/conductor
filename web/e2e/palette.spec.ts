@@ -8,8 +8,9 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // without leaving the page (a digit typed into the input is a search); the
 // page's own group comes first on a session page and is absent on a page
 // with nothing of its own; a verb typed reads as one row that asks before it
-// stops; # lists the saved crews, Enter launches one and Launch named passes
-// the label; :path:line opens the editor at the line; / opens the palette
+// stops; # lists the saved crews, Enter opens one's launch sheet and Launch
+// named (and the Run verb) pass the label to it; :path:line opens the
+// editor at the line; / opens the palette
 // and the sidebar's filter box still filters the list.
 test.describe.configure({ mode: 'serial' })
 
@@ -119,7 +120,7 @@ test('a verb typed is one row: stop asks in the row, Escape cancels, Enter stops
   await expect(palette).toBeHidden()
 })
 
-test('# lists the saved crews: Enter launches one, Launch named passes the label', async ({ page, api }) => {
+test('# lists the saved crews: Enter opens the launch sheet, Launch named and the Run verb pass the label, and only the sheet launches', async ({ page, api }) => {
   crewId = (
     await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
       name: 'e2e palette crew',
@@ -127,11 +128,28 @@ test('# lists the saved crews: Enter launches one, Launch named passes the label
       cwd: '',
       where: 'server',
       isolation: 'none',
-      openAfterLaunch: false,
+      openAfterLaunch: true,
       yolo: false,
       members: [{ name: 'lead', agentId: 'claude', prompt: 'say hello', start: { when: 'immediately' } }],
     })
   ).crew.id
+  // Every launch of the crew this page sends, by the run's name it carries.
+  const launches: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${crewId}/launch`) launches.push((r.postDataJSON() as { label?: string } | null)?.label ?? '')
+  })
+  const sheet = page.locator('[data-crew-launch-sheet]')
+  const dialog = page.getByRole('dialog', { name: 'Launch e2e palette crew' })
+  /** The sheet, open on the crew's page for the crew, says the run's name it was asked with, then launches on its Launch. */
+  async function sheetLaunches(label: string) {
+    await expect(page).toHaveURL(new RegExp(`/crews/${crewId}$`), { timeout: 15_000 })
+    await expect(sheet.locator('[data-crew-launch-line="lead"]')).toBeVisible({ timeout: 15_000 })
+    await expect(dialog).toContainText(`As the run ${label}`)
+    await page.locator('[data-crew-launch-confirm]').click()
+    await expect(page).toHaveURL(/\/runs\//, { timeout: 15_000 })
+    runs.push(decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? ''))
+    await expect(page.locator('[data-crew-run-header] [data-run-subtitle]')).toHaveText(label, { timeout: 15_000 })
+  }
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await page.keyboard.press('Control+k')
@@ -143,16 +161,20 @@ test('# lists the saved crews: Enter launches one, Launch named passes the label
   await expect(row.locator('[data-palette-detail]')).toContainText('launched from the palette')
   await page.keyboard.press('ArrowDown')
   await expect(row).toHaveAttribute('data-palette-focused', '')
+  // Enter shows the crew's page with its launch sheet open; Cancel closes it. Nothing is launched by either: the one launch counted
+  // below carries the name the next step types.
   await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/runs\//, { timeout: 15_000 })
-  runs.push(decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? ''))
-  // Launch named: under →, the field takes the name; Enter in it launches with the label.
+  await expect(page).toHaveURL(new RegExp(`/crews/${crewId}$`), { timeout: 15_000 })
+  await expect(sheet.locator('[data-crew-launch-line="lead"]')).toBeVisible({ timeout: 15_000 })
+  await expect(dialog).toContainText('Each member with its agent, model and account')
+  await page.locator('[data-crew-launch-cancel]').click()
+  await expect(dialog).toHaveCount(0)
+  // Launch named: under →, the field takes the name; Enter in it opens the sheet for the run of that name.
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await page.keyboard.press('Control+k')
   await palette.locator('input[data-palette-input]').fill('# e2e palette crew')
   await expect(row).toBeVisible({ timeout: 15_000 })
-  // The run just launched carries the crew's name and lists first under #: J steps down to the crew's row.
   await page.keyboard.press('ArrowDown')
   for (let i = 0; i < 6 && !(await row.getAttribute('data-palette-focused') === ''); i++) await page.keyboard.press('j')
   await expect(row).toHaveAttribute('data-palette-focused', '')
@@ -163,9 +185,19 @@ test('# lists the saved crews: Enter launches one, Launch named passes the label
   await expect(field).toBeFocused()
   await field.fill('e2e palette named')
   await page.keyboard.press('Enter')
-  await expect(page).toHaveURL(/\/runs\//, { timeout: 15_000 })
-  runs.push(decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? ''))
-  await expect(page.locator('[data-crew-run-header] [data-run-subtitle]')).toHaveText('e2e palette named', { timeout: 15_000 })
+  await sheetLaunches('e2e palette named')
+  // The Run verb: its name after "as" is the run's, and the sheet asks first as the row does.
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  await page.keyboard.press('Control+k')
+  await palette.locator('input[data-palette-input]').fill('> run e2e palette crew as e2e palette verb')
+  const verb = palette.locator(`[data-palette-row="verb:run:${crewId}"]`)
+  await expect(verb).toBeVisible({ timeout: 15_000 })
+  await page.keyboard.press('ArrowDown')
+  await expect(verb).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('Enter')
+  await sheetLaunches('e2e palette verb')
+  expect(launches, "each launch was the sheet's, with the name typed").toEqual(['e2e palette named', 'e2e palette verb'])
 })
 
 test(':path:line opens the file in the editor at the line; / opens the palette and the filter box still filters the sidebar', async ({ page, api, state }) => {

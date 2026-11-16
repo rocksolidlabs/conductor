@@ -247,6 +247,8 @@ test("an old setup sharing a check's id: its row says so, Launch runs the crew a
   const launch = page.locator('[data-launch]')
   await expect(launch).toBeEnabled()
   await launch.click()
+  // A launch asks first (docs/plans/capacity.md, PR-7); its Launch launches.
+  await page.locator('[data-crew-launch-confirm]').click()
   await expect
     .poll(async () => {
       runId = (await runs()).find((r) => r.crewId === id && !before.has(r.id))?.id ?? ''

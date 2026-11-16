@@ -138,7 +138,10 @@ export function resolvedArgv(agent: Pick<PlanAgent, 'command' | 'startArgs' | 'y
   return [...agent.command, ...agent.startArgs, ...memberArgs, ...agent.yoloArgs]
 }
 
-/** A member's model as its launch runs it, in the capacity rows' words: the one the revision names, else the agent's default. */
+/**
+ * A member's model as its launch runs it, in the capacity rows' words (modelWords): the one the revision names, else the one sentence
+ * for no model named, never the agent's default, since the member's arguments may choose one.
+ */
 export function planMemberModel(m: { model?: string }): string {
   return modelWords({ chosen: m.model?.trim() ?? '' })
 }

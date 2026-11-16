@@ -10,6 +10,7 @@ import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
+import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
 import { runOffer } from '~/utils/runs'
 
 /**
@@ -29,7 +30,10 @@ import { runOffer } from '~/utils/runs'
  * Brakeman, for a launch it ran under a grant) and the launch's receipt,
  * read from its chip. Under the bar, the run's people as the crew was
  * launched (HM1), each a chip with the responsibilities they hold, opening
- * their page: never started, they own its decisions and its tasks' outcomes.
+ * their page: never started, they own its decisions and its tasks' outcomes. Under them, each member's
+ * login and model as the launch bound them (docs/plans/capacity.md, PR-7): an account by its label (the
+ * accounts are the admin's), any other login by where it comes from; for a run launched from a ticket's
+ * revision that named no account for a member, that it took the default at the launch.
  */
 const props = withDefaults(
   defineProps<{
@@ -72,6 +76,36 @@ watch(
   { immediate: true },
 )
 
+// The accounts the members are bound to, by their labels; and what the ticket's revision named for each (its body never changes).
+const accounts = useAccounts()
+onMounted(() => void accounts.store.load())
+// A failed read is said in the Logins, and read again as they open: the lines never pass for complete without it.
+const named = ref<{ plan: string; members?: Record<string, string>; error?: string } | null>(null)
+async function readNamed() {
+  const plan = props.run?.ticket?.plan
+  if (!plan || (named.value?.plan === plan && named.value.members)) return
+  // Under way: the Logins say so, and no line passes for complete until it answers, or fails at its deadline.
+  named.value = { plan }
+  try {
+    const members = await readNamedAccounts((signal) => dispatchApi.plan(plan, signal))
+    if (props.run?.ticket?.plan === plan) named.value = { plan, members }
+  } catch (e) {
+    if (props.run?.ticket?.plan === plan) named.value = { plan, error: (e as Error).message }
+  }
+}
+watch(() => props.run?.ticket?.plan, readNamed, { immediate: true })
+const namedNow = computed(() => (named.value && named.value.plan === props.run?.ticket?.plan ? named.value : null))
+/** The revision's read is under way: the run was launched from a ticket's, and it has neither answered nor failed. */
+const namedReading = computed(() => !!props.run?.ticket?.plan && !namedNow.value?.members && !namedNow.value?.error)
+// A registered account while the accounts are being read, or could not be: said in words, never by its id.
+const unread = computed(() => (accounts.problem.value || accounts.unavailable.value ? accountUnreadable(accounts.problem.value || accounts.unavailable.value) : ACCOUNT_UNREAD))
+const logins = computed(() => (props.run?.members ?? []).map((m) => ({ name: m.name, ...boundWords(m, accounts.doc.value, namedNow.value?.members?.[m.name], props.run?.class === 'brakeman', unread.value) })))
+/** The Logins opened: a read that failed or ran out, the revision's or the accounts', is read again. */
+function loginsOpened() {
+  if (namedNow.value?.error) void readNamed()
+  if (accounts.problem.value) void accounts.store.load()
+}
+
 const stopped = computed(() => !!props.run?.stoppedAt)
 /** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
 const resumable = computed(() => !!props.run && runResumable(props.run, !stopped.value && !props.record))
@@ -92,10 +126,9 @@ const addError = ref('')
 const runNames = computed(() => props.run?.members.map((m) => m.name) ?? [])
 // The run's people's names, which the server refuses for a member added to the run (a person is never a member).
 const peopleNames = computed(() => props.run?.people?.map((p) => p.name) ?? [])
-const addInvalid = computed(() => {
-  const m = member.value[0]
-  return !m || !m.agentId || !!memberNameError(m.name, runNames.value, peopleNames.value)
-})
+// The table's own check of the account it marks refused holds Add too.
+const addTable = ref<{ accountProblem: string } | null>(null)
+const addInvalid = computed(() => !!addMemberProblem(member.value[0], runNames.value, peopleNames.value, addTable.value?.accountProblem))
 
 async function openAdd() {
   addError.value = ''
@@ -237,6 +270,22 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <template v-if="launchBy">by {{ launchBy }}</template>
           <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
         </span>
+        <!-- Each member's login and model as the launch bound them, behind a button: the bar keeps its height, the tiles theirs. -->
+        <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && loginsOpened()">
+          <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none self-center" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button><span class="hidden sm:inline">Logins</span></UButton>
+          <template #content>
+            <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
+              <li v-if="namedNow?.error" class="text-warning [overflow-wrap:anywhere]" data-run-logins-unread>Plan revision {{ run?.ticket?.planN }} could not be read, so which member took the default at the launch is not said: {{ namedNow.error }}</li>
+              <li v-if="namedReading" class="flex items-center gap-1.5 text-muted" data-run-logins-reading><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Reading plan revision {{ run?.ticket?.planN }}: each member's login is said once it is read.</li>
+              <li v-for="l in namedReading ? [] : logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
+                <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
+                <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>
+                <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
+                <span class="text-muted [overflow-wrap:anywhere]" data-run-login-model>· {{ l.model }}</span>
+              </li>
+            </ul>
+          </template>
+        </UPopover>
       </span>
     </template>
     <template #trailing>
@@ -304,7 +353,8 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <template #body>
       <div class="flex flex-col gap-4">
         <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="addError" />
-        <CrewMembersTable v-if="member.length" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" single />
+        <!-- Asked as the server binds a member added to the run: under the run's yolo choice (a managed run takes none by hand). -->
+        <CrewMembersTable v-if="member.length" ref="addTable" v-model="member" :agents="agents" :others="runNames" :people="peopleNames" :accounts="accounts.doc.value" :yolo="run?.yolo" single />
         <p v-else-if="!addError" class="text-sm text-muted">No agents in the catalog.</p>
       </div>
     </template>
