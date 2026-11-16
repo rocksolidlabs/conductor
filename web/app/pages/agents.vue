@@ -250,7 +250,8 @@ usePalette().registerPage(() => ({
             <p>Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.</p>
           </PageAbout>
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" aria-label="Refresh" data-agents-refresh @click="refresh"><span class="max-sm:sr-only">Refresh</span></UButton>
-          <UButton label="Add agent" icon="i-lucide-plus" color="neutral" variant="outline" @click="addAgent" />
+          <!-- Its label is the icon's on a phone: About this page sits beside it once the catalog has an agent. -->
+          <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" @click="addAgent"><span class="max-sm:sr-only">Add agent</span></UButton>
           <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
           <FullscreenButton />
         </template>
