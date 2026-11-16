@@ -22,21 +22,5 @@ export interface Known {
   removedBy: string
 }
 
-const PAGES: WalkedPage[] = ['yard', 'session', 'needs', 'agents', 'dispatch', 'run']
-const THEMES = ['dark', 'light'] as const
-
-export const KNOWN: Known[] = [
-  // An exited session's row in the sidebar at opacity-75 (SidebarSessionRow.vue): the loose one in the unfolded Exited section on the
-  // Yard, and on every page at 1440 the exited member rows the day's runs leave in their run's block.
-  ...PAGES.flatMap((page) =>
-    THEMES.map((theme): Known => ({
-      page,
-      theme,
-      width: 1440,
-      at: 'rest',
-      path: '[data-row-kind="session"][data-row-state="exited"]',
-      reason: "the exited row is faded with opacity-75, and its muted meta falls under 4.5:1 on the canvas",
-      removedBy: 'PR-26',
-    })),
-  ),
-]
+// Empty since PR-26 drew the unavailable agent card and the exited sidebar row with muted words instead of fading them.
+export const KNOWN: Known[] = []

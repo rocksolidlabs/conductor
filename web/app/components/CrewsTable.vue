@@ -70,8 +70,8 @@ function where(c: CrewSummary): { cwd: string; mode: string } {
           </div>
           <span class="text-[11.5px] text-muted" data-crew-shape>{{ crewShape(c.members) }}</span>
         </div>
-        <span class="flex min-w-0 flex-col font-mono text-[11.5px] leading-normal text-muted @min-[64rem]:col-start-3 @min-[64rem]:row-start-1" data-crew-meta>
-          <span class="truncate" :title="c.cwd || 'server default'">{{ where(c).cwd }}</span>
+        <span class="flex min-w-0 flex-col text-[11.5px] leading-normal text-muted @min-[64rem]:col-start-3 @min-[64rem]:row-start-1" data-crew-meta>
+          <span class="truncate" :class="c.cwd && 'font-mono'" :data-mono="c.cwd ? 'path' : undefined" :title="c.cwd || 'server default'">{{ where(c).cwd }}</span>
           <span>{{ where(c).mode }}</span>
         </span>
         <CrewRunBars :crew-id="c.id" :live="allOf(c.id)" :sessions="sessions" :now="now" class="@min-[64rem]:col-start-4 @min-[64rem]:row-start-1" />
