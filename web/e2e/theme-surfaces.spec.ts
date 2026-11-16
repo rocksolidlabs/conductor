@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import type { Day } from './day'
-import { budget, dayPage, expect, test } from './fixtures'
+import { budget, dayPage, expect, showView, test } from './fixtures'
 import { MEASURE_WAIT_MS, probeColour } from './layout'
 
 // The brand's own neutrals as drawn (the UX review's PR-24): on the seeded day, in each theme, the page is the brand's ground (ink in
@@ -70,7 +70,7 @@ for (const theme of THEMES) {
 
     // Monaco in Files on the page's tone: the day's repository's README, opened from the tree.
     budget(2 * 30_000)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const tree = page.locator('[data-files-tree]')
     await tree.locator(`[data-file-node="${d.cwd}/README.md"]`).click({ timeout: 30_000 })
     const editor = page.locator('[data-editor-area] .monaco-editor').first()

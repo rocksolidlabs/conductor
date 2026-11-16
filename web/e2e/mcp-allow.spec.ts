@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Api, type Session } from './fixtures'
+import { expect, showView, test, type Api, type Session } from './fixtures'
 
 // Codex's form asking to allow a tool of an MCP server (#716; drawn by the
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
@@ -65,8 +65,16 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   sessions.push(s.id)
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
-  // The page's window sizes the session before the form is drawn: the stub lays it out for that width.
-  await expect.poll(async () => { const c = (await api.session(s.id)).cols ?? 80; return narrower ? c < 80 : c > 80 }, { timeout: 15_000, message: 'the page sized the session' }).toBe(true)
+  // The narrower page has its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
+  // than the session's 80 columns.
+  if (narrower) await showView(page, 'people')
+  // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
+  // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with.
+  const host = page.locator('.terminal-host').first()
+  const drawn = async () => Number((await host.getAttribute('data-cols')) ?? 0)
+  await expect.poll(async () => (await api.session(s.id)).cols === (await drawn()) && (await drawn()) !== 80, { timeout: 15_000, message: 'the page sized the session to its grid' }).toBe(true)
+  const cols = await drawn()
+  expect(narrower ? cols < 80 : cols > 80, `the page's grid is ${cols} columns`).toBe(true)
   await typeLine(page, 'stub mcp-allow')
 
   // The session asks: a question of the dialog's, a permission, with the form's words and its choices.

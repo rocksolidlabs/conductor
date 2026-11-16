@@ -16,7 +16,7 @@ test('Touched lists the files the agent touched, newest first, marks them in the
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'touched', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // The agent's hooks report, in order: a read, an edit, a repeat of the edit (one line), a write.
@@ -40,7 +40,7 @@ test('Touched lists the files the agent touched, newest first, marks them in the
     // A touched row opens the file; the Explorer marks the touched files with a dot.
     await rows.nth(1).click()
     await expect(page.locator('[data-editor-area] [data-editor-crumbs]')).toContainText('users.go', { timeout: 30_000 })
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await expect(pane.locator(`[data-file-node="${cwd}/README.md"] [data-file-touched]`)).toBeVisible()
     await pane.locator(`[data-file-node="${cwd}/internal"]`).click()
     await pane.locator(`[data-file-node="${cwd}/internal/api"]`).click()
@@ -79,7 +79,7 @@ test('Touched lists every file of the session, past the activity replay, one row
       await page.waitForTimeout(70)
     }
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator('[data-inspector] [data-rail-item="activity"]').click()
     await page.locator('[data-inspector] [data-activity-filter="files"]').click()
     await expect(page.locator('[data-inspector] [data-files-touched-count]')).toHaveText('61', { timeout: 30_000 })
@@ -105,7 +105,7 @@ test('a file written with no hook naming it shows in Touched as seen by git', as
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'git seen', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // What the agent's shell did: no file event, only the tool call.
