@@ -84,7 +84,7 @@ function rowClass(r: RelationRow): string {
             <span class="truncate" :class="r.active ? '' : 'line-through'">{{ r.other.title }}</span>
           </NuxtLink>
           <span class="flex-none text-xs text-dimmed" data-relation-state>{{ otherWords(r.other) }}</span>
-          <UButton v-if="!locked && r.active" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto" :aria-label="`Remove the relation with ${r.other.key}`" data-relation-remove @click="remove(r.relation)" />
+          <IconButton v-if="!locked && r.active" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="ml-auto" :label="`Remove the relation with ${r.other.key}`" data-relation-remove @click="remove(r.relation)" />
         </li>
       </ul>
     </div>

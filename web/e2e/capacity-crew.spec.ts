@@ -655,10 +655,10 @@ test('the launch sheet closes for another token and for a crew gone, and an ask 
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await page.evaluate((id) => {
     const router = (document.querySelector('#__nuxt') as unknown as { __vue_app__: { config: { globalProperties: { $router: { beforeEach: (g: (to: { path: string }) => string | boolean) => () => void } } } } }).__vue_app__.config.globalProperties.$router
-    ;(window as unknown as { e2eGuardOff: () => void }).e2eGuardOff = router.beforeEach((to) => (to.path === `/crews/${id}` ? '/events' : true))
+    ;(window as unknown as { e2eGuardOff: () => void }).e2eGuardOff = router.beforeEach((to) => (to.path === `/crews/${id}` ? '/history' : true))
   }, a.id)
   await paletteLaunch(page, a)
-  await expect(page).toHaveURL(/\/events$/, { timeout: 15_000 })
+  await expect(page).toHaveURL(/\/history$/, { timeout: 15_000 })
   await page.evaluate(() => (window as unknown as { e2eGuardOff: () => void }).e2eGuardOff())
   await navigate(page, `/crews/${encodeURIComponent(a.id)}`)
   await expect(name).toHaveValue(a.name, { timeout: 30_000 })
@@ -908,7 +908,8 @@ test("the run page's Logins say a registered account in words while the accounts
 
   // Add member: Work chosen for a Claude Code member, then the agent whose yolo recipe sets its login: asked under the run's yolo,
   // that login alone is offered, Work beside it is marked in the server's words and Add is held; the login chosen, Add is free.
-  await page.locator('[data-crew-run-header]').getByRole('button', { name: 'Add agent', exact: true }).click()
+  await page.locator('[data-crew-run-header] [data-run-menu]').click()
+  await page.locator('[role="menuitem"][data-run-add]').click()
   const slide = page.locator('[role="dialog"]').filter({ has: page.locator('[data-crew-members]') })
   const row = slide.locator('[data-crew-member]')
   const add = slide.getByRole('button', { name: 'Add to the run' })

@@ -32,9 +32,9 @@ Facts to design against
   endedAt, and an error text when it failed.
 - A run is running, needs_input, stopped or finished; it has a goal, a cwd, a log of up to
   200 timestamped lines, and a count of members needing input.
-- Brand: roles primary=forest (green), secondary=terracotta, neutral=zinc, warning=signal
-  (amber), success=active (green), info=harbor (blue), error=brick. Status colours: amber for
-  needs input, green for running, grey for idle/ended; terracotta is used ONLY on the brand
+- Brand: roles primary=forest (green), secondary=terracotta, neutral=ink, warning=signal
+  (amber), success=active (green), info=harbor (blue), error=brick. Status marks and words: as the status
+  section of [the design system](system.md#status) says; terracotta is used ONLY on the brand
   mark, never as a status. One system-wide dark/light theme. Nuxt UI 4 components only;
   Lucide icons; JetBrains Mono for anything terminal-like.
 - The graph will be built with Vue Flow (nodes are Vue components, edges are SVG paths,
@@ -181,7 +181,7 @@ activity entries across sessions (`useEvents`).
 ## Brand tokens
 
 Roles in `web/app/app.config.ts`: primary `forest`, secondary `terracotta`,
-neutral `zinc`, warning `signal`, success `active`, info `harbor`, error `brick`.
+neutral `ink`, warning `signal`, success `active`, info `harbor`, error `brick`.
 The scales live in `web/app/assets/css/main.css` under `@theme` (50–950 each).
 Anchors:
 
@@ -193,7 +193,7 @@ Anchors:
 | active | `#3f8f5f` | running (green) |
 | harbor | `#245d85` | info |
 | brick | `#a1332f` | errors |
-| zinc | Tailwind zinc | idle, ended, chrome |
+| ink | `#666e67` (sage `#eef1e9` at 100, ink `#18211c` at 900) | idle, ended, chrome |
 
 The junction mark is artwork, never a status light. One system-wide dark/light
 theme. Type: Nuxt UI defaults for the chrome, JetBrains Mono for anything that
@@ -219,6 +219,13 @@ Starts select and the pending tile's label.
 
 ## What the implementation will use
 
+- A managed run's tasks (the Graph view's Tasks mode) are drawn as lines, not
+  by Vue Flow (UX1 PR-33): `RunLineDiagram.vue`, an SVG over `lineLayout`
+  (`utils/lineDiagram.ts`), a task a station lit by its state's mark, every
+  line in one neutral ink. Vue Flow draws the members (Members mode and the
+  crew editor) as below. The same drawing, small, is the Crews table's
+  Shape column (a crew's tasks, else its members by their start rules) and
+  a live run's card (UX1 PR-34); the chips of `CrewMiniDag` are gone.
 - Graph: `@vue-flow/core` with custom node and edge components; layout by depth
   in the forest (column = depth, row = crew order), no external layout engine
   for ≤ 12 nodes; `@vue-flow/background` and `@vue-flow/controls` for the canvas

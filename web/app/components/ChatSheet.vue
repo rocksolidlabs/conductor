@@ -61,7 +61,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
           </span>
           <ViewerAvatars :viewers="viewers" :max="3" />
           <span v-if="viewers.length" class="text-xs text-muted">{{ viewers.length }} here</span>
-          <UButton icon="i-lucide-x" color="neutral" variant="ghost" aria-label="Close the chat" data-chat-close @click="open = false" />
+          <IconButton icon="i-lucide-x" color="neutral" variant="ghost" label="Close the chat" data-chat-close @click="open = false" />
         </div>
         <ChatPanel
           :thread="thread"
@@ -89,7 +89,7 @@ const BODY_HEIGHT = 'calc(100% - var(--snap-point-height, 0px) - 1.375rem)'
       <span v-if="viewers.length" class="text-xs text-muted">{{ viewers.length }} here</span>
     </template>
     <template #close>
-      <UButton icon="i-lucide-x" color="neutral" variant="ghost" aria-label="Close the chat" data-chat-close />
+      <IconButton icon="i-lucide-x" color="neutral" variant="ghost" label="Close the chat" data-chat-close />
     </template>
     <template #body>
       <div class="flex min-h-0 flex-1 flex-col" data-chat-sheet :data-run-chat="scope === 'run' ? '' : undefined">

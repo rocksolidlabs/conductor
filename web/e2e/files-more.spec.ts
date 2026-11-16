@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The rest of the Files tab (round 12): the Explorer's filter reaches
 // folders not opened yet (a find on the session's machine, .git and
@@ -15,7 +15,7 @@ test('the Explorer finds files in folders not opened yet; the Yard\'s focused ti
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'more', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator(`[data-file-node="${cwd}/internal"]`)).toBeVisible({ timeout: 30_000 })
     // internal is not opened: the tree has nothing named users, the find has the file below.

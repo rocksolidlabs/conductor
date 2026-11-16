@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // The Changes section (design 4d): git status of the working directory with
 // each file's lines, refreshed as the agent works; a change opens as a diff
@@ -27,7 +27,7 @@ test('Changes lists the status with lines, opens a diff, marks the Explorer; no 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'changes', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // The Explorer marks the modified file once the status is read; the section's count says three.
@@ -69,7 +69,8 @@ test('Changes lists the status with lines, opens a diff, marks the Explorer; no 
   const p = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'plain', cwd: plain })
   try {
     await page.goto(`/sessions/${p.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    // The panel was left open on Explorer, and is kept so across the load (P11): Explorer shown, not clicked closed.
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await page.locator('[data-inspector] [data-rail-item="changes"]').click()

@@ -155,9 +155,9 @@ export function showingWords(shown: number, total: number): string {
 
 /** The four steps' names, in order, as the card titles them. */
 export const STEP_TITLES: Record<StepName, string> = {
-  available: 'Request available',
-  recorded: 'Response recorded',
-  validated: 'Received and validated by the execution owner',
+  available: 'Asked',
+  recorded: 'Your answer',
+  validated: 'Checked by its owner',
   resumed: 'Work resumed',
 }
 export const STEPS: readonly StepName[] = ['available', 'recorded', 'validated', 'resumed']
@@ -444,16 +444,103 @@ export function inboxSections<T extends Pick<InboxSummary, 'tracking'>>(items: r
 export function inboxKindWords(kind: string): string {
   switch (kind) {
     case 'question':
-      return 'A question'
+      return 'A question for you'
     case 'task':
-      return 'A failed task'
+      return 'A task out of attempts'
     case 'plan':
-      return 'A plan revision'
+      return 'A plan to approve'
     case 'decision':
-      return 'A durable decision'
+      return 'A decision for you'
   }
   return kind
 }
+
+/**
+ * A row's second line (UX1 PR-21): the question when it says something the title does not, else the brief, so that a run's decision,
+ * titled by its question, does not say it twice.
+ */
+export function rowLine(s: Pick<InboxSummary, 'title' | 'question' | 'brief'>): string {
+  return s.question && s.question !== s.title ? s.question : s.brief
+}
+
+/**
+ * The item a wide window opens by itself (UX1 PR-21): the oldest open row's ref when the window is at lg (`wide`), no item is in the
+ * query and the list holds an open row; '' otherwise. Rows answered and not yet applied, alone, open nothing.
+ */
+export function firstToOpen(wide: boolean, openRef: string, sections: { open: ReadonlyArray<Pick<InboxSummary, 'ref'>> }): string {
+  return wide && !openRef ? (sections.open[0]?.ref ?? '') : ''
+}
+
+/**
+ * The brief as the item draws it under its title (UX1 PR-21, D12): nothing when it is the title or the item's `now` (drawn already);
+ * the rest, capitalised, when it starts with the title and "; " (a crew member's question: "It is attempt build.1 of run …"); else
+ * the brief whole.
+ */
+export function briefLine(it: Pick<InboxItem, 'title' | 'brief' | 'now'>): string {
+  const b = it.brief.trim()
+  if (!b || b === it.title.trim() || (it.now && b === it.now.trim())) return ''
+  const head = `${it.title.trim()}; `
+  if (it.title.trim() && b.startsWith(head)) {
+    const rest = b.slice(head.length).trim()
+    return rest ? rest[0]!.toUpperCase() + rest.slice(1) : ''
+  }
+  return b
+}
+
+/** The four kinds of thing that need a person, in the order the page names them. */
+export const INBOX_KINDS = ['question', 'plan', 'task', 'decision'] as const
+
+/** A kind's mark: its icon, its word and the line that says what it is. */
+export interface KindLook {
+  icon: string
+  word: string
+  line: string
+}
+
+const KIND_LOOKS: Record<string, KindLook> = {
+  question: { icon: 'i-lucide-message-circle-question', word: 'Question', line: 'A question an agent asks' },
+  plan: { icon: 'i-lucide-clipboard-check', word: 'Plan', line: 'A plan that waits for your approval' },
+  task: { icon: 'i-lucide-list-x', word: 'Task', line: 'A task that failed and is out of attempts' },
+  // The icon a ticket's decisions already use.
+  decision: { icon: 'i-lucide-scale', word: 'Decision', line: 'A decision a run needs from you' },
+}
+
+/** An item's kind as the page, the list's rows and the sidebar mark it; a kind the app does not know keeps its own name. */
+export function kindLook(kind: string): KindLook {
+  return KIND_LOOKS[kind] ?? { icon: 'i-lucide-circle-help', word: kind, line: kind }
+}
+
+/**
+ * Whether the page is at zero, drawn as one column that says so: the list was read and answered (inboxEmpty: never after a failed
+ * read, never on a switchyard), no record waits answered and not yet applied, and no item is open (`openRef`, the query's).
+ */
+export function atZero(
+  s: { loaded: boolean; total: number; tracking?: number; unavailable: string; error: string; items: ReadonlyArray<Pick<InboxSummary, 'tracking'>> },
+  openRef: string,
+): boolean {
+  return inboxEmpty(s) && !(s.tracking ?? 0) && !s.items.some((it) => it.tracking) && !openRef
+}
+
+/** Whether the open item's pane asks the person to pick one: no item is open and the list holds a row to pick. */
+export function pickShown(sections: { open: readonly unknown[]; tracking: readonly unknown[] }, openRef: string): boolean {
+  return !openRef && sections.open.length + sections.tracking.length > 0
+}
+
+/**
+ * When the last thing closed, at `now`: "The last one closed 2h ago.", from the newest of the server's records closed in the last day
+ * (`closed`) and this browser's own acts (`at`). Nothing when neither holds a time, or when the newest is ahead of `now`: the server
+ * keeps no list of what another browser answered, so the line says nothing rather than guess.
+ */
+export function lastClosedWords(closed: ReadonlyArray<Pick<InboxSummary, 'closed'>>, recent: ReadonlyArray<Pick<RecentEntry, 'at'>>, now: number): string {
+  const times = [...closed.map((c) => (c.closed ? Date.parse(c.closed) : Number.NaN)), ...recent.map((e) => e.at)].filter((t) => Number.isFinite(t))
+  if (!times.length) return ''
+  const newest = Math.max(...times)
+  if (newest > now) return ''
+  return `The last one closed ${relativeTime(new Date(newest).toISOString(), now, { suffix: true })}.`
+}
+
+/** History's own query for its Decision chip: every decision kept. */
+export const HISTORY_DECISIONS = '/history?q=class%3Adecided'
 
 /**
  * Where the first load of `/` in a tab goes on a phone (Owner decisions, 10): below lg with an item open, the decision page; at lg

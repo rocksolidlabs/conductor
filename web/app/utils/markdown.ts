@@ -95,6 +95,58 @@ export function localPath(href: string): string {
 }
 
 
+/** An inline token's children as plain text: a link's words, code's text, no emphasis marks, nothing of an image; breaks as spaces. */
+function plainText(children: ReadonlyArray<{ type: string; content: string }>): string {
+  let out = ''
+  for (const c of children) {
+    if (c.type === 'text' || c.type === 'code_inline' || c.type === 'html_inline') out += c.content
+    else if (c.type === 'softbreak' || c.type === 'hardbreak') out += ' '
+  }
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * A description as one line of plain text (a Dispatch project's line above its tickets): its first paragraph of prose, a top-level one
+ * before one in a list or a quote, whole (the cut is the page's), as text (a link gives its words, emphasis and code marks go, an image
+ * gives nothing, so a paragraph of images alone is passed over); a heading only when the description has no paragraph; with neither,
+ * its first text of any kind (a table's first row, its cells joined by " · ", a code block's text, an image's alt text); '' only for a
+ * description with no text at all (empty, or only a rule or images without alt text). Pure: parsed by the renderer's markdown-it, raw
+ * HTML as text.
+ */
+export function descriptionLine(src: string): string {
+  const tokens = new MarkdownIt({ html: false, linkify: false, typographer: false }).parse(src, {})
+  const inlineAfter = (open: string, top: boolean | null) => {
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      const t = tokens[i]!
+      if (t.type !== open || (top !== null && (t.level === 0) !== top)) continue
+      const text = plainText(tokens[i + 1]!.children ?? [])
+      if (text) return text
+    }
+    return ''
+  }
+  return inlineAfter('paragraph_open', true) || inlineAfter('paragraph_open', false) || inlineAfter('heading_open', null) || firstText(tokens)
+}
+
+/** The first text of any kind in a description's tokens, in order: a table row's cells joined, a code block's text, an image's alt text. */
+function firstText(tokens: ReadonlyArray<{ type: string; content: string; children: Array<{ type: string; content: string }> | null }>): string {
+  const flat = (s: string) => s.replace(/\s+/g, ' ').trim()
+  const words = (children: ReadonlyArray<{ type: string; content: string }>) => plainText(children) || flat(children.filter((c) => c.type === 'image').map((c) => c.content).join(' '))
+  let row: string[] | null = null
+  for (const t of tokens) {
+    if (t.type === 'tr_open') row = []
+    else if (t.type === 'tr_close') {
+      const text = (row ?? []).filter(Boolean).join(' · ')
+      if (text) return text
+      row = null
+    } else if (t.type === 'inline') {
+      const text = words(t.children ?? [])
+      if (row) row.push(text)
+      else if (text) return text
+    } else if ((t.type === 'fence' || t.type === 'code_block') && flat(t.content)) return flat(t.content)
+  }
+  return ''
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

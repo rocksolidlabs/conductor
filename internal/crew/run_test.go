@@ -503,7 +503,7 @@ func TestAfterConditionStartsOnFirstDone(t *testing.T) {
 				return ctx.Err()
 			}
 		}
-		return awaitReady(ctx, l, held)
+		return AwaitReady(ctx, l, held)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "Test $GOAL.", "core")))
 	if err != nil {
@@ -1137,6 +1137,47 @@ func TestReadiness(t *testing.T) {
 	}
 }
 
+// A member whose session shows a done is ready at once; an Enter after it
+// begins the agent's next turn, and the session shows the empty state:
+// not ready at once, the member waits for its output to go quiet. The
+// rule is TestReadiness's; what the session shows is not.
+func TestAnEnterAfterADoneIsNotReadyAtOnce(t *testing.T) {
+	p := sessiontest.NewFakeProc()
+	t.Cleanup(func() { p.End(0) })
+	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "lead", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, session.Options{Log: quietLog})
+	shown := func() readiness {
+		att := l.Info().Attention
+		seen, on := l.BracketedPaste()
+		return readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}
+	}
+	l.SetAttentionFull(session.AttentionDone, "All tests pass.", session.SourceAPI, session.KindDone, nil)
+	start := time.Now()
+	if ready, _, _ := readyAt(shown(), start, start); !ready {
+		t.Fatalf("a done is not ready: %+v", shown())
+	}
+	sub, err := l.Attach("", session.RoleControl, "", 0, 0, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Input
+	if rd := shown(); rd.state != session.AttentionNone {
+		t.Fatalf("after the Enter the session shows %+v", rd)
+	} else if ready, _, _ := readyAt(rd, start, start); ready {
+		t.Fatalf("ready at once after the Enter: %+v", rd)
+	}
+	// Quiet output makes it ready, by the test's fast bounds.
+	if err := p.Print("lead> "); err != nil {
+		t.Fatal(err)
+	}
+	w := readyWait{poll: 5 * time.Millisecond, quiet: 20 * time.Millisecond}
+	if err := w.await(t.Context(), l, func(q string) { t.Errorf("held for %q", q) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A run keeps the newest maxRunLog entries of its log.
 func TestRunLogKeepsTheNewest(t *testing.T) {
 	r := &run{}
@@ -1396,7 +1437,7 @@ func TestAPromptFailureEndsOnlyThatMember(t *testing.T) {
 		if l.Info().Crew.Member == "lead" {
 			return boom
 		}
-		return awaitReady(ctx, l, held)
+		return AwaitReady(ctx, l, held)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
 	if err != nil {
@@ -1645,5 +1686,69 @@ func TestLaunchRefusesABadLabel(t *testing.T) {
 		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "label must") {
 			t.Fatalf("%q: %v", label, err)
 		}
+	}
+}
+
+// The readiness wait a crew's prompt and a launch's first message share
+// holds each startup question once: a question drawn right after the one
+// answered, with no look between, is held anew (held called again), so
+// that two questions in a row give two notes; the prompt drawn, it is
+// ready.
+func TestTheReadinessWaitHoldsEachStartupQuestion(t *testing.T) {
+	l, p, sub := firstSession(t, session.Options{
+		TrustPattern: trustRe, TrustAnswers: []session.Option{{Label: "Yes", Input: "1"}},
+		Questions: []session.StartupQuestion{{Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`), Words: regexp.MustCompile(`(?i)update\s*available`), Answers: []session.Option{{Label: "Skip until next version", Input: "3"}}}},
+	})
+	p.Print("\x1b[2J\x1b[HUpdate available 0.1.0 -> 0.2.0\r\n› 1. Update now (runs the installer)\r\n  3. Skip until next version\r\n")
+	update := untilShown(t, l, "the update dialog", startupShown)
+	ticks := make(chan time.Time)
+	var mu sync.Mutex
+	var held []string
+	done := make(chan error, 1)
+	go func() {
+		done <- readyWait{poll: time.Hour, ticks: ticks}.await(t.Context(), l, func(q string) {
+			mu.Lock()
+			held = append(held, q)
+			mu.Unlock()
+		})
+	}()
+	heldN := func(n int) {
+		t.Helper()
+		waitTrue(t, fmt.Sprintf("%d questions held", n), func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(held) >= n
+		})
+	}
+	heldN(1)
+	if err := l.Input(sub, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Input
+	p.Print(trustScreen)
+	untilShown(t, l, "the trust question", func(a session.Attention) bool { return startupShown(a) && a.ID != update.ID })
+	ticks <- time.Now()
+	heldN(2)
+	if err := l.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Input
+	p.Print("\x1b[2J\x1b[H> ")
+	untilShown(t, l, "past the questions", func(a session.Attention) bool { return !startupShown(a) })
+	for {
+		select {
+		case ticks <- time.Now():
+			continue
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		break
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(held) != 2 || !strings.Contains(held[0], "Update available") || !strings.Contains(held[1], "Trust this folder?") {
+		t.Fatalf("held %q", held)
 	}
 }

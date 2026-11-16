@@ -39,17 +39,23 @@ for the wire details.
 
 ### Client only (no protocol change)
 
-- **Status colours.** Needs-input is amber, running is green, idle and exited
-  are grey. Terracotta stays on the brand mark only, per
-  [design/brand.md](design/brand.md). JetBrains Mono for code and terminal
-  chrome.
+- **Status marks.** Every surface draws a session's state with one of five
+  marks and its word, as the status section of
+  [design/system.md](design/system.md#status) says; a run's tasks, members,
+  graph and cards speak the same language, a task's own states (waiting,
+  ready, done, failed, cancelled) with marks of their own, and a run says
+  one sentence ("2 of 6 done · 1 working · 1 checking · 2 need you"). Terracotta stays on the
+  brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
+  code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
   you, Running and Exited, with a filter box. The selected session fills the
   main pane. A right-hand inspector has People, Files and Activity tabs; Files
   replaces the current slideover. The Sessions table page is removed.
-- **Wall** (1b): header chips All / Needs you / Running; a queue panel that
-  lists every session waiting for input with its attention message and a
-  reply box that sends text plus Enter over a control connection.
+- **Wall** (1b): header chips by state; a tile that asks says the start of
+  its question at its foot (the queue panel beside the grid is gone since
+  UX1 PR-18: a question is answered in the sidebar's Needs you, the pill or
+  the expanded tile's bar, which sends text plus Enter over a control
+  connection).
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
   a "next up" line, and a "jumped here" note when follow mode moved. Follow
   mode holds for two intervals (at least 20 s), not forever, so a stray
@@ -73,8 +79,9 @@ Each item touches `internal/proto`, `web/app/utils/protocol.ts` and
   (Claude Code permission requests). Otherwise the UI shows a plain reply box.
   Buttons disable the moment the attention state changes.
 - **Activity log.** Bounded per-session log of attention transitions, inputs
-  during needs-input, link changes and joins. Feeds the Activity tab and the
-  wall's Answered list.
+  during needs-input, link changes and joins. Feeds the Activity tab (and,
+  until UX1 PR-18, the wall's Answered list; who answered stays in a
+  session's Activity and its History record).
 - **Session metadata.** Git branch (read at launch for server sessions,
   reported by the host for hosted ones), host OS user, per-link viewer count,
   client-measured transport round-trip time.
@@ -119,7 +126,7 @@ that order.
 | Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
 |---|---|---|---|---|---|---|---|---|---|
 | Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
-| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11) | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session (a host is not sent the form), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
 | Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse` (working; a `toolCall` without the `error` field) / `PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
 | Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `userPromptSubmitted`/`preToolUse` (working), `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
 | Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `beforeSubmitPrompt`/`preToolUse` (working), `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
@@ -201,6 +208,72 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
+
+- **The server's side.** `POST /api/sessions` takes `message` (at most
+  4,096 bytes): typed into the agent once the session is ready, by the
+  wait a crew member's prompt takes, held behind every startup question
+  (each noted once in the session's activity), and only at the agent's
+  own recognised prompt (its catalog entry's prompt shape), before the
+  cap and after it: an agent with none takes no first message (a launch
+  with one is refused; the catalog's listing says which agents take
+  one, and the Launch dialog offers the field only for them). A person's
+  own keys first withdraw it; keys between its text and its Enter leave
+  the Enter out and hold nothing; a session that ends first gets nothing;
+  each is noted. Its Enter is written only while the screen is the prompt
+  holding the text as typed (the composer's own wrapping allowed); a
+  text the agent shows otherwise is left typed, the session says
+  `typed` until a person's key, and the page says to press Enter.
+  `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
+  server's memory until typed, then only in the activity as Conductor's
+  own line by `launch`: a resume or a clone never types it again. A
+  nameless launch with a message is named by its first words, cut at a
+  word with "…". The Launch dialog's field is PR-36.
+- **A ticket's launch label (D11).** Cut at a word after the key to 60
+  characters, it ends with "…" now; labels stored before keep their
+  text. One cut rule, `internal/session/testdata/cut-at-word.json`, holds
+  the session's copy and Dispatch's (and the app's, PR-36).
+
+## The pages as six tiles (UX1 PR-15, P6; 2026-11-16)
+
+- **The full sidebar's foot.** Six tiles in two rows of three, an icon
+  over each name: Needs you, Yard, Crews, Dispatch, Brakeman and More,
+  whose menu holds Agents, Events, History and, in the desktop app,
+  Settings, each with its key. The foot is about 110 px tall where the
+  column of pages took about 305, and the list has the rest. A tile's
+  tooltip (hover and keyboard focus) is the page's sentence and its key;
+  the current page's tile is lit (Crews on a run's page), and More is lit
+  while one of its pages is open. The foot is a landmark named "Pages".
+- **Brakeman's slot.** Held as an empty cell while the server has not said
+  whether it has Brakeman, so More never moves when the tile fills; a
+  server that says it has none puts More in the slot. A switchyard, which
+  serves no inbox, has no Needs you tile, and the tiles close up.
+- **The phone and the rail.** The phone's More gains Brakeman after
+  Dispatch while the server has it, so every page is reached from the
+  phone. The rail keeps every page as an icon.
+- **The table.** `navTiles` in `web/app/utils/pages.ts` gives the tiles
+  and More's list from the pages' one table (a page's `tile` place).
+
+## History gets the feed; Events is retired (UX1 PR-29, P12; 2026-11-16)
+
+- **History's two views.** Search, which it opens on, and Feed
+  (`/history?view=feed`), the live feed with its last hour, where each
+  event goes and which agents report beside it, captioned "Since this tab
+  opened": the feed is the tab's memory, not the server's. The switch is
+  under the title; the palette's History group has both views, and
+  Refresh while the Feed is shown.
+- **Old links keep working.** `/events` and `?tab=feed` (and any other
+  tab) land on History's Feed, `?tab=routing` on the Alerts panel over it,
+  `?tab=integrations` on Agents' Reporting to Conductor
+  (`eventsRedirect` in `web/app/utils/events.ts`). G E and Alt+E open the
+  Feed ("Go to History's feed"). A crew run's "All events" opens it.
+- **Seven destinations.** Needs you, Yard, Crews, Dispatch, Brakeman,
+  Agents, History, with Settings in the desktop app: the pages' table in
+  that order. The sidebar's More holds Agents and History; the phone's
+  More Dispatch, Brakeman, Agents, History; the palette's Go to adds the
+  Roundhouse, Agents · Reporting, History · Feed and Paste invite.
+  `web/e2e/destinations.spec.ts` holds every list as drawn.
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.
@@ -225,7 +298,7 @@ Collected here so they are not lost. None of these block the planned work.
   worktrees, verify, and a human merge gate with named approvers. Every step
   is an ordinary session that can be opened, shared or taken over. The run
   page shows the stage graph, a Spec / Events / Artifacts inspector, and
-  `on_needs_input: queue` routes step prompts into the wall queue. Presence
+  `on_needs_input: queue` routes step prompts to the sidebar's Needs you. Presence
   and the activity log above are prerequisites for gates and approvers.
 
 ## Round 3: polish, examples and completion (planned 2026-10-01)
@@ -243,11 +316,30 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
-  16.75 rem (268 px) on every screen, which shows its header's every part
-  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
-  drag on its edge widens it up to 26 % of the window, never less than the
-  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
+- **A question in the narrow sidebar (UX1 PR-8, owner decision 7).** Below
+  280 px (`NARROW_SIDEBAR_PX`, `narrowSidebar` in `web/app/utils/sidebar.ts`,
+  from the sidebar's drawn width) a row's question is clamped to two lines
+  (`data-row-clamped`) and the row shows an Answer button in place of its
+  choices; one panel for the list (`SidebarRowPanel.vue`, a popover that is
+  not modal, `data-row-panel`, `data-panel-for`) holds the name, the whole
+  question and the row's own prompt controls, labels wrapped. It is for the
+  focused row while it asks, or the row whose Answer was pressed
+  (`panelRow`); focus opens it without moving the focus, Answer moves the
+  focus into it, Escape gives the focus back to the row, and the list counts
+  the panel as its own, so typing in its field keeps the row focused (#596).
+  The phone's list, the palette, the pill, the Yard and the session page keep
+  the question whole. Specs reach a row's answer through `rowAnswer`
+  (`web/e2e/fixtures.ts`).
+- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
+  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
+  UX review's P5): its header is the mark, "Conductor" and your menu, about
+  186 px, and Alerts… (a slideover of the alert switches and, since PR-28,
+  the rules where each event goes, `AlertsPanel.vue`)
+  and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
+  `accountActions`, which the phone's More and the palette show). A drag on
+  its edge widens it up to 26 % of the window, never less than the minimum
+  plus 5 rem (280 px, the width at which a row shows its question whole) and
+  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
@@ -256,6 +348,92 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **Launch with a first message (the UX review, P19; #951).** The Launch
+  dialog's "What should it do?" (on this server, not for a clone or "On this
+  computer") sends `message` with the launch; past 4,096 bytes the field says
+  so and Launch waits (`messageProblem`). The Name field's placeholder is the
+  name the message gives (`namePreview`, the server's `NameFromMessage`, its
+  cut held to the server's table `cut-at-word.json` by `cutAtWord`). While
+  `firstMessage` is "waiting" the session page says above the terminal what
+  it waits for (`firstMessageLine`). Tests: `launch.test.ts`;
+  `launch-first-message.spec.ts`.
+- **One shape for a page with nothing in it (#937; the UX review's P23,
+  first half).** A page with nothing to show says what the page is (its
+  sentence from the pages' table), why it is empty and what fills it, and
+  the action that fills it with its key, through one component,
+  `PageEmpty`; while it reads it says so with a spinner, a first read that
+  failed shows the server's words and Read again, and a thing not found
+  shows the way back. `pageState` decides which (`web/app/utils/pageState.ts`):
+  content wins over an error beside it, and empty needs a read, so the Yard,
+  the Roundhouse, the home and the sidebar's line never draw their empty
+  picture before the sessions are read. The welcome is the home's alone;
+  the Yard says "Nothing is running…" with Launch agent and a link to the
+  README's Quick start; a focused session that went is not found, with its
+  record. History with nothing typed and nothing kept says "No session is
+  kept yet."; its search caption folds to "About this page" (`PageAbout`)
+  once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
+  `history.test.ts`).
+- **The rest of the pages take the one shape, and About this page (#938;
+  P23, second half).** Crews, Dispatch, a project, the Events feed,
+  Brakeman's briefs and Agents draw `PageEmpty` when they have nothing to
+  show, and its reading and could-not-read shapes while they read
+  (Dispatch's first read that fails says the server's words with Read
+  again, in place of an alert over a blank page). A crew, a project, a
+  ticket and a run that are not found draw its not-found shape with the
+  way back. A project's Board and Roadmap say the project has no tickets,
+  with New ticket (C), in place of empty columns; a filter that matches
+  nothing stays a plain line. The standing paragraphs of Brakeman and
+  Agents, and the Crews page's two section captions, fold to About this
+  page once the page has content; Brakeman's Settings link is a header
+  button. The feed says it is this tab's alone and links Agents'
+  Reporting (`empty-pages.spec.ts`). Needs you with nothing waiting is
+  the same shape, "Nothing needs you now.", with what shows up there and
+  what was decided in the last day under it; it reads, and a first read
+  that fails says so with Read again, the same way.
+- **A welcome that teaches (#945; the UX review's P17, part of #374).** A
+  server with no session at all shows the welcome on the home and, on a
+  phone, on the Sessions page in place of the list's empty line: what
+  Conductor is in one sentence, then three steps. Launch an agent offers
+  the first four agents the server can launch, in the catalog's order, each
+  with the version its check found (`welcomeAgents`), and "and N more" for
+  the rest; an agent not installed is never offered. Bring one in from
+  another machine says to run `conductor host` there and links the README's
+  Quick start. Try a crew loads the example crews and says what that does
+  (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
+  load them say too. "Where things are" lists the sidebar's tiles, then the
+  pages under More, each with the sentence its tooltip says. Settings left
+  the card
+  (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
+  `empty-pages.spec.ts`).
+- **A page to connect (#946; the UX review's P18).** A browser that holds
+  no workbench token, or whose token the server refused, sees Connect to
+  Conductor in place of the app: the mark, one sentence, the field (from the
+  token this browser keeps) and Connect, and where the token is
+  (`CONDUCTOR_WORKBENCH_TOKEN`, `workbenchToken`, or the file
+  `workbench-token` in the data directory, whose path the server printed;
+  never the real path). No Cancel: it leaves when a token is given and comes
+  back at the next refusal. The app stays mounted under it, hidden, so an
+  unsaved edit and a session's viewer survive a refusal. In the desktop app
+  it waits for the shell's bridge to answer (`connectShown`). The dialog
+  Workbench token… stays, with Cancel, for the menu, the palette and Set
+  token on an alert (`useTokenDialog`) (`workbenchGate.test.ts`;
+  `connect.spec.ts`, `token-fragment.spec.ts` and the specs that met the
+  ask, through `tokenAsk`).
+- **A session page where the terminal has the room (the UX review, P11, D7,
+  D9; #934).** The inspector is closed until a view is opened, one choice for
+  every session under `conductor.inspectorOpen` (the old `conductor.inspector`
+  is no longer read), and the rail's toggle opens it on Explorer. The line
+  under the name is agent · folder · branch (`sessionHeadline`), the whole
+  path its tooltip, the ids in More. Share is an outline button like Files and
+  More. The connection badge is its icon alone while open, its words as label
+  and tooltip (`transportLook`, the session page only). A reply choice is
+  filled only when its label ends "(Recommended)" (`recommendedChoice`; none
+  when two say it, never a mode choice). A session the server answers 404
+  for opens on its record's name with Open its record, or says nothing is
+  kept, with no control that cannot work (`gonePage`). Below `sm` Files,
+  Share and Fullscreen move into More. Tests: `attention.test.ts`,
+  `sessions.test.ts`, `transport/look.test.ts`; `session-page.spec.ts`,
+  `inspector-rail.spec.ts`, `hscroll.spec.ts`.
 - **The app's screens: eight defects the owner met (#702, #706, #906,
   2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
   wait for the open pull requests that hold their files.
@@ -300,6 +478,136 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **One number of what needs you, under one name (the UX review's P2, P24's
+  nav row and P3's name; #920, after #919).** The pages are one table
+  (`web/app/utils/pages.ts`: a page's name, its sentence, its key and its
+  place on the nav, the rail, the phone's bar and the palette); a page's
+  sentence is its tooltip in the nav and its palette row's second line.
+  What needs a person is one list (`web/app/utils/needsYou.ts`, read through
+  `useNeedsYou`): a session's question, an open decision no question
+  mirrors (a stopped run's too), a plan and a task waiting on a person, each
+  once. Its number is the one amber number: on Needs you in the nav, on the
+  rail's top count and its label, on the phone's first tab, in the
+  palette's row, in the tab's title and the favicon's dot; "9+" past a store
+  read in part, and no number while a store is unread or its read failed.
+  The Yard's nav badge is gone; the phone's Yard tab counts the asking
+  sessions on its grid in neutral ink, and the Yard's own chip says what it
+  counts. The page is "Needs you" wherever its name is read (the decide-only
+  page stays "Decide"); its row in the nav leaves when nothing waits and
+  nothing was decided in the last day, and stays while its page is open. The
+  pill steps through what it can answer, a stopped run's decision too, and
+  says how many more wait in Needs you.
+- **One inbox: the sidebar lists everything that needs you (UX1 PR-13,
+  #928).** The sidebar's Needs you lists every item of the one list, each
+  with its kind's mark and word: the questions as their sessions' rows, and
+  a row each for a plan waiting for approval, a task out of its attempts and
+  a run's decision (`SidebarInboxRow`: the title and the question or brief,
+  each on one line with its whole text in its title). A run that waits on
+  an item sits in Needs you in the same moment, the item under its header
+  before its members, whatever its members do: a run whose task failed
+  while its members work, a stopped run with an open decision, and a run
+  with no session listed yet (a gate held before any attempt), drawn as its
+  header and its items; its capsule on the rail is amber. A plan, and an
+  item whose run the app does not hold, is a loose row. A decision opens its
+  card; a plan or a task opens on the Needs you page; each is a row the keys
+  land on. The section's count is the nav's one number. Below the rows:
+  "Showing 150 of 212 · all on Needs you" while the inbox holds a next page,
+  and "Plans and tasks could not be read" with Read again after a failed
+  read, the questions still listed. The palette's two groups of what waits
+  are one, "Needs you": answer-all, the questions, the decisions as "Answer
+  dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
+- **Finished apart from working (UX1 PR-14, #929).** Running splits in two.
+  The sidebar's sections are Needs you, Finished, Working, Shared with you
+  and Exited, in the order of how hard a thing waits on you. Finished holds
+  the agents that ended their turn and wait for your next word, grey,
+  "finished 12m ago", the latest finished first; Working holds the agents in
+  a turn and the agents that send no signal (running, starting), each with
+  its own mark. A host away that asks stays in Needs you; one that does not
+  ask sits in Exited, "host away". A run sits once, in the section of its
+  busiest member, and its line says "started 08:31 · 4 agents · 2 working ·
+  2 finished"; its capsule on the rail reads the same state. Each section is
+  drawn only while it has rows; a fold saved for Running folds Working, and
+  Finished starts unfolded. The palette's Running group is Finished then
+  Working, and its fold actions name the five sections.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
+- **The Yard is its grid (UX1 PR-18, #933).** The queue beside the grid is
+  gone (`WallQueue.vue` deleted), so the grid takes the panel at every width
+  and never shrinks while a question waits: on a 390 px phone it is 366 px
+  wide where it was 26. A tile that asks says the start of its question at
+  its foot in place of the host, "dr-7 · " before one that mirrors a
+  decision, the whole question in its title and its name (`tileAsk`, on the
+  sidebar row's `rowPrompt`). A question is answered in the sidebar's Needs
+  you, the pill (] and [), whose Enter on the Yard now expands the tile in
+  place (`pillTarget`), or the expanded tile's bar, whose choices carry the
+  title the queue's had (`choiceTitle`). J, K and Enter leave the Yard's
+  keys, and Alt+J and Alt+K reach the terminal again on every page. The
+  "Answered" list is dropped: a session's Activity and its History record
+  keep who answered. Tests: `yard-grid.spec.ts` (the busy day's grid beside
+  the sidebar, on the rail and opened again; a phone; a question asked
+  again; the pill's Enter), `chords.spec.ts`, and the queue's proofs moved
+  to the tile and the bar in `choices`, `question`, `approval`, `askwait`,
+  `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
+- **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
+  #927, 2026-11-16).** A project's page opens with its description as one
+  line (its first paragraph as text, else its first text of any kind,
+  `descriptionLine` in `web/app/utils/markdown.ts`; only for an empty
+  description "Add a description of CND…", which opens the editor), the
+  tracker's link (its icon alone on a phone) and About at its end, the
+  whole description
+  opened in place under it and remembered per browser
+  (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
+  "shown" starts at the line). Then one toolbar: the List, Board and
+  Roadmap tabs, the search, Filter (the eight filters in a popover, its
+  number the values in use besides the search), a chip per value in use
+  (`filterChips`, a parent and deleted among them) that takes itself out,
+  Clear, the count, Views (the saved views in a menu, the button naming
+  the view applied) and the sort. From a 48 rem list every row is one grid
+  (`TICKET_ROW_TRACKS`), each cell drawn on every row, empty when the
+  ticket has none, so the milestone, priority, owner, assignees and age
+  read straight down; on a phone a row's second line is a grid too. The
+  palette's project group gains "Filter the tickets…". Tests:
+  `dispatch-toolbar.spec.ts` on the seeded day (the first ticket within
+  160 px of the top at 1440 x 900, all fourteen in view, the columns
+  aligned before and after a selection, a phone's lines, the chips and
+  the address, the keys paused while Filter is open);
+  `dispatchQuery.test.ts` and `markdown.test.ts`.
+- **A Dispatch ticket's strip of sections; a plan folds once approved (UX1
+  PR-16, #931, 2026-11-16).** Under a ticket's title a strip names its
+  sections, Description, Acceptance, Plan, Runs, Decisions, To close,
+  People, Comments and History, each with its state where it has one
+  ("Plan approved", "Runs 2 of 6 done · 2 need you", "Decisions 2 open",
+  "Comments 3", "50+" past the newest page), from what the page reads
+  already (`ticketSections` and `ticketWaits` in
+  `web/app/utils/ticketSections.ts`, the waits filtered from the one list
+  of what needs you; a run's done part from `summaryDoneWords`, the
+  counts the run card shows, until the run words of UX1 PR-10 replace
+  it). It stays at the top as the page scrolls, on a
+  background of its own; a press brings its section up under it with the
+  focus, and the properties aside stays under it. The Review view has no
+  strip. An approved revision whose approval holds is folded to one line
+  of what the approval covers ("2 members · 3 tasks · 4 checks · from
+  1a2b3c4d5e6f · Yolo off", `planFold`) with "Show the whole plan", opened
+  for the page; a proposed, stale or superseded one stays open. Each
+  member's command is printed once, in the plan: the "Arguments:" line
+  and People's command lines are gone, People linking to the Plan.
+  Tests: `ticket-strip.spec.ts` on a server of its own, `ticketSections`
+  and `planFold` in vitest, `dispatch-delivery.spec.ts`'s People check.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
@@ -2735,8 +3043,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 - **No scoping on a run page** (3f, S1): the full list shows with the open
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
-- The counts: Needs you is how many sessions need you, members included;
-  Running is that section's live sessions; Exited is that section's.
+- The counts: Needs you is the one number of what needs you (UX1 PR-13);
+  Finished and Working are their sections' live sessions; Exited is that
+  section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run
   header offers Share run, Stop run and Open run; a member has its own Share
@@ -2987,28 +3296,61 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
   rows 5 and 6. A managed run's page has a **Tasks** tab first
   (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
-  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  in the crew's order (`RunTasks.vue`) with its state's mark and word
+  (`taskStatus`, since the UX review's PR-10), kind,
   member, attempt, what it does in words (`taskWords`: what it waits for,
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
-  apply); the selected task, kept in the URL as `?task=`, opens its result
+  apply). Since the UX review's PR-11 the rows are a table, state, task,
+  who, what and actions each read straight down (under 48 rem a row is
+  two lines, and its actions a line of their own below them): the state
+  said once, the attempt once (in the words when they
+  name it, else "attempt N" past the first), the owner only when the task
+  names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
+  menu, so nothing in a row at rest is red. The selected task, kept in the
+  URL as `?task=`, opens its result
   (summary, issues, findings) and every attempt with what it submitted
   (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
   id, a reply lost to the network is asked for once more with the same id,
   a refusal's words come from the receipt; `useTaskCommands` for the toasts).
-  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
-  `paused` instead of the member counts, and has a Pause / Resume button for
-  the dispatch (a receipt too). The grid's tiles say the member's task
+  The header has two rows (`CrewRunHeader.vue`, UX1's PR-9). Row one: the
+  run's name, whole from 1024 px up (below it the label and the short id
+  give way first), one ticket chip ("Launched from CND-12 · plan r3", or the
+  linked ticket's when the run was not launched from one; both only when
+  they name two tickets, `runTicketChips`), then Chat with its unread
+  count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
+  (neutral until its confirm), one menu ("More for this run": Add agent and
+  Share) and full screen. Row two, at every width: what the run is doing
+  (its bar, the tasks counted by part, held tasks in amber; and its one
+  sentence, "2 of 6 done · 1 working · 1 checking · 2 need you", whose
+  "need you" counts the run's items of what needs you; a run of members
+  says "1 working · 2 finished"), "scheduling paused" with the pause's words,
+  "cleaning up", the people, the Logins, who launched the run with the
+  launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
-  (Tasks unless switched; the choice kept with the graph's preferences): one
-  node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
-  words, Open) in columns by depth (`utils/taskGraph.ts`, the crew graph's
-  geometry; a need the run has no task for, or a cycle, is a root with a
-  warning), a dotted `needs` edge in the brand colour from each task to the
-  tasks that need it (`data-graph-edge-kind="needs"`), the legend for both;
-  a phone gets the tasks as a list, one after the tasks it needs. The palette:
+  (Tasks unless switched; the choice kept with the graph's preferences).
+  Tasks mode draws the run as lines (UX1 PR-33, `RunLineDiagram.vue` over
+  `utils/lineDiagram.ts`): a task is a station, a chain of tasks a line, a
+  task that starts from a result another line goes on from a branch, and a
+  task that needs more than one line's result a join; every line is one
+  neutral ink, and a station carries its task's mark (`StatusMark`'s svg
+  form), so the run's position is the stations that are lit. The layout
+  reads the tasks' ids and needs alone: a change of state recolours a
+  station and never moves it. Forty tasks fit the window with their names;
+  Fit scales the drawing to its pane between half size and full, past which
+  the pane scrolls inside itself; Direction draws it left to right or top to
+  bottom. A click or Space selects a station (`?task=`), Enter or a double
+  click opens it (its attempt's session, else the task in the Tasks view),
+  the arrows move the focus along a line and across the lanes, and Tab walks
+  the stations by depth; under the drawing a caption for the selected task
+  says its member, its words and its attempt, with Open and Show in Tasks. A
+  need the run has no task for, or a cycle, is a station with its warning.
+  Members mode stays Vue Flow's, each graph on a store of its own
+  (`data-graph-store`, #449). The legend lists the task marks and the line,
+  the branch and the join. A phone gets the tasks as a list, one after the
+  tasks it needs (`taskListRows`). The palette:
   the run page's group gains a row per task (Enter shows it in the Tasks
   view; → opens its session, retries, accepts or cancels, the last two asked)
   and a Pause / Resume row; a run row's detail says `2/5 tasks · 1 failed ·
@@ -3016,12 +3358,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `pauseRun` and `taskCommand`, `ApiError` the whole reply (`body`) for a
   refusal's receipt. Tests: vitest `tasks.test.ts` (counts, badges, words,
   actions, the id, the retry-once wrapper and the refusal) and
-  `taskGraph.test.ts` (depths, warnings, layout both ways, edges, the list
-  order); Playwright `tasks.spec.ts` gains the page: the rows and their
+  `taskGraph.test.ts` (depths, warnings, the list order); Playwright `tasks.spec.ts` gains the page: the rows and their
   states, the commit against `git rev-parse crew/<run>/build.2`, the header's
   `2/2 tasks`, the detail's attempts with the failed check and what was
-  submitted, the tile's `build #2`, the graph's two task nodes and one needs
-  edge and the switch to the members, the palette's task row; and a crew
+  submitted, the tile's `build #2`, the graph's two stations on one line
+  and the switch to the members and back, the palette's task row; and a crew
   whose check always fails: `1 failed`, Pause and Resume with the badge,
   Accept anyway through the dialog finishing the run with attempt 3's commit
   and the dependent starting from it.
@@ -7692,6 +8033,24 @@ picked.
   it the last hour as bars, where events go, who reports), Routing (the ten
   events grouped by how loud they are, destinations as switches) and
   Integrations (a table, the snippet of an agent nothing wires open below).
+  Since the UX review's P12 (PR-27) the table and the Conductor skill are
+  the Agents page's section Reporting to Conductor: each card there says
+  whether its agent reports (Reports to Conductor, Not set up with a Set up
+  link to its adapter's row, Experimental, No hooks), by one rule
+  (`reportStatus`) that the table and the feed's Reporting list read too,
+  with installed and injected drawn neutral; `/events?tab=integrations`
+  opens the section, and the palette's row is "Agents · Reporting".
+  Since the UX review's P12 and P13 (PR-28) the Routing tab is gone too:
+  the rules are in the Alerts panel (`AlertsPanel.vue`, at most 44 rem wide,
+  the whole width on a phone), under the two switches, with the webhooks of
+  `conductor.json` read while it is open. One open state
+  (`useAlertsPanel`) is shared by your menu's Alerts…, the palette's
+  Alerts… (`action:alerts`, in place of "Events · Routing"), the phone
+  More's All alert rules (its switches stay inline above it), the feed's
+  Edit routing and `?alerts` on any page of the layout, which the address
+  then loses (`useAlertsFromAddress`); `/events?tab=routing` opens it over
+  the feed. Below lg the rules' pills are 44 px targets. The routes stay in
+  this browser (`conductor.events.routes`).
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers
@@ -7769,11 +8128,20 @@ screen. Nothing said which was the plan and which the thing running.
   changed and, while a run is live, says the run keeps the version it
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
-  (one card per live run: badge, the members as chips in the crew's shape
-  with a status dot each, a line per member that asks with Answer beside it,
-  up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
-  shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
-  alone", where it runs, the last runs as bars, Edit, Launch run).
+  (one card per live run: badge, the run drawn as lines, a line per member
+  that asks with Answer beside it, up time, Stop, Open run) above "Saved
+  crews" (a table: name and goal, the shape in miniature with words such as
+  "5 · a chain of 3, 1 by hand, 1 alone", where it runs, the last runs as
+  bars, Edit, Launch run). Since UX1 PR-34 the shape and the card are the
+  run page's line drawing (`RunLineDiagram`) at two small sizes: the Shape
+  column draws a crew with tasks by its tasks (the list's task shape, `GET
+  /api/crews?tasks=1`) and any other by its members' start rules
+  (`memberNodes`: a member after another needs it), its stations hollow
+  and a member started by hand dashed, at most 150 px wide; a live run's
+  card draws its tasks lit by their states, or its members by theirs, at
+  most 520 px wide with their names. A crew's banner for a live run says
+  the run's one sentence (`runStatusLine`), its icon neutral and its edge
+  amber only while something needs a person.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.

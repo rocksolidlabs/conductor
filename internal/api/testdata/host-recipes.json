@@ -1,0 +1,217 @@
+[
+	{
+		"agent": "claude",
+		"recipe": {
+			"trustPrompt": "Is\\s*this\\s*a\\s*project\\s*you\\s*created\\s*or\\s*one\\s*you\\s*trust\\?",
+			"trustAnswers": [
+				{
+					"label": "Yes, I trust this folder",
+					"input": "\u001b[B\r"
+				},
+				{
+					"label": "No, exit",
+					"input": "\r"
+				}
+			],
+			"questions": [
+				{
+					"prompt": "(?m)^[ \\t]*❯[ \\t]*[1-9]\\.[ \\t].*(?:\\n.*){0,40}\\n[ \\t]*(?:Esc to cancel|Enter to select|ctrl\\+g to edit)[^\\n]*(?:\\n[ \\t]*[^\\s─❯][^\\n]*){0,3}\\s*\\z",
+					"anytime": true,
+					"answersFromScreen": true,
+					"modeAnswers": "(?i)auto mode|accept edits|auto-accept|bypass permissions",
+					"typedAnswers": "shift\\+tab to approve with this| ─$"
+				},
+				{
+					"prompt": "(?m)^[ \\t]*Ready to submit your answers\\?\\n(?:[ \\t]*\\n){0,2}[ \\t]*❯?[ \\t]*1\\.[ \\t][^\\n]*\\n[ \\t]*❯?[ \\t]*2\\.[ \\t][^\\n]*\\s*\\z",
+					"anytime": true,
+					"answersFromScreen": true
+				},
+				{
+					"prompt": "(?i)paste\\s*code\\s*here\\s*if\\s*prompted",
+					"words": "(?i)browser\\s*didn.t\\s*open\\?\\s*use\\s*the\\s*url\\s*below\\s*to\\s*sign\\s*in"
+				},
+				{
+					"prompt": "(?i)choose\\s*the\\s*text\\s*style\\s*that\\s*looks\\s*best\\s*with\\s*your\\s*terminal"
+				},
+				{
+					"prompt": "(?i)select\\s*login\\s*method:"
+				},
+				{
+					"prompt": "(?i)opening\\s*browser\\s*to\\s*sign\\s*in"
+				}
+			],
+			"confirmSubmit": true
+		}
+	},
+	{
+		"agent": "codex",
+		"recipe": {
+			"trustPrompt": "Trust\\s*this\\s*folder\\?",
+			"trustAnswers": [
+				{
+					"label": "Yes, trust this folder",
+					"input": "\r"
+				},
+				{
+					"label": "No, quit",
+					"input": "\u001b[B\r"
+				}
+			],
+			"questions": [
+				{
+					"prompt": "(?i)hooks\\s*n?eed\\s*review",
+					"answers": [
+						{
+							"label": "Trust all and continue",
+							"input": "2\r"
+						},
+						{
+							"label": "Continue without trusting",
+							"input": "3\r"
+						}
+					]
+				},
+				{
+					"prompt": "(?i)background\\s*server\\s*has\\s*incompatible\\s*feature\\s*settings",
+					"answers": [
+						{
+							"label": "Run without the daemon this time",
+							"input": "1"
+						},
+						{
+							"label": "Cancel (Codex exits)",
+							"input": "3"
+						}
+					]
+				},
+				{
+					"prompt": "(?i)update\\s*now\\s*\\(\\s*runs",
+					"words": "(?i)(update\\s*available)\\W*?(\\d+(?:\\.\\d+)+\\s*(?:→|-\u003e)\\s*\\d+(?:\\.\\d+)+)",
+					"answers": [
+						{
+							"label": "Skip this update",
+							"input": "\u001b"
+						},
+						{
+							"label": "Skip until next version",
+							"input": "3"
+						}
+					]
+				},
+				{
+					"prompt": "(?is)proceed\\s*\\(\\s*y\\s*\\).{0,400}?\\(\\s*p\\s*\\).{0,400}?\\(\\s*esc\\s*\\).{0,200}?press\\s+enter\\s+to\\s+confirm\\s+or\\s+esc\\s+to\\s+cancel[^\\n]*(?:\\n[^\\n]*){0,3}\\z",
+					"words": "(?ism)((?:would\\s+you\\s+like|do\\s+you\\s+want)\\s+to\\s+[^?]{1,120}\\?)(?:.*?^[ \\t]*(\\$ .*?)\\s*^\\s*›?\\s*1\\.\\s+yes,\\s+proceed)?",
+					"anytime": true,
+					"answers": [
+						{
+							"label": "Yes, proceed",
+							"input": "y"
+						},
+						{
+							"label": "Yes, and don't ask again",
+							"input": "p"
+						},
+						{
+							"label": "No, tell Codex what to do differently",
+							"input": "\u001b"
+						}
+					]
+				},
+				{
+					"prompt": "(?is)proceed\\s*\\(\\s*y\\s*\\).{0,600}?\\(\\s*d\\s*\\).{0,200}?press\\s+enter\\s+to\\s+confirm\\s+or\\s+esc\\s+to\\s+cancel[^\\n]*(?:\\n[^\\n]*){0,3}\\z",
+					"words": "(?ism)((?:would\\s+you\\s+like|do\\s+you\\s+want)\\s+to\\s+[^?]{1,120}\\?)(?:.*?^[ \\t]*(\\$ .*?)\\s*^\\s*›?\\s*1\\.\\s+yes,\\s+proceed)?",
+					"anytime": true,
+					"answers": [
+						{
+							"label": "Yes, proceed",
+							"input": "y"
+						},
+						{
+							"label": "No, continue without running it",
+							"input": "d"
+						},
+						{
+							"label": "Cancel",
+							"input": "\u001b"
+						}
+					]
+				},
+				{
+					"prompt": "(?is)proceed\\s*\\(\\s*y\\s*\\).{0,800}?\\(\\s*esc\\s*\\).{0,200}?press\\s+enter\\s+to\\s+confirm\\s+or\\s+esc\\s+to\\s+cancel[^\\n]*(?:\\n[^\\n]*){0,3}\\z",
+					"words": "(?ism)((?:would\\s+you\\s+like|do\\s+you\\s+want)\\s+to\\s+[^?]{1,120}\\?)(?:.*?^[ \\t]*(\\$ .*?)\\s*^\\s*›?\\s*1\\.\\s+yes,\\s+proceed)?",
+					"anytime": true,
+					"answers": [
+						{
+							"label": "Yes, proceed",
+							"input": "y"
+						},
+						{
+							"label": "No, tell Codex what to do differently",
+							"input": "\u001b"
+						}
+					]
+				},
+				{
+					"prompt": "(?is)\\(\\s*y\\s*\\).{0,800}?.{0,200}?press\\s+enter\\s+to\\s+confirm\\s+or\\s+esc\\s+to\\s+cancel[^\\n]*(?:\\n[^\\n]*){0,3}\\z",
+					"words": "(?ism)((?:would\\s+you\\s+like|do\\s+you\\s+want)\\s+to\\s+[^?]{1,120}\\?)(?:.*?^[ \\t]*(\\$ .*?)\\s*^\\s*›?\\s*1\\.\\s+yes,\\s+proceed)?",
+					"anytime": true,
+					"answers": [
+						{
+							"label": "Yes",
+							"input": "y"
+						},
+						{
+							"label": "Cancel",
+							"input": "\u001b"
+						}
+					]
+				}
+			],
+			"workingTitle": "^(?:\\S+\\s+)?(?:Working|Thinking|Waiting)$"
+		}
+	},
+	{
+		"agent": "agy",
+		"recipe": null
+	},
+	{
+		"agent": "copilot",
+		"recipe": null
+	},
+	{
+		"agent": "cursor",
+		"recipe": null
+	},
+	{
+		"agent": "opencode",
+		"recipe": null
+	},
+	{
+		"agent": "pi",
+		"recipe": null
+	},
+	{
+		"agent": "omp",
+		"recipe": null
+	},
+	{
+		"agent": "aider",
+		"recipe": null
+	},
+	{
+		"agent": "goose",
+		"recipe": null
+	},
+	{
+		"agent": "amp",
+		"recipe": null
+	},
+	{
+		"agent": "dsh",
+		"recipe": null
+	},
+	{
+		"agent": "shell",
+		"recipe": null
+	}
+]

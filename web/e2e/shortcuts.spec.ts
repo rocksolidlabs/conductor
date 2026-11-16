@@ -26,10 +26,10 @@ async function pressInTurn(page: Page, ...keys: string[]) {
 }
 
 // The page chords go by each page's initial: G then Y the Yard, G then R the
-// Roundhouse, G then C Crews (A Agents and E Events as before). The shortcuts
+// Roundhouse, G then C Crews, G then E History's feed (the retired Events page's; A Agents as before). The shortcuts
 // modal lists every action in three columns: the action, its keys in a
 // terminal, its keys outside one.
-test('G then Y, R and C go to the Yard, the Roundhouse and Crews; the modal shows three columns', async ({ page }) => {
+test("G then Y, R, C and E go to the Yard, the Roundhouse, Crews and History's feed; the modal shows three columns", async ({ page }) => {
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await pressInTurn(page, 'g', 'y')
@@ -38,6 +38,9 @@ test('G then Y, R and C go to the Yard, the Roundhouse and Crews; the modal show
   await expect(page).toHaveURL(/\/roundhouse/)
   await pressInTurn(page, 'g', 'c')
   await expect(page).toHaveURL(/\/crews/)
+  await pressInTurn(page, 'g', 'e')
+  await expect(page).toHaveURL(/\/history\?view=feed$/)
+  await expect(page.locator('[data-event-feed]')).toBeVisible()
 
   await page.keyboard.press('?')
   const modal = page.locator('[data-shortcuts]')
@@ -46,6 +49,7 @@ test('G then Y, R and C go to the Yard, the Roundhouse and Crews; the modal show
   const yard = modal.locator('[data-shortcut="Go to the Yard"]')
   await expect(yard.locator('[data-shortcut-terminal]')).toHaveText(/Alt.*Y/i)
   await expect(yard.locator('[data-shortcut-outside]')).toHaveText(/G\s*then\s*Y/)
+  await expect(modal.locator('[data-shortcut="Go to History\'s feed"] [data-shortcut-outside]')).toHaveText(/G\s*then\s*E/)
   // What needs the list focused has no key in a terminal: the cell shows nothing and reads "none" (#328: no dot; the
   // word is visually hidden text, since an empty span's aria-label is not announced).
   const none = modal.locator('[data-shortcut="Next row (or ↓)"] [data-shortcut-terminal]')

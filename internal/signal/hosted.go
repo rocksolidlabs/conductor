@@ -892,6 +892,16 @@ type HostedSession struct {
 	// it and tells it back: with info.Kept, the host's one snapshot
 	// (HostView). Guarded by mu.
 	reported session.Attention
+	// hostTurns is the host's word that its session's agent reports its
+	// turns (a frame's turns), once said: a frame that adds only it changes
+	// nothing shown, whoever learned turns first. Guarded by mu.
+	hostTurns bool
+	// endedTurn is the agent's name for the last turn whose end a report
+	// forwarded here named, as the host's session keeps it
+	// (session.Local's endedTurn): a forwarded done naming it changes
+	// nothing here and goes on to the host, which judges it by its own.
+	// Guarded by mu.
+	endedTurn string
 	// desk is the run a desk carries (desk.go), "" for a session; place
 	// its place among the registry's sessions while it lives.
 	desk  string
@@ -1217,7 +1227,7 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 // is told, so its viewers see the change too; without one the change is held
 // on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
-	return h.setAttention(state, message, source, kind, options, forward, "", false, "", "", nil)
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", "", nil, false, "")
 }
 
 // Ask is SetAttentionFull, forwarded, for the agent's own question
@@ -1228,7 +1238,7 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 // every report forwarded. A question the host has set aside shows here as
 // the host tells it.
 func (h *HostedSession) Ask(message, source, kind string, options []session.Option) error {
-	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "", "", nil)
+	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "", "", nil, false, "")
 }
 
 // HostAttention records an attention change the host reports (forward
@@ -1247,7 +1257,17 @@ func (h *HostedSession) HostAttention(state session.AttentionState, message, sou
 // its plans and tells its attention back with it (HostAttention's plan);
 // the server's copy carries it meanwhile.
 func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, plan string) error {
-	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan, nil)
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan, nil, false, "")
+}
+
+// SetAttentionTurn is SetAttentionPlan, forwarded, for a report that
+// names its turn (the attention route's turnId): the name goes to the host
+// with the report (proto.HostAttentionMsg.TurnID), whose session weighs it
+// (session.Local.SetAttentionTurn), and the copy weighs it the same way,
+// so that the listing does not show a turn's end told twice as a new done
+// after the host's Enter.
+func (h *HostedSession) SetAttentionTurn(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, plan, turn string) error {
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan, nil, false, turn)
 }
 
 // setAttention is SetAttentionFull with the change's id: the host's, or,
@@ -1263,7 +1283,16 @@ func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, 
 // one lock, and from a host that said answerAs alone; a forwarded change
 // leaves what the host said last. A report that changes only what the
 // session keeps takes the kept and leaves the attention, its stamp too.
-func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string, kept []string) error {
+// Info.Turns is learned here, as the host's session learns it: from a
+// report of the agent's own (session.ReportsTurn), forwarded or the
+// host's, and from turns, the host's word on a report of its own; it is
+// never cleared. A done over a done shown is the same turn's when it is
+// forwarded (the host applies it by its own rule and reports back what
+// its session then shows) or when the host gives it the shown one's id:
+// the shown one keeps its id, Since and words. A host's done with another
+// id is another turn's (one it finished while it was away) and replaces
+// it, stamped as it is received, as every host report is.
+func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string, kept []string, turns bool, turn string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -1289,13 +1318,51 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		return ErrRateLimited
 	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
+	learned := !h.info.Turns && (session.ReportsTurn(state, source) || turns && !forward)
+	if learned {
+		h.info.Turns = true
+	}
+	// What the host is sent: the change, with the turn the report names.
+	tell := func(a session.Attention, ask bool) proto.HostAttentionMsg {
+		m := hostAttentionMsg("", a, ask)
+		m.TurnID = turn
+		return m
+	}
+	if !forward || source != session.SourceAPI || !proto.ValidTurnID(turn) {
+		turn = ""
+	}
+	if turn != "" {
+		// The turn the report names, weighed as the host's session weighs
+		// it: a done naming the turn whose end was told last is that end
+		// told again, which goes on to the host and changes nothing here;
+		// another report naming it says the turn went on.
+		switch {
+		case state == session.AttentionDone && turn == h.endedTurn:
+			h.mu.Unlock()
+			if conn != nil {
+				conn.sendJSON(tell(att, false))
+			}
+			if learned {
+				h.notifyChange()
+			}
+			return nil
+		case state == session.AttentionDone:
+			h.endedTurn = turn
+		case turn == h.endedTurn:
+			h.endedTurn = ""
+		}
+	}
 	if !forward {
 		if !h.answerAs {
 			kept = nil
 		}
-		if cur := h.info.Attention; !slices.Equal(h.info.Kept, kept) && sameAttention(cur, att) && cur.ID == id && h.asked == ask {
-			// What the session keeps changed, and nothing it shows: the
-			// router hears of it (OnChange), and nothing else changes.
+		told := turns && !h.hostTurns
+		h.hostTurns = h.hostTurns || turns
+		if cur := h.info.Attention; (!slices.Equal(h.info.Kept, kept) || learned || told) && sameAttention(cur, att) && cur.ID == id && h.asked == ask {
+			// What the session keeps changed, or its turns was learned or
+			// newly told (the frame's turns, the copy knowing it or not),
+			// and nothing it shows: the router hears of it (OnChange), and
+			// nothing else changes, its stamp too.
 			h.info.Kept = slices.Clone(kept)
 			h.reported = cur
 			h.mu.Unlock()
@@ -1309,8 +1376,25 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		// host, which is told the done and tells its attention back.
 		h.mu.Unlock()
 		if conn != nil {
-			conn.sendJSON(hostAttentionMsg("", att, false))
+			conn.sendJSON(tell(att, false))
 		}
+		if learned {
+			h.notifyChange()
+		}
+		return nil
+	}
+	if cur := h.info.Attention; state == session.AttentionDone && cur.State == session.AttentionDone && (forward || id != "" && cur.ID == id) {
+		// The same turn's done: the one shown stays, its id, Since and
+		// words. A forwarded one goes on to the host all the same.
+		if !forward {
+			h.reported = cur
+			h.asked = false
+		}
+		h.mu.Unlock()
+		if forward && conn != nil {
+			conn.sendJSON(tell(att, false))
+		}
+		h.notifyChange()
 		return nil
 	}
 	if state != session.AttentionNone {
@@ -1332,7 +1416,7 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 	h.asked = ask
 	h.mu.Unlock()
 	if forward && conn != nil {
-		conn.sendJSON(hostAttentionMsg("", att, ask))
+		conn.sendJSON(tell(att, ask))
 	}
 	h.notifyChange()
 	return nil

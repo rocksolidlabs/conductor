@@ -176,7 +176,10 @@ export type AttentionKind = '' | 'permission' | 'prompt' | 'done'
 export interface AttentionOption {
   label: string
   input: string
-  /** The choice changes the session's permission mode (a dialog's "switch to auto mode"): no number key, never offered first (#288). */
+  /**
+   * The choice lasts beyond this one answer (a permission mode: a dialog's "switch to auto mode"; an approval that is remembered:
+   * Codex's "Always allow"): no number key, never offered first (#288, #716).
+   */
   mode?: boolean
 }
 
@@ -874,6 +877,26 @@ export interface HostAttentionKept {
   kept?: string[]
 }
 export const HOST_MAX_KEPT = 2
+
+/**
+ * host → server, on `attention`: the host's session's agent reports its turns (its `Info.turns`, from the same snapshot as the
+ * attention). The server's copy learns `true` and never clears it on a message without it; an older host sends none and an older
+ * server ignores it. A bool: the message's bound does not change.
+ */
+export interface HostAttentionTurns {
+  turns?: boolean
+}
+
+/**
+ * server → host, on `attention`: the agent's own name for the turn the report belongs to (Codex's turn id), as the
+ * attention route took it (its `turnId`). The host's session records a turn's end told twice once. At most
+ * HOST_MAX_TURN_ID bytes: a letter or a digit, then letters, digits and `._:-`; a host takes a frame whose name is out
+ * of that without the name, and an older host ignores it. The web never sends it.
+ */
+export interface HostAttentionTurnId {
+  turnId?: string
+}
+export const HOST_MAX_TURN_ID = 128
 
 /**
  * server → host, only to a host whose register said answerAs, never from a switchyard: an answer

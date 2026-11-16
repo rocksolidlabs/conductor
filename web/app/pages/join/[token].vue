@@ -12,6 +12,7 @@ import { skipWords, type MemberStatus } from '~/utils/crews'
 import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { DecisionLane, type LaneWire } from '~/utils/transport/decide'
 import { newestRead } from '~/composables/useRunDesk'
+import { sessionStatus } from '~/utils/status'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -57,8 +58,15 @@ const { tabs, openFile, previewFile, openUrl, openDiff, openCommitDiff } = useEd
 const filesPanel = ref(true)
 const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; lane: () => LaneWire | null } | null>(null)
 const attention = ref<Attention>({ state: '' })
+/**
+ * Whether the session's agent reports its turns: the join's (read again at each reconnect), held true from the first working or done
+ * of the agent's own (its hooks, its title, its program status) the attention frames carry.
+ */
+const turns = ref(false)
+const TURN_SOURCES = new Set(['api', 'title', 'status'])
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
+  if ((msg.state === 'working' || msg.state === 'done') && TURN_SOURCES.has(msg.source ?? '')) turns.value = true
   hearFocused({ attention: msg.state })
 }
 function onStatus(s: string) {
@@ -110,6 +118,15 @@ const unread = useChatUnread()
 const chatUnread = computed(() => unread.count(chatKey.value))
 const chatOffline = computed(() => transport.value.state !== 'open')
 const ended = computed(() => status.value === 'exited' || status.value === 'stopped')
+/**
+ * The header's state (sessionStatus) from the status and attention frames and the join's turns. The attention frame carries no time
+ * (this page stamps each with its arrival), so finished says no age; a run member's own words (ended, pending) read as a session's.
+ */
+const guestStatus = computed(() => {
+  if (!status.value) return undefined
+  const st = status.value === 'ended' ? 'exited' : status.value === 'pending' ? 'starting' : status.value
+  return sessionStatus({ status: st, attention: { ...attention.value, since: undefined }, turns: turns.value })
+})
 const chatNote = computed(() => (info.value?.role === 'control' ? '' : 'You are view only: what you write reaches the people here, not the agent.'))
 const wide = useMedia('(min-width: 48rem)')
 const chatPanel = ref(true)
@@ -286,7 +303,10 @@ async function fetchInfo(signal?: AbortSignal) {
     const got = await api.join(token.value, server.value, signal)
     if (signal?.aborted || !read.land()) return
     info.value = got
-    if (info.value.session) status.value = info.value.session.status
+    if (info.value.session) {
+      status.value = info.value.session.status
+      turns.value = info.value.session.turns === true || turns.value
+    }
     error.value = ''
     kept.noteInfo(server.value, token.value, info.value)
   } catch (e) {
@@ -363,6 +383,7 @@ function openMember(m: JoinRunMember, heard?: { status?: string; attention?: str
   if (!m.sessionId) return
   status.value = heard?.status ?? m.status
   attention.value = { state: '' }
+  turns.value = false
   viewers.value = 0
   transport.value = { kind: 'ws', state: 'idle', rtt: null }
   tabs.value = emptyTabs()
@@ -446,7 +467,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
   <template v-else-if="run && !current">
     <header class="flex items-center gap-3 border-b border-default px-4 py-2">
-      <UButton v-if="inWorkbench" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+      <IconButton v-if="inWorkbench" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <template v-if="!inWorkbench">
         <img src="/brand/conductor-mark.svg" alt="" class="size-6 dark:hidden" />
         <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
@@ -458,19 +479,19 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <UBadge :label="`${run.members.length} ${run.members.length === 1 ? 'agent' : 'agents'}`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <div class="flex-1" />
       <span v-if="!inWorkbench" class="text-xs text-muted hidden md:inline">you are <b class="text-default">{{ identity.name.value }}</b></span>
-      <UButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" aria-label="Refresh the members" @click="refreshRun" />
-      <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+      <IconButton icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" label="Refresh the members" @click="refreshRun" />
+      <IconButton icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="runChatUnread" />
-      </UButton>
-      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
+      </IconButton>
+      <IconButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></IconButton>
       <FullscreenButton size="sm" />
     </header>
 
     <main class="flex-1 min-h-0 overflow-y-auto p-2 sm:p-3">
       <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="mb-3" />
       <section v-if="runDesk.shown.value" class="mx-auto mb-4 w-full max-w-2xl rounded-lg border border-default bg-default p-3" data-join-run-decide>
-        <JoinDecide :state="runDecide" :offline="!runDesk.live.value" title="Needs your decision" @open-session="openRunSession" />
+        <JoinDecide :state="runDecide" :offline="!runDesk.live.value" title="Needs you" @open-session="openRunSession" />
       </section>
       <JoinCrewGrid v-model:heard="tileState" :members="run.members" :role="info!.role" :transport-for="tileTransport" :agent-name="agentName" @open="openMember" />
     </main>
@@ -495,7 +516,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
 
   <template v-else-if="info && current">
     <header class="flex items-center gap-3 border-b border-default px-4 py-2">
-      <UButton v-if="inWorkbench && !run" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+      <IconButton v-if="inWorkbench && !run" icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       <UTooltip v-if="run" text="Back to the crew">
         <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" size="sm" aria-label="Back to the crew" @click="backToCrew" />
       </UTooltip>
@@ -507,8 +528,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       </template>
       <span class="truncate"><template v-if="run">{{ run.name }} · </template>{{ current.name }}</span>
       <UBadge :label="info.role === 'control' ? 'control' : 'view only'" :icon="info.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" :color="info.role === 'control' ? 'primary' : 'neutral'" variant="subtle" size="sm" />
-      <SessionStatusBadge v-if="status" :status="status as any" />
-      <AttentionBadge :attention="attention" />
+      <StatusMark v-if="guestStatus" :status="guestStatus" word class="text-xs" data-join-status />
       <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" />
       <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" />
       <UBadge v-if="current.kind === 'hosted'" :label="`hosted on ${current.hostName || 'dev machine'}`" icon="i-lucide-laptop" color="neutral" variant="subtle" size="sm" />
@@ -517,21 +537,21 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
       <ViewerAvatars :viewers="viewerList" class="hidden lg:flex" />
       <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" size="sm" aria-label="Files" class="hidden md:inline-flex" :class="filesPanel && 'ring-2 ring-primary/40'" data-files-button @click="filesPanel = !filesPanel"><span>Files</span></UButton>
       <!-- The chat (design 2c, 2d): the count while the thread is closed; the panel beside the terminal where there is room, a sheet below. -->
-      <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+      <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" size="sm" label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
-      </UButton>
-      <UButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" aria-label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
+      </IconButton>
+      <IconButton v-if="run" icon="i-lucide-messages-square" color="neutral" variant="outline" size="sm" label="Run chat" :class="runChatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="runChat.offline.value ? '' : undefined" @click="runChatOpen = true">
         <span class="hidden sm:inline">Run chat</span>
         <ChatUnreadPill :count="runChatUnread" />
-      </UButton>
-      <UButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" aria-label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></UButton>
+      </IconButton>
+      <IconButton icon="i-lucide-log-out" color="neutral" variant="outline" size="sm" label="Leave" data-join-leave @click="leave"><span class="hidden sm:inline">Leave</span></IconButton>
       <FullscreenButton size="sm" />
     </header>
 
-    <!-- A decision link's two tabs, under the header so a phone's narrow header keeps its badges: Decide first, the terminal one tap away. -->
-    <nav v-if="sessionDecides" class="flex gap-1 border-b border-default px-2 py-1.5 sm:px-3" role="tablist" aria-label="Decide or the terminal" data-join-tabs>
-      <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Decide' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="md" class="min-h-11 flex-1 justify-center sm:flex-none" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'soft' : 'ghost'" :data-join-tab="t" @click="tab = t" />
+    <!-- A decision link's two tabs, under the header so a phone's narrow header keeps its badges: Needs you first, the terminal one tap away. -->
+    <nav v-if="sessionDecides" class="flex gap-1 border-b border-default px-2 py-1.5 sm:px-3" role="tablist" aria-label="Needs you or the terminal" data-join-tabs>
+      <UButton v-for="t in (['decide', 'terminal'] as const)" :key="t" role="tab" :aria-selected="tab === t" :label="t === 'decide' ? 'Needs you' : 'Terminal'" :icon="t === 'decide' ? 'i-lucide-list-checks' : 'i-lucide-square-terminal'" size="md" class="min-h-11 flex-1 justify-center sm:flex-none" :color="tab === t ? 'primary' : 'neutral'" :variant="tab === t ? 'soft' : 'ghost'" :data-join-tab="t" @click="tab = t" />
     </nav>
 
     <main class="flex-1 min-h-0 p-2 sm:p-3 flex gap-3">

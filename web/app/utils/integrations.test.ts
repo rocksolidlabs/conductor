@@ -1,5 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { noInstallText, snippetLeft } from './integrations'
+import { noInstallText, reportStatus, snippetLeft } from './integrations'
+
+describe('reportStatus', () => {
+  const it0 = { installed: false, launchInjection: false, experimental: false }
+  it('reports when the hooks are installed', () => {
+    expect(reportStatus({ ...it0, installed: true })).toEqual({ key: 'reports', words: 'Reports to Conductor' })
+    expect(reportStatus({ ...it0, installed: true, experimental: true }).key).toBe('reports')
+  })
+  it('reports when a launch injects the hooks, with nothing installed', () => {
+    expect(reportStatus({ ...it0, launchInjection: true })).toEqual({ key: 'reports', words: 'Reports to Conductor' })
+  })
+  it('says an adapter in preview, not installed, is experimental', () => {
+    expect(reportStatus({ ...it0, experimental: true })).toEqual({ key: 'experimental', words: 'Experimental' })
+  })
+  it('says an adapter neither installed nor injected is not set up', () => {
+    expect(reportStatus(it0)).toEqual({ key: 'unset', words: 'Not set up' })
+  })
+  it('says an agent with no adapter has no hooks, and how it reports instead', () => {
+    expect(reportStatus(undefined)).toEqual({ key: 'none', words: 'No hooks: it reports by the bell or a screen pattern' })
+  })
+})
 
 describe('noInstallText', () => {
   it('says there is nothing to install for an adapter without a file, home or not', () => {

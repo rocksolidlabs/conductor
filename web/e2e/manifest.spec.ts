@@ -312,8 +312,8 @@ test('a prerequisite that fails pauses the run with the step named, and Resume r
   expect(run.pausedWhy).toMatch(/^the prerequisite tool failed: /)
   expect(task(run, 'build').attempts, 'no attempt is spent').toBe(0)
   await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks`)
-  // The header: the paused badge titled with the words, the words beside it.
-  const paused = page.locator('[data-crew-run-header] [data-run-task-badge]', { hasText: 'paused' })
+  // The header: the pause's note titled with the words, the words in it.
+  const paused = page.locator('[data-crew-run-header] [data-run-paused-note]')
   await expect(paused).toHaveAttribute('title', `Paused: ${run.pausedWhy}`)
   await expect(page.locator('[data-crew-run-header] [data-run-paused-why]')).toHaveText(run.pausedWhy!)
   // The prerequisite's receipt above the rows, its log the test's own command's.
@@ -375,7 +375,9 @@ test('a task cancelled mid-step gets its tree cleaned up: the step interrupted, 
   await stepIn(api, runId, 1, 'setup:hold:1', 'running')
   await page.goto(`/runs/${encodeURIComponent(runId)}?view=tasks&task=build`)
   const row = page.locator('[data-task-row="build"]')
-  await row.locator('[data-task-cancel="build"]').click()
+  // Cancel… is behind the row's menu (UX1 PR-11).
+  await row.locator('[data-task-menu="build"]').click()
+  await page.locator('[data-task-cancel="build"]').click()
   await page.locator('[data-task-confirm]').click()
   await expect(row).toHaveAttribute('data-task-state', 'cancelled')
   const tidy = await stepIn(api, runId, 1, 'cleanup:tidy:1', 'finished')

@@ -496,6 +496,13 @@ export const LIST_SORTS: readonly SortWord[] = [
   { value: 'milestone', label: 'Milestone', desc: false },
 ]
 
+/**
+ * A list's row from a 48rem container up (DispatchTicketList.vue): one grid template for every row, so that each column reads straight
+ * down. The select track is `--ticket-select`, 0 or 1.25rem while any row is selected, so that every row moves together; then the status,
+ * the key, the title (cut, its blocked badge and at most two labels), the milestone, the priority, the owner, the assignees and the age.
+ */
+export const TICKET_ROW_TRACKS = 'var(--ticket-select) 1rem 4.5rem minmax(0,1fr) 8rem 1.25rem 7rem 4.5rem 3rem'
+
 /** Whether `sort` is a list's sort. */
 export function isSort(sort: string): sort is DispatchSort {
   return LIST_SORTS.some((s) => s.value === sort)

@@ -20,9 +20,11 @@ import {
   rowDecision,
   runHeldOf,
   askForMore,
+  authorizesLine,
   cancelDecision,
   commentDecision,
   decisionWords,
+  detailsOpen,
   optionsOf,
   recommended,
   refusalOf,
@@ -32,6 +34,7 @@ import {
   historyWords,
   runRuns,
   staleNotice,
+  stepLook,
   subjectWords,
   unmirrored,
   type Decision,
@@ -99,6 +102,16 @@ describe("a decision's words", () => {
     expect(decisionWords(decision({ state: 'expired', why: 'escalated' })).state).toBe('Expired: escalated')
   })
 
+  // UX1 PR-20 (the plan's invariant 7): an applied record is done, in neutral ink as its steps are, never green; the open one amber.
+  it('draws the applied state in neutral ink, the open one amber', () => {
+    expect(decisionWords(decision({ state: 'applied', answeredAt: T1, applied: typed })).tone).toBe('default')
+    expect(decisionWords(decision({ state: 'applied', answeredAt: T1, applied: typed }), { controls: true }).tone).toBe('default')
+    expect(decisionWords(decision()).tone).toBe('warning')
+    for (const state of ['open', 'answered', 'applied', 'superseded', 'cancelled', 'expired'] as const) {
+      expect(decisionWords(decision({ state, answeredAt: T1, applied: state === 'applied' ? typed : undefined })).tone as string, state).not.toBe('success')
+    }
+  })
+
   it('shows the four states apart, each reached with its receipt and time', () => {
     const open = decisionWords(decision()).steps
     expect(open.map((s) => [s.key, s.status])).toEqual([['open', 'done'], ['recorded', 'waiting'], ['validated', 'pending'], ['applied', 'pending']])
@@ -112,7 +125,7 @@ describe("a decision's words", () => {
 
     const applied = decisionWords(decision({ state: 'applied', answeredAt: T1, responses: [recorded], applied: typed })).steps
     expect(applied.map((s) => s.status)).toEqual(['done', 'done', 'done', 'done'])
-    expect(applied[2]).toMatchObject({ label: 'Validated by Yardmaster', at: T2, receipt: 'dr-7/1' })
+    expect(applied[2]).toMatchObject({ label: 'Checked by Yardmaster', at: T2, receipt: 'dr-7/1' })
     expect(applied[3]).toMatchObject({ label: 'Applied', words: "typed into build's attempt 1", at: T2, receipt: 'dr-7/1 applied' })
 
     // Why not: a decision that ended unanswered, and an approval applied whose subject moved after.
@@ -121,6 +134,59 @@ describe("a decision's words", () => {
     expect(cancelled[3]).toMatchObject({ label: 'Not applied: cancelled', words: 'build failed, so deploy will not start', at: T2 })
     const moved = decisionWords(decision({ state: 'superseded', why: 'the candidate is now 9f2c1ab, attempt 3', answeredAt: T1, responses: [recorded], applied: typed })).steps
     expect(moved[3]).toMatchObject({ label: 'Applied, then superseded', words: "typed into build's attempt 1; superseded: the candidate is now 9f2c1ab, attempt 3" })
+  })
+
+  // UX1 PR-20: the steps in a person's words, "Your answer" only where the card can answer it.
+  it('names the steps Asked, the answer, Checked by Yardmaster and Applied, "Your answer" only on a card with controls', () => {
+    const labels = (o: { controls?: boolean }) => decisionWords(decision(), o).steps.map((s) => [s.key, s.label])
+    expect(labels({ controls: true })).toEqual([['open', 'Asked'], ['recorded', 'Your answer'], ['validated', 'Checked by Yardmaster'], ['applied', 'Applied']])
+    expect(labels({})).toEqual([['open', 'Asked'], ['recorded', 'The answer'], ['validated', 'Checked by Yardmaster'], ['applied', 'Applied']])
+    expect(labels({ controls: false })[1]).toEqual(['recorded', 'The answer'])
+    // An answered record keeps the names; an ended one says why not, as before.
+    expect(decisionWords(decision({ state: 'answered', answeredAt: T1, responses: [recorded] }), { controls: true }).steps[1]!.label).toBe('Your answer')
+    expect(decisionWords(decision({ state: 'cancelled', closedAt: T2 }), { controls: true }).steps[3]!.label).toBe('Not applied: cancelled')
+  })
+
+  // UX1 PR-20 (the plan's invariant 7): no step spins before anyone began it, a done step is neutral ink, never green.
+  it("draws each step's look: a person's answer owed amber and still, Yardmaster's an hourglass, done neutral, none a loader", () => {
+    const records = {
+      open: decision(),
+      answered: decision({ state: 'answered', answeredAt: T1, responses: [recorded] }),
+      applied: decision({ state: 'applied', answeredAt: T1, responses: [recorded], applied: typed }),
+      cancelled: decision({ state: 'cancelled', why: 'not needed', closedAt: T2 }),
+      superseded: decision({ state: 'superseded', why: 'the candidate moved', answeredAt: T1, responses: [recorded], applied: typed }),
+    }
+    for (const [name, d] of Object.entries(records)) {
+      const looks = decisionWords(d, { controls: true }).steps.map(stepLook)
+      expect(looks.map((l) => l.icon), name).not.toContain('i-lucide-loader-circle')
+      expect(looks.map((l) => l.tone as string), name).not.toContain('success')
+    }
+    const look = (d: Decision) => Object.fromEntries(decisionWords(d).steps.map((s) => [s.key, stepLook(s)]))
+    expect(look(records.open)).toEqual({
+      open: { icon: 'i-lucide-circle-check', tone: 'default' },
+      recorded: { icon: 'i-lucide-circle-dot', tone: 'warning' },
+      validated: { icon: 'i-lucide-circle', tone: 'dimmed' },
+      applied: { icon: 'i-lucide-circle', tone: 'dimmed' },
+    })
+    expect(look(records.answered).validated).toEqual({ icon: 'i-lucide-hourglass', tone: 'muted' })
+    expect(look(records.answered).recorded).toEqual({ icon: 'i-lucide-circle-check', tone: 'default' })
+    expect(Object.values(look(records.applied))).toEqual(Array(4).fill({ icon: 'i-lucide-circle-check', tone: 'default' }))
+    expect(look(records.cancelled).recorded).toEqual({ icon: 'i-lucide-circle-slash', tone: 'muted' })
+    expect(look(records.superseded).applied).toEqual({ icon: 'i-lucide-circle-check', tone: 'default' })
+  })
+
+  // UX1 PR-20: Details open at first for a plan's approval alone; what a yes lets happen in one line.
+  it("opens Details for a plan's approval alone, and says what a yes lets happen in the request's own words", () => {
+    expect(detailsOpen({ type: 'approval', origin: 'plan' })).toBe(true)
+    expect(detailsOpen({ type: 'clarification', origin: 'plan' })).toBe(false)
+    expect(detailsOpen({ type: 'approval', origin: 'agent' })).toBe(false)
+    expect(detailsOpen({ type: 'assignment', origin: 'plan' })).toBe(false)
+    expect(detailsOpen({ type: 'assignment', origin: 'agent' })).toBe(false)
+    const gate = 'Approve lets deploy start; Reject cancels it.'
+    expect(authorizesLine({ origin: 'plan', request: { authorizes: gate } })).toEqual({ lead: '', words: gate })
+    expect(authorizesLine({ origin: 'agent', request: { authorizes: 'build commits stub-builder.txt and submits it' } })).toEqual({ lead: 'A yes authorizes: ', words: 'build commits stub-builder.txt and submits it' })
+    expect(authorizesLine({ origin: 'agent', request: {} })).toBeNull()
+    expect(authorizesLine({ origin: 'plan', request: { authorizes: '  ' } })).toBeNull()
   })
 
   it("names a gate's asker, its options, the recommended one and the subject", () => {

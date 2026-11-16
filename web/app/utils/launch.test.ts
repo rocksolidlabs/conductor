@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { isLoopbackHost, plainOffMachine, showsRunsOn } from './launch'
+import { cutAtWord, firstMessageLine, isLoopbackHost, messageProblem, namePreview, noFirstMessageLine, plainOffMachine, showsRunsOn, takesFirstMessage } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -59,5 +61,61 @@ describe('plainOffMachine', () => {
     for (const s of ['http://[0:0:0:0:0:0:0:1]:8080', 'ws://[::1]:8099', 'http://[::1%25lo]:8080', 'http://127.0.0.1', '']) {
       expect(plainOffMachine(s), s).toBe(false)
     }
+  })
+})
+
+// The server's one table of cuts at a word (internal/session/testdata/cut-at-word.json): the app's copy of the rule gives every `want`.
+const cuts = JSON.parse(readFileSync(fileURLToPath(new URL('../../../internal/session/testdata/cut-at-word.json', import.meta.url)), 'utf8')) as {
+  cases: Array<{ name: string; s: string; keep: number; chars: number; bytes: number; want: string }>
+}
+
+describe('a launch with a first message (P19)', () => {
+  it("cuts at a word as the server does, case by case of the server's table", () => {
+    expect(cuts.cases.length).toBeGreaterThan(0)
+    for (const c of cuts.cases) expect(cutAtWord(c.s, c.keep, c.chars, c.bytes), c.name).toBe(c.want)
+  })
+  it('names the session by the first words, as the server does', () => {
+    expect(namePreview('fix the flaky vim spec on the mac runner please')).toBe('fix the flaky vim spec on the mac…')
+    expect(namePreview('fix it\nnow')).toBe('fix it now')
+    expect(namePreview('  say\thello  ')).toBe('say hello')
+    expect(namePreview('   ')).toBe('')
+  })
+  it('refuses a message past 4,096 bytes as sent', () => {
+    expect(messageProblem('a'.repeat(4096))).toBe('')
+    expect(messageProblem('a'.repeat(4097))).toBe('At most 4,096 bytes: this is 4,097.')
+    expect(messageProblem('é'.repeat(2049))).toBe('At most 4,096 bytes: this is 4,098.')
+  })
+  it('says above the terminal what the message waits for, and nothing once it no longer waits', () => {
+    expect(firstMessageLine({ firstMessage: 'waiting', attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe('Your first message is typed once its question is answered.')
+    expect(firstMessageLine({ firstMessage: 'waiting', attention: { state: '' } }, 'Codex')).toBe('Your first message is typed once Codex is ready.')
+    expect(firstMessageLine({ attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe('')
+    expect(firstMessageLine(null, 'Codex')).toBe('')
+  })
+  it('says the message is typed and not sent, and how to send it; a word it does not know shows nothing', () => {
+    expect(firstMessageLine({ firstMessage: 'typed', attention: { state: 'working', source: 'api' } }, 'Codex')).toBe(
+      "Your first message is typed in the agent's input and not sent: press Enter in the terminal to send it.",
+    )
+    expect(firstMessageLine({ firstMessage: 'typed', attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe(
+      'Your first message is typed: answer the question, then press Enter in the terminal to send it.',
+    )
+    expect(firstMessageLine({ firstMessage: 'later' }, 'Codex')).toBe('')
+  })
+})
+
+describe('which agents take a first message', () => {
+  it('is the catalog\'s word alone: an older server, which says nothing, offers none', () => {
+    expect(takesFirstMessage({ firstMessage: true })).toBe(true)
+    expect(takesFirstMessage({})).toBe(false)
+    expect(takesFirstMessage({ firstMessage: false })).toBe(false)
+    expect(takesFirstMessage(undefined)).toBe(false)
+  })
+  it('says why another does not, naming those offered that do', () => {
+    const claude = { name: 'Claude Code', firstMessage: true }
+    const codex = { name: 'Codex', firstMessage: true }
+    const aider = { name: 'aider' }
+    expect(noFirstMessageLine([claude, codex, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code and Codex here.")
+    expect(noFirstMessageLine([claude, aider])).toBe("Conductor types a first message only where it knows the agent's prompt: Claude Code here.")
+    expect(noFirstMessageLine([{ name: 'A', firstMessage: true }, { name: 'B', firstMessage: true }, codex])).toBe("Conductor types a first message only where it knows the agent's prompt: A, B and Codex here.")
+    expect(noFirstMessageLine([aider])).toBe("Conductor types a first message only where it knows the agent's prompt, and knows none of these agents' prompts.")
   })
 })

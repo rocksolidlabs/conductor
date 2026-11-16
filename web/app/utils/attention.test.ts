@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { alerting, liveAttention, liveSession, ANSWER_IN_TERMINAL, ATTENTION_DOT_COLOR, TERMINAL_FIRST, answersInTerminal, choiceKey, choiceTitle, decisionAnsweredBy, decisionOf, isActive, needingInput, newlyNeedingInput, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 import type { Attention, Role } from './protocol'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
@@ -115,11 +115,38 @@ describe('the choices of a dialog read off the screen (#288)', () => {
     expect(choiceKey({ label: 'tenth', input: 'x' }, 9)).toBeUndefined()
   })
 
-  it('never offers first a choice that changes the permission mode', () => {
-    expect(firstChoice(bash)).toBe(0)
-    expect(firstChoice(plan)).toBe(1)
-    expect(firstChoice([{ label: 'Yes, and use auto mode', input: '1', mode: true }])).toBe(-1)
-    expect(firstChoice(undefined)).toBe(-1)
+  it('fills only the choice the agent marks "(Recommended)", never a mode choice, and none when two say it', () => {
+    expect(recommendedChoice(bash)).toBe(-1)
+    expect(recommendedChoice(plan)).toBe(-1)
+    expect(recommendedChoice(undefined)).toBe(-1)
+    const merge = [
+      { label: 'Merge commit', input: '1' },
+      { label: 'Squash (Recommended)', input: '2' },
+      { label: 'Rebase', input: '3' },
+    ]
+    expect(recommendedChoice(merge)).toBe(1)
+    expect(recommendedChoice([{ label: 'Merge commit (Recommended)', input: '1' }, ...merge.slice(1)])).toBe(-1)
+    expect(recommendedChoice([{ label: 'Yes, and use auto mode (Recommended)', input: '1', mode: true }, { label: 'No', input: '2' }])).toBe(-1)
+    expect(recommendedChoice([{ label: 'merge', input: '1' }, { label: 'squash (recommended) ', input: '2' }])).toBe(1)
+    // Said in the middle of a label, or cut off, it marks nothing.
+    expect(recommendedChoice([{ label: 'The (Recommended) way, or not', input: '1' }, { label: 'Squash (Recomm', input: '2' }])).toBe(-1)
+  })
+
+  it("never offers first Codex's tool approval choices that remember it, and gives them no number key (#716)", () => {
+    const form = [
+      { label: 'Allow', input: '1' },
+      { label: 'Allow for this session', input: '2', mode: true },
+      { label: 'Always allow', input: '3', mode: true },
+      { label: 'Cancel', input: '\u001b' },
+    ]
+    // The form marks no choice as recommended, so none is drawn filled.
+    expect(recommendedChoice(form)).toBe(-1)
+    expect(form.map(choiceKey)).toEqual([1, undefined, undefined, 4])
+    // One that remembers the approval is never the filled one, whatever its label says or wherever it is listed.
+    expect(recommendedChoice([{ ...form[1]!, label: 'Allow for this session (Recommended)' }, form[0]!, form[3]!])).toBe(-1)
+    expect(recommendedChoice([form[0]!, { ...form[2]!, label: 'Always allow (Recommended)' }, form[3]!])).toBe(-1)
+    // Allow itself, marked by the agent, is.
+    expect(recommendedChoice([{ ...form[0]!, label: 'Allow (Recommended)' }, form[1]!, form[2]!, form[3]!])).toBe(0)
   })
 
   it('answers a permission dialog without choices in the terminal', () => {
@@ -198,5 +225,12 @@ describe('a startup question with no choices (#902)', () => {
     expect(noReply({ ...signIn, source: 'api' })).toBeUndefined()
     expect(startupInTerminal({ ...signIn, state: '' })).toBe(false)
     expect(startupInTerminal(undefined)).toBe(false)
+  })
+})
+
+describe('choiceTitle', () => {
+  it("gives a plain choice its label, and a mode answer its label and what it does", () => {
+    expect(choiceTitle({ label: 'Yes' })).toBe('Yes')
+    expect(choiceTitle({ label: 'Yes, and switch to BYPASS PERMISSIONS', mode: true })).toBe('Yes, and switch to BYPASS PERMISSIONS (allows from now on, not this request alone)')
   })
 })

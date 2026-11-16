@@ -106,7 +106,8 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await choose('a', 'Close')
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
     await expect(menu).toBeHidden()
-    await page.locator('[data-sidebar-row]').first().click({ button: 'right' })
+    // The test's own session's row, by its id: the sidebar's first row may be an item of Needs you, which has no menu of its own.
+    await page.locator(`[data-sidebar-row="s:${s.id}"]`).click({ button: 'right' })
     await expect(menu).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(menu).toBeHidden()

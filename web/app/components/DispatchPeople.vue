@@ -2,7 +2,7 @@
 import type { LaunchSummary, PlanBody } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { agentVersionWords, type PersonRow } from '~/utils/dispatch'
-import { argvLine, resolvedArgv, revisionTag } from '~/utils/dispatchPlans'
+import { revisionTag } from '~/utils/dispatchPlans'
 import { shortRunId } from '~/utils/crewWords'
 import { responsibilityWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
@@ -11,9 +11,9 @@ import { personPath } from '~/utils/people'
  * A ticket's People (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-12): who it is to whom, each name once with every
  * role it holds (the owner, the assignees, who approved its plan revisions, who launched its runs, who commented), then the agents: the
  * approved revision's people (HM1: the crew's people as the revision keeps them, with their responsibilities, "as r3 was approved"), its
- * members, each with its agent and the command it runs as the revision resolved it (the agent and model selection the
- * approval covers), and each launch's members with the agent each started and the version its identity probe reported then. One column on
- * a phone.
+ * members, each with its agent and a link "in the plan" that brings the Plan section up, where the command each runs is printed once
+ * (UX1 PR-16), and each launch's members with the agent each started and the version its identity probe reported then. One column on a
+ * phone.
  */
 const props = defineProps<{
   people: readonly PersonRow[]
@@ -26,7 +26,7 @@ const props = defineProps<{
 
 const ROLE_WORDS: Record<PersonRow['roles'][number], string> = { owner: 'owner', assignee: 'assignee', approver: 'approved a plan', launcher: 'launched a run', commenter: 'commented' }
 const agentName = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
-const agentOf = (id: string) => props.plan?.body.agents.find((a) => a.id === id)
+const emit = defineEmits<{ plan: [] }>()
 /** A person the ticket owns or is assigned to has a page (their work): Conductor knows them by the ticket; an approver or a commenter is a name a reply typed, which may be no one's. */
 const linked = (p: PersonRow) => p.kind === 'person' && (p.roles.includes('owner') || p.roles.includes('assignee'))
 const started = computed(() => props.launches.filter((l) => l.state === 'started' && l.agents?.length))
@@ -60,8 +60,10 @@ const started = computed(() => props.launches.filter((l) => l.state === 'started
       <span class="text-xs font-medium text-muted">The agents of {{ revisionTag(plan.n) }}, as it was approved</span>
       <ul class="flex flex-col gap-1">
         <li v-for="m in plan.body.crew.members ?? []" :key="m.name" class="flex min-w-0 flex-col gap-0.5 text-sm" :data-people-plan-agent="m.name" :data-agent="m.agentId">
-          <span><span class="font-medium">{{ m.name }}</span> <span class="text-muted">{{ agentName(m.agentId) }}</span></span>
-          <code class="break-all font-mono text-xs text-default" data-people-plan-argv>{{ argvLine(resolvedArgv(agentOf(m.agentId), m.args ?? [])) }}</code>
+          <span class="flex min-w-0 flex-wrap items-baseline gap-x-2">
+            <span class="font-medium">{{ m.name }}</span> <span class="text-muted">{{ agentName(m.agentId) }}</span>
+            <button type="button" class="text-xs text-muted underline-offset-2 hover:text-default hover:underline" :aria-label="`${m.name}'s command, in the plan`" data-people-plan-link @click="emit('plan')">in the plan</button>
+          </span>
         </li>
       </ul>
     </div>

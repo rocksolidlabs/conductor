@@ -59,7 +59,7 @@ interface FileEvent {
   tool?: string
 }
 
-/** Reads the admin event stream into `into` until closed: every file event of every session, as the Events page gets them. */
+/** Reads the admin event stream into `into` until closed: every file event of every session, as the live feed gets them. */
 function watchFileEvents(server: Started, into: FileEvent[]): { close: () => void } {
   const ctl = new AbortController()
   void (async () => {

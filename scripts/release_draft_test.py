@@ -196,6 +196,20 @@ class Main(unittest.TestCase):
         self.assertIn("tag_name=v0.7.0-rc.18", made[0])
         self.assertIn("draft=true", made[0])
 
+    def test_the_draft_ensure_makes_carries_the_checklist_with_the_design_capture(self):
+        _, calls = self.run_main(["ensure", "v0.7.0-rc.18", "--target", SHA])
+        made = next(c for c in calls if c[1] == "repos/o/r/releases")
+        body = [a for a in made if a.startswith("body=")]
+        self.assertEqual(body, [f"body={release_draft.CHECKLIST}"])
+        self.assertIn("Run `make design-capture` at the release commit, read what drifted, and commit `docs/design/system.json` with `--write`", body[0])
+
+    def test_a_draft_kept_for_the_commit_is_not_rewritten(self):
+        code, calls = self.run_main(["ensure", "v0.7.0-rc.18", "--target", SHA], rels=[release(7, "v0.7.0-rc.18")])
+        self.assertEqual(code, 0)
+        # Read, never made again nor edited: no call makes a release or names the draft kept.
+        self.assertEqual([c for c in calls if "repos/o/r/releases" in c or any("releases/7" in a for a in c)], [])
+        self.assertFalse(any(a.startswith("body=") for c in calls for a in c), calls)
+
     def test_ensure_and_upload_refuse_a_tag_that_exists_before_anything_else(self):
         with tempfile.TemporaryDirectory() as d:
             Path(d, "latest.yml").write_text("x")

@@ -143,7 +143,7 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
           </div>
           <p class="text-xs text-dimmed">added by {{ l.createdBy || 'admin' }} {{ relativeTime(l.createdAt, now, { suffix: true }) }}</p>
         </div>
-        <UButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="flex-none" :aria-label="`Remove the link ${linkLabel(l.url)}`" :loading="removing === l.id" data-link-remove @click="drop(l)" />
+        <IconButton v-if="!locked" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="flex-none" :label="`Remove the link ${linkLabel(l.url)}`" :loading="removing === l.id" data-link-remove @click="drop(l)" />
       </li>
     </ul>
 

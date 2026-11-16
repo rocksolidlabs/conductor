@@ -80,6 +80,32 @@
   --color-brick-800: #5c060a;
   --color-brick-900: #480104;
   --color-brick-950: #2f0002;
+  /* The neutral (app.config.ts): the brand's sage at 100 and its ink at 900, the steps between interpolated in OKLCH along the two
+     hues, each step's lightness set by the contrast it must give (themeContrast.test.ts holds every pair); 300 is the brand's own
+     border colour. Every step is written: Nuxt UI gives a colour name it does not know an empty fallback, so a missing step would
+     draw no colour at all. */
+  --color-ink-50: #f6f9f3;
+  --color-ink-100: #eef1e9;
+  --color-ink-200: #dcdfd7;
+  --color-ink-300: #bfc9be;
+  --color-ink-400: #8f948d;
+  --color-ink-500: #666e67;
+  --color-ink-600: #4d554e;
+  --color-ink-700: #373f39;
+  --color-ink-800: #242c27;
+  --color-ink-900: #18211c;
+  --color-ink-950: #0c1410;
+}
+
+/* Tokens of the brand's own, beside Nuxt UI's, named so that a theme can set them: the sidebar's canvas (a step off the page, which
+   is the panel beside it), its hover (part way to the page's tone; the current row is the page's tone with its border), and the
+   text-safe amber and green that `text-warning` and `text-success` draw with. The light theme's signal-500 and active-500 are too
+   pale for words on white (2.94:1 and 3.96:1); dots and fills (`bg-warning`, `bg-success`) keep them. */
+@theme inline {
+  --background-color-canvas: var(--ui-bg-canvas);
+  --background-color-canvas-hover: var(--ui-bg-canvas-hover);
+  --text-color-warning: var(--ui-warning-text);
+  --text-color-success: var(--ui-success-text);
 }
 
 :root {
@@ -91,6 +117,20 @@
 .dark {
   --ui-primary: var(--color-forest-300);
   --ui-secondary: var(--color-terracotta-400);
+}
+
+:root {
+  --ui-bg-canvas: var(--ui-color-neutral-100);
+  --ui-bg-canvas-hover: color-mix(in srgb, var(--ui-bg) 60%, var(--ui-bg-canvas));
+  /* The brand's --conductor-warning (signal-700) and --conductor-success. */
+  --ui-warning-text: #805000;
+  --ui-success-text: #246b41;
+}
+
+.dark {
+  --ui-bg-canvas: var(--ui-color-neutral-950);
+  --ui-warning-text: var(--ui-warning);
+  --ui-success-text: var(--ui-success);
 }
 
 :root {

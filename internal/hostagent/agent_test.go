@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 const (
@@ -664,4 +666,245 @@ func TestAHostBackFromAwayTellsTheServerItsAttentionTheEmptyStateToo(t *testing.
 	listed("the host back", func(i session.Info) bool {
 		return i.Status == session.StatusRunning && i.Attention.State == session.AttentionNone
 	})
+}
+
+// untilListed waits for the server's listing of a hosted session to show
+// what want asks for: polled, the host's frames being the server's to read
+// in their own time.
+func untilListed(t *testing.T, d session.Driver, what string, want func(session.Info) bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !want(d.Info()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: the server lists %+v", what, d.Info())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// hostedBy registers a host built as TestAHostBackFromAwayTellsTheServerItsAttentionTheEmptyStateToo
+// builds one, its session named as Run names it and its changes forwarded
+// as there. It returns the agent, the session, the first connection and
+// its registration, and serve, which serves a connection.
+func hostedBy(t *testing.T, base string) (*agent, *session.Local, *websocket.Conn, proto.Registered, func(*websocket.Conn) <-chan error) {
+	t.Helper()
+	a, local, conn, registered, serve, _ := hostedOver(t, base, nil)
+	return a, local, conn, registered, serve
+}
+
+// hostedOver is hostedBy with the session's window title read by title
+// (Options.WorkingTitle, none when nil), returning its process too.
+func hostedOver(t *testing.T, base string, title *regexp.Regexp) (*agent, *session.Local, *websocket.Conn, proto.Registered, func(*websocket.Conn) <-chan error, *sessiontest.FakeProc) {
+	t.Helper()
+	a := &agent{opts: Options{ServerURL: base, Token: hostToken, Name: "turns", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: discardLog}
+	a.dir = t.TempDir()
+	wsURL, err := controlURL(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wsURL = wsURL
+	ctx := t.Context()
+	conn, registered, err := a.dialAndRegister(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog, WorkingTitle: title})
+	a.mu.Lock()
+	a.local = local
+	a.mu.Unlock()
+	serve := func(c *websocket.Conn) <-chan error {
+		served := make(chan error, 1)
+		go func() { served <- a.serveConn(ctx, c) }()
+		return served
+	}
+	return a, local, conn, registered, serve, proc
+}
+
+// enter types an Enter into the host's session as a controlling viewer
+// does; the step that ends a done shown is taken before the write returns.
+func enter(t *testing.T, local *session.Local) {
+	t.Helper()
+	sub, err := local.Attach("", session.RoleControl, "", 80, 24, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Detach(sub)
+	if err := local.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An Enter that reaches a host's session through the server, after its
+// done, is told the server: its copy shows the empty state with source
+// input, as the host's session does. The relayed viewer is held by the
+// host's peer first (it has seen the session's output).
+func TestAnEnterAfterADoneIsToldTheServer(t *testing.T) {
+	srv, base, id := relayHostOn(t, []string{"/bin/sh", "-c", "echo ready; exec cat"})
+	d, ok := srv.Registry().Get(id)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	hs, ok := d.(*signal.HostedSession)
+	if !ok {
+		t.Fatalf("listed as %T", d)
+	}
+	v := relayControllerSeeing(t, base, id, "ready")
+	if err := hs.SetAttentionFull(session.AttentionDone, "All tests pass.", session.SourceAPI, session.KindDone, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	// The host's own report of it, with the id its session gave it.
+	untilListed(t, d, "the host's done", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionDone && i.Attention.ID != "" && i.Turns
+	})
+	v.send(proto.Encode(proto.TypeInput, []byte("\r")))
+	untilListed(t, d, "the Enter told", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionNone && i.Attention.Source == session.SourceInput && i.Turns
+	})
+}
+
+// A server that forgot the session (it restarted) has the host register
+// afresh: the new copy saw no report of the agent's, and learns from the
+// host's attention frame that its agent reports its turns, with the empty
+// state an Enter left after a done.
+func TestARegistrationAfreshAfterAnEnterKeepsTurns(t *testing.T) {
+	srv, hs := startServer(t)
+	restarted, hs2 := startServer(t)
+	a, local, conn, registered, serve := hostedBy(t, hs.URL)
+	served := serve(conn)
+	d, ok := srv.Registry().Get(registered.SessionID)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	local.SetAttentionFull(session.AttentionDone, "All tests pass.", session.SourceAPI, session.KindDone, nil)
+	untilListed(t, d, "the done told", func(i session.Info) bool { return i.Attention.State == session.AttentionDone && i.Turns })
+	enter(t, local)
+	untilListed(t, d, "the Enter told", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionNone && i.Attention.Source == session.SourceInput
+	})
+
+	// The next connection reaches a server that never knew the session: it
+	// refuses the resume, and the host registers afresh.
+	conn.CloseNow()
+	<-served
+	wsURL, err := controlURL(hs2.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.wsURL = wsURL
+	a.mu.Unlock()
+	if _, _, err := a.dialAndRegister(t.Context()); err == nil || !strings.Contains(err.Error(), "registering afresh") {
+		t.Fatalf("the resume: %v", err)
+	}
+	conn2, again, err := a.dialAndRegister(t.Context())
+	if err != nil || again.Resumed {
+		t.Fatalf("registered afresh: %v %+v", err, again)
+	}
+	t.Cleanup(func() { conn2.CloseNow() })
+	serve(conn2)
+	d2, ok := restarted.Registry().Get(again.SessionID)
+	if !ok {
+		t.Fatal("the new copy is not listed")
+	}
+	untilListed(t, d2, "the new copy", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionNone && i.Attention.Source == session.SourceInput && i.Turns
+	})
+}
+
+// A host that finished another turn while it was away (an Enter, a
+// working, a done with other words) tells it as its connection comes
+// back: the copy shows that done, its id and words, in place of the one it
+// kept.
+func TestADoneOfAnotherTurnWhileAwayReplacesTheShownDone(t *testing.T) {
+	srv, hs := startServer(t)
+	a, local, conn, registered, serve := hostedBy(t, hs.URL)
+	served := serve(conn)
+	d, ok := srv.Registry().Get(registered.SessionID)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	local.SetAttentionFull(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil)
+	doneA := local.Info().Attention
+	untilListed(t, d, "done A", func(i session.Info) bool { return i.Attention.ID == doneA.ID })
+
+	conn.CloseNow()
+	<-served
+	untilListed(t, d, "the host gone", func(i session.Info) bool { return i.Status == session.StatusHostDisconnected })
+	enter(t, local)
+	local.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil)
+	local.SetAttentionFull(session.AttentionDone, "Docs updated.", session.SourceAPI, session.KindDone, nil)
+	doneB := local.Info().Attention
+	if doneB.ID == doneA.ID || doneB.Message != "Docs updated." {
+		t.Fatalf("the host's session shows %+v", doneB)
+	}
+	if att := d.Info().Attention; att.ID != doneA.ID {
+		t.Fatalf("the server lists %+v with the host away", att)
+	}
+
+	conn2, again, err := a.dialAndRegister(t.Context())
+	if err != nil || !again.Resumed {
+		t.Fatalf("resume: %v %+v", err, again)
+	}
+	t.Cleanup(func() { conn2.CloseNow() })
+	serve(conn2)
+	untilListed(t, d, "done B", func(i session.Info) bool {
+		return i.Status == session.StatusRunning && i.Attention.ID == doneB.ID && i.Attention.Message == "Docs updated."
+	})
+}
+
+// A turn's end told twice through the server, both reports naming the
+// turn (Codex's Stop hook, then its notify program), with an Enter typed
+// in the host's terminal between: the host's session records the end once
+// and the server's copy never shows a second done, keeping the empty
+// state the Enter left; the next report goes through as ever.
+func TestATurnsEndToldTwiceAroundAHostsEnterIsRecordedOnce(t *testing.T) {
+	srv, hs := startServer(t)
+	_, local, conn, registered, serve := hostedBy(t, hs.URL)
+	serve(conn)
+	d, ok := srv.Registry().Get(registered.SessionID)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	hosted, ok := d.(*signal.HostedSession)
+	if !ok {
+		t.Fatalf("listed as %T", d)
+	}
+	const turn = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	report := func() {
+		t.Helper()
+		if err := hosted.SetAttentionTurn(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, true, "", turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report()
+	untilListed(t, d, "the host's done", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionDone && i.Attention.ID != ""
+	})
+	enter(t, local)
+	untilListed(t, d, "the Enter told", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionNone && i.Attention.Source == session.SourceInput
+	})
+	report()
+	if a := d.Info().Attention; a.State != session.AttentionNone || a.Source != session.SourceInput {
+		t.Fatalf("the end told again shows %+v on the server", a)
+	}
+	// A report after it, in the same order on the host's connection: once
+	// the host tells it back, it has applied the end told again.
+	if err := hosted.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	untilListed(t, d, "the next working", func(i session.Info) bool {
+		return i.Attention.State == session.AttentionWorking && i.Attention.ID != ""
+	})
+	n := 0
+	for _, e := range local.Activity() {
+		if e.Type == session.ActivityAttention && e.Message == "Refactored the parser." {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the host's session recorded the end %d times, want once", n)
+	}
 }

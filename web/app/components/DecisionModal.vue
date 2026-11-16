@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { inboxKindWords } from '~/utils/inbox'
 /**
  * The app's one decision card in a modal (Program item DR1, docs/plans/decisions.md, "web/app"): the card (DecisionCard) and its answer
  * (DecisionRespond) of the decision useDecisionModal names, opened from the run page's Answer, the session's question bar in the
- * session page and the Yard, Needs you, the palette's rows and the ticket page. Mounted once, in the layout; it starts the app's store
+ * session page and the Yard, Needs you, the palette's rows and the ticket page; titled "A decision for you", its id in the card's
+ * Details (UX1 PR-20). Mounted once, in the layout; it starts the app's store
  * of the open and answered decisions (useDecisions) that the counts and the palette read.
  */
 const modal = useDecisionModal()
@@ -15,6 +17,8 @@ onMounted(() => {
   tick = window.setInterval(() => (now.value = Date.now()), 5000)
 })
 onBeforeUnmount(() => window.clearInterval(tick))
+/** Whether DecisionRespond draws its buttons: the card then leaves out its option rows (UX1 PR-20). */
+const controls = ref(false)
 
 const open = computed({
   get: () => !!modal.id.value,
@@ -25,7 +29,7 @@ const open = computed({
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="`Decision ${modal.id.value}`" description="Answered by the operator; Yardmaster applies the answer." :ui="{ content: 'sm:max-w-2xl' }">
+  <UModal v-model:open="open" :title="inboxKindWords('decision')" description="Answered by the operator; Yardmaster applies the answer." :ui="{ content: 'sm:max-w-2xl' }">
     <template #body>
       <div class="flex flex-col gap-4" data-decision-modal :data-decision-modal-id="modal.id.value">
         <UAlert v-if="record.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="record.error.value" data-decision-modal-error>
@@ -33,8 +37,8 @@ const open = computed({
         </UAlert>
         <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ modal.id.value }}…</p>
         <template v-if="record.decision.value">
-          <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" />
-          <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" />
+          <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" />
+          <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" @controls="controls = $event" />
         </template>
       </div>
     </template>
