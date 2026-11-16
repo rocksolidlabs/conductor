@@ -442,6 +442,13 @@ test('with the events stream cut, a question answered and another asked meanwhil
   await phone.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
+/** Open on your phone from your menu (the sidebar's header), the menu gone before the caller reads the dialog. */
+async function openFromMenu(page: Page) {
+  await page.locator('[data-header-account]').click()
+  await page.getByRole('menuitem', { name: 'Open on your phone' }).click()
+  await expect(page.getByRole('menuitem')).toHaveCount(0)
+}
+
 /** Presses lowercase letters in turn as a person does, each handed to the page once it has taken the one before (shortcuts.spec.ts). */
 async function pressInTurn(page: Page, ...keys: string[]) {
   const cdp = await page.context().newCDPSession(page)
@@ -519,6 +526,16 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await page.keyboard.press('Escape')
   await expect(page.locator('[data-phone-offer]')).toHaveCount(0)
 
+  // The same dialog from your menu on another page (UX1 PR-6): the menu gone before the dialog is read (a menu that has closed is
+  // not gone).
+  budget(4)
+  await page.goto('/yard')
+  await expect(sidebar).toBeAttached()
+  await openFromMenu(page)
+  await expect(page.locator('[data-phone-offer="loopback"]')).toContainText('A phone cannot reach')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-phone-offer]')).toHaveCount(0)
+
   // On an address of the network (a name this browser resolves to the server): the page's address alone, as a QR code.
   budget(3)
   const lan = await chromium.launch({ args: ['--no-sandbox', `--host-resolver-rules=MAP decide.test 127.0.0.1`] })
@@ -534,6 +551,13 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
     await expect(offer).toHaveAttribute('data-phone-url', `${origin}/decisions`)
     await expect(offer.locator('[data-phone-qr]')).toBeVisible()
     expect(await offer.getAttribute('data-phone-url')).not.toContain(server!.token)
+    // From your menu on the Yard: still the decision page's address, never the page it was opened on.
+    await there.keyboard.press('Escape')
+    await expect(there.locator('[data-phone-offer]')).toHaveCount(0)
+    await there.goto('/yard')
+    await expect(there.locator('#dashboard-sidebar-main')).toBeAttached()
+    await openFromMenu(there)
+    await expect(there.locator('[data-phone-offer="qr"]')).toHaveAttribute('data-phone-url', `${origin}/decisions`)
   } finally {
     await lan.close()
   }

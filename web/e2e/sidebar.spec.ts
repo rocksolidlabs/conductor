@@ -427,7 +427,7 @@ test('alerts and your menu sit beside the name; the foot holds only the pages', 
   await expect(page.getByText('Browser notification')).toBeVisible()
   await page.keyboard.press('Escape')
   await page.locator('[data-header-account]').click()
-  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
   await page.getByRole('menuitem', { name: /Your name/ }).click()
   const dialog = page.locator('[data-name-dialog]')
   await dialog.getByRole('textbox', { name: 'Your name' }).fill('Nate R')

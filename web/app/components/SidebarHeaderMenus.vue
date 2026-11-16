@@ -28,7 +28,8 @@ function openName() {
 function toggleTheme() {
   colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark'
 }
-const items = computed(() => accountItems(hasToken.value, { name: openName, shortcuts: () => shortcuts.show(), theme: toggleTheme, token: () => emit('token'), forget: () => clear() }))
+const phone = useOpenOnPhone()
+const items = computed(() => accountItems(hasToken.value, { name: openName, shortcuts: () => shortcuts.show(), theme: toggleTheme, token: () => emit('token'), forget: () => clear(), phone: phone.show }))
 const side = computed(() => (props.collapsed ? { side: 'right' as const } : undefined))
 const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.value}` : 'Your menu'))
 </script>
