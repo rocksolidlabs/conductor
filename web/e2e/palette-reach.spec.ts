@@ -104,9 +104,15 @@ test('?tab= opens the inspector on that view, ?filter= the Yard on that chip, ?v
   await expect(page.locator('[data-inspector] [data-rail-item="chat"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
   await page.goto(`/sessions/${s.id}?tab=files`)
   await expect(page.locator('[data-inspector] [data-rail-item="explorer"]')).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
+  await page.goto('/yard?filter=finished')
+  await expect(page.locator('[data-yard-filter="finished"]')).toHaveAttribute('data-active', '', { timeout: 30_000 })
+  await expect(page.locator('[data-yard-filter="all"]')).not.toHaveAttribute('data-active', '')
+  // The old link opens the Running chip, shown and chosen though it may hold no session; an unknown word opens All.
   await page.goto('/yard?filter=running')
   await expect(page.locator('[data-yard-filter="running"]')).toHaveAttribute('data-active', '', { timeout: 30_000 })
   await expect(page.locator('[data-yard-filter="all"]')).not.toHaveAttribute('data-active', '')
+  await page.goto('/yard?filter=x')
+  await expect(page.locator('[data-yard-filter="all"]')).toHaveAttribute('data-active', '', { timeout: 30_000 })
   crewId = (
     await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
       name: 'e2e reach crew',

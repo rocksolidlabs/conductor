@@ -111,7 +111,8 @@ test("a managed run's waiting member offers no Start now on its tile or its node
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-header]`)
-  await expect(header).toContainText(/exited|stopped/)
+  // The state's word is at the tile's foot, the header keeps the name and the actions.
+  await expect(page.locator(`[data-run-grid] [data-session-id="${builder}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })
 
@@ -132,7 +133,7 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the header's words, its Resume
   await page.goto(`/runs/${encodeURIComponent(run.id)}?view=grid`)
   const header = page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-header]`)
-  await expect(header).toContainText(/exited|stopped/)
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(1)
 
   // The run as the server answers a run it no longer holds: its read marked a record, and absent from the live runs.

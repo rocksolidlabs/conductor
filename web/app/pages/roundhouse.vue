@@ -6,7 +6,8 @@ import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } fr
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
-useHead({ title: 'Roundhouse' })
+// The Roundhouse is the Yard's second view (the UX review's P12): its header says Yard, its tab names the view.
+useHead({ title: 'Yard · Roundhouse' })
 
 const attention = useAttention()
 const events = useEvents()
@@ -370,9 +371,10 @@ usePalette().registerPage(() => ({
 <template>
   <UDashboardPanel id="carousel" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <UDashboardNavbar :toggle="false" title="Roundhouse" :ui="{ root: 'h-14' }">
+      <UDashboardNavbar :toggle="false" title="Yard" :ui="{ root: 'h-14' }" data-roundhouse-header>
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
+            <YardViews current="roundhouse" />
             <span v-if="active.length" class="font-mono text-xs text-muted">{{ selected + 1 }} / {{ active.length }}</span>
             <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
           </div>
