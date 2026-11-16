@@ -36,6 +36,10 @@ export function stubFiles(home: string, s: Session) {
     lineMark: () => records('.line').length,
     /** Whether the line has held anything since mark (an Enter since may have taken it). */
     typedSince: (mark: number) => records('.line').slice(mark).some((r) => r !== ''),
+    /** What the stub's sign-in screen has read (STUB_SIGNIN), a record a byte: the hex of every byte since it was drawn; "enter" an Enter. */
+    signin: () => records('.signin'),
+    /** The stub's pid, once it has written it (its sign-in screen does); 0 before. */
+    pid: () => Number(file('.pid')().trim() || '0'),
     /** How many mouse reports the stub has read. */
     mice: () => Number(now('.mouse')() || '0'),
     /** "spinning" while the stub draws, "done" once it is. */

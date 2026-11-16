@@ -1547,8 +1547,11 @@ its words are its heading, "Update available 0.161.0 → 0.162.1". Claude
 Code's built-in entry has its sign-in screen (2.1.319 signed out: "Browser
 didn't open? Use the url below to sign in", the URL, "Paste code here if
 prompted >"), a startup question with no answers: no key of Conductor's
-passes it, and the person signs in through the browser, after which the
-program leaves the screen by itself. Such a question is withdrawn, with
+passes it. The person signs in through the browser, after which the
+program leaves the screen by itself, or, when that browser is on another
+device, gives the code it shows in the terminal, where they see the
+screen and press Enter themselves: Conductor types nothing into a
+startup screen. Such a question is withdrawn, with
 no answer recorded and no key typed, once the screen, after output since
 it was asked (output fed while it was being asked counts), shows no
 startup question (as one a key reached is), and a
@@ -1557,6 +1560,30 @@ question shows says so: "the agent asks a startup question (whether to
 trust the folder, its sign-in, an update): answer with the question's
 choices, or in its terminal". An input that is exactly one of the showing
 question's choices answers it with or without an Enter.
+
+The app's terminal on a touch device takes such a code through its paste
+control (#902; a page served over plain http is given no clipboard to
+read). It takes out of the text every C0 control (U+0000 to U+001F: every
+line break, the tab, ESC), DEL (U+007F) and every C1 control (U+0080 to
+U+009F); every other character is sent as it is, as one paste: bracketed
+while the program has that mode on, as its characters otherwise. The
+control sends no Enter. With no connection it sends nothing, keeps the
+text and says the terminal is not connected; the text leaves it only once
+handed to the terminal or when the person closes it. The page judges the
+control by the last attention it was sent, as sent (before it reads a
+question answered in the terminal as none): while a startup question with
+choices shows (a trust question, an update dialog), answered in the
+terminal or not, the control is not offered and types nothing; for one
+with no choices (the sign-in screen) it is, and on the session's page the
+question bar's words, which say to answer in the terminal, carry a button
+that opens it. Opened on one startup question, it types nothing once the
+page has been told another shows. Being the page's, the judgement lags
+the screen: after the program draws another screen, the page learns of it
+only once the startup watch has seen the screen quiet and the attention
+frame has reached the page. A paste sent in that moment reaches the screen
+the program shows then, as one bracketed paste where the program has
+turned bracketed paste on and as its characters otherwise, the same as
+keys typed on a touch keyboard in that moment.
 
 A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
 one the agent asks during its work, not only as it starts. A server session
