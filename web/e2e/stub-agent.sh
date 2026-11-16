@@ -1312,11 +1312,9 @@ mcp_ok() {
 # dialog at its top, in one synchronized update (tui/src/tui.rs,
 # 0.163 to 0.169). dialog_key reads its key, and draws it again the same
 # way when the window is resized meanwhile, as Codex draws its view after
-# a resize (Tui::draw's clear_for_viewport_change): a window made narrower
-# that lost a character of what the old width showed leaves Conductor's
-# screen unreadable until it is erased whole, and an answered dialog would
-# never read as gone (#716's neighbour: the update question skipped at 72
-# columns stayed).
+# a resize (Tui::draw's clear_for_viewport_change): the screen is erased
+# whole at the new width, and an answered dialog reads as gone at any width
+# (#716's neighbour: the update question skipped at 72 columns).
 dialog_draw() {
 	printf '\e[?2026h\e[1;1H\e[J%s\e[?2026l' "$1"
 }

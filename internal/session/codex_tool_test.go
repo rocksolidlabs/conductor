@@ -538,8 +538,7 @@ func TestAnAnsweredToolApprovalFormIsNotAskedAgain(t *testing.T) {
 // Cancel is sent as Escape, the key the form's footer names: with another
 // of Codex's views drawn over the form after the session's last look at it
 // (the pump holds the chunk that draws it, read but not yet looked at), a
-// Cancel writes Escape or nothing, never a digit, which picks a choice of
-// the view drawn over it (2 is the command approval's "don't ask again").
+// Cancel writes Escape or nothing.
 func TestCodexsToolApprovalCancelWritesEscapeOrNothing(t *testing.T) {
 	s, p, sub := newCodexToolSession(t, codexToolOnceCols, codexToolOnceHeight)
 	p.outW.Write(drawn(codexToolFormOnce))
