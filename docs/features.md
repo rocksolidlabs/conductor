@@ -213,9 +213,14 @@ that order.
 - **The server's side.** `POST /api/sessions` takes `message` (at most
   4,096 bytes): typed into the agent once the session is ready, by the
   wait a crew member's prompt takes, held behind every startup question
-  (each noted once in the session's activity), past the cap only at the
-  agent's known prompt when it has one. A person's own keys first
-  withdraw it; a session that ends first gets nothing; each is noted.
+  (each noted once in the session's activity), and only at the agent's
+  own recognised prompt (its catalog entry's prompt shape), before the
+  cap and after it: an agent with none takes no first message (a launch
+  with one is refused; the catalog's listing says which agents take
+  one, and the Launch dialog offers the field only for them). A person's
+  own keys first withdraw it; keys between its text and its Enter leave
+  the Enter out and hold nothing; a session that ends first gets nothing;
+  each is noted.
   `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
   server's memory until typed, then only in the activity as Conductor's
   own line by `launch`: a resume or a clone never types it again. A
@@ -557,9 +562,11 @@ open deferred item from rounds 1 and 2, then the features below.
   `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
-  line (its first paragraph as text, `descriptionLine` in
-  `web/app/utils/markdown.ts`; "Add a description of CND…" opens the
-  editor), the tracker's link and About at its end, the whole description
+  line (its first paragraph as text, else its first text of any kind,
+  `descriptionLine` in `web/app/utils/markdown.ts`; only for an empty
+  description "Add a description of CND…", which opens the editor), the
+  tracker's link (its icon alone on a phone) and About at its end, the
+  whole description
   opened in place under it and remembered per browser
   (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
   "shown" starts at the line). Then one toolbar: the List, Board and
@@ -3293,8 +3300,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
   apply). Since the UX review's PR-11 the rows are a table, state, task,
-  who, what and actions each read straight down (two lines a row under
-  48 rem): the state said once, the attempt once (in the words when they
+  who, what and actions each read straight down (under 48 rem a row is
+  two lines, and its actions a line of their own below them): the state
+  said once, the attempt once (in the words when they
   name it, else "attempt N" past the first), the owner only when the task
   names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
   menu, so nothing in a row at rest is red. The selected task, kept in the

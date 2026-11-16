@@ -7,7 +7,7 @@ import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { messageProblem, namePreview, plainOffMachine, showsRunsOn } from '~/utils/launch'
+import { messageProblem, namePreview, noFirstMessageLine, plainOffMachine, showsRunsOn, takesFirstMessage } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -37,8 +37,8 @@ const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: stri
 // The first message (P19): typed into the agent once it is ready; a launch on this server only, never a clone. Past its bound the
 // field says so and Launch waits; with no name given, the name it makes is the Name field's placeholder.
 const message = ref('')
-const messageError = computed(() => messageProblem(message.value))
-const namePlaceholder = computed(() => namePreview(message.value) || 'optional')
+const messageError = computed(() => (takesMessage.value ? messageProblem(message.value) : ''))
+const namePlaceholder = computed(() => (takesMessage.value && namePreview(message.value)) || 'optional')
 
 // Clone with options… (#434): the dialog titled for the clone of a session, filled in with its launch, on this server, the name
 // empty and required; the arguments as recorded while their line is left as it was; the agent never another than the source's
@@ -70,6 +70,10 @@ watch(
 const selected = computed(() => agents.value.find((a) => a.id === state.agentId))
 /** The server tab offers the agents installed on the server; My machine offers every agent: what is installed there is the host's. */
 const offered = computed(() => (state.runsOn === 'server' ? serverAgents(agents.value) : agents.value))
+// A first message goes only to an agent whose prompt the server knows (the catalog says which, `firstMessage`), on this server, never
+// with a clone; for another agent the dialog says why in one line.
+const offersMessage = computed(() => !cloning.value && state.runsOn === 'server' && !!selected.value)
+const takesMessage = computed(() => offersMessage.value && takesFirstMessage(selected.value))
 const listNote = computed(() => launchListNote({ loading: loading.value, known: agents.value.length, offered: offered.value.length, onServer: state.runsOn === 'server' }))
 // A clone never falls back to another agent: the source's, not offered by this opening's read (gone, or not installed here), is said so.
 const missingAgent = computed(() => (cloning.value ? missingSourceAgent(sourceAgent.value, offered.value, catalogRead.value) : ''))
@@ -268,7 +272,7 @@ async function submit() {
       // The account the person picked, else none: the route resolves it (its refusal of a pick is shown in its words).
       account: decided.value.sent,
       model: takesAccount.value && model.value.trim() ? model.value.trim() : undefined,
-      message: message.value.trim() ? message.value : undefined,
+      message: takesMessage.value && message.value.trim() ? message.value : undefined,
     })
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
@@ -318,6 +322,7 @@ async function submit() {
         </div>
         <!-- The command breaks anywhere (a long path has no space): on a phone it would push the dialog's body sideways. -->
         <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono break-all">{{ selected.command.join(' ') }}</code></p>
+        <p v-if="offersMessage && !takesMessage" class="-mt-2 text-xs text-muted" data-launch-no-message>{{ noFirstMessageLine(offered) }}</p>
 
         <UFormField v-if="runsOnChoice" label="Where it runs" name="runsOn" data-runs-on>
           <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm">
@@ -327,7 +332,7 @@ async function submit() {
           <template #hint><span>"this computer" runs a command you paste; the server is where the workbench is served from</span></template>
         </UFormField>
 
-        <UFormField v-if="!cloning && state.runsOn === 'server'" label="What should it do?" name="message" hint="optional" help="Typed into the agent once it is ready. Line breaks are typed as spaces." :error="messageError || undefined" data-launch-message>
+        <UFormField v-if="takesMessage" label="What should it do?" name="message" hint="optional" help="Typed into the agent at its prompt once it is ready. Line breaks are typed as spaces." :error="messageError || undefined" data-launch-message>
           <UTextarea v-model="message" autoresize :rows="2" :maxrows="6" class="w-full" data-launch-message-input />
         </UFormField>
         <UFormField v-if="cloning" label="Name" name="name" hint="required" :error="cloneNameMessage" :help="cloneNamed.problem === 'empty' ? 'Give the clone a name no session has' : undefined">

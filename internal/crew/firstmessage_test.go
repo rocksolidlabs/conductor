@@ -26,6 +26,10 @@ func firstSession(t *testing.T, opts session.Options) (*session.Local, *sessiont
 	p := sessiontest.NewFakeProc()
 	t.Cleanup(func() { p.End(0) })
 	opts.Log = quietLog
+	if opts.PromptShape == nil {
+		// The agent's own prompt, recognised: a row "> " alone.
+		opts.PromptShape = promptRe
+	}
 	if opts.SubmitPause == 0 {
 		opts.SubmitPause = 5 * time.Millisecond
 	}
@@ -37,7 +41,11 @@ func firstSession(t *testing.T, opts session.Options) (*session.Local, *sessiont
 	return l, p, sub
 }
 
-// typeFirst starts TypeFirstMessage on l, its wait looking at each tick
+// promptRe is the test agent's prompt shape: a row "> " alone.
+var promptRe = regexp.MustCompile(`(?m)^> *$`)
+
+// typeFirst starts TypeFirstMessage on l, for an agent whose prompt the
+// server knows, its wait looking at each tick
 // sent on the channel it returns, and returns that channel and one closed
 // once it has returned.
 func typeFirst(t *testing.T, l *session.Local, fm FirstMessage) (chan<- time.Time, <-chan struct{}) {
@@ -46,7 +54,7 @@ func typeFirst(t *testing.T, l *session.Local, fm FirstMessage) (chan<- time.Tim
 	if fm.Wait == nil {
 		fm.Wait = readyWait{poll: time.Hour, ticks: ticks}.await
 	}
-	fm.Text, fm.poll = firstText, time.Millisecond
+	fm.Text, fm.poll, fm.PromptShape = firstText, time.Millisecond, true
 	l.SetFirstMessage("waiting")
 	done := make(chan struct{})
 	go func() {
@@ -301,12 +309,39 @@ func TestAFirstMessagePastTheCapWaitsForTheAgentsPrompt(t *testing.T) {
 	}
 }
 
-// Past the cap, an agent without a recognised prompt gets the message
-// typed anyway, as a crew's prompt is.
-func TestAFirstMessagePastTheCapIsTypedAnyway(t *testing.T) {
+// An agent whose prompt the server does not know gets no first message
+// at all, ready or not, past the cap or not: nothing is written, and the
+// session's Activity says why.
+func TestAFirstMessageIsNeverTypedWithoutAKnownPrompt(t *testing.T) {
+	for _, wait := range []func(context.Context, *session.Local, func(string)) error{ready, notReady} {
+		l, p, _ := firstSession(t, session.Options{})
+		p.Print("> ")
+		l.SetFirstMessage("waiting")
+		TypeFirstMessage(t.Context(), l, FirstMessage{Text: firstText, Wait: wait, poll: time.Millisecond})
+		noInput(t, p)
+		if n := len(entriesWith(l, session.ActivityStatus, "the first message was not typed: Conductor does not know this agent's prompt")); n != 1 {
+			t.Fatalf("%d notes, want one", n)
+		}
+		if fm := l.Info().FirstMessage; fm != "" {
+			t.Fatalf("the session says its first message is %q", fm)
+		}
+	}
+}
+
+// ready is a readiness wait that answers at once that the session is
+// ready: quiet, no known startup question showing.
+func ready(context.Context, *session.Local, func(string)) error { return nil }
+
+// Before the cap, the wait saying ready is not enough: a quiet screen that
+// is not the agent's prompt (one the catalog does not know) gets nothing,
+// noted once, and the message is typed once the prompt is drawn.
+func TestAFirstMessageWaitsForTheAgentsPromptBeforeTheCap(t *testing.T) {
 	l, p, _ := firstSession(t, session.Options{})
-	p.Print("Loading the agent…")
-	_, done := typeFirst(t, l, FirstMessage{Wait: notReady})
+	p.Print("Choose a colour scheme:\r\n  Dark\r\n  Light\r\n")
+	_, done := typeFirst(t, l, FirstMessage{Wait: ready})
+	untilEntries(t, l, session.ActivityStatus, "the first message waits for the agent's prompt", 1)
+	noInput(t, p)
+	p.Print("\x1b[2J\x1b[H> ")
 	got := ""
 	for !strings.HasSuffix(got, "\r") {
 		got += string(<-p.Input)
@@ -314,5 +349,46 @@ func TestAFirstMessagePastTheCapIsTypedAnyway(t *testing.T) {
 	returned(t, done)
 	if !strings.Contains(got, firstText) {
 		t.Fatalf("written %q", got)
+	}
+	if n := len(entriesWith(l, session.ActivityStatus, "the first message waits for the agent's prompt")); n != 1 {
+		t.Fatalf("%d notes, want one", n)
+	}
+}
+
+// A person who types in the pause between the message's text and its
+// Enter withdraws the Enter and is held to nothing: the Enter is never
+// written, the session shows no question of its own, the agent's next
+// report shows, and the Activity has the one line. The pause is longer
+// than the test: only the person's key ends it.
+func TestAPersonsKeyBeforeTheFirstMessagesEnterHoldsNothing(t *testing.T) {
+	l, p, sub := firstSession(t, session.Options{SubmitPause: time.Hour})
+	p.Print("> ")
+	_, done := typeFirst(t, l, FirstMessage{Wait: ready})
+	if b := <-p.Input; !strings.Contains(string(b), firstText) {
+		t.Fatalf("written %q", b)
+	}
+	if err := l.Input(sub, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if b := <-p.Input; string(b) != "x" {
+		t.Fatalf("written %q", b)
+	}
+	returned(t, done)
+	noInput(t, p)
+	// A hold is set before the submission returns: none is.
+	if l.TurnHeld() {
+		t.Fatal("the session's turn is held")
+	}
+	if a := l.Info().Attention; a.State == session.AttentionNeedsInput {
+		t.Fatalf("the session shows %+v", a)
+	}
+	if err := l.TrySetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := l.Info().Attention; a.State != session.AttentionWorking {
+		t.Fatalf("the agent's working shows %+v", a)
+	}
+	if n := len(entriesWith(l, session.ActivityStatus, "the first message was typed without its Enter: a person typed in the session first")); n != 1 {
+		t.Fatalf("%d notes, want one", n)
 	}
 }
