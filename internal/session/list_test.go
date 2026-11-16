@@ -380,6 +380,91 @@ func TestReadListReadsClaudeCodesDialogs(t *testing.T) {
 	}
 }
 
+// Codex's form asking to allow a tool (#716) draws each choice's
+// description in a column of its own: readList reads each label whole, as
+// for every dialog, and named the names, cut at the one column where every
+// choice row's description begins, at 120, 80 and 72 columns; the whole
+// keeps the description and the rows of it wrapped below. The highlight
+// moved to another choice is read where it stands.
+func TestReadListReadsCodexsToolApprovalForm(t *testing.T) {
+	for name, c := range map[string]struct {
+		screen string
+		at     int
+	}{
+		"120 columns": {codexToolForm, 0},
+		"80 columns":  {screenRows(codexToolForm80...), 3},
+		"72 columns":  {screenRows(codexToolForm72...), 0},
+	} {
+		l, ok := readList(c.screen, nil)
+		if !ok || l.at != c.at || !strings.HasPrefix(l.choices[0].Label, "Allow ") || !strings.HasSuffix(l.choices[0].Label, "  Run the tool and continue") {
+			t.Fatalf("%s: choices %q at %d, %v", name, labels(l.choices), l.at, ok)
+		}
+		named, ok := l.named()
+		if !ok || strings.Join(labels(named), "|") != "1 Allow|2 Allow for this session|3 Always allow|4 Cancel" {
+			t.Fatalf("%s: named %q, %v", name, labels(named), ok)
+		}
+		if want := "1. Allow                   Run the tool and continue|2. Allow for this session  Run the tool and remember this choice for this session|3. Always allow            Run the tool and remember this choice for future tool calls|4. Cancel                  Cancel this tool call"; strings.Join(strings.Fields(strings.Join(l.whole, "|")), " ") != strings.Join(strings.Fields(want), " ") {
+			t.Fatalf("%s: whole %q", name, l.whole)
+		}
+	}
+	// No column: rows with no gap, gaps at other columns, or two columns
+	// every row has.
+	for name, screen := range map[string]string{
+		"no gap":       screenRows("  › 1. Allow", "    2. Cancel", "", "  enter to submit | esc to cancel"),
+		"not aligned":  screenRows("  › 1. Allow  Run the tool", "    2. Cancel    Cancel it", "", "  enter to submit | esc to cancel"),
+		"two columns":  screenRows("  › 1. Ab  cd  ef", "    2. Gh  ij  kl", "", "  enter to submit | esc to cancel"),
+		"one row only": screenRows("  › 1. Allow   Run the tool", "    2. Cancel", "", "  enter to submit | esc to cancel"),
+	} {
+		l, ok := readList(screen, nil)
+		if !ok {
+			t.Fatalf("%s: no list", name)
+		}
+		if named, ok := l.named(); ok {
+			t.Errorf("%s: named %q", name, labels(named))
+		}
+	}
+}
+
+// A Claude Code dialog whose choice holds two spaces in its label keeps it
+// whole, as before Codex's form (#716): two dialogs that differ only after
+// the two spaces offer different labels, and each choice its own.
+func TestAClaudeCodeChoiceWithTwoSpacesKeepsItsWholeLabel(t *testing.T) {
+	qs := claudeQuestions(t)
+	dialog := func(dir string) string {
+		return strings.Replace(claudeBash, "/home/dev/project from this project", dir, 1)
+	}
+	_, debug, _ := readAsked(qs, dialog("/tmp/build  debug"))
+	_, release, _ := readAsked(qs, dialog("/tmp/build  release"))
+	if len(debug) != 4 || debug[1].Label != "Yes, and always allow access to /tmp/build  debug" || release[1].Label != "Yes, and always allow access to /tmp/build  release" {
+		t.Fatalf("the labels %q and %q", labels(debug), labels(release))
+	}
+}
+
+// A Claude Code dialog whose choice rows carry a column aligned on every
+// row, as Codex's form draws its descriptions, keeps each label whole: only
+// a form (#716) is named at its column.
+func TestAClaudeCodeDialogWithAnAlignedColumnKeepsItsWholeLabels(t *testing.T) {
+	qs := claudeQuestions(t)
+	screen := strings.Replace(claudeBash, screenRows(
+		" ❯ 1. Yes",
+		"   2. Yes, and always allow access to /home/dev/project from this project",
+		"   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+		"   4. No",
+	), screenRows(
+		" ❯ 1. Allow                   Run it once",
+		"   2. Allow for this session  Run it from now on",
+		"   3. Always allow            Run it always",
+		"   4. Cancel                  Do not run it",
+	), 1)
+	if screen == claudeBash {
+		t.Fatal("the dialog's choices were not replaced")
+	}
+	_, answers, _ := readAsked(qs, screen)
+	if want := "1 Allow                   Run it once|2 Allow for this session  Run it from now on|3 Always allow            Run it always|4 Cancel                  Do not run it"; strings.Join(labels(answers), "|") != want {
+		t.Fatalf("the labels %q", labels(answers))
+	}
+}
+
 // A list is the dialog's when its rows are numbered 1 to N in turn at one
 // column, close together, at the bottom of the screen: a numbered list
 // above the dialog is not read into it, a label wrapped at a narrow width
