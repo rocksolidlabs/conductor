@@ -256,7 +256,7 @@ const items = computed(() =>
               </button>
             </li>
           </ul>
-          <p class="border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-touched-foot>The same events are in Activity and on the Events page, quiet there by default.</p>
+          <p class="border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-touched-foot>The same events are in Activity and in the feed in History, quiet there by default.</p>
         </div>
         <div v-else class="flex-1 min-h-0 overflow-y-auto p-4">
           <p v-if="!activityRows.length" class="text-xs text-muted">Nothing yet.</p>

@@ -487,13 +487,8 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
   await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
-  // The foot: the pages as six tiles, nothing else, Needs you first; More holds the rest (this server has Brakeman: its slot fills).
-  const foot = page.getByRole('navigation', { name: 'Pages' })
-  await expect(foot.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
-  await foot.locator('[data-sidebar-tile="more"]').click()
-  await expect(page.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('menu')).toHaveCount(0)
+  // The foot holds only the pages: its tiles and More's list, in order, are destinations.spec.ts's (every list of the pages).
+  await expect(page.getByRole('navigation', { name: 'Pages' }).locator('a, button')).toHaveCount(6)
 })
 
 test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
@@ -533,7 +528,7 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   const rail = page.locator('[data-rail]')
   await expect(rail).toBeVisible()
   await expect(rail.locator(`[data-rail-session="${marked.id}"]`)).toBeVisible()
-  // A badge the Events page routes to the sidebar, arriving live (badges come from the stream the page watches).
+  // A badge the Alerts rules route to the sidebar, arriving live (badges come from the stream the page watches).
   await api.ok('POST', `/api/sessions/${marked.id}/attention`, { state: 'done', message: 'finished the sweep' })
   await expect(rail.locator('[data-rail-count="needs"]')).toHaveText(/^[1-9]\d*$/)
   await expect(rail.locator('[data-rail-count="news"]')).toHaveText(/^[1-9]\d*$/)
@@ -1302,11 +1297,11 @@ test('the pages as six tiles', async ({ day, browser }) => {
       const list = await page.locator('[data-session-list="sidebar"]').boundingBox()
       expect(list!.height).toBeGreaterThanOrEqual(600)
     }
-    // More, by a click: Agents, Events and History, each opening its page; the menu is gone after each pick.
+    // More, by a click: Agents and History, each opening its page; the menu is gone after each pick.
     const menu = page.getByRole('menu')
-    for (const [name, path] of [['Agents', '/agents'], ['Events', '/events'], ['History', '/history']] as const) {
+    for (const [name, path] of [['Agents', '/agents'], ['History', '/history']] as const) {
       await tile('more').click()
-      await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
+      await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/])
       await menu.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
       await expect(menu).toHaveCount(0)
       await expect(page).toHaveURL(new RegExp(`${path}$`))
@@ -1317,7 +1312,7 @@ test('the pages as six tiles', async ({ day, browser }) => {
     // More by Enter after Tab from Dispatch; Escape closes it.
     await tabTo(page, tile('more'), 2, tile('dispatch'))
     await page.keyboard.press('Enter')
-    await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
+    await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^History/])
     await page.keyboard.press('Escape')
     await expect(menu).toHaveCount(0)
     // A tile's tooltip shows on keyboard focus: its page's sentence and key.

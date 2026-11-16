@@ -4,6 +4,7 @@ import { pageState } from '~/utils/pageState'
 import { LATEST_SESSIONS } from '~/composables/usePaletteHistory'
 import type { HistoryOptions } from '~/composables/useHistorySearch'
 import type { ProjectsPage } from '~/composables/useDispatch'
+import type { Integration } from '~/composables/useSessions'
 
 /**
  * The History page (Program item HS1, docs/plans/history.md, "web/app", PR-7): the palette's `~` search with room. The search box
@@ -11,13 +12,67 @@ import type { ProjectsPage } from '~/composables/useDispatch'
  * projects, the host from the records, the agent from the catalog, since), so the query is the one truth and the URL keeps it
  * (`?q=`): a search is a link. Every result, paged with Show more (the reply's `next`), grouped under the session or the task it
  * belongs to. Nothing typed: the four questions, and the latest sessions. On a phone, one column.
+ *
+ * Its second view, Feed (`?view=feed`, the UX review's P12: the retired Events page's feed), is the live feed of what agents report
+ * with its last hour beside it, kept in this tab's memory (useEvents): it says so, "Since this tab opened".
  */
-useHead({ title: 'History' })
-
 const route = useRoute()
 const router = useRouter()
 const admin = useWorkbenchToken()
 const { request } = useApi()
+
+/** The page's view, in the address: Search (the default) or Feed. */
+type HistoryView = 'search' | 'feed'
+const view = computed<HistoryView>({
+  get: () => (route.query.view === 'feed' ? 'feed' : 'search'),
+  set: (v) => void router.replace({ query: { ...route.query, view: v === 'feed' ? 'feed' : undefined } }),
+})
+const views = [
+  { label: 'Search', value: 'search', icon: 'i-lucide-search' },
+  { label: 'Feed', value: 'feed', icon: 'i-lucide-radio-tower' },
+]
+useHead({ title: () => (view.value === 'feed' ? 'History · Feed' : 'History') })
+
+// The feed: filled from the live stream on every page (useEvents), its aside's Reporting list from the integrations, read while the
+// Feed is shown.
+const sessionsApi = useSessions()
+const attention = useAttention()
+const events = useEvents()
+const integrations = ref<Integration[]>([])
+const feedLoading = ref(false)
+const feedError = ref('')
+async function refreshFeed() {
+  if (!admin.hasToken.value) {
+    admin.needsToken.value = true
+    return
+  }
+  feedLoading.value = true
+  try {
+    integrations.value = (await sessionsApi.integrations()).integrations
+    feedError.value = ''
+  } catch (e) {
+    feedError.value = (e as Error).message
+  } finally {
+    feedLoading.value = false
+  }
+}
+onMounted(() => attention.start())
+watch(
+  () => [view.value, admin.token.value] as const,
+  ([v]) => {
+    if (v === 'feed') void refreshFeed()
+  },
+  { immediate: true },
+)
+
+// This page's group in the command palette: its two views, and Refresh while the Feed is shown.
+usePalette().registerPage(() => ({
+  label: 'History',
+  rows: [
+    ...views.map((v) => ({ key: `page:view:${v.value}`, label: v.label, icon: v.icon, on: view.value === v.value, run: () => (view.value = v.value as HistoryView) })),
+    ...(view.value === 'feed' ? [{ key: 'page:refresh', label: 'Refresh', icon: 'i-lucide-refresh-cw', run: refreshFeed }] : []),
+  ],
+}))
 
 // The chips' values: the projects Dispatch keeps, the hosts the records name, the agents of the catalog. Read under the history's read
 // rule (useHistorySearch: bounded, cancelled by the next, cleared and asked again when the token changes); a source that fails leaves
@@ -58,14 +113,14 @@ watch(
   () => [asked.value, admin.hasToken.value] as const,
   ([q, has]) => {
     if (has) search.search(q)
-    else admin.needsToken.value = true
+    else if (view.value === 'search') admin.needsToken.value = true
   },
   { immediate: true },
 )
 
 const now = ref(Date.now())
 let tick: ReturnType<typeof setInterval> | undefined
-onMounted(() => (tick = setInterval(() => (now.value = Date.now()), 30_000)))
+onMounted(() => (tick = setInterval(() => (now.value = Date.now()), 15_000)))
 onBeforeUnmount(() => clearInterval(tick))
 
 const shown = computed(() => (search.result.value?.q === asked.value ? search.result.value.reply : null))
@@ -142,7 +197,8 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
           <UIcon name="i-lucide-history" class="size-5 text-muted" />
         </template>
         <template #right>
-          <PageAbout :shown="state === 'content'">
+          <UButton v-if="view === 'feed'" label="Refresh" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="feedLoading" data-history-refresh @click="refreshFeed" />
+          <PageAbout v-if="view === 'search'" :shown="state === 'content'">
             <p>{{ CAPTION }} The palette searches the same with <UKbd value="~" size="sm" />.</p>
           </PageAbout>
         </template>
@@ -150,7 +206,21 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
     </template>
 
     <template #body>
-      <div class="mx-auto grid w-full max-w-6xl min-w-0 grid-cols-1 gap-5 lg:grid-cols-[15rem_minmax(0,1fr)]" data-history-page>
+      <div class="mx-auto w-full max-w-6xl min-w-0">
+        <!-- Manual activation: a view changes on a click or Enter, never on the focus coming back to a tab (the palette closing). -->
+        <UTabs v-model="view" :items="views" :content="false" activation-mode="manual" color="neutral" variant="link" size="sm" aria-label="History's views" data-history-views />
+      </div>
+      <div v-if="view === 'feed'" class="mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col" data-history-feed>
+        <p class="text-xs text-muted" data-history-feed-caption>Since this tab opened</p>
+        <UAlert v-if="feedError" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="feedError" class="mt-3" />
+        <div class="flex min-h-0 flex-1 flex-col xl:flex-row">
+          <div class="min-w-0 flex-1 pb-6 xl:pr-6">
+            <EventFeed :entries="events.entries.value" :now="now" />
+          </div>
+          <EventsAside :entries="events.entries.value" :now="now" :routes="events.routes.value" :integrations="integrations" class="flex-none border-t border-default pt-5 xl:w-[340px] xl:border-t-0 xl:border-l xl:pt-0 xl:pl-5" />
+        </div>
+      </div>
+      <div v-else class="mx-auto grid w-full max-w-6xl min-w-0 grid-cols-1 gap-5 lg:grid-cols-[15rem_minmax(0,1fr)]" data-history-page>
         <!-- The search box first on a phone, beside the chips on a wide screen. -->
         <div class="min-w-0 lg:col-start-2 lg:row-start-1" data-history-search>
           <UInput v-model="text" icon="i-lucide-search" placeholder="Words, or filters: class: outcome: project: host: agent: since:" size="lg" class="w-full" aria-label="Search the history" data-history-input />

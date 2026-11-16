@@ -206,8 +206,8 @@ test('the reads of a page that was left are aborted, never stacked past two', as
     await expect(page.locator('[data-agent="codex"] [data-checking]')).toBeVisible()
     await expect.poll(() => asked).toBe(2 * round)
     await expect.poll(() => open).toBe(2)
-    await viaMore(page, 'Events')
-    await expect(page).toHaveURL(/\/events$/)
+    await viaMore(page, 'History')
+    await expect(page).toHaveURL(/\/history$/)
     // Left: the page's reads are aborted, none left open.
     await expect.poll(() => open).toBe(0)
     if (round < 3) await viaMore(page, 'Agents')
@@ -251,8 +251,8 @@ test('a hide that answers after the page was left starts no read, and the page o
     await hiding
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
-    await viaMore(page, 'Events')
-    await expect(page).toHaveURL(/\/events$/)
+    await viaMore(page, 'History')
+    await expect(page).toHaveURL(/\/history$/)
     const before = quick
     const hidden = page.waitForResponse((r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname === '/api/catalog/opencode')
     release()

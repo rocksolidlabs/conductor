@@ -27,7 +27,7 @@ function who(e: FeedEntry): { name: string; agent: string; runId?: string } {
     <!-- The feed is this tab's alone (useEvents keeps it in memory): empty at every load, so its words say so. -->
     <PageEmpty
       v-if="!entries.length"
-      page="events"
+      page="history-feed"
       state="empty"
       words="Nothing yet since this tab opened. An agent reports when it needs input, finishes a turn, hands work off or hits an error."
       :actions="[{ label: 'Which agents report', icon: 'i-lucide-plug', to: '/agents#reporting' }]"

@@ -1,6 +1,6 @@
 import type { Integration } from '~/composables/useSessions'
 
-/** Where an agent stands with Conductor's hooks: the one rule the Agents page's cards, its table and the Events page's aside read. */
+/** Where an agent stands with Conductor's hooks: the one rule the Agents page's cards, its table and History's feed's aside read. */
 export type ReportKey = 'reports' | 'experimental' | 'unset' | 'none'
 
 /**

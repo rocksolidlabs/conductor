@@ -246,6 +246,26 @@ that order.
 - **The table.** `navTiles` in `web/app/utils/pages.ts` gives the tiles
   and More's list from the pages' one table (a page's `tile` place).
 
+## History gets the feed; Events is retired (UX1 PR-29, P12; 2026-11-16)
+
+- **History's two views.** Search, which it opens on, and Feed
+  (`/history?view=feed`), the live feed with its last hour, where each
+  event goes and which agents report beside it, captioned "Since this tab
+  opened": the feed is the tab's memory, not the server's. The switch is
+  under the title; the palette's History group has both views, and
+  Refresh while the Feed is shown.
+- **Old links keep working.** `/events` and `?tab=feed` (and any other
+  tab) land on History's Feed, `?tab=routing` on the Alerts panel over it,
+  `?tab=integrations` on Agents' Reporting to Conductor
+  (`eventsRedirect` in `web/app/utils/events.ts`). G E and Alt+E open the
+  Feed ("Go to History's feed"). A crew run's "All events" opens it.
+- **Seven destinations.** Needs you, Yard, Crews, Dispatch, Brakeman,
+  Agents, History, with Settings in the desktop app: the pages' table in
+  that order. The sidebar's More holds Agents and History; the phone's
+  More Dispatch, Brakeman, Agents, History; the palette's Go to adds the
+  Roundhouse, Agents · Reporting, History · Feed and Paste invite.
+  `web/e2e/destinations.spec.ts` holds every list as drawn.
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.

@@ -53,12 +53,6 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-/** The Go to rows that are no page of their own (utils/pages.ts): Agents' Reporting section and the paste invite, after the pages. */
-const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
-  { id: 'agents-reporting', label: 'Agents · Reporting', to: '/agents#reporting', icon: 'i-lucide-plug' },
-  { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
-]
-
 /**
  * A plan's or a task's row in the palette's Needs you (the UX review's P3): "Plan: <title>", "Task: <title>" (its kind's word, kindLook),
  * its question or brief below, opening the item on the Needs you page. `go` navigates (and closes the palette).
@@ -464,7 +458,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
-  /** Go to: the pages of the one table (utils/pages.ts), each with its sentence as its second line (so searched), then OTHER_ROWS. */
+  /** Go to: the rows of the one table (utils/pages.ts), each with its sentence as its second line (so searched). */
   function pageItems(): PaletteItem[] {
     // Needs you's row carries the one number (useNeedsYou), the nav's; no other row counts what needs you.
     const d = oneList.number.value ? needsCount(oneList.list.value) : ''
@@ -477,7 +471,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       run: () => go(p.to),
       href: p.to,
     }))
-    return [...pages, ...OTHER_ROWS.map((p) => ({ key: `go:${p.id}`, label: p.label, icon: p.icon, kbds: [], run: () => go(p.to), href: p.to }))]
+    return pages
   }
 
   // ---------------------------------------------------------------------------
@@ -564,7 +558,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input
     for (const k of ['badge', 'browser', 'wall', 'feed'] as const) {
-      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'a browser alert', wall: 'the Roundhouse jump', feed: 'the Events feed' }
+      const words: Record<typeof k, string> = { badge: 'the sidebar badge', browser: 'a browser alert', wall: 'the Roundhouse jump', feed: 'the feed in History' }
       out.push({ key: `action:route:${k}`, label: `Needs input → ${words[k]}`, icon: 'i-lucide-route', on: needs[k], run: () => events.setRoute('needs_input', k, !needs[k]) })
     }
     for (const i of integrations.value.filter((i) => i.installable && !i.installed)) out.push({ key: `action:install:${i.id}`, label: `Install hooks for ${i.name}`, icon: 'i-lucide-plug', run: () => void installHooks(i.id, i.name) })
@@ -888,8 +882,8 @@ export function usePaletteRows(ctx: PaletteContext) {
         return s ? { key: `verb:mark:${s.id}`, label: `Mark ${s.name} as ${v.state === 'clear' ? 'clear' : v.state}`, icon: 'i-lucide-hand', agentId: s.agentId, run: () => signal(s, state) } : null
       }
       case 'go': {
-        const p = PAGES.find((p) => p.id === v.page) ?? OTHER_ROWS.find((p) => p.id === v.page)
-        return p ? { key: `verb:go:${v.page}`, label: `Go to ${'title' in p ? p.title : p.label}`, icon: p.icon, run: () => go(p.to) } : null
+        const p = PAGES.find((p) => p.id === v.page)
+        return p ? { key: `verb:go:${v.page}`, label: `Go to ${p.title}`, icon: p.icon, run: () => go(p.to) } : null
       }
     }
   }

@@ -3,7 +3,20 @@
  * rail, the phone's bar and its More, and the palette's Go to read it through the functions below; none keeps a list of its own.
  */
 
-export type PageId = 'decisions' | 'yard' | 'roundhouse' | 'agents' | 'crews' | 'dispatch' | 'events' | 'history' | 'brakeman' | 'sessions' | 'settings'
+export type PageId =
+  | 'decisions'
+  | 'yard'
+  | 'roundhouse'
+  | 'agents'
+  | 'agents-reporting'
+  | 'crews'
+  | 'dispatch'
+  | 'history'
+  | 'history-feed'
+  | 'brakeman'
+  | 'sessions'
+  | 'paste'
+  | 'settings'
 
 export interface PageEntry {
   id: PageId
@@ -25,8 +38,9 @@ export interface PageEntry {
    */
   place: { nav?: number; tile?: number; tab?: number; more?: number; palette?: number }
   /**
-   * The page this one is a view of (the Roundhouse is the Yard's second view): the nav, the rail and the phone's bar and More leave it
-   * out, the palette keeps its row and key, and the page it is a view of is current on its route (pageActive).
+   * The page this one is a view of (the Roundhouse is the Yard's second view, the Feed History's, Reporting a section of Agents): the
+   * nav, the rail and the phone's bar and More leave it out, the palette keeps its row and key, and the page it is a view of is
+   * current on its route (pageActive).
    */
   viewOf?: PageId
 }
@@ -57,18 +71,7 @@ export const PAGES: readonly PageEntry[] = [
     place: { palette: 3 },
     viewOf: 'yard',
   },
-  {
-    id: 'agents',
-    label: 'Agents',
-    title: 'Agents',
-    to: '/agents',
-    icon: 'i-lucide-bot',
-    chord: ['G', 'A'],
-    about: 'The agents this machine can launch, and how each reports to Conductor.',
-    when: 'always',
-    place: { nav: 4, more: 2, palette: 6 },
-  },
-  { id: 'crews', label: 'Crews', title: 'Crews', to: '/crews', icon: 'i-lucide-users', chord: ['G', 'C'], about: 'Saved teams of agents, and each run of one.', when: 'always', place: { nav: 5, tile: 3, tab: 4, palette: 4 } },
+  { id: 'crews', label: 'Crews', title: 'Crews', to: '/crews', icon: 'i-lucide-users', chord: ['G', 'C'], about: 'Saved teams of agents, and each run of one.', when: 'always', place: { nav: 3, tile: 3, tab: 4, palette: 4 } },
   {
     id: 'dispatch',
     label: 'Dispatch',
@@ -78,9 +81,31 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'D'],
     about: 'Tickets, the plans you approve, the runs they start.',
     when: 'always',
-    place: { nav: 6, tile: 4, more: 3, palette: 5 },
+    place: { nav: 4, tile: 4, more: 1, palette: 5 },
   },
-  { id: 'events', label: 'Events', title: 'Events', to: '/events', icon: 'i-lucide-radio-tower', chord: ['G', 'E'], about: 'What your agents report, as it happens.', when: 'always', place: { nav: 7, more: 5, palette: 7 } },
+  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 5, tile: 5, more: 2 } },
+  {
+    id: 'agents',
+    label: 'Agents',
+    title: 'Agents',
+    to: '/agents',
+    icon: 'i-lucide-bot',
+    chord: ['G', 'A'],
+    about: 'The agents this machine can launch, and how each reports to Conductor.',
+    when: 'always',
+    place: { nav: 6, more: 3, palette: 6 },
+  },
+  {
+    id: 'agents-reporting',
+    label: 'Reporting',
+    title: 'Agents · Reporting',
+    to: '/agents#reporting',
+    icon: 'i-lucide-plug',
+    about: 'How each agent reports its turns and questions, and the hooks that make it.',
+    when: 'always',
+    place: { palette: 7 },
+    viewOf: 'agents',
+  },
   {
     id: 'history',
     label: 'History',
@@ -90,9 +115,21 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'H'],
     about: 'What was said, decided and checked, kept after the work ends.',
     when: 'always',
-    place: { nav: 8, more: 6, palette: 8 },
+    place: { nav: 7, more: 4, palette: 8 },
   },
-  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 9, tile: 5, more: 4 } },
+  {
+    id: 'history-feed',
+    label: 'Feed',
+    title: 'History · Feed',
+    to: '/history?view=feed',
+    icon: 'i-lucide-radio-tower',
+    chord: ['G', 'E'],
+    about: 'What your agents report, as it happens.',
+    when: 'always',
+    place: { palette: 9 },
+    viewOf: 'history',
+  },
+  { id: 'paste', label: 'Paste invite', title: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste', about: 'Opens a share link or an invite someone sent you.', when: 'always', place: { palette: 10 } },
   {
     id: 'settings',
     label: 'Settings',
@@ -102,7 +139,7 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'S'],
     about: 'How the desktop app runs its server and shares.',
     when: 'desktop',
-    place: { nav: 10, more: 7, palette: 9 },
+    place: { nav: 8, more: 5, palette: 11 },
   },
 ]
 
@@ -128,7 +165,7 @@ export function pageById(id: PageId): PageEntry {
   return PAGES.find((p) => p.id === id)!
 }
 
-/** The rail: Needs you while its row shows, the Yard, …, History, then Brakeman while the server has it and Settings in the desktop app. */
+/** The rail: Needs you while its row shows, the Yard, Crews, Dispatch, Brakeman while the server has it, Agents, History, Settings in the desktop app. */
 export function navPages(s: PageScope = {}): PageEntry[] {
   return placed('nav', s).filter((p) => p.id !== 'decisions' || s.needs !== false)
 }
@@ -166,12 +203,12 @@ export function navTiles(s: TileScope = {}): { tiles: NavTile[]; more: PageEntry
   return { tiles, more: placed('nav', s).filter((p) => p.place.tile === undefined) }
 }
 
-/** The pages under the phone's More, in order: Brakeman after Dispatch while the server has it. */
+/** The pages under the phone's More, in order: Dispatch, Brakeman while the server has it, Agents, History, Settings in the desktop app. */
 export function phoneMore(s: Pick<PageScope, 'desktop' | 'brakeman'> = {}): PageEntry[] {
   return placed('more', s)
 }
 
-/** The palette's Go to rows, in order: the destinations alone. */
+/** The palette's Go to rows, in order: the destinations and their views (the Roundhouse, Agents · Reporting, History · Feed), the paste invite. */
 export function palettePages(s: Pick<PageScope, 'desktop'> = {}): PageEntry[] {
   return placed('palette', s)
 }

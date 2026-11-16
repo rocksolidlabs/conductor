@@ -74,7 +74,7 @@ function confirmStop() {
             <span class="text-xs font-medium text-highlighted" data-run-stop-confirm>{{ question.title }}</span>
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
-          <span v-else class="truncate font-mono text-[11px] text-muted">{{ blockSubtitle(block) }}</span>
+          <span v-else class="truncate text-[11px] text-muted tabular-nums" :data-sidebar-run-subtitle="block.runId">{{ blockSubtitle(block) }}</span>
         </span>
       </NuxtLink>
       <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-run-stop-buttons>

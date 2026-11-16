@@ -131,16 +131,16 @@ test('the section lists every adapter with its status, opens a snippet and shows
   await page.goto('/events?tab=integrations')
   await expect(page).toHaveURL(/\/agents#reporting$/)
   await expect(page.locator('#reporting [data-integration][data-id="claude"]')).toBeInViewport()
-  // The Events page keeps its Feed tab (its Routing went to the Alerts panel), and its Reporting list links here.
-  await page.goto('/events')
-  await expect(page.locator('[data-events-tabs]').getByRole('tab')).toHaveText(['Feed'])
+  // History's Feed (the retired Events page's feed) has the Reporting list beside it, which links here.
+  await page.goto('/history?view=feed')
+  await expect(page.locator('[data-event-feed]')).toBeVisible()
   await page.locator('[data-reporting-link]').click()
   await expect(page).toHaveURL(/\/agents#reporting$/)
   await expect(page.locator('#reporting [data-integration]').first()).toBeInViewport()
 })
 
 test("the palette's Agents · Reporting row opens the section, from another page and from the top of Agents itself", async ({ browser, state }) => {
-  const page = await dayPage(browser, { server: state, path: '/events' })
+  const page = await dayPage(browser, { server: state, path: '/history?view=feed' })
   const go = async () => {
     // The layout's keys: pressed once its sidebar is drawn.
     await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()

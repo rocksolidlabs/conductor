@@ -5,7 +5,7 @@ import { markLook, type MarkView } from '~/utils/status'
  * A state's mark and, with `word`, its word (docs/design/system.md, Status): the one way every surface draws a session's, a member's or
  * a task's state. The mark is 8 px, drawn from STATUS_LOOK and TASK_LOOK alone (markLook: its shape and tone; the line diagram's station
  * draws the same table as circles and rings), and carries the colour; the word is drawn in muted text, never in a status colour. The mark
- * is an image named by the word, with the legend as its title. `quiet` hides the amber dot (the Events page's Badge route for needs input
+ * is an image named by the word, with the legend as its title. `quiet` hides the amber dot (the Alerts rules' Badge route for needs input
  * is off), the word stays; `badge` sets the mark on a disc of the surface with a 2 px ring, for a corner over an avatar.
  *
  * `svg` is the second form (the line diagram's station, UX1 PR-33): the same glyph drawn inside a parent SVG, centred on `x`, `y` at

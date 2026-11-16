@@ -6,7 +6,7 @@ import { scratchRepo } from './server'
 // Touched (design 4e): the files the agent read, edited, wrote or deleted,
 // newest first, each with the tool, the agent and the time, from the file
 // events its hooks report; a dot on a touched file in the Explorer; the
-// same events in the Activity tab and on the Events page, quiet there.
+// same events in the Activity tab and in History's feed, quiet there.
 test('Touched lists the files the agent touched, newest first, marks them in the Explorer, and the feeds carry them quietly', async ({ page, api, state }) => {
   const cwd = join(state.root, 'files-touched')
   mkdirSync(join(cwd, 'internal', 'api'), { recursive: true })
@@ -45,12 +45,12 @@ test('Touched lists the files the agent touched, newest first, marks them in the
     await pane.locator(`[data-file-node="${cwd}/internal"]`).click()
     await pane.locator(`[data-file-node="${cwd}/internal/api"]`).click()
     await expect(pane.locator(`[data-file-node="${cwd}/internal/api/users.go"] [data-file-touched]`)).toBeVisible()
-    // The Activity tab words it; the Events page lists what arrives in the feed (a page load starts the feed afresh) without a badge on the session.
+    // The Activity tab words it; History's feed lists what arrives (a page load starts the feed afresh) without a badge on the session.
     await page.locator('[data-inspector] [data-rail-item="activity"]').click()
     await page.locator('[data-inspector] [data-activity-filter="all"]').click()
     await expect(page.locator('[data-inspector] [data-activity="file"]').first()).toContainText('wrote README.md · Write')
-    await page.goto('/events')
-    await expect(page.locator('[data-events-feed-tab]')).toBeVisible()
+    await page.goto('/history?view=feed')
+    await expect(page.locator('[data-event-feed]')).toBeVisible()
     await post({ type: 'file', op: 'delete', path: 'internal/api/router.go', tool: 'Bash' })
     const row = page.locator('[data-event-feed] [data-event="file"]').filter({ hasText: 'router.go' }).first()
     await expect(row).toBeVisible({ timeout: 15_000 })

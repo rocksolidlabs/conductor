@@ -48,8 +48,17 @@ for (const theme of ['dark', 'light'] as const) {
       await tabTo(page, more, 4, page.locator('[data-share-button]'))
       await expect(tip).toBeVisible()
 
-      // The button still opens its menu.
+      // As a menu's trigger: the menu's attributes and the page's own are on the one button a person presses, and it opens its menu
+      // by the keyboard and by a click.
+      await expect(more).toHaveJSProperty('tagName', 'BUTTON')
+      await expect(more).toHaveAttribute('aria-haspopup', 'menu')
+      await expect(more).toHaveAttribute('data-icon-button', '')
       await page.keyboard.press('Enter')
+      await expect(page.getByRole('menuitem', { name: 'Copy session id' })).toBeVisible()
+      await expect(more).toHaveAttribute('aria-expanded', 'true')
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      await more.click()
       await expect(page.getByRole('menuitem', { name: 'Copy session id' })).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('menu')).toHaveCount(0)
@@ -58,6 +67,30 @@ for (const theme of ['dark', 'light'] as const) {
     }
   })
 }
+
+test("an icon-only button as a popover's trigger opens it by a click and by the keyboard, its attributes on the button", async ({ browser, day }) => {
+  await day.part('dispatch')
+  // Below sm the Views button of a Dispatch project is its bookmark alone (its label hidden), an IconButton over a UPopover.
+  const page = await dayPage(browser, { path: '/dispatch/CND', width: 600, height: 900, ready: '[data-views-open]' })
+  const views = page.locator('[data-views-open]')
+  const menu = page.locator('[data-views-menu]')
+  await expect(views).toHaveJSProperty('tagName', 'BUTTON')
+  await expect(views).toHaveAttribute('data-icon-button', '')
+  await expect(views).toHaveAccessibleName('Saved views')
+  await expect(views).toHaveAttribute('aria-expanded', 'false')
+  await views.click()
+  await expect(menu).toBeVisible()
+  await expect(views).toHaveAttribute('aria-expanded', 'true')
+  await page.keyboard.press('Escape')
+  await expect(views).toHaveAttribute('aria-expanded', 'false')
+  await expect(menu).toHaveCount(0)
+  await views.focus()
+  await page.keyboard.press('Enter')
+  await expect(menu).toBeVisible()
+  await expect(views).toHaveAttribute('aria-expanded', 'true')
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+})
 
 test('on a phone an icon-only button keeps its label as its name, and opens its menu at a tap', async ({ browser, day }) => {
   const s = await launch(day, 'e2e tooltips phone')
