@@ -142,7 +142,8 @@ test('a test server finds none of the built-in catalog\'s programs, and a fake a
 // The control, and the stop's own rule: with the agent CLIs on its PATH (the live check's server) the server finds the fakes and runs
 // their probes, which the test above would see; its stop ends every probe under way, so none is left to write after it.
 test('a server stopped while its probes run leaves none of them running', async ({ state }) => {
-  test.setTimeout(START_WAIT_MS + 60_000)
+  // The start, the two polls' bounds and the stop's: each bounds a hang.
+  test.setTimeout(START_WAIT_MS + 30_000 + 60_000 + 30_000)
   const { o, bin, marks, hold } = own(state, 'stopped')
   // Before a server is given the caller's PATH: the fakes cover every program the built-in catalog runs by name (one added later and
   // not faked fails here, before its real CLI could be found behind them), and they come first on the PATH this server is given.
@@ -160,8 +161,19 @@ test('a server stopped while its probes run leaves none of them running', async 
     if (!existsSync(mark)) await call(s, 'GET', '/api/catalog?wait=0')
     return existsSync(mark)
   }, { timeout: 30_000 }).toBe(true)
+  // The stop must be what ends a probe: one ends by itself 3 s after it starts (the product's bound, which an e2e server cannot
+  // change), and its end then says nothing of the stop's. The server is stopped once a fake is seen running, a probe forced (a check
+  // with the adapter) for as long as none is.
+  const runningFake = () => ranPids(marks).some((pid) => fails(() => process.kill(pid, 0)) === 'no error')
+  let forcing: Promise<unknown> | undefined
+  await expect.poll(() => {
+    if (runningFake()) return true
+    forcing ??= call(s, 'POST', '/api/catalog/check', { command: ['copilot'], adapter: 'copilot' }).catch(() => undefined).finally(() => (forcing = undefined))
+    return false
+  }, { timeout: 60_000, intervals: [50] }).toBe(true)
 
   await stopServer(servers.pop()!.pid)
+  await forcing
 
   const ran = ranPids(marks)
   expect(ran.length).toBeGreaterThan(0)
