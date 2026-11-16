@@ -2,8 +2,8 @@
 import { blockRows, type ListSection, type RunBlock, type SessionRow } from '~/utils/sidebar'
 
 /**
- * A run as one block (design 3b): its header, then its members joined by a line, an exited member inside with Resume. In Needs you
- * it shows the members that ask and one line for the rest ("and 2 more · 1 working · 1 finished", blockRows), a button that shows
+ * A run as one block (design 3b): its header, then what of it waits on you (SidebarInboxRow), then its members joined by a line, an
+ * exited member inside with Resume. In Needs you it shows the members that ask and one line for the rest ("and 2 more · 1 working · 1 finished", blockRows), a button that shows
  * them all for the visit. The members' and the header's actions pass up to the list.
  */
 const props = withDefaults(defineProps<{ block: RunBlock; now: number; section?: ListSection; unfolded?: boolean; narrow?: boolean; panelFor?: string | null; needsDot?: boolean; open?: boolean; busy?: Set<string>; focusedId?: string | null; confirmingId?: string | null; big?: boolean }>(), { section: 'running', unfolded: false, narrow: false, panelFor: null, needsDot: true, open: false, busy: () => new Set(), focusedId: null, confirmingId: null, big: false })
@@ -25,8 +25,10 @@ const shown = computed(() => blockRows(props.block, props.section, props.unfolde
       @stop="emit('stopRun', $event)"
       @sheet="emit('sheet', $event)"
     />
-    <!-- The line joining the members is neutral, never a status colour: the state is each row's own. -->
-    <ol class="ml-4 flex flex-col gap-0.5 border-l border-default pl-1">
+    <!-- The line joining the members is neutral, never a status colour: the state is each row's own. What of the run waits on you
+         (its decisions, its tasks out of their attempts) comes first, before its members. -->
+    <ol v-if="block.items.length || shown.members.length || shown.more" class="ml-4 flex flex-col gap-0.5 border-l border-default pl-1">
+      <SidebarInboxRow v-for="it in block.items" :key="it.id" :row="it" :focused="focusedId === it.id" :big="big" />
       <SidebarSessionRow
         v-for="m in shown.members"
         :key="m.id"

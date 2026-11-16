@@ -138,16 +138,6 @@ export function needsRowShown(
   return state.closed.some((c) => within(Date.parse(c.closed ?? c.since))) || state.recent.some((e) => within(e.at))
 }
 
-/**
- * The sidebar section's header, while it lists fewer kinds than the page (questions and the decisions of runs that run): its own count
- * and the items of the one list it does not list (plans, tasks, the open decisions of stopped runs), counted from the list, never as a
- * difference of two stores. "Needs you 6 · +3 on the page"; "Needs you 6" when it lists them all.
- */
-export function sectionHeader(listed: number, items: readonly NeedsItem[]): { listed: number; more: number; words: string } {
-  const more = items.filter((it) => it.kind === 'plan' || it.kind === 'task' || (it.kind === 'decision' && it.stopped)).length
-  return { listed, more, words: more ? `Needs you ${listed} · +${more} on the page` : `Needs you ${listed}` }
-}
-
 /** The items the pill cannot answer (plans and tasks, answered on the page). */
 export function unanswerable(items: readonly NeedsItem[]): number {
   return items.filter((it) => it.kind === 'plan' || it.kind === 'task').length

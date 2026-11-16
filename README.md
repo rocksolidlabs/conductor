@@ -94,11 +94,10 @@ The sidebar is the session list, grouped into **Needs you**, **Running** and
 Its foot holds the pages, each with a tooltip that says what it is. The one
 amber number there is on **Needs you**: every question, decision, plan and
 task that waits on you, each once; the same number is on the folded
-sidebar, the phone's first tab, the palette and the tab's title. While the
-sidebar's section lists only the questions and the decisions of running
-runs, its header says what else waits ("+3 on the page"), linked to the
-page. The Needs you row leaves the nav when nothing waits and nothing was
-decided in the last day.
+sidebar, the phone's first tab, the palette and the tab's title. The
+sidebar's Needs you section lists every one of them with its kind's mark,
+a run that waits with its item under its header. The Needs you row leaves
+the nav when nothing waits and nothing was decided in the last day.
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your
