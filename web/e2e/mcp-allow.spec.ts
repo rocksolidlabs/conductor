@@ -65,8 +65,9 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   sessions.push(s.id)
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
-  // The narrower page has its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
-  // than the session's 80 columns.
+  // The narrower page has its inspector open: the terminal is then narrower than the session's 80 columns (72 at 1280, where Codex
+  // wraps the choices' descriptions) while the window keeps the sidebar whose row this test reads. (The window is not made
+  // narrower instead: below lg the sidebar is not drawn.) The panel starts closed, the terminal taking the room (P11).
   if (narrower) await showView(page, 'people')
   // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
   // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with.
