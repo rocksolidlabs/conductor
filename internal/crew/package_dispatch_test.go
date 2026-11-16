@@ -374,9 +374,11 @@ func sourcePart(md string) string {
 // by a person and edited back to the read's bytes, before the approval or
 // between the approval and the launch: quoted, the package's source, the
 // quoted lines and the Source part byte for byte the first launch's.
-// Edited to a new text: Dispatch's. The same clocks with the snapshot then
-// made not to hold the texts (adopted and the item refreshed with other
-// bytes, or unlinked): quoted by the reads' rows alone.
+// Edited to a new text: Dispatch's. With the snapshot made not to hold the
+// texts (adopted and the item refreshed with other bytes, or unlinked),
+// both fields edited away and back to the read's bytes, the clock forward
+// or stepped back, and the give-back clocks above: quoted by the reads'
+// rows alone.
 func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
@@ -440,14 +442,94 @@ func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 		})
 	}
 
-	// The history clause alone: the same clocks for the title and the
-	// description, and then the snapshot made not to hold the texts (both
-	// adopted again and the item refreshed with other bytes, or the ticket
-	// unlinked), so only the rows of the reads that wrote them quote them.
-	// Quoted, the item's flags false: ticket.md and task.md quote them
+	// The history clause alone: the snapshot made not to hold the texts
+	// (both fields adopted and the item refreshed with other bytes, or the
+	// ticket unlinked), so only the rows of the reads that wrote them quote
+	// them. Quoted, the item's flags false: ticket.md and task.md quote them
 	// under a source not known, the run is named by the key alone, and a
 	// child's package withholds the title as its parent's.
 	fields := []string{dispatch.FieldTitle, dispatch.FieldDescription}
+	byHistory := func(t *testing.T, s *dispatch.Store, name, key string, unlink bool) {
+		t.Helper()
+		child := taken(t, "child")(s.CreateTicket(ctx, storeOp("child"), dispatch.NewTicket{Project: "CND", Title: "Child", Parent: key})).Key
+		lv := launchViewAs(t, s, "launch", key, nil, nil)
+		rp, md := read(t, name, lv.Package)
+		p := rp.p
+		if src := p.Source; src == nil || src.Unlinked != unlink || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.TitleFromItem || src.DescriptionFromItem ||
+			p.Ticket.Title != title || p.Ticket.Description != line {
+			t.Fatalf("%s: the package: %+v %q %q", name, src, p.Ticket.Title, p.Ticket.Description)
+		}
+		unknown := quoted.Source{}
+		if lv.Label != key || !strings.Contains(md, "\n"+quoted.Line(unknown, "The title", title)+"\n") || !strings.Contains(md, quoted.Block(unknown, "The description", line)) {
+			t.Fatalf("%s: the label %q, ticket.md:\n%s", name, lv.Label, md)
+		}
+		checkMarked(t, name, md, unknown, "The description")
+		f := TaskFile{Task: "build", Attempt: 1, MaxAttempts: 3, Member: "dev", Kind: TaskWork, Goal: "g", Instructions: "Do it.", Start: strings.Repeat("b", 40),
+			Ticket:      &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)},
+			ticketTitle: cutTitle(p.Ticket.Title), ticketQuoted: quotedTitle(p), packageQuoted: quotedPackage(p)}
+		task, _, _, err := fitTaskFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(task), "\n"+quoted.Line(unknown, "Its title", title)+"\n") {
+			t.Fatalf("%s: task.md:\n%s", name, task)
+		}
+		cp, err := readPackage(launchAs(t, s, "child", child, nil, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cp.p.Ticket.Parent == nil || cp.p.Ticket.Parent.Title != dispatch.WithheldTitle {
+			t.Fatalf("%s: the child's parent: %+v", name, cp.p.Ticket.Parent)
+		}
+	}
+	// The snapshot made not to hold the texts, and then both fields edited
+	// away by a person and edited back to the read's bytes, with the store's
+	// clock forward and stepped back at its seam (the edit back stamped
+	// before the edit away, the refresh and the unlink): quoted, since the
+	// text alone decides, never the newest row of the field.
+	for _, unlink := range []bool{false, true} {
+		for _, c := range []struct {
+			name       string
+			away, back time.Duration
+		}{
+			{"the clock forward", 20 * time.Minute, 30 * time.Minute},
+			{"the clock stepped back", 20 * time.Minute, 5 * time.Minute},
+		} {
+			name := "adopted and the item refreshed with other bytes, then edited away and back, " + c.name
+			if unlink {
+				name = "unlinked, then edited away and back, " + c.name
+			}
+			t.Run(name, func(t *testing.T) {
+				s, key, at := start(t)
+				at(time.Minute)
+				if !unlink {
+					for _, f := range fields {
+						taken(t, "adopt")(s.SetAuthority(ctx, storeOp("adopt-"+f), dispatch.AuthorityArgs{Key: key, Field: f, Owner: dispatch.OwnerDispatch}, nil))
+					}
+				}
+				at(10 * time.Minute)
+				if unlink {
+					taken(t, "unlink")(s.UnlinkExternal(ctx, storeOp("unlink"), key))
+				} else {
+					other := itemRead(7, "acme/widgets", "octo-cat", "SCRATCH-OTHER-TITLE", "SCRATCH-OTHER-LINE")
+					other.Snapshot.UpdatedAt = other.Snapshot.UpdatedAt.Add(time.Hour)
+					taken(t, "refresh")(s.RefreshExternal(ctx, storeOp("refresh"), key, other))
+				}
+				at(c.away)
+				ours, oursLine := "Ours now", "Ours now."
+				taken(t, "edit away")(s.EditTicket(ctx, storeOp("away"), key, dispatch.TicketEdit{Set: dispatch.TicketSet{Title: &ours, Description: &oursLine}}))
+				at(c.back)
+				back, backLine := title, line
+				taken(t, "edit back")(s.EditTicket(ctx, storeOp("back"), key, dispatch.TicketEdit{Set: dispatch.TicketSet{Title: &back, Description: &backLine}}))
+				at(40 * time.Minute)
+				byHistory(t, s, name, key, unlink)
+			})
+		}
+	}
+	// The same clocks as above for the title and the description, given
+	// back and then the snapshot made not to hold the texts (both adopted
+	// again and the item refreshed with other bytes, or the ticket
+	// unlinked).
 	for _, c := range clocks {
 		for _, unlink := range []bool{false, true} {
 			name := c.name + ", then adopted and the item refreshed with other bytes"
@@ -479,37 +561,7 @@ func TestTheQuoteIsDecidedByTheText(t *testing.T) {
 					other.Snapshot.UpdatedAt = other.Snapshot.UpdatedAt.Add(time.Hour)
 					taken(t, "refresh")(s.RefreshExternal(ctx, storeOp("refresh"), key, other))
 				}
-				child := taken(t, "child")(s.CreateTicket(ctx, storeOp("child"), dispatch.NewTicket{Project: "CND", Title: "Child", Parent: key})).Key
-
-				lv := launchViewAs(t, s, "launch", key, nil, nil)
-				rp, md := read(t, name, lv.Package)
-				p := rp.p
-				if src := p.Source; src == nil || src.Unlinked != unlink || !src.TitleFromGitHub || !src.DescriptionFromGitHub || src.TitleFromItem || src.DescriptionFromItem ||
-					p.Ticket.Title != title || p.Ticket.Description != line {
-					t.Fatalf("%s: the package: %+v %q %q", name, src, p.Ticket.Title, p.Ticket.Description)
-				}
-				unknown := quoted.Source{}
-				if lv.Label != key || !strings.Contains(md, "\n"+quoted.Line(unknown, "The title", title)+"\n") || !strings.Contains(md, quoted.Block(unknown, "The description", line)) {
-					t.Fatalf("%s: the label %q, ticket.md:\n%s", name, lv.Label, md)
-				}
-				checkMarked(t, name, md, unknown, "The description")
-				f := TaskFile{Task: "build", Attempt: 1, MaxAttempts: 3, Member: "dev", Kind: TaskWork, Goal: "g", Instructions: "Do it.", Start: strings.Repeat("b", 40),
-					Ticket:      &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)},
-					ticketTitle: cutTitle(p.Ticket.Title), ticketQuoted: quotedTitle(p), packageQuoted: quotedPackage(p)}
-				task, _, _, err := fitTaskFile(f)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(task), "\n"+quoted.Line(unknown, "Its title", title)+"\n") {
-					t.Fatalf("%s: task.md:\n%s", name, task)
-				}
-				cp, err := readPackage(launchAs(t, s, "child", child, nil, nil))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if cp.p.Ticket.Parent == nil || cp.p.Ticket.Parent.Title != dispatch.WithheldTitle {
-					t.Fatalf("%s: the child's parent: %+v", name, cp.p.Ticket.Parent)
-				}
+				byHistory(t, s, name, key, unlink)
 			})
 		}
 	}

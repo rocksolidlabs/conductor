@@ -146,7 +146,7 @@ func checkMarked(t *testing.T, name, md string, src quoted.Source, whats ...stri
 }
 
 // ticket.md of a ticket linked to GitHub: its Source (the item, its page,
-// the account that wrote it, its state at the launch, when it was read,
+// the account that opened it, its state at the launch, when it was read,
 // the snapshot's SHA-256, that GitHub may have changed it since and the
 // run follows the package, and the words of the mark), its title as a
 // quoted line, its description and its steps to reproduce as blocks, and
