@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test'
-import { budget, dayPage, expect, test, type Session } from './fixtures'
+import { budget, dayPage, expect, itemURL, pagePath, test, type Session } from './fixtures'
 import { inboxItem, summary } from './inbox-stub'
 import { tapTarget } from './layout'
 import type { Day } from './day'
@@ -272,7 +272,8 @@ test('Needs you says when plans and tasks could not be read, and when the inbox 
   await expect(showing).toHaveText('Showing 1 of 212 · all on Needs you')
   await expect(needs.locator(`[data-sidebar-item="${paged.ref}"]`)).toHaveCount(1)
   await showing.locator('[data-sidebar-inbox-all]').click()
-  await expect(desk).toHaveURL(/\/decisions$/)
+  // The page of what needs you open (on this wide window it opens its oldest item by itself, in the address).
+  await expect.poll(() => pagePath(desk)).toBe('/decisions')
 })
 
 // The row's rule is the rail's: in the full sidebar Needs you is a tile of the six (PR-15), which stays at zero and loses its number.
@@ -320,7 +321,7 @@ test.describe('the row leaves at zero', () => {
     // G then N: the page open, its row shown while it is.
     await page.keyboard.press('g')
     await page.keyboard.press('n')
-    await expect(page).toHaveURL(/\/decisions$/)
+    await expect.poll(() => pagePath(page)).toBe('/decisions')
     await expect(row(page)).toBeVisible()
     await page.goto('/yard')
     await expect(yard(page)).toBeVisible()
@@ -335,8 +336,9 @@ test.describe('the row leaves at zero', () => {
 
     // Answered from the page's own buttons: the row stays with no number (this browser answered it today).
     await row(page).click()
-    await expect(page).toHaveURL(/\/decisions$/)
+    // The page open on its oldest item, the one that waits: the question, opened by itself on this wide window.
     const ref = `question:${s.id}/${q}`
+    await expect(page).toHaveURL(itemURL(ref))
     await page.locator(`[data-inbox-row="${ref}"]`).click()
     await page.locator(`[data-inbox-item="${ref}"] [data-inbox-action="answer"]`).first().click()
     budget(DAY_STEP_MS)
