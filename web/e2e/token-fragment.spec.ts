@@ -568,9 +568,9 @@ test('the page that asks stays until a token is given, with no Cancel; the next 
     await shown(page)
     await expect.poll(() => heldReads(page), `reads held ${round}`).toBeGreaterThan(0)
     await expect(gate, `still asking ${round}`).toBeVisible()
-    // Its field holds the kept token; Connect with it, and the app is back.
-    await expect(gate.locator('input'), `field ${round}`).toHaveValue(state.token)
-    await gate.getByRole('button', { name: 'Connect' }).click()
+    // Its field starts empty; the kept token tried again from its own button, and the app is back.
+    await expect(gate.locator('input'), `field ${round}`).toHaveValue('')
+    await gate.locator('[data-connect-kept]').click()
     await expect(gate, `connected ${round}`).toHaveCount(0)
     await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   }
@@ -634,15 +634,16 @@ test('the page that asks after a refusal, a page of another layout, back to the 
   const back = rec.lines.length
   await push('/')
   await expect(gate).toBeVisible()
-  await expect(gate.locator('input')).toHaveValue(state.token)
+  await expect(gate.locator('input')).toHaveValue('')
   expect(refusals).toBe(1)
   // It was shown once and stays: the app's reads wait behind it for a token (the page counts what it holds back), and it never went.
   await shown(page)
   await expect.poll(() => heldReads(page)).toBeGreaterThan(0)
   await expect(gate).toBeVisible()
   await expect.poll(() => gateSince(back)).toEqual(['gate open'])
-  // Connected there with the kept token, the ask ends and the app is back; the next refusal shows the page again.
-  await gate.getByRole('button', { name: 'Connect' }).click()
+  // Connected there with the kept token, tried again from its own button: the ask ends and the app is back; the next refusal shows
+  // the page again.
+  await gate.locator('[data-connect-kept]').click()
   await expect(gate).toHaveCount(0)
   await expect(page.locator('[data-sidebar-brand]').first()).toBeVisible()
   expect(await asked()).toBe(false)
@@ -670,8 +671,8 @@ test('the accounts and the capacity are read again with each new token the page 
   await expect.poll(() => readWith(0, '/api/accounts', token)).toBe(true)
   await expect.poll(() => readWith(0, '/api/capacity', token)).toBe(true)
   // Another token saved in the menu's dialog: the accounts are read again with it; the server refuses it, and the page asks, its
-  // field starting from the token the browser keeps now. The refusal is awaited, and the store seen to have taken it, before the
-  // field is filled: a refusal that came after the fill would set its field.
+  // field empty (the token the browser keeps now is never shown there). The refusal is awaited, and the store seen to have taken it,
+  // before the field is filled.
   const input = await gateOpened(page)
   await input.fill(UNKNOWN)
   await expect(input).toHaveValue(UNKNOWN)
@@ -682,7 +683,7 @@ test('the accounts and the capacity are read again with each new token the page 
   await expect.poll(() => standing(page)).toBe('refused')
   await expect.poll(() => readWith(from, '/api/accounts', UNKNOWN)).toBe(true)
   await expect(gate).toBeVisible()
-  await expect(gate.locator('input')).toHaveValue(UNKNOWN)
+  await expect(gate.locator('input')).toHaveValue('')
   // The workbench token given again: both are read again with it.
   await gate.locator('input').fill(token)
   await expect(gate.locator('input')).toHaveValue(token)
@@ -896,7 +897,7 @@ test("in the desktop app with a bridge that answers no token, and with one that 
   }
 })
 
-test("the field's first value when a 401 shows the page that asks, and when Set token opens the dialog: the token the browser keeps, as when the person opens it, not the link's token the page sends", async ({ browser, state }) => {
+test("the field's first value when a 401 shows the page that asks: empty, the kept token tried again from its own button; when Set token opens the dialog: the token the browser keeps, as when the person opens it, not the link's token the page sends", async ({ browser, state }) => {
   const token = state.token
   for (const how of ['401', 'page'] as const) {
     const ctx = await keeping(browser, UNKNOWN)
@@ -925,7 +926,11 @@ test("the field's first value when a 401 shows the page that asks, and when Set 
       await page.getByRole('button', { name: 'Set token' }).click()
     }
     await expect(gate, how).toBeVisible()
-    await expect(gate.locator('input'), how).toHaveValue(UNKNOWN)
+    if (how === '401') {
+      // The page to connect never shows a kept token: its field is empty, and its button tries the kept one again unseen.
+      await expect(gate.locator('input'), how).toHaveValue('')
+      await expect(gate.locator('[data-connect-kept]'), how).toBeVisible()
+    } else await expect(gate.locator('input'), how).toHaveValue(UNKNOWN)
     expect(await held(page), how).toBe(token)
     expect(await stored(page), how).toBe(UNKNOWN)
     await ctx.close()

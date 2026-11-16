@@ -74,17 +74,22 @@ export function useApi() {
 
   /**
    * The token a request goes with: the caller's own (`explicit`, a link's or none, never held back), else the workbench token held
-   * once the page to connect is gone. While that page shows, nothing goes with the missing or refused token: the request waits, and
-   * no store sees an error it would retry on a timer. An abort while it waits throws as an aborted fetch does.
+   * once the page to connect is gone. While that page shows, nothing goes with the missing or refused token: a read waits, and goes
+   * once a token the server took is held, and no store sees an error it would retry on a timer. A request that changes something
+   * (`write`) is never sent later under another token: once the page goes it is answered as not sent, as a send with no connection
+   * is. An abort, before or while it waits, throws as an aborted fetch does; so does a read whose page went with no token taken.
    */
-  async function admitted(explicit: string | undefined, signal?: AbortSignal): Promise<string> {
+  async function admitted(explicit: string | undefined, signal?: AbortSignal, write = false): Promise<string> {
     if (explicit !== undefined) return explicit
     if (admin.gated.value) {
+      let taken: boolean
       try {
-        await admin.connected(signal)
+        taken = await admin.connected(signal)
       } catch {
         throw new ApiError(0, 'network', 'Cannot reach the server')
       }
+      if (write) throw new ApiError(0, 'network', 'Not sent: the app was not connected to the server')
+      if (!taken) throw new ApiError(0, 'network', 'Cannot reach the server')
     }
     return admin.token.value
   }
@@ -108,25 +113,29 @@ export function useApi() {
 
   /** `signal` aborts the request (a search overtaken by the next key): it then throws as a network error does, which its caller drops. */
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal } = {}): Promise<T> {
-    if (opts.token === undefined && !opts.signal && (opts.method ?? 'GET') === 'GET' && admin.gated.value) {
+    const write = !['GET', 'HEAD'].includes((opts.method ?? 'GET').toUpperCase())
+    if (opts.token === undefined && !opts.signal && !write && admin.gated.value) {
       const key = `${opts.base ?? httpBase.value}${path} ${JSON.stringify(opts.query ?? {})}`
       let read = waiting.get(key) as Promise<T> | undefined
       if (read) admin.waited.value++
       if (!read) {
-        read = (async () => {
+        const entry: { read?: Promise<T> } = {}
+        entry.read = (async () => {
           try {
             await admitted(undefined)
           } finally {
-            waiting.delete(key)
+            // Gone (its wait ended, with a token taken or not): a later read of the key is a read of its own.
+            if (waiting.get(key) === entry.read) waiting.delete(key)
           }
           return send<T>(path, opts, admin.token.value)
         })()
+        read = entry.read
         waiting.set(key, read)
       }
       return read
     }
     // Sent at once when nothing holds it back, in the caller's own tick.
-    return send<T>(path, opts, opts.token !== undefined || !admin.gated.value ? (opts.token ?? admin.token.value) : await admitted(opts.token, opts.signal))
+    return send<T>(path, opts, opts.token !== undefined || !admin.gated.value ? (opts.token ?? admin.token.value) : await admitted(opts.token, opts.signal, write))
   }
 
   async function send<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string; signal?: AbortSignal }, token: string): Promise<T> {

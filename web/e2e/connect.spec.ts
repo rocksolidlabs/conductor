@@ -79,7 +79,7 @@ test('with no token, the page to connect stands in for the app at the desktop an
   }
 })
 
-test('a refusal in the middle of work: the page asks, its field from the kept token, and Connect brings back the crew page with its unsaved edit', async ({ browser, state, api }) => {
+test('a refusal in the middle of work: the page asks, its field empty, and the kept token tried again brings back the crew page with its unsaved edit', async ({ browser, state, api }) => {
   budget(10 * STEP_MS)
   const crew = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', { name: 'e2e connect keeps the edit', goal: 'a goal', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: false, members: [{ name: 'lead', agentId: 'claude', prompt: 'hello', start: { when: 'immediately' } }] })).crew.id
   try {
@@ -90,9 +90,12 @@ test('a refusal in the middle of work: the page asks, its field from the kept to
     await refusedOn(page, refuser)
     const ask = tokenAsk(page)
     await expect(ask.locator('[data-connect-refused]')).toBeVisible()
+    // The kept token is never put in the field: it starts empty, and the kept one is tried again from its own button, unseen.
     const field = ask.getByPlaceholder('paste the workbench token')
-    await expect(field).toHaveValue(state.token)
-    await ask.getByRole('button', { name: 'Connect' }).click()
+    await expect(field).toHaveValue('')
+    const tried = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/whoami' && r.headers()['authorization'] === `Bearer ${state.token}`)
+    await ask.locator('[data-connect-kept]').click()
+    await tried
     await expect(ask).toHaveCount(0)
     // Hidden, never unmounted: the edit and its bar are as they were.
     await expect(page.getByLabel('Goal')).toHaveValue('a goal, changed and not saved')
@@ -113,7 +116,7 @@ test("a refusal on a session's page leaves the session's viewers as they were: t
     const refuser = await refuseNext(page, state.token)
     await refusedOn(page, refuser)
     expect(await viewers(), 'under the page').toBe(before)
-    await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+    await tokenAsk(page).locator('[data-connect-kept]').click()
     await expect(tokenAsk(page)).toHaveCount(0)
     expect(await viewers(), 'after Connect').toBe(before)
   } finally {
@@ -202,7 +205,7 @@ test('a refusal while Alerts or the Launch dialog is open closes it: the page to
     await expect(page.getByRole('dialog'), name).toHaveCount(0)
     await page.keyboard.press('Escape')
     await expect(field(page), name).toBeFocused()
-    await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+    await tokenAsk(page).locator('[data-connect-kept]').click()
     await expect(tokenAsk(page), name).toHaveCount(0)
     await expect(page.locator('#dashboard-sidebar-main'), name).toBeVisible()
     await page.context().close()
@@ -260,4 +263,41 @@ test('while the page to connect shows, the app behind it asks nothing with the r
   await expect(page.locator('#dashboard-sidebar-main nav[data-needs-read="true"], #dashboard-sidebar-main [data-needs-read="true"]').first()).toBeAttached()
   expect(asked.filter((a) => a.path === '/api/events' && a.token === state.token), 'the stream opened once').toHaveLength(1)
   expect(asked.slice(from).filter((a) => a.token === refused), 'the refused token after Connect').toEqual([])
+})
+
+test('a wrong token typed on the page to connect costs its one try and nothing else; the page says so and stays', async ({ browser, state }) => {
+  budget(8 * STEP_MS)
+  const refused = 'e2e-a-kept-token-the-server-refuses'
+  const page = await dayPage(browser, { ...DESK, path: '/yard', ready: '[data-connect-page]', server: { baseURL: state.baseURL, token: refused } })
+  await expect(tokenAsk(page).locator('[data-connect-refused]')).toBeVisible()
+  // The app's reads are held behind the page (it counts them) before the try, so a burst of them would show in what is counted.
+  await expect.poll(async () => Number(await page.locator('[data-connect-page]').getAttribute('data-held'))).toBeGreaterThan(0)
+  const sent: Array<{ path: string; auth: string }> = []
+  page.on('request', (r) => void (new URL(r.url()).pathname.startsWith('/api/') && sent.push({ path: new URL(r.url()).pathname, auth: r.headers()['authorization'] ?? '' })))
+  page.on('websocket', (ws) => sent.push({ path: new URL(ws.url()).pathname, auth: '' }))
+  const wrong = 'e2e-a-typed-token-the-server-refuses'
+  await field(page).fill(wrong)
+  await expect(field(page)).toHaveValue(wrong)
+  const answered = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/whoami')
+  await tokenAsk(page).getByRole('button', { name: 'Connect' }).click()
+  expect((await answered).status()).toBe(401)
+  await expect(tokenAsk(page).locator('[data-connect-tried]')).toHaveText('The server refused that token.')
+  await expect(tokenAsk(page)).toBeVisible()
+  expect(sent, "the page's one try, nothing else").toEqual([{ path: '/api/whoami', auth: `Bearer ${wrong}` }])
+})
+
+test('with a kept token the server refused, the field starts empty; the kept token is tried again from its own button, never shown', async ({ browser, state }) => {
+  budget(8 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, path: '/yard', server: state })
+  const refuser = await refuseNext(page, state.token)
+  await refusedOn(page, refuser)
+  await expect(field(page)).toHaveValue('')
+  await expect(tokenAsk(page).locator('input[type="password"]')).toHaveValue('')
+  const kept = tokenAsk(page).locator('[data-connect-kept]')
+  await expect(kept).toHaveText('Try the kept token again')
+  const tried = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/whoami' && r.headers()['authorization'] === `Bearer ${state.token}`)
+  await kept.click()
+  await tried
+  await expect(tokenAsk(page)).toHaveCount(0)
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
 })

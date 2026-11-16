@@ -1,8 +1,9 @@
 import { $fetch as ofetch } from 'ofetch'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { computed, ref, type Ref } from 'vue'
+import { computed, effectScope, ref, type Ref } from 'vue'
 import { ApiError, useApi } from './useApi'
 import { useWorkbenchToken } from './useWorkbenchToken'
+import { tryToken } from '~/utils/workbenchGate'
 
 const raw = vi.fn()
 const fetchFn = Object.assign(vi.fn(), { raw })
@@ -231,5 +232,81 @@ describe('while the page to connect shows', () => {
     fetchFn.mockResolvedValue({})
     await useApi().request('/api/join/x')
     expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('what the page to connect holds back, and what it lets go', () => {
+  it("a read held from a scope that then stops still goes once a token is taken: the wait is the store's, no component's", async () => {
+    const app = {}
+    vi.stubGlobal('useNuxtApp', () => app)
+    fetchFn.mockResolvedValue({ sessions: [] })
+    const scope = effectScope()
+    let read!: Promise<unknown>
+    let release!: () => void
+    scope.run(() => {
+      const mine = useWorkbenchToken()
+      release = mine.hold()
+      mine.clear()
+      read = useApi().request('/api/sessions')
+    })
+    scope.stop()
+    const store = useWorkbenchToken()
+    expect(store.gated.value).toBe(true)
+    store.take('the-right-token')
+    await read
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(fetchFn.mock.calls[0]![1].headers).toEqual({ Authorization: 'Bearer the-right-token' })
+    // The same key read again is a read of its own: no entry of the first is left to join.
+    fetchFn.mockClear()
+    await useApi().request('/api/sessions')
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    release()
+  })
+
+  it('refuses at once a request whose signal has already aborted', async () => {
+    const release = admin.hold()
+    admin.clear()
+    const ac = new AbortController()
+    ac.abort()
+    const out = await useApi().request('/api/inbox', { signal: ac.signal }).catch((e: unknown) => e)
+    expect(out).toMatchObject({ status: 0, code: 'network' })
+    expect(fetchFn).not.toHaveBeenCalled()
+    release()
+  })
+
+  it('answers a write held while the page showed as not sent when a token is taken, and sends nothing of it', async () => {
+    const release = admin.hold()
+    admin.answered('workbench-token', false)
+    fetchFn.mockResolvedValue({})
+    const write = useApi().request('/api/sessions', { method: 'POST', body: { agentId: 'x' } }).catch((e: unknown) => e)
+    const read = useApi().request('/api/sessions')
+    admin.take('the-right-token')
+    expect(await write).toMatchObject({ status: 0, code: 'network' })
+    await read
+    expect(fetchFn.mock.calls.map((c) => c[1].method)).toEqual(['GET'])
+    release()
+  })
+
+  it('sends nothing held until the server has accepted the token tried: a refused try costs its one request', async () => {
+    const release = admin.hold()
+    admin.answered('workbench-token', false)
+    fetchFn.mockResolvedValue({})
+    const { request } = useApi()
+    const read = request('/api/sessions')
+    const ask = (token: string) => request('/api/whoami', { token })
+    // Refused: the try's one request goes, nothing held does, and the page stays.
+    fetchFn.mockRejectedValueOnce({ statusCode: 401, data: { error: { code: 'unauthorized', message: 'unauthorized' } } })
+    expect(await tryToken('a-wrong-token', { ask, take: (t) => admin.take(t) })).toBe('The server refused that token.')
+    expect(fetchFn.mock.calls.map((c) => c[0])).toEqual(['http://api.test/api/whoami'])
+    expect(admin.gated.value).toBe(true)
+    // Accepted: taken, and the held read goes once, with it.
+    expect(await tryToken('the-right-token', { ask, take: (t) => admin.take(t) })).toBe('')
+    await read
+    expect(fetchFn.mock.calls.map((c) => [c[0], c[1].headers.Authorization])).toEqual([
+      ['http://api.test/api/whoami', 'Bearer a-wrong-token'],
+      ['http://api.test/api/whoami', 'Bearer the-right-token'],
+      ['http://api.test/api/sessions', 'Bearer the-right-token'],
+    ])
+    release()
   })
 })

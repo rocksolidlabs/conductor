@@ -1,4 +1,4 @@
-import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
+import { computed, effectScope, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { desktopBridge } from '~/utils/desktop'
 import { connectShown } from '~/utils/workbenchGate'
 
@@ -40,8 +40,18 @@ interface Held {
   gates: Ref<number>
   /** How many of the app's requests have waited for the page to connect to go (`waited`): what a test reads to see them held. */
   waited: Ref<number>
-  /** The page to connect stands in for the app (`gated`): made once, with the store. */
+  /** The page to connect stands in for the app (`gated`): made once, with the store, in a scope no component owns. */
   gated?: ComputedRef<boolean>
+  /**
+   * The wait of the requests held while the page to connect shows: one for each time it shows, resolved when it goes, `true` when a
+   * token the server took is held then (the held reads go), `false` when it went with none (a layout of another kind: they are dropped).
+   */
+  period: { promise: Promise<boolean>; resolve: (taken: boolean) => void } | null
+  /**
+   * A token that came while the page to connect shows (a link's fragment, the desktop app's bridge), for the page to try with its one
+   * request before it is taken (`take`); '' for none.
+   */
+  offered: Ref<{ value: string; link: boolean } | null>
 }
 
 /**
@@ -60,21 +70,35 @@ export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
   const app = useNuxtApp() as unknown as { [HELD]?: Held }
   const first = !app[HELD]
-  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false), bridged: ref(!desktop), gates: ref(0), waited: ref(0) })
+  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false), bridged: ref(!desktop), gates: ref(0), waited: ref(0), period: null, offered: ref(null) })
   const { token, standing, needsToken, bridged } = held
   /**
    * The page to connect stands in for the app (no token held, or the server refused the one held) under a layout that draws it: the
    * app's reads that would carry that token wait (`connected`), so a refused tab spends nothing of the server's limit of refused
    * requests for its address, which the next person's token tries and link joins from that address share.
    */
-  const gated = (held.gated ??= computed(
-    () => held.gates.value > 0 && connectShown({ desktop: !!desktop, bridged: bridged.value, hasToken: token.value.length > 0, standing: standing.value }),
-  ))
+  if (!held.gated)
+    // Made once in a scope of its own: a component that first asked for the store, unmounted, stops nothing a later wait reads.
+    effectScope(true).run(() => {
+      const g = computed(() => held.gates.value > 0 && connectShown({ desktop: !!desktop, bridged: bridged.value, hasToken: token.value.length > 0, standing: standing.value }))
+      held.gated = g
+      watch(g, (up) => {
+        if (up || !held.period) return
+        const p = held.period
+        held.period = null
+        // Gone with a token the server did not refuse held: a token was taken. Gone otherwise (no layout draws the page): dropped.
+        p.resolve(token.value.length > 0 && standing.value !== 'refused')
+        // At once: a gate that goes up and down within one tick still lets what it held go.
+      }, { flush: 'sync' })
+    })
+  const gated = held.gated!
   if (desktop && first)
     desktop
       .token()
       .then((t) => {
-        if (t) set(t)
+        // While the page to connect shows, the bridge's token is tried by the page's one request before it is taken.
+        if (t && gated.value) held.offered.value = { value: t, link: false }
+        else if (t) set(t)
       })
       .catch(() => {})
       .finally(() => (bridged.value = true))
@@ -143,7 +167,23 @@ export function useWorkbenchToken() {
    * only while this page holds none, or one it has seen refused; else dropped. This page's own token, refused or not, changes nothing.
    */
   function fromLaterLink(value: string) {
-    if (!holds()) fromLink(value)
+    if (holds()) return
+    // While the page to connect shows, the link's token is tried by the page's one request first: nothing held goes with it untried.
+    if (!gated.value) return fromLink(value)
+    if (value && !desktop) held.offered.value = { value, link: true }
+  }
+
+  /**
+   * A token the server took, tried by the page to connect with its one request: the operator's (`set`), or a link's, kept as an
+   * accepted link's is (when the browser's storage holds none). The page to connect goes, and what it held back goes once.
+   */
+  function take(value: string, link = false) {
+    held.offered.value = null
+    if (!link) return set(value)
+    send(value.trim())
+    standing.value = ''
+    if (inStorage() === '') keep(token.value)
+    needsToken.value = false
   }
 
   /**
@@ -174,24 +214,29 @@ export function useWorkbenchToken() {
   }
 
   /**
-   * Resolves once the page to connect is gone (a token taken), at once when it is not shown; rejects with an AbortError when `signal`
-   * aborts first, as an aborted fetch does.
+   * Resolves once the page to connect is gone: `true` when a token the server took is held then, `false` when it went with none; at once
+   * (`true`) when it is not shown. Rejects with an AbortError when `signal` aborts first, or has already, as an aborted fetch does. The
+   * wait is the store's, not a component's: a request held from a component that then unmounts still resolves.
    */
-  function connected(signal?: AbortSignal): Promise<void> {
-    if (!gated.value) return Promise.resolve()
+  function connected(signal?: AbortSignal): Promise<boolean> {
+    if (!gated.value) return Promise.resolve(true)
+    const aborted = () => new DOMException('aborted while the page to connect was shown', 'AbortError')
+    if (signal?.aborted) return Promise.reject(aborted())
     held.waited.value++
-    return new Promise<void>((resolve, reject) => {
-      const stop = watch(gated, (g) => {
-        if (g) return
-        stop()
-        signal?.removeEventListener('abort', aborted)
-        resolve()
+    if (!held.period) {
+      let resolve!: (taken: boolean) => void
+      const promise = new Promise<boolean>((r) => (resolve = r))
+      held.period = { promise, resolve }
+    }
+    const wait = held.period.promise
+    if (!signal) return wait
+    return new Promise<boolean>((resolve, reject) => {
+      const on = () => reject(aborted())
+      signal.addEventListener('abort', on, { once: true })
+      void wait.then((taken) => {
+        signal.removeEventListener('abort', on)
+        resolve(taken)
       })
-      function aborted() {
-        stop()
-        reject(new DOMException('aborted while the page to connect was shown', 'AbortError'))
-      }
-      signal?.addEventListener('abort', aborted, { once: true })
     })
   }
 
@@ -212,6 +257,8 @@ export function useWorkbenchToken() {
     gated,
     connected,
     hold,
+    take,
+    offered: held.offered,
     waited: held.waited,
     standing,
     bridged,

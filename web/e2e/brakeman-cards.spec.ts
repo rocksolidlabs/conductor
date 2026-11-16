@@ -397,7 +397,7 @@ test('a make kept before it is sent is finished after the page is read again wit
   const gate = tokenAsk(page)
   await expect(gate).toBeVisible()
   await expect(d.locator('[data-draft-finish]')).toBeAttached()
-  await gate.getByRole('button', { name: 'Connect' }).click()
+  await gate.locator('[data-connect-kept]').click()
   await expect(gate).toHaveCount(0)
   await expect(d.locator('[data-draft-finish]')).toBeVisible()
   await d.locator('[data-draft-finish]').click()

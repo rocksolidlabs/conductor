@@ -46,3 +46,31 @@ export function connectShown(f: ConnectFacts): boolean {
 export function refusedShown(f: Pick<ConnectFacts, 'hasToken' | 'standing'>): boolean {
   return f.standing === 'refused' && f.hasToken
 }
+
+/** What the page to connect needs to try a token: one request of its own with it, and what takes it once the server has. */
+export interface TokenTry {
+  /** One request with `token` as its own credential (never held back, told nothing of the store): resolves when the server took it. */
+  ask: (token: string) => Promise<unknown>
+  /** Takes the token: the page to connect goes, and what it held back goes once. */
+  take: (token: string) => void
+}
+
+/**
+ * Tries `value` with the page's one request (`ask`) and takes it only once the server has accepted it: until then the page stays and
+ * everything it holds back stays held, so a wrong token costs one refused request, never a burst of them. Resolves to '' when taken,
+ * else to the words the page shows: refused, too many refused tries from this address, or the server's own words.
+ */
+export async function tryToken(value: string, t: TokenTry): Promise<string> {
+  const token = value.trim()
+  if (!token) return 'Paste the workbench token first.'
+  try {
+    await t.ask(token)
+  } catch (e) {
+    const status = (e as { status?: number }).status ?? 0
+    if (status === 401 || status === 403) return 'The server refused that token.'
+    if (status === 429) return 'Too many refused tries from this address: wait a minute, then try again.'
+    return (e as Error).message || 'Cannot reach the server.'
+  }
+  t.take(token)
+  return ''
+}
