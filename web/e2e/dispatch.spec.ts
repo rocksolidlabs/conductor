@@ -353,9 +353,14 @@ test('a filter whose first read fails is read again, with no further event and n
     if (++asked <= 2) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The store is busy.' } }) })
     return route.continue()
   })
-  await page.locator('[data-filter-status]').click()
+  // The filters wait behind Filter: its popover opened, Backlog picked, the select's menu closed and gone, then the popover.
+  await page.locator('[data-filter-open]').click()
+  await page.locator('[data-filter-popover] [data-filter-status]').click()
   await page.getByRole('option', { name: 'Backlog', exact: true }).click()
   await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-filter-popover]')).toHaveCount(0)
   await expect(page).toHaveURL(/status=backlog/)
   // Asked again after the window, by the page alone.
   await expect.poll(() => asked).toBeGreaterThanOrEqual(3)
@@ -1420,18 +1425,27 @@ test("a project's description, labels and milestones made on its page, picked on
   await made(api, key, 'The labelled')
   await page.goto(`/dispatch/${key}`)
 
-  // The description, written in place and shown rendered above the tickets.
+  // The description: one line above the tickets, which with none offers to write it and opens the editor in place.
+  const line = page.locator('[data-project-description-line]')
   const about = page.locator('[data-project-about]')
-  await about.locator('[data-markdown-empty]').click()
+  await expect(about).toHaveCount(0)
+  await expect(line.locator('[data-project-description-text]')).toHaveText(`Add a description of ${key}…`)
+  await line.locator('[data-project-description-text]').click()
   await about.locator('[data-markdown-input]').fill('## Goals\n\nShip the **tracker**.')
   await about.locator('[data-markdown-save]').click()
   await expect(about.locator('[data-markdown-view] h2')).toHaveText('Goals')
+  // The line says its first paragraph, as text.
+  await expect(line.locator('[data-project-description-text]')).toHaveText('Ship the tracker.')
   expect((await api.ok<{ project: { description: string } }>('GET', `/api/dispatch/projects/${key}`)).project.description).toBe('## Goals\n\nShip the **tracker**.')
-  // Folded, it stays folded on this browser.
+  // Opened, it stays opened on this browser.
+  await page.reload()
+  await expect(page.locator('[data-project-about] [data-markdown-view] strong')).toHaveText('tracker')
+  // Folded, a reload shows the line alone.
   await page.locator('[data-project-about-toggle]').click()
   await expect(about).toHaveCount(0)
   await page.reload()
   await expect(page.locator('[data-project-name]')).toBeVisible()
+  await expect(line.locator('[data-project-description-text]')).toHaveText('Ship the tracker.')
   await expect(page.locator('[data-project-about]')).toHaveCount(0)
   await page.locator('[data-project-about-toggle]').click()
   await expect(page.locator('[data-project-about] [data-markdown-view] strong')).toHaveText('tracker')

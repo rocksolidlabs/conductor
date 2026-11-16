@@ -77,7 +77,10 @@ export const BUSY: Record<string, 'working' | 'finished'> = {
   'rail-squares-light': 'working',
 }
 
-/** Dispatch's people, labels, milestones and tickets on the day: CND's fourteen tickets with their owners, assignees and priorities. */
+/**
+ * Dispatch's people, labels, milestones and tickets on the day: CND's fourteen tickets with their owners, assignees and priorities, one
+ * of them with no owner ('' here), so that a list's owner column has a cell drawn empty.
+ */
 export const PEOPLE = ['Nate', 'Ana', 'Priya']
 const LABELS: Array<[string, string]> = [['bug', 'red'], ['ui', 'blue'], ['api', 'teal'], ['docs', 'gray'], ['perf', 'amber'], ['infra', 'indigo']]
 const MILESTONES = ['v1', 'v2']
@@ -101,7 +104,7 @@ export const TICKETS: DayTicket[] = [
   { title: 'Bisect the old resume failure', owner: 'Ana', assignees: [], priority: 4, status: 'backlog', labels: ['bug'] },
   { title: 'Drive the stub through the trust dialog', owner: 'Priya', assignees: ['Priya'], priority: 3, status: 'in_review', labels: [] },
   { title: 'The Mac-only flake in the PTY tests', owner: 'Nate', assignees: ['Nate', 'Priya'], priority: 1, status: 'in_progress', labels: ['bug', 'infra'] },
-  { title: 'Cut the e2e job into two shards', owner: 'Ana', assignees: [], priority: 3, status: 'backlog', labels: ['infra'], milestone: 'v2' },
+  { title: 'Cut the e2e job into two shards', owner: '', assignees: [], priority: 3, status: 'backlog', labels: ['infra'], milestone: 'v2' },
   { title: 'Contrast floors for dimmed text', owner: 'Priya', assignees: ['Ana'], priority: 2, status: 'ready', labels: ['ui'], milestone: 'v2' },
   { title: 'One status language for sessions', owner: 'Nate', assignees: ['Nate'], priority: 1, status: 'in_review', labels: ['ui'], milestone: 'v1' },
   { title: 'Document the seeded day', owner: 'Ana', assignees: ['Ana'], priority: 4, status: 'done', labels: ['docs'] },
@@ -516,7 +519,7 @@ const PARTS: Record<PartName, Part> = {
           opId: `day-ticket-${i + 1}`,
           project: 'CND',
           title: t.title,
-          owner: t.owner,
+          ...(t.owner ? { owner: t.owner } : {}),
           assignees: t.assignees.map((a) => `person:${a}`),
           priority: t.priority,
           status: t.status,
