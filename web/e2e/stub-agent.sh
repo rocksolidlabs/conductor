@@ -22,6 +22,8 @@
 #                   $HOME/.codex/config.toml; Down then Enter, or Esc,
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
+#   STUB_SIGNIN     an invented code: the stub starts on Claude Code's
+#                   sign-in screen and takes that code alone (claude_sign_in)
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
 #                   these as choices (notify --choices) before its prompt;
 #                   the next line typed answers it
@@ -327,9 +329,10 @@ handed_off=
 ring_at_end=
 
 # The arguments: the session, the trust override, the yolo flags, the
-# title and the notifications Codex is launched with. Anything else is
-# taken and ignored, as a flag of the real agent would be.
-session_id= resume_id= trusted= yolo= titles= still=${STUB_TITLE_STILL:-} async_bell=
+# title and the notifications Codex is launched with; --stub-paste-off, a
+# test's own, has the sign-in screen leave bracketed paste off. Anything
+# else is taken and ignored, as a flag of the real agent would be.
+session_id= resume_id= trusted= yolo= titles= still=${STUB_TITLE_STILL:-} async_bell= paste_off=
 [[ $still == 1 ]] || still=
 args=("$@")
 i=0
@@ -368,6 +371,7 @@ while ((i < ${#args[@]})); do
 		continue
 		;;
 	--dangerously-skip-permissions | --dangerously-bypass-approvals-and-sandbox | --yolo) yolo=1 ;;
+	--stub-paste-off) paste_off=1 ;;
 	esac
 	i=$((i + 1))
 done
@@ -1155,6 +1159,85 @@ mcp_ok() {
 	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
 }
 
+# claude_sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
+# browser's link, then "Paste code here if prompted >"), bracketed paste on
+# (off when launched with --stub-paste-off), and reads what is typed byte by byte, echoing nothing. Each byte read
+# appends a record to <id>.signin: the hex of every byte read since the
+# screen was drawn, a paste's marks and keys' sequences included; an Enter
+# appends "enter". At the Enter the code is the printable characters read
+# outside control sequences: the invented code STUB_SIGNIN names signs in
+# ("Login successful."), any other is refused ("That code was not
+# accepted.") and the screen drawn again. A window resized has the screen
+# drawn again whole, as Claude Code's TUI does. The transcript says only
+# whether a code was taken; the stub signs in to nothing.
+claude_sign_in() {
+	local LC_ALL=C
+	local code hex seq note='' st resized='' saved h c bp=h
+	signin_draw() {
+		printf '\e[2J\e[H\e[?2004%s%sWelcome to Claude Code\r\n\r\n Browser didn'"'"'t open? Use the url below to sign in (c to copy)\r\n\r\nhttps://example.invalid/sign-in?code=true\r\n\r\n\r\n Paste code here if prompted > ' "$bp" "$note"
+	}
+	[[ -n $paste_off ]] && bp=l
+	saved=$(stty -g)
+	stty -icanon -echo min 1 time 0
+	# Bash runs a trap only between reads: the read waits a moment at a time,
+	# and a resize noted meanwhile has the screen drawn again.
+	trap 'resized=1' WINCH
+	while :; do
+		signin_draw
+		code='' hex='' seq=''
+		while :; do
+			byte='' st=0
+			IFS= read -rsn1 -d '' -t 0.2 byte || st=$?
+			if ((st != 0)) && [[ -z $byte ]]; then
+				((st > 128)) || exit 0
+				if [[ -n $resized ]]; then
+					resized=''
+					signin_draw
+				fi
+				continue
+			fi
+			[[ -n $byte ]] || continue
+			if [[ $byte == $'\r' || $byte == $'\n' ]]; then
+				printf 'enter\n' >>"$transcripts/$id.signin"
+				break
+			fi
+			printf -v h '%02x' "'$byte"
+			hex+=$h
+			printf '%s\n' "$hex" >>"$transcripts/$id.signin"
+			# A control sequence (ESC [ … final byte, ESC O and one more, or
+			# ESC and one) is no part of the code, nor any control character.
+			printf -v c '%d' "'$byte"
+			case $seq in
+			'')
+				if [[ $byte == $'\e' ]]; then
+					seq=e
+				elif ((c >= 32 && c != 127)); then
+					code+=$byte
+				fi
+				;;
+			e)
+				case $byte in
+				'[') seq=csi ;;
+				O) seq=ss3 ;;
+				*) seq='' ;;
+				esac
+				;;
+			csi) if ((c >= 64 && c <= 126)); then seq=''; fi ;;
+			ss3) seq='' ;;
+			esac
+		done
+		if [[ $code == "$STUB_SIGNIN" ]]; then
+			trap - WINCH
+			stty "$saved"
+			printf 'signin: accepted\n' >>"$transcript"
+			printf '\e[2J\e[HLogin successful.\r\n'
+			return
+		fi
+		printf 'signin: refused\n' >>"$transcript"
+		note=$' That code was not accepted.\r\n\r\n'
+	done
+}
+
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
 # and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
@@ -1625,6 +1708,11 @@ if [[ -n $resume_id ]]; then
 	fi
 else
 	: >>"$transcript"
+fi
+# Its pid, for a test that stops it while a startup question is drawn.
+put "$transcripts/$id.pid" "$$"$'\n'
+if [[ -n ${STUB_SIGNIN:-} ]]; then
+	claude_sign_in
 fi
 if [[ ${STUB_TRUST_DIALOG:-} == 1 && -z $trusted ]]; then
 	trust_dialog

@@ -247,20 +247,6 @@ export function referenceText(r: NewPlanReference): string {
   return s
 }
 
-/**
- * A launched run's default label, as the store makes it when none is given: the ticket's key and title, cut to 60 characters at a word
- * (`CND-12 Fix the login loop`), never inside the key.
- */
-export function defaultLabel(key: string, title: string): string {
-  const s = `${key} ${title}`
-  const r = Array.from(s)
-  if (r.length <= PLAN_BOUNDS.label) return s
-  let cut = r.slice(0, PLAN_BOUNDS.label).join('')
-  const i = cut.lastIndexOf(' ')
-  if (i > key.length) cut = cut.slice(0, i)
-  return cut.replace(/ +$/, '')
-}
-
 /** What a launch's reply came to: its run started, the launch failed with why, still pending, or the operation refused before any run. */
 export type LaunchOutcome =
   | { state: 'started'; launch: LaunchSummary; run: RunInfo | null; repeat: boolean }

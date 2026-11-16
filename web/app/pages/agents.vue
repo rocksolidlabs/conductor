@@ -2,7 +2,7 @@
 import type { AgentInfo } from '~/composables/useSessions'
 import { joinArgv } from '~/utils/argv'
 import { agentIcon } from '~/utils/agentIcons'
-import { identity, isAvailable, notInstalledBadge } from '~/utils/agents'
+import { checkBadge, identity, isAvailable, notInstalledBadge, pageRequests, settleChecks } from '~/utils/agents'
 
 const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
@@ -21,26 +21,53 @@ const error = ref('')
 const launch = useLaunchModal()
 const serverHost = useServerHost()
 
+// Each read of the list is a generation: the checks a read started filling
+// in are aborted once a newer one (or leaving the page) supersedes it. Once
+// the page is left, no request of it still under way (a hide, a restore, a
+// read) starts a read or changes the page when it answers.
+const requests = pageRequests()
+/** The agents whose check the page gave up reading (#704): their reads ran out or one failed. */
+const unanswered = ref<ReadonlySet<string>>(new Set())
+const check = (a: AgentInfo) => checkBadge(a, serverHost.host.value, unanswered.value.has(a.id))
+
+/**
+ * Draws the list from the server's answer of the moment, which waits for
+ * nothing (#704), then fills in each agent the server is still checking (its
+ * program looked up, its version flag run), or showed from an answer that
+ * has expired, as its own read answers.
+ */
 async function refresh() {
+  if (requests.left()) return
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
+  const gen = requests.next()
+  const stop = () => gen.aborted
   loading.value = true
   try {
-    const r = await api.catalogWithHidden()
+    const r = await requests.live(api.catalogNow())
+    if (stop()) return
     agents.value = r.agents
     hidden.value = r.hidden
+    unanswered.value = new Set()
     error.value = ''
     serverHost.load()
+    void settleChecks(
+      r.agents.filter((a) => a.checking || a.recheck).map((a) => a.id),
+      api.catalogAgent,
+      (a) => (agents.value = agents.value.map((x) => (x.id === a.id ? a : x))),
+      { signal: gen, gaveUp: (id) => (unanswered.value = new Set([...unanswered.value, id])) },
+    )
   } catch (e) {
-    error.value = (e as Error).message
+    if (!stop()) error.value = (e as Error).message
   } finally {
-    loading.value = false
+    if (!stop()) loading.value = false
   }
 }
 
 onMounted(refresh)
+onBeforeUnmount(requests.end)
 watch(() => admin.token.value, refresh)
 
 // Add, edit and clone share one slideover; `editing` is the agent being
@@ -90,7 +117,7 @@ async function confirmHide() {
   hiding.value = true
   hideError.value = ''
   try {
-    await api.deleteAgent(a.id)
+    await requests.live(api.deleteAgent(a.id))
     hideOpen.value = false
     toast.add({ title: text.toast.title, description: text.toast.description, icon: text.icon, color: 'neutral' })
     await refresh()
@@ -107,7 +134,7 @@ const restoring = ref('')
 async function restore(id: string) {
   restoring.value = id
   try {
-    const a = await api.unhideAgent(id)
+    const a = await requests.live(api.unhideAgent(id))
     if (a) toast.add({ title: 'Restored', description: a.name, icon: 'i-lucide-eye', color: 'success' })
     else toast.add({ title: 'Nothing to restore', description: `No agent has the ID ${id} any more; it is off the hidden list.`, icon: 'i-lucide-eye', color: 'neutral' })
   } catch (e) {
@@ -173,7 +200,18 @@ usePalette().registerPage(() => ({
               <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
                 <UBadge
-                  v-if="!isAvailable(a)"
+                  v-if="check(a)"
+                  :label="check(a)?.label"
+                  :title="check(a)?.title"
+                  :icon="check(a)?.state === 'checking' ? 'i-lucide-loader-circle' : 'i-lucide-circle-help'"
+                  :color="check(a)?.state === 'checking' ? 'neutral' : 'warning'"
+                  variant="subtle"
+                  size="sm"
+                  :data-checking="check(a)?.state === 'checking' || undefined"
+                  :data-unanswered="check(a)?.state === 'unanswered' || undefined"
+                />
+                <UBadge
+                  v-else-if="!isAvailable(a)"
                   :label="notInstalledBadge(a, serverHost.host.value).label"
                   :title="notInstalledBadge(a, serverHost.host.value).title"
                   icon="i-lucide-circle-off"
