@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { byAnchor, cutWords, filterOf, historyQuestions, historyTarget, indexingWords, machineOf, outcomeChips, withFilter, type HistoryFilter } from '~/utils/history'
+import { byAnchor, cutWords, filterOf, historyNoneWords, historyQuestions, historyTarget, indexingWords, machineOf, outcomeChips, withFilter, type HistoryFilter } from '~/utils/history'
+import { pageState } from '~/utils/pageState'
 import { LATEST_SESSIONS } from '~/composables/usePaletteHistory'
 import type { HistoryOptions } from '~/composables/useHistorySearch'
 import type { ProjectsPage } from '~/composables/useDispatch'
@@ -71,6 +72,12 @@ const shown = computed(() => (search.result.value?.q === asked.value ? search.re
 const error = computed(() => (search.error.value?.q === asked.value ? search.error.value : null))
 const groups = computed(() => byAnchor(shown.value?.entries ?? []))
 const indexing = computed(() => indexingWords(shown.value?.indexing))
+// What the page shows of its answer (P23): reading, a first read that failed, nothing kept or nothing matched, or the entries. With
+// entries the search's caption folds to About this page.
+const state = computed(() => pageState({ read: !!shown.value, error: error.value?.message, count: shown.value?.entries.length ?? 0 }))
+function readAgain() {
+  search.search(asked.value)
+}
 
 // ---- The chips' values, as read above: none until read, and none again once the token is forgotten.
 const projects = computed(() => search.options.value?.projects ?? [])
@@ -123,6 +130,8 @@ function press(name: HistoryFilter, value: string) {
   text.value = withFilter(text.value.trim(), name, filterOf(text.value, name) === value ? '' : value)
 }
 const questions = computed(() => historyQuestions({ project: project.value, host: machine.value || undefined }))
+/** The search's caption: in place while the history has nothing to show, under About this page once it has. */
+const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a receipt) are kept apart: a sentence repeated is still Conversation.'
 </script>
 
 <template>
@@ -132,6 +141,11 @@ const questions = computed(() => historyQuestions({ project: project.value, host
         <template #leading>
           <UIcon name="i-lucide-history" class="size-5 text-muted" />
         </template>
+        <template #right>
+          <PageAbout :shown="state === 'content'">
+            <p>{{ CAPTION }} The palette searches the same with <UKbd value="~" size="sm" />.</p>
+          </PageAbout>
+        </template>
       </UDashboardNavbar>
     </template>
 
@@ -140,7 +154,7 @@ const questions = computed(() => historyQuestions({ project: project.value, host
         <!-- The search box first on a phone, beside the chips on a wide screen. -->
         <div class="min-w-0 lg:col-start-2 lg:row-start-1" data-history-search>
           <UInput v-model="text" icon="i-lucide-search" placeholder="Words, or filters: class: outcome: project: host: agent: since:" size="lg" class="w-full" aria-label="Search the history" data-history-input />
-          <p class="mt-1 text-xs text-muted">What was said (Conversation), decided (Decision) and checked (a receipt) are kept apart: a sentence repeated is still Conversation. The palette searches the same with <UKbd value="~" size="sm" />.</p>
+          <p v-if="state !== 'content'" class="mt-1 text-xs text-muted" data-history-caption>{{ CAPTION }} The palette searches the same with <UKbd value="~" size="sm" />.</p>
         </div>
 
         <!-- The chips: each writes one filter of the query. -->
@@ -173,15 +187,17 @@ const questions = computed(() => historyQuestions({ project: project.value, host
                 <UButton v-for="qn in questions" :key="qn.id" :label="qn.label" icon="i-lucide-circle-help" size="sm" color="neutral" variant="soft" :title="qn.query" :data-history-question="qn.id" @click="text = qn.query" />
               </div>
             </div>
-            <UAlert v-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error.message" :description="error.code" data-history-error />
+            <UAlert v-if="error && state === 'content'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error.message" :description="error.code" data-history-error />
             <p v-if="indexing" class="text-xs text-muted" data-history-indexing>{{ indexing }}</p>
-            <p v-if="!shown && !error" class="text-sm text-muted" data-history-loading>Loading…</p>
-            <template v-if="shown">
+            <PageEmpty v-if="state === 'reading'" :page="query ? undefined : 'history'" state="reading" thing="history" data-history-loading />
+            <PageEmpty v-else-if="state === 'failed'" :page="query ? undefined : 'history'" state="failed" :error="error?.code ? `${error.message} (${error.code})` : error?.message" data-history-error @again="readAgain" />
+            <!-- Nothing kept with nothing typed (the page's sentence above it); nothing matched with a query (a filter's answer, no first line). -->
+            <PageEmpty v-else-if="state === 'empty'" :page="query ? undefined : 'history'" state="empty" :words="historyNoneWords(query)" icon="i-lucide-search" data-history-none />
+            <template v-if="shown && state === 'content'">
               <p class="text-xs text-muted" data-history-total>
                 <template v-if="query">{{ shown.total }}{{ shown.totalCapped ? '+' : '' }} {{ shown.total === 1 && !shown.totalCapped ? 'match' : 'matches' }}<template v-if="shown.cut"> · <span data-history-cut>{{ cutWords(shown.cut) }}</span></template></template>
                 <template v-else>The latest sessions</template>
               </p>
-              <p v-if="!shown.entries.length" class="py-6 text-center text-sm text-muted" data-history-none>Nothing in the history matches.</p>
               <div v-for="g in groups" :key="g.anchor.ref" class="min-w-0 rounded-lg border border-default" :data-history-group="g.anchor.ref">
                 <h3 class="flex min-w-0 items-center gap-2 border-b border-default px-3 py-1.5 text-xs font-medium text-toned">
                   <NuxtLink v-if="historyTarget({ url: g.anchor.url ?? '', anchor: g.anchor })" :to="historyTarget({ url: g.anchor.url ?? '', anchor: g.anchor })!" class="min-w-0 truncate hover:underline">{{ g.anchor.label }}</NuxtLink>
