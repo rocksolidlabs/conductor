@@ -119,3 +119,49 @@ func TestMappersReadTheCapturedPreToolPayloadsAsWorking(t *testing.T) {
 		}
 	}
 }
+
+// Every captured Codex hook payload that maps to an attention state (the
+// PreToolUse's working, the Stop's done) carries its turn's name, the
+// payload's turn_id, so that the session tells a turn's end told twice
+// (its Stop hook, then its notify program, whose turn-id is the same
+// value) from the next turn's; an event (PostToolUse) carries none, its
+// route having no such field.
+func TestTheCapturedCodexHooksNameTheirTurn(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex-hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooks []struct {
+		Event   string `json:"event"`
+		Payload struct {
+			TurnID string `json:"turn_id"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &hooks); err != nil {
+		t.Fatal(err)
+	}
+	var raws []struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &raws); err != nil {
+		t.Fatal(err)
+	}
+	named := 0
+	for i, h := range hooks {
+		got, ok := MapCodexHook(raws[i].Payload)
+		switch {
+		case !ok:
+		case got.Event != "":
+			if got.TurnID != "" {
+				t.Errorf("%s: the event %s names turn %q", h.Event, got.Event, got.TurnID)
+			}
+		case h.Payload.TurnID == "" || got.TurnID != h.Payload.TurnID:
+			t.Errorf("%s: %+v names turn %q, want the payload's %q", h.Event, got, got.TurnID, h.Payload.TurnID)
+		default:
+			named++
+		}
+	}
+	if named < 6 {
+		t.Fatalf("%d reports named their turn, want the five PreToolUse and the Stop", named)
+	}
+}
