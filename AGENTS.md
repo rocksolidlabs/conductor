@@ -544,9 +544,11 @@ add its rule here.
   (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
 - Each builder's own specs passing is not the suite passing. When several
   rows land on one branch, a spec of one meets the change of another, and
-  only the whole run shows it (#956: nineteen such failures in five CI
-  runs, three of them real defects). Push for a whole run early and often,
-  one at a time, and let no push cancel the run before it.
+  only the whole run shows it (#956: about twenty such failures over six
+  CI runs; most were a spec out of date with another row's intended
+  change, and at least one was a real defect of a page: a run's header on
+  a low window). Push for a whole run early and often, one at a time, and
+  let no push cancel the run before it.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
