@@ -214,4 +214,29 @@ export async function walk(page: Page, root?: Locator): Promise<{ judged: number
   return { judged: drawn.length, failures: judge(drawn) }
 }
 
+/**
+ * The visible buttons inside `area` (every match of it) whose computed background is the resolved `--ui-primary`: the filled forest
+ * buttons, of which an area has one, its main action (the UX review's P16). Returned as their accessible names (the label, else the
+ * text), in the page's order.
+ */
+export async function filledPrimaries(area: Locator): Promise<string[]> {
+  return area.evaluateAll((roots) => {
+    const probe = document.body.appendChild(document.createElement('span'))
+    probe.style.backgroundColor = 'var(--ui-primary)'
+    const primary = getComputedStyle(probe).backgroundColor
+    probe.remove()
+    const out: string[] = []
+    for (const root of roots) {
+      for (const b of Array.from(root.querySelectorAll('button, a'))) {
+        if (!(b as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue
+        const box = b.getBoundingClientRect()
+        if (box.width < 1 || box.height < 1) continue
+        if (getComputedStyle(b).backgroundColor !== primary) continue
+        out.push((b.getAttribute('aria-label') ?? b.textContent ?? '').replace(/\s+/g, ' ').trim())
+      }
+    }
+    return out
+  })
+}
+
 export { CONTRAST_FLOORS }

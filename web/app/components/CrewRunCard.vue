@@ -77,7 +77,7 @@ async function stop() {
       <UIcon name="i-lucide-circle-play" class="size-4.5 flex-none" :class="needs ? 'text-warning' : 'text-muted'" />
       <NuxtLink :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate text-[15px] font-semibold text-highlighted hover:underline">{{ run.name }}</NuxtLink>
       <span class="truncate text-[13px] text-muted" data-run-subtitle>{{ runSubtitle(run) }}</span>
-      <span class="font-mono text-[11px] text-dimmed" :title="run.id">{{ shortRunId(run.id) }}</span>
+      <span class="font-mono text-[11px] text-dimmed" :title="run.id" data-mono="id" data-run-short-id>{{ shortRunId(run.id) }}</span>
       <YoloBadge v-if="run.yolo" icon class="flex-none" />
       <UBadge :label="statusLine.text" :color="needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="ml-auto min-w-0 max-w-full truncate" :title="statusLine.text" data-run-state data-run-status-line />
     </div>
@@ -95,11 +95,11 @@ async function stop() {
       <NuxtLink v-if="a.sessionId" :to="`/sessions/${encodeURIComponent(a.sessionId)}`" class="ml-auto flex-none font-medium text-highlighted hover:underline">Answer</NuxtLink>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2 font-mono text-[11.5px] text-muted">
-      <span class="truncate">{{ meta }}</span>
-      <div class="ml-auto flex flex-none items-center gap-1.5 font-sans">
+    <div class="flex flex-wrap items-center gap-2 text-[11.5px] text-muted">
+      <span class="truncate tabular-nums" data-run-meta>{{ meta }}</span>
+      <div class="ml-auto flex flex-none items-center gap-1.5">
         <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" variant="soft" :loading="stopping" :aria-label="`Stop the run ${run.id}`" data-run-stop @click="stop" />
-        <UButton :to="`/runs/${encodeURIComponent(run.id)}`" label="Open run" trailing-icon="i-lucide-arrow-right" size="xs" data-run-open />
+        <UButton :to="`/runs/${encodeURIComponent(run.id)}`" label="Open run" trailing-icon="i-lucide-arrow-right" size="xs" color="neutral" variant="outline" data-run-open />
       </div>
     </div>
   </article>

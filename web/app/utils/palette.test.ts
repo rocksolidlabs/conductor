@@ -259,12 +259,30 @@ describe('sessionGroups: one Needs you group (UX1 PR-13)', () => {
     expect(groups.needs).toEqual(['answer-all', 'session:loose', 'decision:dr-2', 'decision:dr-1 in mirror', 'Plan: plan:CND-2/1', 'Task: task:r3/build'])
     // The question that is also an inbox item: one row.
     expect(groups.needs.filter((r) => r.includes('loose'))).toHaveLength(1)
-    // The mirrored question's session is running; nothing of Needs you is listed again.
-    expect(groups.running).toEqual(['session:mirror', 'session:worker'])
+    // The mirrored question's session is in Working; nothing of Needs you is listed again.
+    expect(groups.working).toEqual(['session:mirror', 'session:worker'])
+    expect(groups.finished).toEqual([])
     expect(groups.exited).toEqual(['session:gone'])
   })
 
+  // The UX review's P4: the palette's Running group is Finished then Working, and the fold actions name the five sections.
+  it('groups the sessions Finished then Working, a host away that does not ask in Exited', () => {
+    const turns = (id: string, state: 'done' | 'working') => session(id, { turns: true, attention: { state, source: 'api', since: T(state === 'done' ? 7 : 8) } as SessionInfo['attention'] })
+    const list2 = [turns('ended-turn', 'done'), turns('in-turn', 'working'), session('quiet'), session('away', { status: 'host_disconnected' as SessionInfo['status'] })]
+    const groups = sessionGroups(sidebarModel(list2), [], make)
+    expect(Object.keys(groups)).toEqual(['needs', 'finished', 'working', 'exited'])
+    expect(groups.finished).toEqual(['session:ended-turn'])
+    expect(groups.working.sort()).toEqual(['session:in-turn', 'session:quiet'])
+    expect(groups.exited).toEqual(['session:away'])
+  })
+
   it('names one fold action per section, in the sidebar\'s order', () => {
-    expect(foldActions({ ...DEFAULT_FOLDS }).map((f) => f.label)).toEqual(["Fold the sidebar's Needs you", "Fold the sidebar's Running", "Fold the sidebar's Shared with you", "Unfold the sidebar's Exited"])
+    expect(foldActions({ ...DEFAULT_FOLDS }).map((f) => f.label)).toEqual([
+      "Fold the sidebar's Needs you",
+      "Fold the sidebar's Finished",
+      "Fold the sidebar's Working",
+      "Fold the sidebar's Shared with you",
+      "Unfold the sidebar's Exited",
+    ])
   })
 })

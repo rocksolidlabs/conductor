@@ -147,6 +147,32 @@ export function notInstalledBadge(a: Pick<AgentInfo, 'identity' | 'command' | 'o
   return { label: notInstalled(host, a.onWindows), title: notInstalledTitle(program, a.onWindows), notAgent: false }
 }
 
+/** An agent the welcome offers to launch: its name and the version its check found, or `checking` while the server still looks. */
+export interface WelcomeAgent {
+  id: string
+  name: string
+  icon?: string
+  version?: string
+  checking: boolean
+}
+
+/**
+ * The agents the welcome offers (the UX review's P17): those the server can launch now, and those it is still checking (#704), in the
+ * catalog's order, at most `max`, with how many more there are. An agent not installed (or another program of its name) is left out:
+ * the welcome offers nothing the server cannot launch.
+ */
+export function welcomeAgents(list: readonly AgentInfo[], max = 4): { agents: WelcomeAgent[]; rest: number } {
+  const found = list.filter((a) => a.checking || isAvailable(a))
+  const agents = found.slice(0, max).map((a) => ({
+    id: a.id,
+    name: a.name,
+    icon: a.icon,
+    version: !a.checking && a.identity?.identified && a.identity.version ? a.identity.version : undefined,
+    checking: !!a.checking,
+  }))
+  return { agents, rest: found.length - agents.length }
+}
+
 /** The agents the Launch dialog's server tab offers. */
 export function serverAgents<T extends Pick<AgentInfo, 'available'>>(list: readonly T[]): T[] {
   return list.filter(isAvailable)

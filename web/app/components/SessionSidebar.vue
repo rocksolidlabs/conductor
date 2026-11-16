@@ -5,7 +5,7 @@ import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
-import { blockSubtitle, filterNeeds, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
+import { blockSubtitle, filterNeeds, LIST_SECTIONS, SECTION_TITLES, focusRows, mayRefocusRow, moveFocus, narrowSidebar, needsDotShown, panelRow, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ItemRow, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { sessionTarget } from '~/utils/actions'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
 import { replyFailure } from '~/utils/reply'
@@ -13,8 +13,9 @@ import { needsCount } from '~/utils/needsYou'
 import { showingWords } from '~/utils/inbox'
 
 /**
- * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
- * loose sessions and run blocks side by side; a run is one block, placed where its most urgent member is, or in Needs you while an
+ * The full sidebar (design 3a, 3b): sessions and runs, ordered by how hard each waits on you. Needs you, Finished (an agent that ended
+ * its turn waits for your next word) and Working (an agent in a turn, or one that sends no signal), each holding loose sessions and run
+ * blocks side by side; a run is one block, placed where its most urgent member is, or in Needs you while an
  * item of it waits. Needs you lists every kind that waits on a person (SidebarInboxRow). Then the links shared with
  * you, below your own sessions, and Exited, folded to one line. Every section folds from its header (useSidebarFolds). The run of
  * the page open now is marked and scrolled to; nothing is filtered out for it.
@@ -91,7 +92,7 @@ watch(attention.sessions, (list) => {
 
 // The open run's section unfolds and its block comes into view, once per page.
 function sectionOfRun(runId: string): ListSection | undefined {
-  for (const key of ['needs', 'running', 'exited'] as const) if (model.value[key].some((it) => it.kind === 'run' && it.runId === runId)) return key
+  for (const key of LIST_SECTIONS) if (model.value[key].some((it) => it.kind === 'run' && it.runId === runId)) return key
   return undefined
 }
 watch(
@@ -203,7 +204,7 @@ async function unfoldRun(runId: string) {
 }
 const byId = computed(() => {
   const m = new Map<string, SessionRow | RunBlock>()
-  for (const key of ['needs', 'running', 'exited'] as const) {
+  for (const key of LIST_SECTIONS) {
     for (const it of model.value[key]) {
       if (it.kind === 'run') {
         m.set(`r:${it.runId}`, it)
@@ -484,7 +485,8 @@ defineExpose({ focusFilter, focusList })
     </div>
 
     <div ref="listEl" class="flex-1 min-h-0 overflow-y-auto px-1 flex flex-col gap-3" :data-session-list="props.page ? 'page' : 'sidebar'" :data-list-width="listWidth" @keydown="onKey" @focusin="onFocusIn" @focusout="onFocusOut">
-      <p v-if="empty" class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p>
+      <!-- The phone's Sessions page draws the welcome in this line's place (the UX review's P17). -->
+      <slot v-if="empty" name="empty"><p class="px-2 py-4 text-xs text-muted leading-relaxed" data-sidebar-empty>No sessions yet.</p></slot>
 
       <SidebarSection v-if="model.needs.length || decisionsCut || decisionsStale || inboxShowing || inboxFailed" id="needs" title="Needs you" :count="needsWords" count-of="needs" tone="warning" :preview="preview('needs')" :folded="folds.needs" @update:folded="foldState.fold('needs', $event)">
         <ol class="flex flex-col gap-0.5">
@@ -554,9 +556,11 @@ defineExpose({ focusFilter, focusList })
         </ol>
       </SidebarSection>
 
-      <SidebarSection v-if="model.running.length" id="running" title="Running" :count="model.counts.running" :preview="preview('running')" :folded="folds.running" @update:folded="foldState.fold('running', $event)">
+      <!-- Finished, then Working (the UX review's P4): each drawn only while it has rows. -->
+      <template v-for="key in (['finished', 'working'] as const)" :key="key">
+      <SidebarSection v-if="model[key].length" :id="key" :title="SECTION_TITLES[key]" :count="model.counts[key]" :preview="preview(key)" :folded="folds[key]" @update:folded="foldState.fold(key, $event)">
         <ol class="flex flex-col gap-0.5">
-          <template v-for="it in model.running" :key="it.id">
+          <template v-for="it in model[key]" :key="it.id">
             <SidebarRunBlock
               v-if="isRun(it)"
               :block="it as RunBlock"
@@ -567,7 +571,7 @@ defineExpose({ focusFilter, focusList })
               :big="props.page"
               :focused-id="focused"
               :confirming-id="confirmingId"
-              section="running"
+              :section="key"
               :unfolded="unfolded.has((it as RunBlock).runId)"
               @unfold="unfoldRun"
               :narrow="narrow"
@@ -608,6 +612,7 @@ defineExpose({ focusFilter, focusList })
           </template>
         </ol>
       </SidebarSection>
+      </template>
 
       <!-- Yours first, then the rest: the links joined from here sit below your own sessions. -->
       <SidebarSection v-if="joined.list.value.length" id="shared" title="Shared with you" :count="joined.list.value.length" :folded="folds.shared" @update:folded="foldState.fold('shared', $event)">

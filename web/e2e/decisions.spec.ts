@@ -313,7 +313,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // so the session is listed among the running, not again in Needs you.
   await expect(prow).toHaveCount(1)
   await expect(palette.locator(`[data-palette-group="needs"] [data-palette-row="session:${sid}"]`)).toHaveCount(0)
-  await expect(palette.locator(`[data-palette-group="running"] [data-palette-row="session:${sid}"]`)).toHaveCount(1)
+  await expect(palette.locator(`[data-palette-group="working"] [data-palette-row="session:${sid}"]`)).toHaveCount(1)
   await prow.click()
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
   await modal.locator('[data-decision-choice-label="Approve"]').click()

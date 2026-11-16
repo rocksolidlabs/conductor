@@ -33,8 +33,10 @@ make build                # generates the SPA and builds bin/conductor with it e
 CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 ```
 
-Open <http://localhost:8080>, paste the workbench token when prompted, and press
-**Launch agent**. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
+Open <http://localhost:8080> and paste the workbench token when prompted. A
+server with no session shows a welcome: the agents found on this machine, each
+with its version (press one to launch it), how to bring one in from another
+machine, and the example crews, then each page of the app in one line. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random
 token at startup and keeps it in `workbench-token` in its data directory, mode
 0600, while it runs: `cat ~/.conductor/workbench-token` (the default data
 directory) as the server's user. The terminal and the log name the file, never
@@ -88,8 +90,10 @@ sessions do (see the Files tab).
 
 ## The workbench
 
-The sidebar is the session list, grouped into **Needs you**, **Running** and
-**Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
+The sidebar is the session list, grouped by how hard each waits on you:
+**Needs you**, **Finished** (an agent that ended its turn and waits for your
+next word, "finished 12m ago"), **Working** (an agent in a turn, or one that
+sends no signal) and **Exited**, a run once where its busiest member is, with a filter box and a **Launch agent** button (**N**); **/** or
 **Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
 Its foot holds the pages, each with a tooltip that says what it is. The one
 amber number there is on **Needs you**: every question, decision, plan and

@@ -362,6 +362,21 @@ open deferred item from rounds 1 and 2, then the features below.
   the same shape, "Nothing needs you now.", with what shows up there and
   what was decided in the last day under it; it reads, and a first read
   that fails says so with Read again, the same way.
+- **A welcome that teaches (#945; the UX review's P17, part of #374).** A
+  server with no session at all shows the welcome on the home and, on a
+  phone, on the Sessions page in place of the list's empty line: what
+  Conductor is in one sentence, then three steps. Launch an agent offers
+  the first four agents the server can launch, in the catalog's order, each
+  with the version its check found (`welcomeAgents`), and "and N more" for
+  the rest; an agent not installed is never offered. Bring one in from
+  another machine says to run `conductor host` there and links the README's
+  Quick start. Try a crew loads the example crews and says what that does
+  (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
+  load them say too. "Where things are" lists the sidebar's tiles, then the
+  pages under More, each with the sentence its tooltip says. Settings left
+  the card
+  (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
+  `empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
@@ -459,6 +474,19 @@ open deferred item from rounds 1 and 2, then the features below.
   read, the questions still listed. The palette's two groups of what waits
   are one, "Needs you": answer-all, the questions, the decisions as "Answer
   dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
+- **Finished apart from working (UX1 PR-14, #929).** Running splits in two.
+  The sidebar's sections are Needs you, Finished, Working, Shared with you
+  and Exited, in the order of how hard a thing waits on you. Finished holds
+  the agents that ended their turn and wait for your next word, grey,
+  "finished 12m ago", the latest finished first; Working holds the agents in
+  a turn and the agents that send no signal (running, starting), each with
+  its own mark. A host away that asks stays in Needs you; one that does not
+  ask sits in Exited, "host away". A run sits once, in the section of its
+  busiest member, and its line says "started 08:31 · 4 agents · 2 working ·
+  2 finished"; its capsule on the rail reads the same state. Each section is
+  drawn only while it has rows; a fold saved for Running folds Working, and
+  Finished starts unfolded. The palette's Running group is Finished then
+  Working, and its fold actions name the five sections.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -2972,7 +3000,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
 - The counts: Needs you is the one number of what needs you (UX1 PR-13);
-  Running is that section's live sessions; Exited is that section's.
+  Finished and Working are their sections' live sessions; Exited is that
+  section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run
   header offers Share run, Stop run and Open run; a member has its own Share

@@ -21,7 +21,7 @@ import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
-import { skipWords } from '~/utils/crews'
+import { EXAMPLES_LINE, skipWords } from '~/utils/crews'
 import { memberOffer, runOffer, sessionResumeOffered } from '~/utils/runs'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
@@ -85,7 +85,7 @@ export function waitingRows(runs: readonly RunInfo[], start: (r: RunInfo, name: 
 const TICKETS_IDLE = 10
 const TICKETS_MATCHED = 50
 /** The groups the plain search's History group follows: it goes after Tickets, before Shared with you. */
-const HISTORY_AFTER = ['needs', 'page', 'running', 'exited', 'runs', 'tickets']
+const HISTORY_AFTER = ['needs', 'page', 'finished', 'working', 'exited', 'runs', 'tickets']
 
 /** The row's second line, in the sidebar's grammar: `agent · where · how long`. */
 function sessionDetail(s: SessionInfo, now: number): string {
@@ -355,7 +355,9 @@ export function usePaletteRows(ctx: PaletteContext) {
       { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },
     ]
     if (isEnded(s.status) && sessionResumeOffered(s, attention.runOf)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
-    const state = rowState(s)
+    // The row's place: Needs you, Exited, else among the live ones (Finished and Working are the groups that place it).
+    const key = rowState(s)
+    const state = key === 'needs' || key === 'exited' ? key : 'running'
     return {
       key: `session:${s.id}`,
       label: s.name,
@@ -454,7 +456,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       detail,
       words: [r?.goal ?? '', r?.cwd ?? '', ...block.members.map((m) => m.session.name)],
       icon: 'i-lucide-play',
-      state: block.state,
+      state: block.state === 'needs' || block.state === 'exited' ? block.state : 'running',
       status: keys.length ? statusOfKey(blockStatus(keys)) : undefined,
       run: () => go(`/runs/${encodeURIComponent(block.runId)}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
@@ -650,12 +652,12 @@ export function usePaletteRows(ctx: PaletteContext) {
   /** `#`: live runs with their actions, ended runs, members waiting for Start now, then the saved crews. */
   function runModeGroups(now: number): PaletteGroup<PaletteItem>[] {
     const model = sidebarModel(attention.sessions.value, attention.runOf)
-    const blocks = [...model.needs, ...model.running, ...model.exited].filter((it): it is RunBlock => it.kind === 'run')
+    const blocks = [...model.needs, ...model.finished, ...model.working, ...model.exited].filter((it): it is RunBlock => it.kind === 'run')
     const seen = new Set(blocks.map((b) => b.runId))
     const live = blocks.filter((b) => !b.stoppedAt && b.state !== 'exited')
     const ended = blocks.filter((b) => b.stoppedAt || b.state === 'exited')
     const runs: PaletteItem[] = live.map((b) => runItem(b, attention.runOf(b.runId)))
-    for (const r of attention.runs.value.filter((r) => !seen.has(r.id) && !r.stoppedAt)) runs.push(runItem({ kind: 'run', id: `run:${r.id}`, runId: r.id, title: r.label || r.name, startedAt: r.startedAt, agents: r.members.length, state: 'idle', needs: 0, members: [], items: [] }, r))
+    for (const r of attention.runs.value.filter((r) => !seen.has(r.id) && !r.stoppedAt)) runs.push(runItem({ kind: 'run', id: `run:${r.id}`, runId: r.id, title: r.label || r.name, startedAt: r.startedAt, agents: r.members.length, state: 'running', needs: 0, members: [], items: [] }, r))
     const endedItems: PaletteItem[] = ended.map((b) => runItem(b, attention.runOf(b.runId)))
     const waiting = waitingRows(attention.runs.value, (r, name) => void startMember(r, name))
     const crews: PaletteItem[] = palette.crews.value.map((c) => {
@@ -695,7 +697,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     })
     const more: PaletteItem[] = [
       { key: 'crews:new', label: 'New crew', icon: 'i-lucide-plus', run: () => go('/crews/new') },
-      { key: 'crews:examples', label: 'Load the example crews', icon: 'i-lucide-package-open', run: () => void api.loadExampleCrews().then((r) => { toast.add({ title: `${r.added.length} added${r.skipped.length ? `, ${r.skipped.length} already there` : ''}`, icon: 'i-lucide-package-open', color: 'success' }); void palette.loadLists(true) }).catch(fail('Load the examples')) },
+      { key: 'crews:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: () => void api.loadExampleCrews().then((r) => { toast.add({ title: `${r.added.length} added${r.skipped.length ? `, ${r.skipped.length} already there` : ''}`, icon: 'i-lucide-package-open', color: 'success' }); void palette.loadLists(true) }).catch(fail('Load the examples')) },
     ]
     void now
     return [
@@ -915,11 +917,13 @@ export function usePaletteRows(ctx: PaletteContext) {
     const model = sidebarModel(attention.sessions.value, attention.runOf, needsList)
     // One Needs you group (the UX review's P3): every item of the one list once, then the sessions by the sidebar's sections.
     const rows = sessionGroups(model, needsList, { answerAll: answerAllItems, session: (s) => sessionItem(s, now), decisions: decisionItems, item: (it) => needsItemRow(it, go) })
-    const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
+    const blocks = [...model.needs, ...model.finished, ...model.working].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
       { id: 'needs', label: 'Needs you', pinned: true, rows: rows.needs },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
-      { id: 'running', label: 'Running', rows: rows.running },
+      // Finished, then Working, in the sidebar's order (the UX review's P4).
+      { id: 'finished', label: 'Finished', rows: rows.finished },
+      { id: 'working', label: 'Working', rows: rows.working },
     ]
     if (rows.exited.length) {
       if (query || showExited.value) groups.push({ id: 'exited', label: 'Exited', rows: rows.exited })

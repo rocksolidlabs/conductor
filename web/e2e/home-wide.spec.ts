@@ -37,9 +37,10 @@ test('the empty home shows its welcome at desktop width, the list below it, and 
   await expect(page).toHaveURL(/\/$/, { timeout: 30_000 })
   const welcome = page.locator('[data-welcome]')
   await expect(welcome).toBeVisible()
-  await expect(welcome.getByRole('button', { name: 'Launch agent' })).toBeVisible()
+  // Its steps (the UX review's P17): an agent found on this machine to launch, the example crews to load. Settings left the card.
+  await expect(welcome.locator('[data-welcome-agent]').first()).toBeVisible()
   await expect(welcome.getByRole('button', { name: 'Load the example crews' })).toBeVisible()
-  await expect(welcome.getByRole('link', { name: 'Settings' })).toBeVisible()
+  await expect(welcome.getByRole('link', { name: 'Settings' })).toHaveCount(0)
 
   // A phone: the list is the home screen.
   await page.setViewportSize({ width: 390, height: 844 })

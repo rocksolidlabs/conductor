@@ -4,6 +4,9 @@ import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
 import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from './events'
 
+/** What loading the example crews does, in the words every place that offers it says (the welcome, Crews, the palette's rows). */
+export const EXAMPLES_LINE = 'Adds five ready-made crews to Crews; nothing starts until you launch one.'
+
 /**
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as

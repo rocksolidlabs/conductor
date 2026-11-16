@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, EXAMPLES_LINE, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, startedClock } from '~/utils/crewWords'
 import { runItems, runStatusLine } from '~/utils/status'
 import { runLive, runState } from '~/utils/runs'
@@ -611,7 +611,7 @@ usePalette().registerPage(() => ({
   label: 'Crews',
   rows: [
     { key: 'page:new', label: 'New crew', icon: 'i-lucide-plus', run: newCrew },
-    { key: 'page:examples', label: 'Load the example crews', icon: 'i-lucide-package-open', run: loadExamples },
+    { key: 'page:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: loadExamples },
     ...crews.value.map((c) => ({
       key: `page:launch:${c.id}`,
       label: `Launch ${c.name}`,
@@ -723,7 +723,10 @@ usePalette().registerPage(() => ({
             ]"
             :data-crews-empty="crewsState === 'empty' ? '' : undefined"
             @again="refresh"
-          />
+          >
+            <!-- What Load the examples does, in the welcome's words (the UX review's P17). -->
+            <p v-if="crewsState === 'empty'" class="text-sm text-muted" data-examples-line>{{ EXAMPLES_LINE }}</p>
+          </PageEmpty>
           <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green still going, grey ended, lighter grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
@@ -800,7 +803,7 @@ usePalette().registerPage(() => ({
         <template #body>
           <div class="flex items-start gap-2.5 rounded-md bg-elevated px-3.5 py-3">
             <code class="min-w-0 flex-1 break-all font-mono text-xs select-all" data-view-link-url>{{ shownLink?.url }}</code>
-            <UButton label="Copy" icon="i-lucide-clipboard" size="sm" class="flex-none" @click="shownLink && copy(shownLink.url, 'Link copied', 'Anyone with it can watch every member.')" />
+            <UButton label="Copy" icon="i-lucide-clipboard" size="sm" color="neutral" variant="outline" class="flex-none" @click="shownLink && copy(shownLink.url, 'Link copied', 'Anyone with it can watch every member.')" />
           </div>
         </template>
         <template #footer>

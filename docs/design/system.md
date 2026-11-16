@@ -185,35 +185,46 @@ hover.
 
 ### One main action
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 One filled forest button a work area: a page's header, a dialog, a card.
 The rest are outline or ghost. The forest fill means the view's main
 action and nothing else.
 
-Checks: none yet; the one-filled-action rule and `main-action.spec.ts`
-come with the change that makes it true (the UX review's PR-26).
+Checks: `designRules.test.ts`, one filled action an area (in each
+`UDashboardNavbar` and `UModal` at most one solid primary `UButton`, a
+`v-if` chain's branches counted apart, a split button as one, a bound
+variant not judged); `main-action.spec.ts`, the forest fill read off the
+seeded day (`filledPrimaries` in `web/e2e/contrast.ts`).
 
 ### The code font for evidence
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 Ids, paths, commits, commands, keys, logs and measures are in the code
 font (JetBrains Mono); sentences, names and labels are in Inter.
 
-Checks: none yet; the mono rule comes with the UX review's PR-26.
+A line that mixes words with an id, a path or a commit keeps the code
+font for that part alone, marked `data-mono="<kind>"` (id, path, commit,
+command, key, log, measure); a number that ticks takes `tabular-nums`.
+
+Checks: `designRules.test.ts`, the mono rule (`font-mono` only on code,
+pre, a key, a field or an element marked `data-mono`; every other use a
+count per source in `designRules.mono.json`, a list that only shrinks);
+`main-action.spec.ts` reads the drawn family of sentences and ids.
 
 ### Amber when someone must act
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #941.
 
 Amber is for what waits on a person: a question, a plan to approve, a
 task out of attempts, a decision, a confirm that loses work, a read that
 failed. Never a standing fact: a setting that is on, an agent that is not
 installed, a count.
 
-Checks: none yet; `main-action.spec.ts`'s amber case comes with the UX
-review's PR-26.
+Checks: `main-action.spec.ts`, amber: Not installed and an identified
+agent's badge are neither amber nor green, the Yard's Needs you chip's
+mark is amber.
 
 ### The page header
 
@@ -226,7 +237,7 @@ tooltip, and the less used ones move into More.
 
 Checks: `web/e2e/session-page.spec.ts` and `web/e2e/run-header.spec.ts`
 (the name whole and nothing overlapping at 1440 x 900 and at 390 x 844);
-the tooltip rule below.
+the one-filled-action rule above; the tooltip rule below.
 
 ### The toolbar
 

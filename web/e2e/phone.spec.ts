@@ -81,7 +81,7 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   expect(box.width).toBeGreaterThanOrEqual(300)
   await choice.tap()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('SQLite\n')
-  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
 })
 
 test('a row opens its page; Back returns to the list', async ({ api }) => {
