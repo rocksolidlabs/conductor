@@ -1,28 +1,40 @@
 import { watch, type Ref } from 'vue'
 
-/** What the gate reads of the workbench token's store (useWorkbenchToken). */
+/** What the token dialog reads of the workbench token's store (useWorkbenchToken). */
 interface Ask {
-  needsToken: Ref<boolean>
   kept: () => string
   cancel: () => void
 }
 
 /**
- * The workbench token gate's open state (WorkbenchTokenGate.vue), kept with the store's ask from the moment the gate mounts: a gate
- * that mounts while a token is needed (the ask stood while a page of another layout was shown) opens at once, a later refusal opens
- * it, and a token the server has since accepted (a link's) closes it. Its draft starts from the token this browser keeps, never from
- * one only this page holds. Closed (Cancel, Escape, outside it), the ask ends, so the next refusal opens the gate again.
+ * The workbench token dialog's draft and close (WorkbenchTokenGate.vue), opened only by the person (the menu's Workbench token…, the
+ * palette, Set token on an alert): opened, its draft starts from the token this browser keeps, never from one only this page holds;
+ * closed (Cancel, Escape, outside it, Save), the ask ends. A refusal does not open it: the connect page asks then (connectShown).
  */
-export function followAsk(open: Ref<boolean>, draft: Ref<string>, admin: Ask) {
+export function tokenDialog(open: Ref<boolean>, draft: Ref<string>, admin: Ask) {
   watch(open, (v) => {
     if (v) draft.value = admin.kept()
     else admin.cancel()
   })
-  watch(
-    () => admin.needsToken.value,
-    (v) => {
-      open.value = v
-    },
-    { immediate: true },
-  )
+}
+
+/** What decides the connect page (the UX review's P18): the store's token, its standing, and in the desktop app its bridge. */
+export interface ConnectFacts {
+  /** The page runs in the desktop app, whose token comes from its shell's bridge. */
+  desktop: boolean
+  /** The bridge has answered (or failed); always true in a browser. */
+  bridged: boolean
+  hasToken: boolean
+  standing: '' | 'trying' | 'dropped' | 'refused'
+}
+
+/**
+ * Whether the connect page stands in for the app: when this page holds no token, or the server refused the one it holds. Never while
+ * a link's token is tried (or, refused, the page loads again), and in the desktop app never before its bridge has answered, so the
+ * page does not flash while the shell hands over its token.
+ */
+export function connectShown(f: ConnectFacts): boolean {
+  if (f.desktop && !f.bridged) return false
+  if (f.standing === 'trying' || f.standing === 'dropped') return false
+  return !f.hasToken || f.standing === 'refused'
 }

@@ -33,6 +33,8 @@ interface Held {
    */
   standing: Ref<'' | 'trying' | 'dropped' | 'refused'>
   needsToken: Ref<boolean>
+  /** Whether the desktop app's bridge has answered its token (or failed): true at once in a browser, which has no bridge. */
+  bridged: Ref<boolean>
 }
 
 /**
@@ -51,8 +53,8 @@ export function useWorkbenchToken() {
   const desktop = import.meta.client ? desktopBridge() : null
   const app = useNuxtApp() as unknown as { [HELD]?: Held }
   const first = !app[HELD]
-  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false) })
-  const { token, standing, needsToken } = held
+  const held = (app[HELD] ??= { token: ref(desktop ? '' : readStored()), changes: ref(0), standing: ref<Held['standing']['value']>(''), needsToken: ref(false), bridged: ref(!desktop) })
+  const { token, standing, needsToken, bridged } = held
   if (desktop && first)
     desktop
       .token()
@@ -60,6 +62,7 @@ export function useWorkbenchToken() {
         if (t) set(t)
       })
       .catch(() => {})
+      .finally(() => (bridged.value = true))
 
   /** Every write of `token` is made here, and a change is counted. */
   function send(value: string) {
@@ -158,6 +161,9 @@ export function useWorkbenchToken() {
   return {
     token,
     changes: held.changes,
+    standing,
+    bridged,
+    desktop: !!desktop,
     hasToken: computed(() => token.value.length > 0),
     needsToken,
     set,

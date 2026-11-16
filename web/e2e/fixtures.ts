@@ -503,6 +503,15 @@ export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise
   return page
 }
 
+/**
+ * The page that asks for the workbench token (the UX review's P18): drawn in place of the app while the page holds no token or the
+ * server refused the one it holds. Its field has the placeholder "paste the workbench token" and its button is Connect; it has no Cancel.
+ * The dialog named "Workbench token" is the menu's, over a working app.
+ */
+export function tokenAsk(page: Page): Locator {
+  return page.locator('[data-connect-page]')
+}
+
 /** Waits for what says the page is drawn, the theme's class on `html`, and the fonts. */
 async function drawn(page: Page, theme: 'dark' | 'light', ready: string): Promise<void> {
   await expect(page.locator(ready).first()).toBeVisible()
