@@ -692,17 +692,10 @@ one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast;
-one the server forwards while the host has no connection, or one its
-connection did not take as it closed, is kept, the latest alone, one per
-session, of a host message's bound, and handed to the host first on its
-next connection, behind `registered`, before the server reads anything the
-host sends on it: the host applies it by its own rules and tells back what
-its session then shows, which the copy then shows; a report its
-connection had taken before it dropped is not kept again; a kept report
-goes with its session as it ends or leaves
-the server's registry, and lives only in the server's memory: a server
-that restarts has none to hand, and the host registers afresh with what
-its session shows),
+a report the agent sends while its host has no connection to the server
+does not reach the host's session: the server's copy takes it, and when
+the host returns, the listing shows what the host's session shows, until
+the agent's next report),
 `answer_as{question, input?, text?, byName, bySubject?}` (an answer a
 decision router or a provider holds for the question the host's session
 shows: `question` its id, 1–32 bytes of printable ASCII; exactly one of
@@ -1134,29 +1127,42 @@ to the empty state with source `input`, told to the viewers in an
 no turn's end for a crew), so an agent that reports only its `done`
 (Amp, Pi) does not read `done` through its next turn. That Enter may
 begin no turn (an empty line, a command the agent answers itself): the
-session then reads the empty state until the agent's next report. A
-`done` of an ended session stays. Every turn's end is recorded once:
-since the Enter ends the `done` shown, the next turn's `done` is a new
-one, recorded with its own entry, also for an agent whose `done` always
-carries the same words (aider's `aider is waiting`), whose later turns'
-`done` an older server dropped as the same report again; so the activity
-log, a webhook, an alert rule and a crew now see each turn's end. A
-`done` reported while a `done` shows, no other state shown between, is
-the same turn's (Claude Code's `idle_prompt`, about a minute after its
-`Stop`): the one shown keeps its `id`, its `since` (the turn's end) and
-its words (its turn's first `done`), and the report is recorded as its
-own `attention` entry at its own time unless it is the same as the last
-`done` reported in that turn (its words, source, kind and choices), as
-before: reports A, B, B record A and B; A, B, A record all three. That
-holds only while no prompt was entered during the turn: an Enter after
-text (typed in the terminal, a paste's, or a submission's: a page's, a
-crew's message or handoff) while the agent is at its turn, neither a
-`done` nor a question showing, is a prompt the agent takes by itself once
-its turn ends, with no Enter after that `done`, so the next `done` after
-the turn's own is a new one, with its own `id`, `since` and words. A
-bare Enter, and an Enter or a choice's key at a question, is no prompt;
-the first prompt entered while no turn runs begins one. A `done` after
-any other state is a new one, with its own `id`, `since` and words.
+session then reads the empty state until the agent's next report. Since
+the Enter ends the `done` shown,
+the next turn's `done` is a new one, recorded with its own entry, also
+for an agent whose `done` always carries the same words (aider's `aider
+is waiting`), whose later turns' `done` an older server dropped as the
+same report again. A `done` after any other state is a new one, with its
+own `id`, `since` and words. A `done` reported while a `done` shows, no
+other state shown between, is weighed in this order. First, one the same
+as the last report of the `done` shown (its words, source, kind and
+choices) is that report again: nothing changes and nothing is recorded
+(a turn's end told twice, as Codex with its hooks on tells it, is
+recorded once). Else, when the session's agent tells its turns' starts,
+it is the same turn's: the session has shown a `working` of the agent's
+own with source `api` (a hook's; learned once in the session's life and
+never cleared, as `turns` is; an operator's mark, a title, a status
+sequence and a bell do not teach it), and such an agent's next turn
+begins with a report that ends the `done` shown by itself, so a `done`
+over it is that turn's again (Claude Code's `idle_prompt`, about a minute
+after its `Stop`): the one shown keeps its `id`, its `since` (the turn's
+end) and its words (its turn's first `done`), and the report is recorded
+as its own `attention` entry at its own time; reports A, B, B record A
+and B, and A, B, A record all three. Else it ends another turn, of an
+agent that reports only its `done` or whose `working` is kept out while
+a `done` shows (a status's or a title's): a new `done`, with its own
+`id`, `since` and words, recorded. So no turn's end is dropped but for
+the first limit below, and within a turn each report that differs from
+the last is recorded (an agent's idle reminder is a second entry, as
+before). The limits: an agent whose `done` always carries the same words,
+when a prompt was entered while its turn ran, ends the next turn with a
+`done` equal to the last report, which is not recorded; an agent whose
+hooks report `working` only when it runs a tool, and that takes a turn by
+itself right after another without running one, keeps the earlier
+`done`'s words and `since` (the later end is recorded); and the first
+`done` of a session, before its agent has told a start, is weighed as an
+agent's that reports only its `done`, so a reminder after it shows as a
+new `done`.
 `turns` in the session's `Info` (absent when false)
 says the session's agent reports its turns: it has reported a `working`
 or a `done` of its own, with source `api`, `title` or `status`; a bell,
@@ -3197,7 +3203,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?, decide?}` (`decide: true`, a decision link: see Decision links; control only, `400 bad_request` with a view role; `409 unsupported` for a hosted session, whose decisions are answered where it runs; `409 switchyard_too_old` for a session published to a switchyard whose `registered` does not say `decisions`; at one that does, minted there: see Decision links, Through a switchyard), reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
 | `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
-| `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. On a hosted session whose host has no connection, the report is applied to the server's copy and kept for the host, the latest one, which is handed to it as its connection comes back (the host control connection's server-to-host `attention`), so the answer is a success and nothing need be sent again. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
+| `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. On a hosted session whose host has no connection to the server, the report does not reach the host's session: the server's copy takes it, and when the host returns, the listing shows what the host's session shows, until the agent's next report. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
 | `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link, `session` carrying `turns: true` when its agent reports its turns (see Attention), absent otherwise; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
