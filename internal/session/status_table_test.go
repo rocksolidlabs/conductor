@@ -78,7 +78,10 @@ func readStatusTable(t *testing.T) statusTable {
 // row gives them, the step its attention first showed at and the entries
 // its dones recorded. A report goes in by its source's own way: a bell
 // rung on the terminal, a window title by the title's rules, a hook's or
-// an operator's through the API.
+// an operator's through the API. A row named "limit:" holds a limit that
+// docs/protocol.md states (A turn's start and end) as it stands, as
+// "limit: the same end told twice, an Enter between" holds the sentence
+// on an agent that reports one turn's end twice with the same words.
 func TestTheStatusTable(t *testing.T) {
 	for _, row := range readStatusTable(t).Rows {
 		t.Run(row.Name, func(t *testing.T) {

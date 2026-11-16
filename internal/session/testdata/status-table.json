@@ -1,5 +1,5 @@
 {
-  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side. shownAt, when given, is the step (from 0) after which the attention shown at the end first showed, its id and since; recorded, when given, is the entries the row's dones recorded, in order. A done over a shown done, no other state between: the same as the last report of the shown done records nothing; for an agent that tells its turns' starts (a hook's working has shown) it is the same turn's, the shown done stays and the report is recorded; for any other agent it is a new done.",
+  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side. shownAt, when given, is the step (from 0) after which the attention shown at the end first showed, its id and since; recorded, when given, is the entries the row's dones recorded, in order. A done over a shown done, no other state between: the same as the last report of the shown done records nothing; for an agent that tells its turns' starts (a hook's working has shown), both dones its own, it is the same turn's, the shown done stays and the report is recorded; for any other agent, or with an operator's mark of done for either, it is a new done. A row named limit: holds what a limit stated in docs/protocol.md (A turn's start and end) does today, the same end told twice with an Enter between among them: the change that lifts a limit changes its row on purpose.",
   "rows": [
     {
       "name": "nothing reported",
@@ -228,6 +228,32 @@
       "recorded": ["Refactored the parser.", "Docs updated."]
     },
     {
+      "name": "hooks: working, an operator's mark of done, then the agent's done: a new done",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "admin", "message": "Marked done." } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Marked done.", "Refactored the parser."]
+    },
+    {
+      "name": "hooks: working, the agent's done, then an operator's mark of done: a new done",
+      "steps": [
+        { "report": { "state": "working", "source": "api" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "report": { "state": "done", "source": "admin", "message": "Marked done." } }
+      ],
+      "attention": { "state": "done", "source": "admin", "message": "Marked done." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Refactored the parser.", "Marked done."]
+    },
+    {
       "name": "status: working, then the same turn's end told twice with the same words: one entry",
       "steps": [
         { "report": { "state": "working", "source": "status" } },
@@ -292,6 +318,19 @@
       "status": "finished",
       "shownAt": 1,
       "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
+    },
+    {
+      "name": "limit: the same end told twice, an Enter between: shown again, two entries",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Refactored the parser.", "Refactored the parser."]
     },
     {
       "name": "working, a hook's permission question, answered",

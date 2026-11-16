@@ -2299,13 +2299,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.mu.Unlock()
 			return nil
 		}
-		if s.startsTold {
+		if s.startsTold && ReportsTurn(state, source) && ReportsTurn(cur.State, cur.Source) {
 			// An agent that tells its turns' starts ends a done shown as its
-			// next turn begins: this one is the same turn's (Claude Code's
-			// idle_prompt a minute after its Stop). The one shown keeps its
-			// id, its Since (the turn's end) and its words (the turn's
-			// first); this one is recorded as the report it is, at its own
-			// time. Another agent's ends another turn: a new done, below.
+			// next turn begins: a done of its own over its own is the same
+			// turn's (Claude Code's idle_prompt a minute after its Stop). The
+			// one shown keeps its id, its Since (the turn's end) and its
+			// words (the turn's first); this one is recorded as the report
+			// it is, at its own time. Another agent's ends another turn, and
+			// an operator's mark over the agent's done or under it is
+			// another done: a new done, below.
 			s.lastDone = Attention{ID: cur.ID, State: state, Message: message, Source: source, Kind: kind, Options: options}
 			if rules&bellPaced != 0 {
 				s.lastBell = time.Now()
