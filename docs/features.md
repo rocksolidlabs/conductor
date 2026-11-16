@@ -3005,8 +3005,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   they name two tickets, `runTicketChips`), then Chat with its unread
   count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
   (neutral until its confirm), one menu ("More for this run": Add agent and
-  Share) and full screen. Row two, at every width: the run's bar of task
-  parts and its one sentence, "scheduling paused" with the pause's words,
+  Share) and full screen. Row two, at every width: what the run is doing
+  (a managed run's task badges, a run of members' counts), "scheduling paused" with the pause's words,
   "cleaning up", the people, the Logins, who launched the run with the
   launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run

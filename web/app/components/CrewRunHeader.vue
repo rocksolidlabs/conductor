@@ -4,7 +4,7 @@ import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, responsibilityWords, type DraftMember } from '~/utils/crews'
 import { avatarTone } from '~/utils/avatar'
 import { personPath } from '~/utils/people'
-import { runResumable, runSubtitle, runTicketChips, shortRunId } from '~/utils/crewWords'
+import { runResumable, runStateBadges, runSubtitle, runTicketChips, shortRunId } from '~/utils/crewWords'
 import { initials, relativeTime } from '~/utils/sessions'
 import { commandBody, sendCommand } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
@@ -185,6 +185,12 @@ async function resumeRun() {
 // The ticket chips beside the name: one for one ticket (the launch's), both only when they name two.
 const chips = computed(() => runTicketChips(props.run?.ticket, props.ticket))
 
+// What the run is doing, in row two: its task badges, or its members' counts (runStateBadges, until the run's status words). The
+// run's open decisions as the app's store read them: a gate that holds no task is counted too.
+const decisionStore = useDecisions()
+const runDecisions = computed(() => decisionStore.open.value.filter((d) => d.run === props.runId).map((d) => d.id))
+const stateBadges = computed(() => (props.run ? runStateBadges(props.run, props.counts, runDecisions.value) : []))
+
 // A managed run's Pause / Resume of its dispatch.
 const pausing = ref(false)
 async function togglePause() {
@@ -298,6 +304,9 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <!-- Row two: what the run is doing, its pause, its people and logins, who launched it, how long it has been up. -->
     <div v-if="run" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2 text-xs" data-run-summary>
       <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
+      <span v-if="stateBadges.length" class="inline-flex flex-wrap items-center gap-1.5" data-run-state>
+        <UBadge v-for="b in stateBadges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+      </span>
       <span v-if="run.paused" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused by a person'" data-run-paused-note>
         <UIcon name="i-lucide-pause" class="size-3.5 flex-none" />
         <span class="flex-none">scheduling paused</span>

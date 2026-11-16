@@ -5,6 +5,7 @@ import { runLength } from './charts'
 import { memberStatus, toCrewInput, type MemberStatus } from './crews'
 import { runState, type RunState } from './runs'
 import { relativeTime } from './sessions'
+import { taskBadges, type TaskBadge } from './tasks'
 
 /**
  * The words of the Crews pages. Two nouns, said every time: a crew is a saved
@@ -188,6 +189,19 @@ export function runSubtitle(run: Pick<RunInfo, 'label' | 'startedAt'>): string {
  */
 export function runTicketChips(launched: RunTicket | null | undefined, linked: RelatedTicket | null | undefined): { launched: RunTicket | null; linked: RelatedTicket | null } {
   return { launched: launched ?? null, linked: linked && linked.key !== launched?.key ? linked : null }
+}
+
+/**
+ * What a run is doing, as row two of its header says it for now: a managed run's task badges (taskBadges: its tasks done, failed,
+ * running, checking, its open decisions), its pause and its cleanup left to their own notes in the row; a run of members, how many
+ * need input and how many run. The run's status words (UX1's PR-10: runStatusLine and the bar's parts) replace this function.
+ */
+export function runStateBadges(run: Pick<RunInfo, 'managed' | 'tasks' | 'paused' | 'outcome' | 'pausedWhy' | 'cleaning'>, counts: { needs: number; running: number }, decisions: readonly string[] = []): TaskBadge[] {
+  if (run.managed) return taskBadges(run, decisions).filter((b) => b.label !== 'paused' && b.label !== 'cleaning up')
+  return [
+    { label: `${counts.needs} need input`, color: counts.needs ? 'warning' : 'neutral' },
+    { label: `${counts.running} running`, color: counts.running ? 'success' : 'neutral' },
+  ]
 }
 
 /** How a run is named where one line must do (a tab title, the sidebar): its own name, else its crew's. */
