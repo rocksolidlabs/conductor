@@ -150,6 +150,6 @@ test("a stopped run the engine holds offers its ended member's Resume or Relaunc
   budget(3 * STEP_MS) // the navigation, the record's badge, the header's words
   await page.reload()
   await expect(page.locator('[data-run-record]')).toBeVisible()
-  await expect(header).toContainText(/exited|stopped/)
+  await expect(page.locator(`[data-run-grid] [data-session-id="${lead}"] [data-tile-foot] [data-status-mark]`)).toHaveAttribute('data-status-mark', 'exited')
   await expect(header.locator('[data-resume]')).toHaveCount(0)
 })

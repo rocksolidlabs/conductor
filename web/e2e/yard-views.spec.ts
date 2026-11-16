@@ -6,6 +6,26 @@ import { inside, noOverlap, noSideways, tapTarget } from './layout'
 // goes between the two; the Roundhouse keeps its route, G R and the old /carousel, leaves the nav and the phone's More, and the Yard's
 // row is current on both views.
 
+/**
+ * Presses G then R as a person typing them quickly does: both keys handed to the browser at once (shortcuts.spec.ts's reason: a round
+ * trip per key on a loaded machine outlasts the chord's 800 ms).
+ */
+async function pressGR(page: Page) {
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    const sends: Array<Promise<unknown>> = []
+    for (const key of ['g', 'r']) {
+      const code = `Key${key.toUpperCase()}`
+      const windowsVirtualKeyCode = key.toUpperCase().charCodeAt(0)
+      sends.push(cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, text: key, unmodifiedText: key, windowsVirtualKeyCode }))
+      sends.push(cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode }))
+    }
+    await Promise.all(sends)
+  } finally {
+    await cdp.detach()
+  }
+}
+
 /** The sidebar's foot: the pages. */
 const foot = (page: Page) => page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
 
@@ -36,8 +56,7 @@ test('G R from another page and the old /carousel land on the Roundhouse, the Ya
   await page.goto('/agents')
   // The layout's keys listen once its sidebar is drawn: a key pressed before is lost.
   await expect(page.locator('#dashboard-sidebar-main')).toBeVisible({ timeout: 30_000 })
-  await page.keyboard.press('g')
-  await page.keyboard.press('r')
+  await pressGR(page)
   await onView(page, 'roundhouse')
   await page.goto('/carousel')
   await onView(page, 'roundhouse')
