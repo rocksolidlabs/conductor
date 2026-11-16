@@ -1,4 +1,4 @@
-import type { Page, Route } from '@playwright/test'
+import type { BrowserContext, Page, Route } from '@playwright/test'
 import { budget, dayPage, expect, test, type Session } from './fixtures'
 import { inboxItem, summary } from './inbox-stub'
 import { tapTarget } from './layout'
@@ -278,10 +278,13 @@ test('Needs you says when plans and tasks could not be read, and when the inbox 
 // The row's rule is the rail's: in the full sidebar Needs you is a tile of the six (PR-15), which stays at zero and loses its number.
 test.describe('the row leaves at zero', () => {
   let own: OwnServer
+  /** The windows `at` opened: closed before the server stops, so none of them goes on reading a later server on the same port. */
+  const opened: BrowserContext[] = []
   test.beforeAll(async () => {
     own = await ownServer('counts')
   })
   test.afterAll(async () => {
+    await Promise.all(opened.splice(0).map((c) => c.close()))
     await own?.stop()
   })
 
@@ -299,6 +302,7 @@ test.describe('the row leaves at zero', () => {
         origins: [{ origin: new URL(own.started.baseURL).origin, localStorage: [{ name: 'conductor-color-mode', value: 'dark' }, { name: 'conductor.workbenchToken', value: own.started.token }, ...(o.full ? [] : [{ name: 'conductor.sidebar.mode', value: 'rail' }])] }],
       },
     })
+    opened.push(ctx)
     const page = await ctx.newPage()
     if (o.inbox) await page.route(/\/api\/inbox(\?.*)?$/, o.inbox)
     const read = o.inbox ? null : page.waitForResponse((r) => /\/api\/inbox(\?|$)/.test(r.url()) && r.request().method() === 'GET')
