@@ -28,7 +28,7 @@ const current = computed(() => route.path === props.shape.to || (props.shape.kin
     <NuxtLink
       :to="shape.to"
       class="relative grid place-items-center rounded-md p-0.5 transition-colors"
-      :class="current ? 'bg-default ring-1 ring-default shadow-xs' : 'hover:bg-elevated/60'"
+      :class="current ? 'bg-default ring-1 ring-default shadow-xs' : 'hover:bg-canvas-hover'"
       :aria-label="shape.label"
       :aria-current="current ? 'page' : undefined"
       :data-rail-session="shape.kind === 'session' ? shape.id : undefined"
@@ -38,12 +38,12 @@ const current = computed(() => route.path === props.shape.to || (props.shape.kin
       :data-rail-tile="shape.tile"
     >
       <span v-if="current" class="absolute -left-2 bottom-1 top-1 w-0.5 rounded-full bg-primary" data-rail-current aria-hidden="true" />
-      <span v-if="shape.kind === 'run'" class="grid size-6 place-items-center rounded-md bg-elevated text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
+      <span v-if="shape.kind === 'run'" class="grid size-6 place-items-center rounded-md bg-default text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
       <SessionAvatar v-else :agent-id="shape.agentId" :label="shape.glyph" :solid="shape.state === 'needs'" :dashed="shape.dashed" />
-      <span v-if="shape.ordinal" class="absolute -left-1 -top-1 grid size-3.5 place-items-center rounded-sm bg-elevated font-mono text-[8px] font-semibold leading-3.5 text-muted ring-2 ring-default" :data-rail-ordinal="shape.ordinal" aria-hidden="true">{{ shape.ordinal }}</span>
+      <span v-if="shape.ordinal" class="absolute -left-1 -top-1 grid size-3.5 place-items-center rounded-sm bg-default font-mono text-[8px] font-semibold leading-3.5 text-muted ring-2 ring-default" :data-rail-ordinal="shape.ordinal" aria-hidden="true">{{ shape.ordinal }}</span>
       <StatusMark v-if="shape.status" :status="shape.status" :quiet="!needsDot" badge class="absolute -right-0.5 -top-0.5" />
-      <span v-if="shape.news" class="absolute -bottom-1 -right-1 grid min-w-3.5 place-items-center rounded-full bg-elevated px-0.5 text-[8px] font-semibold leading-3.5 text-highlighted ring-2 ring-default" :data-rail-news="shape.news" aria-hidden="true">{{ shape.news }}</span>
-      <span v-if="shape.tile" class="absolute -bottom-1 -left-1 grid size-3.5 place-items-center rounded-sm bg-elevated text-muted ring-2 ring-default" aria-hidden="true">
+      <span v-if="shape.news" class="absolute -bottom-1 -right-1 grid min-w-3.5 place-items-center rounded-full bg-default px-0.5 text-[8px] font-semibold leading-3.5 text-highlighted ring-2 ring-default" :data-rail-news="shape.news" aria-hidden="true">{{ shape.news }}</span>
+      <span v-if="shape.tile" class="absolute -bottom-1 -left-1 grid size-3.5 place-items-center rounded-sm bg-default text-muted ring-2 ring-default" aria-hidden="true">
         <UIcon :name="shape.tile === 'machine' ? 'i-lucide-laptop' : 'i-lucide-globe'" class="size-2.5" />
       </span>
     </NuxtLink>

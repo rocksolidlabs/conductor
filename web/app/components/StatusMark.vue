@@ -11,7 +11,9 @@ import { STATUS_LOOK, type StatusView } from '~/utils/status'
 const props = withDefaults(defineProps<{ status: Pick<StatusView, 'key' | 'word' | 'legend'>; word?: boolean; quiet?: boolean; badge?: boolean }>(), { word: false, quiet: false, badge: false })
 
 const look = computed(() => STATUS_LOOK[props.status.key])
-const tone: Record<string, string> = { warning: 'text-warning', success: 'text-success', neutral: 'text-muted' }
+// The mark is a dot or a ring: drawn in the status fill colours (the dots' and fills', not the text-safe tones `text-warning` and
+// `text-success` draw words with in the light theme, main.css).
+const tone: Record<string, string> = { warning: 'text-(--ui-warning)', success: 'text-(--ui-success)', neutral: 'text-muted' }
 const hidden = computed(() => props.quiet && props.status.key === 'needs')
 /** The title: the legend, after the word where the legend does not begin with it ("finished 12m ago · finished: …"). */
 const title = computed(() => (props.status.legend.startsWith(`${props.status.word}:`) ? props.status.legend : `${props.status.word} · ${props.status.legend}`))

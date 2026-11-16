@@ -292,3 +292,44 @@ func TestHookMappersYieldTheFilesATollCallTouched(t *testing.T) {
 		t.Fatalf("cursor: %+v %v", r, ok)
 	}
 }
+
+// Codex names one turn alike in its notify program's payload (turn-id)
+// and its hooks' (turn_id): both reports of the turn's end carry the same
+// name, and so do its hooks' working and permission request. A name past
+// its bound or out of its shape is left out, the report kept, never cut
+// (two names cut could become one); a payload with none names none.
+func TestCodexReportsNameTheirTurn(t *testing.T) {
+	const turn = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	notifyDone, ok := MapCodex([]byte(`{"type":"agent-turn-complete","thread-id":"0199a1b2-0000-7000-8000-000000000001","turn-id":"` + turn + `","cwd":"/r","client":"codex-tui","input-messages":["fix the parser"],"last-assistant-message":"Refactored the parser."}`))
+	if !ok || notifyDone.State != "done" || notifyDone.TurnID != turn {
+		t.Fatalf("notify: %+v %v", notifyDone, ok)
+	}
+	for _, payload := range []string{
+		`{"session_id":"s","turn_id":"` + turn + `","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Refactored the parser."}`,
+		`{"session_id":"s","turn_id":"` + turn + `","hook_event_name":"PreToolUse","tool_name":"shell"}`,
+		`{"session_id":"s","turn_id":"` + turn + `","hook_event_name":"PermissionRequest","tool_name":"shell"}`,
+	} {
+		if r, ok := MapCodexHook([]byte(payload)); !ok || r.TurnID != turn || r.Event != "" {
+			t.Errorf("%s: %+v %v", payload, r, ok)
+		}
+	}
+	if r, _ := MapCodexHook([]byte(`{"session_id":"s","turn_id":"` + turn + `","hook_event_name":"Stop","last_assistant_message":"Refactored the parser."}`)); r.Message != notifyDone.Message || r.TurnID != notifyDone.TurnID {
+		t.Errorf("the Stop %+v and the notify done %+v of one turn differ", r, notifyDone)
+	}
+	for _, bad := range []string{strings.Repeat("a", 129), "a b", "-a", `a\u0000`} {
+		r, ok := MapCodexHook([]byte(`{"turn_id":"` + bad + `","hook_event_name":"Stop","last_assistant_message":"ok"}`))
+		if !ok || r.State != "done" || r.TurnID != "" {
+			t.Errorf("turn %q: %+v %v", bad, r, ok)
+		}
+		if r, ok := MapCodex([]byte(`{"type":"agent-turn-complete","turn-id":"` + bad + `","last-assistant-message":"ok"}`)); !ok || r.State != "done" || r.TurnID != "" {
+			t.Errorf("notify turn %q: %+v %v", bad, r, ok)
+		}
+	}
+	if r, _ := MapCodexHook([]byte(`{"hook_event_name":"Stop"}`)); r.TurnID != "" {
+		t.Errorf("no turn_id: %+v", r)
+	}
+	b, err := json.Marshal(notifyDone)
+	if err != nil || !strings.HasSuffix(string(b), `"turnId":"`+turn+`"}`) {
+		t.Fatalf("sent as %s %v: turnId is last, so an older server names it first", b, err)
+	}
+}

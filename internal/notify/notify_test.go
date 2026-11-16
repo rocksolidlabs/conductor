@@ -356,3 +356,43 @@ func TestSendDropsTheAgentSessionForAnOlderServer(t *testing.T) {
 		t.Fatalf("bodies %v", bodies)
 	}
 }
+
+// A server older than the turn's name refuses it by name: the report goes
+// again once, without the name alone, its agent session and turn kept for
+// Resume; a server older still, refusing the agent session first, gets
+// the state alone, the name with the rest.
+func TestSendDropsTheTurnsNameForAnOlderServer(t *testing.T) {
+	for _, tc := range []struct {
+		name, refuse string
+		bodies       int
+		kept         bool
+	}{
+		{"older than the name", "turnId", 2, true},
+		{"older than the agent session", "agentSession", 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				bodies = append(bodies, body)
+				for _, f := range []string{"agentSession", "turnId"} {
+					if _, ok := body[f]; ok && (f == tc.refuse || tc.refuse == "agentSession") {
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"json: unknown field \"` + f + `\""}}`))
+						return
+					}
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+			if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{State: "done", Message: "ok", AgentSession: "s1", Turn: true, TurnID: "t1"}); err != nil {
+				t.Fatal(err)
+			}
+			last := bodies[len(bodies)-1]
+			if len(bodies) != tc.bodies || bodies[0]["turnId"] != "t1" || last["turnId"] != nil || last["state"] != "done" || (last["agentSession"] == "s1") != tc.kept || (last["turn"] == true) != tc.kept {
+				t.Fatalf("bodies %v", bodies)
+			}
+		})
+	}
+}

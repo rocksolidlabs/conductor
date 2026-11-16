@@ -38,7 +38,7 @@ func (h *HostedSession) HostAttentionTurns(state session.AttentionState, message
 	if !proto.ValidQuestionID(id) {
 		id = ""
 	}
-	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan, kept, turns)
+	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan, kept, turns, "")
 }
 
 // HostView is the session as its host last said it: its Info, with the

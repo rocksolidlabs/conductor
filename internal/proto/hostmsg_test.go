@@ -414,3 +414,34 @@ func TestHostAttentionCarriesTurns(t *testing.T) {
 		t.Fatalf("a turns that is no bool decoded: %+v", bad)
 	}
 }
+
+// A turn's name is at most MaxTurnID bytes of an agent session id's
+// shape: a Codex turn id (a UUID) and the bound itself pass; one byte
+// more, a first byte that is no letter or digit, a space, a slash, a
+// line break or a byte past ASCII do not, nor "". It goes server to
+// host as "turnId", left out when empty, and a frame of the largest
+// fits the host message's bound.
+func TestATurnsNameIsBounded(t *testing.T) {
+	for _, id := range []string{"0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "auto-compact-3", "T", strings.Repeat("a", MaxTurnID), "a.b_c:d-e"} {
+		if !ValidTurnID(id) {
+			t.Errorf("%q refused", id)
+		}
+	}
+	for _, id := range []string{"", strings.Repeat("a", MaxTurnID+1), "-a", ".a", "a b", "a/b", "a\nb", "a\x00", "tür"} {
+		if ValidTurnID(id) {
+			t.Errorf("%q taken", id)
+		}
+	}
+	on, err := json.Marshal(HostAttentionMsg{T: HostAttention, State: "done", Source: "api", TurnID: strings.Repeat("a", MaxTurnID)})
+	if err != nil || !strings.Contains(string(on), `"turnId":"aaaa`) || len(on) > MaxHostMessage {
+		t.Fatalf("encoded %s %v", on, err)
+	}
+	off, err := json.Marshal(HostAttentionMsg{T: HostAttention, State: "done", Source: "api"})
+	if err != nil || strings.Contains(string(off), "turnId") {
+		t.Fatalf("encoded %s %v", off, err)
+	}
+	var back HostAttentionMsg
+	if err := json.Unmarshal(on, &back); err != nil || back.TurnID != strings.Repeat("a", MaxTurnID) {
+		t.Fatalf("decoded %+v %v", back, err)
+	}
+}

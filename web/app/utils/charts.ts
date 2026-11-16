@@ -58,7 +58,7 @@ export const ROLE_FALLBACK = {
   warning: '#c98a1b',
   info: '#245d85',
   error: '#a1332f',
-  neutral: '#71717a',
+  neutral: '#666e67',
 } as const
 
 export type RoleColors = Record<keyof typeof ROLE_FALLBACK, string>

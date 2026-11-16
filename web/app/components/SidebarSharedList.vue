@@ -43,12 +43,12 @@ function title(e: JoinedEntry): string {
       <NuxtLink
         :to="joinedPath(e)"
         class="flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 transition-colors"
-        :class="[joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-elevated/60', !hovers && 'pr-10']"
+        :class="[joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-canvas-hover', !hovers && 'pr-10']"
         :aria-current="joinedOpen(route.path, e.token) ? 'page' : undefined"
         :title="title(e)"
       >
         <SessionAvatar v-if="e.kind === 'session'" :agent-id="e.agentId ?? ''" :dashed="e.lastStatus === 'revoked' || e.lastStatus === 'gone'" />
-        <span v-else class="grid size-6 flex-none place-items-center rounded-md bg-elevated text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
+        <span v-else class="grid size-6 flex-none place-items-center rounded-md bg-default text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
         <span class="flex min-w-0 flex-1 flex-col">
           <span class="flex items-center gap-1.5">
             <span class="truncate text-sm font-medium text-highlighted" data-shared-name>{{ e.name }}</span>
