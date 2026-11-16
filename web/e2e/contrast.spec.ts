@@ -105,6 +105,38 @@ async function where(day: Day, name: WalkedPage, width: number): Promise<Walked>
   }
 }
 
+/**
+ * The sidebar's first exited row (a session that ended: a run's member, or a loose one), shown the way a person shows it, wherever
+ * the list puts it: while none is drawn, the first run's folded line ("and 2 more · 1 working · 1 exited", the sidebar's rows) is
+ * unfolded, then the first folded section, each click waited on until it took, until an exited row is drawn. It is found by its
+ * state, never by the section that holds it.
+ */
+async function showExited(page: Page): Promise<Locator> {
+  const list = page.locator('#dashboard-sidebar-main')
+  const exited = list.locator('[data-row-kind="session"][data-row-state="exited"]')
+  // The list has measured itself and drawn the day's sessions before anything is judged absent.
+  await expect(list.locator('[data-session-list][data-list-width]')).toBeVisible()
+  await expect(list.locator('[data-row-kind="session"]').first()).toBeVisible()
+  for (;;) {
+    if ((await exited.count()) > 0) return exited.first()
+    const more = list.locator('[data-row-kind="more"]').first()
+    if ((await more.count()) > 0) {
+      const id = await more.getAttribute('data-sidebar-row')
+      await more.locator('[data-run-more]').click()
+      await expect(list.locator(`[data-sidebar-row="${id}"]`)).toHaveCount(0)
+      continue
+    }
+    const section = list.locator('[data-sidebar-section][data-folded="true"]').first()
+    if ((await section.count()) > 0) {
+      const key = await section.getAttribute('data-sidebar-section')
+      await section.locator('button[aria-expanded]').first().click()
+      await expect(list.locator(`[data-sidebar-section="${key}"]`)).toHaveAttribute('data-folded', 'false')
+      continue
+    }
+    throw new Error('the sidebar draws no exited row with every run line and section unfolded: the day lists exited sessions')
+  }
+}
+
 /** The failures not on the known list, and the known entries of this walk that it did not meet. */
 function against(failures: Failure[], known: Known[]): { unknown: Failure[]; stale: Known[] } {
   return {
@@ -132,10 +164,11 @@ for (const name of PAGES) {
         const w = await where(day, name, size.width)
         const page = await dayPage(browser, { path: w.path, theme, width: size.width, height: size.height, touch: size.touch })
         await expect(page.locator(w.ready).first()).toBeVisible({ timeout: MEASURE_WAIT_MS })
-        // The walk judges what is in view: at 1440 the sidebar's first exited row (a run's member that ended) is scrolled to, so
-        // that every page walks one, wherever the list's order put it.
+        // The walk judges what is in view: at 1440 the sidebar's first exited row (a run's member that ended, folded into its run's
+        // line in Needs you, or a loose one in the folded Exited section) is unfolded and scrolled to, so that every page walks one,
+        // wherever the list's order and folds put it.
         if (!size.touch) {
-          const exited = page.locator('#dashboard-sidebar-main [data-row-kind="session"][data-row-state="exited"]').first()
+          const exited = await showExited(page)
           await expect(exited).toBeVisible()
           await exited.scrollIntoViewIfNeeded()
         }

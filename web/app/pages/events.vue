@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import type { Integration, WebhookInfo } from '~/composables/useSessions'
+import type { Integration } from '~/composables/useSessions'
 
-// The Integrations tab moved to the Agents page's section Reporting to Conductor: an old link lands there.
-definePageMeta({ middleware: (to) => (to.query.tab === 'integrations' ? navigateTo('/agents#reporting', { replace: true }) : undefined) })
+// The Integrations tab moved to the Agents page's section Reporting to Conductor, the Routing tab to the Alerts panel: an old link
+// lands there (`?alerts` opens the panel over the feed).
+definePageMeta({
+  middleware: (to) => {
+    if (to.query.tab === 'integrations') return navigateTo('/agents#reporting', { replace: true })
+    if (to.query.tab === 'routing') return navigateTo({ path: '/events', query: { alerts: null } }, { replace: true })
+  },
+})
 
 useHead({ title: 'Events' })
 
@@ -12,7 +18,6 @@ const attention = useAttention()
 const events = useEvents()
 
 const integrations = ref<Integration[]>([])
-const webhooks = ref<WebhookInfo[]>([])
 const loading = ref(false)
 const error = ref('')
 // The clock of the last hour's window and of the feed's "now".
@@ -28,7 +33,6 @@ async function refresh() {
   try {
     const r = await api.integrations()
     integrations.value = r.integrations
-    webhooks.value = r.webhooks
     error.value = ''
   } catch (e) {
     error.value = (e as Error).message
@@ -46,24 +50,16 @@ onMounted(() => {
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, refresh)
 
-/** The page's tab, in the URL so a link can open Routing. */
-const route = useRoute()
-const router = useRouter()
-type EventsTab = 'feed' | 'routing'
-const tab = computed<EventsTab>({
-  get: () => (route.query.tab === 'routing' ? 'routing' : 'feed'),
-  set: (t) => router.replace({ query: { ...route.query, tab: t === 'feed' ? undefined : t } }),
-})
-const tabs = [
-  { label: 'Feed', value: 'feed' },
-  { label: 'Routing', value: 'routing' },
-]
+/** The page's one tab: the rules where each event goes are the Alerts panel's (AlertsPanel). */
+type EventsTab = 'feed'
+const tab = ref<EventsTab>('feed')
+const tabs = [{ label: 'Feed', value: 'feed' }]
 
 // This page's group in the command palette (#302): the tabs and a refresh. The hooks are installed on the Agents page.
 usePalette().registerPage(() => ({
   label: 'Events',
   rows: [
-    ...tabs.map((t) => ({ key: `page:tab:${t.value}`, label: t.label, icon: t.value === 'feed' ? 'i-lucide-radio-tower' : 'i-lucide-route', on: tab.value === t.value, run: () => (tab.value = t.value as EventsTab) })),
+    ...tabs.map((t) => ({ key: `page:tab:${t.value}`, label: t.label, icon: 'i-lucide-radio-tower', on: tab.value === t.value, run: () => (tab.value = t.value as EventsTab) })),
     { key: 'page:refresh', label: 'Refresh', icon: 'i-lucide-refresh-cw', run: refresh },
   ],
 }))
@@ -95,14 +91,9 @@ usePalette().registerPage(() => ({
           :routes="events.routes.value"
           :integrations="integrations"
           class="flex-none border-t border-default p-5 xl:w-[340px] xl:border-t-0 xl:border-l"
-          @edit-routing="tab = 'routing'"
         />
       </div>
 
-      <div v-else-if="tab === 'routing'" class="flex flex-col gap-4 px-4 py-5 sm:px-6" data-events-routing-tab>
-        <p class="max-w-4xl text-[13.5px] text-muted">Where each kind of event goes in this browser. The routing is kept here, not on the server; webhooks are set in <code>conductor.json</code>.</p>
-        <RoutingRows :routes="events.routes.value" :webhooks="webhooks" @update="events.setRoute" />
-      </div>
     </template>
   </UDashboardPanel>
 </template>
