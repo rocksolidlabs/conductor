@@ -542,6 +542,13 @@ add its rule here.
   (`mcp-allow.spec.ts`, `answered.spec.ts`, #956). Set the state a person
   can have (a saved width, an open panel), wait for the page's own measure
   (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
+- A stub's ids are its own. A fake that names a thing with an id the
+  server also mints (`dr-1`) is taken for the server's once an earlier
+  spec in the same worker has made that one: a run's header counted one
+  item where its stub held two, in the dark theme only, because the light
+  case ran in a fresh worker (`run-header.spec.ts`, #956). Give a stub's
+  things ids no test server reaches (`LEDGER_HOLD` in
+  `web/e2e/run-fixtures.ts`).
 - Each builder's own specs passing is not the suite passing. When several
   rows land on one branch, a spec of one meets the change of another, and
   only the whole run shows it (#956: about twenty such failures over six
