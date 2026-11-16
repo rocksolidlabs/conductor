@@ -515,6 +515,38 @@ add its rule here.
   (`capacity-crew.spec.ts`, #281). A spec that routes the page while
   it works keeps a route that lets everything through, set before the
   page loads (its `beforeEach`), and puts its own on top of it.
+- Measure a thing at rest. A box, a colour or a place read while an
+  opening animation or a transition still runs is a state passed through:
+  a panel measured 47 ms into its 100 ms opening "moved under the pointer"
+  by two pixels, a popover's paragraph ran out of its box, a button's fill
+  was a shade between two (`question.spec.ts`, `empty-pages.spec.ts`,
+  `session-page.spec.ts`, #956). A loaded machine reads later and passes;
+  CI reads sooner and fails. Wait for the element's own animations to have
+  ended (`rowAnswer` in `web/e2e/fixtures.ts` hands a panel over only
+  then), never for a time.
+- Close what a spec opened before its server stops. Pages left open go on
+  calling whatever server next takes that port, with a token it refuses,
+  and spend its limit of refused requests for their address: a join in
+  another spec was answered 429 (`counts.spec.ts` left eight windows open;
+  `decision-page.spec.ts` ran out of its time, #956).
+- Point at the thing itself, in view. A place assumed to hold a thing holds
+  whatever the layout put there: on a builder's machine a page's tile, a
+  link too, so the check passed by luck; on CI a spot scrolled out of the
+  sidebar that nobody could see (`sidebar.spec.ts`, Shared with you,
+  #956). Scroll the thing into view and require the thing, by its own
+  mark. The same for "the first row": a list's first row is whatever the
+  day put first (`tabs.spec.ts` right-clicked an item that has no menu).
+- A spec that needs a size gets it from what the page reports. A terminal
+  "narrower than 80 columns" by a window's width held until a layout gave
+  the terminal more room, and a drag did not take on a touch page
+  (`mcp-allow.spec.ts`, `answered.spec.ts`, #956). Set the state a person
+  can have (a saved width, an open panel), wait for the page's own measure
+  (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
+- Each builder's own specs passing is not the suite passing. When several
+  rows land on one branch, a spec of one meets the change of another, and
+  only the whole run shows it (#956: nineteen such failures in five CI
+  runs, three of them real defects). Push for a whole run early and often,
+  one at a time, and let no push cancel the run before it.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
