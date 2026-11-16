@@ -245,6 +245,7 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"tasks waiting on a decision", MaxDecisionBefore, 8},
 		{"launches per ticket", MaxLaunches, 200},
 		{"blockers a package names", MaxPackageBlockers, 20},
+		{"evidence links a revision names", MaxPackageEvidence, 8},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)
@@ -282,7 +283,10 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"a file-form manifest", MaxManifestFile, 64 << 10},
 		{"a delivery link's candidate", MaxLinkCandidate, 200},
 		{"a delivery link's verification receipt", MaxLinkVerified, 8 << 10},
-		{"a launch's package", MaxPackage, 512 << 10},
+		{"a launch's package", MaxPackage, 640 << 10},
+		{"a package's source", MaxPackageSource, 24 << 10},
+		{"a package's evidence", MaxPackageEvidenceJSON, 48 << 10},
+		{"an evidence link's note", MaxEvidenceNote, 200},
 		{"a launch's agents", MaxLaunchAgents, 4 << 10},
 		{"an attachment's portable file name", MaxAttachmentFile, 64},
 	} {

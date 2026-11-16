@@ -337,8 +337,9 @@ const (
 	// MaxCrew bounds the crew JSON kept with a run.
 	MaxCrew = 1 << 20
 	// MaxPackage bounds the launch package kept with a run (RunRow.Package):
-	// Dispatch's own bound on a package as it stores one.
-	MaxPackage = 512 << 10
+	// Dispatch's own bound on a package as it stores one (640 KiB since
+	// the package's version 2).
+	MaxPackage = 640 << 10
 	// maxTicketID bounds a run's ticket id (RunRow.Ticket): a Dispatch id
 	// is 16 hex digits, and the bound leaves room without leaving it open.
 	maxTicketID = 64

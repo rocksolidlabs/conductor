@@ -5,7 +5,6 @@ import {
   approvedRevision,
   argvLine,
   decisionsProblem,
-  defaultLabel,
   forItems,
   holderOf,
   planDecisionsOut,
@@ -228,23 +227,6 @@ describe("the reference field's parser", () => {
       const p = parseReference(text)
       expect('ref' in p && referenceText(p.ref)).toBe(text)
     }
-  })
-})
-
-describe('the default label', () => {
-  it("is the key and the title, whole when it fits in 60 characters", () => {
-    expect(defaultLabel('CND-12', 'Fix the login loop')).toBe('CND-12 Fix the login loop')
-    const exact = `CND-12 ${'a'.repeat(53)}`
-    expect(defaultLabel('CND-12', 'a'.repeat(53))).toBe(exact)
-  })
-
-  it('is cut at a word, never inside the key, by characters, not bytes', () => {
-    const title = 'Make the login loop stop when the session token expires mid request again'
-    const label = defaultLabel('CND-12', title)
-    expect(Array.from(label).length).toBeLessThanOrEqual(60)
-    expect(label).toBe('CND-12 Make the login loop stop when the session token')
-    expect(defaultLabel('CND-12', 'x'.repeat(80))).toBe(`CND-12 ${'x'.repeat(53)}`)
-    expect(Array.from(defaultLabel('CND-12', 'é'.repeat(80))).length).toBe(60)
   })
 })
 
