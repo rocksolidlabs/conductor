@@ -194,13 +194,13 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   await expect(build.locator('[data-status-word]')).toHaveText('needs you')
   await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').nth(1)).toHaveText('1 failed')
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('will not succeed')
-  // Pause and resume the dispatch: a receipt each, the badge following.
+  // Pause and resume the dispatch: a receipt each, the header's note following.
   await page.locator('[data-run-pause]').click()
   await expect(page.locator('[data-run-pause][data-run-paused]')).toBeVisible()
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]', { hasText: 'paused' })).toHaveCount(1)
+  await expect(page.locator('[data-crew-run-header] [data-run-paused-note]')).toHaveAttribute('title', 'Paused by a person')
   await page.locator('[data-run-pause]').click()
   await expect(page.locator('[data-run-pause][data-run-paused]')).toHaveCount(0)
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]', { hasText: 'paused' })).toHaveCount(0)
+  await expect(page.locator('[data-crew-run-header] [data-run-paused-note]')).toHaveCount(0)
   // Accept anyway asks, then takes attempt 3's commit as the result; docs starts from it and the run succeeds.
   const before = task(await api.run(run.id), 'build')
   await build.locator('[data-task-accept="build"]').click()

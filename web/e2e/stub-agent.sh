@@ -22,6 +22,12 @@
 #                   $HOME/.codex/config.toml; Down then Enter, or Esc,
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
+#   STUB_DIALOG_WAIT  how long, in seconds, a dialog's read of a key waits
+#                   at a time before it looks for a resize (dialog_key):
+#                   0.2 unless set
+#   STUB_DIALOG_PROBE  a file: the stub runs its probe dialog alone
+#                   (dialog_probe, scripts/stub_dialog_test.py) and writes
+#                   the keys it reads there
 #   STUB_SIGNIN     an invented code: the stub starts on Claude Code's
 #                   sign-in screen and takes that code alone (claude_sign_in)
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
@@ -79,6 +85,11 @@
 # `stub approvals <command>|<command>…` asks for each command in turn, the
 # next drawn as soon as the one before is answered, as Codex asks the
 # approvals it has queued.
+# A line `stub mcp-allow` makes the stub ask, as Codex does before a tool of
+# an MCP server it has not been allowed (#716), "Allow the conductor MCP
+# server to run tool "guide"?" with its four choices (digits 1 to 4, Esc
+# cancels, Enter picks Allow); the answer goes into the transcript as
+# "mcp-allow: …".
 # A line `stub plan` makes the stub send the hooks Claude Code sends for its
 # plan's approval and draw that dialog as Claude Code 2.1.304 draws it
 # (#288): its three choices, "1. Yes, and use auto mode" highlighted; 1 or
@@ -330,6 +341,10 @@ handed_off=
 # terminal is not focused, and the turn ends the same way: a bell after the
 # done.
 ring_at_end=
+# mcp_next: Codex's tool approval form was answered (mcp_allow): the next
+# line read goes into the transcript whole, an empty one too, so that a key
+# sent with the choice (an Enter, a letter) shows there.
+mcp_next=
 
 # The arguments: the session, the trust override, the yolo flags, the
 # title and the notifications Codex is launched with; --stub-paste-off, a
@@ -511,6 +526,147 @@ approval() {
 		printf '✗ You did not approve %s\n' "$cmd"
 	else
 		printf '✔ You approved codex to run %s\n' "$cmd"
+	fi
+}
+
+# wrap_words sets wrapped (an array) to the words of $1 wrapped at $2
+# columns as Codex's word wrap does: as many words to a row as fit, one
+# space apart.
+wrap_words() {
+	local word row='' words
+	read -ra words <<<"$1"
+	wrapped=()
+	for word in "${words[@]}"; do
+		if [[ -z $row ]]; then
+			row=$word
+		elif ((${#row} + 1 + ${#word} <= $2)); then
+			row+=" $word"
+		else
+			wrapped+=("$row")
+			row=$word
+		fi
+	done
+	wrapped+=("$row")
+}
+
+# mcp_form draws mcp_allow's form laid out for the window's width now, as
+# Codex 0.163.0 to 0.169.0 lay it out: two columns of margin on each side
+# (selection_popup_common.rs, menu_surface_inset), the message wrapped to
+# the width between them, each choice's name ("› 1. " or "  N. " before
+# it, wrapped under its first word) and its description in a column of
+# its own, two past the longest name but at most 70% of that width
+# (compute_desc_col), each wrapped in its column (wrap_two_column_row),
+# and the footer on one row, or on two without the bar between its hints
+# where it does not fit (footer_hint.rs, wrap_hint_rows).
+mcp_form() {
+	local size cols inner desc_col left right i j n d w gap rows text
+	local -a names=('Allow' 'Allow for this session' 'Always allow' 'Cancel')
+	local -a descs=('Run the tool and continue' 'Run the tool and remember this choice for this session' 'Run the tool and remember this choice for future tool calls' 'Cancel this tool call')
+	local -a name_rows desc_rows
+	size=$(stty size 2>/dev/null) || size='24 80'
+	cols=${size#* }
+	inner=$((cols - 4))
+	((inner > 1)) || inner=2
+	desc_col=$((5 + 22 + 2))
+	((desc_col <= inner * 70 / 100)) || desc_col=$((inner * 70 / 100))
+	((desc_col <= inner - 1)) || desc_col=$((inner - 1))
+	((desc_col >= 1)) || desc_col=1
+	left=$((desc_col - 2))
+	((left >= 6)) || left=6
+	right=$((inner - desc_col))
+	((right >= 1)) || right=1
+	text=$'  Field 1/1\n'
+	wrap_words 'Allow the conductor MCP server to run tool "guide"?' "$inner"
+	for n in "${wrapped[@]}"; do text+="  $n"$'\n'; done
+	for i in "${!names[@]}"; do
+		wrap_words "${names[i]}" $((left - 5))
+		name_rows=("${wrapped[@]}")
+		wrap_words "${descs[i]}" "$right"
+		desc_rows=("${wrapped[@]}")
+		rows=${#name_rows[@]}
+		((${#desc_rows[@]} <= rows)) || rows=${#desc_rows[@]}
+		for ((j = 0; j < rows; j++)); do
+			n='' d=${desc_rows[j]:-}
+			if ((j < ${#name_rows[@]})); then
+				if ((j > 0)); then
+					n="     ${name_rows[j]}"
+				elif ((i == 0)); then
+					n="› $((i + 1)). ${name_rows[j]}"
+				else
+					n="  $((i + 1)). ${name_rows[j]}"
+				fi
+			fi
+			if [[ -n $d ]]; then
+				# The name's width, "›" one column whatever the locale.
+				w=${n/›/ }
+				gap=$((desc_col - ${#w}))
+				if [[ -z $n ]]; then gap=$desc_col; elif ((gap < 2)); then gap=2; fi
+				printf -v n '%s%*s%s' "$n" "$gap" '' "$d"
+			fi
+			text+="  $n"$'\n'
+		done
+	done
+	text+=$'\n'
+	if ((15 + 3 + 13 <= inner)); then
+		text+=$'  enter to submit | esc to cancel\n'
+	else
+		text+=$'  enter to submit\n  esc to cancel\n'
+	fi
+	dialog_draw "$text"
+}
+
+# mcp_allow draws Codex's form asking to allow a tool of an MCP server
+# (#716), as Codex 0.163.0 to 0.169.0 draw it
+# (tui/src/bottom_pane/mcp_server_elicitation.rs and its snapshot
+# mcp_server_elicitation_approval_form_with_session_persist.snap, the
+# message as src/mcp_tool_call.rs words it), with the bell first and the
+# status blocked (its kind from 0.167, none in the 0.163 mode), on a
+# cleared screen, and waits for one key: a digit picks its choice at once
+# (1 allow, 2 allow-session, 3 always, 4 cancel), Esc cancels, Enter picks
+# the highlighted Allow; anything else (an arrow, a paste) is ignored. The
+# answer goes into the transcript as "mcp-allow: <answer>", and the tool is
+# never run.
+mcp_allow() {
+	local key seq answer= pasted
+	title_stop
+	printf '\a'
+	dialog_begin mcp_form
+	title_action
+	status_set blocked permission
+	while dialog_key mcp_form; do
+		case $key in
+		1 | $'\n' | $'\r') answer=allow ;;
+		2) answer=allow-session ;;
+		3) answer=always ;;
+		4) answer=cancel ;;
+		$'\e')
+			seq=''
+			IFS= read -rsn2 -t 0.2 seq || true
+			if [[ $seq == '[2' ]]; then
+				pasted=''
+				while IFS= read -rsn1 key; do
+					pasted+=$key
+					[[ $pasted == *$'\e[201~' ]] && break
+				done
+				continue
+			fi
+			[[ -n $seq ]] && continue
+			answer=cancel
+			;;
+		*) continue ;;
+		esac
+		break
+	done
+	dialog_end mcp_form
+	title_working
+	printf 'mcp-allow: %s\n' "$answer" >>"$transcript"
+	mcp_next=1
+	ring_at_end=1
+	printf '\e[2J\e[H'
+	if [[ $answer == cancel ]]; then
+		printf '• Cancelled conductor.guide\n'
+	else
+		printf '• Called conductor.guide({})\n'
 	fi
 }
 
@@ -1164,6 +1320,111 @@ mcp_ok() {
 	[[ -n $1 && $1 == *'"result"'* && $1 != *'"error"'* && $1 != *'"isError":true'* ]]
 }
 
+# dialog_draw draws a startup dialog, $1 its text, as Codex draws one on
+# its alternate screen: the screen erased from its first cell and the
+# dialog at its top, in one synchronized update (tui/src/tui.rs,
+# 0.163 to 0.169). dialog_key reads its key, and draws it again the same
+# way when the window is resized meanwhile, as Codex draws its view after
+# a resize (Tui::draw's clear_for_viewport_change): the screen is erased
+# whole at the new width, and an answered dialog reads as gone at any width
+# (#716's neighbour: the update question skipped at 72 columns).
+dialog_draw() {
+	printf '\e[?2026h\e[1;1H\e[J%s\e[?2026l' "$1"
+}
+
+# dialog_begin begins a dialog and draws it with the command $1, which draws
+# it as it stands now (a choice moved to, the window's width). From here to
+# dialog_end the terminal echoes nothing and hands each byte over as it
+# comes, and a resize is noted (SIGWINCH), both set before the first draw:
+# no key typed after it is echoed or held back, and no resize is missed.
+dialog_resized= dialog_tty=
+dialog_wait=${STUB_DIALOG_WAIT:-0.2}
+dialog_begin() {
+	dialog_tty=$(stty -g 2>/dev/null) || dialog_tty=none
+	stty -echo -icanon min 1 time 0 2>/dev/null
+	dialog_resized=
+	trap 'dialog_resized=1' WINCH
+	"$1"
+}
+
+# dialog_key reads one key of a dialog into key (the caller's): 0, or 1 at
+# the end of the input. An Enter is read as any other byte, a newline (the
+# terminal turns the Enter typed into one; NUL ends the read and is no
+# key). The command $1 draws the dialog as it stands now, again when the
+# window has been resized (Bash runs a trap only between reads, so the read
+# waits STUB_DIALOG_WAIT seconds at a time, 0.2 unless set). A byte the
+# read took as its timer ran out is the key all the same.
+dialog_key() {
+	local rc
+	while :; do
+		if [[ -n $dialog_resized ]]; then
+			dialog_resized=
+			"$1"
+		fi
+		key='' rc=0
+		IFS= read -rsn1 -d '' -t "$dialog_wait" key || rc=$?
+		if ((rc == 0)) || [[ -n $key ]]; then
+			return 0
+		fi
+		((rc > 128)) || return 1
+	done
+}
+
+# dialog_end ends a dialog (dialog_begin): a resize noted until now drawn
+# with the command $1, then the terminal's settings as they were. A dialog
+# never ends with a resize pending, so what erases it erases it at the
+# window's width.
+dialog_end() {
+	trap - WINCH
+	if [[ -n $dialog_resized ]]; then
+		"$1"
+	fi
+	if [[ -n $dialog_tty && $dialog_tty != none ]]; then
+		stty "$dialog_tty" 2>/dev/null
+	fi
+	dialog_tty='' dialog_resized=''
+}
+
+# dialog_probe is a dialog of its own for the test of the dialog's keys
+# (scripts/stub_dialog_test.py), run in place of everything else when
+# STUB_DIALOG_PROBE names a file: each time it is drawn it prints "probe
+# draw N" and the terminal's mode as it draws (whether it echoes, whether
+# it holds a line, whether a resize is trapped), it writes each key it
+# reads into that file (printf %q, one a row) until a q, after which it
+# waits (30 s at most) for a resize before the dialog ends, so that the
+# dialog ends with a resize noted after its last key, and prints "probe
+# end" once the dialog has ended.
+probe_draws=0
+probe_draw() {
+	local mode echo=on icanon=on winch=no
+	mode=" $(stty -a 2>/dev/null | tr '\n;' '  ') "
+	[[ $mode == *' -echo '* ]] && echo=off
+	[[ $mode == *' -icanon '* ]] && icanon=off
+	[[ -n $(trap -p WINCH) ]] && winch=trapped
+	probe_draws=$((probe_draws + 1))
+	dialog_draw "probe draw $probe_draws: echo $echo, icanon $icanon, resize $winch"$'\n'
+}
+dialog_probe() {
+	local i=0
+	dialog_begin probe_draw
+	while dialog_key probe_draw; do
+		printf '%q\n' "$key" >>"$1"
+		[[ $key == q ]] && break
+	done
+	while [[ -z $dialog_resized ]] && ((i++ < 3000)); do
+		sleep 0.01
+	done
+	dialog_end probe_draw
+	printf 'probe end\n'
+}
+if [[ -n ${STUB_DIALOG_PROBE:-} ]]; then
+	dialog_probe "$STUB_DIALOG_PROBE"
+	exit 0
+fi
+
+# dialog_text draws the dialog in text (the caller's) as it is.
+dialog_text() { dialog_draw "$text"; }
+
 # claude_sign_in draws Claude Code 2.1.319's sign-in screen, signed out (the
 # browser's link, then "Paste code here if prompted >"), bracketed paste on
 # (off when launched with --stub-paste-off), and reads what is typed byte by byte, echoing nothing. Each byte read
@@ -1255,9 +1516,16 @@ trust_dialog() {
 		if ((sel == 0)); then y='›' n=' '; else y=' ' n='›'; fi
 		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
 	}
-	printf 'Trust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n'
-	while IFS= read -rsn1 key; do
-		if [[ -z $key || $key == $'\r' ]]; then
+	# trust_now draws the dialog whole, the highlight where it stands.
+	trust_now() {
+		local y n t
+		if ((sel == 0)); then y='›' n=' '; else y=' ' n='›'; fi
+		printf -v t 'Trust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
+		dialog_draw "$t"
+	}
+	dialog_begin trust_now
+	while dialog_key trust_now; do
+		if [[ $key == $'\n' || $key == $'\r' ]]; then
 			break
 		fi
 		if [[ $key == $'\e' ]]; then
@@ -1270,6 +1538,7 @@ trust_dialog() {
 			draw
 		fi
 	done
+	dialog_end trust_now
 	if ((sel == 0)); then
 		mkdir -p "${HOME:-/tmp}/.codex"
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
@@ -1292,18 +1561,33 @@ erase_dialog() {
 }
 
 # hooks_review draws Codex's "Hooks need review" and waits for Enter; a
-# digit moves the highlight.
+# digit moves the highlight, and the dialog is drawn again with it there.
 hooks_review() {
 	local sel=1 key
-	printf 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n> 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won'"'"'t run)\n'
-	while IFS= read -rsn1 key; do
-		if [[ -z $key || $key == $'\r' ]]; then
+	# hooks_now draws the dialog whole, the highlight where it stands.
+	hooks_now() {
+		local t m1=' ' m2=' ' m3=' '
+		case $sel in
+		1) m1='>' ;;
+		2) m2='>' ;;
+		3) m3='>' ;;
+		esac
+		printf -v t 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n%s 1. Review hooks\n%s 2. Trust all and continue\n%s 3. Continue without trusting (hooks won'"'"'t run)\n' "$m1" "$m2" "$m3"
+		dialog_draw "$t"
+	}
+	dialog_begin hooks_now
+	while dialog_key hooks_now; do
+		if [[ $key == $'\n' || $key == $'\r' ]]; then
 			break
 		fi
 		case $key in
-		1 | 2 | 3) sel=$key ;;
+		1 | 2 | 3)
+			sel=$key
+			hooks_now
+			;;
 		esac
 	done
+	dialog_end hooks_now
 	erase_dialog 6
 	printf '%s\n' "$sel" >"${HOME:-/tmp}/.codex/stub-hooks-answer"
 	case $sel in
@@ -1316,12 +1600,15 @@ hooks_review() {
 # background_question draws Codex's background-server question; a digit picks at once.
 background_question() {
 	local key
-	printf 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
-	while IFS= read -rsn1 key; do
+	local text
+	printf -v text 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
+	dialog_begin dialog_text
+	while dialog_key dialog_text; do
 		case $key in
 		1 | 2 | 3) break ;;
 		esac
 	done
+	dialog_end dialog_text
 	erase_dialog 5
 	printf '%s\n' "$key" >"${HOME:-/tmp}/.codex/stub-background-answer"
 	if [[ $key == 3 ]]; then
@@ -1334,16 +1621,19 @@ background_question() {
 # 3 skips until the next version (it picks at once, as in Codex 0.161,
 # verified in a PTY on 2026-10-11).
 update_question() {
-	local key answer=
-	printf 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
-	while IFS= read -rsn1 key; do
+	local key answer= next
+	local text
+	printf -v text 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
+	dialog_begin dialog_text
+	while dialog_key dialog_text; do
 		case $key in
-		'' | $'\r' | 1) answer=update ;;
+		$'\n' | $'\r' | 1) answer=update ;;
 		$'\e')
 			# ESC and a key at once (Alt+z, an arrow) is one key, as
 			# Codex's crossterm reads it, and the question ignores it; an
 			# ESC alone skips.
-			if IFS= read -rsn1 -t 0.05 _; then
+			next=''
+			if IFS= read -rsn1 -t 0.05 next || [[ -n $next ]]; then
 				continue
 			fi
 			answer=skip
@@ -1354,6 +1644,7 @@ update_question() {
 		esac
 		break
 	done
+	dialog_end dialog_text
 	erase_dialog 8
 	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
 	if [[ $answer == update ]]; then
@@ -1605,6 +1896,9 @@ answer() {
 	if [[ $line == 'stub plan' ]]; then
 		claude_plan
 	fi
+	if [[ $line == 'stub mcp-allow' ]]; then
+		mcp_allow
+	fi
 	if [[ $line == 'stub permission' ]]; then
 		claude_permission
 	fi
@@ -1760,6 +2054,10 @@ esac
 # answer.
 handle_line() {
 	local line=$1
+	if [[ -n $mcp_next ]]; then
+		mcp_next=
+		printf 'mcp-allow next line: %s\n' "${line:0:200}" >>"$transcript"
+	fi
 	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
 		title_working
 		spin "${BASH_REMATCH[1]}"

@@ -7,7 +7,8 @@ import { argvLine, expectedChecks, planForWords, planMemberModel, resolvedArgv, 
 /**
  * A plan revision's body as the ticket page shows it (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): exactly what its
  * approval covers and what a launch runs. The yolo choice said plainly first; the commit it starts from; the crew with each member's agent
- * and arguments and the command each agent runs as the catalog resolved it when the revision was made; the tasks with who does each, its
+ * and the command it runs as the catalog resolved it when the revision was made, the member's own arguments among them (printed once:
+ * the ticket's People names the agents and links here); the tasks with who does each, its
  * kind, what it needs and its checks; the checks expected; the source references at the base; what the package hands over (the
  * attachments, the comments); the constraints; the decisions a person makes, which hold the tasks they name in a run launched from it (Program item DR1); the note. One column.
  */
@@ -64,7 +65,6 @@ const manifestWords = computed(() => {
             <span class="text-xs text-muted">Model: <span class="text-default" data-plan-member-model>{{ planMemberModel(m) }}</span></span>
             <span v-if="tasksOf(m.name).length" class="text-xs text-dimmed">does {{ tasksOf(m.name).join(', ') }}</span>
           </span>
-          <span v-if="m.args?.length" class="text-xs text-muted">Arguments: <code class="break-all font-mono">{{ argvLine(m.args) }}</code></span>
           <span class="text-xs text-muted" data-plan-member-command>
             Runs as <code class="break-all font-mono text-default">{{ argvLine(resolvedArgv(agentOf(m.agentId), m.args ?? [])) }}</code>
           </span>

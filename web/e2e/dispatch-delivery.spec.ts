@@ -146,12 +146,16 @@ test("a delivery naming the final candidate is verified, the ticket closes once 
   await expect(approval.locator('[data-decision-note]')).toHaveText(note)
   await expect(decisions.locator('[data-decision="acceptance"] [data-decision-title]')).toHaveText('Accepted for Alice')
 
-  // People: the owner, the approver and launcher, the plan's agent with its command, the launch's agent with the version it reported.
+  // People: the owner, the approver and launcher, the plan's agent named (its command printed once, in the plan), the launch's agent
+  // with the version it reported.
   const people = page.locator('[data-ticket-people]')
   await expect(people.locator('[data-person="Alice"]')).toHaveAttribute('data-person-roles', 'owner')
   await expect(people.locator('[data-person="admin"]')).toHaveAttribute('data-person-roles', /approver launcher/)
   await expect(people.locator('[data-people-plan-agent="builder"]')).toHaveAttribute('data-agent', 'worker')
-  await expect(people.locator('[data-people-plan-agent="builder"] [data-people-plan-argv]')).not.toBeEmpty()
+  await expect(page.locator('[data-people-plan-argv]')).toHaveCount(0)
+  // The approved plan is folded: its whole body, the command among it, is one press away.
+  await page.locator('[data-plan-featured] [data-plan-unfold-body]').click()
+  await expect(page.locator('[data-plan-featured] [data-plan-member="builder"] [data-plan-member-command]')).not.toBeEmpty()
   const recorded = (await api.ok<{ launch: Launch }>('GET', `/api/dispatch/launches/${launch.id}`)).launch.agents
   expect(recorded.map((a) => [a.member, a.agent])).toEqual([['builder', 'worker']])
   const agent = people.locator(`[data-people-launch-agent="${launch.id}/builder"]`)
