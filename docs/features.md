@@ -3085,7 +3085,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
   (neutral until its confirm), one menu ("More for this run": Add agent and
   Share) and full screen. Row two, at every width: what the run is doing
-  (a managed run's task badges, a run of members' counts), "scheduling paused" with the pause's words,
+  (its bar, the tasks counted by part, held tasks in amber; and its one
+  sentence, "2 of 6 done · 1 working · 1 checking · 2 need you", whose
+  "need you" counts the run's items of what needs you; a run of members
+  says "1 working · 2 finished"), "scheduling paused" with the pause's words,
   "cleaning up", the people, the Logins, who launched the run with the
   launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run

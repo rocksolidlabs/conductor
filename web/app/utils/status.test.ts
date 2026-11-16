@@ -14,6 +14,7 @@ import {
   markLook,
   markSection,
   memberStatusOf,
+  runBarParts,
   runItems,
   runStatusLine,
   sessionStatus,
@@ -384,5 +385,45 @@ describe('TASK_LOOK: the distinctness guard', () => {
   })
   it('puts each mark in one sidebar section', () => {
     expect(all.map((k) => markSection(k))).toEqual(['needs', 'running', 'running', 'running', 'exited', 'idle', 'exited', 'exited', 'exited'])
+  })
+})
+
+describe('runBarParts: the run header\'s bar counts tasks, never items', () => {
+  const held = (id: string, ...dr: string[]) => task(id, { state: 'ready', holds: dr.map((d) => hold(d)) })
+  const items = (o: Parameters<typeof listOf>[0]) => runItems(listOf(o).items, RUN)
+  const parts = (run: RunInfo, sessions: SessionInfo[], its: ReturnType<typeof items>) => runBarParts(runStatusLine(run, sessions, its, NOW)).map((p) => [p.part, p.count])
+  it("over the Ledger's counts gives done 2, working 1, checking 1, needs 2, in that order, and no failed part", () => {
+    const ledger = managed([
+      task('schema', { state: 'succeeded' }),
+      task('naming', { state: 'succeeded' }),
+      task('backfill', { state: 'verifying', attempts: 2 }),
+      task('soak', { state: 'running', attempts: 1, attempt: attemptIn(WORKING) }),
+      task('migrate', { state: 'failed', attempts: 3, commands: ['retry', 'accept'] }),
+      held('notes', 'dr-1'),
+    ])
+    expect(parts(ledger, [WORKING], items({ decisions: [decision('dr-1')], inbox: [taskItem(RUN, 'migrate')] }))).toEqual([
+      ['done', 2],
+      ['working', 1],
+      ['checking', 1],
+      ['needs', 2],
+    ])
+  })
+  it('one gate holding two tasks: "1 needs you", its segment 2 tasks held; two decisions holding one task: "2 need you", 1 task held', () => {
+    const gate = managed([held('a', 'dr-1'), held('b', 'dr-1')])
+    const one = runStatusLine(gate, [], items({ decisions: [decision('dr-1')] }), NOW)
+    expect(one.text).toBe('0 of 2 done · 1 needs you')
+    expect(runBarParts(one).find((p) => p.part === 'needs')).toMatchObject({ count: 2, words: '2 tasks held', mark: 'needs' })
+    const two = runStatusLine(managed([held('a', 'dr-1', 'dr-2')]), [], items({ decisions: [decision('dr-1'), decision('dr-2')] }), NOW)
+    expect(two.text).toBe('0 of 1 done · 2 need you')
+    expect(runBarParts(two).find((p) => p.part === 'needs')).toMatchObject({ count: 1, words: '1 task held' })
+  })
+  it('keeps the bar and the done words once a run has ended, and gives a run of members no bar', () => {
+    const ended = runStatusLine(managed([task('a', { state: 'succeeded' }), task('b', { state: 'cancelled' })], { outcome: 'succeeded' }), [], [], NOW)
+    expect([ended.text, ended.done]).toEqual(['Succeeded', '1 of 2 done'])
+    expect(runBarParts(ended).map((p) => [p.part, p.mark])).toEqual([
+      ['done', 'done'],
+      ['cancelled', 'cancelled'],
+    ])
+    expect(runBarParts(runStatusLine(managed([], { managed: undefined, tasks: undefined, members: [member('a', { sessionId: WORKING.id })] }), [WORKING], [], NOW))).toEqual([])
   })
 })

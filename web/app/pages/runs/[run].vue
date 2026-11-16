@@ -2,7 +2,7 @@
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
-import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, skipWords, takeViewLink } from '~/utils/crews'
 import { stopQuestion, type Action } from '~/utils/actions'
 import { taskActions, taskWords } from '~/utils/tasks'
 import { attemptSession, markSection, memberStatusOf, sessionStatus, taskStatus } from '~/utils/status'
@@ -148,7 +148,6 @@ const tiles = computed<Tile[]>(() => {
   return out
 })
 
-const counts = computed(() => (run.value ? runCounts(run.value, live.sessions.value) : { needs: 0, running: 0 }))
 
 // Broadcast selection: every member whose session runs, unless the person
 // unticked it; a member that starts later is selected as it appears. Only the
@@ -503,7 +502,7 @@ palette.registerPage(() => {
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
+      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :ticket="runTicket" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>

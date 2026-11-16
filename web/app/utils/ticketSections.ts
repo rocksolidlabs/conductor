@@ -23,17 +23,6 @@ export function ticketWaits<T extends WaitItem>(items: readonly T[], ticket: { k
   return items.filter((i) => (i.kind === 'plan' ? i.ref.startsWith(`plan:${ticket.key}/`) : !!i.run && runs.has(i.run)))
 }
 
-/**
- * A run summary's done part, "2 of 6 done": its succeeded tasks of all it counts, and nothing of which task works or waits on what, which
- * a summary does not say. Today's words, from the counts Dispatch's run card shows (summaryBadges' "2/6 tasks"); PR-10's
- * summaryStatusLine (utils/status.ts) replaces it, so that the strip says what the run card says. '' for a run with no task.
- */
-export function summaryDoneWords(s: Pick<RunSummary, 'tasks'>): string {
-  const counts = Object.values(s.tasks ?? {}).map((n) => n ?? 0)
-  const total = counts.reduce((a, b) => a + b, 0)
-  return total ? `${s.tasks?.succeeded ?? 0} of ${total} done` : ''
-}
-
 /** A section the strip names: its id on the page (`ticket-<id>`), its name, its state in words ('' for a name alone), its tone. */
 export interface TicketSection {
   id: 'description' | 'acceptance' | 'plan' | 'runs' | 'decisions' | 'close' | 'people' | 'comments' | 'history'

@@ -281,14 +281,21 @@ export interface RunLine {
   needs: number
   /** The ended run's outcome ("Succeeded", "Failed", "Stopped", "Interrupted", "Cancelled", "Ended"); '' while it goes. */
   outcome: string
+  /** "2 of 6 done" for a run with tasks, whether it goes or ended; '' for a run of members. */
+  done: string
+  /** A run with tasks: its tasks counted by the bar's parts (runBarParts); empty for a run of members, and from a summary alone. */
+  tasks: Partial<Record<BarPart, number>>
 }
+
+/** A segment of a run's bar: what it counts of the run's tasks. */
+export type BarPart = 'done' | 'working' | 'checking' | 'finished' | 'running' | 'needs' | 'failed' | 'waiting' | 'cancelled'
 
 const needWords = (n: number) => `${n} ${n === 1 ? 'needs' : 'need'} you`
 const part = (key: RunLinePart['key'], n: number, text: string, tone: RunLinePart['tone'] = 'neutral'): RunLinePart => ({ key, n, text, tone })
 
-function line(parts: RunLinePart[], needs: number, outcome: string): RunLine {
+function line(parts: RunLinePart[], needs: number, outcome: string, done = '', tasks: Partial<Record<BarPart, number>> = {}): RunLine {
   if (needs > 0) parts.push(part('needs', needs, needWords(needs), 'warning'))
-  return { text: parts.map((p) => p.text).join(' · '), parts, needs, outcome }
+  return { text: parts.map((p) => p.text).join(' · '), parts, needs, outcome, done, tasks }
 }
 
 function outcomePart(outcome: string): RunLinePart {
@@ -326,15 +333,16 @@ export function runStatusLine(run: RunInfo, sessions: readonly SessionInfo[], ne
   if (run.managed) {
     const tasks = run.tasks ?? []
     const done = tasks.filter((t) => t.state === 'succeeded').length
-    const head = ended ? [outcomePart(ended)] : [part('done', done, `${done} of ${tasks.length} done`)]
-    if (ended) return line(head, n, ended)
+    const doneWords = `${done} of ${tasks.length} done`
+    const bar: Partial<Record<BarPart, number>> = {}
     for (const t of tasks) {
       const m = taskStatus(t, run, attemptSession(t, sessions), now)
-      if (m.key === 'needs') continue
-      if (t.state === 'verifying') add('checking')
-      else if (m.key === 'working' || m.key === 'finished' || m.key === 'running' || m.key === 'failed') add(m.key)
+      const k: BarPart = m.key === 'needs' ? 'needs' : t.state === 'verifying' ? 'checking' : m.key === 'exited' ? 'running' : m.key
+      bar[k] = (bar[k] ?? 0) + 1
+      if (k === 'checking' || k === 'working' || k === 'finished' || k === 'running' || k === 'failed') add(k)
     }
-    return line([...head, ...counted(keys)], n, '')
+    if (ended) return line([outcomePart(ended)], n, ended, doneWords, bar)
+    return line([part('done', done, doneWords), ...counted(keys)], n, '', doneWords, bar)
   }
   if (ended) return line([outcomePart(ended)], n, ended)
   for (const m of run.members) {
@@ -356,13 +364,37 @@ export function runStatusLine(run: RunInfo, sessions: readonly SessionInfo[], ne
 export function summaryStatusLine(s: Pick<RunSummary, 'state' | 'stoppedAt' | 'outcome' | 'tasks'>, needs: readonly NeedsItem[]): RunLine {
   const n = needs.length
   const ended = s.stoppedAt ? 'Stopped' : s.state === 'interrupted' ? 'Interrupted' : s.outcome ? MANAGED_OUTCOME[s.outcome] : s.state === 'finished' ? 'Ended' : s.state === 'stopped' ? 'Stopped' : ''
-  if (ended) return line([outcomePart(ended)], n, ended)
   const counts = Object.values(s.tasks ?? {}).reduce((a, b) => a + (b ?? 0), 0)
-  if (counts > 0) {
-    const done = s.tasks?.succeeded ?? 0
-    return line([part('done', done, `${done} of ${counts} done`)], n, '')
-  }
+  const done = counts > 0 ? `${s.tasks?.succeeded ?? 0} of ${counts} done` : ''
+  if (ended) return line([outcomePart(ended)], n, ended, done)
+  if (counts > 0) return line([part('done', s.tasks?.succeeded ?? 0, done)], n, '', done)
   return line(n ? [] : [part('running', 0, 'running')], n, '')
+}
+
+/** A segment of the run's bar: its part, how many tasks, the mark whose tone it is drawn in, and its words. */
+export interface BarSegment {
+  part: BarPart
+  count: number
+  /** The mark whose tone the segment takes: checking takes working's, done, failed, waiting and cancelled a task's own. */
+  mark: MarkKey
+  /** Its title and label: "2 done", "1 checking", "2 tasks held" (the tasks that wait on a person, never "need you": items count that). */
+  words: string
+}
+
+const BAR_ORDER: readonly BarPart[] = ['done', 'working', 'checking', 'finished', 'running', 'needs', 'failed', 'waiting', 'cancelled']
+const BAR_MARK: Record<BarPart, MarkKey> = { done: 'done', working: 'working', checking: 'working', finished: 'finished', running: 'running', needs: 'needs', failed: 'failed', waiting: 'waiting', cancelled: 'cancelled' }
+
+/**
+ * The run's bar (the run header's): its tasks counted by part in one order (done, working, checking, finished, running, needs, failed,
+ * waiting, cancelled), the parts at zero left out. It counts tasks, not items: its needs segment is the tasks whose taskStatus is
+ * needs, "2 tasks held", while the sentence's "N need you" counts the things a person can act on.
+ */
+export function runBarParts(l: Pick<RunLine, 'tasks'>): BarSegment[] {
+  return BAR_ORDER.filter((p) => (l.tasks[p] ?? 0) > 0).map((p) => {
+    const count = l.tasks[p]!
+    const words = p === 'needs' ? `${count} ${count === 1 ? 'task' : 'tasks'} held` : `${count} ${p}`
+    return { part: p, count, mark: BAR_MARK[p], words }
+  })
 }
 
 /** The sidebar's section a mark falls under (a palette row's state): needs, running (a live agent's three), idle (waiting), exited (the rest). */
