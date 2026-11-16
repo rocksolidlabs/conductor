@@ -391,5 +391,6 @@ defineShortcuts({
     <RenameSessionModal />
     <CloneSessionModal />
     <DecisionModal />
+    <OpenOnPhone />
   </UDashboardGroup>
 </template>

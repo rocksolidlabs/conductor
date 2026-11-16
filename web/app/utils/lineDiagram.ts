@@ -243,6 +243,34 @@ export function placeLabels(stations: readonly LineStation[], direction: GraphDi
   })
 }
 
+/** A step of the focus over a drawing, named as in `LR`: right and left along a line, down and up across the lanes. */
+export type LineStep = 'right' | 'left' | 'down' | 'up'
+
+/**
+ * The station a key moves the focus to from `id` (UX1 PR-33): right is the next station along its line and left the one before it (the
+ * station a branch leaves from, before a line's first); down and up the nearest station by depth on the lane below or above, the lower
+ * depth on a tie. Where there is none, the focus stays: `id` itself. The drawing maps the keys in `TB`, where a line runs down.
+ */
+export function stepFrom(layout: Pick<LineLayout, 'stations' | 'lines'>, id: string, step: LineStep): string {
+  const s = layout.stations.find((x) => x.id === id)
+  if (!s) return id
+  if (step === 'right' || step === 'left') {
+    const line = layout.lines.find((l) => l.id === s.line)
+    if (!line) return id
+    const i = line.stations.indexOf(id)
+    if (step === 'right') return line.stations[i + 1] ?? id
+    return line.stations[i - 1] ?? line.from ?? id
+  }
+  const lane = s.lane + (step === 'down' ? 1 : -1)
+  let best: LineStation | undefined
+  for (const o of layout.stations) {
+    if (o.lane !== lane) continue
+    const [dO, dB] = [Math.abs(o.depth - s.depth), best ? Math.abs(best.depth - s.depth) : Infinity]
+    if (!best || dO < dB || (dO === dB && o.depth < best.depth)) best = o
+  }
+  return best?.id ?? id
+}
+
 /** The tasks laid out as lines and stations; see the module's comment for the rule. */
 export function lineLayout(nodes: readonly DepthNode[], opts: LineOptions = {}): LineLayout {
   const direction = opts.direction ?? 'LR'

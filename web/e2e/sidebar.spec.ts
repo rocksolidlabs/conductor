@@ -444,7 +444,7 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(header.locator('[data-header-alerts]')).toHaveCount(0)
   await expect(header.locator('[data-sidebar-collapse]')).toHaveCount(0)
   await account.click()
-  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
   // Alerts opens its panel with the switches; Escape closes it and gives the focus back to your menu's button.
   await page.getByRole('menuitem', { name: /^Alerts/ }).click()
   await expect(page.getByRole('menu')).toHaveCount(0)

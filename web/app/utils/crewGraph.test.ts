@@ -1,9 +1,7 @@
 import { useVueFlow } from '@vue-flow/core'
 import { describe, expect, it } from 'vitest'
-import type { RunTask } from '~/composables/useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
-import { connectError, connectionAllowed, crewGraph, depths, GAP_X, GAP_Y, HANDOFF_ARC, handoffEdges, handoffPath, handoffsOf, layout, listRows, NODE_H, NODE_W, withStart, type GraphMember } from './crewGraph'
-import { taskLayout } from './taskGraph'
+import { connectError, connectionAllowed, crewGraph, depths, GAP_X, GAP_Y, HANDOFF_ARC, handoffEdges, handoffPath, handoffsOf, layout, listRows, NODE_H, NODE_W, withStart, type GraphEdge, type GraphMember } from './crewGraph'
 
 const m = (name: string, start: GraphMember['start'] = { when: 'immediately' }, agentId = 'claude'): GraphMember => ({ name, agentId, start })
 
@@ -136,13 +134,14 @@ describe('connectError', () => {
 })
 
 describe('connectionAllowed', () => {
-  const task = (id: string, needs?: string[]): RunTask => ({ id, member: 'lead', kind: 'work', state: 'succeeded', attempts: 1, needs })
-  const tasks = taskLayout([task('build'), task('docs', ['build'])])
+  // A task's need as an edge the graph hands Vue Flow, written by hand: the run's tasks are drawn as lines (RunLineDiagram), never by
+  // Vue Flow, but the check must keep any edge the graph draws.
+  const needs: GraphEdge[] = [{ id: 'needs:build-docs', from: 'build', to: 'docs', kind: 'needs' }]
 
   it("keeps every edge the graph draws, a task's need and a handoff back up the start rules among them", () => {
     // The start rules alone refuse both: a task is no member, and tests hands back to lead, which it waits for.
     expect(connectError(crew, 'build', 'docs')).toBe('not a member of this crew')
-    expect(connectionAllowed(crew, tasks.edges, false, 'build', 'docs')).toBe(true)
+    expect(connectionAllowed(crew, needs, false, 'build', 'docs')).toBe(true)
     const run = crewGraph(crew, { handoffs: [{ from: 'tests', to: 'lead', at: '2026-10-30T10:00:00Z' }] })
     expect(connectError(crew, 'tests', 'lead')).not.toBe('')
     expect(connectionAllowed(crew, run.edges, false, 'tests', 'lead')).toBe(true)
@@ -157,19 +156,24 @@ describe('connectionAllowed', () => {
     expect(connectionAllowed(crew, drawn, false, 'lead', 'docs')).toBe(false)
   })
 
-  it("keeps a run's needs edge in Vue Flow's store when the graph is drawn again with the check in place", () => {
+  it("keeps a run's handoff edge in Vue Flow's store when the graph is drawn again with the check in place", () => {
     // Vue Flow runs its connection check on every edge setEdges is handed and drops one it refuses. The run page draws its graph once
-    // before the VueFlow component sets the check, then again at each clock tick and update of the run, with the check set.
+    // before the VueFlow component sets the check, then again at each clock tick and update of the run, with the check set. A handoff
+    // from tests back to lead is one the start rules refuse (lead would wait for what waits for it) and the Members mode draws.
     const flow = useVueFlow('crew-graph-connection-check')
     try {
-      const nodes = tasks.nodes.map((n) => ({ id: n.id, position: { x: n.x, y: n.y } }))
-      const edges = tasks.edges.map((e) => ({ id: e.id, source: e.from, target: e.to }))
+      const g = crewGraph(crew, { handoffs: [{ from: 'tests', to: 'lead', at: '2026-10-30T10:00:00Z' }] })
+      const nodes = g.nodes.map((n) => ({ id: n.id, position: { x: n.x, y: n.y } }))
+      const edges = g.edges.map((e) => ({ id: e.id, source: e.from, target: e.to }))
+      const handoff = g.edges.find((e) => e.kind === 'handoff')
+      expect(handoff).toMatchObject({ from: 'tests', to: 'lead' })
       flow.setNodes(nodes)
       flow.setEdges(edges)
-      flow.isValidConnection.value = (c) => connectionAllowed(crew, tasks.edges, false, c.source, c.target)
+      flow.isValidConnection.value = (c) => connectionAllowed(crew, g.edges, false, c.source, c.target)
       flow.setNodes(nodes)
       flow.setEdges(edges)
-      expect(flow.edges.value.map((e) => e.id)).toEqual(['needs:build-docs'])
+      expect(flow.edges.value.map((e) => e.id)).toEqual(g.edges.map((e) => e.id))
+      expect(flow.edges.value.map((e) => e.id)).toContain(handoff!.id)
     } finally {
       flow.$destroy()
     }
