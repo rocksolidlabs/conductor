@@ -102,6 +102,16 @@ describe("a decision's words", () => {
     expect(decisionWords(decision({ state: 'expired', why: 'escalated' })).state).toBe('Expired: escalated')
   })
 
+  // UX1 PR-20 (the plan's invariant 7): an applied record is done, in neutral ink as its steps are, never green; the open one amber.
+  it('draws the applied state in neutral ink, the open one amber', () => {
+    expect(decisionWords(decision({ state: 'applied', answeredAt: T1, applied: typed })).tone).toBe('default')
+    expect(decisionWords(decision({ state: 'applied', answeredAt: T1, applied: typed }), { controls: true }).tone).toBe('default')
+    expect(decisionWords(decision()).tone).toBe('warning')
+    for (const state of ['open', 'answered', 'applied', 'superseded', 'cancelled', 'expired'] as const) {
+      expect(decisionWords(decision({ state, answeredAt: T1, applied: state === 'applied' ? typed : undefined })).tone as string, state).not.toBe('success')
+    }
+  })
+
   it('shows the four states apart, each reached with its receipt and time', () => {
     const open = decisionWords(decision()).steps
     expect(open.map((s) => [s.key, s.status])).toEqual([['open', 'done'], ['recorded', 'waiting'], ['validated', 'pending'], ['applied', 'pending']])

@@ -30,10 +30,23 @@ let srv: DecisionServer
 let ticket = ''
 let gatedCrew = ''
 let askingCrew = ''
+let longCrew = ''
 const runs: string[] = []
 
+// Choices as long as the server takes them (80 characters, `ledger.MaxOptionLabel`), with no tradeoffs line, two of each pair
+// differing only in their last word: with the option rows gone where the buttons show, each button must say its choice whole.
+const LONG = {
+  approval: ['Ship the change to every region tonight once its checks pass, then tell us: east', 'Ship the change to every region tonight once its checks pass, then tell us: west'],
+  clarification: ['Name the new module after the team that owns it, keeping the old name too: alpha', 'Name the new module after the team that owns it, keeping the old name too: bravo'],
+}
+const longOptions = (labels: string[]) => JSON.stringify(labels.map((label) => ({ label })))
+
 test.beforeAll(async () => {
-  srv = await decisionServer('decision-page-durable', [{ id: 'worker-clarifies', from: 'worker', env: { STUB_DECISION: 'clarification' } }])
+  srv = await decisionServer('decision-page-durable', [
+    { id: 'worker-clarifies', from: 'worker', env: { STUB_DECISION: 'clarification' } },
+    { id: 'worker-approves-long', from: 'worker', env: { STUB_DECISION: 'approval', STUB_DECISION_OPTIONS: longOptions(LONG.approval) } },
+    { id: 'worker-clarifies-long', from: 'worker', env: { STUB_DECISION: 'clarification', STUB_DECISION_OPTIONS: longOptions(LONG.clarification) } },
+  ])
   await stopStrays(srv.api, [])
   ticket = await makeTicket(srv.api, PROJECT, 'Deploy through a gate')
   const crew = (body: object) => srv.api.ok<{ crew: { id: string } }>('POST', '/api/crews', { cwd: '', where: 'server', isolation: 'worktree', openAfterLaunch: false, yolo: null, ...body })
@@ -57,6 +70,20 @@ test.beforeAll(async () => {
       goal: 'ask the operator first',
       members: [{ name: 'asker', agentId: 'worker-clarifies', prompt: '', start: { when: 'task' } }],
       tasks: [{ id: 'ask', member: 'asker', kind: 'work', instructions: 'Ask, then build.' }],
+    })
+  ).crew.id
+  longCrew = (
+    await crew({
+      name: 'e2e durable long choices',
+      goal: 'ask with long choices',
+      members: [
+        { name: 'approver', agentId: 'worker-approves-long', prompt: '', start: { when: 'task' } },
+        { name: 'clarifier', agentId: 'worker-clarifies-long', prompt: '', start: { when: 'task' } },
+      ],
+      tasks: [
+        { id: 'approve', member: 'approver', kind: 'work', instructions: 'Ask an approval, then build.' },
+        { id: 'clarify', member: 'clarifier', kind: 'work', instructions: 'Ask a clarification, then build.' },
+      ],
     })
   ).crew.id
 })
@@ -102,6 +129,61 @@ async function onScreen(page: Page, parts: ReturnType<Page['locator']>) {
   const boxes = await parts.evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.right]))
   expect(boxes.length, 'the parts are drawn').toBeGreaterThan(0)
   for (const [left, right] of boxes) expect(left! >= -0.5 && right! <= width + 0.5, `a part runs ${left}..${right} in ${width} px`).toBe(true)
+}
+
+/** The colour a class of the app's resolves to on the page now, through a probe element (no parsing of oklch). */
+function probeColour(page: Page, cls: string): Promise<string> {
+  return page.evaluate((c) => {
+    const e = document.createElement('span')
+    e.className = c
+    document.body.append(e)
+    const colour = getComputedStyle(e).color
+    e.remove()
+    return colour
+  }, cls)
+}
+
+type Box = [left: number, top: number, right: number, bottom: number]
+
+/**
+ * The choices drawn whole in `holder` (UX1 PR-20, invariant 6): each button's label is the choice's text, not clipped (its box's
+ * scrollWidth not above its clientWidth), each button inside the holder, the recommended mark inside its button, no two buttons
+ * overlapping, nothing sideways. Returns the tallest button's height.
+ */
+async function choicesWhole(page: Page, holder: ReturnType<Page['locator']>, labels: string[], where: string): Promise<number> {
+  const buttons = holder.locator('[data-decision-choice]')
+  await expect(buttons).toHaveCount(labels.length)
+  const outer = await holder.evaluate((e) => {
+    const r = e.getBoundingClientRect()
+    return [r.left, r.top, r.right, r.bottom] as Box
+  })
+  const drawn = await buttons.evaluateAll((els) =>
+    els.map((b) => {
+      const box = (e: Element | null) => {
+        if (!e) return null
+        const r = e.getBoundingClientRect()
+        return [r.left, r.top, r.right, r.bottom] as Box
+      }
+      const l = b.querySelector<HTMLElement>('[data-slot="label"]')
+      return { text: l?.innerText.trim() ?? '', scroll: l?.scrollWidth ?? -1, client: l?.clientWidth ?? -1, box: box(b)!, mark: box(b.querySelector('[data-decision-recommended-mark]')) }
+    }),
+  )
+  const within = (a: Box, b: Box) => a[0] >= b[0] - 0.5 && a[1] >= b[1] - 0.5 && a[2] <= b[2] + 0.5 && a[3] <= b[3] + 0.5
+  drawn.forEach((d, i) => {
+    expect(d.text, `${where}: choice ${i} says its label whole`).toBe(labels[i])
+    expect(d.scroll, `${where}: choice ${i}'s label draws ${d.scroll} px of text in ${d.client} px`).toBeLessThanOrEqual(d.client)
+    expect(within(d.box, outer), `${where}: choice ${i} runs ${d.box.join(',')} in its card ${outer.join(',')}`).toBe(true)
+    if (d.mark) expect(within(d.mark, d.box), `${where}: choice ${i}'s recommended mark ${d.mark.join(',')} lies in its button ${d.box.join(',')}`).toBe(true)
+  })
+  expect(drawn[0]!.mark, `${where}: the recommended choice is marked`).not.toBeNull()
+  for (let i = 0; i < drawn.length; i++)
+    for (let j = i + 1; j < drawn.length; j++) {
+      const [a, b] = [drawn[i]!.box, drawn[j]!.box]
+      const overlap = Math.min(a[2], b[2]) - Math.max(a[0], b[0]) > 0.5 && Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > 0.5
+      expect(overlap, `${where}: choices ${i} ${a.join(',')} and ${j} ${b.join(',')} overlap`).toBe(false)
+    }
+  await noSideways(page)
+  return Math.max(...drawn.map((d) => d.box[3] - d.box[1]))
 }
 
 /** DR1's card's four states as drawn: each step's key and status. */
@@ -156,6 +238,7 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await expect(card.locator('[data-decision-card-id]')).toHaveText(gate1)
   await expect(card.locator('[data-decision-from-plan]')).toContainText('From the plan')
   await tapTarget(details)
+  for (const choice of await item.locator('[data-decision-choice]').all()) await tapTarget(choice)
   await onScreen(phone, item.locator('[data-decision-choice]'))
   await noSideways(phone)
 
@@ -164,6 +247,9 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   const respond = item.locator(`[data-decision-respond][data-decision-id="${gate1}"]`)
   await respond.locator('[data-decision-choice-label="Approve"]').tap()
   await expect(respond.locator('[data-decision-confirm-step]')).toBeVisible()
+  // Confirm and Back, as the choices, a thumb's size (UX1 PR-20, invariant 8).
+  await tapTarget(respond.locator('[data-decision-confirm]'))
+  await tapTarget(respond.locator('[data-decision-back]'))
   const shown = await decision(srv.api, gate1)
   await srv.api.ok('POST', `/api/decisions/${gate1}/comment`, { opId: 'dpd-c1', kind: 'comment', text: 'Moved from the desktop.', expectedRev: shown.rev })
   await expect(respond.locator('[data-decision-moved]')).toBeVisible()
@@ -192,6 +278,13 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await phone.goto(`/dispatch/${PROJECT}/1`)
   const link = phone.locator(`[data-ticket-decision-record="${gate1}"] [data-ticket-decision-item="${gate1}"]`)
   await expect(link).toBeVisible({ timeout: 30_000 })
+  // The applied record there, its state words and its mark, in neutral ink, never green (UX1 PR-20, invariant 7).
+  const record = phone.locator(`[data-ticket-decision-record="${gate1}"]`)
+  await expect(record.locator('[data-ticket-decision-state]')).toContainText('Applied')
+  const [ink, success] = [await probeColour(phone, 'text-default'), await probeColour(phone, 'text-success')]
+  expect(ink, 'the success token is not the ink').not.toBe(success)
+  expect(await record.locator('[data-ticket-decision-state]').evaluate((e) => getComputedStyle(e).color), "the applied record's words are ink").toBe(ink)
+  expect(await record.locator(':scope > :first-child').evaluate((e) => getComputedStyle(e).color), "the applied record's mark is ink").toBe(ink)
   await link.tap()
   await expect(phone).toHaveURL(new RegExp(`/decisions\\?item=decision%3A${gate1}$`))
   await expect(phone.locator(`[data-inbox-item="decision:${gate1}"] [data-decision-card] [data-decision-question]`)).toHaveText(question)
@@ -274,4 +367,66 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await expect(tracking).toHaveCount(0, { timeout: 30_000 })
   await expect(after.locator(`[data-recent-decision="decision:${gate2}"]`)).toBeVisible({ timeout: STEP_MS })
   await after.context().close()
+})
+
+// UX1 PR-20 (invariant 6): the buttons are the one list of choices, so each says its choice whole. An agent's approval and its
+// clarification, each with two choices of 80 characters that differ only in their last word and no tradeoffs line, on a phone
+// (390 x 844, touch) and at 1280 x 720, in the item on the decision page and in the modal: every label whole and unclipped, each
+// button in its card, the recommended mark in its button, no overlap, nothing sideways; the approval's Confirm says its choice whole.
+test('choices as long as the server takes them read whole on their buttons, on a phone and at 1280 x 720, on the page and in the modal', async ({ browser }) => {
+  test.slow()
+  budget(1, 120_000)
+  const run = (await srv.api.launchCrew(longCrew)).id
+  runs.push(run)
+  const ids = { approval: '', clarification: '' }
+  await expect
+    .poll(
+      async () => {
+        const all = await decisionsOf(srv.api, run)
+        ids.approval = all.find((d) => d.asker?.task === 'approve' && d.state === 'open')?.id ?? ''
+        ids.clarification = all.find((d) => d.asker?.task === 'clarify' && d.state === 'open')?.id ?? ''
+        return !!ids.approval && !!ids.clarification
+      },
+      { timeout: 120_000, intervals: [500], message: 'both attempts ask their decisions' },
+    )
+    .toBe(true)
+  const tallest: string[] = []
+  for (const size of ['phone', 'desktop'] as const) {
+    const page =
+      size === 'phone'
+        ? await phonePage(browser, srv.started)
+        : await (async () => {
+            const ctx = await browser.newContext({ baseURL: srv.started.baseURL, viewport: { width: 1280, height: 720 } })
+            await ctx.addInitScript(({ t }) => localStorage.setItem('conductor.workbenchToken', t), { t: srv.started.token })
+            return ctx.newPage()
+          })()
+    for (const type of ['approval', 'clarification'] as const) {
+      const id = ids[type]
+      budget(6)
+      await page.goto(`/decisions?item=${encodeURIComponent(`decision:${id}`)}`)
+      const item = page.locator(`[data-inbox-item="decision:${id}"]`)
+      await expect(item.locator('[data-decision-card] [data-decision-question]')).toBeVisible()
+      await expect(item.locator('[data-decision-tradeoffs]')).toHaveCount(0)
+      tallest.push(`${size}, the page, the ${type}: ${await choicesWhole(page, item, LONG[type], `${size}, the page, the ${type}`)} px`)
+      if (size === 'phone') for (const choice of await item.locator('[data-decision-choice]').all()) await tapTarget(choice)
+      // The approval's Confirm names the choice picked, whole.
+      if (type === 'approval') {
+        await item.locator('[data-decision-choice="1"]').click()
+        const label = item.locator('[data-decision-confirm] [data-slot="label"]')
+        await expect(label).toHaveText(`Answer ${LONG.approval[1]}`)
+        const [scroll, client] = await label.evaluate((e) => [e.scrollWidth, e.clientWidth])
+        expect(scroll, `${size}: Confirm's label draws ${scroll} px of text in ${client} px`).toBeLessThanOrEqual(client!)
+        await noSideways(page)
+        await item.locator('[data-decision-back]').click()
+        await expect(item.locator('[data-decision-confirm-step]')).toHaveCount(0)
+      }
+      await page.goto(`/runs/${encodeURIComponent(run)}?view=tasks&decision=${id}`)
+      const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
+      await expect(modal.locator('[data-decision-question]')).toBeVisible()
+      tallest.push(`${size}, the modal, the ${type}: ${await choicesWhole(page, modal, LONG[type], `${size}, the modal, the ${type}`)} px`)
+    }
+    await page.context().close()
+  }
+  test.info().annotations.push({ type: 'tallest choice', description: tallest.join('; ') })
+  console.log(`tallest choice: ${tallest.join('; ')}`)
 })

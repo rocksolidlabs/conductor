@@ -356,7 +356,7 @@ const CHECKED = 'Checked by Yardmaster'
  * `why`). `runHeld` false says the run that holds it is not running (stopped, interrupted, not continued): an answer recorded then
  * waits for the run to be continued.
  */
-export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: boolean } = {}): { state: string; tone: 'warning' | 'success' | 'muted' | 'error' | 'default'; steps: DecisionStep[] } {
+export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: boolean } = {}): { state: string; tone: 'warning' | 'muted' | 'error' | 'default'; steps: DecisionStep[] } {
   const rc = acceptedReceipt(d)
   const app = d.applied
   const recordedAt = rc?.at ?? d.answeredAt
@@ -393,7 +393,8 @@ export function decisionWords(d: Decision, o: { runHeld?: boolean; controls?: bo
     case 'answered':
       return { state: o.runHeld === false ? 'Recorded: waiting for the run to be continued' : 'Recorded: Yardmaster applies it next', tone: 'default', steps }
     case 'applied':
-      return { state: `Applied: ${app?.words ?? 'done'}`, tone: 'success', steps }
+      // Done, in neutral ink as a done step is (UX1 PR-20, the plan's invariant 7: green is a live agent's alone).
+      return { state: `Applied: ${app?.words ?? 'done'}`, tone: 'default', steps }
     case 'superseded':
       return { state: `Superseded${why}${d.supersededBy ? ` (${d.supersededBy} takes its place)` : ''}`, tone: 'muted', steps }
     case 'cancelled':

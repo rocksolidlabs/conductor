@@ -74,17 +74,23 @@ async function closeCard(page: Page) {
 // The measures below are this spec's own until the stream's shared helpers land (UX1 PR-1, web/e2e/layout.ts: `tabTo`, `probeColour`),
 // where they move.
 
-/** The colour a class of the app's resolves to on the page now, through a probe element (no parsing of oklch). */
-function probeColour(page: Page, cls: string): Promise<string> {
-  return page.evaluate((c) => {
-    const e = document.createElement('span')
-    e.className = c
-    document.body.append(e)
-    const colour = getComputedStyle(e).color
-    e.remove()
-    return colour
-  }, cls)
+/** What a class of the app's resolves to on the page now (a colour, a fill, a ring's shadow), through a probe element. */
+function probe(page: Page, cls: string, prop: 'color' | 'backgroundColor' | 'boxShadow' = 'color'): Promise<string> {
+  return page.evaluate(
+    ([c, p]) => {
+      const e = document.createElement('span')
+      e.className = c
+      document.body.append(e)
+      const v = getComputedStyle(e)[p]
+      e.remove()
+      return v
+    },
+    [cls, prop] as const,
+  )
 }
+
+/** The colour a class of the app's resolves to on the page now, through a probe element (no parsing of oklch). */
+const probeColour = (page: Page, cls: string) => probe(page, cls)
 
 /** Presses Tab from `from` until `target` has the focus, at most `max` times; it then draws a focus ring (an outline or a shadow). */
 async function tabTo(page: Page, from: ReturnType<Page['locator']>, target: ReturnType<Page['locator']>, max: number) {
@@ -158,9 +164,23 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await expect(page.locator('[data-task-row="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
   await expect(page.locator('[data-crew-run-header]')).toContainText('1 decision open')
 
-  // The run page's Answer opens the card: the ticket's chip changed since the question (its revision then named), the run's not.
-  await row.locator(`[data-task-answer="build"]`).click()
+  // The run page's Answer, reached by the keyboard, opens the card on Enter and on Space; Enter on the row itself selects the row
+  // (UX1 PR-20 fixed main here: the row's own Enter took the key as it came up from the button, and selected the row instead).
   const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
+  const answerButton = row.locator('[data-task-answer="build"]')
+  const rowControl = row.locator(':scope > [role="button"]')
+  for (const key of ['Enter', 'Space']) {
+    await tabTo(page, rowControl, answerButton, 4)
+    await page.keyboard.press(key)
+    await expect(modal.locator('[data-decision-question]'), `${key} on Answer opens the card`).toHaveText(question)
+    await closeCard(page)
+  }
+  await expect(page.locator('[data-task-detail-id="build"]')).toHaveCount(0)
+  await rowControl.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('[data-task-detail-id="build"]'), 'Enter on the row selects it').toBeVisible()
+  // The run page's Answer opens the card: the ticket's chip changed since the question (its revision then named), the run's not.
+  await answerButton.click()
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
   // UX1 PR-20: the choices once, as the buttons, the recommended one marked on its button and each tradeoff in a line under them;
   // what a yes lets happen in one line; the modal titled for the person, the id folded under Details.
@@ -196,7 +216,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
       budget(4 * STEP_MS)
       await page.evaluate(() => localStorage.setItem('conductor-color-mode', 'light'))
       await page.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
-      await expect(page.locator('html')).not.toHaveClass(/\bdark\b/)
+      await expect(page.locator('html')).toHaveClass(/\blight\b/)
       await expect(modal.locator('[data-decision-step="recorded"]')).toHaveAttribute('data-step-icon', 'i-lucide-circle-dot')
     } else {
       await expect(page.locator('html')).toHaveClass(/\bdark\b/)
@@ -283,6 +303,27 @@ test("build's approval waits while docs finishes, is answered in its card from t
   // Applied, the buttons gone: the card lists its choices again, the one place they are left (UX1 PR-20).
   await expect(modal.locator('[data-decision-choice]')).toHaveCount(0)
   await expect(modal.locator('[data-decision-option]')).toHaveCount(2)
+  // Applied is done, not green (invariant 7): its state words, the answer's box and the receipt in neutral ink and fills, in both
+  // themes. The page is light now (the stored mode above); dark is set on the page in place, so the receipt stays drawn.
+  await expect(modal.locator('[data-decision-receipt] [data-decision-receipt-mark]')).toHaveCount(1)
+  for (const theme of ['light', 'dark'] as const) {
+    if (theme === 'dark')
+      await page.evaluate(() => {
+        localStorage.setItem('conductor-color-mode', 'dark')
+        document.documentElement.classList.remove('light')
+        document.documentElement.classList.add('dark')
+      })
+    await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /\bdark\b/ : /\blight\b/)
+    const ink = await probeColour(page, 'text-default')
+    const [fill, ring] = [await probe(page, 'bg-elevated/40', 'backgroundColor'), await probe(page, 'ring ring-default', 'boxShadow')]
+    expect(fill, `${theme}: the success fill is not the neutral one`).not.toBe(await probe(page, 'bg-success/5', 'backgroundColor'))
+    expect(await probe(page, 'text-success'), `${theme}: the success token is not the ink`).not.toBe(ink)
+    expect(await modal.locator('[data-decision-state-words]').evaluate((e) => getComputedStyle(e).color), `${theme}: Applied is ink`).toBe(ink)
+    const box = await modal.locator('[data-decision-answer]').evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).boxShadow])
+    expect(box[0], `${theme}: the answer's box has the neutral fill`).toBe(fill)
+    expect(box[1], `${theme}: the answer's box has the neutral ring`).toBe(ring)
+    expect(await modal.locator('[data-decision-receipt]').evaluate((e) => getComputedStyle(e).color), `${theme}: the receipt is ink`).toBe(ink)
+  }
 
   // The stub took the typed line as its answer and went on: build succeeds with stub-answer.txt in its result.
   const done = await runUntil(api, runId, (r) => task(r, 'build').state === 'succeeded', 'build succeeds once its answer is typed')
@@ -300,6 +341,8 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await expect(modal.locator('[data-decision-option="0"] [data-decision-recommended]')).toHaveCount(1)
   await expect(modal.locator('[data-decision-choice]')).toHaveCount(0)
   await expect(modal.locator('[data-decision-step][data-step-icon="i-lucide-circle-check"]')).toHaveCount(4)
+  // A card that cannot answer names the step "The answer", never "Your answer".
+  await expect(modal.locator('[data-decision-step="recorded"] [data-step-label]')).toHaveText('The answer')
   await modal.locator('[data-decision-details-toggle]').click()
   await expect(modal.locator('[data-step-receipt-of="recorded"]')).toHaveText(`${id}/1`)
   await expect(modal.locator('[data-step-receipt-of="applied"]')).toHaveText(`${id}/1 applied`)

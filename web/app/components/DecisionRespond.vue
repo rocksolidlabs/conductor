@@ -120,12 +120,16 @@ watch(
 <template>
   <section class="flex min-w-0 flex-col gap-2" data-decision-respond :data-decision-id="decision.id">
     <template v-if="answering">
+      <!-- The buttons are the choices (UX1 PR-20, invariant 6): each label whole, its words wrapped inside its button, never cut; the
+           buttons wrap, a choice longer than the row taking a row of its own; 44 px each way under touch (invariant 8). -->
       <div class="flex flex-wrap gap-2" data-decision-choices>
         <UButton
           v-for="(o, i) in options"
           :key="i"
           :label="o.label"
           size="sm"
+          class="max-w-full max-lg:min-h-11 max-lg:min-w-11"
+          :ui="{ label: 'text-clip whitespace-normal break-words text-start' }"
           :color="(pending?.choice ?? picked) === i ? 'primary' : 'neutral'"
           :variant="(pending?.choice ?? picked) === i ? 'solid' : i === best ? 'soft' : 'outline'"
           :disabled="busy"
@@ -135,7 +139,7 @@ watch(
           @click="pick(i)"
         >
           <template v-if="i === best" #trailing>
-            <UBadge label="recommended" color="neutral" variant="subtle" size="sm" />
+            <UBadge label="recommended" color="neutral" variant="subtle" size="sm" class="shrink-0" data-decision-recommended-mark />
           </template>
         </UButton>
       </div>
@@ -154,17 +158,18 @@ watch(
         <p v-if="answerAsWords(decision)" class="text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">
-          <UButton label="Back" color="neutral" variant="ghost" size="sm" :disabled="busy" data-decision-back @click="pending = null" />
-          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
+          <UButton label="Back" color="neutral" variant="ghost" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="busy" data-decision-back @click="pending = null" />
+          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'text-clip whitespace-normal break-words text-start' }" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
         </div>
       </div>
       <div v-else-if="!confirms" class="flex items-center justify-end gap-2">
         <span v-if="answerAsWords(decision)" class="mr-auto text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</span>
-        <UButton label="Answer" icon="i-lucide-send" color="primary" size="sm" :disabled="!canSend" :loading="busy" data-decision-send @click="send(picked, decision.rev)" />
+        <UButton label="Answer" icon="i-lucide-send" color="primary" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="!canSend" :loading="busy" data-decision-send @click="send(picked, decision.rev)" />
       </div>
     </template>
 
-    <p v-if="receipt" class="rounded-md bg-success/10 p-2 text-sm text-success" data-decision-receipt>{{ receipt.words }}<span v-if="receipt.k" class="font-mono text-xs text-muted"> · receipt {{ receipt.decision }}/{{ receipt.k }}</span></p>
+    <!-- Done, in neutral ink with its check, as a done step is (UX1 PR-20, invariant 7: green is a live agent's alone). -->
+    <p v-if="receipt" class="flex items-start gap-1.5 rounded-md bg-elevated/40 p-2 text-sm text-default" data-decision-receipt><UIcon name="i-lucide-circle-check" class="mt-0.5 size-4 flex-none" data-decision-receipt-mark /><span class="min-w-0 break-words">{{ receipt.words }}<span v-if="receipt.k" class="font-mono text-xs text-muted"> · receipt {{ receipt.decision }}/{{ receipt.k }}</span></span></p>
     <div v-if="refusal" class="flex flex-wrap items-center gap-2 rounded-md bg-error/10 p-2 text-sm text-error" data-decision-refusal>
       <span class="min-w-0 flex-1 break-words" data-decision-refusal-words>{{ refusal }}</span>
       <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" data-decision-read-again @click="readAgain" />

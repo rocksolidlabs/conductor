@@ -29,7 +29,7 @@ const subject = computed(() => subjectWords(props.decision.request.subject))
 const yes = computed(() => authorizesLine(props.decision))
 const receipts = computed(() => words.value.steps.filter((s) => s.receipt))
 const refOf = (ref: string) => props.refs?.find((r) => r.ref === ref)
-const tones = { warning: 'text-warning', success: 'text-success', muted: 'text-muted', error: 'text-error', default: 'text-default', dimmed: 'text-dimmed' }
+const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error', default: 'text-default', dimmed: 'text-dimmed' }
 const showHistory = ref(false)
 /** Details open or folded: as `detailsOpen` says for the decision, then as the person leaves it, through every new rev of the record. */
 const showDetails = ref(detailsOpen(props.decision))
@@ -108,8 +108,8 @@ watch(
       </dl>
     </div>
 
-    <!-- The accepted answer: what was picked or said, why, and who (Codex's round 1 on #719). -->
-    <dl v-if="answer" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-success/5 p-2 text-xs ring ring-success/20" data-decision-answer>
+    <!-- The accepted answer: what was picked or said, why, and who (Codex's round 1 on #719); neutral, as a done step is (invariant 7). -->
+    <dl v-if="answer" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-elevated/40 p-2 text-xs ring ring-default" data-decision-answer>
       <template v-if="answer.choice">
         <dt class="text-muted">Answer</dt>
         <dd class="break-words font-medium" data-decision-answer-choice>{{ answer.choice }}</dd>
