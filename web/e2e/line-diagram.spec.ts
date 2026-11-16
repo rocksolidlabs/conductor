@@ -112,9 +112,10 @@ for (const size of [
     const labels = page.locator('[data-graph-canvas] [data-station-label]')
     expect(await labels.count()).toBeGreaterThan(30)
     await noOverlap(page.locator('[data-graph-canvas] [data-line-diagram]'), '[data-status-glyph], [data-station-label]')
-    // Each state of a task drawn: every mark a run's task takes without a live session.
+    // Each state of a task drawn: every mark a run's task takes without a live session (a failed task the engine names Retry and
+    // Accept for waits on a person: needs).
     const marks = new Set(await stations.evaluateAll((ss) => ss.map((s) => s.getAttribute('data-status-mark'))))
-    expect([...marks].sort()).toEqual(['cancelled', 'done', 'failed', 'needs', 'running', 'waiting', 'working'])
+    expect([...marks].sort()).toEqual(['cancelled', 'done', 'needs', 'running', 'waiting', 'working'])
     void day
   })
 }
@@ -143,8 +144,12 @@ test('a click selects a station and shows its caption; Show in Tasks opens the T
     await expect(caption).toBeVisible()
     await expect(station(page, 'naming')).toHaveAttribute('aria-pressed', 'true')
     await expect(station(page, 'naming').locator('[data-station-ring]')).toHaveCount(1)
-    // naming has ended: no session to open, only the Tasks view.
-    await expect(caption.locator('[data-station-open]')).toHaveCount(0)
+    // A task whose attempt has no session (release-notes has made none) offers no Open, only the Tasks view.
+    await station(page, 'release-notes').click()
+    await expect(page.locator('[data-station-caption="release-notes"] [data-station-show]')).toBeVisible()
+    await expect(page.locator('[data-station-caption="release-notes"] [data-station-open]')).toHaveCount(0)
+    await station(page, 'naming').click()
+    await expect(caption.locator('[data-station-open]')).toBeVisible()
     await caption.locator('[data-station-show]').click()
     await expect(page).toHaveURL(/[?&]view=tasks(&|$)/)
     await expect(page).toHaveURL(/[?&]task=naming(&|$)/)
@@ -157,6 +162,9 @@ test('a click selects a station and shows its caption; Show in Tasks opens the T
     await station(page, 'schema').focus()
     await page.keyboard.press('ArrowRight')
     await expect(station(page, 'naming')).toBeFocused()
+    await page.keyboard.press('ArrowRight')
+    await expect(station(page, 'migrate')).toBeFocused()
+    // Down: the nearest station on the lane below, release-notes beside migrate.
     await page.keyboard.press('ArrowDown')
     await expect(station(page, 'release-notes')).toBeFocused()
     // Enter on soak goes to its attempt's session page.

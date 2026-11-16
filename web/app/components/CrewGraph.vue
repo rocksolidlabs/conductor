@@ -8,13 +8,13 @@ let seq = 0
 import { ConnectionMode, MarkerType, useVueFlow, VueFlow, type Connection, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import type { CrewStart, RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
+import type { CrewStart, RunInfo, RunTask } from '~/composables/useSessions'
 import type { OfferRun } from '~/utils/runs'
 import type { MemberStatus } from '~/utils/crews'
 import { connectError, connectionAllowed, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
 import { taskListRows } from '~/utils/taskGraph'
-import { taskDot, taskWords, type TaskRun } from '~/utils/tasks'
-import { attemptSession, taskStatus } from '~/utils/status'
+import { taskWords, type TaskRun } from '~/utils/tasks'
+import { markLook, STATUS_KEYS, TASK_KEYS, type MarkKey, type MarkView } from '~/utils/status'
 import type { MemberNodeData } from '~/components/CrewGraphNode.vue'
 import type { LineStationInfo } from '~/components/RunLineDiagram.vue'
 import type { CrewEdgeData } from '~/components/CrewGraphEdge.vue'
@@ -39,6 +39,10 @@ const props = withDefaults(
     members: GraphMember[]
     /** Live member states in a run (memberStatus). */
     states?: Map<string, MemberStatus>
+    /** Each member's mark in a run (memberStatusOf), by name; absent for a saved crew. */
+    marks?: Map<string, MarkView>
+    /** Each task's mark (taskStatus), by id. */
+    taskMarks?: Map<string, MarkView>
     handoffs?: HandoffSeen[]
     editable?: boolean
     runId?: string
@@ -53,8 +57,6 @@ const props = withDefaults(
     agentNames?: Record<string, string>
     /** A managed run's tasks (#334): with any, the graph has a Tasks mode, the tasks drawn as lines. */
     tasks?: RunTask[]
-    /** The sessions the page holds: a running task's mark is its attempt's session's state. */
-    sessions?: SessionInfo[]
     paused?: boolean
     /** The run's state and why it paused, for the tasks' words: they read as in the run page's task list (an interrupted run's held task). */
     runState?: string
@@ -62,7 +64,7 @@ const props = withDefaults(
     /** The task selected in Tasks mode. */
     selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, run: null, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], sessions: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
+  { states: undefined, marks: undefined, taskMarks: undefined, editable: false, runId: '', stopped: false, run: null, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -122,13 +124,13 @@ function taskWordsOf(t: RunTask) {
   return taskWords(t, taskRun.value)
 }
 const warnings = computed(() => new Map(taskRows.value.flatMap((n) => (n.warning ? [[n.id, n.warning] as const] : []))))
-// The stations: each task with its needs, its state, its mark (taskStatus, its attempt's session's state while it runs) and its words.
+// The stations: each task with its needs, its state, its mark (taskMarks: taskStatus, its attempt's session's state while it runs) and its words.
 const stations = computed<LineStationInfo[]>(() =>
   props.tasks.map((t) => ({
     id: t.id,
     needs: t.needs,
     state: t.state,
-    mark: taskStatus(t, props.run ?? undefined, attemptSession(t, props.sessions), props.now || Date.now()),
+    mark: props.taskMarks?.get(t.id),
     words: warnings.value.get(t.id) ?? taskWordsOf(t).text,
   })),
 )
@@ -151,7 +153,7 @@ const flowNodes = computed<Node<MemberNodeData>[]>(() =>
         id: n.id,
         type: 'member',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, run: props.run, agentName: props.agentNames[n.member.agentId] ?? '' },
+        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, run: props.run, agentName: props.agentNames[n.member.agentId] ?? '', mark: props.marks?.get(n.id) },
         connectable: props.editable,
         draggable: false,
         selected: n.id === props.selected,
@@ -237,22 +239,14 @@ function onNodeDoubleClick(e: NodeMouseEvent) {
   emit('open', e.node.id)
 }
 
-const memberLegend = [
-  { dot: 'bg-success', label: 'running' },
-  { dot: 'bg-warning', label: 'needs input' },
-  { dot: 'bg-info', label: 'starting' },
-  { dot: 'bg-neutral-400', label: 'ended' },
-  { dot: 'bg-transparent ring-1 ring-neutral-400', label: 'pending' },
-]
-const taskLegend = [
-  { dot: taskDot('running'), label: 'an attempt runs' },
-  { dot: taskDot('verifying'), label: 'checking a result' },
-  { dot: taskDot('succeeded'), label: 'done' },
-  { dot: taskDot('failed'), label: 'failed' },
-  { dot: taskDot('ready'), label: 'ready, or cancelled' },
-  { dot: taskDot('blocked'), label: 'waiting for a result' },
-]
-const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
+/**
+ * The legend: one line a key, made from the status table (STATUS_LOOK and TASK_LOOK, in their order), listing only the keys the graph
+ * draws now (the tasks' marks in Tasks mode, else the members'); in Tasks mode the three kinds of line after them.
+ */
+const legend = computed(() => {
+  const drawn = new Set<MarkKey>([...((tasksMode.value ? props.taskMarks : props.marks)?.values() ?? [])].map((m) => m.key))
+  return [...STATUS_KEYS, ...TASK_KEYS].filter((k) => drawn.has(k)).map((k) => ({ key: k, look: markLook(k) }))
+})
 const lineLegend = [
   { key: 'line', label: 'a line: tasks that follow one another' },
   { key: 'branch', label: 'a branch: a task that starts from a result another line goes on from' },
@@ -278,12 +272,12 @@ const lineLegend = [
       <USwitch v-if="!editable && !tasksMode" v-model="prefs.handoffs" label="Handoffs" size="xs" data-graph-handoffs />
       <span v-if="editable && wide" class="ml-1.5 text-xs text-muted" data-graph-hint>Drag from a member's right edge onto another to make it wait. One "after" each; loops can't be drawn.</span>
       <UPopover v-if="!editable" :content="{ align: 'end' }">
-        <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" />
+        <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" data-graph-legend-open />
         <template #content>
-          <dl class="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 p-3 text-xs">
-            <template v-for="l in legend" :key="l.label">
-              <dt class="size-2 rounded-full" :class="l.dot" />
-              <dd>{{ l.label }}</dd>
+          <dl class="grid max-w-sm grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1 p-3 text-xs" data-graph-legend-list>
+            <template v-for="l in legend" :key="l.key">
+              <dt class="flex items-center"><StatusMark :status="{ key: l.key, word: l.look.word, legend: l.look.legend }" /></dt>
+              <dd :data-graph-legend="l.key">{{ l.look.legend }}</dd>
             </template>
             <template v-if="tasksMode">
               <template v-for="l in lineLegend" :key="l.key">
@@ -325,14 +319,14 @@ const lineLegend = [
           <div class="flex items-center gap-2">
             <UIcon :name="n.task.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" />
             <span class="truncate font-mono text-sm font-semibold">{{ n.id }}</span>
-            <span class="size-2 flex-none rounded-full" :class="taskDot(n.task.state)" aria-hidden="true" />
+            <StatusMark v-if="taskMarks?.get(n.id)" :status="taskMarks.get(n.id)!" word class="flex-none" />
             <span class="ml-auto truncate text-xs text-muted">{{ n.task.member }}</span>
           </div>
           <span class="truncate text-xs" :class="n.warning ? 'text-warning' : 'text-muted'">{{ n.warning ?? taskWordsOf(n.task).text }}</span>
         </div>
       </li>
     </ol>
-    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :run="run" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
+    <CrewGraphList v-else-if="!wide" :graph="graph" :marks="marks" :editable="editable" :run="run" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
     <!-- Tasks mode: the run as lines, fitted to the pane, which scrolls inside itself past half size; the selected task's caption under it. -->
     <template v-else-if="tasksMode">
       <div class="relative rounded-md border border-default bg-elevated [--line-station-bg:var(--ui-bg-elevated)]" :class="fill ? 'min-h-72 flex-1' : 'h-96'" data-graph-canvas data-graph-lines>

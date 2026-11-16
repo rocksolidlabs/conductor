@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { summaryDoneWords, ticketSections, ticketWaits, type TicketSectionsInput, type WaitItem } from './ticketSections'
+import { summaryStatusLine } from './status'
+import { ticketSections, ticketWaits, type TicketSectionsInput, type WaitItem } from './ticketSections'
 
 // A ticket's strip of sections (UX1 PR-16, utils/ticketSections.ts): the nine names in the page's order, each with its state where it has
 // one, and the ticket's items of the one list, filtered by its key and its runs, never counted again.
@@ -46,12 +47,14 @@ describe("a ticket's strip of sections", () => {
   })
 })
 
-describe("a run summary's done part", () => {
-  it('counts the succeeded tasks of all, and says nothing of a running or checking task', () => {
-    expect(summaryDoneWords({ tasks: { succeeded: 2, running: 1, ready: 3 } })).toBe('2 of 6 done')
-    expect(summaryDoneWords({ tasks: { verifying: 1, blocked: 1 } })).toBe('0 of 2 done')
-    expect(summaryDoneWords({ tasks: {} })).toBe('')
-    const runs = words(input({ runs: 1, runDone: summaryDoneWords({ tasks: { succeeded: 2, running: 1, ready: 3 } }) }), 'runs')
+describe("the strip's run part from a summary alone (summaryStatusLine's done part)", () => {
+  const summary = (tasks: Record<string, number>, over: Record<string, unknown> = {}) => ({ state: 'running' as const, tasks, ...over })
+  it('counts the succeeded tasks of all, says nothing of a running or checking task, and keeps the count once the run ended', () => {
+    expect(summaryStatusLine(summary({ succeeded: 2, running: 1, ready: 3 }), []).done).toBe('2 of 6 done')
+    expect(summaryStatusLine(summary({ verifying: 1, blocked: 1 }), []).done).toBe('0 of 2 done')
+    expect(summaryStatusLine(summary({}), []).done).toBe('')
+    expect(summaryStatusLine(summary({ succeeded: 6 }, { outcome: 'succeeded', state: 'finished' }), []).done).toBe('6 of 6 done')
+    const runs = words(input({ runs: 1, runDone: summaryStatusLine(summary({ succeeded: 2, running: 1, ready: 3 }), []).done }), 'runs')
     expect(runs.words).toBe('2 of 6 done')
     expect(runs.words).not.toMatch(/working|running|checking/)
   })

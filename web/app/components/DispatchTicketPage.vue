@@ -15,7 +15,8 @@ import { heldRuns } from '~/composables/useTicketCandidates'
 import { REVIEW_ENTRY, openFindingsOf, openFindingsOfTask, useReview, type ReviewSummary } from '~/composables/useReview'
 import { firstReviewCandidate, latestReviewable } from '~/utils/review'
 import { entryRunId } from '~/utils/dispatchEvidence'
-import { summaryDoneWords, ticketSections, ticketWaits } from '~/utils/ticketSections'
+import { ticketSections, ticketWaits } from '~/utils/ticketSections'
+import { summaryStatusLine } from '~/utils/status'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -320,7 +321,8 @@ const strip = computed(() => {
     plan: plan.featured.value,
     waits: ticketWaits(needs.items.value, { key: t.key, runs: runIds.value }),
     runs: runIds.value.length,
-    runDone: newestRun.value ? summaryDoneWords(newestRun.value) : '',
+    // The newest run's done part, in the status language's words (summaryStatusLine): what a summary carries; its need-you is the strip's.
+    runDone: newestRun.value ? summaryStatusLine(newestRun.value, []).done : '',
     decisions: decisionRecords.decisions.value ?? [],
     close: closeCard(t),
     comments: t.comments ?? [],

@@ -1,7 +1,9 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -105,5 +107,63 @@ func TestRenameIsSafeForConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if got, launched := s.Info().Name, s.Launched().Name; got != launched || !strings.HasPrefix(got, "name ") {
 		t.Fatalf("after the renames the name is %q and a resume's %q", got, launched)
+	}
+}
+
+// cutAtWordCase is a case of testdata/cut-at-word.json, the table every
+// copy of the cut rule is held to (this one, dispatch's, the app's).
+type cutAtWordCase struct {
+	Name  string `json:"name"`
+	S     string `json:"s"`
+	Keep  int    `json:"keep"`
+	Chars int    `json:"chars"`
+	Bytes int    `json:"bytes"`
+	Want  string `json:"want"`
+}
+
+// Every case of the table: whole when it fits, cut at the last space
+// that fits after the kept characters, a first word past the bound cut
+// at a character, the ellipsis inside both bounds.
+func TestCutAtWordTable(t *testing.T) {
+	data, err := os.ReadFile("testdata/cut-at-word.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tab struct {
+		About string          `json:"about"`
+		Cases []cutAtWordCase `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &tab); err != nil || len(tab.Cases) < 8 {
+		t.Fatalf("the table: %d cases, %v", len(tab.Cases), err)
+	}
+	for _, c := range tab.Cases {
+		got := CutAtWord(c.S, c.Keep, c.Chars, c.Bytes)
+		if got != c.Want {
+			t.Errorf("%s: %q, want %q", c.Name, got, c.Want)
+		}
+		if utf8.RuneCountInString(got) > c.Chars || c.Bytes > 0 && len(got) > c.Bytes {
+			t.Errorf("%s: %q is past its bounds", c.Name, got)
+		}
+	}
+}
+
+// A session launched with a first message and no name is named by the
+// message's first words: line breaks and tabs are spaces, runs of spaces
+// one, cut at a word to 40 characters and the name's bytes with an
+// ellipsis; a message of spaces names nothing.
+func TestNameFromMessage(t *testing.T) {
+	for in, want := range map[string]string{
+		"fix the flaky vim spec on the mac runner please": "fix the flaky vim spec on the mac…",
+		"fix it\nnow":                "fix it now",
+		"  fix\t\tthe   parser \r\n": "fix the parser",
+		" \n\t ":                     "",
+		strings.Repeat("é", 100):     strings.Repeat("é", 39) + "…",
+	} {
+		if got := NameFromMessage(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+		if got := NameFromMessage(in); len(got) > proto.MaxSessionName || utf8.RuneCountInString(got) > 40 {
+			t.Errorf("%q: %q is past the name's bounds", in, got)
+		}
 	}
 }

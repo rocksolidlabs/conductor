@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { GraphDirection } from '~/utils/crewGraph'
 import { lineLayout, stepFrom, type LinePoint, type LineStep, type LineStation } from '~/utils/lineDiagram'
-import type { StatusView } from '~/utils/status'
+import type { MarkView } from '~/utils/status'
 
 /**
  * A run drawn as lines (UX1 PR-33, P15): an SVG over lineLayout, as RunTimeline is over utils/timeline.ts. A task is a station, a chain
@@ -20,7 +20,7 @@ export interface LineStationInfo {
   /** The task's own state (`data-task-state`), where there is one. */
   state?: string
   /** Its state's mark; none draws a hollow station. */
-  mark?: Pick<StatusView, 'key' | 'word' | 'legend'>
+  mark?: Pick<MarkView, 'key' | 'word' | 'legend'>
   /** What it does now in words: the station's name for a screen reader and its title, after its id. */
   words?: string
   /** Started by hand (a member's start rule): its station's ring is dashed. */
