@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, rowAnswer, test, type Session } from './fixtures'
 
 // A needs-input report with choices (conductor notify --choices): the
 // session page, the wall queue and the sidebar's row show them as buttons,
@@ -104,12 +104,14 @@ test('the sidebar row offers the choices, numbered, and a click types one withou
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText('Which database?')
-  await expect(row.locator('[data-row-choice]')).toHaveCount(3)
-  await expect(row.locator('[data-row-choice="3"]')).toContainText('Keep both')
-  await row.locator('[data-row-choice="1"]').click()
+  const answers = await rowAnswer(page, row)
+  await expect(answers.locator('[data-row-choice]')).toHaveCount(3)
+  await expect(answers.locator('[data-row-choice="3"]')).toContainText('Keep both')
+  await answers.locator('[data-row-choice="1"]').click()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('Postgres\n')
   // The prompt clears and the row moves to Running, its buttons gone; the page never left /crews.
   await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
   await expect(row.locator('[data-row-choice]')).toHaveCount(0)
+  await expect(page.locator('[data-row-panel]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/crews$/)
 })

@@ -83,6 +83,29 @@ export function sidebarBounds(windowWidth: number, remPx = 16): SidebarBounds {
 /** The full sidebar's drawn width: the width Nuxt UI holds (`--width`), within the bounds of the window as it is now. */
 export const SIDEBAR_WIDTH = `clamp(${SIDEBAR_SIZE.min}rem, var(--width), max(${SIDEBAR_SIZE.min + SIDEBAR_SIZE.range}rem, ${SIDEBAR_SIZE.maxShare * 100}vw))`
 
+/**
+ * Below this drawn width (px) a row's question is two lines and whole in the panel beside the row (owner decision 7): at 200 px a
+ * question at the server's bound is two dozen lines. At 280 px and wider, and on the phone's list, it stays whole in the row.
+ */
+export const NARROW_SIDEBAR_PX = 280
+
+/** Whether the list drawn `px` wide is narrow: one answer decides both the clamp and the panel. Never for the phone's list (`page`). */
+export function narrowSidebar(px: number, page = false): boolean {
+  return !page && Number.isFinite(px) && px < NARROW_SIDEBAR_PX
+}
+
+/**
+ * The row the question's panel is for (`s:<id>`), or null: in a narrow sidebar, the row whose Answer was pressed, else the focused
+ * row, while it asks (it has a prompt) and does not show its Stop question (`confirming`); none in a wide one.
+ */
+export function panelRow(focused: string | null, pressed: string | null, rows: ReadonlyMap<string, SessionRow | RunBlock>, narrow: boolean, confirming: string | null = null): string | null {
+  if (!narrow) return null
+  const id = pressed ?? focused
+  if (!id || id === confirming) return null
+  const row = rows.get(id)
+  return row?.kind === 'session' && row.prompt ? id : null
+}
+
 /** The width a drag left, in rem, per browser, beside the mode: with Nuxt UI's persistence off, nothing else keeps it over a reload. */
 export const SIDEBAR_SIZE_KEY = 'conductor.sidebar.width'
 /** The width before #437, in percent of the window: dropped once, so every browser opens at the minimum. */
