@@ -433,7 +433,7 @@ func worstRepairFile(c Crew, pkg *Package, def Task, prompt string, rp *repair, 
 	f.Compare = compareFor(c.Compare, c.Tasks, def.ID, commit)
 	if pkg != nil {
 		f.Ticket = &TaskTicket{Key: pkg.Ticket.Key, Rev: 1<<63 - 1, Plan: pkg.Plan.ID, PlanN: pkg.Plan.N, Digest: strings.Repeat("0", 64), Files: packageFilePaths(*pkg)}
-		f.ticketTitle = cutTitle(pkg.Ticket.Title)
+		f.ticketTitle, f.ticketQuoted, f.packageQuoted = cutTitle(pkg.Ticket.Title), quotedTitle(*pkg), quotedPackage(*pkg)
 	}
 	if len(def.Needs) > 0 {
 		need := def.Needs[0]

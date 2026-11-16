@@ -49,6 +49,24 @@ describe('CapacityLive', () => {
     expect(live.entry(q).view?.state).toBe('ok')
   })
 
+  it('asks a view that failed again when a page says so (Read again), and nothing for a question no page shows', async () => {
+    const srv = fakeServer()
+    const live = new CapacityLive()
+    live.attach(srv.reads)
+    const q = { agent: 'claude' }
+    void live.watch(q)
+    srv.gets[0]!.fail(new Error('The server did not answer within 30 s'))
+    await settle()
+    expect(live.entry(q)).toMatchObject({ view: null, error: 'The server did not answer within 30 s' })
+    void live.again(q)
+    expect(srv.gets).toHaveLength(2)
+    srv.gets[1]!.answer(view('claude', 'default', { state: 'ok' }))
+    await settle()
+    expect(live.entry(q)).toMatchObject({ error: '', view: { state: 'ok' } })
+    void live.again({ agent: 'codex' })
+    expect(srv.gets).toHaveLength(2)
+  })
+
   it("fetches again on its key's event only: another agent's or another account's moves nothing", async () => {
     const srv = fakeServer()
     const live = new CapacityLive()
