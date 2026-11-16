@@ -3,7 +3,7 @@ import type { TicketSummary } from '~/composables/useDispatch'
 import { parseTicketKey, pickEdit, priorityWord, statusWord, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
-import type { InboxSummary } from '~/utils/inbox'
+import { rowLine, type InboxSummary } from '~/utils/inbox'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, sessionTarget, type Action } from '~/utils/actions'
@@ -68,7 +68,7 @@ export function decisionRows(items: ReadonlyArray<Pick<InboxSummary, 'ref' | 'ti
   // A DR1 record answered and not yet applied waits on Yardmaster, not on a person: no row (the bar's number leaves it out too).
   return items.filter((s) => !s.tracking).map((s) => {
     const to = `/decisions?item=${encodeURIComponent(s.ref)}`
-    return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: s.question || s.brief, icon: 'i-lucide-gavel', run: () => go(to), href: to }
+    return { key: `decide:${s.ref}`, label: `Decide: ${s.title}`, detail: rowLine(s), icon: 'i-lucide-gavel', run: () => go(to), href: to }
   })
 }
 

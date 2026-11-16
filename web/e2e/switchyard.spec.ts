@@ -690,7 +690,7 @@ test('a gate before the first attempt, over the desk: its card drawn from the re
     await phone.getByRole('button', { name: 'Join crew' }).tap()
     const decide = phone.locator('[data-join-run-decide]')
     await expect(decide.locator(`[data-inbox-row="${ref}"]`)).toBeVisible({ timeout: STEP })
-    await expect(decide.locator(`[data-inbox-row="${ref}"] [data-inbox-row-durable]`)).toHaveText('A durable decision')
+    await expect(decide.locator(`[data-inbox-row="${ref}"] [data-inbox-row-kind="decision"]`)).toHaveText('Decision')
     await decide.locator(`[data-inbox-row="${ref}"]`).tap()
 
     // DR1's card from the record assembled through the link: the question, its two options, its four states; no control.
@@ -703,7 +703,7 @@ test('a gate before the first attempt, over the desk: its card drawn from the re
       .toEqual({ open: 'done', recorded: 'waiting', validated: 'pending', applied: 'pending' })
     await expect(item.locator('[data-decision-respond]')).toHaveCount(0)
     await expect(item.locator('[data-inbox-actions]')).toHaveCount(0)
-    await expect(item.locator('[data-inbox-now]')).toContainText('a link cannot answer a durable decision yet')
+    await expect(item.locator('[data-inbox-now]')).toContainText("a link cannot answer a run's decision yet")
     // The inbox's own evidence there: each entry says where it is opened, none a workbench page.
     await item.locator('[data-inbox-evidence-toggle]').tap()
     await expect(item.locator('[data-evidence-ref^="run:"] [data-evidence-elsewhere]')).toHaveText('Open it on the desktop or the LAN.')

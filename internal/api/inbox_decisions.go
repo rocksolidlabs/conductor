@@ -119,17 +119,6 @@ func optionLabels(row ledger.DecisionRow, r recordRequest) []string {
 	return out
 }
 
-// typeWord is a record's type as a title starts.
-func typeWord(typ string) string {
-	switch typ {
-	case ledger.DecisionApproval:
-		return "Approval"
-	case ledger.DecisionAssignment:
-		return "Assignment"
-	}
-	return "Clarification"
-}
-
 // inboxRun is a run as one read of the inbox found it: false for none.
 type inboxRun struct {
 	run crew.Run
@@ -180,6 +169,29 @@ func (rd *inboxRead) askedWhere(row ledger.DecisionRow, run inboxRun) string {
 	return fmt.Sprintf("%s in attempt %s.%d", agent, row.TaskID, row.Attempt)
 }
 
+// decisionFrom says where a record comes from, after "A decision for
+// you, from": a plan's gate is "the plan of DEC-1" (of its run's ticket)
+// or "the plan of run <name>" when the run has none; an agent's request
+// is "<agent> in attempt build.2 of run <name>", with " for DEC-1" when
+// the run has a ticket.
+func (rd *inboxRead) decisionFrom(row ledger.DecisionRow, run inboxRun, runName string) string {
+	ticket := ""
+	if run.ok && run.run.Ticket != nil {
+		ticket = run.run.Ticket.Key
+	}
+	if row.Origin == ledger.OriginPlan {
+		if ticket != "" {
+			return "the plan of " + ticket
+		}
+		return "the plan of run " + runName
+	}
+	from := rd.askedWhere(row, run) + " of run " + runName
+	if ticket != "" {
+		from += " for " + ticket
+	}
+	return from
+}
+
 // decisionItem is the item of DR1's record row and held, the tasks it
 // holds, both as one read of the ledger found them (one read, so what a
 // response authorizes and what waits for it are said of the rev it is
@@ -204,12 +216,11 @@ func (rd *inboxRead) decisionItem(row ledger.DecisionRow, held []string, rec *le
 		runName = run.run.Name
 	}
 	where := rd.askedWhere(row, run)
-	it.Title = fitText(fmt.Sprintf("%s %s: %s", typeWord(row.Type), id, req.Question), 200)
-	brief := fmt.Sprintf("%s asks %s, a durable decision of run %s", capitalize(where), id, runName)
-	if run.ok && run.run.Ticket != nil {
-		brief += " for " + run.run.Ticket.Key
-	}
-	it.Brief = fitText(brief, 2<<10)
+	// In a person's words (UX1 PR-21): titled by its question alone,
+	// briefed by where it comes from; its id is the card's, and no
+	// "durable" or "gate" is said.
+	it.Title = fitText(req.Question, 200)
+	it.Brief = fitText("A decision for you, from "+rd.decisionFrom(row, run, runName), 2<<10)
 	rd.decisionBlocking(it, row, run, held, where)
 	rd.decisionEvidence(it, row, run, req)
 	switch row.State {
