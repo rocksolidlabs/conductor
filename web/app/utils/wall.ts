@@ -1,5 +1,7 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { isActive } from './attention'
+import { sessionRow } from './sidebar'
+import { rowPrompt } from './sidebarActions'
 import { sessionStatus } from './status'
 
 export interface GridLayout {
@@ -89,4 +91,15 @@ export function yardFilterOf(query: unknown): YardFilter {
 /** What the Needs you chip counts, said in its tooltip and its accessible name: the sessions on this grid, not the one number. */
 export function needsChipWords(n: number): string {
   return `${n} ${n === 1 ? 'session on this grid asks' : 'sessions on this grid ask'} you. Plans, tasks and decisions wait in Needs you.`
+}
+
+/**
+ * What a tile that asks says at its foot, in place of the host (the UX review's P22): its question as the sidebar's row and the pill
+ * read it (rowPrompt), "dr-7 · " before one that mirrors a durable decision; null for a tile that does not ask (a working session, an
+ * ended one that still carries its question). The foot cuts it to one line; the whole is its title.
+ */
+export function tileAsk(s: SessionInfo): string | null {
+  const p = rowPrompt(sessionRow(s))
+  if (!p) return null
+  return p.decision ? `${p.decision} · ${p.message}` : p.message
 }

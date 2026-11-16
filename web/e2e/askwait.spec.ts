@@ -6,8 +6,8 @@ import { expect, member, test, type Api } from './fixtures'
 // An agent's own question outlasts its turn (#193). An agent asks with
 // `conductor notify --ask` (the stub's `stub ask-wait`), then waits for the
 // answer by ending its turn, which its hooks report as done: the question
-// still shows, on the member's row in the sidebar, in the Yard's queue and on
-// the run's card, with its words, until a person answers it from the row.
+// still shows, on the member's row in the sidebar, at its tile's foot on the
+// Yard and on the run's card, with its words, until a person answers it from the row.
 // Codex, whose window title says it works while it goes on after asking,
 // shows Working meanwhile, and the question again at its turn's done. What
 // the session went through is read from the admin event stream and the
@@ -158,7 +158,7 @@ test("an agent's question still shows Needs you once its turn ends, on its row, 
   expect(asked.attention).toMatchObject({ state: 'needs_input', message: ASK })
   expect(member(await api.run(runId), 'asks').needsInput).toBe(true)
 
-  // What a person sees: the row, the Yard's queue and the run's card ask, with the question's words.
+  // What a person sees: the row, the Yard's tile and the run's card ask, with the question's words.
   await page.goto('/crews')
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row(page, id).locator('[data-row-prompt]')).toHaveText(ASK)
@@ -167,8 +167,9 @@ test("an agent's question still shows Needs you once its turn ends, on its row, 
   await expect(card.locator('[data-run-ask]')).toContainText(ASK)
   const yard = await page.context().newPage()
   await yard.goto('/yard')
-  const queued = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
-  await expect(queued).toContainText(ASK, { timeout: 30_000 })
+  const queued = yard.locator(`[data-session-tile][data-session-id="${id}"] [data-tile-ask]`)
+  await expect(queued).toHaveAttribute('title', ASK, { timeout: 30_000 })
+  expect(ASK.startsWith((await queued.textContent()) ?? 'x'), "the tile's foot says the question's start").toBe(true)
   // It stays: a second later it still asks, the same question.
   await page.waitForTimeout(1_000)
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs')

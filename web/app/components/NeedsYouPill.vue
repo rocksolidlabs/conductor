@@ -21,6 +21,7 @@ const attention = useAttention()
 const quick = useQuickReply()
 const toast = useToast()
 const router = useRouter()
+const route = useRoute()
 const root = useTemplateRef<HTMLElement>('root')
 
 const session = computed(() => (cursor.shown.value && !cursor.shown.value.decision ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
@@ -64,7 +65,8 @@ function open() {
   const s = session.value
   if (!s) return
   cursor.hide()
-  void router.push(`/sessions/${s.id}`)
+  // On the Yard the tile expands in place, where its bar takes a typed reply; elsewhere the session's page.
+  void router.push(pillTarget(route.path, s.id))
 }
 function answer(i: number) {
   const s = session.value

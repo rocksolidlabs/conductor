@@ -5,6 +5,7 @@ import { isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
 import { sessionStatus } from '~/utils/status'
 import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
+import { tileAsk } from '~/utils/wall'
 
 /**
  * A session as a live tile: its terminal fits the tile and takes keys in place (a click on it focuses it); the full view is one action
@@ -27,6 +28,9 @@ const needsInput = computed(() => status.value.key === 'needs')
 const hostName = computed(() => props.session.hostName || 'dev machine')
 const host = computed(() => (props.session.kind === 'hosted' ? hostName.value : 'server'))
 const hostTitle = computed(() => (props.session.kind === 'hosted' ? `hosted · ${hostName.value}` : 'server'))
+// A tile that asks says the start of its question where the host was; the whole question is its title and joins the tile's name.
+const ask = computed(() => (needsInput.value ? tileAsk(props.session) : null))
+const label = computed(() => (ask.value ? `${props.session.name} asks: ${ask.value} Enter opens it in full.` : `${props.session.name}: a live terminal. Enter opens it in full.`))
 </script>
 
 <template>
@@ -42,7 +46,7 @@ const hostTitle = computed(() => (props.session.kind === 'hosted' ? `hosted · $
       tabindex="0"
       data-session-tile
       :data-session-id="props.session.id"
-      :aria-label="`${props.session.name}: a live terminal. Enter opens it in full.`"
+      :aria-label="label"
       @keydown.enter.self.prevent="emit('select')"
       @keydown.space.self.prevent="emit('select')"
     >
@@ -66,7 +70,8 @@ const hostTitle = computed(() => (props.session.kind === 'hosted' ? `hosted · $
           <StatusMark :status="status" word :quiet="!events.routes.value.needs_input.badge" />
         </span>
         <slot name="footer">
-          <span class="min-w-0 truncate" :title="hostTitle" data-tile-host>{{ host }}</span>
+          <span v-if="ask" class="min-w-0 truncate font-sans text-[11.5px] text-default" :title="ask" data-tile-ask>{{ ask }}</span>
+          <span v-else class="min-w-0 truncate" :title="hostTitle" data-tile-host>{{ host }}</span>
           <span class="ml-auto flex-none" data-tile-viewers>{{ props.session.viewers ? `${props.session.viewers} here` : '—' }}</span>
         </slot>
       </div>

@@ -91,12 +91,17 @@ test("a decision's question takes no reply in the sidebar's row, the Yard's queu
   await expect(row.locator('[data-row-reply]')).toHaveCount(0)
   await expect(row.locator('[data-row-choice]')).toHaveCount(0)
 
-  // The Yard's queue: the card says it, and has no reply box.
-  budget(3 * STEP_MS) // the page, the words, no box
+  // The Yard: the tile says the decision and the question's start, and the grid has no reply box; expanded, its bar answers it as
+  // the decision, with no field.
+  budget(6 * STEP_MS) // two pages, the tile's words, no box, the bar's Answer, no field
   await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
-  await expect(card.locator('[data-queue-decision]')).toHaveText(words, { timeout: 15_000 })
-  await expect(card.locator('input')).toHaveCount(0)
+  const ask = page.locator(`[data-session-tile][data-session-id="${s.id}"] [data-tile-ask]`)
+  await expect(ask).toHaveText(new RegExp(`^${s.attention!.decision} · `), { timeout: 15_000 })
+  await expect(page.locator('[data-yard-grid] input')).toHaveCount(0)
+  await page.goto(`/yard?focus=${s.id}`)
+  const bar = page.locator('[data-yard-focus] [data-quick-reply]')
+  await expect(bar.locator('[data-quick-reply-answer]')).toHaveText(`Answer ${s.attention!.decision}`, { timeout: 15_000 })
+  await expect(bar.locator('input')).toHaveCount(0)
 
   // The palette's row for the session: the words where a reply field would be.
   budget(6 * STEP_MS) // the page, the sidebar, the key, the palette, the words, no reply

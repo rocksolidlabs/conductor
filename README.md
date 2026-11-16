@@ -591,10 +591,11 @@ while the tile has focus and the **Alt** chords still work. The chips in the
 header filter tiles by state (**All**, **Needs you**, **Working**, **Finished**,
 and **Running** while an agent that reports no turns, or one still starting,
 is on the grid); **Needs you** counts the sessions on this grid that ask. A
-tile's header is its name; its state is at its foot. A queue on the left
-lists every session waiting for input with its prompt: answer from there
-(**J**/**K** select, **Enter** types a reply) without opening the session,
-and see who answered what under **Answered**. The expand button in a tile's
+tile's header is its name; its state is at its foot, and a tile that asks
+says the start of its question there, the whole of it in its tooltip. The
+grid takes the page at every width: answer a question from **Needs you** in
+the sidebar, from the pill that **]** brings up (its **Enter** expands the
+tile in place on the Yard), or in the expanded tile's own reply bar. The expand button in a tile's
 header, a double-click on the header, or **Enter** on a tile whose frame has
 keyboard focus expands it in place to a full-size terminal (`/yard?focus=<id>`,
 so the view is linkable); **Esc**, the back arrow or the browser's Back button
@@ -660,7 +661,7 @@ as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
 away".
 
-**The command palette** is the sidebar's row actions and the Yard's queue
+**The command palette** is the sidebar's row actions and its Needs you
 from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
 while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
 kill-line), and the rail's search button. It opens over the page on what
@@ -798,7 +799,7 @@ an attention word, or a hook mapped to one) that the server answers `429` is
 tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
 at most; an event is tried once. Sessions that need a human show an amber
 **needs input** badge, move to the top of the sidebar, count in the tab title,
-can raise a browser notification, and appear in the Yard's queue. Claude Code's
+can raise a browser notification, and say their question at their tile's foot on the Yard. Claude Code's
 dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
 offer their own choices wherever the prompt is shown, read off the dialog as
 it is drawn: a choice that changes the permission mode (auto mode, accept
@@ -910,7 +911,7 @@ as the built-in Cursor CLI entry does for its prompt. Run `conductor notify
 --state needs_input --message "approve?"` from a script for anything else;
 `--state clear` resets it. A question with a few answers takes them as
 `--choices "Postgres|SQLite|Keep both"` (at most 6, each at most 40 bytes):
-the session tile, the Yard's queue and the run page show them as buttons, and
+the session's reply bar, the sidebar's row, the pill and the run page show them as buttons, and
 a click types the choice into the session as a line, so an agent names the
 choices in its terminal first and gets the same words back.
 

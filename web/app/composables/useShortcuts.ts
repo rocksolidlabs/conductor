@@ -20,7 +20,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyD', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyD', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -144,9 +144,6 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [
     { keys: ['escape'], label: 'Back to the grid (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
-    { keys: ['J'], label: 'Next in the queue', terminal: ['alt', 'J'] },
-    { keys: ['K'], label: 'Previous in the queue', terminal: ['alt', 'K'] },
-    { keys: ['enter'], label: 'Reply to the selected queue item' },
   ],
 }
 

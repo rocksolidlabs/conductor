@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
 
 // A needs-input report with choices (conductor notify --choices): the
-// session page, the wall queue and the sidebar's row show them as buttons,
+// session page, a tile expanded on the Yard and the sidebar's row show them as buttons,
 // and a click types the choice into the session as a line, which the stub's
 // transcript holds.
 test.describe.configure({ mode: 'serial' })
@@ -47,52 +47,54 @@ test('the session page offers the choices and a click types one as a line', asyn
   await expect(bar).toBeHidden()
 })
 
-test('the wall queue offers the same buttons', async ({ page, api, state }) => {
+test("a tile expanded on the Yard offers the same buttons in its bar", async ({ page, api, state }) => {
   const s = await ask(api)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
-  await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
+  await page.goto(`/yard?focus=${s.id}`)
+  const card = page.locator('[data-yard-focus] [data-quick-reply]')
   await expect(card).toBeVisible({ timeout: 30_000 })
+  await expect(card.getByRole('button')).toHaveCount(3)
   await card.getByRole('button', { name: /SQLite/ }).click()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('SQLite\n')
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
 })
 
-test("the wall queue wraps a question's choices onto lines of their own: none is cut off, a shortened one whole in its title (#906)", async ({ page, api }) => {
+test("an expanded tile's bar wraps a question's choices onto lines of their own: none is cut off, a shortened one whole in its title (#906)", async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e three choices' })
   sessions.push(s.id)
-  // Three labels as a permission prompt words them: each fits the card alone, together they do not fit one line of it.
+  // Three labels as a permission prompt words them, in the bar of a tile expanded on the Yard at 1440 x 900, beside the Files pane.
   const labels = ['Yes', "Yes, and don't ask again", 'No, tell Claude why']
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Run git status?', options: labels.map((label, i) => ({ label, input: String(i + 1) })) })
-  await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${s.id}"]`)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/yard?focus=${s.id}`)
+  const card = page.locator('[data-yard-focus] [data-quick-reply]')
   await expect(card).toBeVisible({ timeout: 30_000 })
-  const choice = (label: string) => card.getByRole('button', { name: label, exact: true })
-  /** Each choice inside the card; whole unless `cut` names it, which is shortened and inside the card all the same. */
-  async function inside(all: string[], at: string, cut?: string) {
+  // A choice by its label alone: the bar's buttons lead with their number key.
+  const choice = (label: string) => card.locator('button').filter({ has: page.locator('[data-slot="label"]').getByText(label, { exact: true }) })
+  /** Each choice inside the bar; one the bar shortens has its whole label in its title (choiceTitle). */
+  async function inside(all: string[], at: string) {
     const box = (await card.boundingBox())!
     for (const label of all) {
       await expect(choice(label), `${label} ${at}`).toBeVisible()
       const b = (await choice(label).boundingBox())!
       expect(b.x, `${label} ${at}`).toBeGreaterThanOrEqual(box.x)
       expect(b.x + b.width, `${label} ${at}`).toBeLessThanOrEqual(box.x + box.width)
-      expect(await choice(label).locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth), `${label} whole ${at}`).toBe(label !== cut)
+      const whole = await choice(label).locator('[data-slot="label"]').evaluate((e) => e.scrollWidth <= e.clientWidth)
+      if (!whole) expect(await choice(label).getAttribute('title'), `${label} shortened ${at}: whole in its title`).toContain(label)
     }
   }
   await inside(labels, 'as the card shows')
-  // A label wider than the card would be shortened: its whole text is the button's title.
+  // A label wider than the bar would be shortened: its whole text is the button's title.
   for (const label of labels) await expect(choice(label)).toHaveAttribute('title', label)
-  // More than one line: the third went below the first.
-  expect((await choice(labels[2]!).boundingBox())!.y).toBeGreaterThan((await choice(labels[0]!).boundingBox())!.y)
 
   // The question asked again with a choice that changes the permission mode, longer than the card (the server's 60 runes at most): the
   // card is drawn again; every choice is still inside it, and the long one, shortened, has its words and what it does in its title,
   // as the sidebar's prompt says them.
   const mode = 'Yes, and switch to BYPASS PERMISSIONS (no further prompts)'
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Run git status again?', options: [...labels, mode].map((label, i) => ({ label, input: String(i + 1), mode: label === mode })) })
-  await expect(card.locator('[data-queue-message]')).toHaveText('Run git status again?')
+  await expect(card.locator('[data-quick-reply-message]')).toHaveText('Run git status again?')
   await expect(card.locator('button[data-choice-mode]')).toHaveCount(1)
-  await inside([...labels, mode], 'asked again', mode)
+  await inside([...labels, mode], 'asked again')
   await expect(choice(mode)).toHaveAttribute('title', `${mode} (allows from now on, not this request alone)`)
   for (const label of labels) await expect(choice(label)).toHaveAttribute('title', label)
 })

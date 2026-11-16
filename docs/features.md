@@ -51,9 +51,11 @@ for the wire details.
   you, Running and Exited, with a filter box. The selected session fills the
   main pane. A right-hand inspector has People, Files and Activity tabs; Files
   replaces the current slideover. The Sessions table page is removed.
-- **Wall** (1b): header chips All / Needs you / Running; a queue panel that
-  lists every session waiting for input with its attention message and a
-  reply box that sends text plus Enter over a control connection.
+- **Wall** (1b): header chips by state; a tile that asks says the start of
+  its question at its foot (the queue panel beside the grid is gone since
+  UX1 PR-18: a question is answered in the sidebar's Needs you, the pill or
+  the expanded tile's bar, which sends text plus Enter over a control
+  connection).
 - **Carousel** (1g): film strip of all sessions with a rotation progress bar,
   a "next up" line, and a "jumped here" note when follow mode moved. Follow
   mode holds for two intervals (at least 20 s), not forever, so a stray
@@ -77,8 +79,9 @@ Each item touches `internal/proto`, `web/app/utils/protocol.ts` and
   (Claude Code permission requests). Otherwise the UI shows a plain reply box.
   Buttons disable the moment the attention state changes.
 - **Activity log.** Bounded per-session log of attention transitions, inputs
-  during needs-input, link changes and joins. Feeds the Activity tab and the
-  wall's Answered list.
+  during needs-input, link changes and joins. Feeds the Activity tab (and,
+  until UX1 PR-18, the wall's Answered list; who answered stays in a
+  session's Activity and its History record).
 - **Session metadata.** Git branch (read at launch for server sessions,
   reported by the host for hosted ones), host OS user, per-link viewer count,
   client-measured transport round-trip time.
@@ -247,7 +250,7 @@ Collected here so they are not lost. None of these block the planned work.
   worktrees, verify, and a human merge gate with named approvers. Every step
   is an ordinary session that can be opened, shared or taken over. The run
   page shows the stage graph, a Spec / Events / Artifacts inspector, and
-  `on_needs_input: queue` routes step prompts into the wall queue. Presence
+  `on_needs_input: queue` routes step prompts to the sidebar's Needs you. Presence
   and the activity log above are prerequisites for gates and approvers.
 
 ## Round 3: polish, examples and completion (planned 2026-10-01)
@@ -374,6 +377,23 @@ open deferred item from rounds 1 and 2, then the features below.
   it leaves the nav, the rail and the phone's More, where the Yard's row and
   tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
   `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
+- **The Yard is its grid (UX1 PR-18, #933).** The queue beside the grid is
+  gone (`WallQueue.vue` deleted), so the grid takes the panel at every width
+  and never shrinks while a question waits: on a 390 px phone it is 366 px
+  wide where it was 26. A tile that asks says the start of its question at
+  its foot in place of the host, "dr-7 · " before one that mirrors a
+  decision, the whole question in its title and its name (`tileAsk`, on the
+  sidebar row's `rowPrompt`). A question is answered in the sidebar's Needs
+  you, the pill (] and [), whose Enter on the Yard now expands the tile in
+  place (`pillTarget`), or the expanded tile's bar, whose choices carry the
+  title the queue's had (`choiceTitle`). J, K and Enter leave the Yard's
+  keys, and Alt+J and Alt+K reach the terminal again on every page. The
+  "Answered" list is dropped: a session's Activity and its History record
+  keep who answered. Tests: `yard-grid.spec.ts` (the busy day's grid beside
+  the sidebar, on the rail and opened again; a phone; a question asked
+  again; the pill's Enter), `chords.spec.ts`, and the queue's proofs moved
+  to the tile and the bar in `choices`, `question`, `approval`, `askwait`,
+  `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in
