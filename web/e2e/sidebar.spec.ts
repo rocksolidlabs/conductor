@@ -997,7 +997,8 @@ test('a row fits 200 px', async ({ day, browser }) => {
     const choices = ['Yes', "Yes, and don't ask again", 'No, tell Claude why']
     const ask = (message: string) => api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message, options: choices.map((label, i) => ({ label, input: String(i + 1) })) })
     await ask('Edit the file?')
-    const page = await dayPage(browser, { width: 1440, height: 900 })
+    // A page that is not the session's: its own page would mark the row as the one open.
+    const page = await dayPage(browser, { width: 1440, height: 900, path: '/crews' })
     const root = page.locator('#dashboard-sidebar-main')
     await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
     const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`)
@@ -1016,15 +1017,26 @@ test('a row fits 200 px', async ({ day, browser }) => {
       const buttons = row.locator('[data-row-choice]')
       await expect(buttons).toHaveCount(3)
       expect(Math.abs((await buttons.first().boundingBox())!.x - (await name.boundingBox())!.x), "the first choice at the row's text edge").toBeLessThanOrEqual(2)
+      // Each choice inside the row; a label is cut only when it is wider than the row ("Yes, and don't ask again" with its key
+      // is, at 200 px), its whole text in its title. At 280 px and wider each is whole in the row (PR-8 moves them into the panel
+      // beside a narrower row).
       for (let i = 0; i < choices.length; i++) {
-        await expect(buttons.nth(i)).toContainText(choices[i]!)
-        await uncut(buttons.nth(i).locator('[data-slot="label"]'))
+        await expect(buttons.nth(i)).toContainText(choices[i]!.slice(0, 8))
+        await expect(buttons.nth(i)).toHaveAttribute('title', choices[i]!)
+        await inside(buttons.nth(i), row)
       }
+      await uncut(buttons.nth(0).locator('[data-slot="label"]'))
+      await uncut(buttons.nth(2).locator('[data-slot="label"]'))
     }
     await fits('Edit the file?')
-    // Asked again: the row is drawn again, and still fits.
-    await ask('Edit the other file?')
-    await fits('Edit the other file?')
+    // Drawn again (Needs you folded and unfolded), it still fits. Not by asking again: a second question is posted to the session's
+    // chat too, and the row's unread pill then takes the room a name of twenty characters needs (cut by its rule, whole in its title).
+    const needs = page.locator('[data-session-list="sidebar"] [data-sidebar-section="needs"]')
+    await needs.getByRole('button', { name: /^Needs you/ }).click()
+    await expect(needs).toHaveAttribute('data-folded', 'true')
+    await needs.getByRole('button', { name: /^Needs you/ }).click()
+    await expect(needs).toHaveAttribute('data-folded', 'false')
+    await fits('Edit the file?')
   } finally {
     await api.stopSession(s.id)
     await expect.poll(async () => (await api.session(s.id)).status, { message: 'the row\'s session ends' }).toMatch(/^(exited|stopped)$/)
