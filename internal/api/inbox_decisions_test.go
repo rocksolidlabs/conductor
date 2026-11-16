@@ -1095,6 +1095,52 @@ func TestADecisionSurvivesARestart(t *testing.T) {
 	}
 }
 
+// A run's decision is an item in a person's words (UX1 PR-21): titled by
+// its question alone, briefed by where it comes from ("A decision for you,
+// from" an agent's attempt of its run, or the plan of its run's ticket),
+// with no id, no "durable" and no "gate" in its title or its brief, in the
+// list and read whole.
+func TestADecisionItemIsInAPersonsWords(t *testing.T) {
+	plain := func(t *testing.T, what, s string) {
+		t.Helper()
+		for _, w := range []string{"dr-", "durable", "gate"} {
+			if strings.Contains(s, w) {
+				t.Fatalf("%s says %q: %q", what, w, s)
+			}
+		}
+	}
+	t.Run("agent", func(t *testing.T) {
+		f := newDecisionFixture(t, nil, nil)
+		f.ask(t, approvalBody("r1"), http.StatusCreated, "")
+		f.mirrored(t, "dr-1")
+		it := f.itemOf(t, "decision:dr-1")
+		run, ok := f.srv.runs.Get(f.run)
+		if !ok {
+			t.Fatal("the run is gone")
+		}
+		want := "A decision for you, from " + readyCat.Name + " in attempt build.1 of run " + run.Name
+		if it.Title != "Ship build r1?" || it.Brief != want {
+			t.Fatalf("the item: title %q, brief %q, want %q", it.Title, it.Brief, want)
+		}
+		page, _ := f.inboxList(t, "")
+		if len(page.Items) != 1 || page.Items[0].Title != it.Title || page.Items[0].Brief != want {
+			t.Fatalf("the list: %+v", page.Items)
+		}
+		plain(t, "the title", it.Title)
+		plain(t, "the brief", it.Brief)
+	})
+	t.Run("plan", func(t *testing.T) {
+		l := newLaunchTest(t, nil, nil)
+		_, did := gatedLaunch(t, l)
+		it := l.itemOf(t, "decision:"+did)
+		if it.Title != "Ship it?" || it.Brief != "A decision for you, from the plan of CND-1" {
+			t.Fatalf("the gate's item: title %q, brief %q", it.Title, it.Brief)
+		}
+		plain(t, "the title", it.Title)
+		plain(t, "the brief", it.Brief)
+	})
+}
+
 // A gate a plan requires before the run's first attempt, with no member
 // alive, listed over the run's desk, at the server (GET
 // /ws/runs/{run}/desk) and at a switchyard (the desk's connection), with
@@ -1228,7 +1274,7 @@ func TestALinksScopePastItsBoundSaysSo(t *testing.T) {
 	if words := laneScopeCut(ledger.MaxScopeDecisions); len(words) > 500 || !strings.HasPrefix(words, "More than 1100 ") {
 		t.Fatalf("the cut's words at the ledger's bound: %d bytes, %q", len(words), words)
 	}
-	if page.Total != 2 || !page.Truncated || !strings.HasPrefix(page.Cut, "More than 2 durable decisions are in this link's scope") {
+	if page.Total != 2 || !page.Truncated || !strings.HasPrefix(page.Cut, "More than 2 of a run's decisions are in this link's scope") {
 		t.Fatalf("past the bound: %+v", page)
 	}
 	if refs := []string{page.Items[0].Ref, page.Items[1].Ref}; !slices.Equal(refs, []string{"decision:dr-2", "decision:dr-3"}) {

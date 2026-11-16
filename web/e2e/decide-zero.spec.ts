@@ -31,7 +31,10 @@ async function readZero(page: Page) {
   const zero = page.locator('[data-decisions-empty]')
   // A page not yet drawn passes every "hidden": the block first.
   await expect(zero).toBeVisible()
-  await expect(zero).toContainText('Nothing needs you now.')
+  // The one shape of a page with nothing in it (PageEmpty, UX1 PR-23): the page's sentence, then the words.
+  await expect(zero).toHaveAttribute('data-page-empty', 'decisions')
+  await expect(zero).toHaveAttribute('data-state', 'empty')
+  await expect(zero.locator('[data-page-why]')).toHaveText('Nothing needs you now.')
   const kinds = page.locator('[data-decisions-kind]')
   await expect(kinds).toHaveCount(4)
   expect(await kinds.evaluateAll((els) => els.map((e) => e.getAttribute('data-decisions-kind')))).toEqual(KINDS)
@@ -67,7 +70,7 @@ test('with nothing waiting, on a phone: every line of the zero block is whole', 
   void day
   const page = await decisions(browser, PHONE)
   await readZero(page)
-  await uncut(page.locator('[data-decisions-empty] p, [data-decisions-empty] h2, [data-decisions-kind] span.block'))
+  await uncut(page.locator('[data-decisions-empty] [data-page-about], [data-decisions-empty] [data-page-why], [data-decisions-empty] h2, [data-decisions-kind] span.block'))
   await uncut(page.locator('[data-decisions-history]'))
 })
 
@@ -92,7 +95,8 @@ test('one decision closed two hours ago: Decided in the last day, when it closed
 test('a read that fails is not zero: the could-not-read alert, and no zero page', async ({ day, browser }) => {
   void day
   const page = await decisions(browser, DESK, [], (route) => json(route, 500, { error: { code: 'internal', message: 'the inbox could not be read' } }))
-  await expect(page.locator('[data-decisions-error]')).toBeVisible()
+  await expect(page.locator('[data-decisions-error][data-page-empty][data-state="failed"]')).toBeVisible()
+  await expect(page.locator('[data-decisions-error] [data-page-again]')).toBeVisible()
   await expect(page.locator('[data-decisions-empty]')).toHaveCount(0)
   await expect(page.locator('[data-decisions-kinds]')).toHaveCount(0)
 })
@@ -105,14 +109,25 @@ test("a switchyard's refusal is not zero: the unavailable alert, and no zero pag
   await expect(page.locator('[data-decisions-kinds]')).toHaveCount(0)
 })
 
-test('one open question at a desktop: the list beside the pane, which asks to pick it', async ({ day, browser }) => {
+test('one open question at a desktop: the list beside it, the question opened by itself, no "Pick an item"', async ({ day, browser }) => {
   void day
   const q = inboxItem('question')
   const page = await decisions(browser, DESK, [q])
   await expect(page.locator(`[data-inbox-row="${q.ref}"]`)).toBeVisible()
+  await expect(page.locator(`[data-inbox-item="${q.ref}"]`)).toBeVisible()
   await expect(page.locator('[data-decisions-empty]')).toHaveCount(0)
-  await expect(page.getByText('Pick an item')).toBeVisible()
+  await expect(page.getByText('Pick an item')).toHaveCount(0)
   const [list, pane] = [(await page.locator('[data-decisions-list]').boundingBox())!, (await page.locator('[data-decisions-item]').boundingBox())!]
   expect(list.width, 'the list is the 24 rem column').toBeLessThanOrEqual(24 * 16 + 0.5)
   expect(pane.x, 'the pane is beside the list').toBeGreaterThanOrEqual(list.x + list.width)
+})
+
+test('a run\'s decision answered and not yet applied alone at a desktop: it opens nothing, and the pane asks to pick it', async ({ day, browser }) => {
+  void day
+  const d = inboxItem('decision', { state: 'answered' })
+  const page = await decisions(browser, DESK, [d])
+  await expect(page.locator(`[data-inbox-row="${d.ref}"]`)).toBeVisible()
+  await expect(page.getByText('Pick an item')).toBeVisible()
+  await expect(page).toHaveURL(/\/decisions$/)
+  await expect(page.locator('[data-decisions-empty] [data-decisions-kinds]')).toHaveCount(0)
 })

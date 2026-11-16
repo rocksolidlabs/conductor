@@ -42,6 +42,9 @@ import {
   inboxKindWords,
   inboxSections,
   atZero,
+  briefLine,
+  firstToOpen,
+  rowLine,
   INBOX_KINDS,
   kindLook,
   lastClosedWords,
@@ -88,7 +91,7 @@ describe('the order', () => {
 
 describe('the steps in words', () => {
   it('names the four steps apart and says each state', () => {
-    expect(Object.values(STEP_TITLES)).toEqual(['Request available', 'Response recorded', 'Received and validated by the execution owner', 'Work resumed'])
+    expect(Object.values(STEP_TITLES)).toEqual(['Asked', 'Your answer', 'Checked by its owner', 'Work resumed'])
     expect(['done', 'waiting', 'refused', 'not_applicable', 'unknown'].map(stateWords)).toEqual(['Done', 'Waiting', 'Refused', 'Does not apply', 'Unknown'])
   })
   it("says a stale refusal's words with what the item is now and that nothing was done", () => {
@@ -411,8 +414,10 @@ describe('the decision kind', () => {
       expect(isDecisionRef(r)).toBe(false)
       expect(decisionIdOf(r)).toBe('')
     }
-    expect(inboxKindWords('decision')).toBe('A durable decision')
-    expect(inboxKindWords('task')).toBe('A failed task')
+    expect(inboxKindWords('decision')).toBe('A decision for you')
+    expect(inboxKindWords('task')).toBe('A task out of attempts')
+    expect(inboxKindWords('question')).toBe('A question for you')
+    expect(inboxKindWords('plan')).toBe('A plan to approve')
   })
   it('puts the records answered and not yet applied apart, each part in the list\'s order', () => {
     const items = [s('decision:dr-1', true), s('task:crew-0000aaaa-11112222/build'), s('decision:dr-2'), s('decision:dr-3', true)]
@@ -517,5 +522,34 @@ describe('the page at zero (UX1 PR-6)', () => {
     expect(lastClosedWords([{ closed: new Date(now + 3_600_000).toISOString() }], [], now), 'an hour ahead').toBe('')
     expect(lastClosedWords([], [{ at: now + 3_600_000 }], now), 'an act an hour ahead').toBe('')
     expect(lastClosedWords([{ closed: 'not a time' }], [], now)).toBe('')
+  })
+})
+
+describe('the list and the item in a person\'s words (UX1 PR-21)', () => {
+  const row = (ref: string) => ({ ref })
+  it('opens the oldest open row by itself on a wide window alone, never over an item in the query', () => {
+    const a = row('question:a/1')
+    const b = row('decision:dr-2')
+    expect(firstToOpen(true, '', { open: [a, b] })).toBe(a.ref)
+    expect(firstToOpen(false, '', { open: [a, b] }), 'below lg').toBe('')
+    expect(firstToOpen(true, 'plan:STB-1/1', { open: [a, b] }), 'an item in the query').toBe('')
+    expect(firstToOpen(true, '', { open: [] }), 'an empty list').toBe('')
+    // Rows answered and not yet applied are the tracking section's: they open nothing.
+    expect(firstToOpen(true, '', { open: [], ...{ tracking: [row('decision:dr-3')] } }), 'tracking rows alone').toBe('')
+  })
+
+  it("draws a brief that says nothing the title or the item's now says", () => {
+    const title = 'Claude Code in api-fix asks'
+    expect(briefLine({ title, brief: title }), 'a plain question').toBe('')
+    expect(briefLine({ title: 'Claude Code in api-fix asked', brief: 'no longer open: answered', now: 'no longer open: answered' }), 'its now').toBe('')
+    // A crew member's question, in the server's shape (inbox.go): the title, then "; it is attempt …".
+    expect(briefLine({ title, brief: `${title}; it is attempt build.1 of run crew-0000aaaa-11112222 for DEC-1` })).toBe('It is attempt build.1 of run crew-0000aaaa-11112222 for DEC-1')
+    expect(briefLine({ title: 'Ship it?', brief: 'A decision for you, from the plan of DEC-1' }), 'a brief of its own').toBe('A decision for you, from the plan of DEC-1')
+  })
+
+  it("gives a row's second line the question when the title is not it, else the brief", () => {
+    expect(rowLine({ title: 'Claude Code in api-fix asks', question: 'Which database?', brief: 'Claude Code in api-fix asks' })).toBe('Which database?')
+    expect(rowLine({ title: 'Ship it?', question: 'Ship it?', brief: 'A decision for you, from the plan of DEC-1' })).toBe('A decision for you, from the plan of DEC-1')
+    expect(rowLine({ title: 'build failed in run r', question: '', brief: 'Task build of run r is failed after 3 attempts' })).toBe('Task build of run r is failed after 3 attempts')
   })
 })

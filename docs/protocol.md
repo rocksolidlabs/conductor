@@ -2510,7 +2510,7 @@ the id the holder opens it by. A ref outside the scope is
 has its four states (`delivery`) and no action: DR1's policy, `local/1`,
 takes a response from a principal with the admin grant alone, so its
 `now` begins "Answer it on the LAN or the desktop: a link cannot answer
-a durable decision yet", until DR1's plan accepts a decision link's
+a run's decision yet", until DR1's plan accepts a decision link's
 actor.
 
 **Record.** A DR1 record in the scope, read in parts, each cut from one
@@ -2561,7 +2561,7 @@ more. The promise is narrowed there, fail-closed and never silent: a
 read that reaches the bound takes the open and answered records first,
 then the newest of the rest, so an open record is never the one left
 out while the open and answered fit; the list carries `truncated` and
-`cut` ("More than 1100 durable decisions are in this link's scope…",
+`cut` ("More than 1100 of a run's decisions are in this link's scope…",
 pointing to the LAN or the desktop for every record), and the
 notification's hash carries the cut as a mark of its own. A final
 record left out of such a read is not listed and its changes are not

@@ -497,7 +497,7 @@ func (rd *inboxRead) questionItem(info session.Info) (*inboxItem, bool) {
 		it.Brief, it.Blocking.Words = fitText(words, 2<<10), fitText(words, 500)
 	case a.Decision != "":
 		// The decision's card answers it: no choice, no line.
-		it.Brief = fitText(brief+"; it asks "+a.Decision+", a durable decision, answered on its card, never in the terminal", 2<<10)
+		it.Brief = fitText(brief+"; it asks a decision for you, "+a.Decision+", answered on its card, never in the terminal", 2<<10)
 		it.Blocking.Words = fitText(agent+" does nothing until "+a.Decision+" is answered on its card: Answer "+a.Decision+" in its session's bar, on its run page or in Needs you; nothing typed in the terminal answers it", 500)
 	default:
 		it.Brief = fitText(brief, 2<<10)

@@ -67,6 +67,11 @@ for (const width of [360, 1440]) {
       expect(await title.evaluate((e) => [getComputedStyle(e).textOverflow, e.scrollWidth > e.clientWidth])).toEqual(['ellipsis', true])
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    // At a desktop's width the oldest open item opens by itself beside the list (UX1 PR-21); below lg the list stays alone.
+    if (width >= 1024) {
+      await expect(page).toHaveURL(/\/decisions\?item=decision(:|%3A)dr-901$/)
+      await expect(page.locator('[data-inbox-item="decision:dr-901"]')).toBeVisible()
+    } else await expect(page).toHaveURL(/\/decisions$/)
   })
 }
 
