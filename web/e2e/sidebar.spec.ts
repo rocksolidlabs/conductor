@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { dayPage, endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { tabTo } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
@@ -122,7 +123,7 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   await expect(exited).toHaveAttribute('data-folded', 'true')
   await expect(exited.locator('[data-section-count]')).toHaveText(/^· \d+$/)
   await expect(exited.locator('[data-sidebar-row]')).toHaveCount(0)
-  expect(await exited.locator('[data-section-preview] [data-state="exited"]').count()).toBeGreaterThan(0)
+  expect(await exited.locator('[data-section-preview] [data-status-mark="exited"]').count()).toBeGreaterThan(0)
   await exited.getByRole('button', { name: /^Exited/ }).click()
   await expect(exited).toHaveAttribute('data-folded', 'false')
   const row = exited.locator(`[data-sidebar-row="s:${done.id}"]`)
@@ -172,7 +173,10 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   await running.getByRole('button', { name: /^Running/ }).click()
   await expect(running).toHaveAttribute('data-folded', 'true')
   await expect(running.locator('[data-section-count]')).toHaveText(/^· \d+$/)
-  expect(await running.locator('[data-section-preview] [data-state="running"]').count()).toBeGreaterThan(0)
+  // The squares are status marks: a live session's, working, finished or running (which the resumed stub shows is its own to say).
+  const marks = running.locator('[data-section-preview] [data-status-mark]')
+  expect(await marks.count()).toBeGreaterThan(0)
+  for (const key of await marks.evaluateAll((els) => els.map((e) => e.getAttribute('data-status-mark')))) expect(key).toMatch(/^(working|finished|running)$/)
   await expect(running.locator('[data-sidebar-row]')).toHaveCount(0)
   await page.reload()
   await expect(page.locator('[data-sidebar-section="running"]').first()).toHaveAttribute('data-folded', 'true')
@@ -479,7 +483,9 @@ test('the rail: the counts on top, a capsule holding its members, the corner til
   const capsule = rail.locator(`[data-rail-run="${run2}"]`)
   await expect(capsule.locator('[data-rail-member]')).toHaveCount(2)
   await expect(capsule.locator('[data-rail-play="needs"]')).toBeVisible()
-  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead running$/)
+  // Each member by its status's word (utils/status.ts): lead's stub answers its prompt and ends its turn, so it has finished.
+  await expect(capsule.locator('a').first()).toHaveAttribute('aria-label', /^e2e rail crew · run started \d\d:\d\d · review needs you · lead finished (just now|\d+[mh] ago)$/)
+  await expect(capsule.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'needs')
   // The corners: new events bottom right, the machine bottom left; the exited run dashed; loose exited folded into +N.
   await expect(rail.locator(`[data-rail-session="${marked.id}"] [data-rail-news]`)).toBeVisible()
   await expect(rail.locator('[data-rail-session][data-rail-tile="machine"]')).toHaveCount(1)
@@ -936,6 +942,34 @@ test.describe('the full sidebar\'s width', () => {
     await expect(header.locator('[data-header-update]')).toBeVisible()
     for (const part of ['[data-header-update]', '[data-header-alerts]', '[data-header-account]', '[data-sidebar-collapse]']) await fitsSidebar(page, header.locator(part))
   })
+})
+
+// The pages' one table (utils/pages.ts): a page's sentence is its tooltip in the full sidebar (on hover over its label) and on the rail
+// (on hover and on focus, in place of the label alone), and the second line of its row in the palette, which a search reads.
+test("a page's tooltip says what it is", async ({ day, browser }) => {
+  void day
+  const page = await dayPage(browser, { width: 1440, height: 900 })
+  const sidebar = page.locator('#dashboard-sidebar-main')
+  const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text}$`) })
+  const yardTip = 'Yard: every live terminal on one screen'
+  await sidebar.locator('[data-nav-label]').filter({ hasText: /^Yard$/ }).hover()
+  await expect(tip(yardTip)).toBeVisible()
+  // Folded to the rail by its key, pressed once the layout that listens for it is drawn (dayPage waits for it).
+  await page.mouse.move(1000, 450)
+  await page.keyboard.press('Alt+b')
+  await expect(sidebar.locator('[data-rail]')).toBeVisible()
+  const nav = sidebar.getByRole('navigation').last()
+  await tabTo(page, nav.locator('a[href="/yard"]'), 2, nav.locator('a[href="/decisions"]'))
+  await expect(tip(yardTip)).toBeVisible()
+  await expect(nav.locator('a[href="/yard"]')).toHaveAttribute('aria-label', /^Yard/)
+  // The palette: "terminal" finds the Yard by its sentence.
+  await page.keyboard.press('Alt+/')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('terminal')
+  const row = palette.locator('[data-palette-row="go:yard"]')
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-palette-detail]')).toHaveText('Every live terminal on one screen.')
 })
 
 /** Nothing of the sidebar spills sideways, and `part` sits whole inside it: at the minimum width every spec runs at (#437). */

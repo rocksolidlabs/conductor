@@ -5,6 +5,7 @@ import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
 import { questionOf } from './reply'
 import { agentInitials, relativeTime } from './sessions'
+import { blockStatus, joinedStatus, sessionStatus, statusOfKey, type StatusKey, type StatusView } from './status'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
 export type SidebarMode = 'full' | 'rail'
@@ -304,12 +305,12 @@ export function blockSubtitle(block: Pick<RunBlock, 'startedAt' | 'stoppedAt' | 
   return agents
 }
 
-/** The states a folded section shows as squares: a run contributes its members'. At most six. */
-export function sectionPreview(items: readonly SidebarItem[]): RowState[] {
-  const out: RowState[] = []
+/** The status keys a folded section shows as marks (utils/status.ts, sessionStatus): a run contributes its members'. At most six. */
+export function sectionPreview(items: readonly SidebarItem[]): StatusKey[] {
+  const out: StatusKey[] = []
   for (const it of items) {
-    if (it.kind === 'run') out.push(...it.members.map((m) => m.state))
-    else out.push(it.state)
+    if (it.kind === 'run') out.push(...it.members.map((m) => sessionStatus(m.session).key))
+    else out.push(sessionStatus(it.session).key)
     if (out.length >= 6) break
   }
   return out.slice(0, 6)
@@ -428,6 +429,8 @@ export interface RailShape {
   /** The tooltip: the shape named in words. */
   label: string
   state: RowState
+  /** The corner mark: the session's status (sessionStatus), a capsule's its busiest member's (blockStatus); none for a share that does not say. */
+  status?: StatusView
   /** Exited. */
   dashed: boolean
   /** A square's agent (its initials); a run link shared with you shows a crew instead. */
@@ -464,43 +467,44 @@ export interface RailModel {
   exitedFolded: number
 }
 
-const STATE_WORDS: Record<RowState, string> = { needs: 'needs you', running: 'running', idle: 'idle', exited: 'exited' }
-
 /** "3 unread in chat". */
 function unreadWords(n: number): string {
   return `${n} unread in chat`
 }
 
-function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>>): RailShape {
+function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>>, now: number): RailShape {
   const s = row.session
-  const parts = [s.name, STATE_WORDS[row.state]]
+  const status = sessionStatus(s, now)
+  const parts = [s.name, status.word]
   if (row.state === 'needs' && s.attention?.message) parts.push(s.attention.message)
   if (row.machine) parts.push(`on ${row.machine}`)
   const mark = marks[s.id]
-  if (mark) parts.push(mark.label)
+  // A finished turn's event is counted below, but not named while the status says finished: the status's word says it.
+  if (mark && !(mark.type === 'done' && status.key === 'finished')) parts.push(mark.label)
   const chat = unread[`session:${s.id}`] ?? 0
   if (chat) parts.push(unreadWords(chat))
-  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
+  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, status, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
 }
 
-/** "users api · run started 08:31 · review needs you · core running · lead exited", then "3 unread in chat" when the run's chat has them. */
-export function railRunLabel(block: RunBlock, unread = 0): string {
+/** "users api · run started 08:31 · review needs you · core working · lead exited", then "3 unread in chat" when the run's chat has them. */
+export function railRunLabel(block: RunBlock, unread = 0, now = Date.now()): string {
   const sub = blockSubtitle(block).split(' · ')[0]!
   const when = /^(started|stopped) /.test(sub) ? `run ${sub}` : sub
-  const parts = [block.title, when, ...block.members.map((m) => `${m.session.name} ${STATE_WORDS[m.state]}`)]
+  const parts = [block.title, when, ...block.members.map((m) => `${m.session.name} ${sessionStatus(m.session, now).word}`)]
   if (unread) parts.push(unreadWords(unread))
   return parts.join(' · ')
 }
 
-function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>>): RailShape {
-  const members = block.members.map((m) => railSquare(m, marks, unread))
+function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>>, now: number): RailShape {
+  const members = block.members.map((m) => railSquare(m, marks, unread, now))
   const chat = unread[`run:${block.runId}`] ?? 0
   return {
     id: `run:${block.runId}`,
     shape: 'capsule',
     to: `/runs/${encodeURIComponent(block.runId)}`,
-    label: railRunLabel(block, chat),
+    label: railRunLabel(block, chat, now),
     state: block.state,
+    status: statusOfKey(blockStatus(members.map((m) => m.status!.key))),
     dashed: block.state === 'exited',
     agentId: '',
     kind: 'run',
@@ -517,7 +521,7 @@ function railCapsule(block: RunBlock, marks: Readonly<Record<string, EventMark>>
  * by thread): a square's bottom-right number is its badge plus its unread
  * chat, a capsule's its members' plus the run's own.
  */
-export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>> = {}): RailModel {
+export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], marks: Readonly<Record<string, EventMark>>, unread: Readonly<Record<string, number>> = {}, now = Date.now()): RailModel {
   const items: RailShape[] = []
   let news = 0
   const count = (sq: RailShape) => {
@@ -525,12 +529,12 @@ export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], m
   }
   const add = (it: SidebarItem) => {
     if (it.kind === 'run') {
-      const c = railCapsule(it, marks, unread)
+      const c = railCapsule(it, marks, unread, now)
       c.members!.forEach(count)
       if (unread[`run:${it.runId}`]) news++
       items.push(c)
     } else {
-      const sq = railSquare(it, marks, unread)
+      const sq = railSquare(it, marks, unread, now)
       count(sq)
       items.push(sq)
     }
@@ -545,6 +549,7 @@ export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], m
       to: joinedPath(e),
       label: `${e.name} · ${e.role === 'control' ? 'control' : 'view only'} · through ${e.host}`,
       state: gone ? 'exited' : 'idle',
+      status: joinedStatus(e),
       dashed: gone,
       agentId: e.agentId ?? '',
       kind: e.kind === 'run' ? 'run' : 'shared',

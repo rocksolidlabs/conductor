@@ -2,6 +2,7 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
+import { navPages, pageActive, pageTip, type PageId } from '~/utils/pages'
 
 const showToken = ref(false)
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
@@ -190,11 +191,6 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
   document.addEventListener(end, () => void keepWidth(before), { once: true })
 }
 
-// A run page keeps the Crews page lit in the foot: a run is the Crews page's.
-const runRoute = computed(() => route.path.startsWith('/runs/'))
-// Dispatch's pages (its projects, a project's list, a ticket) keep it lit.
-const dispatchRoute = computed(() => route.path === '/dispatch' || route.path.startsWith('/dispatch/'))
-
 // Brakeman's row (docs/plans/brakeman.md, PR-6): the briefs this browser has not opened, counted as they arrive; nothing else
 // happens when one does (no toast, no dialog, no navigation). Shown once the server says it has Brakeman (not a switchyard's).
 const brakeman = useBrakeman()
@@ -213,47 +209,45 @@ onMounted(() =>
 )
 const brakemanCount = computed(() => brakeman.unopened.value.length)
 
-const nav = computed<NavigationMenuItem[]>(() => [
-  {
-    label: 'Decide',
-    icon: 'i-lucide-gavel',
-    to: '/decisions',
-    'data-sidebar-decide': '',
-    badge: inbox.count.value ? { label: String(inbox.count.value), color: 'warning' as const, variant: 'solid' as const } : undefined,
-  },
-  { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
-  { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
-  { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  {
-    label: 'Crews',
-    icon: 'i-lucide-users',
-    to: '/crews',
-    active: route.path.startsWith('/crews') || runRoute.value,
-  },
-  { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch', active: dispatchRoute.value },
-  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
-  { label: 'History', icon: 'i-lucide-history', to: '/history', active: route.path.startsWith('/history') },
-  ...(brakeman.available.value
-    ? [{ label: 'Brakeman', icon: 'i-lucide-notebook-pen', to: '/brakeman', 'data-sidebar-brakeman': '', badge: brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary' as const, variant: 'subtle' as const } : undefined }]
-    : []),
-  ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
-])
+/** A page's badge in the foot: Decide's and the Yard's amber while something waits, Brakeman's briefs not yet opened. */
+function navBadge(id: PageId): NavigationMenuItem['badge'] {
+  if (id === 'decisions') return inbox.count.value ? { label: String(inbox.count.value), color: 'warning', variant: 'solid' } : undefined
+  if (id === 'yard') return attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined
+  if (id === 'brakeman') return brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary', variant: 'subtle' } : undefined
+  return undefined
+}
+/** The hooks the tests find a page's row by. */
+const NAV_HOOKS: Partial<Record<PageId, string>> = { decisions: 'data-sidebar-decide', brakeman: 'data-sidebar-brakeman' }
+
+// The foot's pages, from the one table (utils/pages.ts): each one's sentence is its tooltip (pageTip), drawn by the label's slot.
+const navEntries = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value }))
+const nav = computed<NavigationMenuItem[]>(() =>
+  navEntries.value.map((p) => {
+    const hook = NAV_HOOKS[p.id]
+    // `tip` is the label slot's alone: Nuxt UI hands a link only its link, aria- and data- keys.
+    return { label: p.label, icon: p.icon, to: p.to, active: pageActive(p.id, route.path), badge: navBadge(p.id), tip: pageTip(p), ...(hook ? { [hook]: '' } : {}) }
+  }),
+)
 
 // On the rail Nuxt UI's collapsed menu hides the links' labels and the Yard's
 // count: each link is named by an aria-label instead, and the Yard's icon
-// carries an amber chip while any session needs you.
+// carries an amber chip while any session needs you. Its tooltip, on hover
+// and on focus, is the page's sentence (Nuxt UI takes `text` from the item's
+// tooltip object over the label).
 const railNav = computed<NavigationMenuItem[]>(() =>
-  nav.value.map((item) => {
-    const n = item.to === '/yard' ? attention.count.value : 0
-    if (item.to === '/decisions') {
+  nav.value.map((item, i) => {
+    const p = navEntries.value[i]!
+    const tooltip = { text: pageTip(p) }
+    if (p.id === 'decisions') {
       const d = inbox.count.value
-      return { ...item, 'aria-label': d ? `Needs your decision, ${d} waiting` : 'Needs your decision', chip: d ? { color: 'warning' } : undefined }
+      return { ...item, tooltip, 'aria-label': d ? `${p.title}, ${d} waiting` : p.title, chip: d ? { color: 'warning' } : undefined }
     }
-    if (item.to === '/brakeman') {
+    if (p.id === 'brakeman') {
       const b = brakemanCount.value
-      return { ...item, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
+      return { ...item, tooltip, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
     }
-    return { ...item, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
+    const n = p.id === 'yard' ? attention.count.value : 0
+    return { ...item, tooltip, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
   }),
 )
 
@@ -354,7 +348,17 @@ defineShortcuts({
       </template>
 
       <template #footer="{ collapsed }">
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: collapsed ? 'justify-center' : undefined }" class="w-full" />
+        <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
+             the current page's link the page's tone, as the sidebar's rows do. -->
+        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full">
+          <!-- The full sidebar's label says what the page is on hover (Nuxt UI draws a tooltip only on the rail). -->
+          <template #item-label="{ item }">
+            <template v-if="collapsed">{{ item.label }}</template>
+            <UTooltip v-else :text="item.tip" :content="{ side: 'right' }" :delay-duration="300">
+              <span data-nav-label>{{ item.label }}</span>
+            </UTooltip>
+          </template>
+        </UNavigationMenu>
         <!-- On the rail the header's menus and the expand button stack in the foot. -->
         <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
           <SidebarHeaderMenus collapsed @token="showToken = true" />

@@ -5,7 +5,7 @@ import type { TransportState } from './types'
 export interface TransportLook {
   icon: string
   words: string
-  color: 'error' | 'warning' | 'success' | 'neutral'
+  color: 'error' | 'warning' | 'neutral'
   /** False only for a compact badge on a healthy connection: the icon alone, the words its label and tooltip. */
   showWords: boolean
 }
@@ -31,7 +31,8 @@ export function transportName(kind: TransportKind): string {
 export function transportLook(kind: TransportKind, state: TransportState, rtt: number | null | undefined, compact = true): TransportLook {
   const name = transportName(kind)
   const words = state === 'connecting' ? 'connecting' : state === 'signaling' ? 'negotiating WebRTC' : state === 'closed' ? 'disconnected' : state === 'idle' ? 'idle' : rtt != null ? `${name} · ${rtt} ms` : name
-  const color = state === 'closed' ? 'error' : state !== 'open' ? 'warning' : kind === 'webrtc' ? 'success' : 'neutral'
+  // A direct connection is neutral too: green is for a live agent (docs/design/system.md, Status).
+  const color = state === 'closed' ? 'error' : state !== 'open' ? 'warning' : 'neutral'
   const icon = state !== 'open' ? 'i-lucide-loader-circle' : kind === 'webrtc' ? 'i-lucide-radio' : kind === 'relay' ? 'i-lucide-route' : 'i-lucide-cable'
   return { icon, words, color, showWords: !(compact && state === 'open') }
 }

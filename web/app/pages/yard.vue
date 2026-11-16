@@ -7,6 +7,7 @@ import type { TransportKind, ActivityEntry, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
+import { sessionStatus } from '~/utils/status'
 import { bestGrid } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 
@@ -62,6 +63,7 @@ watch(waiting, (list) => {
 // Esc, one click or one browser Back away; the URL stays shareable.
 const focusId = computed(() => (typeof route.query.focus === 'string' ? route.query.focus : ''))
 const focused = computed<SessionInfo | undefined>(() => attention.sessions.value.find((s) => s.id === focusId.value))
+const now = useNow()
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
@@ -245,8 +247,7 @@ usePalette().registerPage(() => {
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
             <template v-if="focusId">
-              <SessionStatusBadge v-if="focused" :status="focused.status" :exit-code="focused.exitCode" />
-              <AttentionBadge :attention="focused?.attention" />
+              <StatusMark v-if="focused" :status="sessionStatus(focused, now)" word class="text-xs" :data-yard-focused-status="focused.id" />
               <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden sm:inline-flex" />
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>

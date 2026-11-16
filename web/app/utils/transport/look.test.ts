@@ -4,7 +4,7 @@ import { transportLook } from './look'
 describe('transportLook', () => {
   it('draws a healthy connection as its icon alone, its name and round trip as its label', () => {
     expect(transportLook('ws', 'open', 12)).toEqual({ icon: 'i-lucide-cable', words: 'WebSocket · 12 ms', color: 'neutral', showWords: false })
-    expect(transportLook('webrtc', 'open', null)).toMatchObject({ words: 'WebRTC direct', color: 'success', showWords: false })
+    expect(transportLook('webrtc', 'open', null)).toMatchObject({ words: 'WebRTC direct', color: 'neutral', showWords: false })
     expect(transportLook('relay', 'open', 40)).toMatchObject({ icon: 'i-lucide-route', words: 'Relay · 40 ms', showWords: false })
   })
 

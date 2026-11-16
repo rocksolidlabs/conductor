@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { relativeTime, sessionMeta } from '~/utils/sessions'
 import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
+import { sessionStatus } from '~/utils/status'
 import { sessionTarget } from '~/utils/actions'
 import { sessionResumeOffered } from '~/utils/runs'
 import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/sidebarActions'
 
 /**
- * One session in the list (design 3b, 3c): the agent's initials, the name, a status dot, what it asks when it asks, and a meta
+ * One session in the list (design 3b, 3c): the agent's initials, the name, its status mark (StatusMark of sessionStatus), what it asks when it asks, and a meta
  * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
  * row carries its machine with a laptop, in place of a heading. The path is the row's tooltip. An exited row says how it ended
- * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the dot; Stop
+ * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the mark; Stop
  * asks first, in the row; a right-click or a long press opens the same menu as More. A prompt is answered in the row, below the
  * link: its choices as numbered buttons, or a reply field. The list drives the keys: `focused` marks the row they act on,
  * `confirming` (a model: the hover Stop sets it too) shows the question.
@@ -32,6 +33,7 @@ const route = useRoute()
 const router = useRouter()
 
 const s = computed(() => props.row.session)
+const status = computed(() => sessionStatus(s.value, props.now))
 const current = computed(() => sessionOpen(route.path, s.value.id))
 const meta = computed(() => rowMeta(s.value, props.member, props.now))
 /** The meta line after the machine (which carries the laptop), the parts joined by middle dots as text, so it reads and copies as one line. */
@@ -92,7 +94,7 @@ function confirmStop() {
       <NuxtLink
         :to="`/sessions/${s.id}`"
         class="flex min-w-0 flex-1 gap-2.5 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="[!current && 'hover:bg-elevated/60', row.state === 'exited' && !current && 'opacity-75']"
+        :class="[!current && 'hover:bg-canvas-hover', row.state === 'exited' && !current && 'opacity-75']"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >
@@ -100,15 +102,13 @@ function confirmStop() {
         <span class="flex min-w-0 flex-1 flex-col gap-0.5">
           <span class="flex min-w-0 items-center gap-1.5">
             <span class="truncate text-sm" :class="row.state === 'needs' ? 'font-semibold' : 'font-medium'">{{ s.name }}</span>
-            <EventMarkBadge :session-id="s.id" />
+            <EventMarkBadge :session-id="s.id" :finished="status.key === 'finished'" />
             <YoloBadge v-if="s.yolo" icon />
             <slot name="pill" />
             <!-- Unread chat (design 2g): a neutral pill, never a status colour. -->
             <ChatUnreadPill :session-id="s.id" />
-            <!-- The dot gives way to the actions on hover. -->
-            <span v-if="row.state === 'needs' && needsDot" class="ml-auto size-2 flex-none rounded-full bg-warning group-hover:opacity-0" data-row-dot="needs" aria-hidden="true" />
-            <span v-else-if="row.state === 'running'" class="ml-auto size-2 flex-none rounded-full bg-success group-hover:opacity-0" data-row-dot="running" aria-hidden="true" />
-            <span v-else-if="row.state === 'idle'" class="ml-auto size-2 flex-none rounded-full bg-neutral-400 group-hover:opacity-0" data-row-dot="idle" aria-hidden="true" />
+            <!-- The mark gives way to the actions on hover; its word is its label and its title. -->
+            <StatusMark :status="status" :quiet="!needsDot" class="ml-auto group-hover:opacity-0" />
           </span>
           <template v-if="confirming">
             <span class="text-xs font-medium text-highlighted" data-row-stop-confirm>{{ question.title }}</span>

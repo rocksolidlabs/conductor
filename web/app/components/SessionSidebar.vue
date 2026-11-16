@@ -33,8 +33,7 @@ const cloneModal = useCloneModal()
 
 const query = ref('')
 const filterInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('filterInput')
-const now = ref(Date.now())
-let tick: number | undefined
+const now = useNow()
 
 const model = computed(() => sidebarModel(filterSessions(attention.sessions.value, query.value), attention.runOf))
 const needsDot = computed(() => needsDotShown(events.routes.value))
@@ -345,11 +344,6 @@ const sheet = computed(() => {
 })
 
 defineExpose({ focusFilter, focusList })
-
-onMounted(() => {
-  tick = window.setInterval(() => (now.value = Date.now()), 30000)
-})
-onBeforeUnmount(() => window.clearInterval(tick))
 </script>
 
 <template>
@@ -414,8 +408,8 @@ onBeforeUnmount(() => window.clearInterval(tick))
           <li v-for="d in loneDecisions" :key="d.id" :data-sidebar-row="`d:${d.id}`">
             <button
               type="button"
-              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-elevated/60 focus-visible:ring-2 focus-visible:ring-primary"
-              :class="focused === `d:${d.id}` ? 'bg-elevated/60' : ''"
+              class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-canvas-hover focus-visible:ring-2 focus-visible:ring-primary"
+              :class="focused === `d:${d.id}` ? 'bg-canvas-hover' : ''"
               :data-sidebar-decision="d.id"
               @click="decisionModal.open(d.id)"
             >

@@ -1154,3 +1154,84 @@ func TestATurnsOnlyFrameKeepsTheStampWhenTheCopyKnewTurns(t *testing.T) {
 		t.Fatalf("the host's view restamped: %+v", v)
 	}
 }
+
+// A forwarded done that names the turn whose end the copy was told last is
+// that end told again (Codex's hook, then its notify program): after the
+// host's Enter the copy keeps the empty state the host told, and the
+// report still goes on to the host with its name, whose session judges it
+// by its own. A working naming that turn says the turn went on: its next
+// done is a new one here. A name out of its bound, or an operator's, is
+// none, and the host is sent none.
+func TestTheHostedCopyTellsATurnsEndOnce(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	const turn = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	sent := func(what string) proto.HostAttentionMsg {
+		t.Helper()
+		o, ok := takeWithin(conn, time.Second)
+		if !ok || o.Text == nil {
+			t.Fatalf("%s: nothing sent", what)
+		}
+		var m proto.HostAttentionMsg
+		if err := json.Unmarshal(o.Text, &m); err != nil || m.T != proto.HostAttention {
+			t.Fatalf("%s: sent %s", what, o.Text)
+		}
+		return m
+	}
+	done := func(words, name, source string) {
+		t.Helper()
+		if err := hs.SetAttentionTurn(session.AttentionDone, words, source, session.KindDone, nil, true, "", name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done("Refactored the parser.", turn, session.SourceAPI)
+	if m := sent("the done"); m.TurnID != turn || m.State != "done" {
+		t.Fatalf("the host is sent %+v", m)
+	}
+	// The host's session takes the Enter and tells the empty state.
+	hs.HostAttention(session.AttentionNone, "", session.SourceInput, "", nil, "", false, "", "")
+	done("Refactored the parser.", turn, session.SourceAPI)
+	if a := hs.Info().Attention; a.State != session.AttentionNone || a.Source != session.SourceInput {
+		t.Fatalf("the end told again shows %+v", a)
+	}
+	if m := sent("the end told again"); m.TurnID != turn || m.State != "done" {
+		t.Fatalf("the host is sent %+v", m)
+	}
+
+	// The turn went on: a working naming it, then its done again.
+	if err := hs.SetAttentionTurn(session.AttentionWorking, "", session.SourceAPI, "", nil, true, "", turn); err != nil {
+		t.Fatal(err)
+	}
+	sent("the working")
+	done("Docs updated.", turn, session.SourceAPI)
+	if a := hs.Info().Attention; a.State != session.AttentionDone || a.Message != "Docs updated." {
+		t.Fatalf("the went-on turn's end shows %+v", a)
+	}
+	sent("the went-on turn's end")
+
+	// No name: a name past its bound, and an operator's mark.
+	other, conn2 := register(t, hub)
+	for _, name := range []string{strings.Repeat("a", proto.MaxTurnID+1), "a b"} {
+		if err := other.SetAttentionTurn(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, true, "", name); err != nil {
+			t.Fatal(err)
+		}
+		o, ok := takeWithin(conn2, time.Second)
+		if !ok || strings.Contains(string(o.Text), "turnId") {
+			t.Fatalf("%q: sent %s", name, o.Text)
+		}
+		other.HostAttention(session.AttentionNone, "", session.SourceInput, "", nil, "", false, "", "")
+	}
+	if err := other.SetAttentionTurn(session.AttentionDone, "Refactored the parser.", session.SourceAPI, session.KindDone, nil, true, "", strings.Repeat("a", proto.MaxTurnID+1)); err != nil {
+		t.Fatal(err)
+	}
+	if a := other.Info().Attention; a.State != session.AttentionDone {
+		t.Fatalf("a report whose name is out of its bound shows %+v", a)
+	}
+	takeWithin(conn2, time.Second)
+	if err := other.SetAttentionTurn(session.AttentionWorking, "", session.SourceAdmin, "", nil, true, "", turn); err != nil {
+		t.Fatal(err)
+	}
+	if o, ok := takeWithin(conn2, time.Second); !ok || strings.Contains(string(o.Text), "turnId") {
+		t.Fatalf("an operator's mark: sent %s", o.Text)
+	}
+}

@@ -140,6 +140,8 @@ test('a session the server no longer holds opens on its name and a way to its re
   await expect(goneBody).toHaveAttribute('data-session-gone', 'record')
   await expect(goneBody).toContainText('This session ended, and this server no longer holds it.')
   await expect(page.locator('[data-session-title]')).toHaveText('e2e session gone')
+  // The exited mark of the one status language, with its word.
+  await expect(page.locator('[data-session-gone-head] [data-status-mark="exited"] [data-status-word]')).toHaveText('exited')
   await expect(page).toHaveTitle(/e2e session gone/)
   // No control that cannot work: no connection, no viewers, Files, Share, Chat or More.
   for (const name of ['Share', 'More', 'Files', 'Chat']) await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)

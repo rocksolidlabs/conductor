@@ -11,8 +11,10 @@ import { hostedReason } from '~/utils/clone'
 import { answerRows, cutNotice, mirroringSessions, oneRowPerDecision, rowDecision, runRuns, staleNotice } from '~/utils/decisions'
 import { isActive, isEnded, needingInput, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
-import { joinedDot, joinedPath } from '~/utils/joined'
+import { joinedPath } from '~/utils/joined'
+import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
+import { PAGES, palettePages } from '~/utils/pages'
 import { capGroup, parsePrefix, parseVerb, placeAfter, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
@@ -50,18 +52,11 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon: string }> = [
-  { id: 'decisions', label: 'Needs your decision', to: '/decisions', kbds: ['G', 'N'], icon: 'i-lucide-gavel' },
-  { id: 'yard', label: 'Yard', to: '/yard', kbds: ['G', 'Y'], icon: 'i-lucide-layout-grid' },
-  { id: 'roundhouse', label: 'Roundhouse', to: '/roundhouse', kbds: ['G', 'R'], icon: 'i-lucide-gallery-horizontal' },
-  { id: 'crews', label: 'Crews', to: '/crews', kbds: ['G', 'C'], icon: 'i-lucide-users' },
-  { id: 'dispatch', label: 'Dispatch', to: '/dispatch', kbds: ['G', 'D'], icon: 'i-lucide-ticket' },
-  { id: 'agents', label: 'Agents', to: '/agents', kbds: ['G', 'A'], icon: 'i-lucide-bot' },
-  { id: 'events', label: 'Events', to: '/events', kbds: ['G', 'E'], icon: 'i-lucide-radio-tower' },
-  { id: 'history', label: 'History', to: '/history', kbds: ['G', 'H'], icon: 'i-lucide-history' },
-  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', kbds: [], icon: 'i-lucide-route' },
-  { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
-  { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
+/** The Go to rows that are no page of their own (utils/pages.ts): two tabs of Events and the paste invite, after the pages. */
+const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
+  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', icon: 'i-lucide-route' },
+  { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', icon: 'i-lucide-plug' },
+  { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
 ]
 
 /**
@@ -369,6 +364,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       words: [s.cwd, shortCwd(s.cwd), s.hostName ?? '', s.hostUser ?? '', s.branch ?? '', s.agentId, agentInitials(s.agentId), s.crew ? (attention.runNames.value[s.crew.runId] ?? '') : ''],
       agentId: s.agentId,
       state,
+      status: sessionStatus(s, now),
       session: s,
       prompt: rowPrompt(row),
       run: () => go(`/sessions/${s.id}`),
@@ -446,9 +442,11 @@ export function usePaletteRows(ctx: PaletteContext) {
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
     if (r && live && r.managed) more.push({ id: 'tasks', kind: 'run', target: r.id, label: 'Open the tasks', icon: 'i-lucide-list-checks', run: () => go(`/runs/${encodeURIComponent(r.id)}?view=tasks`) })
     const asking = block.members.filter((m) => m.state === 'needs').map((m) => m.session.name)
+    // "1 working · 2 finished": the members by status (utils/status.ts); those that ask are named before it.
+    const keys = block.members.map((m) => sessionStatus(m.session).key)
     // A managed run says its tasks: `2/5 tasks · 1 failed · paused`.
     const tc = r?.managed ? taskCounts(r.tasks) : null
-    const detail = [blockSubtitle(block), tc ? `${tc.done}/${tc.total} tasks${tc.failed ? ` · ${tc.failed} failed` : ''}${r?.paused ? ' · paused' : ''}` : '', asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', `${block.members.filter((m) => m.state === 'running' || m.state === 'idle').length} running`, block.members.some((m) => m.state === 'exited') ? `${block.members.filter((m) => m.state === 'exited').length} exited` : '']
+    const detail = [blockSubtitle(block), tc ? `${tc.done}/${tc.total} tasks${tc.failed ? ` · ${tc.failed} failed` : ''}${r?.paused ? ' · paused' : ''}` : '', asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', statusTally(keys, ['working', 'finished', 'running', 'exited'])]
       .filter(Boolean)
       .join(' · ')
     return {
@@ -458,27 +456,27 @@ export function usePaletteRows(ctx: PaletteContext) {
       words: [r?.goal ?? '', r?.cwd ?? '', ...block.members.map((m) => m.session.name)],
       icon: 'i-lucide-play',
       state: block.state,
+      status: keys.length ? statusOfKey(blockStatus(keys)) : undefined,
       run: () => go(`/runs/${encodeURIComponent(block.runId)}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
       href: `/runs/${encodeURIComponent(block.runId)}`,
     }
   }
 
+  /** Go to: the pages of the one table (utils/pages.ts), each with its sentence as its second line (so searched), then OTHER_ROWS. */
   function pageItems(): PaletteItem[] {
     const n = attention.count.value
     const d = inbox.count.value
-    return PAGES.filter((p) => (p.id !== 'settings' ? true : desktop.isDesktop.value)).map((p) => ({
+    const pages: PaletteItem[] = palettePages({ desktop: desktop.isDesktop.value }).map((p) => ({
       key: `go:${p.id}`,
-      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `Needs your decision · ${d} waiting` : p.label,
+      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `${p.title} · ${d} waiting` : p.title,
+      detail: p.about,
       icon: p.icon,
-      kbds: p.kbds,
+      kbds: [...(p.chord ?? [])],
       run: () => go(p.to),
       href: p.to,
     }))
-  }
-
-  function settingsItem(): PaletteItem[] {
-    return desktop.isDesktop.value ? [{ key: 'go:settings', label: 'Settings', icon: 'i-lucide-settings', kbds: ['G', 'S'], run: () => go('/settings'), href: '/settings' }] : []
+    return [...pages, ...OTHER_ROWS.map((p) => ({ key: `go:${p.id}`, label: p.label, icon: p.icon, kbds: [], run: () => go(p.to), href: p.to }))]
   }
 
   // ---------------------------------------------------------------------------
@@ -546,14 +544,14 @@ export function usePaletteRows(ctx: PaletteContext) {
     for (const p of palette.projects.value) {
       out.push({ key: `action:new-ticket:${p.key}`, label: `New ticket in ${p.key}`, detail: p.name, icon: 'i-lucide-ticket-plus', run: () => palette.askNewTicket(p.key) })
     }
-    const done = attention.sessions.value.filter((s) => sessionLive(s.status) && s.attention?.state === 'done')
+    const done = attention.sessions.value.filter((s) => sessionLive(s.status) && sessionStatus(s).key === 'finished')
     out.push({
       key: 'action:stop-done',
-      label: `Stop every session that is done${done.length ? ` · ${done.length}` : ''}`,
-      detail: done.length ? done.map((s) => s.name).join(', ') : 'None is done',
+      label: `Stop every finished session${done.length ? ` · ${done.length}` : ''}`,
+      detail: done.length ? done.map((s) => s.name).join(', ') : 'None has finished',
       icon: 'i-lucide-square',
       disabled: !done.length,
-      ask: { title: `Stop ${done.length} ${done.length === 1 ? 'session' : 'sessions'} that ${done.length === 1 ? 'is' : 'are'} done?`, detail: done.map((s) => s.name).join(', ') },
+      ask: { title: `Stop ${done.length} finished ${done.length === 1 ? 'session' : 'sessions'}?`, detail: done.map((s) => s.name).join(', ') },
       run: () => {
         for (const s of done) void stopSession(s)
       },
@@ -644,7 +642,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       detail: `${e.kind === 'run' ? 'crew' : (e.agentId ?? 'session')} · via ${e.host} · ${e.role}`,
       words: [e.host, e.agentId ?? ''],
       icon: e.kind === 'run' ? 'i-lucide-users' : 'i-lucide-globe',
-      state: joinedDot(e) === 'running' ? 'running' : joinedDot(e) === 'ended' ? 'exited' : 'idle',
+      state: joinedStatus(e)?.key === 'exited' ? 'exited' : joinedStatus(e) ? 'running' : 'idle',
+      status: joinedStatus(e),
       run: () => go(joinedPath(e)),
       actions: rowActions({ kind: 'shared', name: e.name, live: true, id: e.id }, { open: () => go(joinedPath(e)), forget: () => joined.forget(e.id) }).flat(),
       href: joinedPath(e),
@@ -890,8 +889,8 @@ export function usePaletteRows(ctx: PaletteContext) {
         return s ? { key: `verb:mark:${s.id}`, label: `Mark ${s.name} as ${v.state === 'clear' ? 'clear' : v.state}`, icon: 'i-lucide-hand', agentId: s.agentId, run: () => signal(s, state) } : null
       }
       case 'go': {
-        const p = PAGES.find((p) => p.id === v.page) ?? (v.page === 'settings' ? { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' } : null)
-        return p ? { key: `verb:go:${v.page}`, label: `Go to ${p.label}`, icon: p.icon, run: () => go(p.to) } : null
+        const p = PAGES.find((p) => p.id === v.page) ?? OTHER_ROWS.find((p) => p.id === v.page)
+        return p ? { key: `verb:go:${v.page}`, label: `Go to ${'title' in p ? p.title : p.label}`, icon: p.icon, run: () => go(p.to) } : null
       }
     }
   }
@@ -957,7 +956,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     else groups.push(tickets)
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
-    groups.push({ id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] })
+    groups.push({ id: 'goto', label: 'Go to', rows: pageItems() })
     groups.push({ id: 'brakeman', label: 'Brakeman', rows: brakemanItems() })
     groups.push({ id: 'actions', label: 'Actions', rows: actionItems() })
     // One row per durable decision, whatever group gives it: Needs you's "Answer dr-7" first, which opens its card.
@@ -983,7 +982,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
     if (mode === 'actions') {
       const page = palette.page.value
-      const groups: PaletteGroup<PaletteItem>[] = [...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []), { id: 'actions', label: 'Actions', rows: actionItems() }, { id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] }]
+      const groups: PaletteGroup<PaletteItem>[] = [...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []), { id: 'actions', label: 'Actions', rows: actionItems() }, { id: 'goto', label: 'Go to', rows: pageItems() }]
       // A verb typed under `>` reads as under no prefix: "> stop docs" is the verb, first.
       const verb = rest ? parseVerb(rest, names()) : null
       const row = verb ? verbRow(verb, now) : null

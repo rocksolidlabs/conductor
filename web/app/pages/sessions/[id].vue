@@ -7,6 +7,7 @@ import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { agentName, gonePage, sessionGone, sessionHeadline, type GonePage } from '~/utils/sessions'
+import { sessionStatus, statusOfKey } from '~/utils/status'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, toggleCollapse, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
@@ -161,6 +162,12 @@ watch(
 const stored = computed(() => live.sessions.value.find((s) => s.id === id.value))
 /** The session as the live store has it, else as read: its yolo badge and its agent session follow the stream. */
 const current = computed(() => stored.value ?? session.value)
+const clock = useNow()
+/** The header's state (sessionStatus): the live store's session, else the one read with the attention the page holds. */
+const status = computed(() => {
+  const s = stored.value ?? (session.value && { ...session.value, attention: attention.value })
+  return s ? sessionStatus(s, clock.value) : undefined
+})
 const ended = computed(() => !!current.value && (current.value.status === 'exited' || current.value.status === 'stopped'))
 /** A hosted session whose machine is away: its files cannot be read until it returns (design 4f). */
 const hostAway = computed(() => (current.value?.kind === 'hosted' && current.value.status === 'host_disconnected' ? current.value.hostName || 'The host' : undefined))
@@ -582,13 +589,12 @@ palette.registerPage(() => {
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
             <span class="truncate text-[15px] font-semibold" data-session-title>{{ goneTitle }}</span>
-            <SessionStatusBadge status="exited" />
+            <StatusMark :status="statusOfKey('exited')" word class="text-xs" data-session-status="gone" />
           </div>
           <div v-else class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
               <span class="truncate text-[15px] font-semibold" data-session-title>{{ current?.name || 'Session' }}</span>
-              <AttentionBadge :attention="attention" />
-              <SessionStatusBadge v-if="session && session.status !== 'running'" :status="session.status" :exit-code="session.exitCode" />
+              <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
             </div>
             <span v-if="headline" class="truncate font-mono text-[11.5px] text-muted" :title="headline.title" data-session-meta>{{ headline.line }}</span>

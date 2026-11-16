@@ -32,9 +32,9 @@ Facts to design against
   endedAt, and an error text when it failed.
 - A run is running, needs_input, stopped or finished; it has a goal, a cwd, a log of up to
   200 timestamped lines, and a count of members needing input.
-- Brand: roles primary=forest (green), secondary=terracotta, neutral=zinc, warning=signal
-  (amber), success=active (green), info=harbor (blue), error=brick. Status colours: amber for
-  needs input, green for running, grey for idle/ended; terracotta is used ONLY on the brand
+- Brand: roles primary=forest (green), secondary=terracotta, neutral=ink, warning=signal
+  (amber), success=active (green), info=harbor (blue), error=brick. Status marks and words: as the status
+  section of [the design system](system.md#status) says; terracotta is used ONLY on the brand
   mark, never as a status. One system-wide dark/light theme. Nuxt UI 4 components only;
   Lucide icons; JetBrains Mono for anything terminal-like.
 - The graph will be built with Vue Flow (nodes are Vue components, edges are SVG paths,
@@ -181,7 +181,7 @@ activity entries across sessions (`useEvents`).
 ## Brand tokens
 
 Roles in `web/app/app.config.ts`: primary `forest`, secondary `terracotta`,
-neutral `zinc`, warning `signal`, success `active`, info `harbor`, error `brick`.
+neutral `ink`, warning `signal`, success `active`, info `harbor`, error `brick`.
 The scales live in `web/app/assets/css/main.css` under `@theme` (50–950 each).
 Anchors:
 
@@ -193,7 +193,7 @@ Anchors:
 | active | `#3f8f5f` | running (green) |
 | harbor | `#245d85` | info |
 | brick | `#a1332f` | errors |
-| zinc | Tailwind zinc | idle, ended, chrome |
+| ink | `#666e67` (sage `#eef1e9` at 100, ink `#18211c` at 900) | idle, ended, chrome |
 
 The junction mark is artwork, never a status light. One system-wide dark/light
 theme. Type: Nuxt UI defaults for the chrome, JetBrains Mono for anything that
