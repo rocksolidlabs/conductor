@@ -48,8 +48,8 @@ const VERB_KINDS: Record<Verb, Array<'session' | 'run' | 'crew' | 'agent'>> = {
   go: [],
 }
 
-export const PAGES = ['yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'history', 'settings', 'paste'] as const
-export type Page = (typeof PAGES)[number]
+export const GO_PAGES = ['yard', 'roundhouse', 'crews', 'dispatch', 'agents', 'events', 'history', 'settings', 'paste'] as const
+export type Page = (typeof GO_PAGES)[number]
 
 export interface Named {
   kind: 'session' | 'run' | 'crew' | 'agent'
@@ -93,7 +93,7 @@ export function parseVerb(query: string, names: readonly Named[]): ParsedVerb | 
   const rest = words.slice(1)
   if (verb === 'go') {
     const page = rest[0]!.toLowerCase() as Page
-    return rest.length === 1 && PAGES.includes(page) ? { verb, page } : null
+    return rest.length === 1 && GO_PAGES.includes(page) ? { verb, page } : null
   }
   if (verb === 'open') {
     const m = /^(.*?)(?::(\d+))?$/.exec(rest.join(' '))

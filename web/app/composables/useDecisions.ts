@@ -4,6 +4,7 @@ import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import { isDecisionId, replaces, runHeldOf } from '~/utils/decisions'
 import type { RunInfo } from './useSessions'
+import { ApiError } from './useApi'
 
 /**
  * The durable decisions the operator has before them (Program item DR1, docs/plans/decisions.md, "web/app"): the open and answered
@@ -123,6 +124,8 @@ export class DecisionsLive {
   /** The open or the answered decisions were more than DECISION_PAGES pages: the oldest past them are not here. */
   cut = false
   error = ''
+  /** Why the decisions are not served here ('' when they are): a switchyard answers 403 `switchyard`, and holds none. */
+  unavailable = ''
   /** When the first read that failed since the last that succeeded was made (ms since the epoch); null while the last read succeeded. */
   staleSince: number | null = null
   /** The pages' counter: bumped after every change of the store. */
@@ -207,9 +210,20 @@ export class DecisionsLive {
   private async once() {
     const reads = this.reads
     if (!reads) return
-    const [open, answered] = await Promise.all([readAll(reads, 'open'), readAll(reads, 'answered')])
+    let open: { decisions: Decision[]; cut: boolean }
+    let answered: { decisions: Decision[]; cut: boolean }
+    let why = ''
+    try {
+      ;[open, answered] = await Promise.all([readAll(reads, 'open'), readAll(reads, 'answered')])
+    } catch (e) {
+      // A switchyard serves no decisions: read, with nothing in it, said why; not a failure to read again.
+      if (!(e instanceof ApiError && e.status === 403 && e.code === 'switchyard')) throw e
+      why = e.message || 'Not served here'
+      open = answered = { decisions: [], cut: false }
+    }
     this.decisions = [...open.decisions, ...answered.decisions].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
     this.cut = open.cut || answered.cut
+    this.unavailable = why
     this.loaded = true
     this.error = ''
     this.staleSince = null
@@ -263,10 +277,19 @@ export function useDecisions() {
     void version.value
     return { since: store.staleSince, error: store.error }
   })
+  /** Whether a read has answered, and why the decisions are not served here ('' when they are), for the one list (useNeedsYou). */
+  const loaded = computed(() => {
+    void version.value
+    return store.loaded
+  })
+  const unavailable = computed(() => {
+    void version.value
+    return store.unavailable
+  })
   function start() {
     if (import.meta.client) void store.read()
   }
-  return { decisions, open, cut, stale, start, read: () => store.read() }
+  return { decisions, open, cut, stale, loaded, unavailable, start, read: () => store.read() }
 }
 
 /** The card the app shows in its modal: the decision's id, or '' for none. One for the app (DecisionModal.vue in the layout). */
