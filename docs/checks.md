@@ -64,15 +64,21 @@ shards (#955), shard 1 ran 284 tests in 32 minutes and shard 2 ran 280 in 27 (34
 for each job), where the whole suite of 564 had taken one job 67.
 
 A spec asserts layout by measures, never by pixels: `web/e2e/layout.ts`'s
-helpers say the measure in the failure. `uncut`, `inside`, `noOverlap`,
-`aligned`, `rowsInView`, `topAtMost`, `lines`, `noSideways`,
-`tapTarget` and `atWidths` wait for what they measure to be drawn, fail
-when nothing matched and measure after the fonts load; `tabTo` waits for
-its target and its start and fails when either matched nothing; `ageBy`
-and `probeColour` wait for nothing, and `probeColour` fails on a value
-that is no colour. Each helper's doc comment names its wait, its slack
-and its limits; `layout.spec.ts` proves each half of each on a good page
-and a bad one.
+helpers say the measure in the failure. What a person can see of an
+element is the browser's answer, read by one function the helpers share:
+drawn by `checkVisibility`, the visible box by an `IntersectionObserver`,
+text by a `Range`, one box per line, what covers it by hit-testing.
+`uncut`, `inside`, `noOverlap`, `aligned`, `rowsInView`, `topAtMost`,
+`lines`, `noSideways` and `tapTarget` wait until one match is drawn
+(failing with how many matched), measure after the fonts load and fail
+when none is drawn at the measure; `atWidths` waits for the layout's
+root at each size and names the size in a failure; `tabTo` waits for its
+target and its start and fails when either matched nothing; `ageBy` and
+`probeColour` wait for nothing, and `probeColour` fails on a value that
+is no colour. Where the browser cannot say, a helper fails, saying what
+to give it, or its doc comment states the limit. `layout.spec.ts` holds
+each check of each helper with a page that fails without it, and copies
+the app's own markup shapes with the defects seen on the built app.
 
 `make lint` ends with the open-core rules (`internal/opencore`,
 `TestModuleKeepsTheRules`; CONTRIBUTING.md, The open-core rules): no import
