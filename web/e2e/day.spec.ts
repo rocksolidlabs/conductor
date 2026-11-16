@@ -139,7 +139,8 @@ const own = test.extend<{ own: Day }>({
   // eslint-disable-next-line no-empty-pattern
   own: async ({}, use) => {
     budget(DAY_WORKER_MS)
-    const d = await startDay('day-guard')
+    // Named for the test and its repetition: its server's log is kept in test-results under that name.
+    const d = await startDay(`day-guard-${test.info().testId}-${test.info().repeatEachIndex}`)
     try {
       await use(d)
     } finally {
