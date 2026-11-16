@@ -223,6 +223,26 @@ that order.
   text. One cut rule, `internal/session/testdata/cut-at-word.json`, holds
   the session's copy and Dispatch's (and the app's, PR-36).
 
+## The pages as six tiles (UX1 PR-15, P6; 2026-11-16)
+
+- **The full sidebar's foot.** Six tiles in two rows of three, an icon
+  over each name: Needs you, Yard, Crews, Dispatch, Brakeman and More,
+  whose menu holds Agents, Events, History and, in the desktop app,
+  Settings, each with its key. The foot is about 110 px tall where the
+  column of pages took about 305, and the list has the rest. A tile's
+  tooltip (hover and keyboard focus) is the page's sentence and its key;
+  the current page's tile is lit (Crews on a run's page), and More is lit
+  while one of its pages is open. The foot is a landmark named "Pages".
+- **Brakeman's slot.** Held as an empty cell while the server has not said
+  whether it has Brakeman, so More never moves when the tile fills; a
+  server that says it has none puts More in the slot. A switchyard, which
+  serves no inbox, has no Needs you tile, and the tiles close up.
+- **The phone and the rail.** The phone's More gains Brakeman after
+  Dispatch while the server has it, so every page is reached from the
+  phone. The rail keeps every page as an icon.
+- **The table.** `navTiles` in `web/app/utils/pages.ts` gives the tiles
+  and More's list from the pages' one table (a page's `tile` place).
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.

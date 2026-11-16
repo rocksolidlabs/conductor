@@ -6,8 +6,8 @@ import { pageActive, phoneMore, phoneTabs, type PageId } from '~/utils/pages'
  * The phone's bar at the foot (design 3e): Decide first (Needs your
  * decision, with the number of items waiting: Owner decisions 10 of
  * docs/plans/decision-inbox.md), Sessions, Yard (with its count), Crews;
- * Roundhouse, Agents, Dispatch, Events, Settings, Alerts and your menu under
- * More. Every target is at least 44 px tall; the padding reads the safe
+ * Agents, Dispatch, Brakeman (while the server has it), Events, History,
+ * Settings, Alerts and your menu under More. Every target is at least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
  */
@@ -15,6 +15,7 @@ const emit = defineEmits<{ token: [] }>()
 const attention = useAttention()
 const inbox = useInbox()
 const desktop = useDesktop()
+const brakeman = useBrakeman()
 const route = useRoute()
 const { hasToken, clear } = useWorkbenchToken()
 const shortcuts = useShortcutsModal()
@@ -31,7 +32,7 @@ function active(id: PageId): boolean {
 
 const more = ref(false)
 const nameOpen = ref(false)
-const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value }))
+const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value, brakeman: brakeman.available.value === true }))
 /** Your menu's items as buttons, the sheet closed before each acts. */
 const account = computed(() =>
   accountItems(hasToken.value, {

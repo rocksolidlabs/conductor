@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
 import { expect, rowAnswer, test, type Session } from './fixtures'
+import { tapTarget } from './layout'
 
 // The phone (design 3e): the list is a page of its own, not a drawer; the
 // pages sit in a bar at the foot, Decide first; a prompt is answered in the row with
@@ -152,7 +153,9 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Events/, /History/])
+  // Brakeman after Dispatch (this server has it), so every page of the sidebar is reached from the phone; each a 44 px target.
+  await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Brakeman/, /Events/, /History/])
+  await tapTarget(more.getByRole('link'))
   await expect(more.getByText('Browser notification')).toBeVisible()
   await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()

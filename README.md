@@ -746,7 +746,15 @@ narrowest, 12.5 rem (200 px) on every screen, its header the mark,
 right edge to widen it, up to 26 % of the window but never less than
 17.5 rem (280 px), and on to the window's left edge for the rail; a
 double-click on the edge returns it to 200 px, and a narrower window keeps
-it within that window's bounds. A width you dragged is kept as you left it. The mode and the full sidebar's width are
+it within that window's bounds. The full sidebar's foot is the pages as six
+tiles in two rows, an icon over each name: **Needs you** (its number on the
+corner while something waits), **Yard**, **Crews**, **Dispatch**, **Brakeman**
+and **More**, which holds **Agents**, **Events**, **History** and, in the
+desktop app, **Settings**. A tile's tooltip, on hover and on keyboard focus,
+says what the page is and its key. Until the server has said whether it has
+Brakeman its tile's place is held empty, so nothing moves when it fills; a
+server without Brakeman puts More in its place, and a switchyard, which keeps
+no inbox, shows no Needs you tile. A width you dragged is kept as you left it. The mode and the full sidebar's width are
 remembered per browser (localStorage keys `conductor.sidebar.mode` and
 `conductor.sidebar.width`, in rem; a hidden sidebar from an earlier version
 becomes the rail, and a width an earlier version saved, under
@@ -755,9 +763,10 @@ the filter on top, prompts answered in place with full-width buttons, a row
 opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
-swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
-count), Crews, Events, and under More: Agents, Settings, Alerts
-and your menu. **F** toggles fullscreen on
+swipe actions. The pages sit in a bar at the foot: Needs you, Sessions, Yard
+(with the count), Crews, and under More: Agents, Dispatch, Brakeman (where the
+server has it), Events, History, Settings (in the desktop app), Alerts and
+your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
@@ -1523,8 +1532,8 @@ token's; a share link sees no ticket, and a switchyard keeps none. The store is
 `dispatch/attachments/`, so a copy of the data directory taken with the server
 stopped is a backup of it, and copying it back restores it.
 
-**The pages.** **Dispatch** sits in the sidebar's foot after Crews (under More
-on a phone), **G D** from any page (**Alt+D** in a terminal). It lists the
+**The pages.** **Dispatch** is a tile in the sidebar's foot after Crews (under
+More on a phone), **G D** from any page (**Alt+D** in a terminal). It lists the
 projects with their open and done tickets; **New project** takes a key (two
 to six capitals and digits, a capital first: `CND`), a name, a repository
 folder, the tracker (Dispatch's own, or an external one named by its URL,
@@ -1773,7 +1782,7 @@ your exec-policy allow rules (a matching command runs outside it without
 asking), and no flag isolates them, so a Codex turn is read-only only for an
 account with neither.
 
-**Asking.** **Brakeman** in the sidebar's foot opens `/brakeman`: pick **Brief
+**Asking.** **Brakeman**'s tile in the sidebar's foot (under More on a phone) opens `/brakeman`: pick **Brief
 me since…**, **Explain this**, **Prepare a decision**, **Draft tickets**,
 **Propose a crew**, **Prepare a handoff**, **Find…**, **Overlapping changes**
 or **A question**, the runs, tasks, sessions or ticket it is about, a note and
@@ -1781,7 +1790,7 @@ a time. The request shows queued, then running with its session and its run
 (watch the terminal, or Stop), then briefed; one turn runs at a time and 8
 wait. The palette's Brakeman rows, a task's **Ask Brakeman why** on the run
 page and a ticket's **Ask Brakeman** menu open the same form, filled in. A
-brief arriving adds a count to the sidebar's row and nothing else: no dialog,
+brief arriving adds a count to the sidebar's Brakeman tile and nothing else: no dialog,
 no toast, no change of page.
 
 **A brief** says which agent, model and version made it, for which request, as
@@ -1968,7 +1977,7 @@ quotes), and filters narrow it: `class:` (`said`, `decided`, `checked`,
 `repo:`, `host:`, `agent:`, `crew:`, `run:`, `ticket:`, `session:`,
 `since:` and `until:` (`since:7d`). A search of common words is bounded:
 it reads at most the 10,000 matches indexed most recently and ranks at
-most 2,000 of them, and says so when it stopped. **History** in the sidebar's foot (or Go to, `G H`)
+most 2,000 of them, and says so when it stopped. **History** under the sidebar's More (or Go to, `G H`)
 opens `/history`: the same search with filter chips that write those
 filters, every result paged with Show more, the query in the URL so a
 search is a link, one column on a phone.

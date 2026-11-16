@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect, test, type Api } from './fixtures'
+import { expect, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import type { E2EState } from './state'
 
@@ -1284,7 +1284,8 @@ test('Settings chosen again in the same page goes back to the top, from a sectio
   await standIn(page, state, 'linux')
   await page.goto('/settings')
   await settled(page, 'linux')
-  const settingsLink = page.locator('#dashboard-sidebar-main').getByRole('link', { name: 'Settings', exact: true })
+  // The sidebar's Settings is under its More tile.
+  const settingsLink = { click: () => viaMore(page, 'Settings') }
   const atTop = async () => {
     await expect.poll(async () => (await layoutOf(page)).body.scrollTop).toBe(0)
     await expect(page.locator('[data-settings-nav-entry="switchyard"]')).toHaveAttribute('aria-current', 'true')
