@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -150,8 +151,9 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 // continue", #716). The column is found as a column: the one screen column
 // at which, on every choice row, a word begins after two spaces or more,
 // past the start of the row's label. Each label is its row from its start
-// up to that column, trimmed; the description stays in the choice whole.
-// False when the rows draw no such column, or more than one.
+// up to that column, its ASCII spaces trimmed; the description stays in
+// the choice whole. False when the rows draw no such column, or more than
+// one, or a label holds other white space or a control character.
 func (l dialogList) named() ([]Option, bool) {
 	labelAt := func(row string) ([]rune, int) {
 		r := []rune(row)
@@ -174,7 +176,10 @@ func (l dialogList) named() ([]Option, bool) {
 	out := slices.Clone(l.choices)
 	for i, row := range l.rows {
 		r, start := labelAt(row)
-		out[i].Label = strings.TrimSpace(string(r[start:cols[0]]))
+		out[i].Label = strings.Trim(string(r[start:cols[0]]), " ")
+		if strings.ContainsFunc(out[i].Label, func(c rune) bool { return c != ' ' && unicode.IsSpace(c) || unicode.IsControl(c) }) {
+			return nil, false
+		}
 	}
 	return out, true
 }

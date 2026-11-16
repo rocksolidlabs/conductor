@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -368,7 +369,8 @@ func codexToolScreen(rows ...string) string {
 // the form drawn twice, a server's own form whose choices have no
 // description column, the four choices as Codex lays them out 40 columns
 // wide, the form whose Cancel row is named otherwise (no choice its own
-// answer names). The form asked before is withdrawn, and a reply to it, with any of
+// answer names), the form whose Cancel name has a no-break space after it
+// (a name holds no white space but ASCII spaces). The form asked before is withdrawn, and a reply to it, with any of
 // its choices' keys, writes nothing. Each screen is judged once the
 // watcher has looked at it, told by a marker of its own (the form asked
 // before holds none of them).
@@ -387,6 +389,7 @@ func TestCodexsToolApprovalNotPlainlyOneFormIsNotAsked(t *testing.T) {
 		"a server's own form":                {screenRows(append(append([]string{}, codexToolAbove...), "  Field 1/1", "  Pick one", "", "  Decision", "  › 1. Allow", "    2. Cancel", "", "  enter to submit | esc to cancel")...), "Decision"},
 		"40 columns":                         {screenRows(codexToolForm40...), "server to\n"},
 		"its Cancel row named otherwise":     {strings.Replace(codexToolForm, "Cancel                  Cancel", "Cancel call             Cancel", 1), "Cancel call"},
+		"a no-break space after Cancel":      {strings.Replace(codexToolForm, "Cancel                  Cancel", "Cancel                  Cancel", 1), "Cancel "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if strings.Contains(codexToolForm, c.marker) || !strings.Contains(c.screen, c.marker) {
@@ -532,6 +535,123 @@ func TestAnAnsweredToolApprovalFormIsNotAskedAgain(t *testing.T) {
 	p.outW.Write(drawn(codexToolForm))
 	if a := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.Answered == "" }); !sameOptions(a.Options, codexToolChoices) {
 		t.Fatalf("the form drawn again %+v", a)
+	}
+}
+
+// lookedAt returns the attention once the watcher of the questions asked
+// during the work has looked at a screen holding has and not hasNot (when
+// set), and at all it was fed (the look takes the screen, then decides
+// under fireMu).
+func lookedAt(t *testing.T, s *Local, has, hasNot string) Attention {
+	t.Helper()
+	waitAttention(t, s, func(Attention) bool {
+		text := s.asked.Text()
+		return strings.Contains(text, has) && (hasNot == "" || !strings.Contains(text, hasNot)) && s.asked.LookedAt() == s.asked.Fed()
+	})
+	s.asked.fireMu.Lock()
+	a := s.Info().Attention
+	s.asked.fireMu.Unlock()
+	return a
+}
+
+// An answered form is forgotten only by a look whose screen holds no row
+// that opens a form. The form answered (a digit, and Cancel) and still
+// drawn, Codex having read no key: drawn for one look where it is not read
+// as the form (40 columns wide, or with a second form's top row above it),
+// then drawn as before, it is not offered with choices, a reply to it is
+// refused and nothing is written. Once a look sees no form, the form drawn
+// again is asked anew, with an id of its own.
+func TestAnAnsweredToolApprovalFormIsKeptWhileARowOpensAForm(t *testing.T) {
+	msg := `  Allow the conductor MCP server to run tool "guide"?`
+	form := strings.Split(codexToolForm, "\n")
+	second := strings.Split(codexToolScreen("  Field 1/1", `  Allow the docs MCP server to run tool "search"?`, "", "  query:", "  Field 1/1", msg), "\n")
+	for _, choice := range []string{"1", "\x1b"} {
+		for name, c := range map[string]struct {
+			cols   uint16
+			rows   []string
+			marker string
+		}{
+			"40 columns":             {40, codexToolForm40, "server to\n"},
+			"a second top row above": {codexToolFormCols, second, "query:"},
+		} {
+			t.Run(fmt.Sprintf("%s, %q", name, choice), func(t *testing.T) {
+				s, p, sub := newCodexToolSession(t, codexToolFormCols, codexToolFormRows)
+				p.outW.Write([]byte(codexFrame(form)))
+				first := waitAttention(t, s, asked)
+				fed := s.asked.Fed()
+				if err := s.AnswerInput(t.Context(), sub, first.ID, []byte(choice)); err != nil {
+					t.Fatal(err)
+				}
+				if got := nextWrite(t, p); got != choice {
+					t.Fatalf("written %q", got)
+				}
+				ids := []string{first.ID}
+				check := func(a Attention, when string) {
+					t.Helper()
+					if asked(a) && a.Answered == "" {
+						t.Fatalf("asked %s: %+v", when, a)
+					}
+					if asked(a) {
+						ids = append(ids, a.ID)
+					}
+				}
+				check(lookedSince(t, s, fed), "after the answer")
+				resize := func(cols uint16) {
+					t.Helper()
+					if err := s.Resize(sub, cols, codexToolFormRows); err != nil {
+						t.Fatal(err)
+					}
+				}
+				resize(c.cols)
+				p.outW.Write([]byte(codexFrame(c.rows)))
+				check(lookedAt(t, s, c.marker, ""), "on the look that does not read it")
+				resize(codexToolFormCols)
+				p.outW.Write([]byte(codexFrame(form)))
+				check(lookedAt(t, s, "for future tool calls", c.marker), "drawn as before")
+				for _, id := range ids {
+					for _, o := range first.Options {
+						if err := s.AnswerInput(t.Context(), sub, id, []byte(o.Input)); err == nil {
+							t.Fatalf("a second reply %q was taken", o.Input)
+						}
+					}
+				}
+				noWrite(t, p, 100*time.Millisecond)
+				// A look with no form, then the form again: asked anew.
+				p.outW.Write([]byte(codexFrame(strings.Split(codexToolCalled, "\n"))))
+				lookedAt(t, s, "Called conductor.guide", "Field 1/1")
+				p.outW.Write([]byte(codexFrame(form)))
+				again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Answered == "" && !slices.Contains(ids, a.ID) })
+				if !sameOptions(again.Options, codexToolChoices) || again.Message != codexToolWords {
+					t.Fatalf("the form drawn again %+v", again)
+				}
+			})
+		}
+	}
+}
+
+// A form with two rows named Cancel, its own answer's label, gets no
+// choices: neither row is taken for that answer. The question is the
+// catalog's form with a pattern of its own that lets the two rows through
+// (Codex's tool approval does not); the same screen with one Cancel row is
+// read with its four choices.
+func TestAFormWithTwoRowsNamedCancelGetsNoChoices(t *testing.T) {
+	q := StartupQuestion{
+		Pattern:    regexp.MustCompile(`(?m)^ *Field 1/1\b(?:.*\n)+ *enter to submit\W*esc to cancel\z`),
+		Words:      regexp.MustCompile(`^ *Field \d+/\d+\b`),
+		Anytime:    true,
+		FromScreen: true,
+		Answers:    []Option{{Label: "Cancel", Input: "\x1b"}},
+	}
+	once := codexToolScreen("  Field 1/1", `  Allow the conductor MCP server to run tool "guide"?`)
+	if words, answers, _ := q.read(once); words != codexToolWords || len(answers) != 4 || answers[3].Input != "\x1b" {
+		t.Fatalf("one Cancel row: %q %+v", words, answers)
+	}
+	twice := strings.Replace(once, "    3. Always allow            Run the tool and remember this choice for future tool calls", "    3. Cancel                  Cancel this tool call", 1)
+	if twice == once {
+		t.Fatal("no row replaced")
+	}
+	if words, answers, _ := q.read(twice); words != "" || answers != nil {
+		t.Fatalf("two Cancel rows read as %q %+v", words, answers)
 	}
 }
 

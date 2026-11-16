@@ -303,6 +303,9 @@ type Local struct {
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
 	resultIDs        []string
+	// dialogAnsweredForm says the dialog answered (dialogAnswered) is a
+	// form (formKept). Guarded by mu.
+	dialogAnsweredForm bool
 	// resuming is the questions answered whose results wait for their
 	// resumption (Answer.Resumed), oldest first, each its own: the first
 	// attention change after its answer that says how the session went on
@@ -1191,7 +1194,8 @@ func (s *Local) fireTrust(text string) {
 // program waits on now, and its choices are the only safe answer: typed
 // text, or another question's choice, would reach the dialog's keys. A
 // dialog with other words than the one last answered is that one gone
-// (dialogAnswered); one with its words is that question still (sameDialog).
+// (dialogAnswered; a form, on a screen with no row that opens one:
+// formKept); one with its words is that question still (sameDialog).
 // The question it takes the place of, answered by a key typed while it
 // showed that did not clear it (an Escape, which may have been read with
 // what came next), is answered by that key, as when it goes (missAsked).
@@ -1204,7 +1208,7 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	_, words, answers, whole := s.askedIn(text, cols)
+	q, words, answers, whole := s.askedIn(text, cols)
 	if words == "" {
 		// Found, and no list to read on it (a question whose answers are
 		// read off the screen): the screen shows none of the questions.
@@ -1212,7 +1216,7 @@ func (s *Local) fireAsked(text string) {
 		return
 	}
 	s.mu.Lock()
-	if settled && !sameWords(s.dialogAnswered, words) {
+	if settled && !sameWords(s.dialogAnswered, words) && !s.formKept(text) {
 		s.dialogGone(look)
 	}
 	s.mu.Unlock()
@@ -1227,16 +1231,20 @@ func (s *Local) fireAsked(text string) {
 	if planApprovalShown(text) {
 		rules |= planApproval
 	}
+	if q.form() {
+		rules |= formAsked
+	}
 	s.setAttentionWith(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), rules, planFooter(text))
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
-// the questions: the dialog last answered has gone (dialogAnswered), and a
-// question asked during the work still shown is withdrawn: the screen
+// the questions: the dialog last answered has gone (dialogAnswered; a form,
+// on a screen with no row that opens one: formKept), and a question asked
+// during the work still shown is withdrawn: the screen
 // moved on from it (the program took a key, Conductor's or not, a click,
 // or went on by itself), and one drawn again is asked again. A reply being
 // written to it keeps its claim (withdraw): it resolves or lets go.
-func (s *Local) missAsked(string) {
+func (s *Local) missAsked(text string) {
 	s.escGone()
 	look, settled, _ := s.asked.Look()
 	if !settled {
@@ -1245,7 +1253,9 @@ func (s *Local) missAsked(string) {
 		return
 	}
 	s.mu.Lock()
-	s.dialogGone(look)
+	if !s.formKept(text) {
+		s.dialogGone(look)
+	}
 	att := s.info.Attention
 	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && att.ID != ""
 	s.mu.Unlock()
@@ -1935,6 +1945,9 @@ const (
 	// planApproval (fireAsked) marks a dialog read off the screen as a
 	// plan's approval, by its footer (Attention.approval, #289).
 	planApproval
+	// formAsked (fireAsked) marks a dialog read off the screen as a form
+	// (Attention.form, #716).
+	formAsked
 	// fromReport marks a report from outside the session (an agent's or an
 	// admin's through the API, or one the server sends on to a hosted
 	// session's host): one that says the session waits does not hide a
@@ -2349,6 +2362,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if state == AttentionNeedsInput {
 		att.Plan = plan
 		att.approval = rules&planApproval != 0
+		att.form = rules&formAsked != 0
 		if att.Plan == "" && att.approval && cur.State == AttentionNeedsInput && cur.Source != SourceQuestion {
 			att.Plan = cur.Plan
 		}
@@ -3260,6 +3274,7 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 				// Read off the screen and offering none: the highlight is in
 				// a field, where a digit is typed.
 				onScreen.field = q.FromScreen && answers == nil
+				onScreen.form = q.form()
 			}
 		}
 		// A startup question a key surely answers is consumed, its screen
@@ -3608,7 +3623,7 @@ func (s *Local) claimLocked(id, decision string) (uint64, error) {
 	att := s.info.Attention
 	switch att.Source {
 	case SourceQuestion:
-		s.noteDialogAnswered(att.words())
+		s.noteDialogAnswered(att.words(), att.form)
 	case SourceTrust:
 		s.startupAnsweredWords = att.words()
 	}
@@ -4479,12 +4494,25 @@ func (s *Local) startupShown(text string) (*StartupQuestion, string) {
 }
 
 // noteDialogAnswered notes the dialog of words as answered (dialogAnswered),
-// as the screen is now. The caller holds s.mu.
-func (s *Local) noteDialogAnswered(words string) {
-	s.dialogAnswered = words
+// as the screen is now, and whether it is a form. The caller holds s.mu.
+func (s *Local) noteDialogAnswered(words string, form bool) {
+	s.dialogAnswered, s.dialogAnsweredForm = words, form
 	if s.asked != nil {
 		s.dialogAnsweredAt = s.asked.Fed()
 	}
+}
+
+// formKept reports whether the dialog answered is a form and text, the
+// screen a look took, holds a row that opens a form (a form's Words): an
+// answered form is forgotten only by a look whose screen holds none (#716).
+// The caller holds s.mu.
+func (s *Local) formKept(text string) bool {
+	if !s.dialogAnsweredForm {
+		return false
+	}
+	return slices.ContainsFunc(strings.Split(text, "\n"), func(row string) bool {
+		return slices.ContainsFunc(s.askedQuestions, func(q StartupQuestion) bool { return q.form() && q.Words.MatchString(row) })
+	})
 }
 
 // dialogGone forgets the dialog answered when the look in progress, which
@@ -4575,7 +4603,7 @@ func (s *Local) answeredLeft() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.dialogAnswered != words {
+	if s.dialogAnswered != words || s.formKept(text) {
 		return ""
 	}
 	s.dialogGone(fed)
@@ -4626,7 +4654,7 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 	}()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
-		s.noteDialogAnswered(onScreen.words)
+		s.noteDialogAnswered(onScreen.words, onScreen.form)
 	}
 	if person && s.own.ID != "" && s.ownAside && s.own.Decision == "" {
 		s.dropOwnLocked(ChatLeftTerminal)
@@ -4686,6 +4714,8 @@ type dialogView struct {
 	// takes typed words, StartupQuestion.Typed): a printable key is typed
 	// into it, no choice or key of the dialog's.
 	field bool
+	// form says the dialog is a form (StartupQuestion.form).
+	form bool
 }
 
 // picks reports whether data, whose keys are keys (keyReader), picks an
