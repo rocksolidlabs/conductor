@@ -16,7 +16,6 @@ import {
   medianMinutes,
   memberWords,
   minutesLabel,
-  ownError,
   runBars,
   runNote,
   runOutcome,
@@ -25,8 +24,8 @@ import {
   shortRunId,
   startSentence,
   startWords,
-  STOPPED_ERROR,
 } from './crewWords'
+import { ownError, STOPPED_ERROR } from './crews'
 
 const m = (name: string, start: CrewMember['start'] = { when: 'immediately' }): CrewMember => ({ name, agentId: 'claude', prompt: '', start })
 const after = (member: string): CrewMember['start'] => ({ when: 'after', member })

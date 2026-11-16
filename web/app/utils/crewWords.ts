@@ -14,8 +14,7 @@ import { memberStatusOf } from './status'
  * or "stopped" in grey, and red is kept for an error of its own.
  */
 
-// A member's own error, and the stop's: kept beside memberStatus (crews.ts), which the status language reads too.
-export { ownError, STOPPED_ERROR }
+// A member's own error (ownError) and the stop's (STOPPED_ERROR) are crews.ts's, beside memberStatus, which the status language reads too.
 
 /** A start rule in words, with its icon: the table's Starts column, a graph node's last line. A member started by hand is muted. */
 export function startWords(start: CrewStart): { icon: string; text: string; muted: boolean } {
