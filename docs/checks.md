@@ -128,10 +128,10 @@ to; and the server's settings, catalog, webhooks and alert rules and the
 day's repository's files and branches, which no spec on the day may
 write (a spec that must starts a server of its own, `ownServer`).
 `dayPage` opens the day only in a test that asked for `day`. A shard that asks for the day builds its own (a shard is a run
-with a worker of its own): on CI's runner `busy` takes about 17 s,
-`waiting` alone about 8 s (2026-11-15), and `day.spec.ts`'s proofs of the
-guard start nine days of their own, about 25 s in all. To look at it by
-hand,
+with a worker of its own): on CI's runner `busy` takes about 17 s
+(2026-11-16), `waiting` alone about 8 s (2026-11-15, when a spec last
+asked for it alone), and `day.spec.ts`'s proofs of the guard start nine
+days of their own, about 9 s in all (2026-11-16). To look at it by hand,
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.

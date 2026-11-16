@@ -353,8 +353,8 @@ export class Day {
   /**
    * Ends the day in the order AGENTS.md asks (end what a test started before its directories go): the runs stopped and waited
    * ended, the sessions stopped and waited ended, the server's agent probes waited ended, `stop` written into every hold file, then
-   * the server stopped, its log copied to
-   * test-results/day-server.log and its root removed. What could not be waited for is said after the server is gone.
+   * the server stopped, its log copied to test-results/<name>-server.log (startDay's name) and its root removed. What could not be
+   * waited for is said after the server is gone.
    */
   async end(): Promise<void> {
     const problems: string[] = []
