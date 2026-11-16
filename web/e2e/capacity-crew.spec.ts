@@ -127,6 +127,12 @@ function attemptTranscript(home: string, taskId: string, n: number): string {
 
 const command = () => ({ commandId: randomBytes(8).toString('hex') })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (a GET asked as `page.unroute` ended went unanswered for 30 s, #281).
+test.beforeEach(async ({ page }) => {
+  await page.route('**/*', (route) => route.fallback())
+})
+
 test.afterEach(async ({ api }) => {
   if (made.brakeman) {
     const { config } = await api.ok<{ config: { rev: number } }>('GET', '/api/brakeman')
