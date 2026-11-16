@@ -36,7 +36,7 @@ import (
 
 const (
 	// MaxLaunchReply bounds a launch's read: its summary beside its
-	// package as the bytes it is kept as (at most dispatch.MaxPackage, 512
+	// package as the bytes it is kept as (at most dispatch.MaxPackage, 640
 	// KiB). The largest, a package at its bound with the summary's texts
 	// (why, the agents, the label) at their escaped worst, is under it
 	// (dispatch_launch_test.go). Exported for the CLI.
