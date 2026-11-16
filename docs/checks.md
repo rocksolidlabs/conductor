@@ -29,7 +29,7 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py)
 ```
 
 `npm --prefix web test` runs the design system's rule checks among the
@@ -40,6 +40,17 @@ mapped to a status colour outside `utils/status.ts`, a zinc grey) or when
 the file and the code disagree (a rule with no mark, the Status table
 against `STATUS_LOOK`, the floors against `CONTRAST_FLOORS`). Each rule of
 `system.md` names its checks.
+
+`make design-capture` is not a check: it is a maintainer's step at a
+release, on the draft release's checklist. It builds the app and the
+server, runs `web/e2e/look.spec.ts` with `CONDUCTOR_E2E_LOOK=1` (skipped
+otherwise, as `live.spec.ts` is; `typecheck:e2e` still checks it), which
+writes every screen of the seeded day in both themes and sizes to
+`web/test-results/look/` with the computed values in `look.json`, then
+prints what drifted against `docs/design/system.json`
+(`scripts/design_drift.py`; `--check` exits 1 on drift, `--write` writes
+the new baseline). The screens are never committed; the baseline is,
+values only (`docs/design/system.md`, What a pull request cannot do).
 
 The race tests' `-timeout 60m` catches a hang; it is not a speed target.
 go test's default, ten minutes a package, is less than `internal/api` takes

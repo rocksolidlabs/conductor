@@ -31,6 +31,12 @@ refuses the same, a package in the directory (the package jobs' artifacts)
 the draft does not have, an installer without its blockmap, and a draft
 without the updater's three latest*.yml.
 
+The draft `ensure` makes carries a body: CHECKLIST, the by-hand steps of a
+release, among them the design capture (`make design-capture`, the UX
+review's PR-38). The maintainer works through it and deletes it from the
+body when publishing; a draft kept from an earlier run keeps its body, and
+no script edits a published release.
+
 A package's file name is its name on the release: the Windows installer is
 named without spaces (electron-builder.yml), as electron-builder would have
 published it.
@@ -190,6 +196,15 @@ def upload(repo: str, rid: int, path: Path, tries: int = 3) -> None:
                 raise
 
 
+# The body of a draft `ensure` makes: the steps a maintainer takes by hand before publishing, then deletes.
+CHECKLIST = """Before publishing (delete this checklist from the notes when done):
+
+- [ ] Run `make design-capture` at the release commit, read what drifted, and commit `docs/design/system.json` with `--write` (`python3 scripts/design_drift.py --write`).
+- [ ] Publish the capture's screens (`web/test-results/look/`) to the design-system page.
+- [ ] Write the release's notes here.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="The one draft release a tag's packages go into.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -216,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{a.tag}: keeping draft release {rid}")
                 return 0
             made = json.loads(gh("api", f"repos/{repo}/releases", "-f", f"tag_name={a.tag}", "-f", f"target_commitish={a.target}",
-                                 "-f", f"name={version(a.tag)}", "-F", "draft=true", "-F", "prerelease=false"))
+                                 "-f", f"name={version(a.tag)}", "-f", f"body={CHECKLIST}", "-F", "draft=true", "-F", "prerelease=false"))
             print(f"{a.tag}: made draft release {made['id']} at {a.target}")
             return 0
         packages = built(a.packages)

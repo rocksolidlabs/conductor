@@ -326,9 +326,27 @@ project's Views, a popover's trigger, the same by click and by Enter).
 
 ### What a pull request cannot do
 
-Described, not decided.
+Decided 2026-11-16 by the maintainers, #953.
 
 The maintainers keep a design-system page outside the repository, made
 from a capture of the running app. No pull request can change it: a
 maintainer publishes it at a release, by hand, a step on the release's
-checklist.
+checklist (the body `scripts/release_draft.py ensure` gives the draft).
+
+The capture is in the repository: `make design-capture` builds the app and
+the server, drives the seeded day through every page of the pages' table,
+a session, a run, a ticket and the Needs you page (with an item open, and
+at zero on a server of its own), in both themes, at 1440 x 900 and at 390
+x 844 (`web/e2e/look.spec.ts`, skipped unless `CONDUCTOR_E2E_LOOK=1`). The
+screens stay on that machine, in `web/test-results/look/`; the values the
+pages computed (every `--ui-*` token and ink step in each theme, each
+status mark's word and colour, the ten texts nearest their floor) go to
+`look.json` beside them. `scripts/design_drift.py` then prints what
+drifted since the last release against `docs/design/system.json`: a token,
+a status word or colour, a component or page added or gone, a rule whose
+mark changed. At the release the maintainer reads it, publishes the
+screens, and commits the new baseline written by `--write`.
+
+Checks: none, by design: the capture is a step by hand, not a check, and
+no picture is compared in CI. `scripts/design_drift_test.py` and
+`scripts/release_draft_test.py` hold the report and the checklist.
