@@ -79,7 +79,10 @@ onMounted(() => {
         words="Nothing is running. Launch an agent, or resume one from Exited in the list."
         thing="sessions"
         :error="attention.error.value"
-        :actions="[{ label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => launch.show() }]"
+        :actions="[
+          { label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => launch.show() },
+          { label: 'Set token', icon: 'i-lucide-key-round', failed: true, onClick: () => (admin.needsToken.value = true) },
+        ]"
         @again="attention.refresh()"
       />
     </template>

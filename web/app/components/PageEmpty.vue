@@ -18,6 +18,8 @@ export interface PageEmptyAction {
   external?: boolean
   onClick?: () => void
   loading?: boolean
+  /** Offered beside Read again when the first read failed (the home's Set token), and not with the empty shape. */
+  failed?: boolean
 }
 
 const props = withDefaults(
@@ -51,7 +53,10 @@ const why = computed(() => {
   if (props.state === 'failed') return props.error || 'The server did not answer.'
   return props.words
 })
-const shown = computed(() => (props.state === 'empty' || props.state === 'missing' ? props.actions.slice(0, 2) : []))
+const shown = computed(() => {
+  if (props.state === 'failed') return props.actions.filter((a) => a.failed).slice(0, 1)
+  return props.state === 'empty' || props.state === 'missing' ? props.actions.filter((a) => !a.failed).slice(0, 2) : []
+})
 </script>
 
 <template>
@@ -71,8 +76,8 @@ const shown = computed(() => (props.state === 'empty' || props.state === 'missin
         :icon="a.icon"
         :to="a.to"
         :target="a.external ? '_blank' : undefined"
-        :color="i === 0 ? 'primary' : 'neutral'"
-        :variant="i === 0 ? 'solid' : 'outline'"
+        :color="i === 0 && state !== 'failed' ? 'primary' : 'neutral'"
+        :variant="i === 0 && state !== 'failed' ? 'solid' : 'outline'"
         :loading="a.loading"
         class="pointer-coarse:min-h-11"
         data-page-action
