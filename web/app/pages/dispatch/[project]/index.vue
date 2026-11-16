@@ -7,18 +7,21 @@ import { listWatch } from '~/composables/useDispatchLive'
 import { DISPATCH_SHORTCUTS } from '~/composables/useShortcuts'
 import { PICK_KEYS, PICK_WORDS, TRACKERS, listKeepSelected, listToggle, moveEdit, newestRows, patchRows, pickEdit, ticketSummaryOf, targetWords, ticketPath, validProjectKey, withMoves, type CardMove, type PickField } from '~/utils/dispatch'
 import { apiQuery, filterFromURL, filterNarrows, filterToURL, type DispatchFilter } from '~/utils/dispatchQuery'
+import { descriptionLine } from '~/utils/markdown'
 import { serially } from '~/utils/dispatchOrder'
 
 // A project's page (docs/plans/dispatch.md, PR-8 and PR-9): its tickets as a list, a board or a roadmap, filtered and sorted on the server,
-// the filter in the link (utils/dispatchQuery.ts), pages of 200; the saved views as chips (DispatchViewsBar.vue); New ticket. The project
+// the filter in the link (utils/dispatchQuery.ts), pages of 200; one toolbar (DispatchFilters.vue) of the views, the search, Filter and
+// its chips, the count, the saved views behind Views (DispatchViewsBar.vue) and the sort; New ticket. The project
 // and the list are read through the page's ordering gate, the list by its filter (a filter changed is a new list, the old one's late pages
 // dropped), as the page opens and again after the window on any dispatch event of the project, and on a snapshot, which forgets what the
 // gate knew (a store restored from a backup). A read that fails is asked again as a re-read is, the first and a filter's among them.
 // Nothing polls. The keys (Owner decisions, 10): J K move through the list, Enter opens, X selects, C makes a ticket, S P A L M O pick the
 // status, priority, assignees, labels, milestone and owner of the tickets selected or the one focused, each one operation per ticket;
 // a card of the board or the roadmap moves by drag and drop or by ← →. The page's group in the palette offers the views, New ticket and
-// what the selection can be set to. The project's description is shown above its tickets, rendered, and edited in place (one operation on
-// the project's revision); its labels and milestones are managed from the page (DispatchProjectSettings.vue).
+// what the selection can be set to, and Filter the tickets. The project's description is one line above its tickets (its first paragraph,
+// descriptionLine), opened in place, rendered, and edited there (one operation on the project's revision); its labels and milestones are
+// managed from the page (DispatchProjectSettings.vue).
 
 const route = useRoute()
 const router = useRouter()
@@ -283,23 +286,38 @@ const narrows = computed(() => filterNarrows(filter.value))
 // labels and its milestones.
 
 const ABOUT_KEY = 'conductor.dispatchAbout'
-/** Whether the description is shown, per browser: shown unless the person folded it. */
+/**
+ * Whether the whole description is opened under its line, per browser: only once the person opened it ("opened"). A browser that kept
+ * the older "shown" starts at the line.
+ */
 function readAbout(): boolean {
   try {
-    return localStorage.getItem(ABOUT_KEY) !== 'folded'
+    return localStorage.getItem(ABOUT_KEY) === 'opened'
   } catch {
-    return true
+    return false
   }
 }
 const aboutOpen = ref(readAbout())
 watch(aboutOpen, (o) => {
   try {
-    localStorage.setItem(ABOUT_KEY, o ? 'shown' : 'folded')
+    localStorage.setItem(ABOUT_KEY, o ? 'opened' : 'folded')
   } catch {
     /* storage refused: the choice lasts the page */
   }
 })
 const description = computed(() => projectRead.value?.project.description ?? '')
+/** The description's line: its first paragraph as plain text, whole (the page's CSS cuts it). */
+const line = computed(() => descriptionLine(description.value))
+const about = useTemplateRef<{ edit: () => void }>('about')
+/** The line pressed: the description opened (or folded again); with none, opened in its editor. */
+function pressLine() {
+  if (line.value) {
+    aboutOpen.value = !aboutOpen.value
+    return
+  }
+  aboutOpen.value = true
+  void nextTick(() => about.value?.edit())
+}
 const settingsOpen = ref(false)
 
 /** A project's description's bound, the store's, in bytes. */
@@ -511,6 +529,7 @@ watch(
 // The saved views (DispatchViewsBar.vue): a chip applies a view, its filter written to the link and its kind shown.
 
 const bar = useTemplateRef<{ views: DispatchView[]; openSave: () => void; apply: (v: DispatchView) => void }>('bar')
+const filters = useTemplateRef<{ openFilter: () => void }>('filters')
 /** The link takes the view's filter and kind first; the kind is shown once the link has it, so the view's own watch keeps the filter. */
 async function applyView(f: DispatchFilter, kind: ViewKind) {
   await router.replace({ query: { ...(kind !== 'list' ? { view: kind } : {}), ...filterToURL(f) } })
@@ -536,6 +555,7 @@ palette.registerPage((): PageGroup => {
     }
     rows.push({ key: 'page:selection:clear', label: `Clear the selection of ${n}`, icon: 'i-lucide-x', kbds: ['escape'], run: clearSelection })
   }
+  rows.push({ key: 'page:filter', label: 'Filter the tickets…', icon: 'i-lucide-list-filter', run: () => void nextTick(() => filters.value?.openFilter()) })
   rows.push({ key: 'page:new-ticket', label: `New ticket in ${project.value}`, icon: 'i-lucide-ticket-plus', kbds: ['C'], disabled: !projectRead.value || archived.value, run: () => void nextTick(() => (newOpen.value = true)) })
   for (const kind of ['list', 'board', 'roadmap'] as const) {
     if (kind !== view.value) rows.push({ key: `page:view:${kind}`, label: VIEW_WORDS[kind].label, icon: VIEW_WORDS[kind].icon, run: () => (view.value = kind) })
@@ -549,7 +569,7 @@ palette.registerPage((): PageGroup => {
 </script>
 
 <template>
-  <UDashboardPanel id="dispatch-project" :ui="{ body: 'p-0 sm:p-0 gap-0' }">
+  <UDashboardPanel id="dispatch-project" :ui="{ body: 'p-0 sm:p-0 gap-0 sm:gap-0' }">
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ left: 'min-w-0 flex-1' }" data-project-header>
         <template #leading>
@@ -585,28 +605,46 @@ palette.registerPage((): PageGroup => {
       <template v-else>
         <div class="flex min-w-0 flex-none flex-col gap-2.5 px-4 pt-3 pb-2 sm:px-6">
           <UAlert v-if="archived" color="neutral" variant="subtle" icon="i-lucide-archive" :title="`${project} is archived.`" description="Its tickets are read as they are; nothing of them can be changed until it is unarchived." />
-          <div v-if="projectRead && aboutOpen" class="max-h-72 overflow-y-auto" data-project-about>
-            <TicketMarkdown :text="description" label="Description" :empty="`Add a description of ${project}…`" :max-bytes="MAX_PROJECT_DESCRIPTION" :save="saveDescription" :disabled="archived" name="project-description" />
-          </div>
-          <div class="flex flex-wrap items-center gap-3">
-            <UButton :icon="aboutOpen ? 'i-lucide-chevron-up' : 'i-lucide-info'" size="xs" color="neutral" variant="ghost" :label="aboutOpen ? 'Fold' : 'About'" :aria-expanded="aboutOpen" :aria-label="aboutOpen ? 'Fold the description' : `About ${project}`" data-project-about-toggle @click="aboutOpen = !aboutOpen" />
-            <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-project-view />
+          <!-- The description as one line, cut by the CSS and whole in its title; the tracker's link and About at its end. -->
+          <div v-if="projectRead" class="flex h-5 min-w-0 items-center gap-3 text-xs" data-project-description-line>
+            <button
+              type="button"
+              class="min-w-0 flex-1 truncate text-left hover:text-default"
+              :class="line ? 'text-muted' : 'text-dimmed'"
+              :title="line || undefined"
+              :disabled="!line && archived"
+              :aria-expanded="line ? aboutOpen : undefined"
+              data-project-description-text
+              @click="pressLine"
+            >
+              {{ line || `Add a description of ${project}…` }}
+            </button>
             <a
-              v-if="projectRead?.project.tracker === 'external' && projectRead.project.trackerUrl"
+              v-if="projectRead.project.tracker === 'external' && projectRead.project.trackerUrl"
               :href="projectRead.project.trackerUrl"
               target="_blank"
               rel="noopener noreferrer"
-              class="flex min-w-0 items-center gap-1 text-xs text-muted hover:underline"
+              class="flex min-w-0 max-w-64 flex-none items-center gap-1 text-muted hover:underline"
               :title="`Its tickets are tracked at ${projectRead.project.trackerUrl}`"
               data-project-tracker
             >
               <UIcon :name="TRACKERS.external.icon" class="size-3.5 flex-none" />
               <span class="truncate">{{ projectRead.project.trackerUrl }}</span>
             </a>
-            <span v-if="listed" class="ml-auto text-xs text-muted tabular-nums" data-list-total :data-count="total">{{ total }} {{ total === 1 ? 'ticket' : 'tickets' }}{{ narrows ? ' match' : '' }}</span>
+            <UButton :icon="aboutOpen ? 'i-lucide-chevron-up' : 'i-lucide-info'" size="xs" color="neutral" variant="ghost" class="h-5 flex-none py-0" :label="aboutOpen ? 'Fold' : 'About'" :aria-expanded="aboutOpen" :aria-label="aboutOpen ? 'Fold the description' : `About ${project}`" data-project-about-toggle @click="aboutOpen = !aboutOpen" />
           </div>
-          <DispatchViewsBar v-if="projectRead" ref="bar" :project="project" :filter="filter" :kind="view" :names="names" :archived="archived" @apply="applyView" />
-          <DispatchFilters v-model="filter" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" />
+          <div v-if="projectRead && aboutOpen" class="max-h-72 overflow-y-auto" data-project-about>
+            <TicketMarkdown ref="about" :text="description" label="Description" :empty="`Add a description of ${project}…`" :max-bytes="MAX_PROJECT_DESCRIPTION" :save="saveDescription" :disabled="archived" name="project-description" />
+          </div>
+          <DispatchFilters ref="filters" v-model="filter" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents">
+            <template #leading>
+              <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" :ui="{ label: 'sr-only sm:not-sr-only' }" data-project-view />
+            </template>
+            <template #trailing>
+              <span v-if="listed" class="order-7 ml-auto flex-none text-xs whitespace-nowrap text-muted tabular-nums sm:order-none sm:ml-0" data-list-total :data-count="total">{{ total }} {{ total === 1 ? 'ticket' : 'tickets' }}{{ narrows ? ' match' : '' }}</span>
+              <DispatchViewsBar v-if="projectRead" ref="bar" class="order-5 sm:order-none" :project="project" :filter="filter" :kind="view" :names="names" :archived="archived" @apply="applyView" />
+            </template>
+          </DispatchFilters>
           <!-- The selection (X): what its tickets can be set to, one operation each, as the letters and the palette's rows do. -->
           <div v-if="view === 'list' && selectedKeys.length" class="flex flex-wrap items-center gap-1.5 rounded-md bg-elevated/60 px-2 py-1.5" data-selection-bar :data-count="selectedKeys.length">
             <span class="mr-1 text-xs font-medium text-highlighted tabular-nums">{{ selectedKeys.length }} selected</span>

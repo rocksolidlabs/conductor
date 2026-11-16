@@ -301,6 +301,28 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
+  #927, 2026-11-16).** A project's page opens with its description as one
+  line (its first paragraph as text, `descriptionLine` in
+  `web/app/utils/markdown.ts`; "Add a description of CND…" opens the
+  editor), the tracker's link and About at its end, the whole description
+  opened in place under it and remembered per browser
+  (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
+  "shown" starts at the line). Then one toolbar: the List, Board and
+  Roadmap tabs, the search, Filter (the eight filters in a popover, its
+  number the values in use besides the search), a chip per value in use
+  (`filterChips`, a parent and deleted among them) that takes itself out,
+  Clear, the count, Views (the saved views in a menu, the button naming
+  the view applied) and the sort. From a 48 rem list every row is one grid
+  (`TICKET_ROW_TRACKS`), each cell drawn on every row, empty when the
+  ticket has none, so the milestone, priority, owner, assignees and age
+  read straight down; on a phone a row's second line is a grid too. The
+  palette's project group gains "Filter the tickets…". Tests:
+  `dispatch-toolbar.spec.ts` on the seeded day (the first ticket within
+  160 px of the top at 1440 x 900, all fourteen in view, the columns
+  aligned before and after a selection, a phone's lines, the chips and
+  the address, the keys paused while Filter is open);
+  `dispatchQuery.test.ts` and `markdown.test.ts`.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
