@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capGroup, dropPrefix, frecency, matchRange, MODE_PREFIX, noteUse, PAGES, parsePrefix, parseVerb, placeAfter, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
+import { capGroup, dropPrefix, frecency, matchRange, MODE_PREFIX, noteUse, GO_PAGES, parsePrefix, parseVerb, placeAfter, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
 
 const names: Named[] = [
   { kind: 'session', id: 's1', name: 'api sweep', words: ['/home/dev/conductor', 'claude'] },
@@ -150,7 +150,7 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
   })
 
   it('goes to Dispatch with go dispatch, and keeps twelve verbs', () => {
-    expect(PAGES).toContain('dispatch')
+    expect(GO_PAGES).toContain('dispatch')
     expect(parseVerb('go dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
     expect(parseVerb('go Dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
     expect(VERBS).toHaveLength(12)
@@ -158,7 +158,7 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
   })
 
   it('goes to History with go history, under no prefix and under `>` (Program item HS1, PR-7)', () => {
-    expect(PAGES).toContain('history')
+    expect(GO_PAGES).toContain('history')
     expect(parseVerb('go history', names)).toEqual({ verb: 'go', page: 'history' })
     expect(parseVerb('go History', names)).toEqual({ verb: 'go', page: 'history' })
     // `> go history`: the actions mode reads the rest as the verb, as under no prefix.
