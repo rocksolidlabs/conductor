@@ -107,6 +107,27 @@ class Steps(unittest.TestCase):
         self.assertTrue(jobs, "no jobs parsed from ci.yml")
         self.assertEqual(jobs - covered, set(), f"ci.yml jobs with no preflight step: {jobs - covered}")
 
+    def test_the_e2e_shards_cover_the_suite(self):
+        # CI runs the Playwright suite in N shards (docs/checks.md): the matrix lists every
+        # shard from 1 to N and the one test run cuts by that N, or some spec files run in
+        # no shard. Each shard uploads its failure report under a name of its own.
+        ci = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
+        text = ci.read_text()
+        job = re.search(r"^  e2e:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)", text[text.index("\njobs:\n") :], re.M | re.S)
+        self.assertIsNotNone(job, "ci.yml has no e2e job")
+        job = job.group(1)
+        matrix = re.search(r"^    strategy:\n      fail-fast: false\n      matrix:\n        shard: \[([0-9, ]+)\]\s*$", job, re.M)
+        self.assertIsNotNone(matrix, "the e2e job has no shard matrix with fail-fast: false")
+        shards = [int(s) for s in matrix.group(1).split(",")]
+        lines = [line.strip() for line in job.splitlines()]
+        runs = [line for line in lines if ("playwright test" in line or "test:e2e" in line) and not line.startswith("#")]
+        self.assertEqual(len(runs), 1, f"the e2e job runs the suite once a shard: {runs}")
+        cut = re.fullmatch(r"- run: npx playwright test --shard=\$\{\{ matrix\.shard \}\}/(\d+)", runs[0])
+        self.assertIsNotNone(cut, f"the e2e job's test run does not shard by matrix.shard: {runs[0]}")
+        self.assertEqual(shards, list(range(1, int(cut.group(1)) + 1)), f"the matrix lists {shards}, the run cuts /{cut.group(1)}")
+        reports = re.findall(r"^\s+name: (playwright-report.*?)\s*$", job, re.M)
+        self.assertEqual(reports, ["playwright-report-${{ matrix.shard }}"], "the failure report is named for its shard")
+
     def test_the_dco_check_runs_first_against_origin_main(self):
         # The fetch that makes origin/main GitHub's comes before the steps (Main).
         first = p.LINUX_STEPS[0]

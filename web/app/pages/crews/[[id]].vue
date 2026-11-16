@@ -4,6 +4,8 @@ import { ApiError } from '~/composables/useApi'
 import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAfterDelete, peopleProblems, refusedAsStale, revisionToSave, elsewhereWords, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
+import { modelProblem } from '~/utils/capacity'
+import { SheetConfirmation, type SheetTarget } from '~/utils/crewLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -190,6 +192,8 @@ const ruleProblem = computed(() => {
     const err = memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name))
     if (err) return err
     if (!m.agentId) return `${m.name || 'A member'} needs an agent`
+    const model = modelProblem(m.model ?? '')
+    if (model) return `${m.name || 'A member'}: ${model}`
   }
   // The server checks the tasks, then the people (internal/crew Validate).
   return taskProblems(d)[0] ?? peopleProblems(d)[0] ?? ''
@@ -432,7 +436,60 @@ function launchNamed() {
   const label = runName.value
   nameOpen.value = false
   runName.value = ''
-  launch('', label)
+  crewLaunch.ask('', label)
+}
+
+/**
+ * A launch asks first (docs/plans/capacity.md, PR-7): every launch of a crew, from this page or the app's palette, is asked through
+ * useCrewLaunch and opens the sheet, which lists each member with its agent, model, account and a line of its usage; only its Launch
+ * launches, and it launches what the sheet was opened for (SheetTarget): from the crew's page its draft when new or changed (saved
+ * first), else the saved crew by its id. The crew page the sheet was opened on is kept (`at`): a move to another crew closes it, and so
+ * does another workbench token. Each opening is one confirmation (SheetConfirmation): its Launch starts one run at most.
+ */
+const crewLaunch = useCrewLaunch()
+const sheet = reactive<{ open: boolean; target: SheetTarget | null; at?: string }>({ open: false, target: null })
+const confirmation = new SheetConfirmation()
+function openSheet(id: string, label: string) {
+  const key = selectedKey.value
+  if (!id && (key === undefined || !draft.value)) return
+  const target: SheetTarget = id || !(key === NEW || isDirty(key!)) ? { id: id || key!, label } : { key: key!, draft: draft.value!, label }
+  confirmation.opened()
+  Object.assign(sheet, { open: true, target, at: key })
+}
+/** The crew the sheet read is gone: the sheet closes, and the page says so. */
+function sheetGone() {
+  const t = sheet.target
+  sheet.open = false
+  toast.add({ title: 'The crew is gone', description: `${t && 'id' in t ? t.id : 'It'} is no longer saved on the server: nothing was launched.`, icon: 'i-lucide-circle-x', color: 'warning' })
+}
+watch(selectedKey, (k) => {
+  if (k !== sheet.at) sheet.open = false
+})
+watch(
+  crewLaunch.asked,
+  (a) => {
+    if (!a) return
+    crewLaunch.asked.value = null
+    openSheet(a.id, a.label)
+  },
+  { immediate: true },
+)
+/**
+ * The sheet's Launch: its confirmation is taken before anything is awaited, so a second click, or one while it closes, starts nothing.
+ * A draft's run starts after its save only while the sheet was not opened again and the token is the one it was confirmed under; the
+ * launch, once ended, closes only the opening it was confirmed in.
+ */
+async function launchFromSheet(read: CrewInfo | null) {
+  const t = sheet.target
+  const n = t && sheet.at === selectedKey.value ? confirmation.take(sheet.open) : 0
+  if (!t || !n) return
+  const token = admin.token.value
+  try {
+    await launch(t, read, () => confirmation.holds(n) && admin.token.value === token)
+  } finally {
+    if (confirmation.holds(n)) sheet.open = false
+    confirmation.done()
+  }
 }
 
 const menu = computed(() => [[{ label: 'Delete crew', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => (deleteOpen.value = true) }]])
@@ -457,29 +514,23 @@ function hours(ttlSeconds: number): number {
 }
 
 /**
- * Launches a run. From the crew page (`id` empty) what changed is saved
- * first; from a row of the home the crew runs as saved. The server makes
- * the crew's view link, if it asks for one, and returns it this once: the
- * run page shows it when the launch opens that, else a dialog here does.
+ * Launches what the sheet was opened for: the draft is saved first (unless it changed since the sheet drew it: then nothing is sent),
+ * and its run started only while `confirmed` holds after the save (else the page says no run was started); a saved crew by its id, as
+ * the sheet read it (`read`). The server makes the crew's view link, if it asks for one, and returns it this once: the run page shows it
+ * when the launch opens that, else a dialog here does.
  */
-async function launch(id = '', label = '') {
-  const key = id ? id : selectedKey.value
-  if (key === undefined) return
-  launchingKey.value = key
+async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => boolean) {
+  launchingKey.value = 'id' in t ? t.id : t.key
   try {
-    let c: CrewInfo | undefined
-    if (id) {
-      try {
-        c = full.value[id] ?? (await api.getCrew(id))
-      } catch (e) {
-        fail('Launch failed', e)
-        return
-      }
-    } else c = isDirty(key) ? await save() : saved.value
+    const c = 'id' in t ? read : drafts.value[t.key] === t.draft ? await save() : undefined
     if (!c) return
+    if (!('id' in t) && !confirmed()) {
+      toast.add({ title: 'The launch was not started', description: `${c.name} was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
+      return
+    }
     let launched: Awaited<ReturnType<typeof api.launchCrew>>
     try {
-      launched = await api.launchCrew(c.id, label.trim() ? { label: label.trim() } : undefined)
+      launched = await api.launchCrew(c.id, t.label.trim() ? { label: t.label.trim() } : undefined)
     } catch (e) {
       if (e instanceof ApiError && e.code === 'not_a_repo') fail('Not a git repository', e)
       else fail('Launch failed', e)
@@ -532,7 +583,10 @@ watch(
   () => admin.token.value,
   () => {
     // Another token may be another server: nothing typed or read under the
-    // old one stays, and neither does a view link held from it.
+    // old one stays, and neither does a view link held from it, a launch
+    // asked or a sheet drawn from a copy read under it.
+    sheet.open = false
+    crewLaunch.asked.value = null
     drafts.value = {}
     crews.value = []
     full.value = {}
@@ -557,8 +611,8 @@ usePalette().registerPage(() => ({
       icon: 'i-lucide-play',
       note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : undefined,
       disabled: c.where === 'host',
-      run: () => launch(c.id),
-      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => launch(c.id, label.trim()) },
+      run: () => crewLaunch.ask(c.id),
+      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => crewLaunch.ask(c.id, label.trim()) },
       actions: c.where === 'host' ? undefined : [{ id: 'field', kind: 'page' as const, target: c.id, label: 'Launch named…', icon: 'i-lucide-tag', kbds: ['L'], run: () => {} }],
     })),
   ],
@@ -603,7 +657,7 @@ usePalette().registerPage(() => ({
           </UDropdownMenu>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
             <UFieldGroup>
-              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="launch()"><span class="hidden sm:inline">Launch run</span></UButton>
+              <UButton icon="i-lucide-play" :loading="launchingKey === selectedKey" :disabled="!!launchBlocked || saving" aria-label="Launch run" data-launch @click="crewLaunch.ask()"><span class="hidden sm:inline">Launch run</span></UButton>
               <UPopover v-model:open="nameOpen" :content="{ align: 'end' }">
                 <UButton icon="i-lucide-chevron-down" :disabled="!!launchBlocked || saving" aria-label="Name this run" class="border-l border-inverted/20" data-launch-menu />
                 <template #content>
@@ -643,7 +697,7 @@ usePalette().registerPage(() => ({
             <span class="text-[11px] font-semibold uppercase tracking-wider text-muted">Saved crews · {{ total }}</span>
             <span class="text-xs text-muted">plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one</span>
           </div>
-          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="launch($event)" />
+          <CrewsTable v-if="crews.length" :crews="crews" :runs="live.runs.value" :sessions="live.sessions.value" :now="now" :launching="launchingKey ?? ''" @launch="crewLaunch.ask($event)" />
           <UEmpty
             v-else-if="loaded"
             icon="i-lucide-users"
@@ -761,6 +815,7 @@ usePalette().registerPage(() => ({
           </div>
         </template>
       </UModal>
+      <CrewLaunchSheet v-model:open="sheet.open" :target="sheet.target" :agents="agents" :launching="launchingKey !== undefined" @launch="launchFromSheet" @gone="sheetGone" />
       <UModal v-model:open="deleteOpen" :title="`Delete ${saved?.name ?? routeId ?? 'crew'}?`" description="The saved crew goes. Runs already launched keep going, and their worktrees and branches stay.">
         <template #footer>
           <div class="flex w-full justify-end gap-2">

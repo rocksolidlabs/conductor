@@ -450,7 +450,7 @@ func TestThePackageIsCheckedAgainstItsDigest(t *testing.T) {
 		{"another digest", Planned{RunID: id, Base: base, Digest: packageDigest([]byte("other")), Package: good.Package}, "SHA-256"},
 		{"no digest", Planned{RunID: id, Base: base, Package: good.Package}, "SHA-256"},
 		{"another run's launch", planned(t, "api-sweep-0000000b", base), "not of"},
-		{"another version", withPackage(id, base, edit(func(p *Package) { p.Version = 2 })), "version 2"},
+		{"another version", withPackage(id, base, edit(func(p *Package) { p.Version = 3 })), "version 3"},
 		{"not JSON", withPackage(id, base, []byte("{")), "cannot be read"},
 		{"a field not read", withPackage(id, base, unknown), "unknown field"},
 		{"another base", withPackage(id, base, edit(func(p *Package) { p.Plan.Base = strings.Repeat("1", 40) })), "approved at the base"},
