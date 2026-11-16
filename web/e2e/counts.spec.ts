@@ -54,7 +54,7 @@ async function readAll(desk: Page, rail: Page, phone: Page) {
     text(desk, '[data-palette-row="go:decisions"] [data-palette-label]'),
     text(desk, '[data-sidebar-section="needs"] [data-section-count]'),
     desk.locator('[data-sidebar-section="needs"] [data-section-more]').count(),
-    desk.locator('#dashboard-sidebar-main nav a[href="/yard"] [data-slot="linkTrailingBadge"]').count(),
+    desk.locator('#dashboard-sidebar-main [data-sidebar-tile="yard"] [data-tile-badge]').count(),
   ])
   const [railCount, railLabel, railYardChip, yardChip] = await Promise.all([
     text(rail, '[data-rail-count="needs"][data-count-of="needs"]'),
@@ -264,6 +264,7 @@ test('Needs you says when plans and tasks could not be read, and when the inbox 
   await expect(desk).toHaveURL(/\/decisions$/)
 })
 
+// The row's rule is the rail's: in the full sidebar Needs you is a tile of the six (PR-15), which stays at zero and loses its number.
 test.describe('the row leaves at zero', () => {
   let own: OwnServer
   test.beforeAll(async () => {
@@ -273,15 +274,18 @@ test.describe('the row leaves at zero', () => {
     await own?.stop()
   })
 
-  /** A page on the spec's own server, its inbox read answered by `inbox` when given, set before the page loads. */
-  async function at(browser: Parameters<typeof dayPage>[0], o: { path?: string; width?: number; inbox?: (r: Route) => void } = {}) {
+  /**
+   * A page on the spec's own server, its inbox read answered by `inbox` when given, set before the page loads; on a desktop's width
+   * the sidebar is folded to the rail (the row's rule is the rail's) unless `full`.
+   */
+  async function at(browser: Parameters<typeof dayPage>[0], o: { path?: string; width?: number; inbox?: (r: Route) => void; full?: boolean } = {}) {
     const ctx = await browser.newContext({
       baseURL: own.started.baseURL,
       viewport: { width: o.width ?? 1440, height: o.width ? 844 : 900 },
       ...(o.width ? { hasTouch: true, isMobile: true } : {}),
       storageState: {
         cookies: [],
-        origins: [{ origin: new URL(own.started.baseURL).origin, localStorage: [{ name: 'conductor-color-mode', value: 'dark' }, { name: 'conductor.workbenchToken', value: own.started.token }] }],
+        origins: [{ origin: new URL(own.started.baseURL).origin, localStorage: [{ name: 'conductor-color-mode', value: 'dark' }, { name: 'conductor.workbenchToken', value: own.started.token }, ...(o.full ? [] : [{ name: 'conductor.sidebar.mode', value: 'rail' }])] }],
       },
     })
     const page = await ctx.newPage()
@@ -330,12 +334,13 @@ test.describe('the row leaves at zero', () => {
     await expect(page).toHaveURL(/\/yard$/)
     await expect(row(page)).toBeVisible()
     await expect(row(page).locator('[data-count-of="needs"]')).toHaveCount(0)
-    // Again after a redraw it causes: the sidebar folded and unfolded.
-    await page.keyboard.press('Alt+b')
-    await expect(page.locator('[data-rail]')).toBeVisible()
-    await expect(row(page)).toBeVisible()
+    // Again after a redraw it causes: the sidebar unfolded, where Needs you is a tile with no number, and folded again.
     await page.keyboard.press('Alt+b')
     await expect(page.locator('[data-rail]')).toHaveCount(0)
+    await expect(row(page)).toBeVisible()
+    await expect(row(page).locator('[data-count-of="needs"]')).toHaveCount(0)
+    await page.keyboard.press('Alt+b')
+    await expect(page.locator('[data-rail]')).toBeVisible()
     await expect(row(page)).toBeVisible()
 
     // Another browser, which answered nothing: no row.
@@ -366,5 +371,30 @@ test.describe('the row leaves at zero', () => {
     await expect(yard(sy)).toBeVisible()
     await expect(sy.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
     await expect(row(sy)).toHaveCount(0)
+    // The full sidebar on a switchyard: no Needs you tile, the Yard's first.
+    const syFull = await at(browser, { full: true, inbox: (r) => void r.fulfill({ status: 403, json: { error: { code: 'switchyard', message: 'this server coordinates hosted sessions and launches none' } } }) })
+    await expect(syFull.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
+    await expect(syFull.locator('[data-sidebar-tile]').first()).toHaveAttribute('data-sidebar-tile', 'yard')
+    await expect(row(syFull)).toHaveCount(0)
+  })
+
+  test('the Needs you tile stays at zero with no number, and shows the number when something asks', async ({ browser }) => {
+    test.setTimeout(test.info().timeout + DAY_STEP_MS)
+    const page = await at(browser, { full: true })
+    const tile = page.locator('#dashboard-sidebar-main nav[aria-label="Pages"] [data-sidebar-decide]')
+    // Every store read (a positive state, never only an absence): the tile is there, holding no number.
+    await expect(page.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
+    await expect(tile).toBeVisible()
+    await expect(tile.locator('[data-count-of="needs"]')).toHaveCount(0)
+    await expect(tile).toHaveText('Needs you')
+    // The test's own session asks: the tile shows 1.
+    const s = await own.api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e zero tile' })
+    try {
+      await expect.poll(async () => (await own.api.session(s.id)).attention, { timeout: DAY_STEP_MS }).toMatchObject({ state: 'needs_input' })
+      await expect(tile.locator('[data-count-of="needs"]')).toHaveText('1')
+    } finally {
+      await own.api.stopSession(s.id)
+      await own.api.stopSession(s.id)
+    }
   })
 })

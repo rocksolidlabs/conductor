@@ -2,7 +2,7 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
-import { navPages, pageActive, pageTip, type PageId } from '~/utils/pages'
+import { navPages, navTiles, pageActive, pageTip, type PageId } from '~/utils/pages'
 import { needsCount, needsRowShown } from '~/utils/needsYou'
 
 const showToken = ref(false)
@@ -223,6 +223,8 @@ onMounted(() => {
   onBeforeUnmount(() => window.clearInterval(t))
 })
 const needsRow = computed(() => needsRowShown(inbox.state.value, needs.list.value, route.path, minute.value))
+/** Every store of the one list read: the rail's Needs you row is where it stays and the tile's number is drawn (a test waits on it). */
+const needsRead = computed(() => (needs.known.value || needs.more.value ? 'true' : 'false'))
 
 /** A page's badge in the foot: Needs you's one number in amber, Brakeman's briefs not yet opened. */
 function navBadge(id: PageId): NavigationMenuItem['badge'] {
@@ -234,13 +236,20 @@ function navBadge(id: PageId): NavigationMenuItem['badge'] {
 /** The hooks the tests find a page's row by. */
 const NAV_HOOKS: Partial<Record<PageId, string>> = { decisions: 'data-sidebar-decide', brakeman: 'data-sidebar-brakeman' }
 
-// The foot's pages, from the one table (utils/pages.ts): each one's sentence is its tooltip (pageTip), drawn by the label's slot.
+// The full sidebar's foot: the pages as tiles and More (SidebarTiles), from the one table. Brakeman's slot is held while the server
+// has not said; a switchyard serves no inbox, so it has no Needs you tile.
+const tiles = computed(() => navTiles({ brakeman: brakeman.available.value, desktop: desktop.isDesktop.value, switchyard: !!inbox.state.value.unavailable }))
+function tileBadge(id: PageId) {
+  const b = navBadge(id)
+  return b && typeof b === 'object' ? b : undefined
+}
+
+// The rail's pages, from the one table (utils/pages.ts): each one's sentence is its tooltip (pageTip).
 const navEntries = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value, needs: needsRow.value }))
 const nav = computed<NavigationMenuItem[]>(() =>
   navEntries.value.map((p) => {
     const hook = NAV_HOOKS[p.id]
-    // `tip` is the label slot's alone: Nuxt UI hands a link only its link, aria- and data- keys.
-    return { label: p.label, icon: p.icon, to: p.to, active: pageActive(p.id, route.path), badge: navBadge(p.id), tip: pageTip(p), ...(hook ? { [hook]: '' } : {}) }
+    return { label: p.label, icon: p.icon, to: p.to, active: pageActive(p.id, route.path), badge: navBadge(p.id), ...(hook ? { [hook]: '' } : {}) }
   }),
 )
 
@@ -360,16 +369,10 @@ defineShortcuts({
       <template #footer="{ collapsed }">
         <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
              the current page's link the page's tone, as the sidebar's rows do. -->
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full" :data-needs-read="needs.known.value || needs.more.value ? 'true' : 'false'">
-          <!-- data-needs-read: every store of the one list has been read, so Needs you's row is where it stays (a test waits on it). -->
-          <!-- The full sidebar's label says what the page is on hover (Nuxt UI draws a tooltip only on the rail). -->
-          <template #item-label="{ item }">
-            <template v-if="collapsed">{{ item.label }}</template>
-            <UTooltip v-else :text="item.tip" :content="{ side: 'right' }" :delay-duration="300">
-              <span data-nav-label>{{ item.label }}</span>
-            </UTooltip>
-          </template>
-        </UNavigationMenu>
+        <!-- The full sidebar's foot is the pages as tiles; on the rail each page is an icon. data-needs-read: every store of the one
+             list has been read, so the rail's Needs you row is where it stays and the tile's number is drawn (a test waits on it). -->
+        <SidebarTiles v-if="!collapsed" :tiles="tiles.tiles" :more="tiles.more" :badge="tileBadge" :data-needs-read="needsRead" />
+        <UNavigationMenu v-else :items="railNav" orientation="vertical" collapsed tooltip :ui="{ link: 'justify-center hover:before:bg-canvas-hover data-active:before:bg-default' }" class="w-full" :data-needs-read="needsRead" />
         <!-- On the rail the header's menus and the expand button stack in the foot. -->
         <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
           <SidebarHeaderMenus collapsed @token="showToken = true" />

@@ -247,6 +247,16 @@ export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
   return panel
 }
 
+/**
+ * Opens a page from the full sidebar's More tile (the pages that have no tile of their own: SidebarTiles.vue) by clicking it and the
+ * page's item, and waits for the menu to be gone, so that nothing typed next lands in it.
+ */
+export async function viaMore(page: Page, name: string): Promise<void> {
+  await page.locator('#dashboard-sidebar-main [data-sidebar-tile="more"]').click()
+  await page.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+}
+
 /** The hrefs of the session and run links of the full sidebar's list, in the order they show. */
 export function sidebarLinks(page: Page): Promise<string[]> {
   return page

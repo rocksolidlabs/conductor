@@ -7,15 +7,17 @@ import { isActive } from '~/utils/attention'
 /**
  * The phone's bar at the foot (design 3e): Needs you first (with the one
  * number of what waits), Sessions, Yard (the asking sessions on its grid,
- * in neutral ink), Crews;
- * Roundhouse, Agents, Dispatch, Events, Settings, Alerts and your menu under
- * More; the alerts end with "All alert rules", the Alerts panel. Every target is at least 44 px tall; the padding reads the safe
+ * in neutral ink), Crews; Agents, Dispatch, Brakeman (while the server has
+ * it), Events, History, Settings, Alerts and your menu under More; the
+ * alerts end with "All alert rules", the Alerts panel. Every target is at
+ * least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
  */
 const emit = defineEmits<{ token: [] }>()
 const attention = useAttention()
 const desktop = useDesktop()
+const brakeman = useBrakeman()
 const route = useRoute()
 const { hasToken, clear } = useWorkbenchToken()
 const shortcuts = useShortcutsModal()
@@ -44,7 +46,7 @@ function active(id: PageId): boolean {
 
 const more = ref(false)
 const nameOpen = ref(false)
-const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value }))
+const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value, brakeman: brakeman.available.value === true }))
 /** Your menu's items as buttons, the sheet closed before each acts. */
 const account = computed(() =>
   accountItems(hasToken.value, {
