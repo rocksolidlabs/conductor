@@ -257,6 +257,15 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **Launch with a first message (the UX review, P19; #951).** The Launch
+  dialog's "What should it do?" (on this server, not for a clone or "On this
+  computer") sends `message` with the launch; past 4,096 bytes the field says
+  so and Launch waits (`messageProblem`). The Name field's placeholder is the
+  name the message gives (`namePreview`, the server's `NameFromMessage`, its
+  cut held to the server's table `cut-at-word.json` by `cutAtWord`). While
+  `firstMessage` is "waiting" the session page says above the terminal what
+  it waits for (`firstMessageLine`). Tests: `launch.test.ts`;
+  `launch-first-message.spec.ts`.
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`

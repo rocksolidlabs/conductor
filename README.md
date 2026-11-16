@@ -91,6 +91,11 @@ sessions do (see the Files tab).
 The sidebar is the session list, grouped into **Needs you**, **Running** and
 **Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
 **Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
+Launch's **What should it do?** takes a first message for the agent: it is
+typed once the agent is ready (after any startup question, such as trusting
+the folder, is answered; line breaks go in as spaces), the session is named
+by its first words unless you name it, and a line above the terminal says
+what it waits for. Keys you type in the terminal first withdraw it.
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your

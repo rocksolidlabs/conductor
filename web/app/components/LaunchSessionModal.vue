@@ -7,7 +7,7 @@ import { splitArgs } from '~/utils/argv'
 import { ATTEMPT_WARNING, SHARED_TREE_WARNING, cloneArgsShown, cloneCwd, cloneLaunchArgs, cloneLaunchCwd, cloneName, cloneNameError, cloneRefusal, inRunWorktree, missingSourceAgent, yoloStored } from '~/utils/clone'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
 import { accountChoices, accountOfLaunch, capacityKey, modelProblem, type CapacityQuery } from '~/utils/capacity'
-import { plainOffMachine, showsRunsOn } from '~/utils/launch'
+import { messageProblem, namePreview, plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -34,6 +34,11 @@ const yoloDefault = ref(false)
 
 /** `yolo` is this launch's own choice; undefined follows the server's default. */
 const state = reactive<{ agentId: string; runsOn: 'server' | 'local'; name: string; cwd: string; args: string; yolo?: boolean }>({ agentId: '', runsOn: 'server', name: '', cwd: '', args: '' })
+// The first message (P19): typed into the agent once it is ready; a launch on this server only, never a clone. Past its bound the
+// field says so and Launch waits; with no name given, the name it makes is the Name field's placeholder.
+const message = ref('')
+const messageError = computed(() => messageProblem(message.value))
+const namePlaceholder = computed(() => namePreview(message.value) || 'optional')
 
 // Clone with options… (#434): the dialog titled for the clone of a session, filled in with its launch, on this server, the name
 // empty and required; the arguments as recorded while their line is left as it was; the agent never another than the source's
@@ -263,6 +268,7 @@ async function submit() {
       // The account the person picked, else none: the route resolves it (its refusal of a pick is shown in its words).
       account: decided.value.sent,
       model: takesAccount.value && model.value.trim() ? model.value.trim() : undefined,
+      message: message.value.trim() ? message.value : undefined,
     })
     toast.add({ title: 'Session started', description: session.name, color: 'success', icon: 'i-lucide-play' })
     emit('launched', session)
@@ -270,6 +276,7 @@ async function submit() {
     state.name = ''
     state.args = ''
     model.value = ''
+    message.value = ''
   } catch (e) {
     error.value = e instanceof ApiError ? `${e.message} (${e.code})` : (e as Error).message
   } finally {
@@ -319,11 +326,14 @@ async function submit() {
           <template #hint><span>"this computer" runs a command you paste; the server is where the workbench is served from</span></template>
         </UFormField>
 
+        <UFormField v-if="!cloning && state.runsOn === 'server'" label="What should it do?" name="message" hint="optional" help="Typed into the agent once it is ready. Line breaks are typed as spaces." :error="messageError || undefined" data-launch-message>
+          <UTextarea v-model="message" autoresize :rows="2" :maxrows="6" class="w-full" data-launch-message-input />
+        </UFormField>
         <UFormField v-if="cloning" label="Name" name="name" hint="required" :error="cloneNameMessage" :help="cloneNamed.problem === 'empty' ? 'Give the clone a name no session has' : undefined">
           <UInput v-model="state.name" placeholder="no session's already" class="w-full" data-clone-name />
         </UFormField>
         <UFormField v-else label="Name" name="name" :hint="state.runsOn === 'local' ? 'required to spot it when it connects' : 'optional'" :error="state.runsOn === 'local' && !state.name.trim() ? 'Give the session a name first' : undefined">
-          <UInput v-model="state.name" placeholder="optional" class="w-full" />
+          <UInput v-model="state.name" :placeholder="state.runsOn === 'server' ? namePlaceholder : 'optional'" class="w-full" />
         </UFormField>
 
         <template v-if="state.runsOn === 'server'">
@@ -389,7 +399,7 @@ async function submit() {
         <div class="flex-1" />
         <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
         <UButton v-if="cloning" label="Clone" icon="i-lucide-copy" :loading="submitting" :disabled="!state.agentId || !!cloneNamed.problem" data-launch-clone-submit @click="submit" />
-        <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId" @click="submit" />
+        <UButton v-else-if="state.runsOn === 'server'" label="Launch" icon="i-lucide-play" :loading="submitting" :disabled="!state.agentId || !!messageError" @click="submit" />
       </div>
     </template>
   </UModal>
