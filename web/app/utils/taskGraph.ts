@@ -1,27 +1,17 @@
 import type { RunTask } from '~/composables/useSessions'
-import { GAP_X, GAP_Y, NODE_H, NODE_W, type GraphDirection, type GraphEdge } from './crewGraph'
 
-// The tasks of a managed run as a graph (#334, row 7): one node per task,
-// an edge from each task to the tasks that need its result, laid out in
-// columns by depth as the crew graph lays out its members.
+// The tasks of a managed run by depth (#334, row 7): a task one past the
+// deepest task it needs. The Graph view draws them as lines (lineLayout,
+// utils/lineDiagram.ts); a phone lists them by depth (taskListRows).
 
 export interface TaskNode {
   /** The task's id. */
   id: string
   task: RunTask
-  /** Column: one past the deepest task it needs; 0 for a task that needs nothing here. */
+  /** One past the deepest task it needs; 0 for a task that needs nothing here. */
   depth: number
-  /** Row within its column, in the run's order. */
-  row: number
-  x: number
-  y: number
-  /** A need the run has no task for, or a cycle: drawn as a root, said on the node. */
+  /** A need the run has no task for, or a cycle: drawn as a root, said on its row. */
   warning?: string
-}
-
-export interface TaskGraphData {
-  nodes: TaskNode[]
-  edges: GraphEdge[]
 }
 
 /** What a task's depth reads of it: a run's task, a crew's task shape and a member as its needs all are one. */
@@ -60,30 +50,15 @@ export function taskDepths(tasks: readonly DepthNode[]): { depth: Map<string, nu
   return { depth, warnings }
 }
 
-/** The nodes laid out by depth, and a `needs` edge from each task to each task that needs it (none to a task drawn with a warning). */
-export function taskLayout(tasks: readonly RunTask[], direction: GraphDirection = 'LR'): TaskGraphData {
+/** The tasks as a list (a phone's Graph view), a task after the tasks it needs: by depth, then in the run's order. */
+export function taskListRows(tasks: readonly RunTask[]): TaskNode[] {
   const { depth, warnings } = taskDepths(tasks)
-  const rows = new Map<number, number>()
-  const ids = new Set(tasks.map((t) => t.id))
-  const nodes: TaskNode[] = tasks.map((t) => {
-    const d = depth.get(t.id) ?? 0
-    const row = rows.get(d) ?? 0
-    rows.set(d, row + 1)
-    const along = d * (NODE_W + GAP_X)
-    const across = row * (NODE_H + GAP_Y)
-    return { id: t.id, task: t, depth: d, row, x: direction === 'LR' ? along : across, y: direction === 'LR' ? across : along, warning: warnings.get(t.id) }
+  const rows: TaskNode[] = tasks.map((t) => {
+    const n: TaskNode = { id: t.id, task: t, depth: depth.get(t.id) ?? 0 }
+    const w = warnings.get(t.id)
+    if (w) n.warning = w
+    return n
   })
-  const edges: GraphEdge[] = []
-  for (const t of tasks) {
-    if (warnings.has(t.id)) continue
-    for (const need of t.needs ?? []) {
-      if (ids.has(need)) edges.push({ id: `needs:${need}-${t.id}`, from: need, to: t.id, kind: 'needs' })
-    }
-  }
-  return { nodes, edges }
-}
-
-/** The nodes as a list, a task after the tasks it needs: by column, then in the run's order. */
-export function taskListRows(g: TaskGraphData): TaskNode[] {
-  return [...g.nodes].sort((a, b) => a.depth - b.depth || a.row - b.row)
+  const at = new Map(tasks.map((t, i) => [t, i]))
+  return rows.sort((a, b) => a.depth - b.depth || (at.get(a.task) ?? 0) - (at.get(b.task) ?? 0))
 }
