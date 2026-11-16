@@ -58,8 +58,8 @@ test('each part of the day holds what it promises, read through the API by name'
   expect((await day.api.run(n['Release notes']!)).outcome).toBe('succeeded')
 
   // dispatch: the fourteen tickets by key with their owners.
-  const tickets = (await day.api.ok<{ tickets: Array<{ key: string; owner: string }> }>('GET', '/api/dispatch/tickets?project=CND')).tickets
-  expect(tickets.map((t) => [t.key, t.owner]).sort((a, b) => Number(a[0]!.slice(4)) - Number(b[0]!.slice(4)))).toEqual(TICKETS.map((t, i) => [`CND-${i + 1}`, t.owner]))
+  const tickets = (await day.api.ok<{ tickets: Array<{ key: string; owner?: string }> }>('GET', '/api/dispatch/tickets?project=CND')).tickets
+  expect(tickets.map((t) => [t.key, t.owner ?? '']).sort((a, b) => Number(a[0]!.slice(4)) - Number(b[0]!.slice(4)))).toEqual(TICKETS.map((t, i) => [`CND-${i + 1}`, t.owner]))
 
   // long: the session's name 120 bytes, the run's label exactly 60 characters (the bound a launch accepts), the ticket's title 200.
   expect((await day.api.session(n.long!)).name).toBe(LONG_NAME)
