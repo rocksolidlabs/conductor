@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { DAY_STEP_MS, type Day } from './day'
 import { dayPage, expect, test, type Session } from './fixtures'
 import { tabTo } from './layout'
@@ -10,6 +11,14 @@ import { tabTo } from './layout'
 /** A session of the test's own on the day's server, ended and removed by `drop`. */
 async function launch(day: Day, name: string): Promise<Session> {
   return day.api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name })
+}
+
+/**
+ * The page has drawn what the focus it just took asked for: a tooltip opens in the focus event's own handler and is drawn at the
+ * next render, so two frames after the focus landed say whether one opened.
+ */
+async function drawnAfterFocus(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
 }
 
 async function drop(day: Day, id: string): Promise<void> {
@@ -56,12 +65,19 @@ for (const theme of ['dark', 'light'] as const) {
       await page.keyboard.press('Enter')
       await expect(page.getByRole('menuitem', { name: 'Copy session id' })).toBeVisible()
       await expect(more).toHaveAttribute('aria-expanded', 'true')
+      // Closed by Escape, the menu hands the focus back to the button: that focus is the app's, not a Tab, and opens no tooltip.
       await page.keyboard.press('Escape')
       await expect(page.getByRole('menu')).toHaveCount(0)
+      await expect(more).toBeFocused()
+      await drawnAfterFocus(page)
+      await expect(anyTip).toHaveCount(0)
+      // By a click, and an item chosen: the pointer is on the item when the menu hands the focus back, and no tooltip opens.
       await more.click()
-      await expect(page.getByRole('menuitem', { name: 'Copy session id' })).toBeVisible()
-      await page.keyboard.press('Escape')
+      await page.getByRole('menuitem', { name: 'Copy session id' }).click()
       await expect(page.getByRole('menu')).toHaveCount(0)
+      await expect(more).toBeFocused()
+      await drawnAfterFocus(page)
+      await expect(anyTip).toHaveCount(0)
     } finally {
       await drop(day, s.id)
     }
@@ -84,12 +100,19 @@ test("an icon-only button as a popover's trigger opens it by a click and by the 
   await page.keyboard.press('Escape')
   await expect(views).toHaveAttribute('aria-expanded', 'false')
   await expect(menu).toHaveCount(0)
+  // The pointer off the button, so that what follows is the keyboard's and the app's alone.
+  await page.mouse.move(1, 450)
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0)
   await views.focus()
   await page.keyboard.press('Enter')
   await expect(menu).toBeVisible()
   await expect(views).toHaveAttribute('aria-expanded', 'true')
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
+  // The popover hands the focus back: no tooltip for that.
+  await expect(views).toBeFocused()
+  await drawnAfterFocus(page)
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0)
 })
 
 test('on a phone an icon-only button keeps its label as its name, and opens its menu at a tap', async ({ browser, day }) => {
@@ -100,9 +123,12 @@ test('on a phone an icon-only button keeps its label as its name, and opens its 
     await expect(more).toBeVisible()
     await expect(more).toHaveAccessibleName('More')
     await more.tap()
-    await expect(page.getByRole('menuitem', { name: 'Copy session id' })).toBeVisible()
-    await page.keyboard.press('Escape')
+    await page.getByRole('menuitem', { name: 'Copy session id' }).tap()
     await expect(page.getByRole('menu')).toHaveCount(0)
+    // The menu hands the focus back to the button; on a touch screen no tooltip opens, then or ever.
+    await expect(more).toBeFocused()
+    await drawnAfterFocus(page)
+    await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0)
   } finally {
     await drop(day, s.id)
   }

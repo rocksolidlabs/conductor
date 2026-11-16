@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { agentInitials, relativeTime, sessionMeta } from '~/utils/sessions'
-import { rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
+import { agentInitials, sessionMeta } from '~/utils/sessions'
+import { exitLine as exitLineOf, rowMeta, sessionOpen, type SessionRow } from '~/utils/sidebar'
 import { sessionStatus } from '~/utils/status'
 import { sessionTarget } from '~/utils/actions'
 import { sessionResumeOffered } from '~/utils/runs'
@@ -39,7 +39,7 @@ const current = computed(() => sessionOpen(route.path, s.value.id))
 const meta = computed(() => rowMeta(s.value, props.member, props.now))
 /** The meta line after the machine (which carries the laptop), the parts joined by middle dots as text, so it reads and copies as one line. */
 const metaText = computed(() => (props.row.machine ? meta.value.slice(1).map((p) => ` · ${p}`).join('') : meta.value.join(' · ')))
-const exitLine = computed(() => `${props.row.exitWord} · ${relativeTime(s.value.endedAt ?? s.value.createdAt, props.now, { suffix: true })}`)
+const exitLine = computed(() => exitLineOf(props.row, props.now))
 const live = computed(() => sessionLive(s.value.status))
 const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))

@@ -12,6 +12,7 @@ import {
   SIDEBAR_WIDTH,
   blockRows,
   blockSubtitle,
+  exitLine,
   focusRows,
   mayRefocusRow,
   moveFocus,
@@ -243,6 +244,12 @@ describe('rowState', () => {
     expect(at({ status: 'host_disconnected' as SessionInfo['status'] })).toBe('exited')
     const away = sidebarModel([session({ id: 'away', status: 'host_disconnected' as SessionInfo['status'] })])
     expect((away.exited[0] as SessionRow).exitWord).toBe('host away')
+    // Its line has no age: the listing does not say when the host went, and three hours since its start is not that.
+    const now = Date.parse('2026-10-01T12:00:00Z')
+    expect(exitLine(away.exited[0] as SessionRow, now)).toBe('host away')
+    // An ended session says how long ago it ended.
+    const ended = sidebarModel([session({ id: 'done', status: 'exited', exitCode: 1, endedAt: '2026-10-01T11:57:00Z' })])
+    expect(exitLine(ended.exited[0] as SessionRow, now)).toBe('exit 1 · 3m ago')
   })
 })
 

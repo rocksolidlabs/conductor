@@ -311,6 +311,11 @@ function onKey(e: KeyboardEvent) {
     return
   }
   if (target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return
+  // Enter on a button in a row (Answer, a choice, a run's line or its header's controls) is that button's click, never the row's open.
+  if (e.key === 'Enter' && target.closest('button')) {
+    e.stopPropagation()
+    return
+  }
   const id = focused.value
   if (!id) return
   if (confirmingId.value) {

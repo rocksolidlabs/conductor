@@ -12,7 +12,7 @@ import { answerRows, cutNotice, oneRowPerDecision, rowDecision, staleNotice, typ
 import { isEnded, noReply, offeredChoices } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
 import { joinedPath } from '~/utils/joined'
-import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally } from '~/utils/status'
+import { joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusView } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
 import { PAGES, palettePages } from '~/utils/pages'
 import { needsCount, type NeedsItem } from '~/utils/needsYou'
@@ -51,6 +51,23 @@ export interface PaletteContext {
   now: () => number
   /** A ticket's picker (Set status…, Set priority…), opened once the palette has closed. */
   pickTicket: (field: PickField, t: TicketSummary) => void
+}
+
+/**
+ * A run's row in the palette, its second line and its mark: "started 08:31 · 3 agents · 2/5 tasks · review asks · 1 working ·
+ * 1 finished", the members' tally said once (after the names of those who ask), and the mark of the run's own state, the one that
+ * places it in the sidebar's list (a run that waits on a decision or a failed task is amber whatever its members do).
+ */
+export function runRowLook(block: RunBlock, r: RunInfo | undefined): { detail: string; status: StatusView } {
+  const asking = block.members.filter((m) => m.state === 'needs').map((m) => m.session.name)
+  const keys = block.members.map((m) => sessionStatus(m.session).key)
+  // A managed run says its tasks: `2/5 tasks · 1 failed · paused`.
+  const tc = r?.managed ? taskCounts(r.tasks) : null
+  const head = blockSubtitle({ startedAt: block.startedAt, stoppedAt: block.stoppedAt, agents: block.agents })
+  const detail = [head, tc ? `${tc.done}/${tc.total} tasks${tc.failed ? ` · ${tc.failed} failed` : ''}${r?.paused ? ' · paused' : ''}` : '', asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', statusTally(keys, ['working', 'finished', 'running', 'exited'])]
+    .filter(Boolean)
+    .join(' · ')
+  return { detail, status: statusOfKey(block.state) }
 }
 
 /**
@@ -436,14 +453,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
     if (r && live && r.managed) more.push({ id: 'tasks', kind: 'run', target: r.id, label: 'Open the tasks', icon: 'i-lucide-list-checks', run: () => go(`/runs/${encodeURIComponent(r.id)}?view=tasks`) })
-    const asking = block.members.filter((m) => m.state === 'needs').map((m) => m.session.name)
-    // "1 working · 2 finished": the members by status (utils/status.ts); those that ask are named before it.
-    const keys = block.members.map((m) => sessionStatus(m.session).key)
-    // A managed run says its tasks: `2/5 tasks · 1 failed · paused`.
-    const tc = r?.managed ? taskCounts(r.tasks) : null
-    const detail = [blockSubtitle(block), tc ? `${tc.done}/${tc.total} tasks${tc.failed ? ` · ${tc.failed} failed` : ''}${r?.paused ? ' · paused' : ''}` : '', asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', statusTally(keys, ['working', 'finished', 'running', 'exited'])]
-      .filter(Boolean)
-      .join(' · ')
+    const { detail, status } = runRowLook(block, r)
     return {
       key: `run:${block.runId}`,
       label: block.title,
@@ -451,7 +461,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       words: [r?.goal ?? '', r?.cwd ?? '', ...block.members.map((m) => m.session.name)],
       icon: 'i-lucide-play',
       state: block.state === 'needs' || block.state === 'exited' ? block.state : 'running',
-      status: keys.length ? statusOfKey(blockStatus(keys)) : undefined,
+      status,
       run: () => go(`/runs/${encodeURIComponent(block.runId)}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
       href: `/runs/${encodeURIComponent(block.runId)}`,
