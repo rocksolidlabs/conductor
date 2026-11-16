@@ -358,7 +358,10 @@ open deferred item from rounds 1 and 2, then the features below.
   Agents, and the Crews page's two section captions, fold to About this
   page once the page has content; Brakeman's Settings link is a header
   button. The feed says it is this tab's alone and links Agents'
-  Reporting (`empty-pages.spec.ts`).
+  Reporting (`empty-pages.spec.ts`). Needs you with nothing waiting is
+  the same shape, "Nothing needs you now.", with what shows up there and
+  what was decided in the last day under it; it reads, and a first read
+  that fails says so with Read again, the same way.
 - **A welcome that teaches (#945; the UX review's P17, part of #374).** A
   server with no session at all shows the welcome on the home and, on a
   phone, on the Sessions page in place of the list's empty line: what
@@ -369,8 +372,9 @@ open deferred item from rounds 1 and 2, then the features below.
   another machine says to run `conductor host` there and links the README's
   Quick start. Try a crew loads the example crews and says what that does
   (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
-  load them say too. "Where things are" lists each page of the nav with the
-  sentence its tooltip says (`navPages`). Settings left the card
+  load them say too. "Where things are" lists the sidebar's tiles, then the
+  pages under More, each with the sentence its tooltip says. Settings left
+  the card
   (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
   `empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
