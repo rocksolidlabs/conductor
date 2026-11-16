@@ -14,7 +14,8 @@ import { taskDepths, type DepthNode } from './taskGraph'
  * nearest its parent's, so the lanes number the most lines alive at one depth;
  * 4 geometry, a connector kept to the gutters between depths and the tracks
  * between lanes, where no station ever stands; 5 labels, alternating above
- * and below a line, flipped, cut or hidden so that none meets another.
+ * and below a line, flipped, cut or hidden so that none meets another label,
+ * a station not its own, a line or a connector.
  */
 
 export type LineSize = 'full' | 'mini'
@@ -72,7 +73,7 @@ export interface LineBox {
 }
 
 export interface LineLabel {
-  /** The id as shown, cut with "…"; empty when hidden or at `mini`. */
+  /** The id as shown, cut with "…"; empty when hidden or at `mini`. A cut or hidden label's whole text is the station's `title`. */
   text: string
   /** `none`: hidden (no room, or `mini`); the whole id stays in the station's `title`. */
   side: LineLabelSide
@@ -135,6 +136,14 @@ export interface LineLayout {
   height: number
   /** A task's warning, by its id. */
   warnings: Map<string, string>
+  /** The geometry it was laid out at (a copy of `LINE_GEOMETRY`'s for its size and direction), so that a drawing looks nothing up. */
+  geometry: LineGeometry
+}
+
+/** A path drawn through the layout, which no label may be crossed by: a line through its stations' centres (`corner` 0), or a connector. */
+export interface LinePath {
+  points: readonly LinePoint[]
+  corner: number
 }
 
 interface Building {
@@ -182,17 +191,39 @@ function labelBox(s: LineStation, text: string, side: LineLabelSide): LineBox {
 }
 
 /**
+ * What a path covers, as boxes a label's box must not meet: each straight run
+ * (every run of a layout is straight along or across, so its box is the run
+ * itself, of no width), and each rounded turn's square of its corner, inside
+ * which the rounding is drawn, whatever its curve.
+ */
+function pathBoxes(path: LinePath): LineBox[] {
+  const ps = path.points
+  const out: LineBox[] = []
+  ps.forEach((b, i) => {
+    const a = ps[i - 1]
+    if (a) out.push({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) })
+    const c = ps[i + 1]
+    if (!a || !c || path.corner === 0) return
+    const dx = Math.sign(a.x - b.x) + Math.sign(c.x - b.x)
+    const dy = Math.sign(a.y - b.y) + Math.sign(c.y - b.y)
+    out.push({ x: Math.min(b.x, b.x + dx * path.corner), y: Math.min(b.y, b.y + dy * path.corner), w: Math.abs(dx) * path.corner, h: Math.abs(dy) * path.corner })
+  })
+  return out
+}
+
+/**
  * Step 5: each station's label, in station order (the stations by depth, so a
  * line's own in its order). In `LR` the side alternates along the station's
- * line, above first; a box that meets a box already placed or another
- * station's circle takes the other side; if both meet one it is cut short and
- * tried again; if it still meets one it is hidden. In `TB` it sits to the
- * right. At the full geometry the alternation alone keeps every label clear
- * (two stations of one lane at neighbouring depths are neighbours on one line),
- * so the rest guards what a station's place does not promise.
+ * line, above first; a box that meets a box already placed, another station's
+ * circle or one of `paths` (the lines and the connectors, `pathBoxes`) takes
+ * the other side; if both meet one it is cut short and tried again; if it
+ * still meets one it is hidden. In `TB` it sits to the right, so it is cut,
+ * then hidden. A cut or hidden label's whole text stays in the station's
+ * `title`, for the drawing to show on focus or in a caption.
  */
-export function placeLabels(stations: readonly LineStation[], direction: GraphDirection, radius: number): LineLabel[] {
+export function placeLabels(stations: readonly LineStation[], direction: GraphDirection, radius: number, paths: readonly LinePath[] = []): LineLabel[] {
   const placed: LineBox[] = []
+  const crossing = paths.flatMap(pathBoxes)
   const along = new Map<string, number>()
   return stations.map((s) => {
     const k = along.get(s.line) ?? 0
@@ -203,7 +234,7 @@ export function placeLabels(stations: readonly LineStation[], direction: GraphDi
       const text = cutLineLabel(s.id, n)
       for (const side of sides) {
         const box = labelBox(s, text, side)
-        if (placed.some((b) => meets(b, box)) || stations.some((o) => o !== s && boxHitsCircle(box, o.x, o.y, radius))) continue
+        if (placed.some((b) => meets(b, box)) || crossing.some((b) => meets(b, box)) || stations.some((o) => o !== s && boxHitsCircle(box, o.x, o.y, radius))) continue
         placed.push(box)
         return { text, side, box }
       }
@@ -348,9 +379,11 @@ export function lineLayout(nodes: readonly DepthNode[], opts: LineOptions = {}):
     return s
   })
 
-  // Step 5: labels.
+  // Step 5: labels, clear of the lines (through their stations' centres) and the connectors.
   if (g.labels) {
-    const labels = placeLabels(stations, direction, g.radius)
+    const at = new Map(stations.map((s) => [s.id, s]))
+    const paths: LinePath[] = [...lines.map((l) => ({ points: l.stations.flatMap((id) => at.get(id) ?? []), corner: 0 })), ...connectors]
+    const labels = placeLabels(stations, direction, g.radius, paths)
     stations.forEach((s, i) => (s.label = labels[i] ?? s.label))
   }
 
@@ -376,5 +409,6 @@ export function lineLayout(nodes: readonly DepthNode[], opts: LineOptions = {}):
     width: ceil4(right + g.margin),
     height: ceil4(bottom + g.margin),
     warnings,
+    geometry: { ...g },
   }
 }

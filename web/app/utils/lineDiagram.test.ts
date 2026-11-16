@@ -3,7 +3,23 @@ import { describe, expect, it } from 'vitest'
 import type { RunTask } from '~/composables/useSessions'
 import type { GraphDirection } from './crewGraph'
 import { NODE_W } from './crewGraph'
-import { LINE_LABEL_CHARS, LINE_GEOMETRY, lineLayout, placeLabels, type LineLayout, type LinePoint, type LineSize, type LineStation } from './lineDiagram'
+import {
+  LINE_LABEL_CHARS,
+  LINE_LABEL_CHAR_W,
+  LINE_LABEL_H,
+  LINE_LABEL_OFFSET,
+  LINE_LABEL_SHORT,
+  LINE_GEOMETRY,
+  cutLineLabel,
+  lineLayout,
+  placeLabels,
+  type LineBox,
+  type LineLabelSide,
+  type LineLayout,
+  type LinePoint,
+  type LineSize,
+  type LineStation,
+} from './lineDiagram'
 import { taskDepths, taskLayout, type DepthNode } from './taskGraph'
 
 // lineLayout is a pure function of ids and needs: its cases are written as
@@ -63,11 +79,51 @@ function distance(path: LinePoint[], q: LinePoint): number {
   return best
 }
 
-/** How far a connector keeps from a station's edge. */
-const clearance = (l: LineLayout, c: { points: LinePoint[]; corner: number }, id: string, size: LineSize = 'full', dir: GraphDirection = 'LR') => {
+/** How far a connector keeps from a station's edge, at the radius the layout carries. */
+const clearance = (l: LineLayout, c: { points: LinePoint[]; corner: number }, id: string) => {
   const s = l.stations.find((x) => x.id === id)
   if (!s) throw new Error(`no station ${id}`)
-  return distance(drawn(c.points, c.corner), s) - LINE_GEOMETRY[size][dir].radius
+  return distance(drawn(c.points, c.corner), s) - l.geometry.radius
+}
+
+/** Whether the segment a to b runs through the inside of a box (Liang and Barsky's clip, the box's edges not inside). */
+function crosses(a: LinePoint, b: LinePoint, box: LineBox): boolean {
+  let [t0, t1] = [0, 1]
+  const [dx, dy] = [b.x - a.x, b.y - a.y]
+  const sides: Array<[number, number]> = [
+    [-dx, a.x - box.x],
+    [dx, box.x + box.w - a.x],
+    [-dy, a.y - box.y],
+    [dy, box.y + box.h - a.y],
+  ]
+  for (const [p, q] of sides) {
+    if (p === 0) {
+      if (q <= 0) return false
+      continue
+    }
+    if (p < 0) t0 = Math.max(t0, q / p)
+    else t1 = Math.min(t1, q / p)
+  }
+  return t0 < t1
+}
+
+/** Whether a path, as given (a line's centres, or a connector's points with each turn's corner square, where its rounding is drawn), meets a box. */
+function pathMeets(points: LinePoint[], corner: number, box: LineBox): boolean {
+  return points.some((p, i) => {
+    const [a, c] = [points[i - 1], points[i + 1]]
+    if (a && crosses(a, p, box)) return true
+    if (!a || !c || corner === 0) return false
+    const [dx, dy] = [Math.sign(a.x - p.x) + Math.sign(c.x - p.x), Math.sign(a.y - p.y) + Math.sign(c.y - p.y)]
+    const sq = { x: Math.min(p.x, p.x + dx * corner), y: Math.min(p.y, p.y + dy * corner), w: corner, h: corner }
+    return sq.x < box.x + box.w && box.x < sq.x + sq.w && sq.y < box.y + box.h && box.y < sq.y + sq.h
+  })
+}
+
+/** A label's box as the rule tries it: centred over or under its station (never left of 0), or to its right in TB. */
+function triedBox(s: LinePoint, text: string, side: LineLabelSide): LineBox {
+  const w = text.length * LINE_LABEL_CHAR_W
+  if (side === 'right') return { x: s.x + LINE_LABEL_OFFSET, y: s.y - LINE_LABEL_H / 2, w, h: LINE_LABEL_H }
+  return { x: Math.max(0, s.x - w / 2), y: side === 'above' ? s.y - LINE_LABEL_OFFSET - LINE_LABEL_H : s.y + LINE_LABEL_OFFSET, w, h: LINE_LABEL_H }
 }
 
 describe('lineLayout: a table of shapes', () => {
@@ -94,6 +150,38 @@ describe('lineLayout: a table of shapes', () => {
       connectors: ['schema>backfill:branch', 'naming>release-notes:branch'],
       junctions: { schema: 'split', naming: 'split' },
     })
+  })
+  it("the Ledger's labels: release-notes takes the side below, as naming>release-notes runs down x 132 through the one above", () => {
+    const l = lineLayout(ledger)
+    expect(Object.fromEntries(l.stations.map((s) => [s.id, `${s.label.side} ${s.label.text}`]))).toEqual({
+      schema: 'above schema',
+      soak: 'above soak',
+      naming: 'below naming',
+      backfill: 'above backfill',
+      migrate: 'above migrate',
+      'release-notes': 'below release-notes',
+    })
+    // The side its line gives it, above, is the box the review measured: the branch's run down the gutter crosses it.
+    const above = triedBox({ x: 168, y: 72 }, 'release-notes', 'above')
+    expect(above).toEqual({ x: 168 - 42.9, y: 50, w: 85.8, h: 12 })
+    expect(l.connectors.find((c) => c.to === 'release-notes')?.points).toEqual([
+      { x: 96, y: 24 },
+      { x: 132, y: 24 },
+      { x: 132, y: 72 },
+      { x: 168, y: 72 },
+    ])
+    expect(crosses({ x: 132, y: 24 }, { x: 132, y: 72 }, above)).toBe(true)
+    expect(l.stations.find((s) => s.id === 'release-notes')?.label.box).toEqual({ x: 168 - 42.9, y: 82, w: 85.8, h: 12 })
+  })
+  it('a branch leaves from the deepest need: x, whose needs r0 and s1 both go on, branches from s1 (depth 1) and takes a merge from r0', () => {
+    const l = lineLayout([n('r0'), n('r1', 'r0'), n('s0'), n('s1', 's0'), n('s2', 's1'), n('x', 'r0', 's1')])
+    expect(shape(l)).toEqual({
+      at: { r0: [0, 0], s0: [0, 1], r1: [1, 0], s1: [1, 1], s2: [2, 1], x: [2, 2] },
+      lines: ['r0 r1', 's0 s1 s2', 'x'],
+      connectors: ['s1>x:branch', 'r0>x:merge'],
+      junctions: { r0: 'split', s1: 'split', x: 'merge' },
+    })
+    expect(l.lines[2]).toEqual({ id: 'x', stations: ['x'], lane: 2, from: 's1' })
   })
   it('two independent chains on two lanes', () => {
     expect(shape(lineLayout([n('a'), n('b', 'a'), n('c'), n('d', 'c')]))).toEqual({ at: { a: [0, 0], c: [0, 1], b: [1, 0], d: [1, 1] }, lines: ['a b', 'c d'], connectors: [], junctions: {} })
@@ -128,7 +216,7 @@ describe('lineLayout: a table of shapes', () => {
   })
   it('TB: every station has x and y swapped against LR, each under its own gaps, labels to the right', () => {
     const [lr, tb] = [lineLayout(ledger), lineLayout(ledger, { direction: 'TB' })]
-    const [L, T] = [LINE_GEOMETRY.full.LR, LINE_GEOMETRY.full.TB]
+    const [L, T] = [lr.geometry, tb.geometry]
     expect(shape(tb)).toEqual(shape(lr))
     for (const s of tb.stations) {
       const o = lr.stations.find((x) => x.id === s.id)
@@ -196,6 +284,18 @@ describe('lineLayout: a table of shapes', () => {
     ])
     expect(labels[0]?.box).toEqual({ x: 60 - 52.8, y: 18, w: 105.6, h: 12 })
   })
+  it('placeLabels: a path counts as another label does: a run across both sides cuts it, a closer one hides it, and a turn counts as its corner square', () => {
+    const at = (id: string, x: number, y: number): LineStation => ({ id, depth: 0, lane: 0, x, y, line: id, label: { text: '', side: 'none' }, title: id })
+    const down = (x: number) => ({ points: [{ x, y: 0 }, { x, y: 80 }], corner: 0 })
+    const g20 = 'g'.repeat(20)
+    expect(placeLabels([at(g20, 400, 40)], 'LR', 6, [down(440)])).toEqual([{ text: 'ggggggg…', side: 'above', box: { x: 400 - 26.4, y: 18, w: 52.8, h: 12 } }])
+    expect(placeLabels([at(g20, 400, 40)], 'LR', 6, [down(410)])).toEqual([{ text: '', side: 'none' }])
+    expect(placeLabels([at(g20, 400, 40)], 'TB', 6, [down(480)]).map((x) => [x.side, x.text])).toEqual([['right', 'ggggggg…']])
+    // The turn at (492, 14) runs right above the box of "h" (496.7 to 503.3 by 18 to 30) and down left of it; its 8 px square, where it is rounded, meets the box.
+    const turn = (corner: number) => ({ points: [{ x: 560, y: 14 }, { x: 492, y: 14 }, { x: 492, y: 60 }], corner })
+    expect(placeLabels([at('h', 500, 40)], 'LR', 6, [turn(0)]).map((x) => x.side)).toEqual(['above'])
+    expect(placeLabels([at('h', 500, 40)], 'LR', 6, [turn(8)]).map((x) => x.side)).toEqual(['below'])
+  })
   it('prints the Ledger at full and at mini, to be read by hand', () => {
     for (const size of ['full', 'mini'] as const) {
       const l = lineLayout(ledger, { size })
@@ -245,7 +345,7 @@ describe('lineLayout: bounds', () => {
     expect(l.width).toBeLessThan(9300)
   })
   it('nothing given is an empty drawing of its margins', () => {
-    expect(lineLayout([])).toEqual({ stations: [], lines: [], connectors: [], width: 48, height: 48, warnings: new Map() })
+    expect(lineLayout([])).toEqual({ stations: [], lines: [], connectors: [], width: 48, height: 48, warnings: new Map(), geometry: LINE_GEOMETRY.full.LR })
   })
   it('past the bounds: a second task of one id is drawn once, a long id is cut, and past 128 tasks nothing is cut', () => {
     const twice = lineLayout([n('a'), n('b', 'a'), n('a', 'b')])
@@ -412,8 +512,8 @@ describe('lineLayout: properties over 200 seeded graphs', { timeout: 120_000 }, 
       if (lanes !== most || Math.max(-1, ...l.lines.map((x) => x.lane)) !== lanes - 1) return `${lanes} lanes for at most ${most} lines alive at one depth`
     }))
   it('no line passes within the clearance of a station that is not its own', () =>
-    holds((l, _c, size, dir) => {
-      const r = LINE_GEOMETRY[size][dir].radius
+    holds((l, _c, size) => {
+      const r = l.geometry.radius
       const at = new Map(l.stations.map((s) => [s.id, s]))
       for (const x of l.lines) {
         const path = x.stations.map((id) => at.get(id) as LinePoint)
@@ -422,7 +522,7 @@ describe('lineLayout: properties over 200 seeded graphs', { timeout: 120_000 }, 
     }))
   it('every connector is orthogonal, ends at its stations, turns only in a gutter, and keeps the clearance from every other station', () =>
     holds((l, _c, size, dir) => {
-      const g = LINE_GEOMETRY[size][dir]
+      const g = l.geometry
       const at = new Map(l.stations.map((s) => [s.id, s]))
       const gutter = (p: LinePoint) => {
         const k = ((dir === 'LR' ? p.x : p.y) - g.margin) / g.step - 0.5
@@ -448,8 +548,8 @@ describe('lineLayout: properties over 200 seeded graphs', { timeout: 120_000 }, 
       }
     }))
   it('no two shown labels meet, nor a label and a station not its own; each is its id cut, the whole id in the title', () =>
-    holds((l, _c, size, dir) => {
-      const r = LINE_GEOMETRY[size][dir].radius
+    holds((l, _c, size) => {
+      const r = l.geometry.radius
       const shown = l.stations.filter((s) => s.label.side !== 'none')
       if (size === 'mini' && shown.length) return 'a label at mini'
       for (const s of l.stations) {
@@ -470,21 +570,74 @@ describe('lineLayout: properties over 200 seeded graphs', { timeout: 120_000 }, 
         }
       }
     }))
-  it('at full, every label is shown on the side its line gives it (alternating, above first; TB to the right), cut only at 16 characters', () =>
+  it('no connector and no line crosses a shown label, on the path as drawn (each turn rounded)', () =>
+    holds((l) => {
+      const at = new Map(l.stations.map((s) => [s.id, s]))
+      const paths = [
+        ...l.lines.map((x) => ({ name: `line ${x.id}`, points: x.stations.map((id) => at.get(id) as LinePoint) })),
+        ...l.connectors.map((c) => ({ name: `${c.from}>${c.to}`, points: drawn(c.points, c.corner) })),
+      ].map((p) => ({ ...p, x0: Math.min(...p.points.map((q) => q.x)), x1: Math.max(...p.points.map((q) => q.x)), y0: Math.min(...p.points.map((q) => q.y)), y1: Math.max(...p.points.map((q) => q.y)) }))
+      for (const s of l.stations) {
+        const b = s.label.box
+        if (!b) continue
+        for (const p of paths) {
+          if (p.x1 < b.x || p.x0 > b.x + b.w || p.y1 < b.y || p.y0 > b.y + b.h) continue
+          if (p.points.some((q, i) => i > 0 && crosses(p.points[i - 1] as LinePoint, q, b))) return `${p.name} crosses ${s.id}'s label`
+        }
+      }
+    }))
+  it("at full, a label is on its line's side (alternating, above first; TB to the right), cut only at 16 characters, unless that box is crossed; each try before the one shown was crossed", () => {
+    const tally: Record<string, Record<'kept' | 'flipped' | 'cut' | 'hidden', number>> = {}
     holds((l, _c, size, dir) => {
-      if (size === 'mini') return
+      const count = (tally[`${size} ${dir}`] ??= { kept: 0, flipped: 0, cut: 0, hidden: 0 })
+      if (size === 'mini') {
+        count.hidden += l.stations.length
+        return
+      }
+      // Crossed: by a label shown before it, a station not its own, a line, or a connector (its turns as the corner squares they are rounded in).
+      const placed: LineBox[] = []
+      const at = new Map(l.stations.map((s) => [s.id, s]))
+      const paths = [...l.lines.map((x) => ({ points: x.stations.map((id) => at.get(id) as LinePoint), corner: 0 })), ...l.connectors]
+      const crossed = (s: LineStation, box: LineBox) =>
+        placed.some((b) => b.x < box.x + box.w && box.x < b.x + b.w && b.y < box.y + box.h && box.y < b.y + b.h) ||
+        l.stations.some((o) => o !== s && Math.hypot(o.x - Math.min(Math.max(o.x, box.x), box.x + box.w), o.y - Math.min(Math.max(o.y, box.y), box.y + box.h)) < l.geometry.radius) ||
+        paths.some((p) => pathMeets(p.points, p.corner, box))
       const along = new Map<string, number>()
       for (const s of l.stations) {
         const k = along.get(s.line) ?? 0
         along.set(s.line, k + 1)
-        const side = dir === 'TB' ? 'right' : k % 2 === 0 ? 'above' : 'below'
-        const text = s.id.length > 16 ? `${s.id.slice(0, 15)}…` : s.id
-        if (s.label.side !== side || s.label.text !== text) return `${s.id}'s label is ${s.label.side} "${s.label.text}", not ${side} "${text}"`
+        const sides: LineLabelSide[] = dir === 'TB' ? ['right'] : k % 2 === 0 ? ['above', 'below'] : ['below', 'above']
+        const tries = [LINE_LABEL_CHARS, LINE_LABEL_SHORT].flatMap((chars) => sides.map((side) => ({ side, text: cutLineLabel(s.id, chars) })))
+        const first = tries.findIndex((t) => !crossed(s, triedBox(s, t.text, t.side)))
+        const want = tries[first] ?? { side: 'none', text: '' }
+        if (s.label.side !== want.side || s.label.text !== want.text) {
+          const why = first === 0 ? 'its own side is not crossed' : `the first try not crossed is ${want.side} "${want.text}"`
+          return `${s.id}'s label is ${s.label.side} "${s.label.text}", but ${why}`
+        }
+        if (s.label.box) placed.push(s.label.box)
+        const whole = want.text === cutLineLabel(s.id, LINE_LABEL_CHARS)
+        count[want.side === 'none' ? 'hidden' : !whole ? 'cut' : first === 0 ? 'kept' : 'flipped']++
       }
+    })
+    console.log(`labels over ${CASES.length} graphs (kept on their side, flipped, cut to ${LINE_LABEL_SHORT}, hidden): ${Object.entries(tally).map(([k, v]) => `${k} ${v.kept}/${v.flipped}/${v.cut}/${v.hidden}`).join('; ')}`)
+  })
+  it("every branch ends one depth past where it starts: a branch leaves from its task's deepest need", () =>
+    holds((l) => {
+      const depthOf = new Map(l.stations.map((s) => [s.id, s.depth]))
+      for (const c of l.connectors) {
+        const [a, b] = [depthOf.get(c.from) ?? 0, depthOf.get(c.to) ?? 0]
+        if (c.kind === 'branch' && b !== a + 1) return `${c.from}>${c.to} is a branch from depth ${a} to depth ${b}`
+      }
+      for (const x of l.lines) if (x.from !== undefined && !l.connectors.some((c) => c.kind === 'branch' && c.from === x.from && c.to === x.stations[0])) return `line ${x.id} leaves ${x.from} with no branch into it`
+    }))
+  it('the layout carries the geometry it was laid out at, a copy of the constants', () =>
+    holds((l, _c, size, dir) => {
+      if (JSON.stringify(l.geometry) !== JSON.stringify(LINE_GEOMETRY[size][dir])) return `geometry ${JSON.stringify(l.geometry)}`
+      if (l.geometry === LINE_GEOMETRY[size][dir]) return 'the constants themselves, not a copy'
     }))
   it('everything drawn is inside the bounds, on the 4 px grid at full', () =>
-    holds((l, _c, size, dir) => {
-      const r = LINE_GEOMETRY[size][dir].radius
+    holds((l, _c, size) => {
+      const r = l.geometry.radius
       const inside = (x: number, y: number) => x >= 0 && y >= 0 && x <= l.width && y <= l.height
       if (l.stations.some((s) => !inside(s.x - r, s.y - r) || !inside(s.x + r, s.y + r))) return 'a station outside'
       if (l.stations.some((s) => s.label.box && (!inside(s.label.box.x, s.label.box.y) || !inside(s.label.box.x + s.label.box.w, s.label.box.y + s.label.box.h)))) return 'a label outside'
