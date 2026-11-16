@@ -16,8 +16,8 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
  * link: its choices as numbered buttons, or a reply field. The list drives the keys: `focused` marks the row they act on,
  * `confirming` (a model: the hover Stop sets it too) shows the question.
  */
-const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false })
-const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
+const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean; narrow?: boolean; panelOpen?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false, narrow: false, panelOpen: false })
+const emit = defineEmits<{ answerOpen: [row: SessionRow]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
 
 // A touch long press (500 ms, design 3e) opens the row's sheet; the context menu is the mouse's and a coarse pointer's own is off.
 const coarse = useMedia('(pointer: coarse)')
@@ -44,6 +44,8 @@ const live = computed(() => sessionLive(s.value.status))
 const confirming = defineModel<boolean>('confirming', { default: false })
 const question = computed(() => stopQuestion({ kind: 'session', name: s.value.name }))
 const prompt = computed(() => rowPrompt(props.row))
+/** In a narrow sidebar the question is two lines here and whole, with its controls, in the panel beside the row (SidebarRowPanel). */
+const clamped = computed(() => props.narrow && !!props.row.prompt)
 
 const target = computed(() => sessionTarget(s.value, live.value))
 // Rename… opens the one dialog (#318), on the session as the row shows it; Clone… and Clone with options… theirs (#434).
@@ -114,11 +116,12 @@ function confirmStop() {
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
           <template v-else>
-            <!-- The question whole, never cut: wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing.
-                 No clamp: the server bounds a message at 500 bytes (session.MaxAttentionMessage), two dozen lines at the sidebar's
-                 default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
-                 would move the choices under the pointer. -->
-            <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
+            <!-- The question wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing (#187). In a
+                 sidebar 280 px wide and wider it is whole here, its controls below; narrower, a question at the server's bound (500
+                 bytes, session.MaxAttentionMessage) would be two dozen lines, so it is two here and whole in the panel beside the row,
+                 which focus opens and the Answer button below opens with the focus in it (owner decision 7): never a clamp without
+                 the panel, so the tail is one press away for the keyboard and a touch screen alike. -->
+            <span v-if="row.prompt" class="break-words text-xs" :class="clamped && 'line-clamp-2'" :data-row-clamped="clamped ? '' : undefined" data-row-prompt>{{ row.prompt.message }}</span>
             <!-- The meta line: the initials as a chip, then the meta, then the status's word. The meta takes only the room the word
                  leaves (its basis 0), so it is cut first and the word only once the meta has none. -->
             <span class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" data-row-meta-line>
@@ -167,7 +170,21 @@ function confirmStop() {
           <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
-      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
+      <div v-if="prompt && !confirming && clamped" class="px-2.5 pb-1.5">
+        <UButton
+          label="Answer"
+          icon="i-lucide-message-square-reply"
+          size="xs"
+          color="neutral"
+          variant="outline"
+          :aria-expanded="panelOpen"
+          aria-haspopup="dialog"
+          :aria-label="`Answer ${s.name}'s question`"
+          data-row-answer-open
+          @click="emit('answerOpen', row)"
+        />
+      </div>
+      <SidebarPrompt v-else-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
     </li>
   </UContextMenu>
 </template>

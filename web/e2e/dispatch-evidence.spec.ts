@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, logged, member, task, test, type Api, type Run } from './fixtures'
+import { expect, logged, member, rowAnswer, task, test, type Api, type Run } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, sideways, storedTicket } from './dispatch-helpers'
 
 // A ticket's runs and their evidence (Program item DS2, docs/plans/dispatch-evidence.md, PR-11), the assertions that need PR-8's routes
@@ -256,7 +256,7 @@ test('a launched run under Runs: its candidates with their receipts and where th
   await other.goto('/crews')
   const row = other.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${asker}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
-  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  const field = (await rowAnswer(other, row)).locator('[data-row-reply] input, input[data-row-reply]').first()
   await field.fill(REPLY)
   await field.press('Enter')
   await expect(card.locator('[data-run-question="asker"]')).toHaveCount(0, { timeout: 30_000 })

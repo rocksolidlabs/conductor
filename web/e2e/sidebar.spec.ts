@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { dayPage, endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
 import { inside, tabTo, uncut } from './layout'
 import { serverBinary, stubBash, stubPath } from './server'
 
@@ -99,11 +99,14 @@ test('a run of two in Needs you shows its asking member, the rest folded', async
   await expect(members.nth(0).locator('[data-row-prompt]')).toContainText('Trust this folder?')
   const more = block.locator('[data-run-more]')
   await expect(more).toHaveText(/^and 1 more · 1 (working|finished|running)$/)
-  // At the sidebar's minimum (#437) the choices wrap inside it.
-  const choices = members.nth(0).locator('[data-row-answer] button')
+  // At the sidebar's minimum the question is two lines in the row and its choices are in the panel beside it (rowAnswer), inside
+  // the panel and the window.
+  const answers = await rowAnswer(page, members.nth(0))
+  const choices = answers.locator('[data-row-answer] button')
   // The trust question's two answers, drawn before they are measured: a loop over none would check nothing.
   await expect(choices).toHaveCount(2)
-  for (let i = 0; i < (await choices.count()); i++) await fitsSidebar(page, choices.nth(i))
+  await inside(choices, answers)
+  for (let i = 0; i < (await choices.count()); i++) expect((await choices.nth(i).boundingBox())!.x + (await choices.nth(i).boundingBox())!.width, 'a choice inside the window').toBeLessThanOrEqual(page.viewportSize()!.width)
   // Unfolded, the run shows both, the one asking first.
   await more.click()
   await expect(more).toHaveCount(0)
@@ -318,7 +321,7 @@ test('a loose session stops from its row and moves to Exited', async ({ page, ap
   await expect(exited.locator(`[data-sidebar-row="s:${alive!.id}"] [data-row-stop]`)).toHaveCount(0)
 })
 
-test('a free-text prompt gets a reply field in the row; Enter sends the line and the row moves on', async ({ page, api, state }) => {
+test('a free-text prompt gets a reply field, in the panel beside the row at 200 px; Enter sends the line and the row moves on', async ({ page, api, state }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e branch' })
   sessions.push(s.id)
   await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch should I base it on?' })
@@ -327,12 +330,13 @@ test('a free-text prompt gets a reply field in the row; Enter sends the line and
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText('Which branch should I base it on?')
   await expect(row.locator('[data-row-choice]')).toHaveCount(0)
-  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  const field = (await rowAnswer(page, row)).locator('[data-row-reply] input, input[data-row-reply]').first()
   await field.fill('main')
   await field.press('Enter')
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('main\n')
   await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
   await expect(row.locator('[data-row-reply]')).toHaveCount(0)
+  await expect(page.locator('[data-row-panel]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/crews$/)
 })
 
@@ -344,7 +348,8 @@ test('a reply being typed in a row keeps the focus and its keys while the rows c
   const list = page.locator('[data-session-list="sidebar"]')
   const row = list.locator(`[data-sidebar-row="s:${s.id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
-  const field = row.locator('[data-row-reply] input, input[data-row-reply]').first()
+  // In the panel beside the row at the sidebar's minimum: the panel counts as the list's, so the row stays the one the keys act on.
+  const field = (await rowAnswer(page, row)).locator('[data-row-reply] input, input[data-row-reply]').first()
   // The field takes the focus, so the list names the row (its focusin) as the row the keys act on.
   await field.click()
   await page.keyboard.type('fi')
@@ -1014,19 +1019,9 @@ test('a row fits 200 px', async ({ day, browser }) => {
       expect((await row.locator('[data-row-initials]').boundingBox())!.y, 'the initials below the name').toBeGreaterThanOrEqual((await name.boundingBox())!.y + (await name.boundingBox())!.height - 1)
       await expect(row.locator('[data-status-word]')).toHaveText('needs you')
       await uncut(row.locator('[data-status-word]'))
-      const buttons = row.locator('[data-row-choice]')
-      await expect(buttons).toHaveCount(3)
-      expect(Math.abs((await buttons.first().boundingBox())!.x - (await name.boundingBox())!.x), "the first choice at the row's text edge").toBeLessThanOrEqual(2)
-      // Each choice inside the row; a label is cut only when it is wider than the row ("Yes, and don't ask again" with its key
-      // is, at 200 px), its whole text in its title. At 280 px and wider each is whole in the row (PR-8 moves them into the panel
-      // beside a narrower row).
-      for (let i = 0; i < choices.length; i++) {
-        await expect(buttons.nth(i)).toContainText(choices[i]!.slice(0, 8))
-        await expect(buttons.nth(i)).toHaveAttribute('title', choices[i]!)
-        await inside(buttons.nth(i), row)
-      }
-      await uncut(buttons.nth(0).locator('[data-slot="label"]'))
-      await uncut(buttons.nth(2).locator('[data-slot="label"]'))
+      // Below 280 px the question is two lines and its choices are in the panel beside the row (sidebar-question.spec.ts).
+      await expect(row.locator('[data-row-prompt]')).toHaveAttribute('data-row-clamped', '')
+      await expect(row.locator('[data-row-choice]')).toHaveCount(0)
     }
     await fits('Edit the file?')
     // Drawn again (Needs you folded and unfolded), it still fits. Not by asking again: a second question is posted to the session's
@@ -1037,6 +1032,22 @@ test('a row fits 200 px', async ({ day, browser }) => {
     await needs.getByRole('button', { name: /^Needs you/ }).click()
     await expect(needs).toHaveAttribute('data-folded', 'false')
     await fits('Edit the file?')
+    // At 300 px the choices are in the row, from its text edge, each whole.
+    const grip = (await page.locator('[role="separator"][aria-controls="dashboard-sidebar-main"]').boundingBox())!
+    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(300, grip.y + grip.height / 2, { steps: 4 })
+    await page.mouse.up()
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(300, 0)
+    await expect(row.locator('[data-row-prompt]')).not.toHaveAttribute('data-row-clamped', '')
+    const name = row.locator('[data-row-name]')
+    const buttons = row.locator('[data-row-choice]')
+    await expect(buttons).toHaveCount(3)
+    expect(Math.abs((await buttons.first().boundingBox())!.x - (await name.boundingBox())!.x), "the first choice at the row's text edge").toBeLessThanOrEqual(2)
+    for (let i = 0; i < choices.length; i++) {
+      await expect(buttons.nth(i)).toContainText(choices[i]!)
+      await uncut(buttons.nth(i).locator('[data-slot="label"]'))
+    }
   } finally {
     await api.stopSession(s.id)
     await expect.poll(async () => (await api.session(s.id)).status, { message: 'the row\'s session ends' }).toMatch(/^(exited|stopped)$/)
