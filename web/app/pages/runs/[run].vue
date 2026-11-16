@@ -542,6 +542,7 @@ palette.registerPage(() => {
             :selected="selectedMember"
             :now="now"
             :tasks="run?.tasks ?? []"
+            :sessions="live.sessions.value"
             :paused="!!run?.paused"
             :run-state="run?.state"
             :paused-why="run?.pausedWhy"
@@ -552,6 +553,7 @@ palette.registerPage(() => {
             @start="startMember"
             @select-task="selectTask($event)"
             @open-task="openTask"
+            @show-task="selectTask($event, true)"
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
