@@ -210,7 +210,7 @@ test('on a touch screen a tap on Answer opens the panel and a tap on a choice an
 
 // The plan asks for five; with the nine pages at the sidebar's foot the list has about 440 px at 900 px tall, and the busy day's
 // Needs you holds three run blocks beside its loose rows: three asking rows are whole in view (the review counted two, each row
-// holding its question whole). The pages as tiles (PR-15) give the list the room for five.
+// holding its question whole). A plan's, a task's and a decision's row of Needs you (UX1 PR-13) count as asking rows. The pages as tiles (PR-15) give the list the room for five.
 test("on the day's busy part, at 200 px, the list shows more asking rows whole than with each question whole", async ({ day, browser }) => {
   await day.part('busy')
   const page = await dayPage(browser, { path: '/crews' })
@@ -218,5 +218,6 @@ test("on the day's busy part, at 200 px, the list shows more asking rows whole t
   const list = page.locator('[data-session-list="sidebar"]')
   await expect(list).toHaveAttribute('data-list-width', 'narrow')
   await expect(list.locator('[data-row-clamped]').first()).toBeVisible()
-  expect(await rowsInView(list, '[data-row-kind="session"][data-row-state="needs"]')).toBeGreaterThanOrEqual(3)
+  // A row that asks: a session's question, or (UX1 PR-13) a plan's, a task's or a decision's row of Needs you.
+  expect(await rowsInView(list, '[data-row-kind="session"][data-row-state="needs"], [data-row-kind="item"]')).toBeGreaterThanOrEqual(3)
 })

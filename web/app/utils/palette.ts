@@ -3,6 +3,12 @@
 // highlight. Nothing here fetches or acts; the composable (usePalette)
 // reads the live stores and the component renders what these return.
 
+import type { SessionInfo } from '~/composables/useSessions'
+import { isActive, isEnded } from './attention'
+import type { Decision } from './decisions'
+import type { NeedsItem } from './needsYou'
+import { SECTION_KEYS, SECTION_TITLES, type Folds, type SectionKey, type SidebarModel } from './sidebar'
+
 export type PaletteMode = 'search' | 'actions' | 'runs' | 'files' | 'people' | 'events' | 'shortcuts' | 'history'
 
 /** The prefix a mode is typed with; the search has none. `~` is history (Program item HS1): what was said, decided and checked, from the server. */
@@ -290,4 +296,61 @@ export function placeAfter<R extends PaletteRow>(groups: readonly PaletteGroup<R
     if (after.includes(g.id)) at = i + 1
   })
   return [...groups.slice(0, at), group, ...groups.slice(at)]
+}
+
+// ---------------------------------------------------------------------------
+// The groups of what needs you and of the sessions (the UX review's P3): one
+// "Needs you" group, in which nothing is listed twice, then the sessions by
+// the sidebar's sections. Built from the sidebar's model and the one list of
+// what needs you; the rows themselves are the composable's (they act).
+
+/** How the composable makes each kind of row. */
+export interface SessionGroupMakers<R> {
+  /** Answer all: one row per question several live sessions ask. */
+  answerAll: () => R[]
+  session: (s: SessionInfo) => R
+  /** The decisions' rows ("Answer dr-7"), and the store's own lines after them; `inSession` names the session whose question mirrors one. */
+  decisions: (open: readonly Decision[], inSession: (id: string) => string | undefined) => R[]
+  /** A plan's or a task's row, opening it on the page. */
+  item: (it: NeedsItem) => R
+}
+
+export interface SessionGroupRows<R> {
+  needs: R[]
+  running: R[]
+  exited: R[]
+}
+
+/**
+ * The palette's Needs you group and its session groups. Needs you: answer-all, the questions (oldest first), the decisions (a question
+ * that mirrors an open record is that record's row, its session named in it), then the plans and the tasks: every item of the one list
+ * (`needs`) once. A session whose question is a decision's row is listed among the running ones. Running and Exited hold every other
+ * session in the sidebar's order (a run's members where its block sits), by their own state.
+ */
+export function sessionGroups<R>(model: SidebarModel, needs: readonly NeedsItem[], make: SessionGroupMakers<R>): SessionGroupRows<R> {
+  const questions: SessionInfo[] = []
+  const decisions: Decision[] = []
+  const mirroredIn = new Map<string, string>()
+  const items: NeedsItem[] = []
+  for (const it of needs) {
+    if (it.kind === 'question' && it.session) {
+      if (it.decision) {
+        mirroredIn.set(it.decision.id, it.session.name)
+        decisions.push(it.decision)
+      } else questions.push(it.session)
+    } else if (it.kind === 'decision' && it.decision) decisions.push(it.decision)
+    else if (it.kind === 'plan' || it.kind === 'task') items.push(it)
+  }
+  const asking = new Set(questions.map((s) => s.id))
+  const every = [...model.needs, ...model.running, ...model.exited].flatMap((it) => (it.kind === 'run' ? it.members : it.kind === 'session' ? [it] : []))
+  return {
+    needs: [...make.answerAll(), ...questions.map(make.session), ...make.decisions(decisions, (id) => mirroredIn.get(id)), ...items.map(make.item)],
+    running: every.filter((r) => !asking.has(r.session.id) && isActive(r.session)).map((r) => make.session(r.session)),
+    exited: every.filter((r) => isEnded(r.session.status)).map((r) => make.session(r.session)),
+  }
+}
+
+/** The palette's fold actions, one per section of the sidebar, in its order: "Fold the sidebar's Needs you", "Unfold …" while folded. */
+export function foldActions(folds: Readonly<Folds>): Array<{ key: SectionKey; label: string; folded: boolean }> {
+  return SECTION_KEYS.map((k) => ({ key: k, label: `${folds[k] ? 'Unfold' : 'Fold'} the sidebar's ${SECTION_TITLES[k]}`, folded: folds[k] }))
 }

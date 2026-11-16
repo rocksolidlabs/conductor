@@ -38,9 +38,13 @@ import {
   writeSidebarSize,
   type Folds,
   type KeyValueStore,
+  type ItemRow,
   type RunBlock,
   type SessionRow,
+  type SidebarItem,
 } from './sidebar'
+import type { Decision } from './decisions'
+import type { NeedsItem } from './needsYou'
 
 function memory(initial: Record<string, string> = {}): KeyValueStore & { data: Map<string, string> } {
   const data = new Map(Object.entries(initial))
@@ -225,7 +229,7 @@ describe('rowState', () => {
 })
 
 describe('sidebarModel', () => {
-  const ids = (items: readonly (SessionRow | RunBlock)[]) => items.map((it) => (it.kind === 'run' ? `${it.runId}[${it.members.map((m) => m.id).join(',')}]` : it.id))
+  const ids = (items: readonly SidebarItem[]) => items.map((it) => (it.kind === 'run' ? `${it.runId}[${it.members.map((m) => m.id).join(',')}]` : it.id))
 
   it('keeps a run whole where its most urgent member is, the members by urgency then the crew order', () => {
     const list = [
@@ -304,6 +308,113 @@ describe('sidebarModel', () => {
   })
 })
 
+const T13 = (m: number) => `2026-10-01T09:${String(m).padStart(2, '0')}:00Z`
+function decisionItem(id: string, runId: string, since: string, stopped = false): NeedsItem {
+  const decision = { id, run: runId, openedIn: runId, origin: 'plan', type: 'approval', gate: 'ship', request: { question: `May ${id} go out?` }, policy: {}, state: 'open', rev: 1, createdAt: since } as unknown as Decision
+  return { kind: 'decision', ref: `decision:${id}`, run: runId, since, decision, stopped }
+}
+function inboxNeed(kind: 'task' | 'plan', ref: string, since: string, run?: string): NeedsItem {
+  return { kind, ref, run, since, summary: { ref, kind, since, title: `${kind} ${ref}`, brief: 'its brief', question: '', answerer: '', actions: [] } }
+}
+
+// The UX review's P3: Needs you lists every kind that waits on a person, a run that waits sits there whatever its members do.
+describe('sidebarModel with the one list of what needs you (UX1 PR-13)', () => {
+  const ids = (items: readonly SidebarItem[]) => items.map((it) => (it.kind === 'run' ? `${it.runId}[${[...it.items.map((x) => x.id), ...it.members.map((m) => m.id)].join(',')}]` : it.id))
+  const working = (id: string, runId: string) => session({ id, crew: { runId, crewId: 'c', member: id }, attention: { state: 'working' } as SessionInfo['attention'] })
+
+  it('puts a run whose members all work but whose task failed in Needs you, the task under its header before its members', () => {
+    const list = [working('core', 'r1'), working('lead', 'r1'), session({ id: 'alone' })]
+    const r1 = run({ members: [member('lead'), member('core')] })
+    const task = inboxNeed('task', 'task:r1/build', T13(3), 'r1')
+    const m = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined), [task])
+    expect(ids(m.needs)).toEqual(['r1[i:task:r1/build,lead,core]'])
+    expect(ids(m.running)).toEqual(['alone'])
+    const block = m.needs[0] as RunBlock
+    expect(block.state).toBe('needs')
+    expect(block.needs).toBe(1)
+    expect(block.items[0]).toEqual({ kind: 'item', id: 'i:task:r1/build', item: task })
+    expect(m.counts.needs).toBe(1)
+    // Its working members fold under one line: the task is what the block shows.
+    expect(blockRows(block, 'needs')).toEqual({ members: [], more: { count: 2, words: 'and 2 more · 2 working' } })
+    // Without the list the run is in Running, with no item rows.
+    const before = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined))
+    expect(ids(before.running)).toEqual(['alone', 'r1[lead,core]'])
+    expect(before.needs).toEqual([])
+  })
+
+  it('puts a stopped run with an open decision in Needs you, its members drawn exited', () => {
+    const list = [
+      session({ id: 'a', crew: { runId: 'r2', crewId: 'c', member: 'a' }, status: 'stopped', endedAt: T13(5) }),
+      session({ id: 'b', crew: { runId: 'r2', crewId: 'c', member: 'b' }, status: 'exited', exitCode: 0, endedAt: T13(6) }),
+    ]
+    const r2 = run({ id: 'r2', stoppedAt: T13(6), members: [member('a'), member('b')] })
+    const m = sidebarModel(list, (id) => (id === 'r2' ? r2 : undefined), [decisionItem('dr-3', 'r2', T13(2), true)])
+    expect(ids(m.needs)).toEqual(['r2[d:dr-3,a,b]'])
+    expect(m.exited).toEqual([])
+    const block = m.needs[0] as RunBlock
+    expect(block.members.map((x) => x.state)).toEqual(['exited', 'exited'])
+    expect(block.stoppedAt).toBe(T13(6))
+    expect(m.counts).toEqual({ needs: 1, running: 0, exited: 0 })
+  })
+
+  it('lists a plan, and a decision whose run the store does not hold, as loose rows, newest first beside the questions', () => {
+    const asker = session({ id: 'ask', attention: { state: 'needs_input', since: T13(4) } })
+    const plan = inboxNeed('plan', 'plan:CND-4/1', T13(7))
+    const lone = decisionItem('dr-9', 'gone', T13(1))
+    const m = sidebarModel([asker], () => undefined, [plan, lone, { kind: 'question', ref: 'question:ask/q1', since: T13(4), session: asker }])
+    // The question is the session's own row, never a second one.
+    expect(ids(m.needs)).toEqual(['i:plan:CND-4/1', 'ask', 'd:dr-9'])
+    expect((m.needs[0] as ItemRow).item).toBe(plan)
+    expect(m.counts.needs).toBe(3)
+    expect(focusRows(m, [], DEFAULT_FOLDS)).toEqual([
+      { id: 'i:plan:CND-4/1', kind: 'item', ref: 'plan:CND-4/1' },
+      { id: 's:ask', kind: 'session', sessionId: 'ask', runId: undefined, options: 0 },
+      { id: 'd:dr-9', kind: 'decision', decision: 'dr-9' },
+    ])
+    expect(focusRows(m, [], { ...DEFAULT_FOLDS, needs: true })).toEqual([])
+    expect(sectionPreview(m.needs)).toEqual(['needs', 'needs', 'needs'])
+  })
+
+  it("gives a focus row to each item of a run, after its header, in the list's order", () => {
+    const list = [working('core', 'r1'), session({ id: 'rev', crew: { runId: 'r1', crewId: 'c', member: 'rev' }, attention: { state: 'needs_input', since: T13(9) } })]
+    const r1 = run({ members: [member('rev'), member('core')] })
+    const m = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined), [decisionItem('dr-1', 'r1', T13(1)), inboxNeed('task', 'task:r1/t', T13(2), 'r1')])
+    expect(focusRows(m, [], DEFAULT_FOLDS).map((r) => r.id)).toEqual(['r:r1', 'd:dr-1', 'i:task:r1/t', 's:rev', 'm:r1'])
+    expect((m.needs[0] as RunBlock).needs).toBe(3)
+  })
+
+  it('draws a run that waits with no session listed: its header and its items, no member rows', () => {
+    const gate = decisionItem('dr-2', 'r-gate', T13(0))
+    const aged = inboxNeed('task', 'task:r-old/t', T13(1), 'r-old')
+    const runs: Record<string, RunInfo> = { 'r-gate': run({ id: 'r-gate', label: 'Gate run', members: [member('deploy')] }), 'r-old': run({ id: 'r-old', name: 'Old run', members: [member('a'), member('b')] }) }
+    const m = sidebarModel([], (id) => runs[id], [gate, aged])
+    expect(ids(m.needs)).toEqual(['r-old[i:task:r-old/t]', 'r-gate[d:dr-2]'])
+    const block = m.needs[1] as RunBlock
+    expect([block.title, block.agents, block.members, block.state]).toEqual(['Gate run', 1, [], 'needs'])
+    expect(blockRows(block, 'needs')).toEqual({ members: [] })
+    expect(focusRows(m, [], DEFAULT_FOLDS).map((r) => r.id)).toEqual(['r:r-old', 'i:task:r-old/t', 'r:r-gate', 'd:dr-2'])
+    // The rail draws them as capsules too, amber.
+    const rail = railModel(m, [], {})
+    expect(rail.items.map((it) => [it.id, it.amber, it.status?.key])).toEqual([
+      ['run:r-old', true, 'needs'],
+      ['run:r-gate', true, 'needs'],
+    ])
+  })
+
+  it("marks a waiting run's capsule amber on the rail, though its members work", () => {
+    const list = [working('core', 'r1')]
+    const r1 = run({ members: [member('core')] })
+    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined), [inboxNeed('task', 'task:r1/build', T13(3), 'r1')]), [], {})
+    expect(rail.items[0]).toMatchObject({ id: 'run:r1', amber: true, state: 'needs' })
+    expect(rail.items[0]!.status?.key).toBe('needs')
+    expect(rail.items[0]!.label).toContain('task needs you')
+    expect(rail.needs).toBe(1)
+    // Without the item the capsule is the members' alone.
+    const quiet = railModel(sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined)), [], {})
+    expect(quiet.items[0]).toMatchObject({ amber: false, state: 'running' })
+  })
+})
+
 describe('blockSubtitle', () => {
   const at = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
   it('says when the run started or stopped, and how many agents', () => {
@@ -376,14 +487,23 @@ describe('focusRows and moveFocus', () => {
     expect(focusRows(m, shared, { needs: true, running: true, shared: true, exited: true })).toEqual([])
   })
 
-  // Codex's round 1 on #719: Needs you's lone decisions are rows a key lands on, after its sessions, so Tab or ↓ onto one moves the
-  // list's focus there and Enter opens its card, not the session before it.
-  it("lists Needs you's lone decisions after its sessions, and none from a folded Needs you", () => {
-    const rows = focusRows(m, shared, DEFAULT_FOLDS, ['dr-1', 'dr-2'])
+  // Codex's round 1 on #719: Needs you's decisions are rows a key lands on, so Tab or ↓ onto one moves the list's focus there and
+  // Enter opens its card, not the session before it. A decision of a run the store does not hold is a loose row of Needs you.
+  it("lists Needs you's loose decisions as rows, and none from a folded Needs you", () => {
+    const withDecisions = sidebarModel(
+      [
+        session({ id: 'a', attention: { state: 'needs_input', since: '2026-10-01T09:09:00Z', options: [{ label: 'Yes', input: 'y\r' }] } }),
+        session({ id: 'b', crew: { runId: 'r1', crewId: 'c', member: 'b' } }),
+        session({ id: 'c', crew: { runId: 'r1', crewId: 'c', member: 'c' } }),
+      ],
+      () => undefined,
+      [decisionItem('dr-1', 'gone', '2026-10-01T09:02:00Z'), decisionItem('dr-2', 'gone', '2026-10-01T09:01:00Z')],
+    )
+    const rows = focusRows(withDecisions, shared, DEFAULT_FOLDS)
     expect(rows.map((r) => r.id)).toEqual(['s:a', 'd:dr-1', 'd:dr-2', 'r:r1', 's:b', 's:c', 'j:j1'])
     expect(rows[1]).toEqual({ id: 'd:dr-1', kind: 'decision', decision: 'dr-1' })
     expect(moveFocus(rows, 's:a', 1)).toBe('d:dr-1')
-    expect(focusRows(m, shared, { ...DEFAULT_FOLDS, needs: true }, ['dr-1']).map((r) => r.id)).not.toContain('d:dr-1')
+    expect(focusRows(withDecisions, shared, { ...DEFAULT_FOLDS, needs: true }).map((r) => r.id)).not.toContain('d:dr-1')
   })
 
   it('moves between rows, clamped at the ends, and enters the list at the first or the last', () => {
@@ -430,7 +550,7 @@ describe('blockRows', () => {
     const model = sidebarModel(three.members.map((m) => m.session), () => run({ id: 'r3', members: [member('lead'), member('review'), member('docs')] }))
     expect(focusRows(model, [], DEFAULT_FOLDS).map((r) => r.id)).toEqual(['r:r3', 's:review', 'm:r3'])
     expect(focusRows(model, [], DEFAULT_FOLDS)[2]).toEqual({ id: 'm:r3', kind: 'more', runId: 'r3' })
-    expect(focusRows(model, [], DEFAULT_FOLDS, [], new Set(['r3'])).map((r) => r.id)).toEqual(['r:r3', 's:review', 's:lead', 's:docs'])
+    expect(focusRows(model, [], DEFAULT_FOLDS, new Set(['r3'])).map((r) => r.id)).toEqual(['r:r3', 's:review', 's:lead', 's:docs'])
   })
 })
 
@@ -456,7 +576,7 @@ describe('narrowSidebar and panelRow', () => {
     if (it.kind === 'run') {
       rows.set(`r:${it.runId}`, it)
       for (const x of it.members) rows.set(`s:${x.id}`, x)
-    } else rows.set(`s:${it.id}`, it)
+    } else if (it.kind === 'session') rows.set(`s:${it.id}`, it)
   }
 
   it('is the focused row while it asks, the pressed one over the focused, and none when wide or the row asks to stop', () => {
