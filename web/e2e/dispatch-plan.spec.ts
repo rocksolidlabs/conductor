@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import type { BrowserContext, Locator } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import type { BrowserContext } from '@playwright/test'
+import { expect, readAgain, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, secondBrowser, sideways, storedTicket } from './dispatch-helpers'
 
 // A ticket's Plan (Program item DS2, docs/plans/dispatch-evidence.md, PR-10), only what PR-10 and the PRs before it build: a managed crew
@@ -19,17 +19,6 @@ test.describe.configure({ mode: 'serial' })
 function budget(ms: number) {
   const info = test.info()
   info.setTimeout(info.timeout + ms)
-}
-
-/**
- * A dialog's Read it again pressed until what the body shows is there (`shown`). The page asks its failed read again by itself, as a
- * re-read is, and that read may answer first and take the button away: a click on it then waits for a button that never comes back.
- */
-async function readAgain(retry: Locator, shown: Locator) {
-  await expect(async () => {
-    if (!(await shown.count())) await retry.click({ timeout: 2_000 })
-    await expect(shown).toBeVisible({ timeout: 2_000 })
-  }).toPass({ timeout: 15_000 })
 }
 
 let crewId = ''

@@ -395,6 +395,17 @@ export interface E2ECrew {
   manifestRevision?: number
 }
 
+/**
+ * A Read again pressed until what it leads to is shown (`shown`). The page asks its failed read again by itself, as a re-read is, and
+ * that read may answer first and take the button away: a click on it then waits for a button that never comes back.
+ */
+export async function readAgain(retry: Locator, shown: Locator) {
+  await expect(async () => {
+    if (!(await shown.count())) await retry.click({ timeout: 2_000 })
+    await expect(shown).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 15_000 })
+}
+
 /** Raises the running test's timeout by `ms`, as a step is about to make waits of those caps (AGENTS.md, Tests that do not flake). */
 export function budget(ms: number) {
   const info = test.info()
