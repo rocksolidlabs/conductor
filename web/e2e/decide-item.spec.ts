@@ -153,3 +153,66 @@ test('on a phone nothing opens by itself; the same page made wide opens the olde
   await expect(page).toHaveURL(itemURL(o.question.ref))
   await expect(page.locator(`[data-inbox-item="${o.question.ref}"]`)).toBeVisible()
 })
+
+test("a run's decision says its question while the item and its record are read, and when the record's read fails", async ({ day, browser }) => {
+  void day
+  const decision = inboxItem('decision', { since: ago(25) })
+  const id = decision.ref.slice('decision:'.length)
+  const page = await decisions(browser, DESK, [decision])
+  // The item's read and its record's reads held at gates (routes of the spec's own, over the stub's); the record's reads then fail
+  // as a server error would, until the spec lets them go on to the stub.
+  let releaseItem!: () => void
+  const itemGate = new Promise<void>((r) => (releaseItem = r))
+  let itemHeld = 0
+  await page.route(
+    (u) => u.pathname === '/api/inbox/item' && u.searchParams.get('ref') === decision.ref,
+    async (route) => {
+      itemHeld++
+      await itemGate
+      await route.fallback()
+    },
+  )
+  let failRecord!: () => void
+  const recordGate = new Promise<void>((r) => (failRecord = r))
+  let recordReads = 0
+  let recordServed = false
+  await page.route(
+    (u) => u.pathname === `/api/decisions/${id}`,
+    async (route) => {
+      recordReads++
+      if (recordServed) return route.fallback()
+      await recordGate
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'the record could not be read' } }) })
+    },
+  )
+  await page.goto('/decisions')
+  await expect(page).toHaveURL(itemURL(decision.ref))
+  const pane = page.locator('[data-decisions-item]')
+
+  // The item read whole is held: the pane says the list's title for it, the question, and that it is being read.
+  await expect.poll(() => itemHeld, { message: "the item's read reached its gate" }).toBeGreaterThan(0)
+  await expect(pane.locator('[data-inbox-reading-title]')).toHaveText(decision.title)
+  await expect(pane.locator('[data-inbox-reading]')).toContainText('Reading the item…')
+  expect(decision.title, "the server titles a run's decision by its question").toBe(decision.question)
+
+  // The item read, its record held: the item's title says the question while the record is read.
+  releaseItem()
+  const d = page.locator(`[data-inbox-item="${decision.ref}"]`)
+  await expect(d).toBeVisible()
+  await expect.poll(() => recordReads, { message: "the record's read reached its gate" }).toBeGreaterThan(0)
+  await expect(d.locator('[data-decision-question]')).toHaveCount(0)
+  await expect(d.locator('[data-inbox-title]')).toHaveText(decision.question)
+  await expect(d).toContainText(`Reading ${id}…`)
+
+  // The record's read failed: the question still heads the item, beside the warning and its Read again.
+  failRecord()
+  await expect(d.locator('[data-inbox-record-error]')).toBeVisible()
+  await expect(d.locator('[data-inbox-title]')).toHaveText(decision.question)
+
+  // Read again: the card is drawn, its question heads the item once, and the title leaves.
+  recordServed = true
+  await d.locator('[data-inbox-record-error]').getByRole('button', { name: 'Read again' }).click()
+  await expect(d.locator('[data-decision-question]')).toHaveText(decision.question)
+  await expect(d.locator('[data-inbox-title]')).toHaveCount(0)
+  expect(await times(d, decision.question)).toBe(1)
+})

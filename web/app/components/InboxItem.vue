@@ -43,6 +43,11 @@ const props = defineProps<{
   noComments?: boolean
   /** A DR1 record's evidence refs its card draws (its request's): left out of the inbox's evidence, never drawn twice. */
   drawn?: readonly string[]
+  /**
+   * A DR1 record's card is drawn in the `record` slot: its question heads the item. Until it is (the record still read, or its read
+   * failed) the item's own title, the question as the server words it, heads the item, so the question is never shown nowhere.
+   */
+  recordShown?: boolean
 }>()
 const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
 
@@ -124,8 +129,8 @@ function sendComment() {
 <template>
   <article class="flex flex-col gap-4" :data-inbox-item="item.ref" :data-inbox-kind="item.kind">
     <header class="flex flex-col gap-1">
-      <!-- A run's decision: its card's question heads it, so no title says it again. -->
-      <h2 v-if="!durable" class="text-base font-semibold text-highlighted text-pretty" data-inbox-title>{{ item.title }}</h2>
+      <!-- A run's decision: its card's question heads it once the card is drawn, so no title says it again. -->
+      <h2 v-if="!durable || !recordShown" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-title>{{ item.title }}</h2>
       <p class="text-xs text-muted">
         <span>{{ inboxKindWords(item.kind) }}</span>
         <span v-if="timeWords" data-inbox-time> · {{ timeWords }}</span>

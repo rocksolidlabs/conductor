@@ -114,6 +114,8 @@ let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
 onBeforeUnmount(() => window.clearInterval(tick))
 
+/** The open item as the list sums it up, while the list holds it: its title stands in the pane until the item is read whole. */
+const openSummary = computed(() => state.value.items.find((s) => s.ref === openRef.value))
 /** The open item as last read whole; null before it is read, or when it names nothing the server holds (`missing`). */
 const item = ref<InboxItem | null>(null)
 const missing = ref('')
@@ -392,6 +394,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
             :ask-brakeman="askBrakeman"
             :confirm-question="confirmQuestion"
             :drawn="record.decision.value?.request.evidence"
+            :record-shown="!!record.decision.value && record.decision.value.id === decisionIdOf(item.ref)"
             @act="act"
             @comment="comment"
             @reread="reread"
@@ -414,6 +417,11 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
               <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">What became of your action<template v-if="latest?.label"> · {{ latest.label }}</template></h3>
               <InboxDelivery :steps="delivery" :route-of="routeOf" />
             </section>
+          </div>
+          <!-- The open item while it is read whole: the list's own title for it, when the list holds it, and that it is being read. -->
+          <div v-else-if="openRef" class="flex flex-col gap-2" data-inbox-reading>
+            <h2 v-if="openSummary" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-reading-title>{{ openSummary.title }}</h2>
+            <p class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</p>
           </div>
           <p v-else-if="pick" class="hidden py-8 text-center text-sm text-muted lg:block">Pick an item to see its brief, its choices and what each authorizes.</p>
         </section>

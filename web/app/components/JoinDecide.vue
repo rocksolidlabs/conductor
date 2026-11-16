@@ -35,6 +35,8 @@ async function openTerminal(ref: string) {
 // What DR1's card draws reads through the link: its chips, and whether its run runs here (not known on a link).
 provide(REF_ACCESS, linkRefAccess({ evidence: (r) => readEvidence(r), openSession: (r) => void openTerminal(r) }))
 /** The clock DR1's card reads its times by. */
+/** The open item as the list sums it up, while the list holds it: its title stands in until the item is read whole. */
+const openSummary = computed(() => items.value.find((s) => s.ref === openRef.value))
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 5000)))
@@ -112,6 +114,7 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
         :open-terminal="openTerminal"
         no-comments
         :drawn="record?.ref === item.ref ? record.decision.request.evidence : undefined"
+        :record-shown="record?.ref === item.ref"
         @act="act"
         @reread="reread"
       >
@@ -136,7 +139,11 @@ const recentWord = (e: JoinRecent) => recentBadge({ ref: e.ref, receipt: e.recei
           <InboxDelivery :steps="delivery" :route-of="() => null" />
         </section>
       </div>
-      <div v-else class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</div>
+      <!-- The open item while it is read whole: the list's own title for it, when the list holds it, and that it is being read. -->
+      <div v-else class="flex flex-col gap-2" data-inbox-reading>
+        <h2 v-if="openSummary" class="text-base font-semibold text-highlighted text-pretty break-words" data-inbox-reading-title>{{ openSummary.title }}</h2>
+        <p class="flex items-center gap-2 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Reading the item…</p>
+      </div>
     </template>
   </div>
 </template>
