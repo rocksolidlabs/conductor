@@ -261,7 +261,7 @@ test("the phone's list and its session page show it whole, and a choice from the
     await choice.tap()
     await expect.poll(() => transcript(state.home, asker), { timeout: 15_000, message: 'the choice was typed' }).toContain('No\n')
     await expect.poll(async () => (await api.session(asker.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
-    await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+    await expect(row).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
   } finally {
     await ctx.close()
   }

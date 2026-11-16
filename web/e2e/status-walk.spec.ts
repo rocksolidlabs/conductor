@@ -304,7 +304,12 @@ test("a hosted session whose host is gone shows the exited mark with \"host away
     // A state that holds: the server says the host is away before the row is read.
     budget(DAY_STEP_MS)
     await expect.poll(async () => (await api.session(id)).status, { timeout: DAY_STEP_MS, message: 'the server sees the host gone' }).toBe('host_disconnected')
-    await check(page, page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"] [data-status-mark]`), name, { key: 'exited', word: /^host away$/, tone: '--ui-text-muted' }, false)
+    // It sits in Exited (UX1 PR-14), which starts folded: unfolded from its header, the row is there.
+    const exited = page.locator('[data-session-list="sidebar"] [data-sidebar-section="exited"]')
+    await expect(exited.locator('button').first()).toBeVisible()
+    if ((await exited.getAttribute('data-folded')) === 'true') await exited.locator('button').first().click()
+    await expect(exited).toHaveAttribute('data-folded', 'false')
+    await check(page, exited.locator(`[data-sidebar-row="s:${id}"] [data-status-mark]`), name, { key: 'exited', word: /^host away$/, tone: '--ui-text-muted' }, false)
     // The server drops the copy itself (signal.DisconnectGrace, 60 s, then the maintenance sweep's 30 s): a DELETE now answers 500.
     const drop = 60_000 + 30_000 + 30_000
     budget(drop)
