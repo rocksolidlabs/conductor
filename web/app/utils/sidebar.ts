@@ -290,6 +290,17 @@ export function sessionRow(s: SessionInfo): SessionRow {
   return row
 }
 
+/**
+ * An exited row's line: its first word, then how long ago the session ended ("exit 1 · 3m ago"). A host away says "host away"
+ * alone: the listing gives no moment its host went (the server sets no end for a host that may come back), and the session's start
+ * is not that moment.
+ */
+export function exitLine(row: Pick<SessionRow, 'exitWord' | 'session'>, now: number): string {
+  const s = row.session
+  if (s.status === 'host_disconnected') return row.exitWord ?? 'host away'
+  return `${row.exitWord} · ${relativeTime(s.endedAt ?? s.createdAt, now, { suffix: true })}`
+}
+
 /** The state of a run block: its busiest member's (blockStatus: needs, working, running, finished, exited). */
 export function blockState(members: readonly SessionRow[]): RowState {
   return blockStatus(members.map((m) => m.state))
