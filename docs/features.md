@@ -297,6 +297,15 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **Launch with a first message (the UX review, P19; #951).** The Launch
+  dialog's "What should it do?" (on this server, not for a clone or "On this
+  computer") sends `message` with the launch; past 4,096 bytes the field says
+  so and Launch waits (`messageProblem`). The Name field's placeholder is the
+  name the message gives (`namePreview`, the server's `NameFromMessage`, its
+  cut held to the server's table `cut-at-word.json` by `cutAtWord`). While
+  `firstMessage` is "waiting" the session page says above the terminal what
+  it waits for (`firstMessageLine`). Tests: `launch.test.ts`;
+  `launch-first-message.spec.ts`.
 - **One shape for a page with nothing in it (#937; the UX review's P23,
   first half).** A page with nothing to show says what the page is (its
   sentence from the pages' table), why it is empty and what fills it, and
@@ -313,6 +322,20 @@ open deferred item from rounds 1 and 2, then the features below.
   kept yet."; its search caption folds to "About this page" (`PageAbout`)
   once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
   `history.test.ts`).
+- **The rest of the pages take the one shape, and About this page (#938;
+  P23, second half).** Crews, Dispatch, a project, the Events feed,
+  Brakeman's briefs and Agents draw `PageEmpty` when they have nothing to
+  show, and its reading and could-not-read shapes while they read
+  (Dispatch's first read that fails says the server's words with Read
+  again, in place of an alert over a blank page). A crew, a project, a
+  ticket and a run that are not found draw its not-found shape with the
+  way back. A project's Board and Roadmap say the project has no tickets,
+  with New ticket (C), in place of empty columns; a filter that matches
+  nothing stays a plain line. The standing paragraphs of Brakeman and
+  Agents, and the Crews page's two section captions, fold to About this
+  page once the page has content; Brakeman's Settings link is a header
+  button. The feed says it is this tab's alone and links Agents'
+  Reporting (`empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
@@ -372,6 +395,26 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **One number of what needs you, under one name (the UX review's P2, P24's
+  nav row and P3's name; #920, after #919).** The pages are one table
+  (`web/app/utils/pages.ts`: a page's name, its sentence, its key and its
+  place on the nav, the rail, the phone's bar and the palette); a page's
+  sentence is its tooltip in the nav and its palette row's second line.
+  What needs a person is one list (`web/app/utils/needsYou.ts`, read through
+  `useNeedsYou`): a session's question, an open decision no question
+  mirrors (a stopped run's too), a plan and a task waiting on a person, each
+  once. Its number is the one amber number: on Needs you in the nav, on the
+  rail's top count and its label, on the phone's first tab, in the
+  palette's row, in the tab's title and the favicon's dot; "9+" past a store
+  read in part, and no number while a store is unread or its read failed.
+  The Yard's nav badge is gone; the phone's Yard tab counts the asking
+  sessions on its grid in neutral ink, and the Yard's own chip says what it
+  counts. The page is "Needs you" wherever its name is read (the decide-only
+  page stays "Decide"); its row in the nav leaves when nothing waits and
+  nothing was decided in the last day, and stays while its page is open. The
+  sidebar's section says what it leaves out: "+3 on the page", linked to the
+  page. The pill steps through what it can answer, a stopped run's decision
+  too, and says how many more wait in Needs you.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -3125,7 +3168,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
-  apply); the selected task, kept in the URL as `?task=`, opens its result
+  apply). Since the UX review's PR-11 the rows are a table, state, task,
+  who, what and actions each read straight down (two lines a row under
+  48 rem): the state said once, the attempt once (in the words when they
+  name it, else "attempt N" past the first), the owner only when the task
+  names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
+  menu, so nothing in a row at rest is red. The selected task, kept in the
+  URL as `?task=`, opens its result
   (summary, issues, findings) and every attempt with what it submitted
   (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
@@ -3146,13 +3195,27 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   "cleaning up", the people, the Logins, who launched the run with the
   launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
-  (Tasks unless switched; the choice kept with the graph's preferences): one
-  node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
-  words, Open) in columns by depth (`utils/taskGraph.ts`, the crew graph's
-  geometry; a need the run has no task for, or a cycle, is a root with a
-  warning), a dotted `needs` edge in the brand colour from each task to the
-  tasks that need it (`data-graph-edge-kind="needs"`), the legend for both;
-  a phone gets the tasks as a list, one after the tasks it needs. The palette:
+  (Tasks unless switched; the choice kept with the graph's preferences).
+  Tasks mode draws the run as lines (UX1 PR-33, `RunLineDiagram.vue` over
+  `utils/lineDiagram.ts`): a task is a station, a chain of tasks a line, a
+  task that starts from a result another line goes on from a branch, and a
+  task that needs more than one line's result a join; every line is one
+  neutral ink, and a station carries its task's mark (`StatusMark`'s svg
+  form), so the run's position is the stations that are lit. The layout
+  reads the tasks' ids and needs alone: a change of state recolours a
+  station and never moves it. Forty tasks fit the window with their names;
+  Fit scales the drawing to its pane between half size and full, past which
+  the pane scrolls inside itself; Direction draws it left to right or top to
+  bottom. A click or Space selects a station (`?task=`), Enter or a double
+  click opens it (its attempt's session, else the task in the Tasks view),
+  the arrows move the focus along a line and across the lanes, and Tab walks
+  the stations by depth; under the drawing a caption for the selected task
+  says its member, its words and its attempt, with Open and Show in Tasks. A
+  need the run has no task for, or a cycle, is a station with its warning.
+  Members mode stays Vue Flow's, each graph on a store of its own
+  (`data-graph-store`, #449). The legend lists the task marks and the line,
+  the branch and the join. A phone gets the tasks as a list, one after the
+  tasks it needs (`taskListRows`). The palette:
   the run page's group gains a row per task (Enter shows it in the Tasks
   view; → opens its session, retries, accepts or cancels, the last two asked)
   and a Pause / Resume row; a run row's detail says `2/5 tasks · 1 failed ·
@@ -3160,12 +3223,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `pauseRun` and `taskCommand`, `ApiError` the whole reply (`body`) for a
   refusal's receipt. Tests: vitest `tasks.test.ts` (counts, badges, words,
   actions, the id, the retry-once wrapper and the refusal) and
-  `taskGraph.test.ts` (depths, warnings, layout both ways, edges, the list
-  order); Playwright `tasks.spec.ts` gains the page: the rows and their
+  `taskGraph.test.ts` (depths, warnings, the list order); Playwright `tasks.spec.ts` gains the page: the rows and their
   states, the commit against `git rev-parse crew/<run>/build.2`, the header's
   `2/2 tasks`, the detail's attempts with the failed check and what was
-  submitted, the tile's `build #2`, the graph's two task nodes and one needs
-  edge and the switch to the members, the palette's task row; and a crew
+  submitted, the tile's `build #2`, the graph's two stations on one line
+  and the switch to the members and back, the palette's task row; and a crew
   whose check always fails: `1 failed`, Pause and Resume with the badge,
   Accept anyway through the dialog finishing the run with attempt 3's commit
   and the dependent starting from it.

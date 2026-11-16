@@ -528,11 +528,7 @@ palette.registerPage(() => {
         />
       </div>
 
-      <div v-if="gone" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted">
-        <UIcon name="i-lucide-search-x" class="size-8" />
-        <p class="text-sm">No run has the id <code>{{ runId }}</code>. The server forgets runs when it restarts.</p>
-        <UButton label="Crews" icon="i-lucide-arrow-left" color="neutral" variant="soft" to="/crews" />
-      </div>
+      <PageEmpty v-if="gone" state="missing" :words="`No run has the id ${runId}. The server forgets runs when it restarts.`" :actions="[{ label: 'Crews', icon: 'i-lucide-arrow-left', to: '/crews' }]" data-run-missing />
 
       <template v-else>
         <div class="flex flex-none items-center px-3 pt-3">
@@ -561,6 +557,7 @@ palette.registerPage(() => {
             @start="startMember"
             @select-task="selectTask($event)"
             @open-task="openTask"
+            @show-task="selectTask($event, true)"
           />
         </div>
         <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>

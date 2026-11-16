@@ -136,11 +136,15 @@ export interface AccountHandlers {
   theme: () => void
   token: () => void
   forget: () => void
+  /** Open on your phone: offered only where it is given (the sidebar's menu; the phone's More is on the phone already). */
+  phone?: () => void
 }
 
 export function accountActions(hasToken: boolean, on: AccountHandlers): Action[][] {
   const a = (id: string, label: string, run: () => void, rest: Partial<Action> = {}): Action => ({ id, label, kind: 'account', run, ...rest })
   const token = [a('token', hasToken ? 'Workbench token…' : 'Set workbench token…', on.token, { icon: hasToken ? 'i-lucide-key-round' : 'i-lucide-lock' })]
   if (hasToken) token.push(a('forget-token', 'Forget token', on.forget, { icon: 'i-lucide-log-out', color: 'error' }))
-  return [[a('name', 'Your name…', on.name, { icon: 'i-lucide-user-round' })], [a('shortcuts', 'Keyboard shortcuts', on.shortcuts, { icon: 'i-lucide-keyboard', kbds: ['?'] }), a('theme', 'Toggle theme', on.theme, { icon: 'i-lucide-sun-moon' })], token]
+  const tools = [a('shortcuts', 'Keyboard shortcuts', on.shortcuts, { icon: 'i-lucide-keyboard', kbds: ['?'] }), a('theme', 'Toggle theme', on.theme, { icon: 'i-lucide-sun-moon' })]
+  if (on.phone) tools.push(a('phone', 'Open on your phone', on.phone, { icon: 'i-lucide-smartphone' }))
+  return [[a('name', 'Your name…', on.name, { icon: 'i-lucide-user-round' })], tools, token]
 }

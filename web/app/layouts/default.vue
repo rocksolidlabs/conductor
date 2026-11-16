@@ -3,12 +3,12 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
 import { navPages, pageActive, pageTip, type PageId } from '~/utils/pages'
+import { needsCount, needsRowShown } from '~/utils/needsYou'
 
 const showToken = ref(false)
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
 const desktopWide = useMedia('(min-width: 64rem)')
-const attention = useAttention()
-// The decision inbox (Needs your decision): read for the whole app, its count on the sidebar's Decide row and the phone's tab.
+// The decision inbox: read for the whole app, one of the stores of the one number on Needs you (useNeedsYou).
 const inbox = useInbox()
 onMounted(() => inbox.start())
 const desktop = useDesktop()
@@ -212,10 +212,22 @@ onMounted(() =>
 )
 const brakemanCount = computed(() => brakeman.unopened.value.length)
 
-/** A page's badge in the foot: Decide's and the Yard's amber while something waits, Brakeman's briefs not yet opened. */
+// The one number of what needs you (utils/needsYou.ts), on Needs you alone: drawn "9", "9+" past a store cut short, and not at all
+// while it is not known. Every place that draws it carries data-count-of="needs".
+const needs = useNeedsYou()
+const needsWords = computed(() => needsCount(needs.list.value))
+// The row leaves when nothing waits and nothing was decided that day (needsRowShown); the clock moves its day on every minute.
+const minute = ref(Date.now())
+onMounted(() => {
+  const t = window.setInterval(() => (minute.value = Date.now()), 60_000)
+  onBeforeUnmount(() => window.clearInterval(t))
+})
+const needsRow = computed(() => needsRowShown(inbox.state.value, needs.list.value, route.path, minute.value))
+
+/** A page's badge in the foot: Needs you's one number in amber, Brakeman's briefs not yet opened. */
 function navBadge(id: PageId): NavigationMenuItem['badge'] {
-  if (id === 'decisions') return inbox.count.value ? { label: String(inbox.count.value), color: 'warning', variant: 'solid' } : undefined
-  if (id === 'yard') return attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined
+  // The hook rides on the badge as an attribute (Nuxt UI binds the badge object onto its UBadge).
+  if (id === 'decisions') return needsWords.value && needs.number.value ? ({ label: needsWords.value, color: 'warning', variant: 'solid', 'data-count-of': 'needs' } as NavigationMenuItem['badge']) : undefined
   if (id === 'brakeman') return brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary', variant: 'subtle' } : undefined
   return undefined
 }
@@ -223,7 +235,7 @@ function navBadge(id: PageId): NavigationMenuItem['badge'] {
 const NAV_HOOKS: Partial<Record<PageId, string>> = { decisions: 'data-sidebar-decide', brakeman: 'data-sidebar-brakeman' }
 
 // The foot's pages, from the one table (utils/pages.ts): each one's sentence is its tooltip (pageTip), drawn by the label's slot.
-const navEntries = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value }))
+const navEntries = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value, needs: needsRow.value }))
 const nav = computed<NavigationMenuItem[]>(() =>
   navEntries.value.map((p) => {
     const hook = NAV_HOOKS[p.id]
@@ -232,28 +244,26 @@ const nav = computed<NavigationMenuItem[]>(() =>
   }),
 )
 
-// On the rail Nuxt UI's collapsed menu hides the links' labels and the Yard's
-// count: each link is named by an aria-label instead, and the Yard's icon
-// carries an amber chip while any session needs you. Its tooltip, on hover
-// and on focus, is the page's sentence (Nuxt UI takes `text` from the item's
-// tooltip object over the label).
+// On the rail Nuxt UI's collapsed menu hides the links' labels and their
+// badges: each link is named by an aria-label instead, and Needs you's icon
+// carries an amber chip while anything waits, its label the one number. Its
+// tooltip, on hover and on focus, is the page's sentence (Nuxt UI takes
+// `text` from the item's tooltip object over the label).
 const railNav = computed<NavigationMenuItem[]>(() =>
   nav.value.map((item, i) => {
     const p = navEntries.value[i]!
     const tooltip = { text: pageTip(p) }
     if (p.id === 'decisions') {
-      const d = inbox.count.value
-      return { ...item, tooltip, 'aria-label': d ? `${p.title}, ${d} waiting` : p.title, chip: d ? { color: 'warning' } : undefined }
+      const d = needs.number.value ? needsWords.value : ''
+      return { ...item, tooltip, 'aria-label': d ? `${p.title}, ${d} waiting` : p.title, 'data-count-of': 'needs', chip: d ? { color: 'warning' } : undefined }
     }
     if (p.id === 'brakeman') {
       const b = brakemanCount.value
       return { ...item, tooltip, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
     }
-    const n = p.id === 'yard' ? attention.count.value : 0
-    return { ...item, tooltip, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
+    return { ...item, tooltip, 'aria-label': item.label }
   }),
 )
-
 
 // Shortcuts pause while a terminal or a text field has focus (see useShortcuts).
 // Plain keys work outside terminals and text fields; the Alt chords also
@@ -350,7 +360,8 @@ defineShortcuts({
       <template #footer="{ collapsed }">
         <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
              the current page's link the page's tone, as the sidebar's rows do. -->
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full">
+        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full" :data-needs-read="needs.known.value || needs.more.value ? 'true' : 'false'">
+          <!-- data-needs-read: every store of the one list has been read, so Needs you's row is where it stays (a test waits on it). -->
           <!-- The full sidebar's label says what the page is on hover (Nuxt UI draws a tooltip only on the rail). -->
           <template #item-label="{ item }">
             <template v-if="collapsed">{{ item.label }}</template>
@@ -382,5 +393,6 @@ defineShortcuts({
     <RenameSessionModal />
     <CloneSessionModal />
     <DecisionModal />
+    <OpenOnPhone />
   </UDashboardGroup>
 </template>

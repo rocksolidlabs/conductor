@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { BrakemanRequest } from '~/utils/brakeman'
 import { closed, kindWords, refLabel, stateWords, stopAction } from '~/utils/brakeman'
+import { pageState } from '~/utils/pageState'
 
 // The Brakeman page (docs/plans/brakeman.md, PR-6): ask Brakeman, follow the request in progress (its session's terminal, its
 // run, Stop), the queue, and the briefs newest first. A brief is opened in place; `?request=br-n` opens one (a `brief:` ref leads
@@ -81,7 +82,13 @@ async function stop(r: BrakemanRequest) {
   }
 }
 
+/** The page's standing paragraph: in place until a brief is done, then under About this page. Its Settings link is the header's. */
+const ABOUT =
+  'Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in Settings.'
 const unavailable = computed(() => bk.available.value === false)
+/** The briefs' part of the page (P23): reading until the first answer, failed when it did not come, none yet, or the briefs. Once a
+ * request is done the page has content, and its standing paragraph folds to About this page. */
+const briefsState = computed(() => pageState({ read: !!state.value, error: bk.problem.value, count: done.value.length }))
 </script>
 
 <template>
@@ -90,6 +97,10 @@ const unavailable = computed(() => bk.available.value === false)
       <UDashboardNavbar title="Brakeman" :ui="{ root: 'h-14' }">
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
+          <PageAbout :shown="!unavailable && briefsState === 'content'">
+            <p>{{ ABOUT }}</p>
+          </PageAbout>
+          <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="ghost" to="/settings" data-brakeman-settings-link />
           <span v-if="state" class="text-xs text-muted" data-turns-today>{{ state.turnsToday }} of {{ config?.budget.turnsPerDay }} turns, {{ state.minutesToday ?? 0 }} of {{ config?.budget.minutesPerDay }} minutes today</span>
           <FullscreenButton />
         </template>
@@ -99,10 +110,7 @@ const unavailable = computed(() => bk.available.value === false)
       <div class="mx-auto flex w-full max-w-3xl flex-col gap-5" data-brakeman-page>
         <UAlert v-if="unavailable" color="neutral" variant="subtle" icon="i-lucide-info" title="Brakeman is not here" :description="bk.problem.value" data-brakeman-unavailable />
         <template v-else>
-          <p class="text-sm text-muted">
-            Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in
-            <NuxtLink to="/settings" class="underline" data-brakeman-settings-link>Settings</NuxtLink>.
-          </p>
+          <p v-if="briefsState !== 'content'" class="text-sm text-muted" data-brakeman-about>{{ ABOUT }}</p>
           <UAlert v-if="state && !config?.enabled" color="neutral" variant="subtle" icon="i-lucide-power" title="Brakeman is off" data-brakeman-off>
             <template #description>Choose its agent and turn it on in <NuxtLink to="/settings" class="underline">Settings</NuxtLink>.</template>
           </UAlert>
@@ -152,7 +160,7 @@ const unavailable = computed(() => bk.available.value === false)
           <section class="flex flex-col gap-2" data-brakeman-briefs>
             <h2 class="text-sm font-semibold text-highlighted">Briefs</h2>
             <UAlert v-if="named" color="warning" variant="subtle" icon="i-lucide-search-x" :title="named" data-brakeman-named-missing />
-            <p v-if="!done.length" class="text-sm text-muted">No brief yet.</p>
+            <PageEmpty v-if="briefsState !== 'content'" page="brakeman" :state="briefsState" words="No brief yet. Ask for the first one above." thing="briefs" :error="bk.problem.value" @again="bk.load()" />
             <UCard v-for="r in done" :key="r.id" :ui="{ body: 'p-3 sm:p-4' }" :data-request="r.id" :data-request-state="r.state">
               <div class="flex flex-wrap items-center gap-2 text-sm">
                 <UButton

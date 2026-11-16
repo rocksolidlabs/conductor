@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // A plan Claude Code writes outside the session's folder (#289): the stub
 // writes it where Claude Code does, under the home's .claude/plans, reports
@@ -89,7 +89,7 @@ test('a plan outside the folder opens from the approval, the Files tab and the p
     await expect(lines).toBeVisible()
 
     // The Files tab lists it under Plans, this session's plan alone; clicking it is the same tab.
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-plans-head]')).toHaveText('Plans', { timeout: 15_000 })
     await expect(pane.locator('[data-files-plans]')).toHaveCount(1)
@@ -219,7 +219,7 @@ test('Preview plan opens the plan rendered on the session page, the Yard and a s
 
     // The session page: a file already open and the editor folded; Preview plan opens the plan rendered and unfolds the editor.
     budget(2 * STEP_MS)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     const area = page.locator('[data-editor-area]')
     await expect(area).toHaveAttribute('data-editor-area', 'open')

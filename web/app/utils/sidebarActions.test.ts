@@ -138,4 +138,13 @@ describe('accountItems', () => {
     for (const g of accountItems(true, h)) for (const i of g) i.onSelect?.(new Event('select'))
     expect(calls).toEqual(['name', 'shortcuts', 'theme', 'token', 'forget'])
   })
+  it('lists Open on your phone after Toggle theme only where it is given, and calls it (UX1 PR-6)', () => {
+    let called = 0
+    const items = accountItems(true, { ...on, phone: () => void called++ })
+    expect(shape(items)).toEqual([['Your name…'], ['Keyboard shortcuts [?]', 'Toggle theme', 'Open on your phone'], ['Workbench token…', 'Forget token error']])
+    const phone = items.flat().find((i) => i.label === 'Open on your phone')!
+    expect(phone.icon).toBe('i-lucide-smartphone')
+    phone.onSelect?.(new Event('select'))
+    expect(called).toBe(1)
+  })
 })

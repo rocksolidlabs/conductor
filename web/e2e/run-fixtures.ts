@@ -448,3 +448,44 @@ export async function serveTicketRuns(page: Page, key: string, run: StubRun): Pr
   )
   return served
 }
+
+/** The forty-task shape the line diagram is laid out for (web/app/utils/testdata/line-forty.json, lineDiagram.test.ts's bounds). */
+const FORTY = JSON.parse(readFileSync(join(repoRoot, 'web/app/utils/testdata/line-forty.json'), 'utf8')) as Array<{ id: string; needs?: string[] }>
+
+/** A managed run of `shape`'s tasks, each as runInfo makes one in the state `states` gives it in turn, with the needs the shape gives. */
+function shapedRun(name: string, shape: ReadonlyArray<{ id: string; needs?: string[] }>, states: readonly TaskState[]): StubRun {
+  const run = runInfo({ tasks: 6 })
+  const n = made
+  run.tasks = shape.map((s, i) => {
+    const t = stubTask(run.id, n, s.id, i, states[i % states.length]!)
+    if (s.needs?.length) t.needs = [...s.needs]
+    else delete t.needs
+    if (t.state === 'blocked') t.reason = s.needs?.length ? `needs ${s.needs.join(', ')}` : 'needs nothing yet'
+    return t
+  })
+  run.name = name
+  run.label = name
+  run.members = stubMembers(run.id, run.tasks)
+  return run
+}
+
+/**
+ * The forty-task run (UX1 PR-33): the shape of line-forty.json, its states spread over every state a task can be in (TASK_STATES in
+ * turn), so that its stations carry every mark a run's task draws without a live session: done, failed, cancelled, waiting, ready,
+ * checking and running. A failed task carries the engine's commands, so it asks for a person (needs you).
+ */
+export function fortyRun(): StubRun {
+  return shapedRun('Stub run of forty', FORTY, TASK_STATES)
+}
+
+/** A chain of `count` tasks (128 at most: a crew's bound), t001 to t128, each needing the one before it: done up to the middle, one running, the rest waiting. */
+export function chainRun(count: number): StubRun {
+  const width = Math.max(2, String(count).length)
+  const ids = Array.from({ length: count }, (_, i) => `t${String(i + 1).padStart(width, '0')}`)
+  const half = Math.floor(count / 2)
+  return shapedRun(
+    `Stub chain of ${count}`,
+    ids.map((id, i) => (i ? { id, needs: [ids[i - 1]!] } : { id })),
+    ids.map((_, i): TaskState => (i < half ? 'succeeded' : i === half ? 'running' : 'blocked')),
+  )
+}

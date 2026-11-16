@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { accountItems } from '~/utils/sidebarActions'
 import { pageActive, phoneMore, phoneTabs, type PageId } from '~/utils/pages'
+import { needsCount } from '~/utils/needsYou'
+import { isActive } from '~/utils/attention'
 
 /**
- * The phone's bar at the foot (design 3e): Decide first (Needs your
- * decision, with the number of items waiting: Owner decisions 10 of
- * docs/plans/decision-inbox.md), Sessions, Yard (with its count), Crews;
+ * The phone's bar at the foot (design 3e): Needs you first (with the one
+ * number of what waits), Sessions, Yard (the asking sessions on its grid,
+ * in neutral ink), Crews;
  * Roundhouse, Agents, Dispatch, Events, Settings, Alerts and your menu under
  * More; the alerts end with "All alert rules", the Alerts panel. Every target is at least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
@@ -13,7 +15,6 @@ import { pageActive, phoneMore, phoneTabs, type PageId } from '~/utils/pages'
  */
 const emit = defineEmits<{ token: [] }>()
 const attention = useAttention()
-const inbox = useInbox()
 const desktop = useDesktop()
 const route = useRoute()
 const { hasToken, clear } = useWorkbenchToken()
@@ -22,8 +23,20 @@ const colorMode = useColorMode()
 
 // The bar's tabs and More's pages, from the one table (utils/pages.ts); the hook a test finds Decide's tab by stays `decide`.
 const TAB_HOOKS: Partial<Record<PageId, string>> = { decisions: 'decide' }
+// Needs you's tab carries the one number in amber (useNeedsYou; nothing while it is not known); the Yard's counts the asking sessions
+// on its grid, as the Yard's chip does, in neutral ink: the phone's one amber number is Needs you's.
+const needs = useNeedsYou()
+const gridAsks = computed(() => attention.needsInput.value.filter(isActive).length)
 const tabs = computed(() =>
-  phoneTabs().map((p) => ({ key: TAB_HOOKS[p.id] ?? p.id, id: p.id, label: p.label, to: p.to, icon: p.icon, count: p.id === 'decisions' ? inbox.count.value : p.id === 'yard' ? attention.count.value : 0 })),
+  phoneTabs().map((p) => ({
+    key: TAB_HOOKS[p.id] ?? p.id,
+    id: p.id,
+    label: p.label,
+    to: p.to,
+    icon: p.icon,
+    count: p.id === 'decisions' ? (needs.number.value ? needsCount(needs.list.value) : '') : p.id === 'yard' && gridAsks.value ? String(gridAsks.value) : '',
+    amber: p.id === 'decisions',
+  })),
 )
 function active(id: PageId): boolean {
   return pageActive(id, route.path)
@@ -70,7 +83,14 @@ function act(fn?: (e: Event) => void) {
     >
       <span class="relative">
         <UIcon :name="t.icon" class="size-5" />
-        <span v-if="t.count" class="absolute -right-2.5 -top-1.5 rounded-full bg-warning px-1 text-[9px] font-semibold leading-3.5 text-(--ui-color-neutral-900)" data-bottom-count>{{ t.count }}</span>
+        <span
+          v-if="t.count"
+          class="absolute -right-2.5 -top-1.5 rounded-full px-1 text-[9px] font-semibold leading-3.5"
+          :class="t.amber ? 'bg-warning text-(--ui-color-neutral-900)' : 'bg-elevated text-default ring ring-default'"
+          :data-count-of="t.amber ? 'needs' : undefined"
+          data-bottom-count
+          >{{ t.count }}</span
+        >
       </span>
       {{ t.label }}
     </NuxtLink>

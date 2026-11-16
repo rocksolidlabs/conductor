@@ -42,8 +42,12 @@ test('a long working directory shows the end of its crumbs: at mount, after a vi
     await expect(pane.locator('[data-files-crumbs]')).toBeHidden()
     await rail.locator('[data-rail-item="explorer"]').click()
     await atEnd(page)
-    // A pane opened on Changes has no strip at mount: the Explorer's, made later, is scrolled as it appears.
+    // A pane opened on Changes has no strip at mount: the Explorer's, made later, is scrolled as it appears. The panel is collapsed
+    // first, so that the page loads with it closed (the choice is kept, P11) and opens on Changes, never on Explorer.
+    await rail.locator('[data-rail-toggle]').click()
+    await expect(rail).toHaveAttribute('data-inspector-open', 'false')
     await page.goto(`/sessions/${s.id}`)
+    await expect(rail).toHaveAttribute('data-inspector-open', 'false')
     await rail.locator('[data-rail-item="changes"]').click()
     await expect(pane).toBeVisible({ timeout: 30_000 })
     await expect(pane.locator('[data-files-crumbs]')).toBeHidden()

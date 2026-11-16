@@ -27,7 +27,7 @@ test('Changes lists the status with lines, opens a diff, marks the Explorer; no 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'changes', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // The Explorer marks the modified file once the status is read; the section's count says three.

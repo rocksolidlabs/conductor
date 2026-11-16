@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path'
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
 import { expect, member, rowAnswer, showView, test, type Api, type Session } from './fixtures'
+import { terminalColumns } from './terminal-width'
 
 // Two people answer the same question: Codex's command approval, with the
 // next approval queued behind it (the stub's `stub approvals a|b`). Nate
@@ -170,8 +171,11 @@ test("an Escape typed at Codex's update question in a narrower terminal skips it
     await page.goto(`/sessions/${encodeURIComponent(id)}`)
     const screen = page.locator('.terminal-host .xterm-screen').first()
     await expect(screen).toBeVisible()
-    // The page's window sizes the session: narrower than the 80 columns it was born with.
-    await expect.poll(async () => (await api.session(id)).cols ?? 80, { timeout: 15_000, message: 'the page made the session narrower' }).toBeLessThan(80)
+    // The page's window sizes the session: narrower than the 80 columns it was born with. The window's width is chosen by what the
+    // page draws (a terminal of 72 columns, as this window's was with the inspector open), and the session takes that grid.
+    const cols = await terminalColumns(page, 72)
+    expect(cols).toBeLessThan(80)
+    await expect.poll(async () => (await api.session(id)).cols ?? 80, { timeout: 15_000, message: 'the page made the session narrower' }).toBe(cols)
     await screen.click()
     await page.keyboard.press('Escape')
     await expect.poll(answered, { timeout: 15_000, message: 'the stub skipped' }).toBe('skip')

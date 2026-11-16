@@ -444,7 +444,7 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(header.locator('[data-header-alerts]')).toHaveCount(0)
   await expect(header.locator('[data-sidebar-collapse]')).toHaveCount(0)
   await account.click()
-  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(page.getByRole('menuitem')).toHaveText([/Your name/, /^Alerts…$/, /Collapse to the rail/, /Keyboard shortcuts/, /Toggle theme/, /Open on your phone/, /Workbench token/, /Forget token/])
   // Alerts opens its panel with the switches and, under them, the rules; Escape closes it and gives the focus back to your menu's
   // button.
   await page.getByRole('menuitem', { name: /^Alerts/ }).click()
@@ -483,9 +483,13 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
   await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
-  // The foot: the pages, nothing else; Needs your decision's Decide row first (docs/plans/decision-inbox.md, PR-2).
+  // The foot: the pages, nothing else. Needs you's row leaves when nothing waits and nothing was decided that day, which this shared
+  // server's earlier specs decide: here it is first when present, and the pages after it are in order (counts.spec.ts proves the
+  // row's rule on servers whose state it knows).
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
-  await expect(foot.getByRole('link')).toHaveText([/Decide/, /Yard/, /Agents/, /Crews/, /Dispatch/, /Events/, /History/, /Brakeman/])
+  const pages = [/^Yard/, /^Agents/, /^Crews/, /^Dispatch/, /^Events/, /^History/, /^Brakeman/]
+  await expect(foot.getByRole('link').filter({ hasNotText: /^Needs you/ })).toHaveText(pages)
+  await expect(foot.getByRole('link').first()).toHaveText(/^(Needs you|Yard)/)
 })
 
 test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
@@ -1129,6 +1133,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   const sidebar = page.locator('#dashboard-sidebar-main')
   const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text}$`) })
   const yardTip = 'Yard: every live terminal on one screen'
+  // Needs you's row shows until every store of the one list is read, then leaves when nothing waits: hover once it is in its place.
+  await expect(sidebar.locator('nav[data-needs-read="true"]')).toHaveCount(1)
   await sidebar.locator('[data-nav-label]').filter({ hasText: /^Yard$/ }).hover()
   await expect(tip(yardTip)).toBeVisible()
   // Folded to the rail by its key, pressed once the layout that listens for it is drawn (dayPage waits for it).
@@ -1136,7 +1142,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   await page.keyboard.press('Alt+b')
   await expect(sidebar.locator('[data-rail]')).toBeVisible()
   const nav = sidebar.getByRole('navigation').last()
-  await tabTo(page, nav.locator('a[href="/yard"]'), 2, nav.locator('a[href="/decisions"]'))
+  // From the rail's search button, down its squares and past Needs you's row when it shows (it leaves when nothing waits).
+  await tabTo(page, nav.locator('a[href="/yard"]'), 80, sidebar.locator('[data-rail] button[aria-label="Filter sessions"]'))
   await expect(tip(yardTip)).toBeVisible()
   await expect(nav.locator('a[href="/yard"]')).toHaveAttribute('aria-label', /^Yard/)
   // The palette: "terminal" finds the Yard by its sentence.

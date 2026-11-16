@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { choiceKey } from '~/utils/attention'
 import { pillGoes } from '~/utils/needsCursor'
+import { pillWords } from '~/utils/needsYou'
 import { replyFailure } from '~/utils/reply'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
@@ -25,6 +26,8 @@ const root = useTemplateRef<HTMLElement>('root')
 
 const session = computed(() => (cursor.shown.value && !cursor.shown.value.decision ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
 const decisions = useDecisions()
+/** "2 of 4", and " · 2 more in Needs you" for the plans and tasks it cannot answer. */
+const countWords = computed(() => (cursor.shown.value ? pillWords(cursor.shown.value.n, cursor.shown.value.of, cursor.shown.value.more) : ''))
 const decisionModal = useDecisionModal()
 /** The decision the pill shows, while it is still open. */
 const lone = computed(() => (cursor.shown.value?.decision ? decisions.open.value.find((d) => d.id === cursor.shown.value!.decision) : undefined))
@@ -141,7 +144,7 @@ watch(
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate text-sm font-semibold text-highlighted">{{ session.name }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ cursor.shown.value.n }} of {{ cursor.shown.value.of }}</span>
+          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ countWords }}</span>
           <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || session.attention?.message || 'needs you' }}</p>
@@ -177,7 +180,7 @@ watch(
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate font-mono text-sm font-semibold text-highlighted">{{ lone.id }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ cursor.shown.value.n }} of {{ cursor.shown.value.of }}</span>
+          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ countWords }}</span>
           <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ lone.request.question }}</p>
