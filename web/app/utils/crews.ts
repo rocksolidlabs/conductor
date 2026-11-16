@@ -1077,6 +1077,8 @@ export function pageAfterDelete(page: number, left: number): number {
 export function summaryOf(c: CrewInfo): CrewSummary {
   const out: CrewSummary = { id: c.id, name: c.name, goal: c.goal, cwd: c.cwd, where: c.where, isolation: c.isolation, members: c.members.map((m) => ({ name: m.name, agentId: m.agentId, start: m.start })), updatedAt: c.updatedAt }
   if (c.people?.length) out.people = c.people.map((p) => (p.responsibilities?.length ? { name: p.name, responsibilities: [...p.responsibilities] } : { name: p.name }))
+  // The task shape, as the server's summary has it: id, member, kind and needs alone, so a crew saved here draws what a read would.
+  if (c.tasks?.length) out.tasks = c.tasks.map((t) => ({ id: t.id, member: t.member, kind: t.kind, ...(t.needs?.length ? { needs: [...t.needs] } : {}) }))
   return out
 }
 

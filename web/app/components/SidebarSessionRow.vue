@@ -97,12 +97,13 @@ function confirmStop() {
       <NuxtLink
         :to="`/sessions/${s.id}`"
         class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md px-2.5 py-1.5 transition-colors"
-        :class="[!current && 'hover:bg-canvas-hover', row.state === 'exited' && !current && 'opacity-75']"
+        :class="!current && 'hover:bg-canvas-hover'"
         :aria-current="current ? 'page' : undefined"
         :title="sessionMeta(s, now)"
       >
           <span class="flex min-w-0 items-center gap-1.5">
-            <span class="truncate text-sm" :class="row.state === 'needs' ? 'font-semibold' : 'font-medium'" data-row-name>{{ s.name }}</span>
+            <!-- An exited row is drawn whole, its name muted: never faded (the UX review's P16). -->
+            <span class="truncate text-sm" :class="[row.state === 'needs' ? 'font-semibold' : 'font-medium', row.state === 'exited' && !current && 'text-muted']" data-row-name>{{ s.name }}</span>
             <EventMarkBadge :session-id="s.id" :finished="status.key === 'finished'" />
             <YoloBadge v-if="s.yolo" icon />
             <slot name="pill" />
@@ -131,7 +132,7 @@ function confirmStop() {
                 :title="s.agentId"
                 data-row-initials
               >{{ agentInitials(s.agentId) }}</span>
-              <span v-if="row.state === 'exited'" class="min-w-0 truncate font-mono">{{ exitLine }}</span>
+              <span v-if="row.state === 'exited'" class="min-w-0 truncate tabular-nums" data-row-exit-line>{{ exitLine }}</span>
               <template v-else>
                 <span class="flex min-w-0 flex-1 basis-0 items-center overflow-hidden whitespace-nowrap font-mono" data-row-meta>
                   <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">

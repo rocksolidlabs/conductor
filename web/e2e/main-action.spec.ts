@@ -9,8 +9,8 @@ import { MEASURE_WAIT_MS, probeColour } from './layout'
 //
 // - The main action: on the Needs you page the failed task's Retry and the waiting plan revision's Approve are the forest fill
 //   (`--ui-primary`); a session page's bar has one filled button at most and Share is outlined; a live run's Open run is outlined.
-// - The code font: the sentences (the run card's meta line, the inspector's People line) are set in the app's face; the ids (the run
-//   card's short run id, a task's id on the run page) stay in the code font.
+// - The code font: the sentences (the sidebar run header's subtitle, the run card's meta line, the inspector's People line) are set
+//   in the app's face; the ids (the run card's short run id, a task's id on the run page) stay in the code font.
 // - Amber: Not installed and an identified agent's badge on Agents are neither amber nor green; the Yard's Needs you chip keeps its
 //   amber mark (its text and number are the chip's neutral ink, PR-17's, and not read here).
 
@@ -101,6 +101,13 @@ for (const size of SIZES) {
       expect(await mono(card.locator('[data-run-meta]')), "the run card's meta line").toBe(false)
       expect(await mono(card.locator('[data-run-short-id]')), "the run card's short run id").toBe(true)
       await expect(card.locator('[data-run-short-id]')).toHaveAttribute('data-mono', 'id')
+
+      // The sidebar's run header: its subtitle ("started 07:29 · 3 agents") in the app's face. The phone has no sidebar.
+      if (!size.touch) {
+        const subtitle = page.locator(`#dashboard-sidebar-main [data-sidebar-run-subtitle="${run}"]`)
+        await expect(subtitle).toBeVisible({ timeout: MEASURE_WAIT_MS })
+        expect(await mono(subtitle), "the sidebar run header's subtitle").toBe(false)
+      }
 
       // A task's id on the run page, in the code font.
       await page.goto(`/runs/${encodeURIComponent(run)}?view=tasks`)

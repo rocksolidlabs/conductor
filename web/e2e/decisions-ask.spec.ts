@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, test, tokenAsk } from './fixtures'
 import { inboxItem, stubInbox } from './inbox-stub'
 
 // Needs your decision, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
@@ -17,13 +17,13 @@ test('the address opened with no token asks for it at once; the token saved show
   const ctx = await browser.newContext(PHONE)
   const page = await ctx.newPage()
   await page.goto('/decisions')
-  const gate = page.getByRole('dialog', { name: GATE })
+  const gate = tokenAsk(page)
   await expect(gate).toBeVisible()
   const field = gate.getByPlaceholder('paste the workbench token')
   await field.fill(state.token)
   await expect(field).toHaveValue(state.token)
   const read = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/inbox' && r.status() === 200)
-  await gate.getByRole('button', { name: 'Save' }).click()
+  await gate.getByRole('button', { name: 'Connect' }).click()
   await read
   await expect(gate).toHaveCount(0)
   await expect(page.locator('[data-decisions-list]')).toBeVisible()
@@ -37,6 +37,7 @@ test('the address opened with no token asks for it at once; the token saved show
   await expect(passPage.getByText(ENDED)).toBeVisible()
   expect(new URL(passPage.url()).pathname).toBe('/decide')
   await expect(passPage.getByRole('dialog', { name: GATE })).toHaveCount(0)
+  await expect(tokenAsk(passPage)).toHaveCount(0)
   await passCtx.close()
 })
 

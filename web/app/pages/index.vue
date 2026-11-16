@@ -8,6 +8,8 @@ useHead({ title: 'Sessions' })
 const attention = useAttention()
 const admin = useWorkbenchToken()
 const launch = useLaunchModal()
+/** Set token opens the token dialog over the page: with a token held, the store's ask alone would open nothing. */
+const tokenDialog = useTokenDialog()
 /** Below lg the list is a page of its own (design 3e): a phone opens on it. */
 const wide = useMedia('(min-width: 64rem)')
 
@@ -69,7 +71,7 @@ onMounted(() => {
     </template>
 
     <template #body>
-      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
+      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: tokenDialog.show }]" />
       <WelcomeCard v-if="welcome" />
       <!-- The home is not a destination of the pages' table: no first line. -->
       <PageEmpty
@@ -81,7 +83,7 @@ onMounted(() => {
         :error="attention.error.value"
         :actions="[
           { label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => launch.show() },
-          { label: 'Set token', icon: 'i-lucide-key-round', failed: true, onClick: () => (admin.needsToken.value = true) },
+          { label: 'Set token', icon: 'i-lucide-key-round', failed: true, onClick: tokenDialog.show },
         ]"
         @again="attention.refresh()"
       />

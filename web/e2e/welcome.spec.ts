@@ -7,8 +7,7 @@ import { START_WAIT_MS } from './server'
 // The first screens of a new install (the UX review's P17; #906 before it): the welcome says what Conductor is in one sentence, then
 // three steps (the agents this machine has, each with its version; another machine's terminal brought in; the example crews), then
 // "Where things are", each page of the nav with the sentence its tooltip says. Every choice says what it does, here and where the
-// examples are offered elsewhere (Crews, the palette). And the workbench token's dialog, which says where the token is as the server
-// says it.
+// examples are offered elsewhere (Crews, the palette). The token dialog's words are held in connect.spec.ts.
 
 /** An expect's bound and an action's (the config's expect timeout). */
 const STEP_MS = 15_000
@@ -226,21 +225,5 @@ test('the examples say what loading them does, on the welcome, on Crews and in t
     await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app"] [data-crew-item]')).toBeVisible()
   } finally {
     await srv.stop()
-  }
-})
-
-test('the token dialog says where the server keeps a token it made: it prints the file\'s path, never the token', async ({ browser }) => {
-  // A browser with no token: the page asks for it.
-  const ctx = await browser.newContext()
-  try {
-    const page = await ctx.newPage()
-    await page.goto('/')
-    const gate = page.getByRole('dialog', { name: 'Workbench token' })
-    await expect(gate).toBeVisible()
-    await expect(gate).toContainText('CONDUCTOR_WORKBENCH_TOKEN')
-    await expect(gate).toContainText('in the file workbench-token in its data directory: it prints that file\'s path as it starts, never the token.')
-    await expect(gate).not.toContainText('printed at server start')
-  } finally {
-    await ctx.close()
   }
 })

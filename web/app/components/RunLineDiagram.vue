@@ -12,7 +12,8 @@ import type { MarkView } from '~/utils/status'
  * Sizes: `full`, the Graph view's, fitted to the pane it fills (never above 1, never below 0.5; past that the pane scrolls inside
  * itself), its stations buttons: a click or Space selects, Enter or a double click opens, the arrows move the focus along a line and
  * across the lanes (stepFrom), Tab walks them by depth, then lane. `card` (the same geometry with its labels) and `mini` (no labels) are
- * pictures scaled into `maxWidth`, never larger than drawn; a station with no mark is hollow there, and a `manual` one dashed.
+ * pictures scaled into the width they are given, at most `maxWidth`, never larger than drawn; a station with no mark is hollow, and a
+ * `manual` one dashed.
  */
 export interface LineStationInfo {
   id: string
@@ -106,7 +107,7 @@ watch(
 )
 const scale = computed(() => {
   const { width, height } = layout.value
-  if (props.size !== 'full') return Math.min(1, props.maxWidth / width)
+  if (props.size !== 'full') return Math.min(1, Math.min(box.value.w || props.maxWidth, props.maxWidth) / width)
   if (!box.value.w || !box.value.h) return 1
   return Math.max(0.5, Math.min(1, box.value.w / width, box.value.h / height))
 })
@@ -158,8 +159,8 @@ defineExpose({ fit, focusStation })
 <template>
   <div
     ref="pane"
-    :class="size === 'full' ? 'absolute inset-0 overflow-auto' : 'max-w-full'"
-    :style="size === 'full' ? undefined : { width: `${drawnW}px` }"
+    :class="size === 'full' ? 'absolute inset-0 overflow-auto' : 'w-full'"
+    :style="size === 'full' ? undefined : { maxWidth: `${maxWidth}px` }"
     :data-line-pane="size === 'full' ? '' : undefined"
     :data-line-size="size"
     :data-line-scale="scale.toFixed(3)"

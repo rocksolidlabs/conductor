@@ -113,8 +113,23 @@ type Summary struct {
 	Members   []MemberSummary `json:"members"`
 	// People are the crew's people with their responsibilities, never
 	// their notes; absent for a crew without people.
-	People    []TaskPerson `json:"people,omitempty"`
-	UpdatedAt time.Time    `json:"updatedAt"`
+	People []TaskPerson `json:"people,omitempty"`
+	// Tasks are the shape of a crew with tasks, in the crew's order: each
+	// task's id, member, kind and needs, never its instructions, checks or
+	// owner (the Crews page draws the crew as lines from them); absent for
+	// a crew without. GET /api/crews sends them only when asked
+	// (?tasks=1): a crew's file holds up to 128 of them.
+	Tasks     []TaskShape `json:"tasks,omitempty"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+}
+
+// TaskShape is a task as a Summary lists it: where it stands in the crew's
+// shape, and nothing of what it is told to do.
+type TaskShape struct {
+	ID     string   `json:"id"`
+	Member string   `json:"member"`
+	Kind   string   `json:"kind"`
+	Needs  []string `json:"needs,omitempty"`
 }
 
 // MemberSummary is a member as a Summary lists it: its name, agent and
@@ -134,7 +149,11 @@ func (c Crew) summary() Summary {
 	for _, p := range c.People {
 		people = append(people, TaskPerson{Name: p.Name, Responsibilities: slices.Clone(p.Responsibilities)})
 	}
-	return Summary{ID: c.ID, Name: c.Name, Goal: c.Goal, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, People: people, UpdatedAt: c.UpdatedAt}
+	var tasks []TaskShape
+	for _, t := range c.Tasks {
+		tasks = append(tasks, TaskShape{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs)})
+	}
+	return Summary{ID: c.ID, Name: c.Name, Goal: c.Goal, Cwd: c.Cwd, Where: c.Where, Isolation: c.Isolation, Members: members, People: people, Tasks: tasks, UpdatedAt: c.UpdatedAt}
 }
 
 // Store keeps the saved crews, one file each in crews/ of the data directory,
@@ -360,6 +379,10 @@ func cloneSummaries(sums []Summary) []Summary {
 		page[i].People = slices.Clone(page[i].People)
 		for j := range page[i].People {
 			page[i].People[j].Responsibilities = slices.Clone(page[i].People[j].Responsibilities)
+		}
+		page[i].Tasks = slices.Clone(page[i].Tasks)
+		for j := range page[i].Tasks {
+			page[i].Tasks[j].Needs = slices.Clone(page[i].Tasks[j].Needs)
 		}
 	}
 	return page

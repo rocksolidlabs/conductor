@@ -377,6 +377,20 @@ open deferred item from rounds 1 and 2, then the features below.
   the card
   (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
   `empty-pages.spec.ts`).
+- **A page to connect (#946; the UX review's P18).** A browser that holds
+  no workbench token, or whose token the server refused, sees Connect to
+  Conductor in place of the app: the mark, one sentence, the field (from the
+  token this browser keeps) and Connect, and where the token is
+  (`CONDUCTOR_WORKBENCH_TOKEN`, `workbenchToken`, or the file
+  `workbench-token` in the data directory, whose path the server printed;
+  never the real path). No Cancel: it leaves when a token is given and comes
+  back at the next refusal. The app stays mounted under it, hidden, so an
+  unsaved edit and a session's viewer survive a refusal. In the desktop app
+  it waits for the shell's bridge to answer (`connectShown`). The dialog
+  Workbench token… stays, with Cancel, for the menu, the palette and Set
+  token on an alert (`useTokenDialog`) (`workbenchGate.test.ts`;
+  `connect.spec.ts`, `token-fragment.spec.ts` and the specs that met the
+  ask, through `tokenAsk`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
@@ -8083,11 +8097,20 @@ screen. Nothing said which was the plan and which the thing running.
   changed and, while a run is live, says the run keeps the version it
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
-  (one card per live run: badge, the members as chips in the crew's shape
-  with a status mark each, a line per member that asks with Answer beside it,
-  up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
-  shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
-  alone", where it runs, the last runs as bars, Edit, Launch run).
+  (one card per live run: badge, the run drawn as lines, a line per member
+  that asks with Answer beside it, up time, Stop, Open run) above "Saved
+  crews" (a table: name and goal, the shape in miniature with words such as
+  "5 · a chain of 3, 1 by hand, 1 alone", where it runs, the last runs as
+  bars, Edit, Launch run). Since UX1 PR-34 the shape and the card are the
+  run page's line drawing (`RunLineDiagram`) at two small sizes: the Shape
+  column draws a crew with tasks by its tasks (the list's task shape, `GET
+  /api/crews?tasks=1`) and any other by its members' start rules
+  (`memberNodes`: a member after another needs it), its stations hollow
+  and a member started by hand dashed, at most 150 px wide; a live run's
+  card draws its tasks lit by their states, or its members by theirs, at
+  most 520 px wide with their names. A crew's banner for a live run says
+  the run's one sentence (`runStatusLine`), its icon neutral and its edge
+  amber only while something needs a person.
   `/crews/<id>` is one saved crew with Setup and Runs tabs; `/crews/new` the
   draft of a crew not saved yet (the server never derives the id `new`).
   The summary `GET /api/crews` lists carries the goal now.
