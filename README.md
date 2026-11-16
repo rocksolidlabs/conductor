@@ -109,12 +109,19 @@ typing), **Explorer**, **Changes** and **Commits** (the file browser, the git
 status and the commits since the session started), **Activity** (joins,
 answers, signals and link changes, with the files the agent touched as a
 filter) and **Chat**; each item opens its view, the open one collapses the
-panel to the rail, whose count pills still read. The header names the
-agent, where it runs, the working directory and the git branch, shows a
-**yolo** badge for a session launched with its agent's yolo recipe (see
-[Yolo](#yolo)) and the agent's own session id when Conductor knows it (click
-to copy); an ended session offers **Resume** or **Relaunch** (see
-[Resume and relaunch](#resume-and-relaunch)). A reply typed in a reply bar
+panel to the rail, whose count pills still read. The panel is closed until
+you open a view, so the terminal has the room; the choice is remembered for
+every session, and the rail's toggle opens it on Explorer. The line under
+the name reads the agent (and, for a hosted session, its machine), the
+folder and the git branch, with the whole path as its tooltip; **More**
+copies the session's id and, when Conductor knows it, the agent's own. The
+header shows a **yolo** badge for a session launched with its agent's yolo
+recipe (see [Yolo](#yolo)), and the connection as an icon while it is
+healthy (its kind and round trip on hover) and in words when it is not. On
+a phone, Files, Share and Fullscreen are the first items of **More**, so the
+name stays whole. An ended session offers **Resume** or **Relaunch** (see
+[Resume and relaunch](#resume-and-relaunch)); a link to a session the server
+no longer holds opens on its name with a way to its record in History. A reply typed in a reply bar
 goes in as Conductor types a crew prompt: the text, then Enter on its own a
 quarter of a second later, so that an agent that reads a fast burst as a paste
 still runs it.
@@ -785,8 +792,9 @@ can raise a browser notification, and appear in the Yard's queue. Claude Code's
 dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
 offer their own choices wherever the prompt is shown, read off the dialog as
 it is drawn: a choice that changes the permission mode (auto mode, accept
-edits, bypass permissions) gets no number key and is never the highlighted
-one. A permission question whose dialog the screen does not show (a hosted
+edits, bypass permissions) gets no number key and is never filled. Every
+choice is drawn alike unless the agent itself recommends one, its label
+ending "(Recommended)": that one alone is filled. A permission question whose dialog the screen does not show (a hosted
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 

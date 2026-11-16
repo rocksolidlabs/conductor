@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { agentInitials, filterSessions, groupSessions, homeLeavesFor, initials, listLeavesFor, relativeTime, sessionMeta, sessionWorthOpening, shortCwd } from './sessions'
+import { ApiError } from '~/composables/useApi'
+import { agentInitials, filterSessions, gonePage, groupSessions, homeLeavesFor, initials, listLeavesFor, relativeTime, sessionHeadline, sessionMeta, sessionWorthOpening, shortCwd } from './sessions'
 
 function s(p: Partial<SessionInfo>): SessionInfo {
   return { id: 'x', name: 'n', kind: 'server', agentId: 'claude', command: ['claude'], cwd: '/srv', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: '2026-09-28T10:00:00Z', ...p }
@@ -108,5 +109,42 @@ describe('the home and the list page at each width (#359)', () => {
     expect(listLeavesFor(true, null)).toBe('/')
     expect(homeLeavesFor(true, newer)).toBe('/sessions/r2')
     expect(homeLeavesFor(true, null)).toBe(null)
+  })
+})
+
+describe('sessionHeadline', () => {
+  it('reads agent, folder and branch, the whole path as its title, and no id', () => {
+    const h = sessionHeadline(s({ agentId: 'claude', cwd: '/srv/work/api', branch: 'main', agentSession: { id: 'a1b2c3', source: 'set', resumable: true } }))
+    expect(h).toEqual({ line: 'Claude Code · api · main', title: '/srv/work/api' })
+    expect(h.line).not.toContain('a1b2c3')
+    expect(h.line).not.toContain('server')
+  })
+  it('keeps a hosted session machine in the line and its user and host in the title', () => {
+    const h = sessionHeadline(s({ kind: 'hosted', agentId: 'codex', cwd: '/home/ana/src/web/', hostName: 'build-box', hostUser: 'ana' }))
+    expect(h.line).toBe('Codex on build-box · web')
+    expect(h.title).toBe('/home/ana/src/web/ · ana on build-box')
+  })
+  it('names an agent it does not know by its id, and a Windows folder by its last part', () => {
+    expect(sessionHeadline(s({ agentId: 'pi', cwd: 'C:\\Users\\ana\\repo' })).line).toBe('pi · repo')
+  })
+})
+
+describe('gonePage', () => {
+  const gone = new ApiError(404, 'not_found', 'no such session')
+  it('opens on the record when the server no longer holds the session but kept its record', () => {
+    expect(gonePage(gone, { ok: { name: 'auth-refactor' } })).toEqual({ kind: 'record', name: 'auth-refactor' })
+  })
+  it('says nothing is kept when the record is gone too', () => {
+    expect(gonePage(gone, { failed: new ApiError(404, 'not_found', 'no such record') })).toEqual({ kind: 'forgotten', history: true })
+  })
+  it("gives a record's failed read in its own words, with no way to History where the server keeps none", () => {
+    expect(gonePage(gone, { failed: new ApiError(500, 'internal', 'the journal could not be read') })).toEqual({ kind: 'unread', words: 'the journal could not be read', history: true })
+    expect(gonePage(gone, { failed: new ApiError(404, 'history_unavailable', 'this server keeps no history') })).toEqual({ kind: 'unread', words: 'this server keeps no history', history: false })
+  })
+  it('is no gone page for any other error: the alert stays', () => {
+    expect(gonePage(new ApiError(500, 'internal', 'boom'), { ok: { name: 'x' } })).toBeNull()
+    expect(gonePage(new ApiError(401, 'unauthorized', 'token'), { ok: { name: 'x' } })).toBeNull()
+    expect(gonePage(new ApiError(404, 'history_unavailable', 'x'), { ok: { name: 'x' } })).toBeNull()
+    expect(gonePage(new Error('network'), { ok: { name: 'x' } })).toBeNull()
   })
 })

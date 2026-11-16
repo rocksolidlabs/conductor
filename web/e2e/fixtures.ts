@@ -108,6 +108,8 @@ export interface Session {
   resumedFrom?: string
   /** Launched with its agent's yolo recipe applied. */
   yolo?: boolean
+  /** Its agent reports its turns (a working or a done of its own); missing when it has not. */
+  turns?: boolean
 }
 
 /**

@@ -643,11 +643,14 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   counts, the tracker) and New project (a dialog: key, name, folder with
   `DirInput`, tracker, close policy). `pages/dispatch/[project]/index.vue`:
   the views (`?view=list|board|roadmap`, kept per browser as the run
-  page keeps its view), the filter bar (`DispatchFilters.vue`: status,
-  priority, labels, owner, assignees, milestone, horizon, blocked, a
-  search box), the saved views as chips (`DispatchViewsBar.vue`: save,
-  rename, delete), `DispatchTicketList.vue` (rows: key, title, status,
-  priority, owner, assignees as avatar chips, labels, milestone, updated;
+  page keeps its view), one toolbar (`DispatchFilters.vue`: the view
+  tabs, a search box, Filter, whose popover holds status, priority,
+  labels, owner, assignees, milestone, horizon and blocked, a chip per
+  value in use, the count, Views and the sort; UX1 PR-12), the saved
+  views behind the toolbar's Views button (`DispatchViewsBar.vue`: a menu
+  of the views, save, rename, delete), `DispatchTicketList.vue` (rows:
+  key, title, status, priority, owner, assignees as avatar chips, labels,
+  milestone, updated, each in a column of its own from a 48 rem list;
   `x` selects, the page's palette group offers "Set status of 3
   selected…" and the like, one operation per ticket), `DispatchBoard.vue`
   (a column per status, cards with key, title, priority, labels and
