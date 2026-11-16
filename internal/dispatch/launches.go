@@ -354,18 +354,37 @@ func (t *tx) launchComments(tk Ticket, in []PlanComment) ([]Comment, error) {
 }
 
 // defaultLabel is a launch's label when none is given: the ticket's key
-// and title, cut to MaxLaunchLabel characters at a word.
+// and title, cut to MaxLaunchLabel characters at a word after the key,
+// with an ellipsis when cut (D11).
 func defaultLabel(key, title string) string {
-	s := key + " " + title
-	r := []rune(s)
-	if len(r) <= MaxLaunchLabel {
+	return cutAtWord(key+" "+title, utf8.RuneCountInString(key), MaxLaunchLabel, 0)
+}
+
+// cutAtWord is session.CutAtWord, the one rule for a text cut at a word,
+// copied here since this package imports only ext: s whole when it is at
+// most chars characters and, when bytes is not 0, at most bytes bytes;
+// else cut to chars - 1 characters (and bytes - 3 bytes) at the last
+// space after the first keep characters, the spaces before the cut
+// trimmed, and an ellipsis added. internal/session/testdata/cut-at-word.json
+// holds both copies to the same cases.
+func cutAtWord(s string, keep, chars, bytes int) string {
+	if utf8.RuneCountInString(s) <= chars && (bytes == 0 || len(s) <= bytes) {
 		return s
 	}
-	cut := string(r[:MaxLaunchLabel])
-	if i := strings.LastIndexByte(cut, ' '); i > len(key) {
-		cut = cut[:i]
+	r := []rune(s)
+	r = r[:min(len(r), max(chars-1, 0))]
+	if bytes > 0 {
+		for len(r) > 0 && len(string(r)) > bytes-len("…") {
+			r = r[:len(r)-1]
+		}
 	}
-	return strings.TrimRight(cut, " ")
+	for i := len(r) - 1; i > keep; i-- {
+		if r[i] == ' ' {
+			r = r[:i]
+			break
+		}
+	}
+	return strings.TrimRight(string(r), " ") + "…"
 }
 
 // runSuffix is a run id's last part: 8 hex characters from crypto/rand,

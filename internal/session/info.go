@@ -76,6 +76,11 @@ type Info struct {
 	// hosted session's copy learns it from the reports it carries and from
 	// its host's word (proto.HostAttentionMsg.Turns).
 	Turns bool `json:"turns,omitempty"`
+	// FirstMessage is "waiting" while the line the session was launched
+	// with (POST /api/sessions' message) waits to be typed into its agent,
+	// and "" once it is typed, withdrawn or dropped (SetFirstMessage). The
+	// text itself is never in Info.
+	FirstMessage string `json:"firstMessage,omitempty"`
 	// Kept is the ids of the questions the session keeps without showing
 	// them (the agent's own question while it is set aside, the question a
 	// held turn took the place of), at most MaxKept, read with Attention
