@@ -110,7 +110,7 @@ test('the sidebar row offers the choices, numbered, and a click types one withou
   await answers.locator('[data-row-choice="1"]').click()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('Postgres\n')
   // The prompt clears and the row moves to Running, its buttons gone; the page never left /crews.
-  await expect(row).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
   await expect(row.locator('[data-row-choice]')).toHaveCount(0)
   await expect(page.locator('[data-row-panel]')).toHaveCount(0)
   await expect(page).toHaveURL(/\/crews$/)

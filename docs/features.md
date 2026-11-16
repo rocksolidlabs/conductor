@@ -409,6 +409,19 @@ open deferred item from rounds 1 and 2, then the features below.
   read, the questions still listed. The palette's two groups of what waits
   are one, "Needs you": answer-all, the questions, the decisions as "Answer
   dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
+- **Finished apart from working (UX1 PR-14, #929).** Running splits in two.
+  The sidebar's sections are Needs you, Finished, Working, Shared with you
+  and Exited, in the order of how hard a thing waits on you. Finished holds
+  the agents that ended their turn and wait for your next word, grey,
+  "finished 12m ago", the latest finished first; Working holds the agents in
+  a turn and the agents that send no signal (running, starting), each with
+  its own mark. A host away that asks stays in Needs you; one that does not
+  ask sits in Exited, "host away". A run sits once, in the section of its
+  busiest member, and its line says "started 08:31 · 4 agents · 2 working ·
+  2 finished"; its capsule on the rail reads the same state. Each section is
+  drawn only while it has rows; a fold saved for Running folds Working, and
+  Finished starts unfolded. The palette's Running group is Finished then
+  Working, and its fold actions name the five sections.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -2905,7 +2918,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
 - The counts: Needs you is the one number of what needs you (UX1 PR-13);
-  Running is that section's live sessions; Exited is that section's.
+  Finished and Working are their sections' live sessions; Exited is that
+  section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run
   header offers Share run, Stop run and Open run; a member has its own Share

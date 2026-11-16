@@ -29,6 +29,7 @@ import {
   rowMeta,
   rowState,
   runOpen,
+  sectionOf,
   sectionPreview,
   sessionOpen,
   sidebarBounds,
@@ -217,14 +218,31 @@ describe('the full sidebar\'s width (#437)', () => {
 })
 
 describe('rowState', () => {
-  it('is exited once ended, needs while waiting on input, running while the process runs, idle otherwise', () => {
+  it("is the session's status key: exited once ended, needs while it asks, working in a turn, finished after one, running otherwise", () => {
     expect(rowState(session({ status: 'exited' }))).toBe('exited')
     expect(rowState(session({ status: 'stopped', attention: { state: 'needs_input' } }))).toBe('exited')
     expect(rowState(session({ attention: { state: 'needs_input' } }))).toBe('needs')
     expect(rowState(session({ status: 'starting', attention: { state: 'needs_input' } }))).toBe('needs')
+    expect(rowState(session({ attention: { state: 'working', source: 'api' }, turns: true }))).toBe('working')
+    expect(rowState(session({ attention: { state: 'done', source: 'api' }, turns: true }))).toBe('finished')
     expect(rowState(session({ status: 'running' }))).toBe('running')
-    expect(rowState(session({ status: 'starting' }))).toBe('idle')
-    expect(rowState(session({ status: 'host_disconnected' as SessionInfo['status'] }))).toBe('idle')
+    expect(rowState(session({ status: 'starting' }))).toBe('running')
+  })
+
+  // The UX review's P4: each status key to its section; a host away both ways.
+  it('places each key in its section, Working holding the working, the running and the starting', () => {
+    const at = (over: Partial<SessionInfo>) => sectionOf(rowState(session(over)))
+    expect(at({ attention: { state: 'needs_input' } })).toBe('needs')
+    expect(at({ attention: { state: 'done', source: 'api' }, turns: true })).toBe('finished')
+    expect(at({ attention: { state: 'working', source: 'api' }, turns: true })).toBe('working')
+    expect(at({ status: 'running' })).toBe('working')
+    expect(at({ status: 'starting' })).toBe('working')
+    expect(at({ status: 'exited' })).toBe('exited')
+    // A host away that asks stays in Needs you; one that does not ask is in Exited, said "host away".
+    expect(at({ status: 'host_disconnected' as SessionInfo['status'], attention: { state: 'needs_input' } })).toBe('needs')
+    expect(at({ status: 'host_disconnected' as SessionInfo['status'] })).toBe('exited')
+    const away = sidebarModel([session({ id: 'away', status: 'host_disconnected' as SessionInfo['status'] })])
+    expect((away.exited[0] as SessionRow).exitWord).toBe('host away')
   })
 })
 
@@ -241,7 +259,7 @@ describe('sidebarModel', () => {
     const r1 = run({ members: [member('lead'), member('core'), member('tests', 'codex'), member('review', 'codex-untrusted')] })
     const m = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined))
     expect(ids(m.needs)).toEqual(['r1[review,core,lead]'])
-    expect(ids(m.running)).toEqual(['alone'])
+    expect(ids(m.working)).toEqual(['alone'])
     expect(m.exited).toEqual([])
     const block = m.needs[0] as RunBlock
     expect(block.title).toBe('API sweep')
@@ -252,10 +270,10 @@ describe('sidebarModel', () => {
     expect(block.members[0]!.prompt).toEqual({ message: 'Trust this folder?', options: [], kind: undefined, since: '2026-10-01T09:06:00Z' })
     expect(block.members[2]!.exitWord).toBe('exit 0')
     // The counts: who needs you, the Running section's live sessions, the Exited section's.
-    expect(m.counts).toEqual({ needs: 1, running: 1, exited: 0 })
+    expect(m.counts).toEqual({ needs: 1, finished: 0, working: 1, exited: 0 })
   })
 
-  it('places a wholly exited run in Exited, a run of running members in Running, and names a forgotten run by its crew', () => {
+  it('places a wholly exited run in Exited, a run of running members in Working, and names a forgotten run by its crew', () => {
     const list = [
       session({ id: 'a', crew: { runId: 'r1', crewId: 'docs', member: 'w' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
       session({ id: 'b', crew: { runId: 'r1', crewId: 'docs', member: 'x' }, status: 'stopped', endedAt: '2026-10-01T09:08:00Z' }),
@@ -264,20 +282,21 @@ describe('sidebarModel', () => {
       session({ id: 'e', status: 'exited', endedAt: '2026-10-01T09:09:00Z' }),
     ]
     const m = sidebarModel(list, (id) => (id === 'r2' ? run({ id: 'r2', crewId: 'api', name: 'API', label: 'Monday run', members: [member('lead'), member('core')] }) : undefined))
-    expect(ids(m.running)).toEqual(['r2[c,d]'])
-    expect((m.running[0] as RunBlock).title).toBe('Monday run')
-    expect((m.running[0] as RunBlock).state).toBe('running')
+    // Both members are running (no signal; starting takes its mark): the crew's order.
+    expect(ids(m.working)).toEqual(['r2[d,c]'])
+    expect((m.working[0] as RunBlock).title).toBe('Monday run')
+    expect((m.working[0] as RunBlock).state).toBe('running')
     // A run the server forgot keeps its members in the order they came.
     expect(ids(m.exited)).toEqual(['e', 'r1[a,b]'])
     expect((m.exited[1] as RunBlock).title).toBe('docs')
     expect((m.exited[1] as RunBlock).agents).toBe(2)
-    expect(m.counts).toEqual({ needs: 0, running: 2, exited: 3 })
+    expect(m.counts).toEqual({ needs: 0, finished: 0, working: 2, exited: 3 })
   })
 
   it('tags a hosted session with its machine, under no heading, and never says "server" for it', () => {
     const list = [session({ id: 'h1', kind: 'hosted', hostName: 'priya-mbp' }), session({ id: 'h2', kind: 'hosted', hostName: '' }), session({ id: 'm' })]
     const m = sidebarModel(list)
-    const rows = m.running as SessionRow[]
+    const rows = m.working as SessionRow[]
     expect(rows.map((r) => [r.id, r.machine])).toEqual([
       ['h1', 'priya-mbp'],
       ['h2', 'unnamed host'],
@@ -300,11 +319,69 @@ describe('sidebarModel', () => {
     ]
     const m = sidebarModel(list)
     expect(ids(m.needs)).toEqual(['new', 'old', 'r2[b2]', 'r1[b1]'])
-    expect(ids(m.running)).toEqual(['r-new', 'r-old'])
+    expect(ids(m.working)).toEqual(['r-new', 'r-old'])
   })
 
   it('has empty sections and zero counts for no sessions', () => {
-    expect(sidebarModel([])).toEqual({ needs: [], running: [], exited: [], counts: { needs: 0, running: 0, exited: 0 } })
+    expect(sidebarModel([])).toEqual({ needs: [], finished: [], working: [], exited: [], counts: { needs: 0, finished: 0, working: 0, exited: 0 } })
+  })
+})
+
+// The UX review's P4: Finished apart from Working, in the order of how hard a thing waits on you.
+describe('sidebarModel: Finished apart from Working (UX1 PR-14)', () => {
+  const ids = (items: readonly SidebarItem[]) => items.map((it) => (it.kind === 'run' ? `${it.runId}[${it.members.map((m) => m.id).join(',')}]` : it.id))
+  const at = (m: number) => `2026-10-01T09:${String(m).padStart(2, '0')}:00Z`
+  const working = (id: string, over: Partial<SessionInfo> = {}) => session({ id, turns: true, attention: { state: 'working', source: 'api', since: at(1) }, ...over })
+  const done = (id: string, m: number, over: Partial<SessionInfo> = {}) => session({ id, turns: true, attention: { state: 'done', source: 'api', since: at(m) }, ...over })
+  const crew = (runId: string, member: string) => ({ crew: { runId, crewId: 'c', member } })
+
+  it('gives the sections in their order, Finished the latest finished first', () => {
+    const m = sidebarModel([
+      session({ id: 'asks', attention: { state: 'needs_input', since: at(2) } }),
+      done('early', 3),
+      done('late', 9),
+      working('busy'),
+      session({ id: 'quiet' }),
+      session({ id: 'gone', status: 'exited', endedAt: at(4) }),
+    ])
+    expect(Object.keys(m).filter((k) => k !== 'counts')).toEqual(['needs', 'finished', 'working', 'exited'])
+    expect(ids(m.needs)).toEqual(['asks'])
+    expect(ids(m.finished)).toEqual(['late', 'early'])
+    expect(ids(m.working).sort()).toEqual(['busy', 'quiet'])
+    expect(ids(m.exited)).toEqual(['gone'])
+    expect(m.counts).toEqual({ needs: 1, finished: 2, working: 2, exited: 1 })
+  })
+
+  it('places a run of two working and two finished in Working once, its subtitle saying so', () => {
+    const r1 = run({ members: [member('a'), member('b'), member('c'), member('d')] })
+    const m = sidebarModel([working('a', crew('r1', 'a')), done('b', 5, crew('r1', 'b')), working('c', crew('r1', 'c')), done('d', 6, crew('r1', 'd'))], (id) => (id === 'r1' ? r1 : undefined))
+    expect(ids(m.working)).toEqual(['r1[a,c,b,d]'])
+    expect(m.finished).toEqual([])
+    const block = m.working[0] as RunBlock
+    expect(blockSubtitle(block)).toBe(`started ${new Date('2026-10-01T08:31:00Z').toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })} · 4 agents · 2 working · 2 finished`)
+    // Its capsule on the rail says the same key as the section that holds it.
+    expect(railModel(m, [], {}).items[0]!.status?.key).toBe('working')
+    expect(m.counts.working).toBe(4)
+  })
+
+  it('places a run of finished members in Finished, its capsule finished too', () => {
+    const r1 = run({ members: [member('a'), member('b')] })
+    const m = sidebarModel([done('a', 5, crew('r1', 'a')), done('b', 6, crew('r1', 'b'))], (id) => (id === 'r1' ? r1 : undefined))
+    expect(ids(m.finished)).toEqual(['r1[a,b]'])
+    expect(m.working).toEqual([])
+    expect(railModel(m, [], {}).items[0]!.status?.key).toBe('finished')
+    // A run with a member that sends no signal is in Working: its busiest member is running.
+    const mixed = sidebarModel([done('a', 5, crew('r1', 'a')), session({ id: 'b', ...crew('r1', 'b') })], (id) => (id === 'r1' ? r1 : undefined))
+    expect(ids(mixed.working)).toEqual(['r1[b,a]'])
+    expect(railModel(mixed, [], {}).items[0]!.status?.key).toBe('running')
+  })
+
+  it('lists the focus rows Finished before Working, none from a folded one', () => {
+    const m = sidebarModel([working('w'), done('f', 5)])
+    expect(focusRows(m, [], DEFAULT_FOLDS).map((r) => r.id)).toEqual(['s:f', 's:w'])
+    expect(focusRows(m, [], { ...DEFAULT_FOLDS, finished: true }).map((r) => r.id)).toEqual(['s:w'])
+    expect(sectionPreview(m.finished)).toEqual(['finished'])
+    expect(sectionPreview(m.working)).toEqual(['working'])
   })
 })
 
@@ -328,7 +405,7 @@ describe('sidebarModel with the one list of what needs you (UX1 PR-13)', () => {
     const task = inboxNeed('task', 'task:r1/build', T13(3), 'r1')
     const m = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined), [task])
     expect(ids(m.needs)).toEqual(['r1[i:task:r1/build,lead,core]'])
-    expect(ids(m.running)).toEqual(['alone'])
+    expect(ids(m.working)).toEqual(['alone'])
     const block = m.needs[0] as RunBlock
     expect(block.state).toBe('needs')
     expect(block.needs).toBe(1)
@@ -338,7 +415,7 @@ describe('sidebarModel with the one list of what needs you (UX1 PR-13)', () => {
     expect(blockRows(block, 'needs')).toEqual({ members: [], more: { count: 2, words: 'and 2 more · 2 working' } })
     // Without the list the run is in Running, with no item rows.
     const before = sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined))
-    expect(ids(before.running)).toEqual(['alone', 'r1[lead,core]'])
+    expect(ids(before.working)).toEqual(['alone', 'r1[lead,core]'])
     expect(before.needs).toEqual([])
   })
 
@@ -354,7 +431,7 @@ describe('sidebarModel with the one list of what needs you (UX1 PR-13)', () => {
     const block = m.needs[0] as RunBlock
     expect(block.members.map((x) => x.state)).toEqual(['exited', 'exited'])
     expect(block.stoppedAt).toBe(T13(6))
-    expect(m.counts).toEqual({ needs: 1, running: 0, exited: 0 })
+    expect(m.counts).toEqual({ needs: 1, finished: 0, working: 0, exited: 0 })
   })
 
   it('lists a plan, and a decision whose run the store does not hold, as loose rows, newest first beside the questions', () => {
@@ -411,7 +488,7 @@ describe('sidebarModel with the one list of what needs you (UX1 PR-13)', () => {
     expect(rail.needs).toBe(1)
     // Without the item the capsule is the members' alone.
     const quiet = railModel(sidebarModel(list, (id) => (id === 'r1' ? r1 : undefined)), [], {})
-    expect(quiet.items[0]).toMatchObject({ amber: false, state: 'running' })
+    expect(quiet.items[0]).toMatchObject({ amber: false, state: 'working' })
   })
 })
 
@@ -437,15 +514,17 @@ describe('sectionPreview', () => {
     ])
     // Each state of the status table gives its own key: the folded squares are StatusMarks of these.
     expect(sectionPreview(m.needs).sort()).toEqual(['exited', 'finished', 'needs', 'needs', 'running', 'working'])
-    expect(sectionPreview(Array.from({ length: 9 }, (_, i) => sidebarModel([session({ id: String(i) })]).running[0]!))).toHaveLength(6)
+    expect(sectionPreview(Array.from({ length: 9 }, (_, i) => sidebarModel([session({ id: String(i) })]).working[0]!))).toHaveLength(6)
   })
 })
 
 describe('folds', () => {
   it('starts with Exited folded and the rest open, and reads what was saved, field by field', () => {
-    expect(DEFAULT_FOLDS).toEqual({ needs: false, running: false, shared: false, exited: true })
+    expect(DEFAULT_FOLDS).toEqual({ needs: false, finished: false, working: false, shared: false, exited: true })
     expect(readFolds(memory())).toEqual(DEFAULT_FOLDS)
-    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: true, exited: false }) }))).toEqual({ needs: false, running: true, shared: false, exited: false })
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ working: true, finished: true, exited: false }) }))).toEqual({ needs: false, finished: true, working: true, shared: false, exited: false })
+    // A fold saved for Running, before it split, folds Working; Finished starts unfolded.
+    expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: true, exited: false }) }))).toEqual({ needs: false, finished: false, working: true, shared: false, exited: false })
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: JSON.stringify({ running: 'yes', other: true }) }))).toEqual(DEFAULT_FOLDS)
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '{not json' }))).toEqual(DEFAULT_FOLDS)
     expect(readFolds(memory({ [SIDEBAR_FOLDS_KEY]: '[]' }))).toEqual(DEFAULT_FOLDS)
@@ -454,7 +533,7 @@ describe('folds', () => {
 
   it('writes the folds and never throws', () => {
     const s = memory()
-    const folds: Folds = { needs: true, running: false, shared: true, exited: true }
+    const folds: Folds = { needs: true, finished: false, working: true, shared: true, exited: true }
     writeFolds(s, folds)
     expect(readFolds(s)).toEqual(folds)
     expect(() => writeFolds(broken, folds)).not.toThrow()
@@ -484,7 +563,7 @@ describe('focusRows and moveFocus', () => {
     expect(rows[0]).toEqual({ id: 's:a', kind: 'session', sessionId: 'a', runId: undefined, options: 1 })
     expect(rows[2]).toEqual({ id: 's:b', kind: 'session', sessionId: 'b', runId: 'r1', options: 0 })
     expect(focusRows(m, shared, DEFAULT_FOLDS).map((r) => r.id)).toEqual(['s:a', 'r:r1', 's:b', 's:c', 'j:j1'])
-    expect(focusRows(m, shared, { needs: true, running: true, shared: true, exited: true })).toEqual([])
+    expect(focusRows(m, shared, { needs: true, finished: true, working: true, shared: true, exited: true })).toEqual([])
   })
 
   // Codex's round 1 on #719: Needs you's decisions are rows a key lands on, so Tab or ↓ onto one moves the list's focus there and
@@ -537,8 +616,8 @@ describe('blockRows', () => {
   })
 
   it('shows every member elsewhere, once unfolded, and when none or all of them ask', () => {
-    expect(blockRows(three, 'running').members.map((m) => m.id)).toEqual(['review', 'lead', 'docs'])
-    expect(blockRows(three, 'running').more).toBeUndefined()
+    expect(blockRows(three, 'working').members.map((m) => m.id)).toEqual(['review', 'lead', 'docs'])
+    expect(blockRows(three, 'working').more).toBeUndefined()
     expect(blockRows(three, 'needs', true)).toEqual({ members: three.members })
     const calm = { members: three.members.filter((m) => m.state !== 'needs') }
     expect(blockRows(calm, 'needs')).toEqual({ members: calm.members })
@@ -572,7 +651,7 @@ describe('narrowSidebar and panelRow', () => {
     session({ id: 'm', crew: { runId: 'r1', crewId: 'c', member: 'm' } }),
   ])
   const rows = new Map<string, SessionRow | RunBlock>()
-  for (const it of [...m.needs, ...m.running]) {
+  for (const it of [...m.needs, ...m.finished, ...m.working]) {
     if (it.kind === 'run') {
       rows.set(`r:${it.runId}`, it)
       for (const x of it.members) rows.set(`s:${x.id}`, x)
@@ -638,9 +717,9 @@ describe('railModel', () => {
     expect(rail.items.map((i) => `${i.shape}:${i.id}:${i.state}${i.dashed ? ':dashed' : ''}${i.tile ? ':' + i.tile : ''}${i.news ? ':news' + i.news : ''}`)).toEqual([
       'square:c:needs',
       'capsule:run:r1:needs',
-      'square:a:running:news1',
-      'square:h:idle:machine',
-      'square:j:j1:idle:share',
+      'square:a:finished:news1',
+      'square:h:running:machine',
+      'square:j:j1:running:share',
       'capsule:run:r2:exited:dashed',
     ])
     const capsule = rail.items[1]!

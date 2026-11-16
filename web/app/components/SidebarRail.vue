@@ -7,7 +7,7 @@ import { needsCount } from '~/utils/needsYou'
  * then how many have new events), Launch, a search button that opens the
  * full sidebar on its filter, then every session as a square and every run
  * as a capsule with its sessions inside, the play icon amber while one needs
- * you, in the list's order: needs you, running, shared, exited. Loose exited
+ * you, in the list's order: needs you, finished, working, shared, exited. Loose exited
  * sessions fold into +N, which opens the full sidebar on Exited. The mark,
  * the pages, the menus and the expand button are the layout's header and
  * footer.

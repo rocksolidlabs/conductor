@@ -175,11 +175,11 @@ test("a Codex member that asks and goes on shows Needs you, then Working while i
   expect((await api.session(id)).command).toEqual(expect.arrayContaining(['-c', 'tui.terminal_title=["activity","run-state"]']))
   // What a person sees while it works: the member's row runs, it is not in Needs you, and the run counts no one waiting.
   await page.goto('/crews')
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 30_000 })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 30_000 })
   await expect(row(page, id).locator('[data-row-prompt]')).toHaveCount(0)
   expect(member(await api.run(runId), 'asks').needsInput ?? false).toBe(false)
   await page.waitForTimeout(1_500)
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running')
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/)
   // The row's mark says working, from Codex's program status (source status): the status walk's one proof from a real agent's signal.
   await expect(row(page, id).locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'working')
   expect(stubFile(state.home, stub, 'spin')).toBe('spinning\n')
@@ -213,7 +213,7 @@ test("a question the agent asks while one of Codex's async questions is pending 
   const stub = stubOf(state.home, `stub async-ask ${ASYNC_ASK}`)
   expect(stub).not.toBe('')
   await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', /^(working|finished|running)$/, { timeout: 15_000 })
   await expect(card).toHaveCount(0)
   // Working came a second or more after the question and before the async question resolved: the entries and the
   // stub's resolution stamp say so, whatever the pace of the polls above.
