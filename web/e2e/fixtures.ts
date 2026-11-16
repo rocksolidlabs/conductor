@@ -373,7 +373,7 @@ export function budget(ms: number) {
   info.setTimeout(info.timeout + ms)
 }
 
-/** The day (day.ts) this worker holds once a test asked for it: dayPage's server when none is given. */
+/** The day (day.ts) of the running test, set only while its `day` fixture is in use: dayPage's server when none is given. */
 let today: Day | undefined
 /** The contexts dayPage opened in the running test: closed at its end, before the day's guard reads the server. */
 const dayContexts = new Set<BrowserContext>()
@@ -460,7 +460,8 @@ export async function useTheme(page: Page, theme: 'dark' | 'light', ready?: stri
 export const DAY_RUNS_END_MS = 30_000
 export const DAY_SESSIONS_END_MS = 15_000
 export const DAY_SERVER_END_MS = 15_000
-const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_SERVER_END_MS
+/** The bound of a day's start and end together: the worker fixture's, and a guard test's day of its own. */
+export const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_SERVER_END_MS
 
 export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { state: E2EState; dayServer: Day }>({
   state: [
@@ -475,28 +476,28 @@ export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { 
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
       const d = await startDay()
-      today = d
       try {
         await use(d)
       } finally {
-        today = undefined
         await d.end()
       }
     },
     { scope: 'worker', timeout: DAY_WORKER_MS },
   ],
-  // The day, read-only: after the test, the contexts dayPage opened are closed, anything on the server no part made is ended and
-  // fails the test by name, and so does any item of a built part no longer as that part promised it (day.ts, check).
+  // The day, read-only, and dayPage's server while the test runs (never after it, nor for a test that did not ask for it). After
+  // the test the contexts dayPage opened are closed, then the guard (day.ts, guard) fails the test naming what it left (sessions,
+  // runs and inbox items are ended first), what of Dispatch, the crews and the links it changed, and any part's item it changed.
   day: async ({ dayServer }, use) => {
-    await use(dayServer)
-    await closeDayContexts()
-    const left = await dayServer.leftovers()
-    if (left.length) {
-      await dayServer.endLeftovers(left)
-      throw new Error(`the test left on the day's server what no part made (ended now): ${left.map((l) => l.words).join('; ')}`)
+    today = dayServer
+    try {
+      await use(dayServer)
+    } finally {
+      today = undefined
     }
-    const changed = await dayServer.check()
-    if (changed.length) throw new Error(`the test changed the day: ${changed.join('; ')}`)
+    await closeDayContexts()
+    const { left, problems } = await dayServer.guard()
+    if (left.length) await dayServer.endLeftovers(left)
+    if (problems.length) throw new Error(`the test left or changed on the day's server what no part made: ${problems.join('; ')}`)
   },
   dayPagesClosed: [
     // eslint-disable-next-line no-empty-pattern

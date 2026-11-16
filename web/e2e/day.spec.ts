@@ -1,8 +1,8 @@
 import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { budget, dayPage, expect, task, test, type Session } from './fixtures'
-import { BUSY_LIVE, DAY_STEP_MS, LONG_LABEL, LONG_NAME, LONG_TITLE, STATES, TICKETS, type Day } from './day'
+import { budget, DAY_WORKER_MS, dayPage, expect, task, test, type Session } from './fixtures'
+import { BUSY_LIVE, DAY_STEP_MS, letGo, LONG_LABEL, LONG_NAME, LONG_TITLE, startDay, STATES, TICKETS, type Day } from './day'
 
 // The seeded day proves itself through the API (UX1's PR-1, docs/plans/ux-review.md, the chapter Tests): each part holds what it
 // promises, read by name; the states hold once a page has attached every session; the `day` fixture's guard names what a test left
@@ -87,8 +87,8 @@ test("the day's states hold once a page of the Yard has attached every live sess
   expect(await day.check()).toEqual([])
 })
 
-test("the guard: what a test makes on the day is named until it is removed, and a day's item changed is named at the change", async ({ day }) => {
-  const n = await day.part('states')
+test('the guard: what a test makes on the day is named until it is removed', async ({ day }) => {
+  await day.part('states')
   const mine = await day.api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e day guard' })
   const named = async () => (await day.leftovers()).filter((l) => l.id === mine.id).map((l) => l.kind)
   expect(await named()).toEqual(['session'])
@@ -100,13 +100,6 @@ test("the guard: what a test makes on the day is named until it is removed, and 
   await day.api.stopSession(mine.id)
   await expect.poll(() => day.statusOf(mine.id), { message: 'the guard session is removed' }).toBe('gone')
   expect(await named()).toEqual([])
-
-  // A day's session changed through the API is named by the reread; set back, it is not.
-  const finished = n['flaky-vim-spec']!
-  await day.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'working' })
-  expect((await day.check()).join('\n')).toContain(`flaky-vim-spec (${finished}) is running with attention working where running with attention done was promised`)
-  await day.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'done', message: 'set back' })
-  await expect.poll(() => day.check(), { message: 'the day reads as promised again' }).toEqual([])
 })
 
 test('dayPage opens the theme and the touch it is asked for', async ({ day, browser }) => {
@@ -120,6 +113,109 @@ test('dayPage opens the theme and the touch it is asked for', async ({ day, brow
   expect(await phone.evaluate(touch)).toEqual([true, true])
   const desk = await dayPage(browser, { width: 1440, height: 900 })
   expect(await desk.evaluate(touch)).toEqual([false, false])
+})
+
+// After a test that used the day, in the same worker: a page on the day is only for a test that asks for it.
+test('dayPage in a test that did not ask for the day has no server, whatever ran before it', async ({ browser }) => {
+  await expect(dayPage(browser, { path: '/' })).rejects.toThrow("dayPage: no server: ask for the `day` fixture (the day's server), or give `server`")
+})
+
+test("letGo ends the held turn of a session the test made, and the session is the test's to remove", async ({ day }) => {
+  const mine = await day.api.ok<Session>('POST', '/api/sessions', { agentId: 'day-working', name: 'e2e let go' })
+  budget(DAY_STEP_MS)
+  await expect.poll(async () => (await day.api.session(mine.id)).attention?.state, { timeout: DAY_STEP_MS, message: 'the held turn shows' }).toBe('working')
+  const s = await letGo(day.server, mine.id)
+  expect([s.status, s.attention?.state, s.attention?.message]).toEqual(['running', 'done', 'a held turn, let go'])
+  await day.api.stopSession(mine.id)
+  await expect.poll(() => day.statusOf(mine.id), { message: 'the session ends' }).toBe('stopped')
+  await day.api.stopSession(mine.id)
+  await expect.poll(() => day.statusOf(mine.id), { message: 'the session is removed' }).toBe('gone')
+})
+
+// The guard's own proofs leave on a day what the shared day must never hold, so each runs on a day of its own, started for the test
+// and ended after it: the shared day is never changed by them. Each leaves one thing and reads what the `day` fixture would judge
+// at its end (guard), which must name it.
+const own = test.extend<{ own: Day }>({
+  // eslint-disable-next-line no-empty-pattern
+  own: async ({}, use) => {
+    budget(DAY_WORKER_MS)
+    const d = await startDay('day-guard')
+    try {
+      await use(d)
+    } finally {
+      await d.end()
+    }
+  },
+})
+
+/** What the guard names on the day, one line each. */
+async function judged(d: Day): Promise<string> {
+  return (await d.guard()).problems.join('\n')
+}
+
+own('the guard names a Dispatch person and project a test made before Dispatch was built, a part built after them', async ({ own }) => {
+  await own.api.ok('POST', '/api/dispatch/people', { opId: 'e2e-guard-person', name: 'Ana' })
+  await own.api.ok('POST', '/api/dispatch/projects', { opId: 'e2e-guard-project', key: 'CND', name: 'Conductor', closeRequires: [] })
+  await own.part('states')
+  const words = await judged(own)
+  expect(words).toContain("person Ana is not the day's")
+  expect(words).toContain("project CND is not the day's")
+})
+
+own('the guard names a ticket made in another project than CND', async ({ own }) => {
+  await own.part('dispatch')
+  await own.api.ok('POST', '/api/dispatch/tickets', { opId: 'e2e-guard-ops', project: 'OPS', title: 'A ticket of the test', owner: 'Ana' })
+  expect(await judged(own)).toContain("ticket OPS-1 is not the day's")
+})
+
+own("the guard names a day's ticket moved to another status", async ({ own }) => {
+  await own.part('dispatch')
+  const rev = (await own.api.ok<{ ticket: { rev: number } }>('GET', '/api/dispatch/tickets/CND-2')).ticket.rev
+  await own.api.ok('POST', '/api/dispatch/tickets/CND-2/edit', { opId: 'e2e-guard-status', expectedRev: rev, set: { status: 'ready' } })
+  expect(await judged(own)).toMatch(/ticket CND-2 is \{[^\n]*"status":"ready"[^\n]* where the day left \{[^\n]*"status":"backlog"/)
+})
+
+own('the guard names a label added to CND', async ({ own }) => {
+  await own.part('dispatch')
+  await own.api.ok('POST', '/api/dispatch/projects/CND/labels', { opId: 'e2e-guard-label', name: 'g14', color: 'red' })
+  expect(await judged(own)).toContain("label CND/g14 is not the day's")
+})
+
+own("the guard names CND-1's approved plan withdrawn", async ({ own }) => {
+  const plan = (await own.part('dispatch'))['plan:CND-1']!
+  await own.api.ok('POST', `/api/dispatch/plans/${plan}/withdraw`, { opId: 'e2e-guard-withdraw' })
+  const words = await judged(own)
+  expect(words).toMatch(/plan CND-1\/1 is \{[^\n]*"withdrawn":true[^\n]* where the day left \{[^\n]*"withdrawn":false/)
+  expect(words).toContain('dispatch: CND-1 revision 1 is withdrawn where approved, fresh was promised')
+})
+
+own('the guard names a crew made and not launched', async ({ own }) => {
+  const body = { name: 'e2e guard crew', goal: 'g', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: null, members: [{ name: 'a', agentId: 'plain', prompt: '', start: { when: 'manual' } }] }
+  const id = (await own.api.ok<{ crew: { id: string } }>('POST', '/api/crews', body)).crew.id
+  expect(await judged(own)).toContain(`crew e2e guard crew (${id}) is not the day's`)
+})
+
+own("the guard names a share link minted on a day's session", async ({ own }) => {
+  const driver = (await own.part('states')).driver!
+  await own.api.ok('POST', `/api/sessions/${driver}/links`, { role: 'view' })
+  expect(await judged(own)).toMatch(new RegExp(`share link \\S+ of session driver \\(${driver}\\) is not the day's`))
+})
+
+own("the guard names a session started in one of the day's runs, whichever parts are built", async ({ own }) => {
+  const run = (await own.part('long'))['Long label']!
+  await own.api.ok('POST', `/api/runs/${run}/members/idle/start`)
+  const { left } = await own.guard()
+  expect(left.map((l) => l.words).join('\n')).toMatch(new RegExp(`session \\S+ \\(\\S+, running, of run ${run}\\)`))
+})
+
+own("the guard names a day's finished session marked working and set back by the operator: its attention whole is not the day's", async ({ own }) => {
+  const finished = (await own.part('states'))['flaky-vim-spec']!
+  await own.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'working' })
+  expect(await judged(own)).toContain(`flaky-vim-spec (${finished}) is running with attention working where running with attention done was promised`)
+  await own.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'done', message: 'set back' })
+  // The state is the promised one again; the attention is the operator's, not the agent's the part saw.
+  expect((await own.api.session(finished)).attention?.state).toBe('done')
+  expect(await judged(own)).toMatch(new RegExp(`flaky-vim-spec \\(${finished}\\)'s attention is \\{"state":"done","source":"admin"[^\\n]*"message":"set back"[^\\n]* where the day saw \\{"state":"done","source":"api"`))
 })
 
 // To look at the day by hand: CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open. It builds the whole day, prints its

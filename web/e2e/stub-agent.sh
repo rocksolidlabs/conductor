@@ -150,8 +150,11 @@
 # then reads lines as ever; `working` draws its prompt, reports the turn's
 # start and holds it, reading nothing more (a line typed meanwhile, a run's
 # task, waits in the terminal), until $HOME/.stub-sessions/<id>.hold says
-# `stop`: the stub writes `hold` into it first, and a test or the day's end
-# writes `stop`. Then it reports the turn's end and reads lines as ever.
+# `stop`, <id> being the stub's own session id (the server lists it as the
+# session's agentSession.id; never the session's id on the server): the
+# stub writes `hold` into it first, and a test (letGo in web/e2e/day.ts) or
+# the day's end writes `stop`. Then it reports the turn's end and reads
+# lines as ever.
 set -euo pipefail
 
 identity=${STUB_IDENTITY:-stub}

@@ -106,15 +106,32 @@ exited), `dispatch` (projects CND and OPS, fourteen tickets), `waiting`
 tasks, Release notes succeeded), `long` (a name, a label and a title at
 their bounds) and `busy` (all of them, and eighteen live sessions). The stub
 holds its states with no timer (`STUB_TURN`, a question, a check that exits
-1). Two rules: the day is read-only, and the `day` fixture ends and fails
-the test that leaves a session, a run or an inbox item of its own on it or
-changes a part's item; a measure of how much fits is made on `busy`, so that
-it measures the same page whatever ran before it. The whole day builds in
-about 16 s on CI's runner (the first test that asks for `busy`, 2026-11-15)
-and about 20 s on the 64-core Linux box; the e2e job took 60 minutes with it,
-against 56 to 67 on `main` that day, before the shards. Each shard that asks
-for the day builds its own (a shard is a run with a worker of its own). To
-look at it by hand,
+1). Two rules: the day is read-only, and a measure of how much fits is made
+on `busy`, so that it measures the same page whatever ran before it. The
+`day` fixture holds the first at each test's end (`guard` in `day.ts`): it
+ends and names a session (one started in a day's run too), a run or an
+inbox item no part made; it names what of Dispatch (people, projects,
+labels, milestones, saved views, every project's tickets with their status,
+labels, owner, priority, assignees and revision, each plan's state), the
+crews and the share links differs from a snapshot taken when the day's
+server starts, with each part's build applied (about fifty reads, under a
+second); and it rereads every built part, a session's attention whole. Not
+guarded: a browser context opened by hand (not `dayPage`) and left
+attached, which views until the worker ends (viewers come and go with
+every page, so the guard counts none; `dayPage`'s are closed before it);
+what is typed into a day session's terminal and its screen, which the API
+does not list (a line into a finished session starts a turn, which is
+named); a ticket's comments, attachments and links, which the ticket list
+does not carry (one that moves the ticket's revision is named); the
+activity log and history, which every test that looks at the day appends
+to; and the server's settings, catalog, webhooks and alert rules and the
+day's repository's files and branches, which no spec on the day may
+write (a spec that must starts a server of its own, `ownServer`).
+`dayPage` opens the day only in a test that asked for `day`. A shard that asks for the day builds its own (a shard is a run
+with a worker of its own): on CI's runner `busy` takes about 17 s,
+`waiting` alone about 8 s (2026-11-15), and `day.spec.ts`'s proofs of the
+guard start nine days of their own, about 25 s in all. To look at it by
+hand,
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.
