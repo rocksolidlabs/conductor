@@ -34,7 +34,7 @@ function send() {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2" :class="big ? 'flex-col items-stretch pl-2 pt-1' : 'pl-10'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
+  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2.5" :class="big ? 'flex-col items-stretch pl-2 pt-1' : 'pl-2.5'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
     <!-- A durable decision's question takes no reply here: the row says where it is answered (noReply). -->
     <p v-if="prompt.decision" class="text-xs text-muted" data-row-decision>{{ prompt.placeholder }}</p>
     <template v-else-if="prompt.choices.length">

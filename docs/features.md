@@ -244,11 +244,15 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
-  16.75 rem (268 px) on every screen, which shows its header's every part
-  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
-  drag on its edge widens it up to 26 % of the window, never less than the
-  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
+- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
+  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
+  UX review's P5): its header is the mark, "Conductor" and your menu, about
+  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
+  `accountActions`, which the phone's More and the palette show). A drag on
+  its edge widens it up to 26 % of the window, never less than the minimum
+  plus 5 rem (280 px, the width at which a row shows its question whole) and
+  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
