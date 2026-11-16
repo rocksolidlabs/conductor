@@ -23,9 +23,11 @@ const folds = useSidebarFolds()
 const unread = useChatUnread()
 const now = useNow()
 
-const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf), joined.list.value, events.marks.value, unread.counts.value, now.value))
-// The top count is the one number of what needs you (useNeedsYou), the nav's: nothing while it is not known.
+// The one list of what needs you (useNeedsYou): the rail is drawn from the full sidebar's model, its runs' decisions and tasks among
+// it, so a run that waits on one is amber here as it is in Needs you. The top count is its one number, the nav's: nothing while it
+// is not known.
 const needs = useNeedsYou()
+const rail = computed(() => railModel(sidebarModel(attention.sessions.value, attention.runOf, needs.items.value), joined.list.value, events.marks.value, unread.counts.value, now.value))
 const needsShown = computed(() => (needs.number.value ? needsCount(needs.list.value) : ''))
 const needsDot = computed(() => needsDotShown(events.routes.value))
 

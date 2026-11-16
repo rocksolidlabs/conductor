@@ -562,9 +562,11 @@ open deferred item from rounds 1 and 2, then the features below.
   `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
-  line (its first paragraph as text, `descriptionLine` in
-  `web/app/utils/markdown.ts`; "Add a description of CND…" opens the
-  editor), the tracker's link and About at its end, the whole description
+  line (its first paragraph as text, else its first text of any kind,
+  `descriptionLine` in `web/app/utils/markdown.ts`; only for an empty
+  description "Add a description of CND…", which opens the editor), the
+  tracker's link (its icon alone on a phone) and About at its end, the
+  whole description
   opened in place under it and remembered per browser
   (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
   "shown" starts at the line). Then one toolbar: the List, Board and
@@ -3298,8 +3300,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
   apply). Since the UX review's PR-11 the rows are a table, state, task,
-  who, what and actions each read straight down (two lines a row under
-  48 rem): the state said once, the attempt once (in the words when they
+  who, what and actions each read straight down (under 48 rem a row is
+  two lines, and its actions a line of their own below them): the state
+  said once, the attempt once (in the words when they
   name it, else "attempt N" past the first), the owner only when the task
   names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
   menu, so nothing in a row at rest is red. The selected task, kept in the
