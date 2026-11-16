@@ -50,7 +50,8 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
 ## Working an issue
 
 GitHub Issues are the backlog; the Project board is a view of them. One
-issue, one branch, one pull request, and CI is the only gate. The
+piece of work, one branch, one pull request, and CI is the only gate: the
+piece is an issue, or a bundle of related issues (below). The
 maintainers are the owners of the `rocksolidlabs` GitHub organization
 (`CONTRIBUTING.md`, Who decides); they merge and decide. The assignment,
 branch-on-origin and Project board bullets below are the maintainers' and
@@ -59,11 +60,31 @@ follows `CONTRIBUTING.md`'s fork path, and a maintainer assigns the issue
 and moves the board for them.
 
 - Take the issue you were given, or else the top unassigned issue labelled
-  `ready`. Assign yourself. Never hold two open issues at once.
+  `ready`. Assign yourself. Never hold two open issues at once; a bundle's
+  issues count as one.
 - Work on the branch `issue-N`, cut from `main` and linked to the issue
   (`gh issue develop N --name issue-N`), in a worktree of its own. The
   branch on origin is the claim: one that already exists is someone's work,
   so ask before touching it.
+- **Related work is one pull request, a bundle.** The rows of a plan, the
+  issues of one feature, and several small features or fixes that touch no
+  boundary are built at the same time on one branch (named for the first
+  of its issues; builders in worktrees of their own feed it) and land as
+  one pull request: `Fixes #N` once for each issue, and each issue's
+  commits a series of their own, so that one can be reverted alone. No
+  pull request, no review round and no by-hand check per row. One review
+  of the whole at the end: a defect a person would hit and any security
+  defect are fixed in the pull request (a bug in the stream is fixed in
+  the stream, below); a finding that is neither is filed or dropped, not
+  chased through more rounds; a second round is for a boundary only.
+  (2026-11-16: a stream of 41 rows was cut into 41 pull requests, each
+  with review rounds and checks of its own; three had merged after a
+  night.)
+- **Kept out of a bundle:** a change at a boundary (sign-in, tokens,
+  links, who may answer or act, the host link) gets a pull request of its
+  own, or a part of a bundle that is its own with an adversarial review of
+  its own; a fix people are hitting now ships alone and at once; a ledger
+  migration ships alone, so that it can be reverted alone.
 - Open a draft PR at the first commit, and tick the template's checklist.
   `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
   body which agent or person made it, with a session link when there is one.

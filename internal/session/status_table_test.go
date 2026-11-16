@@ -47,6 +47,10 @@ type statusStep struct {
 		Message string         `json:"message,omitempty"`
 		Kind    string         `json:"kind,omitempty"`
 		Options []Option       `json:"options,omitempty"`
+		// TurnID is the agent's name for the turn the report belongs
+		// to (SetAttentionTurn), as Codex's hooks and notify program
+		// name it.
+		TurnID string `json:"turnId,omitempty"`
 	} `json:"report,omitempty"`
 	Enter  bool   `json:"enter,omitempty"`
 	Answer string `json:"answer,omitempty"`
@@ -80,8 +84,10 @@ func readStatusTable(t *testing.T) statusTable {
 // rung on the terminal, a window title by the title's rules, a hook's or
 // an operator's through the API. A row named "limit:" holds a limit that
 // docs/protocol.md states (A turn's start and end) as it stands, as
-// "limit: the same end told twice, an Enter between" holds the sentence
-// on an agent that reports one turn's end twice with the same words.
+// "limit: the same end told twice, no turn named, an Enter between" holds
+// the sentence on a report that names no turn (a hook an earlier release
+// wrote); a report that names its turn (turnId) goes in as the attention
+// route takes it.
 func TestTheStatusTable(t *testing.T) {
 	for _, row := range readStatusTable(t).Rows {
 		t.Run(row.Name, func(t *testing.T) {
@@ -104,6 +110,10 @@ func TestTheStatusTable(t *testing.T) {
 				case r != nil && (r.Source == SourceTitle || r.Source == SourceStatus):
 					// A program status's working is weighed as a title's (readStatus).
 					if err := s.setAttention(r.State, r.Message, r.Source, r.Kind, r.Options, titleRules); err != nil {
+						t.Fatal(err)
+					}
+				case r != nil && r.TurnID != "":
+					if err := s.TrySetAttentionTurn(r.State, r.Message, r.Source, r.Kind, r.Options, "", r.TurnID); err != nil {
 						t.Fatal(err)
 					}
 				case r != nil:

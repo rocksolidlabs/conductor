@@ -1,5 +1,5 @@
 {
-  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side. shownAt, when given, is the step (from 0) after which the attention shown at the end first showed, its id and since; recorded, when given, is the entries the row's dones recorded, in order. A done over a shown done, no other state between: the same as the last report of the shown done records nothing; for an agent that tells its turns' starts (a hook's working has shown), both dones its own, it is the same turn's, the shown done stays and the report is recorded; for any other agent, or with an operator's mark of done for either, it is a new done. A row named limit: holds what a limit stated in docs/protocol.md (A turn's start and end) does today, the same end told twice with an Enter between among them: the change that lifts a limit changes its row on purpose.",
+  "about": "What a session shows after each row's steps, and the status key the app gives it (web/app/utils/status.ts, sessionStatus). Held by internal/session/status_table_test.go on the server's side. shownAt, when given, is the step (from 0) after which the attention shown at the end first showed, its id and since; recorded, when given, is the entries the row's dones recorded, in order. A done over a shown done, no other state between: the same as the last report of the shown done records nothing; for an agent that tells its turns' starts (a hook's working has shown), both dones its own, it is the same turn's, the shown done stays and the report is recorded; for any other agent, or with an operator's mark of done for either, it is a new done. A report that names its turn (turnId, as Codex's hooks and notify program name it) is weighed first by that name: a done naming the turn whose end was recorded last records nothing and changes nothing shown, whatever came between; another report of the agent's own naming that turn says the turn went on, and its next done is a new one. A row named limit: holds what a limit stated in docs/protocol.md (A turn's start and end) does today, the same end told twice with no turn named and an Enter between among them: the change that lifts a limit changes its row on purpose.",
   "rows": [
     {
       "name": "nothing reported",
@@ -320,7 +320,98 @@
       "recorded": ["Refactored the parser.", "Claude is waiting for your input"]
     },
     {
-      "name": "limit: the same end told twice, an Enter between: shown again, two entries",
+      "name": "the same end told twice, its turn named, an Enter between: one entry, the Enter's empty state shows",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } }
+      ],
+      "attention": { "state": "", "source": "input" },
+      "turns": true,
+      "status": "working",
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "the same end told twice, its turn named, the next turn's own reports between: one entry, the next turn shows",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } },
+        { "prompt": "now the docs" },
+        { "report": { "state": "working", "source": "status" } },
+        { "report": { "state": "working", "source": "api", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } }
+      ],
+      "attention": { "state": "working", "source": "api" },
+      "turns": true,
+      "status": "working",
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "the same end told twice, its turn named, a submission between: one entry",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } },
+        { "submit": "Handoff from lead: the handlers are in" },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } }
+      ],
+      "attention": { "state": "", "source": "input" },
+      "turns": true,
+      "status": "working",
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "a named turn that went on (its done, a working naming it, its done again): both ends recorded, the second shown",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Stopped early.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } },
+        { "report": { "state": "working", "source": "api", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Stopped early.", "Refactored the parser."]
+    },
+    {
+      "name": "each turn named, the same words every turn, an Enter before each: every end recorded",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Done.", "turnId": "t1" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Done.", "turnId": "t2" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Done.", "turnId": "t3" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Done." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 4,
+      "recorded": ["Done.", "Done.", "Done."]
+    },
+    {
+      "name": "an operator's mark naming the turn is no name: the agent's end told again after it is dropped",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "t1" } },
+        { "report": { "state": "working", "source": "admin", "turnId": "t1" } },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "t1" } }
+      ],
+      "attention": { "state": "working", "source": "admin" },
+      "turns": true,
+      "status": "working",
+      "recorded": ["Refactored the parser."]
+    },
+    {
+      "name": "a turn's name past its bound is no name: the same end told twice, an Enter between, two entries",
+      "steps": [
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
+        { "enter": true },
+        { "report": { "state": "done", "source": "api", "message": "Refactored the parser.", "turnId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+      ],
+      "attention": { "state": "done", "source": "api", "message": "Refactored the parser." },
+      "turns": true,
+      "status": "finished",
+      "shownAt": 2,
+      "recorded": ["Refactored the parser.", "Refactored the parser."]
+    },
+    {
+      "name": "limit: the same end told twice, no turn named, an Enter between: shown again, two entries",
       "steps": [
         { "report": { "state": "done", "source": "api", "message": "Refactored the parser." } },
         { "enter": true },

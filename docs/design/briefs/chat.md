@@ -8,7 +8,7 @@ Roundhouse, 1d Run (grid, graph, timeline, the broadcast bar), 1e Launch
 agent, 1f Share, 1g Join, 1h Paste, 1i Agents, 1j Crews home, on to 1q
 Settings. Add the chat screens to that file as a new series (2a, 2b, …)
 drawn on 1a, 1g and 1d, in the same style, tokens and density; change
-nothing in the 1-series. Read `brand.md` first (zinc surfaces, forest
+nothing in the 1-series. Read `brand.md` first (the ink scale's surfaces, forest
 `#263D35` for actions, terracotta on the junction mark only, Inter and
 JetBrains Mono). Nuxt UI 4 components; dark is the default, light exists.
 

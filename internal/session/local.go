@@ -432,6 +432,14 @@ type Local struct {
 	// one shown, then each one of its turn after it): a done the same as it
 	// records nothing (setAttentionLooked). Guarded by mu.
 	lastDone Attention
+	// endedTurn is the agent's name for the last turn whose end was
+	// recorded (a done whose report named its turn): a done naming it
+	// again is the same report, however much has happened since, and a
+	// report of the agent's own naming it that is not a done says the turn
+	// went on, and forgets it (setAttentionLooked). An Enter, a
+	// submission, an operator's mark, a bell, a title, a status sequence
+	// and the screen leave it. Guarded by mu.
+	endedTurn string
 	// startsTold says the session's agent tells its turns' starts: a
 	// working of its own from its hooks (api) has shown. Such an agent's
 	// next turn ends a done shown by itself, so a done over a done is its
@@ -1707,6 +1715,32 @@ func (s *Local) TrySetAttentionPlan(state AttentionState, message, source, kind 
 	return s.setAttentionWith(state, message, source, kind, options, spendToken|fromReport, plan)
 }
 
+// SetAttentionTurn is SetAttentionPlan for a report that names its turn
+// (turn, the agent's own name for it: Codex's turn id), as a host applies
+// what its server sends on: a done naming the turn whose end the session
+// recorded last is that report again, and changes and records nothing;
+// another report of the agent's own naming it says the turn went on. A
+// name out of its bound (proto.ValidTurnID), or from another source than
+// the agent's (api), is no name.
+func (s *Local) SetAttentionTurn(state AttentionState, message, source, kind string, options []Option, plan, turn string) {
+	_ = s.setAttentionLooked(state, message, source, kind, options, fromReport, anyTurn, 0, plan, turnOpt(turn)...)
+}
+
+// TrySetAttentionTurn is SetAttentionTurn for a report from outside the
+// session, as TrySetAttentionFull: the token spent first, and with none
+// left ErrRateLimited and nothing changed.
+func (s *Local) TrySetAttentionTurn(state AttentionState, message, source, kind string, options []Option, plan, turn string) error {
+	return s.setAttentionLooked(state, message, source, kind, options, spendToken|fromReport, anyTurn, 0, plan, turnOpt(turn)...)
+}
+
+// turnOpt is the option of a change that names its turn, none for "".
+func turnOpt(turn string) []attentionOpt {
+	if turn == "" {
+		return nil
+	}
+	return []attentionOpt{{turn: turn}}
+}
+
 // Ask is SetAttentionFull for the agent's own question: needs_input, from a
 // report that says the agent asks it (the MCP tool ask, conductor notify
 // --ask), which the session keeps until it is answered (own). In the turn it
@@ -1934,6 +1968,9 @@ type attentionOpt struct {
 	// decision is the durable decision the agent's question asked
 	// mirrors (TryAskDecision), "" for any other change.
 	decision string
+	// turn is the agent's name for the turn the report belongs to
+	// (SetAttentionTurn), "" when it names none.
+	turn string
 }
 
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, opts ...attentionOpt) error {
@@ -1976,7 +2013,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
-	if len(opts) > 0 && opt.asked == nil && (opt.only == "" || s.info.Attention.ID != opt.only) {
+	if len(opts) > 0 && opt.asked == nil && opt.turn == "" && (opt.only == "" || s.info.Attention.ID != opt.only) {
 		// A change for one question (WithdrawQuestion) that is not the one
 		// shown: under this same lock, the agent's own kept aside and the
 		// question the hold of the turn holds over go if they are that one
@@ -2004,6 +2041,24 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if ReportsTurn(state, source) && !s.info.Turns {
 		s.info.Turns = true
 		defer s.notifyChange()
+	}
+	// The turn the report names (endedTurn), weighed before every path
+	// below that records a done: a done naming the turn whose end was
+	// recorded last is that end told again (Codex's hook, then its notify
+	// program), whatever was written or shown since; nothing changes and
+	// nothing is recorded. Another report naming that turn says it went
+	// on (Codex's Stop that another Stop hook blocked): its next done is a
+	// new end. A report naming no turn, or another, is judged as ever.
+	if turn := opt.turn; turn != "" && source == SourceAPI && proto.ValidTurnID(turn) {
+		switch {
+		case state == AttentionDone && turn == s.endedTurn:
+			s.mu.Unlock()
+			return nil
+		case state == AttentionDone:
+			s.endedTurn = turn
+		case turn == s.endedTurn:
+			s.endedTurn = ""
+		}
 	}
 	// The plan the change names (#289), learnt now, past the bucket, under
 	// the lock the change takes: a question's alone, and nothing when the

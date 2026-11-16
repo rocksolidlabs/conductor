@@ -354,7 +354,9 @@ defineShortcuts({
       </template>
 
       <template #footer="{ collapsed }">
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: collapsed ? 'justify-center' : undefined }" class="w-full" />
+        <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
+             the current page's link the page's tone, as the sidebar's rows do. -->
+        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: `${collapsed ? 'justify-center ' : ''}hover:before:bg-canvas-hover data-active:before:bg-default` }" class="w-full" />
         <!-- On the rail the header's menus and the expand button stack in the foot. -->
         <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
           <SidebarHeaderMenus collapsed @token="showToken = true" />

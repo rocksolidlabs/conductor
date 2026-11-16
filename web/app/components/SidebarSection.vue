@@ -16,7 +16,7 @@ const bodyId = computed(() => `sidebar-section-${props.id}`)
   <section class="flex flex-col gap-0.5" :data-sidebar-section="id" :data-folded="folded ? 'true' : 'false'">
     <button
       type="button"
-      class="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wider outline-none hover:bg-elevated/60 focus-visible:ring-2 focus-visible:ring-primary"
+      class="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wider outline-none hover:bg-canvas-hover focus-visible:ring-2 focus-visible:ring-primary"
       :class="tone === 'warning' ? 'text-warning' : 'text-muted'"
       :aria-expanded="!folded"
       :aria-controls="bodyId"
