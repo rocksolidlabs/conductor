@@ -215,7 +215,7 @@ test("the palette's session rows show each of the five states with its mark, the
 test("the Yard's tiles, its bar and its focused header show the four live states; the exited session is not drawn there", async ({ day, browser }) => {
   const n = await states(day)
   const page = await dayPage(browser, { path: '/yard' })
-  const tile = (id: string) => page.locator(`[data-session-tile][data-session-id="${id}"] [data-tile-header] [data-status-mark]`)
+  const tile = (id: string) => page.locator(`[data-session-tile][data-session-id="${id}"] [data-tile-foot] [data-status-mark]`)
   const slice = (key: string) => page.locator(`[data-attention-bar] [data-attention-slice="${key}"]`)
   const read = async () => {
     await walk(page, n, LIVE, tile, true)

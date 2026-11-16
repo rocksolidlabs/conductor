@@ -371,6 +371,23 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in

@@ -483,7 +483,7 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
   // The foot: the pages, nothing else; Needs your decision's Decide row first (docs/plans/decision-inbox.md, PR-2).
   const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
-  await expect(foot.getByRole('link')).toHaveText([/Decide/, /Yard/, /Roundhouse/, /Agents/, /Crews/, /Dispatch/, /Events/, /History/, /Brakeman/])
+  await expect(foot.getByRole('link')).toHaveText([/Decide/, /Yard/, /Agents/, /Crews/, /Dispatch/, /Events/, /History/, /Brakeman/])
 })
 
 test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
