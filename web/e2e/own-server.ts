@@ -9,11 +9,13 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // directory and scratch repository under one temporary root, the e2e catalog with copies of its agents added, its log copied into
 // test-results when it stops. The seeded day (day.ts) runs on one; decisions-helpers.ts's decisionServer is a call of it.
 
-/** A copy of the catalog's agent `from` under the id `id`, with `env` over the copied agent's own. */
+/** A copy of the catalog's agent `from` under the id `id`, with `env` over the copied agent's own and, when given, a prompt shape. */
 export interface AgentCopy {
   id: string
   from: string
   env: Record<string, string>
+  /** The copy's prompt shape (the catalog's promptShape): what the server recognises as the agent's own prompt. */
+  promptShape?: string
 }
 
 export interface OwnServerOptions {
@@ -100,7 +102,7 @@ async function startOwn(o: OwnServerOptions, root: string, log: string, remove: 
   for (const a of o.agents ?? []) {
     const base = cfg.catalog.agents.find((x) => x.id === a.from)
     if (!base) throw new Error(`the e2e catalog has no agent ${a.from} to copy as ${a.id}`)
-    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env } })
+    cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env }, ...(a.promptShape ? { promptShape: a.promptShape } : {}) })
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
   const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })
