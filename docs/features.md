@@ -256,6 +256,22 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **One shape for a page with nothing in it (#937; the UX review's P23,
+  first half).** A page with nothing to show says what the page is (its
+  sentence from the pages' table), why it is empty and what fills it, and
+  the action that fills it with its key, through one component,
+  `PageEmpty`; while it reads it says so with a spinner, a first read that
+  failed shows the server's words and Read again, and a thing not found
+  shows the way back. `pageState` decides which (`web/app/utils/pageState.ts`):
+  content wins over an error beside it, and empty needs a read, so the Yard,
+  the Roundhouse, the home and the sidebar's line never draw their empty
+  picture before the sessions are read. The welcome is the home's alone;
+  the Yard says "Nothing is running…" with Launch agent and a link to the
+  README's Quick start; a focused session that went is not found, with its
+  record. History with nothing typed and nothing kept says "No session is
+  kept yet."; its search caption folds to "About this page" (`PageAbout`)
+  once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
+  `history.test.ts`).
 - **The app's screens: eight defects the owner met (#702, #706, #906,
   2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
   wait for the open pull requests that hold their files.

@@ -9,6 +9,8 @@ import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { bestGrid } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
+import { pageState } from '~/utils/pageState'
+import { QUICK_START_URL } from '~/utils/about'
 
 useHead({ title: 'Yard' })
 
@@ -62,6 +64,19 @@ watch(waiting, (list) => {
 // Esc, one click or one browser Back away; the URL stays shareable.
 const focusId = computed(() => (typeof route.query.focus === 'string' ? route.query.focus : ''))
 const focused = computed<SessionInfo | undefined>(() => attention.sessions.value.find((s) => s.id === focusId.value))
+// What the page shows when it has nothing to (P23): the grid's state over the live sessions, read before it judges (a Yard opened on
+// a busy server never flashes its empty shape); a focused session not in the first read is not found, never before that read.
+const gridState = computed(() => pageState({ read: attention.loaded.value, error: attention.error.value, count: active.value.length }))
+const focusState = computed(() => (focused.value ? 'content' : attention.loaded.value ? 'missing' : attention.error.value ? 'failed' : 'reading'))
+const shownState = computed(() => (focusId.value ? focusState.value : gridState.value))
+const emptyActions = [
+  { label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => useLaunchModal().show() },
+  { label: 'How to bring one in', icon: 'i-lucide-book-open', to: QUICK_START_URL, external: true },
+]
+const missingActions = computed(() => [
+  { label: 'Back to the grid', icon: 'i-lucide-arrow-left', onClick: backToGrid },
+  { label: 'Its record', icon: 'i-lucide-history', to: `/history/sessions/${encodeURIComponent(focusId.value)}` },
+])
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
@@ -277,7 +292,7 @@ usePalette().registerPage(() => {
     </template>
 
     <template #body>
-      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
+      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
       <!-- Scrolls when the terminal's least height and the reply bar's question (#187: whole, up to 500 bytes) outgrow a short
            viewport, a landscape phone's, so that the choices stay reachable; the session page's body scrolls the same way. -->
@@ -300,23 +315,25 @@ usePalette().registerPage(() => {
             <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" answers @answer="decisionModal.open" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" @preview-plan="previewFile({ path: $event })" />
           </template>
         </EditorColumn>
-        <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
-          <UIcon name="i-lucide-search-x" class="size-8" />
-          <p class="text-sm">That session is gone.</p>
-          <UButton label="Back to the grid" icon="i-lucide-arrow-left" color="neutral" variant="soft" @click="backToGrid" />
-        </div>
+        <!-- Not in the first read: not found; before it, the reading shape (or the failed one). -->
+        <PageEmpty v-else-if="focusState === 'missing'" state="missing" words="That session is no longer on this server." :actions="missingActions" />
+        <PageEmpty v-else page="yard" :state="focusState === 'failed' ? 'failed' : 'reading'" thing="sessions" :error="attention.error.value" @again="attention.refresh()" />
         <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
           <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
           <FilesPane :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
         </aside>
       </div>
-      <!-- Nothing at all yet: the first-run welcome, which is not the sidebar's empty line (#359). -->
-      <WelcomeCard v-else-if="!attention.sessions.value.length" />
-      <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
-        <UIcon name="i-lucide-layout-grid" class="size-10" />
-        <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>
-        <UButton label="Launch agent" icon="i-lucide-play" @click="useLaunchModal().show()" />
-      </div>
+      <!-- Nothing live, once the sessions are read: the Yard's empty shape (the welcome is the home's alone); before, the reading one. -->
+      <PageEmpty
+        v-else-if="gridState !== 'content'"
+        page="yard"
+        :state="gridState"
+        words="Nothing is running. A terminal shows here when you launch an agent, or bring one in from another machine."
+        thing="sessions"
+        :error="attention.error.value"
+        :actions="emptyActions"
+        @again="attention.refresh()"
+      />
 
       <div v-else class="flex flex-1 min-h-0">
         <WallQueue v-if="showQueue" ref="queue" :sessions="waiting" :answered="answered" :selected="queueSel" :sending="quick.sending.value" @reply="reply" @option="option" @open="focusSession" @select="queueSel = $event" />
