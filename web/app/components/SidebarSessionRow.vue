@@ -119,7 +119,8 @@ function confirmStop() {
                  default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
                  would move the choices under the pointer. -->
             <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
-            <!-- The meta line: the initials as a chip, then the meta, then the status's word, which is cut only once the meta is. -->
+            <!-- The meta line: the initials as a chip, then the meta, then the status's word. The meta takes only the room the word
+                 leaves (its basis 0), so it is cut first and the word only once the meta has none. -->
             <span class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted" data-row-meta-line>
               <span
                 class="flex-none rounded px-1 font-mono text-[10px] leading-4 font-semibold select-none"
@@ -129,14 +130,14 @@ function confirmStop() {
               >{{ agentInitials(s.agentId) }}</span>
               <span v-if="row.state === 'exited'" class="min-w-0 truncate font-mono">{{ exitLine }}</span>
               <template v-else>
-                <span class="flex min-w-0 items-center overflow-hidden whitespace-nowrap font-mono" data-row-meta>
+                <span class="flex min-w-0 flex-1 basis-0 items-center overflow-hidden whitespace-nowrap font-mono" data-row-meta>
                   <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
                     <UIcon name="i-lucide-laptop" class="size-3 flex-none" :aria-label="`Hosted on ${row.machine}`" />{{ meta[0] }}
                   </span>
                   <!-- Spaces kept: the text starts with the dot that follows the machine. -->
                   <span class="overflow-hidden text-ellipsis whitespace-pre">{{ metaText }}</span>
                 </span>
-                <span class="ml-auto min-w-0 shrink-[0.001] truncate" :title="status.word" data-status-word>{{ status.word }}</span>
+                <span class="min-w-0 truncate" :title="status.word" data-status-word>{{ status.word }}</span>
               </template>
             </span>
           </template>
