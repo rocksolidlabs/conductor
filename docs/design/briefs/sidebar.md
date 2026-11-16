@@ -63,8 +63,9 @@ a page; digits answer a prompt on a session page.
 
 ## Rules
 
-- The junction mark is artwork, never a status light; the status colours
-  stay (amber needs you, green running, grey idle and exited).
+- The junction mark is artwork, never a status light; a session's state
+  is drawn as the status section of [the design system](../system.md#status)
+  says.
 - Train words stay: Yard, Roundhouse, Switchyard, Conductor.
 - Name every screen with an id in the 3-series (3a, 3b, …) inside
   Conductor UI.dc.html, so the build can be checked against it.

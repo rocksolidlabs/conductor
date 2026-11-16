@@ -8,13 +8,16 @@ import { validProjectKey } from '~/utils/dispatch'
 import { filterFromView, filterToView, sameFilter, type DispatchFilter, type FilterNames } from '~/utils/dispatchQuery'
 
 /**
- * A project's saved views as chips (docs/plans/dispatch.md, "web/app"): the project's own and every project's, by name, each a list,
- * a board or a roadmap with its filter, sort and grouping; a chip applies its view (the filter written to the link, utils/dispatchQuery.ts,
- * and the view shown), and is marked while the page shows what it saved. Save keeps the filter shown as a view of this project or of
- * every project; a chip's menu renames or deletes it, each one operation on the revision shown. The views are read through the bar's
- * ordering gate as it opens, and again after the window on a `view` event of the project or of every project (`project` ""), and on a
- * snapshot, which forgets what the gate knew; a read that fails is asked again. Nothing polls. On a phone the chips scroll sideways.
+ * A project's saved views behind the toolbar's Views button (docs/plans/dispatch.md, "web/app"), which names the view applied ("Views ·
+ * Doing"): its menu lists the project's own and every project's, by name, each a list, a board or a roadmap with its filter, sort and
+ * grouping; a row applies its view (the filter written to the link, utils/dispatchQuery.ts, and the view shown), and is marked while the
+ * page shows what it saved. "Save the filter as a view…" keeps the filter shown as a view of this project or of every project; a row's
+ * own menu renames or deletes it, each one operation on the revision shown. The views are read through the bar's ordering gate as it
+ * opens, and again after the window on a `view` event of the project or of every project (`project` ""), and on a snapshot, which
+ * forgets what the gate knew; a read that fails is asked again. Nothing polls.
  */
+// The page places the button (its order in the toolbar's line below sm): the class goes on the button's root, not on the dialogs.
+defineOptions({ inheritAttrs: false })
 const props = defineProps<{
   project: string
   filter: DispatchFilter
@@ -74,7 +77,12 @@ function applied(v: DispatchView): boolean {
 }
 /** The ids of the views the page shows applied, worked out once per change of the views, the filter or the kind. */
 const appliedIds = computed(() => new Set(views.value.filter(applied).map((v) => v.id)))
+/** The view the button names: the first applied, in the menu's order. */
+const appliedView = computed(() => views.value.find((v) => appliedIds.value.has(v.id)) ?? null)
+/** The Views menu. */
+const menuOpen = ref(false)
 function apply(v: DispatchView) {
+  menuOpen.value = false
   emit('apply', filterFromView(v.query, props.names), v.kind)
 }
 
@@ -103,6 +111,7 @@ const scopeItems = computed(() => [
 // closes the opening it was made from and a draft of a newer one is never lost to it (DispatchNewTicket.vue does the same).
 function openSave() {
   if (props.archived || !query.value || submitting.value) return
+  menuOpen.value = false
   renaming.value = null
   name.value = ''
   scope.value = 'project'
@@ -111,6 +120,7 @@ function openSave() {
 }
 function openRename(v: DispatchView) {
   if ((props.archived && v.projectId) || submitting.value) return
+  menuOpen.value = false
   renaming.value = v
   name.value = v.name
   dialogError.value = ''
@@ -146,6 +156,7 @@ const deleting = ref<DispatchView | null>(null)
 const deleteOpen = ref(false)
 function askDelete(v: DispatchView) {
   if (props.archived && v.projectId) return
+  menuOpen.value = false
   deleting.value = v
   deleteOpen.value = true
 }
@@ -160,7 +171,6 @@ async function confirmDelete() {
 function menu(v: DispatchView): DropdownMenuItem[][] {
   const locked = props.archived && !!v.projectId
   return [
-    [{ label: 'Apply', icon: KIND_ICONS[v.kind], onSelect: () => apply(v) }],
     [
       { label: 'Rename…', icon: 'i-lucide-pencil', disabled: locked, onSelect: () => openRename(v) },
       { label: 'Delete…', icon: 'i-lucide-trash-2', color: 'error', disabled: locked, onSelect: () => askDelete(v) },
@@ -172,42 +182,61 @@ defineExpose({ views, openSave, apply, applied })
 </script>
 
 <template>
-  <div class="flex min-w-0 items-center gap-1.5" data-views-bar :data-loaded="loaded ? '' : undefined">
-    <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 [scrollbar-width:thin]" data-views-chips>
-      <UIcon name="i-lucide-bookmark" class="size-4 flex-none text-muted" aria-hidden="true" />
-      <span v-if="loaded && !views.length" class="flex-none text-xs text-dimmed">No saved views yet.</span>
-      <div v-for="v in views" :key="v.id" class="flex flex-none items-center" :data-view-chip="v.id" :data-view-name="v.name" :data-view-kind="v.kind" :data-view-every="v.projectId ? undefined : ''" :data-active="appliedIds.has(v.id) ? '' : undefined">
-        <UButton
-          size="xs"
-          :color="appliedIds.has(v.id) ? 'primary' : 'neutral'"
-          :variant="appliedIds.has(v.id) ? 'soft' : 'outline'"
-          :icon="v.projectId ? KIND_ICONS[v.kind] : 'i-lucide-globe'"
-          :aria-pressed="appliedIds.has(v.id)"
-          :title="v.projectId ? `A ${v.kind} of ${project}` : `A ${v.kind} of every project`"
-          class="max-w-48 rounded-r-none"
-          data-view-apply
-          @click="apply(v)"
-        >
-          <span class="truncate">{{ v.name }}</span>
-        </UButton>
-        <UDropdownMenu :items="menu(v)" :content="{ align: 'start' }">
-          <UButton size="xs" :color="appliedIds.has(v.id) ? 'primary' : 'neutral'" :variant="appliedIds.has(v.id) ? 'soft' : 'outline'" icon="i-lucide-chevron-down" class="-ml-px rounded-l-none" :aria-label="`${v.name}: its actions`" :data-view-menu="v.id" />
-        </UDropdownMenu>
-      </div>
-    </div>
-    <UButton
-      size="xs"
-      color="neutral"
-      variant="ghost"
-      icon="i-lucide-bookmark-plus"
-      class="flex-none"
-      :disabled="archived || !query"
-      :title="archived ? 'The project is archived' : !query ? 'The filter names a label or a milestone this project lacks' : 'Save the filter as a view'"
-      data-view-save
-      @click="openSave"
-    >
-      <span class="hidden sm:inline">Save view</span>
-    </UButton>
+  <div class="flex min-w-0 flex-none items-center" v-bind="$attrs" data-views-bar :data-loaded="loaded ? '' : undefined">
+    <UPopover v-model:open="menuOpen" :content="{ align: 'end', sideOffset: 6 }">
+      <UButton
+        size="sm"
+        :color="appliedView ? 'primary' : 'neutral'"
+        :variant="appliedView ? 'soft' : 'outline'"
+        icon="i-lucide-bookmark"
+        class="max-w-56"
+        :title="appliedView ? `Views · ${appliedView.name}` : undefined"
+        :aria-expanded="menuOpen"
+        :aria-label="appliedView ? `Saved views: ${appliedView.name} is applied` : 'Saved views'"
+        :data-applied="appliedView?.id"
+        data-views-open
+      >
+        <!-- Below sm the bookmark alone (its tone says a view is applied, its label which), so that the toolbar's second line fits. -->
+        <span class="hidden truncate sm:inline">{{ appliedView ? `Views · ${appliedView.name}` : 'Views' }}</span>
+      </UButton>
+      <template #content>
+        <div class="flex w-[min(20rem,calc(100vw-2rem))] flex-col p-1" data-views-menu>
+          <p v-if="!loaded" class="px-2 py-1.5 text-xs text-dimmed">Reading the saved views…</p>
+          <p v-else-if="!views.length" class="px-2 py-1.5 text-xs text-dimmed" data-views-none>No saved views yet.</p>
+          <div v-for="v in views" :key="v.id" class="flex min-w-0 items-center gap-0.5 rounded-md" :class="appliedIds.has(v.id) && 'bg-primary/10'" :data-view-chip="v.id" :data-view-name="v.name" :data-view-kind="v.kind" :data-view-every="v.projectId ? undefined : ''" :data-active="appliedIds.has(v.id) ? '' : undefined">
+            <UButton
+              size="sm"
+              :color="appliedIds.has(v.id) ? 'primary' : 'neutral'"
+              variant="ghost"
+              :icon="v.projectId ? KIND_ICONS[v.kind] : 'i-lucide-globe'"
+              :aria-pressed="appliedIds.has(v.id)"
+              :title="v.projectId ? `A ${v.kind} of ${project}` : `A ${v.kind} of every project`"
+              class="min-w-0 flex-1"
+              data-view-apply
+              @click="apply(v)"
+            >
+              <span class="min-w-0 flex-1 truncate text-left">{{ v.name }}</span>
+              <span class="flex-none text-xs text-dimmed">{{ v.projectId ? project : 'every project' }}</span>
+            </UButton>
+            <UDropdownMenu :items="menu(v)" :content="{ align: 'end' }">
+              <UButton size="sm" color="neutral" variant="ghost" icon="i-lucide-ellipsis" class="flex-none" :aria-label="`${v.name}: its actions`" :data-view-menu="v.id" />
+            </UDropdownMenu>
+          </div>
+          <div class="my-1 border-t border-default" />
+          <UButton
+            size="sm"
+            color="neutral"
+            variant="ghost"
+            icon="i-lucide-bookmark-plus"
+            label="Save the filter as a view…"
+            :disabled="archived || !query"
+            :title="archived ? 'The project is archived' : !query ? 'The filter names a label or a milestone this project lacks' : undefined"
+            data-view-save
+            @click="openSave"
+          />
+        </div>
+      </template>
+    </UPopover>
   </div>
 
   <UModal v-model:open="dialogOpen" :dismissible="!submitting" :close="{ disabled: submitting }" :title="renaming ? `Rename ${renaming.name}` : 'Save the view'" :description="renaming ? 'Its filter, sort and kind stay as they are.' : `The filter, sort and ${kind} shown, under a name.`" :ui="{ content: 'max-w-md' }">

@@ -7,7 +7,8 @@ import type { TransportKind, ActivityEntry, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
-import { bestGrid, yardFilterOf, needsChipWords, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
+import { sessionStatus } from '~/utils/status'
+import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 
 useHead({ title: 'Yard' })
@@ -33,12 +34,12 @@ watch(
   (q) => (filter.value = yardFilterOf(q)),
 )
 // The chips filter the live sessions by one state each (utils/wall.ts, on sessionStatus); the queue lists the grid's needs set.
-const clock = useNow()
+const now = useNow()
 const active = computed(() => attention.sessions.value.filter(isActive))
-const waiting = computed(() => yardFilter(attention.sessions.value, 'needs', clock.value))
-const counts = computed(() => yardCounts(attention.sessions.value, clock.value))
+const waiting = computed(() => yardFilter(attention.sessions.value, 'needs', now.value))
+const counts = computed(() => yardCounts(attention.sessions.value, now.value))
 const chips = computed(() => yardChips(counts.value, filter.value))
-const tiles = computed(() => yardFilter(attention.sessions.value, filter.value, clock.value))
+const tiles = computed(() => yardFilter(attention.sessions.value, filter.value, now.value))
 // Below sm the chips and the polling badge leave the header for a row of their own under it (the bar shows from sm up).
 const phone = useIsPhone()
 const answered = computed(() =>
@@ -239,8 +240,7 @@ usePalette().registerPage(() => {
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
             <template v-if="focusId">
-              <SessionStatusBadge v-if="focused" :status="focused.status" :exit-code="focused.exitCode" />
-              <AttentionBadge :attention="focused?.attention" />
+              <StatusMark v-if="focused" :status="sessionStatus(focused, now)" word class="text-xs" :data-yard-focused-status="focused.id" />
               <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden sm:inline-flex" />
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>

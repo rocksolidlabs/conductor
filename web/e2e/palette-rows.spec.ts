@@ -464,15 +464,23 @@ test("the Dispatch pages' rows (#409): go dispatch; the projects page's New proj
   await expect(page.locator('[data-view-dialog]')).toBeVisible()
   await page.locator('[data-view-dialog] [data-view-name-input]').fill('All of it')
   await page.locator('[data-view-submit]').click()
-  const chip = page.locator('[data-view-chip][data-view-name="All of it"]')
-  await expect(chip).toHaveAttribute('data-active', '')
-  const viewId = (await chip.getAttribute('data-view-chip')) ?? ''
+  // The Views button names the view applied, by its id.
+  const views = page.locator('[data-views-open]')
+  await expect(views).toHaveText('Views · All of it')
+  const viewId = (await views.getAttribute('data-applied')) ?? ''
+  expect(viewId).toMatch(/^[0-9a-f]{16}$/)
   try {
     await runRow(page, 'page:view:roadmap', 'show the roadmap')
     await expect(page.locator('[data-roadmap]')).toBeVisible()
+    await expect(views).not.toHaveAttribute('data-applied', /./)
     await runRow(page, `page:saved-view:${viewId}`, 'saved view: all of it')
     await expect(page.locator(`[data-ticket-row="${key}-1"]`)).toBeVisible()
-    await expect(chip).toHaveAttribute('data-active', '')
+    await expect(views).toHaveAttribute('data-applied', viewId)
+    // Filter the tickets… opens the toolbar's Filter popover.
+    await runRow(page, 'page:filter', 'filter the tickets')
+    await expect(page.locator('[data-filter-popover]')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('[data-filter-popover]')).toHaveCount(0)
     await runRow(page, 'page:new-ticket', `new ticket in ${key}`)
     await expect(page.locator('[data-new-ticket]')).toBeVisible()
     await page.keyboard.press('Escape')

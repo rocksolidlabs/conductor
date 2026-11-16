@@ -6,7 +6,7 @@ import { expect, test, type Session } from './fixtures'
 // navigating; ?tab= opens the inspector's view, ?view= the run's view,
 // ?filter= the Yard's chips; S shares and X asks to stop the session a page
 // is on; I types a line into a running session; Answer all answers the same
-// question asked by several sessions; Stop every session that is done asks
+// question asked by several sessions; Stop every finished session asks
 // with their names; the launch verb opens the Launch dialog prefilled.
 test.describe.configure({ mode: 'serial' })
 
@@ -133,7 +133,7 @@ test('?tab= opens the inspector on that view, ?filter= the Yard on that chip, ?v
   await expect(page.locator('[data-run-timeline-view]')).toBeVisible({ timeout: 30_000 })
 })
 
-test('on a session page S shares and X asks to stop it in the palette; I types a line into a running session; Stop every session that is done asks with their names', async ({ page, api, state }) => {
+test('on a session page S shares and X asks to stop it in the palette; I types a line into a running session; Stop every finished session asks with their names', async ({ page, api, state }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e reach keys' })
   sessions.push(s.id)
   await page.goto(`/sessions/${s.id}`)
@@ -175,15 +175,17 @@ test('on a session page S shares and X asks to stop it in the palette; I types a
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('typed from the palette\n')
   // The owner's word (#322): the line was entered, said as typed.
   await expect(page.locator('li').filter({ hasText: 'Typed into e2e reach keys' }).last()).toBeVisible({ timeout: 15_000 })
-  // The stub answers and reports done: Stop every session that is done names it and asks; Enter stops it.
+  // The stub answers and reports done: Stop every finished session names it and asks; Enter stops it.
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('done')
   await page.keyboard.press('Control+k')
-  await palette.locator('input[data-palette-input]').fill('> stop every session')
+  await palette.locator('input[data-palette-input]').fill('> stop every finished')
   const every = palette.locator('[data-palette-row="action:stop-done"]')
   await expect(every).toBeVisible()
+  await expect(every.locator('[data-palette-label]')).toHaveText(/^Stop every finished session · \d+$/)
   await page.keyboard.press('ArrowDown')
   await expect(every).toHaveAttribute('data-palette-focused', '')
   await page.keyboard.press('Enter')
+  await expect(every.locator('[data-palette-ask]')).toContainText(/Stop \d+ finished sessions?\?/)
   await expect(every.locator('[data-palette-ask]')).toContainText('e2e reach keys')
   await page.keyboard.press('Enter')
   await expect(palette).toBeHidden()
