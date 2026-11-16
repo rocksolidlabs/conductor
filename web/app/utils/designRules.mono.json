@@ -19,7 +19,6 @@
   "components/CrewGraphList.vue": 1,
   "components/CrewGraphNode.vue": 3,
   "components/CrewLaunchSheet.vue": 1,
-  "components/CrewMiniDag.vue": 2,
   "components/CrewRunHeader.vue": 3,
   "components/CrewRunsPanel.vue": 4,
   "components/CrewsTable.vue": 1,

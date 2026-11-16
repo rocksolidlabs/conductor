@@ -348,17 +348,6 @@ export function barsSummary(bars: readonly RunBar[]): string {
   return parts.join(' · ')
 }
 
-/** The live-run banner's words: when it started, how many run, who needs you, who waits for Start now. */
-export function liveRunLine(run: RunInfo, sessions: readonly SessionInfo[]): { started: string; running: number; needs: string[]; waits: string[] } {
-  const tiles = memberTiles(run, sessions)
-  return {
-    started: startedClock(run.startedAt),
-    running: tiles.filter((t) => t.status === 'running' || t.status === 'starting').length,
-    needs: tiles.filter((t) => t.status === 'needs_input').map((t) => t.m.name),
-    waits: tiles.filter((t) => t.status === 'pending' && t.m.start.when === 'manual').map((t) => t.m.name),
-  }
-}
-
 /** The fields of a draft that differ from the crew as saved, as the unsaved-changes bar names them: "Goal, Members". */
 export function changedFields(draft: CrewInput, saved: CrewInput | undefined): string[] {
   if (!saved) return []

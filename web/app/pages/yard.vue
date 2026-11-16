@@ -89,12 +89,21 @@ function leaveFocus() {
   backToGrid()
 }
 const inTerminal = { usingInput: true }
-defineShortcuts({
-  escape: leaveFocus,
-  alt_escape: { ...inTerminal, handler: leaveFocus },
-  // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
-  alt_q: { ...inTerminal, handler: leaveFocus },
-})
+// A dialog's, a slideover's, a menu's or the palette's Escape is its own (your menu's Alerts… and Open on your phone among them): the
+// page's keys are not there while one is open, so the key reaches it whole (useOverlaid), as on a ticket's page.
+const overlaid = useOverlaid()
+defineShortcuts(
+  computed(() =>
+    overlaid.value
+      ? {}
+      : {
+          escape: leaveFocus,
+          alt_escape: { ...inTerminal, handler: leaveFocus },
+          // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
+          alt_q: { ...inTerminal, handler: leaveFocus },
+        },
+  ),
+)
 
 // Grid: every active session fits on screen; tiles shrink as sessions are added.
 const grid = useTemplateRef<HTMLDivElement>('grid')
