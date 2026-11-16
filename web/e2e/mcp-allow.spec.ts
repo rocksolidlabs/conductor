@@ -2,6 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, rowAnswer, showView, test, type Api, type Session } from './fixtures'
+import { drawnGrid, narrowedBy } from './terminal-width'
 
 // Codex's form asking to allow a tool of an MCP server (#716; drawn by the
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
@@ -66,24 +67,28 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   // The narrower page opens with the sidebar at 300 px, the width a person dragged it to before (kept for the browser under the app's
   // own key, in rem), and its inspector open (it starts closed, the terminal taking the room, P11): the terminal is then narrower
   // than the session's 80 columns, where Codex wraps the choices' descriptions, while the window keeps the sidebar whose row this test
-  // reads. At the 200 px the sidebar opens at, the terminal there draws 80 columns; the window is not made narrower instead: a
-  // narrower one does not keep the inspector beside the terminal, and below lg the sidebar is not drawn. At 300 px the row holds its
-  // choices; at 1440 they are in the panel beside the 200 px row.
+  // reads. The window is not made narrower instead (terminalColumns): the inspector is beside the terminal only from 1280 px (xl),
+  // and below lg the sidebar is not drawn. At 300 px the row holds its choices; at 1440 they are in the panel beside the 200 px row.
   if (narrower) await page.addInitScript((rem) => localStorage.setItem('conductor.sidebar.width', rem), String(300 / 16))
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
   await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
+  // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
+  // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with. Where the
+  // inspector opens, the grid read at once after it is still the one drawn before (on CI: 109 columns with the inspector closed,
+  // already the session's): the wait is for the fit pass the inspector's opening brings (narrowedBy).
+  const sessionCols = async () => (await api.session(s.id)).cols ?? 0
+  let grid: { cols: number; cell: number }
   if (narrower) {
     await expect.poll(() => page.locator('#dashboard-sidebar-main').evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBe(300)
-    await showView(page, 'people')
-    await expect(page.locator('[data-inspector-open="true"]')).toBeVisible()
+    grid = await narrowedBy(page, sessionCols, async () => {
+      await showView(page, 'people')
+      await expect(page.locator('[data-inspector-open="true"]')).toBeVisible()
+    })
+  } else {
+    await expect.poll(async () => { grid = await drawnGrid(page); return grid.cols !== 80 && (await sessionCols()) === grid.cols }, { timeout: 15_000, message: 'the page sized the session to its grid' }).toBe(true)
   }
-  // The page's window sizes the session before the form is drawn: the stub lays it out for that width. Waited on what the page
-  // computed, its terminal's grid, until the session has that width, then judged against the 80 it was born with.
-  const host = page.locator('.terminal-host').first()
-  const drawn = async () => Number((await host.getAttribute('data-cols')) ?? 0)
-  await expect.poll(async () => (await api.session(s.id)).cols === (await drawn()) && (await drawn()) !== 80, { timeout: 15_000, message: 'the page sized the session to its grid' }).toBe(true)
-  const cols = await drawn()
-  expect(narrower ? cols < 80 : cols > 80, `the page's grid is ${cols} columns`).toBe(true)
+  const cols = grid!.cols
+  expect(narrower ? cols < 80 : cols > 80, `the page's grid is ${cols} columns of ${grid!.cell.toFixed(2)} px`).toBe(true)
   await typeLine(page, 'stub mcp-allow')
 
   // The session asks: a question of the dialog's, a permission, with the form's words and its choices.

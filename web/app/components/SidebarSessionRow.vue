@@ -58,6 +58,8 @@ const resumable = computed(() => props.row.state === 'exited' && s.value.kind ==
 // a click mutes it until the pointer leaves the button (#137).
 const shareTip = ref(false)
 const shareTipMuted = ref(false)
+// More's menu is open while the list says so: a row drawn anew in another section (its turn ended, it asks) keeps it open.
+const menuOpen = useRowMenu(() => `s:${s.value.id}`)
 const menu = computed(() =>
   rowMenuItems(target.value, {
     open: () => router.push(`/sessions/${s.value.id}`),
@@ -167,7 +169,7 @@ function confirmStop() {
         <UTooltip v-if="live" text="Stop">
           <UButton icon="i-lucide-square" size="xs" color="neutral" variant="ghost" :aria-label="`Stop ${s.name}`" data-row-stop @click="confirming = true" />
         </UTooltip>
-        <UDropdownMenu :items="menu" :content="{ align: 'end' }">
+        <UDropdownMenu v-model:open="menuOpen" :items="menu" :content="{ align: 'end' }">
           <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>

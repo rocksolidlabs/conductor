@@ -538,10 +538,23 @@ add its rule here.
   day put first (`tabs.spec.ts` right-clicked an item that has no menu).
 - A spec that needs a size gets it from what the page reports. A terminal
   "narrower than 80 columns" by a window's width held until a layout gave
-  the terminal more room, and a drag did not take on a touch page
-  (`mcp-allow.spec.ts`, `answered.spec.ts`, #956). Set the state a person
+  the terminal more room (`mcp-allow.spec.ts`, `answered.spec.ts`, #956;
+  two fixes of it guessed at a cause from a builder's machine, and CI's
+  own trace named the real one: read the trace first). Set the state a person
   can have (a saved width, an open panel), wait for the page's own measure
   (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
+  The measure is the one made after the step: a grid read at once after
+  the inspector opened was the grid drawn before it, already the
+  session's, so the wait passed at once and judged 109 columns, cells as
+  wide on CI as on the builder's (8 px). Wait for the fit pass the step
+  brings (`narrowedBy`, data-fit-passes).
+- A redraw a test waits out is a redraw a person meets. A row's More menu
+  closed when its row moved between the sidebar's sections, an agent's
+  turn ending; a wait for the row's last state passed on a builder's
+  machine and failed on CI, where the turn ended, began and ended again
+  as the menu opened (`clone-session.spec.ts`, #929). What a person holds
+  open lives where the redraw does not destroy it (`useRowMenu`), proved
+  by a move the test causes while it is open (`sidebar-row-menu.spec.ts`).
 - A stub's ids are its own. A fake that names a thing with an id the
   server also mints (`dr-1`) is taken for the server's once an earlier
   spec in the same worker has made that one: a run's header counted one
