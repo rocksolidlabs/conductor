@@ -538,8 +538,9 @@ add its rule here.
   day put first (`tabs.spec.ts` right-clicked an item that has no menu).
 - A spec that needs a size gets it from what the page reports. A terminal
   "narrower than 80 columns" by a window's width held until a layout gave
-  the terminal more room, and a drag did not take on a touch page
-  (`mcp-allow.spec.ts`, `answered.spec.ts`, #956). Set the state a person
+  the terminal more room (`mcp-allow.spec.ts`, `answered.spec.ts`, #956;
+  two fixes of it guessed at a cause from a builder's machine, and CI's
+  own trace named the real one: read the trace first). Set the state a person
   can have (a saved width, an open panel), wait for the page's own measure
   (`terminalColumns` in `web/e2e/terminal-width.ts`), and choose by it.
   The measure is the one made after the step: a grid read at once after
