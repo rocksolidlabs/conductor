@@ -622,7 +622,7 @@ between the two, and the Yard's row in the sidebar stays current on both.
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow routed events** on, the
-Roundhouse follows what the **Roundhouse jump** switch on the Events page's Routing tab routes to
+Roundhouse follows what the **Roundhouse jump** switch in **Alerts** routes to
 it, input requests and handoffs unless you change it. It jumps to a session
 that needs input and holds there for two intervals (at least 20 s) before
 rotating on; click **Holding** to release it sooner. Any other routed event
@@ -769,14 +769,15 @@ opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
 swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
-count), Crews, Events, and under More: Agents, Settings, Alerts
+count), Crews, Events, and under More: Agents, Settings, Alerts (the two
+switches, ending with **All alert rules**, which opens the Alerts panel)
 and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or
 have a select focused. Press **?** (or **Keyboard shortcuts** in your menu,
 behind your initials beside the sidebar's name, with **Your name…**, **Toggle
 theme**, **Workbench token…** and **Forget token**, and in the sidebar
-**Alerts…**, which opens the alert switches in a panel, and **Collapse to the
+**Alerts…**, which opens the Alerts panel, and **Collapse to the
 rail**; the foot holds only the pages) for the list of shortcuts on the current
 screen. The list itself takes keys once
 a row has the focus (**↓** from the filter puts the first there; a click or
@@ -827,21 +828,28 @@ ending "(Recommended)": that one alone is filled. A permission question whose di
 session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
-**The Events page** has two tabs. **Feed** (the default) lists the events
+**The Events page** is the feed. It lists the events
 newest first in groups of one minute: the time, the event's icon, who reported
 it (a crew member as `<crew> / <member>`), what happened and the one thing to
 do about it (**Answer** a question, **Open run** for a handoff, **Open** an
 artifact). Beside it: the last hour as bars per minute (what needs you,
 handoffs, errors and the rest, as the tab saw them), where each kind of event
-goes now, and whether each agent reports. **Routing** lists the ten events
+goes now (**Edit routing** opens Alerts), and whether each agent reports. The
+live feed keeps the last 500 events in memory. An artifact's URL becomes a
+link only when it is `http(s)`.
+
+**Alerts** is one panel at the right of the window, opened by **Alerts…** in
+your menu or the command palette, by **All alert rules** in the phone's More,
+or by `?alerts` on any page's address (an old link to the Events page's
+Routing tab opens it over the feed). On top are the two switches, a browser
+notification and a chime, for when a session needs input and for the events
+routed to Browser. Under them, **Where each event goes** lists the ten events
 grouped by how loud they are (needs you, worth knowing, background), each
 with its destinations as switches: a labelled badge on its session in the
 sidebar and on its Yard tile (until the session reports `working` or
 `needs_input`, or you open it), a browser notification with the chime (as
-switched on under the sidebar's alerts), a Roundhouse jump while it follows, and
-a line in the live feed, which keeps the last 500 events in memory. Routes are
-saved in the browser. An artifact's URL becomes a link only when it is
-`http(s)`.
+switched on above), a Roundhouse jump while it follows, and a line in the
+live feed. Routes are saved in the browser.
 
 **Reporting to Conductor** is a section of the **Agents** page, under the
 cards. Each card says whether its agent reports: **Reports to Conductor** (its
@@ -997,8 +1005,9 @@ for Claude Code started elsewhere.
 
 The server can also pass events on to other services. A webhook in the
 config is a URL the server POSTs to for every entry, from any session, of
-the event types the webhook lists. The **Events** page shows the webhooks,
-read-only, as the **Webhook** switch of each event on the Routing tab.
+the event types the webhook lists. The **Alerts** panel shows the webhooks,
+read-only, as the **Webhook** switch of each event under **Where each event
+goes**.
 
 ```json
 {
@@ -1012,7 +1021,7 @@ read-only, as the **Webhook** switch of each event on the Routing tab.
 }
 ```
 
-`events` takes the Events page's names (`needs_input`, `done`, `working`,
+`events` takes the events' names as Alerts lists them (`needs_input`, `done`, `working`,
 `tool_denied`, `progress`, `artifact`, `handoff`, `error`, `exit_nonzero`,
 `tool_use`) and the entry types (`attention`, which covers all three
 attention states, `status`, `join`, `leave`, `input` and `link`).

@@ -282,7 +282,8 @@ open deferred item from rounds 1 and 2, then the features below.
 - **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
   minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
   UX review's P5): its header is the mark, "Conductor" and your menu, about
-  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  186 px, and Alerts… (a slideover of the alert switches and, since PR-28,
+  the rules where each event goes, `AlertsPanel.vue`)
   and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
   `accountActions`, which the phone's More and the palette show). A drag on
   its edge widens it up to 26 % of the window, never less than the minimum
@@ -7904,6 +7905,17 @@ picked.
   (`reportStatus`) that the table and the feed's Reporting list read too,
   with installed and injected drawn neutral; `/events?tab=integrations`
   opens the section, and the palette's row is "Agents · Reporting".
+  Since the UX review's P12 and P13 (PR-28) the Routing tab is gone too:
+  the rules are in the Alerts panel (`AlertsPanel.vue`, at most 44 rem wide,
+  the whole width on a phone), under the two switches, with the webhooks of
+  `conductor.json` read while it is open. One open state
+  (`useAlertsPanel`) is shared by your menu's Alerts…, the palette's
+  Alerts… (`action:alerts`, in place of "Events · Routing"), the phone
+  More's All alert rules (its switches stay inline above it), the feed's
+  Edit routing and `?alerts` on any page of the layout, which the address
+  then loses (`useAlertsFromAddress`); `/events?tab=routing` opens it over
+  the feed. Below lg the rules' pills are 44 px targets. The routes stay in
+  this browser (`conductor.events.routes`).
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers

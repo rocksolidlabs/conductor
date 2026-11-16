@@ -131,9 +131,9 @@ test('the section lists every adapter with its status, opens a snippet and shows
   await page.goto('/events?tab=integrations')
   await expect(page).toHaveURL(/\/agents#reporting$/)
   await expect(page.locator('#reporting [data-integration][data-id="claude"]')).toBeInViewport()
-  // The Events page keeps its Feed and Routing tabs, and its Reporting list links here.
+  // The Events page keeps its Feed tab (its Routing went to the Alerts panel), and its Reporting list links here.
   await page.goto('/events')
-  await expect(page.locator('[data-events-tabs]').getByRole('tab')).toHaveText(['Feed', 'Routing'])
+  await expect(page.locator('[data-events-tabs]').getByRole('tab')).toHaveText(['Feed'])
   await page.locator('[data-reporting-link]').click()
   await expect(page).toHaveURL(/\/agents#reporting$/)
   await expect(page.locator('#reporting [data-integration]').first()).toBeInViewport()
