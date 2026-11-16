@@ -265,11 +265,15 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
-  16.75 rem (268 px) on every screen, which shows its header's every part
-  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
-  drag on its edge widens it up to 26 % of the window, never less than the
-  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
+- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
+  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
+  UX review's P5): its header is the mark, "Conductor" and your menu, about
+  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
+  `accountActions`, which the phone's More and the palette show). A drag on
+  its edge widens it up to 26 % of the window, never less than the minimum
+  plus 5 rem (280 px, the width at which a row shows its question whole) and
+  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
@@ -353,6 +357,23 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in

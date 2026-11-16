@@ -187,3 +187,17 @@ test("at 390 with touch a run of members says its members' sentence and draws no
   await inside(header.locator('[data-run-summary]'), page.locator('body'))
   await noSideways(page)
 })
+
+test('in a low window (1440 x 360) row two gives way and the bar and the sentence stay, in row one', async ({ day, browser }) => {
+  const { page, header } = await ledgerPage(browser, { height: 360 })
+  await expect(header.locator('[data-run-summary]')).toBeHidden()
+  const low = header.locator('[data-run-progress-low]')
+  await expect(low).toBeVisible()
+  await expect(low).toContainText(/^\d of 6 done · /)
+  await noOverlap(header.locator('[data-run-row-one]'))
+  // Back to a tall window: row two again, the sentence there alone.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(header.locator('[data-run-summary]')).toBeVisible()
+  await expect(low).toBeHidden()
+  void day
+})
