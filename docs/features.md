@@ -557,9 +557,11 @@ open deferred item from rounds 1 and 2, then the features below.
   `codexworking` and `decision-mirror`; `yard-queue.spec.ts` deleted.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
-  line (its first paragraph as text, `descriptionLine` in
-  `web/app/utils/markdown.ts`; "Add a description of CND…" opens the
-  editor), the tracker's link and About at its end, the whole description
+  line (its first paragraph as text, else its first text of any kind,
+  `descriptionLine` in `web/app/utils/markdown.ts`; only for an empty
+  description "Add a description of CND…", which opens the editor), the
+  tracker's link and About at its end, the
+  whole description
   opened in place under it and remembered per browser
   (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older
   "shown" starts at the line). Then one toolbar: the List, Board and
