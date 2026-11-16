@@ -128,7 +128,7 @@ test("an approval asked by an attempt that ended survives the server's end, is a
   expect(answered.applied).toBeUndefined()
   await expect(modal.locator('[data-decision-state-words]')).toHaveText('Recorded: waiting for the run to be continued', { timeout: 30_000 })
   await expect(modal.locator('[data-decision-step="validated"] [data-step-words]')).toContainText('waiting for the run to be continued')
-  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
 
   // Continue: the continuation takes the decision and its hold, and applies the answer once, through build's task file.
