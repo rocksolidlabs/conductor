@@ -2,7 +2,8 @@
 import { ConnectionMode, MarkerType, useVueFlow, VueFlow, type Connection, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import type { CrewStart, RunTask } from '~/composables/useSessions'
+import type { CrewStart, RunInfo, RunTask } from '~/composables/useSessions'
+import type { OfferRun } from '~/utils/runs'
 import type { MemberStatus } from '~/utils/crews'
 import { connectError, connectionAllowed, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
 import { taskLayout, taskListRows } from '~/utils/taskGraph'
@@ -30,6 +31,8 @@ const props = withDefaults(
     editable?: boolean
     runId?: string
     stopped?: boolean
+    /** The run, as what a member offers by hand (memberOffer) and its tasks' words (a continued run's, taskWords) read it. */
+    run?: (OfferRun & Pick<RunInfo, 'resumedBy'>) | null
     selected?: string
     now?: number
     /** Fill the height the parent gives (a page body); else the canvas is a fixed 24 rem tall (a form). */
@@ -45,7 +48,7 @@ const props = withDefaults(
     /** The task selected in Tasks mode. */
     selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
+  { editable: false, runId: '', stopped: false, run: null, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, runState: '', pausedWhy: '', selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
@@ -105,7 +108,7 @@ const taskRows = computed(() => taskListRows(taskGraph.value))
 function agentOf(member: string): string {
   return props.members.find((m) => m.name === member)?.agentId ?? ''
 }
-const taskRun = computed<TaskRun>(() => ({ state: props.runState, stoppedAt: props.stopped ? 'stopped' : undefined, paused: props.paused, pausedWhy: props.pausedWhy }))
+const taskRun = computed<TaskRun>(() => ({ state: props.runState, stoppedAt: props.stopped ? 'stopped' : undefined, paused: props.paused, pausedWhy: props.pausedWhy, resumedBy: props.run?.resumedBy }))
 function taskWordsOf(t: RunTask) {
   return taskWords(t, taskRun.value)
 }
@@ -125,7 +128,7 @@ const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
         id: n.id,
         type: 'member',
         position: { x: n.x, y: n.y },
-        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, agentName: props.agentNames[n.member.agentId] ?? '' },
+        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, run: props.run, agentName: props.agentNames[n.member.agentId] ?? '' },
         connectable: props.editable,
         draggable: false,
         selected: n.id === props.selected,
@@ -295,7 +298,7 @@ const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
         </div>
       </li>
     </ol>
-    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :stopped="stopped" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
+    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :run="run" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
     <div v-else class="relative overflow-hidden rounded-md border border-default bg-elevated/30" :class="fill ? 'min-h-72 flex-1' : 'h-96'" data-graph-canvas>
       <VueFlow
         :id="flowId"

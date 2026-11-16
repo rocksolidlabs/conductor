@@ -118,7 +118,9 @@ type planCrew struct {
 // (not_found), at most MaxPlanAttachments of MaxPlanAttachmentBytes and
 // MaxPlanComments of MaxPlanCommentBytes (bound), each comment's SHA-256
 // set from its row; every decision waiting on tasks of the crew
-// (invalid); the body as encoded at most MaxPlanBody (bound, naming its
+// (invalid); the source it hands over, the steps to reproduce pinned from
+// the snapshot and the evidence links the ticket's (planSource); the body
+// as encoded at most MaxPlanBody (bound, naming its
 // largest part). One plans row, proposed, its fingerprint the
 // operation's, and one create row whose value is the revision's summary
 // (planCreated), never the body. Any actor may propose. The receipt's id
@@ -196,6 +198,9 @@ func (s *Store) proposePlan(ctx context.Context, op Op, key string, req PlanRequ
 			return err
 		}
 		if err := checkField("plan.note", "the note", body.Note); err != nil {
+			return err
+		}
+		if body.Source, err = t.planSource(tk, body.Source); err != nil {
 			return err
 		}
 		body = body.normalized()
@@ -428,6 +433,92 @@ func (t *tx) planComments(tk Ticket, in []PlanComment) ([]PlanComment, error) {
 	return out, nil
 }
 
+// planSource checks what a revision hands over of the ticket's source and
+// gives it as the body keeps it: nil when it hands over nothing; the steps
+// to reproduce by their pin, the linked item's identity and the SHA-256 of
+// the steps the proposal showed (invalid for a ticket with no linked item
+// or no steps, and for a pin that names either part empty; stale_plan for
+// a pin that is not the snapshot's now: the steps changed since they were
+// shown); each evidence
+// link a live link of the ticket, external or delivery (not_found,
+// invalid), named once, at most MaxPackageEvidence (bound).
+func (t *tx) planSource(tk Ticket, in *PlanSource) (*PlanSource, error) {
+	if in == nil || (in.Repro == nil && len(in.Evidence) == 0) {
+		return nil, nil
+	}
+	out := &PlanSource{Evidence: slices.Clone(in.Evidence)}
+	if in.Repro != nil {
+		sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
+		if tk.ExternalID == "" || !ok || sn.Repro == "" {
+			return nil, refuse(RefusalInvalid, "%s has no steps to reproduce from a linked issue to hand over", tk.Key)
+		}
+		pin := PlanRepro{Identity: tk.ExternalID, SHA256: sn.ReproSha256}
+		if in.Repro.Identity == "" || in.Repro.SHA256 == "" {
+			return nil, refuse(RefusalInvalid, "the steps to reproduce are handed over by their pin: the linked item's identity and the SHA-256 of the steps shown")
+		}
+		if *in.Repro != pin {
+			return nil, refuse(RefusalStalePlan, "the steps to reproduce changed since they were shown: propose it again")
+		}
+		out.Repro = &pin
+	}
+	if err := checkCount("evidence links", len(out.Evidence), MaxPackageEvidence); err != nil {
+		return nil, err
+	}
+	for i, id := range out.Evidence {
+		if slices.Contains(out.Evidence[:i], id) {
+			return nil, refuse(RefusalInvalid, "the link %s is named as evidence twice", id)
+		}
+		var of, kind, deleted string
+		switch err := t.tx.QueryRowContext(t.ctx, "SELECT ticket_id, kind, deleted_at FROM links WHERE id = ?", id).Scan(&of, &kind, &deleted); {
+		case isNoRows(err) || (err == nil && of != tk.ID):
+			return nil, refuse(RefusalNotFound, "no link %s of %s", id, tk.Key)
+		case err != nil:
+			return nil, err
+		case deleted != "":
+			return nil, refuse(RefusalNotFound, "the link %s is removed", id)
+		case kind != LinkExternal && kind != LinkDelivery:
+			return nil, refuse(RefusalInvalid, "the link %s is a %s link: evidence is an external or a delivery link", id, kind)
+		}
+	}
+	return out, nil
+}
+
+// sourceStale says whether what the revision hands over of the ticket's
+// source no longer holds, and names it in words: the steps to reproduce
+// pinned that are not the snapshot's now (GitHub's section edited and
+// refreshed in, the section gone, the issue unlinked or another linked),
+// or an evidence link removed since.
+func sourceStale(ctx context.Context, q queryer, tk Ticket, p PlanSummary, src *PlanSource) (string, bool, error) {
+	if src == nil {
+		return "", false, nil
+	}
+	if r := src.Repro; r != nil {
+		sn, ok := ParseSnapshot(string(tk.ExternalSnapshot))
+		if tk.ExternalID != r.Identity || !ok || sn.Identity() != r.Identity || sn.Repro == "" || sn.ReproSha256 != r.SHA256 {
+			return fmt.Sprintf("the steps to reproduce changed since revision %d was proposed", p.N), true, nil
+		}
+	}
+	for _, id := range src.Evidence {
+		var deleted string
+		switch err := q.QueryRowContext(ctx, "SELECT deleted_at FROM links WHERE id = ? AND ticket_id = ?", id, tk.ID).Scan(&deleted); {
+		case isNoRows(err) || (err == nil && deleted != ""):
+			return fmt.Sprintf("the evidence link %s was removed since revision %d was made", id, p.N), true, nil
+		case err != nil:
+			return "", false, err
+		}
+	}
+	return "", false, nil
+}
+
+// handedStale says whether what the revision hands over no longer holds:
+// a comment gone or edited (commentsStale), then its source (sourceStale).
+func handedStale(ctx context.Context, q queryer, tk Ticket, p PlanSummary, h planHanded) (string, bool, error) {
+	if words, stale, err := commentsStale(ctx, q, tk, p, h.Comments); err != nil || stale {
+		return words, stale, err
+	}
+	return sourceStale(ctx, q, tk, p, h.Source)
+}
+
 // checkDecisions checks the decisions a revision names: at most
 // MaxPlanDecisions, each an id of a task id's shape named once, a
 // question, its kind, at most MaxDecisionBefore tasks of the crew that
@@ -533,6 +624,11 @@ func (b PlanBody) normalized() PlanBody {
 	if b.Decisions == nil {
 		b.Decisions = []PlanDecision{}
 	}
+	if b.Source != nil && b.Source.Evidence == nil {
+		src := *b.Source
+		src.Evidence = []string{}
+		b.Source = &src
+	}
 	for i, d := range b.Decisions {
 		if d.Before == nil {
 			d.Before = []string{}
@@ -553,7 +649,7 @@ func bodyBound(b PlanBody, total int) error {
 	}{
 		{"the crew is", b.Crew}, {"the agents' commands are", b.Agents}, {"the manifest file is", b.ManifestFile},
 		{"the references are", b.References}, {"the attachments are", b.Attachments}, {"the comments are", b.Comments},
-		{"the constraints are", b.Constraints}, {"the decisions are", b.Decisions}, {"the note is", b.Note},
+		{"the constraints are", b.Constraints}, {"the decisions are", b.Decisions}, {"the note is", b.Note}, {"the source is", b.Source},
 	}
 	largest, size := "", -1
 	for _, p := range parts {
@@ -594,7 +690,9 @@ type planApproveArgs struct {
 // either). The revision missing, or its ticket deleted, is not_found; an
 // archived project refuses it (archived); a withdrawn revision is
 // invalid; one whose handed-over comment is edited or gone since it was
-// made is stale_plan, its remedy a new revision, since the digest it
+// made, or whose source no longer holds (sourceStale: the steps to
+// reproduce it pins changed, an evidence link removed), is stale_plan,
+// its remedy a new revision, since the digest it
 // recorded is the immutable body's; one approved whose approval holds is
 // invalid. It sets approved_at, approved_by (the operator's display
 // name), approved_note, approved_rev (the ticket's rev now),
@@ -620,11 +718,11 @@ func (s *Store) ApprovePlan(ctx context.Context, op Op, id string, ticketRev int
 		if p.State == PlanWithdrawn {
 			return refuse(RefusalInvalid, "revision %d is withdrawn", p.N)
 		}
-		comments, err := planBodyComments(t.ctx, t.tx, p.ID)
+		handed, err := planBodyHanded(t.ctx, t.tx, p.ID)
 		if err != nil {
 			return err
 		}
-		if words, stale, err := commentsStale(t.ctx, t.tx, tk, p, comments); err != nil {
+		if words, stale, err := handedStale(t.ctx, t.tx, tk, p, handed); err != nil {
 			return err
 		} else if stale {
 			return refuse(RefusalStalePlan, "%s: revise it", words)
@@ -740,20 +838,25 @@ func planNumber(ctx context.Context, q queryer, p PlanSummary) (int, error) {
 	return n, err
 }
 
-// planBodyComments reads the comments the body of the revision with the
-// id hands over.
-func planBodyComments(ctx context.Context, q queryer, id string) ([]PlanComment, error) {
+// planHanded is what a revision's body hands over that can go stale: its
+// comments and its source.
+type planHanded struct {
+	Comments []PlanComment `json:"comments"`
+	Source   *PlanSource   `json:"source"`
+}
+
+// planBodyHanded reads the comments and the source the body of the
+// revision with the id hands over.
+func planBodyHanded(ctx context.Context, q queryer, id string) (planHanded, error) {
 	var body string
 	if err := q.QueryRowContext(ctx, "SELECT body FROM plans WHERE id = ?", id).Scan(&body); err != nil {
-		return nil, err
+		return planHanded{}, err
 	}
-	var b struct {
-		Comments []PlanComment `json:"comments"`
+	var h planHanded
+	if err := json.Unmarshal([]byte(body), &h); err != nil {
+		return planHanded{}, fmt.Errorf("dispatch: the body of plan revision %s: %w", id, err)
 	}
-	if err := json.Unmarshal([]byte(body), &b); err != nil {
-		return nil, fmt.Errorf("dispatch: the body of plan revision %s: %w", id, err)
-	}
-	return b.Comments, nil
+	return h, nil
 }
 
 // commentsStale says whether a comment the revision hands over is gone
@@ -839,17 +942,18 @@ func intentWords(ctx context.Context, q queryer, tk Ticket, p PlanSummary) (stri
 
 // planStale is why the approved revision's approval no longer holds, nil
 // while it does or for a revision not approved: a handed-over comment
-// edited or gone (RemedyRevise, the intent's change said beside it when
+// edited or gone, or its source no longer holding (handedStale;
+// RemedyRevise, the intent's change said beside it when
 // there is one), else the ticket's intent changed (RemedyApprove).
 func planStale(ctx context.Context, q queryer, tk Ticket, p PlanSummary) (*PlanStale, error) {
 	if p.State != PlanApproved {
 		return nil, nil
 	}
-	comments, err := planBodyComments(ctx, q, p.ID)
+	handed, err := planBodyHanded(ctx, q, p.ID)
 	if err != nil {
 		return nil, err
 	}
-	words, stale, err := commentsStale(ctx, q, tk, p, comments)
+	words, stale, err := handedStale(ctx, q, tk, p, handed)
 	if err != nil {
 		return nil, err
 	}

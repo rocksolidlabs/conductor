@@ -25,6 +25,22 @@
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },
       {
+        "id": "signed-out",
+        "name": "Signed out (e2e stub)",
+        "description": "The stub that starts on the agent's sign-in screen, takes only the invented code STUB_SIGNIN names and then asks whether to trust the folder: no real tool, no real sign-in.",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_SIGNIN": "e2e-Code-7Hq2Wx9Kp4", "STUB_TRUST_DIALOG": "1" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "trustPrompt": "Trust\\s*this\\s*folder\\?",
+        "trustAnswers": [{ "label": "Yes, trust this folder", "input": "\r" }, { "label": "No, quit", "input": "\u001b[B\r" }],
+        "questions": [
+          { "prompt": "(?i)paste\\s*code\\s*here\\s*if\\s*prompted", "words": "(?i)browser\\s*didn.t\\s*open\\?\\s*use\\s*the\\s*url\\s*below\\s*to\\s*sign\\s*in" }
+        ],
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
         "id": "codex",
         "name": "Codex CLI (e2e stub)",
         "description": "web/e2e/stub-agent.sh in place of Codex, with its notify, yolo, trust and session recipes, its working title, and its hidden title thread.",

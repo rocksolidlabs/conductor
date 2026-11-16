@@ -1,6 +1,7 @@
 import type { DispatchChange, DispatchReceipt, DispatchTicket, HistoryPage, LaunchSummary, NewPlanReference, PlanAgent, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewPerson, Responsibility, RunInfo } from '~/composables/useSessions'
 import { RESPONSIBILITIES, RESPONSIBILITY_WORDS } from '~/utils/crews'
+import { modelWords } from '~/utils/capacity'
 
 // A ticket's Plan section in words (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"): a plan revision's state and why its
 // approval no longer holds, with the one remedy that cures it; the checks a revision expects; why Launch is not offered; the reference
@@ -129,11 +130,20 @@ export function argvLine(argv: readonly string[]): string {
 /**
  * What a member's agent runs as the revision resolved it, in the order the server's launch builds it (internal/api/sessions.go,
  * createLocalSession): the catalog's command, the session recipe's start arguments (`{id}` as the session's id, filled at the start), the
- * member's own arguments, then the yolo recipe's arguments when yolo is on.
+ * member's own arguments, then the yolo recipe's arguments when yolo is on. A model the member names goes in through its adapter's flag
+ * after the member's arguments, which the revision does not carry: the member's line names it in words (planMemberModel).
  */
 export function resolvedArgv(agent: Pick<PlanAgent, 'command' | 'startArgs' | 'yoloArgs'> | undefined, memberArgs: readonly string[] = []): string[] {
   if (!agent) return [...memberArgs]
   return [...agent.command, ...agent.startArgs, ...memberArgs, ...agent.yoloArgs]
+}
+
+/**
+ * A member's model as its launch runs it, in the capacity rows' words (modelWords): the one the revision names, else the one sentence
+ * for no model named, never the agent's default, since the member's arguments may choose one.
+ */
+export function planMemberModel(m: { model?: string }): string {
+  return modelWords({ chosen: m.model?.trim() ?? '' })
 }
 
 /** The yolo choice said plainly (the plan's Owner decisions, 7): it is what an approval most needs to show. */
@@ -235,20 +245,6 @@ export function referenceText(r: NewPlanReference): string {
   if (r.start && r.end && r.end !== r.start) s += `-${r.end}`
   if (r.note) s += `=${r.note}`
   return s
-}
-
-/**
- * A launched run's default label, as the store makes it when none is given: the ticket's key and title, cut to 60 characters at a word
- * (`CND-12 Fix the login loop`), never inside the key.
- */
-export function defaultLabel(key: string, title: string): string {
-  const s = `${key} ${title}`
-  const r = Array.from(s)
-  if (r.length <= PLAN_BOUNDS.label) return s
-  let cut = r.slice(0, PLAN_BOUNDS.label).join('')
-  const i = cut.lastIndexOf(' ')
-  if (i > key.length) cut = cut.slice(0, i)
-  return cut.replace(/ +$/, '')
 }
 
 /** What a launch's reply came to: its run started, the launch failed with why, still pending, or the operation refused before any run. */

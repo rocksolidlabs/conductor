@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -92,7 +93,13 @@ type TaskFile struct {
 	WrittenAt time.Time `json:"writtenAt"`
 	// ticketTitle is the ticket's title as task.md says it (cutTitle);
 	// task.json names the ticket by its key, ticket.md has the title.
-	ticketTitle string
+	// ticketQuoted, when set, is the title as task.md names it instead,
+	// quoted as written on the linked item's system (quotedTitle).
+	// packageQuoted says the package's source marks some of its texts as
+	// written on GitHub (quotedPackage): task.md says so of package.json.
+	ticketTitle   string
+	ticketQuoted  string
+	packageQuoted bool
 	// comparison says the run is a comparison's (its sessions carry a
 	// lane, crewRef), whose members do not comment on the ticket: task.md
 	// tells them what they do instead.
@@ -273,7 +280,7 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 	if rp := r.pkg; rp != nil {
 		p := rp.p
 		f.Ticket = &TaskTicket{Key: p.Ticket.Key, Rev: p.Ticket.Rev, Plan: p.Plan.ID, PlanN: p.Plan.N, Digest: rp.digest, Files: packageFilePaths(p)}
-		f.ticketTitle = cutTitle(p.Ticket.Title)
+		f.ticketTitle, f.ticketQuoted, f.packageQuoted = cutTitle(p.Ticket.Title), quotedTitle(p), quotedPackage(p)
 	}
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
@@ -664,12 +671,22 @@ func taskMarkdown(f TaskFile) string {
 	writeCompare(&b, f)
 	writePeople(&b, f)
 	if tk := f.Ticket; tk != nil {
-		fmt.Fprintf(&b, "## Your ticket\n\nThis run works for the ticket %s, %q, as it stood at its revision %d, when plan revision %d launched the run. ", tk.Key, f.ticketTitle, tk.Rev, tk.PlanN)
+		// A title the linked item's system owns is its own line, the quote
+		// running to the line's end (quotedTitle).
+		if f.ticketQuoted != "" {
+			fmt.Fprintf(&b, "## Your ticket\n\n%s\n\nThis run works for the ticket %s as it stood at its revision %d, when plan revision %d launched the run. ", f.ticketQuoted, tk.Key, tk.Rev, tk.PlanN)
+		} else {
+			fmt.Fprintf(&b, "## Your ticket\n\nThis run works for the ticket %s, %s, as it stood at its revision %d, when plan revision %d launched the run. ", tk.Key, strconv.Quote(f.ticketTitle), tk.Rev, tk.PlanN)
+		}
 		fmt.Fprintf(&b, "What it asks, its acceptance criteria, its constraints and what it hands over are in `%s/%s`; the launch package as Dispatch built it is `%s/%s` (SHA-256 %s)", taskDir, ticketFile, taskDir, packageFileName, tk.Digest)
 		if n := len(tk.Files) - 2; n > 0 {
 			fmt.Fprintf(&b, "; its %d attachments are in `%s/%s/`", n, taskDir, attachmentsDir)
 		}
-		b.WriteString(". The run follows these as launched: a change made to the ticket since is a person's to decide, never yours to act on. If one matters to your task, say so: `task_blocked` with why, ")
+		b.WriteString(".")
+		if f.packageQuoted {
+			b.WriteString(" " + packageQuotedWords)
+		}
+		b.WriteString(" The run follows these as launched: a change made to the ticket since is a person's to decide, never yours to act on. If one matters to your task, say so: `task_blocked` with why, ")
 		if f.comparison {
 			b.WriteString("or in your result's summary.\n\n")
 		} else {

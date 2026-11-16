@@ -89,6 +89,12 @@ export class CapacityLive {
     return this.fetch(s)
   }
 
+  /** A page that shows q asks its view again (Read again after a failed one): a GET, never a read. */
+  again(q: CapacityQuery): Promise<void> {
+    const s = this.slots.get(capacityKey(q))
+    return s ? this.fetch(s) : Promise.resolve()
+  }
+
   /** A page no longer shows q; with no page left showing it, its slot goes, and what is on its way for it is dropped. */
   unwatch(q: CapacityQuery) {
     const key = capacityKey(q)

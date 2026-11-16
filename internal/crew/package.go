@@ -9,15 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/quoted"
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
@@ -32,8 +35,11 @@ import (
 // shapes below are the package's as JSON, which the API hands over as
 // bytes.
 
-// PackageVersion is the version of the launch package this engine reads.
-const PackageVersion = 1
+// PackageVersion is the newest version of the launch package this engine
+// reads; it reads version 1 too, a package Dispatch built before version
+// 2's source and evidence (Program item IN1a), so a run launched before an
+// upgrade, and its continuations, keep their package as it was.
+const PackageVersion = 2
 
 // Bounds of a package's parts as the engine reads them, Dispatch's own
 // (the plan's owner decision 8): a package past one was not built by
@@ -48,9 +54,21 @@ const (
 	// maxTicketRef bounds an id of the package's (ticket, plan, launch,
 	// attachment, comment) and a ticket's key.
 	maxTicketRef = 64
+	// The bounds of version 2's source and evidence, Dispatch's own
+	// (dispatch.MaxPackageEvidence, MaxLinkURL, MaxEvidenceNote,
+	// MaxPackageSource, MaxPackageEvidenceJSON): the links a revision names
+	// as evidence, a page's bytes, an evidence note's characters (its "…"
+	// among them), and the source and the evidence each as the package
+	// writes it, in bytes.
+	maxPackageEvidence     = 8
+	maxPackageURL          = 2 << 10
+	maxEvidenceNote        = 200
+	maxPackageSource       = 24 << 10
+	maxPackageEvidenceJSON = 48 << 10
 )
 
-// Package is a launch package as JSON, version 1.
+// Package is a launch package as JSON, version 1 or 2: version 2 adds the
+// ticket's linked item (Source) and the links named as evidence.
 type Package struct {
 	Version     int                 `json:"version"`
 	Ticket      PackageTicket       `json:"ticket"`
@@ -61,6 +79,56 @@ type Package struct {
 	Constraints string              `json:"constraints,omitempty"`
 	Decisions   []PackageDecision   `json:"decisions,omitempty"`
 	Launch      PackageLaunch       `json:"launch"`
+	Source      *PackageSource      `json:"source,omitempty"`
+	Evidence    []PackageEvidence   `json:"evidence,omitempty"`
+}
+
+// PackageSource is the ticket's linked item at the launch (version 2): its
+// system, host, page, reference and node id, its state then, when the
+// ticket last read it, the SHA-256 of its snapshot, the account that
+// opened it, which of the title and the description are quoted (a read
+// wrote that text: ticket.md quotes them through internal/quoted) and
+// which of those the item holds now (the quote then names the item, and
+// otherwise a source not known), and its steps to reproduce when the
+// revision hands them over. Unlinked says the ticket had no linked item at
+// the launch: the source then holds which fields are quoted and nothing
+// of an item.
+type PackageSource struct {
+	Unlinked              bool      `json:"unlinked,omitempty"`
+	System                string    `json:"system,omitempty"`
+	Host                  string    `json:"host,omitempty"`
+	URL                   string    `json:"url,omitempty"`
+	Ref                   string    `json:"ref,omitempty"`
+	NodeID                string    `json:"nodeId,omitempty"`
+	State                 string    `json:"state,omitempty"`
+	StateReason           string    `json:"stateReason,omitempty"`
+	ReadAt                time.Time `json:"readAt,omitzero"`
+	SnapshotSha256        string    `json:"snapshotSha256,omitempty"`
+	Author                string    `json:"author,omitempty"`
+	TitleFromGitHub       bool      `json:"titleFromGitHub"`
+	DescriptionFromGitHub bool      `json:"descriptionFromGitHub"`
+	TitleFromItem         bool      `json:"titleFromItem"`
+	DescriptionFromItem   bool      `json:"descriptionFromItem"`
+	Repro                 string    `json:"repro,omitempty"`
+}
+
+// PackageEvidence is a link the revision names as evidence: its page and
+// its note.
+type PackageEvidence struct {
+	URL  string `json:"url"`
+	Note string `json:"note,omitempty"`
+}
+
+// quotedSource is where a text of the source was written, for the one
+// writer of its mark: the linked item when it holds the text (ofItem: the
+// steps always, the title or the description by its flag), otherwise a
+// source not known (quoted.Source{}, "an item outside Conductor"), never
+// another item's reference or author.
+func (s *PackageSource) quotedSource(ofItem bool) quoted.Source {
+	if !ofItem || s.Unlinked {
+		return quoted.Source{}
+	}
+	return quoted.Source{On: quoted.FromSystem(s.System), Ref: s.Ref, Author: s.Author}
 }
 
 // PackageTicket is the ticket as it stood at the launch: its intent (the
@@ -247,15 +315,26 @@ func readPackage(raw []byte) (*runPackage, error) {
 		return nil, invalidf("the package is %d bytes, more than %d", len(raw), ledger.MaxPackage)
 	}
 	// The version first, so a package of another one says so rather
-	// than naming a field of it.
+	// than naming a field of it; then version 2's parts as the package
+	// writes them: named at all (null too) in a version 1 package, or
+	// past their bounds as written.
 	var v struct {
-		Version int `json:"version"`
+		Version  int             `json:"version"`
+		Source   json.RawMessage `json:"source"`
+		Evidence json.RawMessage `json:"evidence"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, invalidf("the package cannot be read: %v", err)
 	}
-	if v.Version != PackageVersion {
-		return nil, invalidf("the package is version %d: this Conductor reads version %d", v.Version, PackageVersion)
+	switch {
+	case v.Version != 1 && v.Version != PackageVersion:
+		return nil, invalidf("the package is version %d: this Conductor reads versions 1 and %d", v.Version, PackageVersion)
+	case v.Version == 1 && (v.Source != nil || v.Evidence != nil):
+		return nil, invalidf("the package is version 1, which has no source and no evidence")
+	case len(v.Source) > maxPackageSource:
+		return nil, invalidf("the package's source is %d bytes as written, more than %d", len(v.Source), maxPackageSource)
+	case len(v.Evidence) > maxPackageEvidenceJSON:
+		return nil, invalidf("the package's evidence is %d bytes as written, more than %d", len(v.Evidence), maxPackageEvidenceJSON)
 	}
 	var p Package
 	if err := store.DecodeStrict(raw, &p); err != nil {
@@ -269,8 +348,14 @@ func readPackage(raw []byte) (*runPackage, error) {
 
 // validate holds a package to what the engine needs of it.
 func (p Package) validate() error {
-	if p.Version != PackageVersion {
-		return invalidf("the package is version %d: this Conductor reads version %d", p.Version, PackageVersion)
+	switch {
+	case p.Version != 1 && p.Version != PackageVersion:
+		return invalidf("the package is version %d: this Conductor reads versions 1 and %d", p.Version, PackageVersion)
+	case p.Version == 1 && (p.Source != nil || p.Evidence != nil):
+		return invalidf("the package is version 1, which has no source and no evidence")
+	}
+	if err := p.validateSource(); err != nil {
+		return err
 	}
 	for _, f := range []struct{ name, v string }{
 		{"ticket.id", p.Ticket.ID}, {"ticket.key", p.Ticket.Key}, {"plan.id", p.Plan.ID}, {"launch.id", p.Launch.ID},
@@ -327,6 +412,58 @@ func (p Package) validate() error {
 		total += a.Size
 	}
 	return nil
+}
+
+// validateSource holds version 2's source and evidence to the rules
+// Dispatch builds them by (dispatch.checkParts; readPackage holds each
+// part as written to its bound): an unlinked source holds which fields
+// are quoted and nothing of an item; a linked one names its system and
+// reference, its page is a web page (webPage), its state and state reason
+// are the linked item's words, its snapshot's SHA-256 is one; at most
+// maxPackageEvidence evidence links, each a web page with a note of at
+// most maxEvidenceNote characters. The source's words and steps are
+// otherwise as Dispatch keeps them (an account with a space, a bot's
+// login with brackets): ticket.md writes them through internal/quoted.
+func (p Package) validateSource() error {
+	if s := p.Source; s != nil && s.Unlinked {
+		if (*s != PackageSource{Unlinked: true, TitleFromGitHub: s.TitleFromGitHub, DescriptionFromGitHub: s.DescriptionFromGitHub}) {
+			return invalidf("the package's unlinked source names something of an item")
+		}
+	} else if s != nil {
+		switch {
+		case s.System == "" || s.Ref == "":
+			return invalidf("the package's source names no system or no reference")
+		case !webPage(s.URL):
+			return invalidf("the package's source.url is not an http or https URL of at most %d bytes", maxPackageURL)
+		case s.State != "open" && s.State != "closed" && s.State != "merged":
+			return invalidf("the package's source.state %s is not open, closed or merged", quote(s.State))
+		case s.StateReason != "" && s.StateReason != "completed" && s.StateReason != "not_planned" && s.StateReason != "reopened":
+			return invalidf("the package's source.stateReason %s is none of completed, not_planned and reopened", quote(s.StateReason))
+		case !isSHA256(s.SnapshotSha256):
+			return invalidf("the package's source has no SHA-256 of its snapshot")
+		}
+	}
+	if len(p.Evidence) > maxPackageEvidence {
+		return invalidf("the package names %d evidence links, more than %d", len(p.Evidence), maxPackageEvidence)
+	}
+	for _, e := range p.Evidence {
+		if !webPage(e.URL) || utf8.RuneCountInString(e.Note) > maxEvidenceNote {
+			return invalidf("the package's evidence link %s is not an http or https URL of at most %d bytes with a note of at most %d characters", quote(e.URL), maxPackageURL, maxEvidenceNote)
+		}
+	}
+	return nil
+}
+
+// webPage reports whether u is a page as Dispatch admits a link's URL: at
+// most maxPackageURL bytes of UTF-8 with no control character, which
+// url.Parse reads with the scheme http or https (whatever its case) and a
+// host.
+func webPage(u string) bool {
+	if len(u) > maxPackageURL || !utf8.ValidString(u) || strings.IndexFunc(u, unicode.IsControl) >= 0 {
+		return false
+	}
+	parsed, err := url.Parse(u)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != ""
 }
 
 // isSHA256 reports whether s is a SHA-256 in lower-case hex.
@@ -583,11 +720,20 @@ func sizeWords(n, size int64) string {
 // fields, its description, acceptance criteria, constraints, the decisions
 // a person makes, the references with their objects at the base, the
 // attachments (each display name beside the file it was written as) and
-// the comments handed over. An empty part is left out.
+// the comments handed over; and, of a version 2 package, the ticket's
+// linked item (Source), its steps to reproduce and the evidence links.
+// A quoted text (a title or a description the source flags, and the
+// steps) stands in the mark of internal/quoted, the title as a line and
+// the rest as blocks, naming the linked item only where the source says
+// the item holds that text. An empty part is left out.
 func ticketMarkdown(p Package) string {
 	var b strings.Builder
-	tk, pl := p.Ticket, p.Plan
-	fmt.Fprintf(&b, "# %s: %s\n\n", tk.Key, flatLine(tk.Title))
+	tk, pl, src := p.Ticket, p.Plan, p.Source
+	if src != nil && src.TitleFromGitHub {
+		fmt.Fprintf(&b, "# %s\n\n%s\n\n", tk.Key, quoted.Line(src.quotedSource(src.TitleFromItem), "The title", flatLine(tk.Title)))
+	} else {
+		fmt.Fprintf(&b, "# %s: %s\n\n", tk.Key, flatLine(tk.Title))
+	}
 	fmt.Fprintf(&b, "The ticket as it stood at its revision %d, when plan revision %d launched this run", tk.Rev, pl.N)
 	if p.Launch.Run != "" {
 		fmt.Fprintf(&b, " (%s", p.Launch.Run)
@@ -662,7 +808,17 @@ func ticketMarkdown(p Package) string {
 			fmt.Fprintf(&b, "## %s\n\n%s\n\n", title, body)
 		}
 	}
-	section("Description", tk.Description)
+	if src != nil {
+		section("Source", sourceWords(*src))
+	}
+	if src != nil && src.DescriptionFromGitHub {
+		section("Description", quoted.Block(src.quotedSource(src.DescriptionFromItem), "The description", tk.Description))
+	} else {
+		section("Description", tk.Description)
+	}
+	if src != nil && src.Repro != "" {
+		section("Steps to reproduce", quoted.Block(src.quotedSource(true), "The steps to reproduce", src.Repro))
+	}
 	section("Acceptance criteria", tk.Acceptance)
 	section("Constraints", p.Constraints)
 	if len(p.Decisions) > 0 {
@@ -694,6 +850,17 @@ func ticketMarkdown(p Package) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(p.Evidence) > 0 {
+		b.WriteString("## Evidence links\n\nThe ticket's links the plan revision names as evidence:\n\n")
+		for _, e := range p.Evidence {
+			fmt.Fprintf(&b, "- <%s>", quoted.Flat(e.URL))
+			if n := strings.TrimSpace(e.Note); n != "" {
+				fmt.Fprintf(&b, ": %s", quoted.Flat(n))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	if len(p.Attachments) > 0 {
 		fmt.Fprintf(&b, "## Attachments\n\nIn `%s/%s/`, each under the name it was written as:\n\n", taskDir, attachmentsDir)
 		for _, a := range p.Attachments {
@@ -719,6 +886,60 @@ func ticketMarkdown(p Package) string {
 		}
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// sourceWords is ticket.md's Source part. Of a linked item: the item, its
+// page, the account that opened it and where, its state at the launch, when the ticket last
+// read it, its snapshot's SHA-256, and that the system may have changed it
+// since and the run follows the package; of a ticket unlinked before the
+// launch, one line saying so and nothing of an item. Then which texts
+// stand quoted below. The system's name, the reference and the account
+// are written through internal/quoted's cleaning (quoted.Source.Clean), so
+// they read here as in each block's opening line that names the item; the
+// state and its reason are the linked item's words (validateSource); the
+// page through the writer's cleaning, on one line (quoted.Flat).
+func sourceWords(s PackageSource) string {
+	var b strings.Builder
+	if s.Unlinked {
+		b.WriteString("Unlinked from the ticket before the launch: this package states nothing of the item it was linked to.\n\n")
+	} else {
+		c := s.quotedSource(true).Clean()
+		state := s.State
+		if s.StateReason != "" {
+			state += " (" + strings.ReplaceAll(s.StateReason, "_", " ") + ")"
+		}
+		fmt.Fprintf(&b, "- Linked item: %s, <%s>\n", c.Ref, quoted.Flat(s.URL))
+		if c.Author != "" {
+			fmt.Fprintf(&b, "- Opened by: @%s on %s\n", c.Author, c.On)
+		}
+		fmt.Fprintf(&b, "- State at the launch: %s\n", state)
+		if !s.ReadAt.IsZero() {
+			fmt.Fprintf(&b, "- Last read: %s\n", s.ReadAt.UTC().Format(time.RFC3339))
+		}
+		fmt.Fprintf(&b, "- Snapshot SHA-256: %s\n\n", s.SnapshotSha256)
+		fmt.Fprintf(&b, "%s may have changed it since: the run follows this package. ", c.On)
+	}
+	var parts []string
+	if s.TitleFromGitHub {
+		parts = append(parts, "the title")
+	}
+	if s.DescriptionFromGitHub {
+		parts = append(parts, "the description")
+	}
+	if s.Repro != "" {
+		parts = append(parts, "the steps to reproduce")
+	}
+	switch len(parts) {
+	case 0:
+		b.WriteString("The ticket's title and description are Dispatch's.")
+	default:
+		what := parts[0]
+		if n := len(parts); n > 1 {
+			what = strings.Join(parts[:n-1], ", ") + " and " + parts[n-1]
+		}
+		fmt.Fprintf(&b, "Quoted below, each part saying where it was written: %s. Such text is %s.", what, quoted.Untrusted)
+	}
+	return b.String()
 }
 
 // priorityWord is a ticket's priority in words, Dispatch's: 1 low to 4
@@ -761,6 +982,28 @@ func cutTitle(s string) string {
 		s = string([]rune(s)[:maxTicketTitle]) + "…"
 	}
 	return s
+}
+
+// quotedTitle is the ticket's title as task.md names it when it is quoted:
+// cut (cutTitle) and through internal/quoted as a line of its own; ""
+// when it is Dispatch's (task.md then quotes it as a Go string).
+func quotedTitle(p Package) string {
+	if s := p.Source; s != nil && s.TitleFromGitHub {
+		return quoted.Line(s.quotedSource(s.TitleFromItem), "Its title", cutTitle(p.Ticket.Title))
+	}
+	return ""
+}
+
+// packageQuotedWords is what task.md says of package.json when its source
+// marks texts of it as written on GitHub (quotedPackage).
+const packageQuotedWords = "The texts of `" + taskDir + "/" + packageFileName + "` its `source` marks as GitHub's are the same report `" +
+	taskDir + "/" + ticketFile + "` quotes: " + quoted.Untrusted + "."
+
+// quotedPackage reports whether the package's source marks any of its
+// texts as written on its system: the title, the description or the steps.
+func quotedPackage(p Package) bool {
+	s := p.Source
+	return s != nil && (s.TitleFromGitHub || s.DescriptionFromGitHub || s.Repro != "")
 }
 
 // quoteBlock is s as a Markdown block quote.

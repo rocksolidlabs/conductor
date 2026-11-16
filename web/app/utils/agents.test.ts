@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { agentItem, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, serverAgents } from './agents'
+import { agentItem, CHECK_READ_DEADLINE_MS, checkBadge, identity, isAvailable, launchListNote, misidentified, notInstalled, notInstalledBadge, notInstalledTitle, pageRequests, serverAgents, settleChecks } from './agents'
+import type { After } from './capacity'
 
 const agent = (over: Partial<AgentInfo>): AgentInfo => ({ id: 'a', name: 'Agent', command: ['a'], allowArgs: true, ...over })
 
@@ -100,5 +101,171 @@ describe("the Launch dialog's note where its agents go", () => {
     expect(launchListNote({ loading: false, known: 3, offered: 0, onServer: true })).toBe('none-installed')
     expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: true })).toBe('none')
     expect(launchListNote({ loading: false, known: 0, offered: 0, onServer: false })).toBe('none')
+  })
+})
+
+describe('agents still being checked (#704)', () => {
+  it('says what is checked, and that a check given up did not answer, with no state half found', () => {
+    const pending = { ran: false, pending: true, identified: false, verified: true }
+    expect(checkBadge(agent({ command: ['codex'], checking: true }), 'build-1', false)).toEqual({ state: 'checking', label: 'Checking…', title: 'Looking for codex on build-1' })
+    expect(checkBadge(agent({ command: ['codex'], checking: true, identity: pending }), '', false)?.label).toBe('Checking the version…')
+    // Given up, the card says so, whatever the last read left: no spinner, no "Checking the version…".
+    for (const a of [agent({ command: ['codex'], checking: true, identity: pending }), agent({ command: ['codex'] })]) {
+      expect(checkBadge(a, 'build-1', true)).toEqual({
+        state: 'unanswered',
+        label: 'Check did not answer',
+        title: 'The server did not answer the check of codex on build-1; the page checks again when it is opened or refreshed',
+      })
+    }
+    // Settled, or shown from an expired answer while it is read again: the agent's own state is shown.
+    expect(checkBadge(agent({ command: ['codex'] }), '', false)).toBeNull()
+    expect(checkBadge(agent({ command: ['codex'], recheck: true, available: false }), '', false)).toBeNull()
+  })
+
+  /** A read the test answers by hand: one deferred answer per call, in the order they were asked, with the signal it was given. */
+  function reads() {
+    const asked: Array<{ id: string; signal: AbortSignal; answer: (a: { id: string; checking?: boolean }) => void; fail: () => void }> = []
+    const read = (id: string, signal: AbortSignal) =>
+      new Promise<{ id: string; checking?: boolean }>((resolve, reject) => {
+        asked.push({ id, signal, answer: resolve, fail: () => reject(new Error('gone')) })
+        signal.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    return { asked, read }
+  }
+  /** The deadlines' timers, which the test fires by hand. */
+  function timers() {
+    const set: Array<{ ms: number; fn: () => void; on: boolean }> = []
+    const after: After = (ms, fn) => {
+      const t = { ms, fn, on: true }
+      set.push(t)
+      return () => (t.on = false)
+    }
+    return { set, after }
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+  const live = () => new AbortController().signal
+
+  it('fills each agent in as its read answers, two at a time, while a held one waits', async () => {
+    const { asked, read } = reads()
+    const applied: string[] = []
+    const done = settleChecks(['held', 'b', 'c'], read, (a) => applied.push(`${a.id}:${a.checking ? 'checking' : 'known'}`), { signal: live(), gaveUp: () => {} })
+    await tick()
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b'])
+    asked[1]!.answer({ id: 'b' })
+    await tick()
+    // b is known; c takes its place while held is still asked.
+    expect(applied).toEqual(['b:known'])
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b', 'c'])
+    asked[2]!.answer({ id: 'c' })
+    await tick()
+    expect(applied).toEqual(['b:known', 'c:known'])
+    // The held one comes back still checking: it is shown so and asked again.
+    asked[0]!.answer({ id: 'held', checking: true })
+    await tick()
+    expect(applied).toEqual(['b:known', 'c:known', 'held:checking'])
+    expect(asked.map((r) => r.id)).toEqual(['held', 'b', 'c', 'held'])
+    asked[3]!.answer({ id: 'held' })
+    await done
+    expect(applied).toEqual(['b:known', 'c:known', 'held:checking', 'held:known'])
+  })
+
+  it('puts an agent still checking behind the agents not yet read: two slow ones do not hold a ready one', async () => {
+    const { asked, read } = reads()
+    const applied: string[] = []
+    const done = settleChecks(['slow1', 'slow2', 'ready'], read, (a) => applied.push(`${a.id}:${a.checking ? 'checking' : 'known'}`), { signal: live(), gaveUp: () => {} })
+    await tick()
+    asked[0]!.answer({ id: 'slow1', checking: true })
+    asked[1]!.answer({ id: 'slow2', checking: true })
+    await tick()
+    // ready is read before either slow one is read again.
+    expect(asked.map((r) => r.id)).toEqual(['slow1', 'slow2', 'ready', 'slow1'])
+    asked[2]!.answer({ id: 'ready' })
+    await tick()
+    expect(applied).toEqual(['slow1:checking', 'slow2:checking', 'ready:known'])
+    expect(asked.map((r) => r.id)).toEqual(['slow1', 'slow2', 'ready', 'slow1', 'slow2'])
+    asked[3]!.answer({ id: 'slow1' })
+    asked[4]!.answer({ id: 'slow2' })
+    await done
+    expect(applied.slice(3)).toEqual(['slow1:known', 'slow2:known'])
+  })
+
+  it('gives an agent up when its reads run out or one fails, and the others go on', async () => {
+    const { asked, read } = reads()
+    const applied: string[] = []
+    const gaveUp: string[] = []
+    const done = settleChecks(['a', 'b', 'c'], read, (a) => applied.push(a.id), { signal: live(), gaveUp: (id) => gaveUp.push(id), reads: 2 })
+    await tick()
+    asked[1]!.fail()
+    await tick()
+    expect(gaveUp).toEqual(['b'])
+    asked[0]!.answer({ id: 'a', checking: true })
+    await tick()
+    expect(asked.map((r) => r.id)).toEqual(['a', 'b', 'c', 'a'])
+    asked[2]!.answer({ id: 'c' })
+    asked[3]!.answer({ id: 'a', checking: true })
+    await done
+    // Two reads of a, both still checking: it is given up.
+    expect(gaveUp).toEqual(['b', 'a'])
+    expect(applied).toEqual(['a', 'c', 'a'])
+  })
+
+  it('aborts a read past its deadline and gives the agent up', async () => {
+    const { asked, read } = reads()
+    const t = timers()
+    const gaveUp: string[] = []
+    const done = settleChecks(['never', 'b'], read, () => {}, { signal: live(), gaveUp: (id) => gaveUp.push(id), after: t.after })
+    await tick()
+    expect(t.set.map((x) => x.ms)).toEqual([CHECK_READ_DEADLINE_MS, CHECK_READ_DEADLINE_MS])
+    asked[1]!.answer({ id: 'b' })
+    await tick()
+    // b's deadline was cancelled by its answer; never's fires.
+    expect(t.set.map((x) => x.on)).toEqual([true, false])
+    t.set[0]!.fn()
+    await done
+    expect(asked[0]!.signal.aborted).toBe(true)
+    expect(gaveUp).toEqual(['never'])
+  })
+
+  it('aborts the reads under way when its signal is, and applies, gives up or asks nothing after', async () => {
+    const { asked, read } = reads()
+    const ctl = new AbortController()
+    const late: string[] = []
+    const done = settleChecks(['x', 'y', 'z'], read, (a) => late.push(a.id), { signal: ctl.signal, gaveUp: (id) => late.push(`gave up:${id}`) })
+    await tick()
+    ctl.abort()
+    await done
+    expect(asked.map((r) => [r.id, r.signal.aborted])).toEqual([
+      ['x', true],
+      ['y', true],
+    ])
+    expect(late).toEqual([])
+  })
+
+  it("starts each read's generation over the one before, and hands on answers only while the page lives", async () => {
+    const requests = pageRequests()
+    const first = requests.next()
+    const second = requests.next()
+    expect([first.aborted, second.aborted]).toEqual([true, false])
+    await expect(requests.live(Promise.resolve('hidden'))).resolves.toBe('hidden')
+    await expect(requests.live(Promise.reject(new Error('refused')))).rejects.toThrow('refused')
+    expect(requests.left()).toBe(false)
+  })
+
+  it('once the page is left, aborts its reads, starts none, and lets no answer still to come settle (Codex round 2)', async () => {
+    const requests = pageRequests()
+    const gen = requests.next()
+    let answer = (_: string) => {}
+    let refuse = (_: Error) => {}
+    const settled: string[] = []
+    requests.live(new Promise<string>((r) => (answer = r))).then((v) => settled.push(`answered:${v}`), () => settled.push('failed'))
+    requests.live(new Promise<string>((_, r) => (refuse = r))).then(() => settled.push('answered'), (e: Error) => settled.push(`failed:${e.message}`))
+    requests.end()
+    expect(requests.left()).toBe(true)
+    expect(gen.aborted).toBe(true)
+    expect(requests.next().aborted).toBe(true)
+    answer('hidden')
+    refuse(new Error('refused'))
+    await tick()
+    expect(settled).toEqual([])
   })
 })
