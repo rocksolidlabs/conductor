@@ -24,13 +24,16 @@ export interface TaskGraphData {
   edges: GraphEdge[]
 }
 
+/** What a task's depth reads of it: a run's task, a crew's task shape and a member as its needs all are one. */
+export type DepthNode = Pick<RunTask, 'id' | 'needs'>
+
 /** Each task's column, and the warnings for needs that cannot be drawn. */
-export function taskDepths(tasks: readonly RunTask[]): { depth: Map<string, number>; warnings: Map<string, string> } {
+export function taskDepths(tasks: readonly DepthNode[]): { depth: Map<string, number>; warnings: Map<string, string> } {
   const byId = new Map(tasks.map((t) => [t.id, t]))
   const depth = new Map<string, number>()
   const warnings = new Map<string, string>()
   const visiting = new Set<string>()
-  const visit = (t: RunTask): number => {
+  const visit = (t: DepthNode): number => {
     const known = depth.get(t.id)
     if (known !== undefined) return known
     if (visiting.has(t.id)) {

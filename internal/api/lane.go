@@ -285,6 +285,21 @@ type Lane struct{ s *Server }
 // Lane is the server's lane, which a publisher hands its connections.
 func (s *Server) Lane() *Lane { return &Lane{s: s} }
 
+// LinkEnded is why this server's link store no longer opens linkID
+// (hostagent.Decisions), in one read of it (share.Store.Live): revoked
+// from its mark, or kept as ended with its forgotten run; expired once
+// past its expiry on this server's clock. A link it does not hold is not
+// ended.
+func (l *Lane) LinkEnded(linkID string) error {
+	switch _, err := l.s.links.Live(linkID); {
+	case errors.Is(err, share.ErrExpired):
+		return session.ErrExpired
+	case errors.Is(err, share.ErrRevoked):
+		return session.ErrRevoked
+	}
+	return nil
+}
+
 // SetSwitchyardDecisions says whether this server's host connections say,
 // in their registered, that it carries a decision link's lane
 // (signal.Hub.SetDecisions). The serve command says so: its embedded join
@@ -1576,8 +1591,17 @@ func (s *Server) armLapse(linkID string, at time.Time, fire func()) (stop func()
 	return func() { t.Stop() }
 }
 
+// linkEndedWhy is why a desk's viewers of linkID are ended, as the store
+// holds the link: expired, else revoked.
+func (s *Server) linkEndedWhy(linkID string) error {
+	if _, err := s.links.Live(linkID); errors.Is(err, share.ErrExpired) {
+		return session.ErrExpired
+	}
+	return session.ErrRevoked
+}
+
 // closeDesks closes the desks of the links named, each as its link stands
-// (expired, else revoked), or every desk with why when no link is named.
+// (linkEndedWhy), or every desk with why when no link is named.
 func (s *Server) closeDesks(why error, linkIDs ...string) {
 	s.lanes.mu.Lock()
 	var todo []*wsSink
@@ -1588,10 +1612,7 @@ func (s *Server) closeDesks(why error, linkIDs ...string) {
 		}
 		reason := why
 		if reason == nil {
-			reason = session.ErrRevoked
-			if _, err := s.links.Live(id); errors.Is(err, share.ErrExpired) {
-				reason = session.ErrExpired
-			}
+			reason = s.linkEndedWhy(id)
 		}
 		for c := range conns {
 			todo, reasons = append(todo, c), append(reasons, reason)
