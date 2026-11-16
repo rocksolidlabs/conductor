@@ -38,7 +38,7 @@ function openExited() {
         <span class="rounded-full bg-warning px-1.5 text-[10px] font-semibold leading-4 text-inverted" data-rail-count="needs">{{ rail.needs }}</span>
       </UTooltip>
       <UTooltip v-if="rail.news" :text="`${rail.news} with new events or unread chat`" :content="{ side: 'right' }">
-        <span class="rounded-full bg-elevated px-1.5 text-[10px] font-semibold leading-4 text-muted" data-rail-count="news">{{ rail.news }}</span>
+        <span class="rounded-full bg-default px-1.5 text-[10px] font-semibold leading-4 text-muted" data-rail-count="news">{{ rail.news }}</span>
       </UTooltip>
     </div>
     <UTooltip text="Launch agent" :kbds="['N']" :content="{ side: 'right' }">
@@ -52,14 +52,14 @@ function openExited() {
         <UTooltip v-if="it.shape === 'capsule'" :text="it.label" :content="{ side: 'right' }">
           <div
             class="flex w-full flex-col items-center gap-1 rounded-full border px-0.5 py-1"
-            :class="it.dashed ? 'border-dashed border-accented' : 'border-default bg-elevated/40'"
+            :class="it.dashed ? 'border-dashed border-accented' : 'border-default bg-default'"
             :data-rail-run="it.id.slice(4)"
             :data-rail-dashed="it.dashed ? '' : undefined"
           >
-            <NuxtLink :to="it.to" class="relative grid size-5 place-items-center rounded-full hover:bg-elevated" :aria-label="it.label" :aria-current="$route.path === it.to ? 'page' : undefined">
+            <NuxtLink :to="it.to" class="relative grid size-5 place-items-center rounded-full hover:bg-canvas-hover" :aria-label="it.label" :aria-current="$route.path === it.to ? 'page' : undefined">
               <UIcon name="i-lucide-play" class="size-3.5" :class="it.amber && needsDot ? 'text-warning' : 'text-muted'" :data-rail-play="it.amber && needsDot ? 'needs' : undefined" />
               <!-- The run's own unread chat (design 2g), bottom right of the play icon. -->
-              <span v-if="it.chat" class="absolute -bottom-1 -right-1.5 grid min-w-3.5 place-items-center rounded-full bg-elevated px-0.5 text-[8px] font-semibold leading-3.5 text-highlighted ring-2 ring-default" :data-rail-news="it.chat" aria-hidden="true">{{ it.chat }}</span>
+              <span v-if="it.chat" class="absolute -bottom-1 -right-1.5 grid min-w-3.5 place-items-center rounded-full bg-default px-0.5 text-[8px] font-semibold leading-3.5 text-highlighted ring-2 ring-default" :data-rail-news="it.chat" aria-hidden="true">{{ it.chat }}</span>
             </NuxtLink>
             <SidebarRailSquare v-for="m in it.members" :key="m.id" :shape="m" :needs-dot="needsDot" member />
           </div>
@@ -67,7 +67,7 @@ function openExited() {
         <SidebarRailSquare v-else :shape="it" :needs-dot="needsDot" />
       </template>
       <UTooltip v-if="rail.exitedFolded" :text="`${rail.exitedFolded} exited · open the sidebar on them`" :content="{ side: 'right' }">
-        <button type="button" class="grid size-6 place-items-center rounded-md border border-dashed border-accented font-mono text-[10px] text-muted hover:bg-elevated/60" :aria-label="`${rail.exitedFolded} exited, open the sidebar on them`" data-rail-exited @click="openExited">+{{ rail.exitedFolded }}</button>
+        <button type="button" class="grid size-6 place-items-center rounded-md border border-dashed border-accented font-mono text-[10px] text-muted hover:bg-canvas-hover" :aria-label="`${rail.exitedFolded} exited, open the sidebar on them`" data-rail-exited @click="openExited">+{{ rail.exitedFolded }}</button>
       </UTooltip>
     </div>
   </div>
