@@ -435,6 +435,56 @@ func TestExpireDue(t *testing.T) {
 	}
 }
 
+// A sweep tells its due links' hooks at once: a session link's hook that
+// waits (for its viewers' closes, held here at a gate) holds no other
+// link's, so a run link due in the same sweep is told meanwhile; the sweep
+// returns once both hooks have returned.
+func TestASweepTellsItsDueLinksTogether(t *testing.T) {
+	s := NewStore()
+	if _, _, err := s.Create("sess", session.RoleControl, "phone", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateRunLink("run", session.RoleControl, "tablet", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	held, gate, told := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	s.OnRevoke = func(string, string) {
+		close(held)
+		<-gate
+	}
+	s.OnRevokeRun = func(string, string) { close(told) }
+	swept := make(chan int, 1)
+	go func() { swept <- s.ExpireDue(time.Now().Add(time.Hour)) }()
+	bound := time.After(20 * time.Second)
+	select {
+	case <-held:
+	case <-bound:
+		t.Fatal("the session link's hook was never told")
+	}
+	select {
+	case <-told:
+	case <-bound:
+		close(gate)
+		t.Fatal("the run link's hook waits for the session link's hook")
+	}
+	// The session link's hook is held at its gate: the sweep cannot have
+	// returned.
+	select {
+	case n := <-swept:
+		t.Fatalf("the sweep returned (told %d) with a hook held", n)
+	default:
+	}
+	close(gate)
+	select {
+	case n := <-swept:
+		if n != 2 {
+			t.Fatalf("the sweep told %d links, want 2", n)
+		}
+	case <-bound:
+		t.Fatal("the sweep never returned once its hooks had")
+	}
+}
+
 // SetGroup says which links it changed and which sessions they no longer
 // name, so the viewers attached to those through them can be closed; the
 // links name the new group's sessions alone from then on.
