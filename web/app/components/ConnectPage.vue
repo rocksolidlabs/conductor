@@ -5,7 +5,8 @@
 // unmounted (layouts/default.vue), so a refusal in the middle of work loses nothing.
 const admin = useWorkbenchToken()
 const draft = ref('')
-const refused = computed(() => admin.standing.value === 'refused')
+/** The server refused the token this page holds. A page that holds none is asked for one, never told that one was refused. */
+const refused = computed(() => admin.standing.value === 'refused' && admin.hasToken.value)
 
 // The field starts from the token this browser keeps (none in the desktop app), as the dialog's does.
 onMounted(() => (draft.value = admin.kept()))

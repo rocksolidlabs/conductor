@@ -208,3 +208,13 @@ test('a refusal while Alerts or the Launch dialog is open closes it: the page to
     await page.context().close()
   }
 })
+
+test('a browser that keeps no token is asked for one, never told that the server refused a token it keeps', async ({ browser, state }) => {
+  budget(6 * STEP_MS)
+  // Brakeman's page reads at once, with no token: the server answers 401, and the store marks the refusal.
+  const page = await dayPage(browser, { ...DESK, token: false, path: '/brakeman', ready: '[data-connect-page]', server: state })
+  await expect(page.locator('[data-connect-page][data-standing="refused"]')).toBeVisible()
+  await expect(tokenAsk(page)).toContainText('This server asks for its workbench token before it shows anything.')
+  await expect(tokenAsk(page).locator('[data-connect-refused]')).toHaveCount(0)
+  await expect(field(page)).toHaveValue('')
+})
