@@ -237,13 +237,14 @@ async function confirm() {
     <p v-if="!tasks.length" class="text-sm text-muted">No tasks.</p>
     <ol v-else class="flex flex-col gap-1.5" data-task-rows>
       <li v-for="t in tasks" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
+        <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, a link) keeps its own key. -->
         <div
           class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-sm"
           :class="selected === t.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30'"
           role="button"
           tabindex="0"
           @click="emit('select', selected === t.id ? '' : t.id)"
-          @keydown.enter.prevent="emit('select', t.id)"
+          @keydown.enter.self.prevent="emit('select', t.id)"
         >
           <span class="size-2 flex-none rounded-full" :class="taskDot(t.state)" aria-hidden="true" />
           <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />

@@ -204,7 +204,7 @@ test('a gate for the architecture owner and an assignment for ana: proposed, rev
   const applied = await decisionUntil(api, schema, 'applied')
   expect(applied.applied).toMatchObject({ how: 'released', tasks: ['build'] })
   await expect(modal.locator('[data-decision-answer-for]')).toHaveText('nate, the architecture owner', { timeout: 30_000 })
-  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
   const started = await runUntil(api, runId, (r) => task(r, 'build').attempts > 0, 'build starts once its gate is approved')
   expect(task(started, 'docs').attempts).toBe(0)
@@ -226,7 +226,7 @@ test('a gate for the architecture owner and an assignment for ana: proposed, rev
   await card.locator('[data-decision-confirm]').click()
   await expect(card.locator('[data-decision-receipt]')).toContainText(`Recorded: ${migrate} answered by Nate for ana`)
   expect((await decisionUntil(api, migrate, 'applied')).applied).toMatchObject({ how: 'released', tasks: ['docs'] })
-  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
   // The page reads itself again on the decision's event: the assignment is gone from it.
   await expect(item).toHaveCount(0, { timeout: 30_000 })

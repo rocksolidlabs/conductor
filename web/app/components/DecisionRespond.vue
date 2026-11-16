@@ -4,7 +4,8 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
- * button per option; a clarification's text beside them), a rationale, Comment and Ask for more (disabled, with the record's words,
+ * button per option, the recommended one marked on it and each option's tradeoffs in a line under them, UX1 PR-20; a clarification's
+ * text beside them), a rationale, Comment and Ask for more (disabled, with the record's words,
  * when no live agent asked it). An approval's and an assignment's answer is asked first: the choice, then Confirm, which sends it
  * against the rev the card showed when it was picked. The receipt is shown (Recorded); a refusal is shown in the server's words (who
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
@@ -12,7 +13,7 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
  * (useDecisionRecord's), so a reply from before the stream came back is dropped (Codex's round 3 on #719).
  */
 const props = defineProps<{ decision: Decision; begin: () => (decision: Decision) => void }>()
-const emit = defineEmits<{ read: [] }>()
+const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
 
 const { request } = useApi()
 const identity = useIdentity()
@@ -40,6 +41,11 @@ const commentBusy = ref(false)
 /** The controls show while it is open, and while a picked choice waits for Confirm whatever happened since. */
 const answering = computed(() => d.value.state === 'open' || !!pending.value)
 const moved = computed(() => !!pending.value && (d.value.state !== 'open' || d.value.rev !== pending.value.rev))
+// Whether the buttons are drawn, said to the card above (UX1 PR-20): while they are, they are the one list of choices.
+watch(answering, (shown) => emit('controls', shown), { immediate: true })
+onBeforeUnmount(() => emit('controls', false))
+/** The options that say what they cost, in order: one muted line each under the buttons. */
+const tradeoffs = computed(() => options.value.flatMap((o, i) => (o.tradeoffs ? [{ i, label: o.label, tradeoffs: o.tradeoffs }] : [])))
 
 function pick(i: number) {
   refusal.value = ''
@@ -114,42 +120,57 @@ watch(
 <template>
   <section class="flex min-w-0 flex-col gap-2" data-decision-respond :data-decision-id="decision.id">
     <template v-if="answering">
+      <!-- The buttons are the choices (UX1 PR-20, invariant 6): each label whole, wrapped inside its button, a run with no space
+           (a hash) broken anywhere, never cut; the buttons wrap, a choice longer than the row taking a row of its own; 44 px each
+           way under touch (invariant 8). -->
       <div class="flex flex-wrap gap-2" data-decision-choices>
         <UButton
           v-for="(o, i) in options"
           :key="i"
           :label="o.label"
           size="sm"
+          class="max-w-full max-lg:min-h-11 max-lg:min-w-11"
+          :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }"
           :color="(pending?.choice ?? picked) === i ? 'primary' : 'neutral'"
           :variant="(pending?.choice ?? picked) === i ? 'solid' : i === best ? 'soft' : 'outline'"
           :disabled="busy"
           :data-decision-choice="i"
           :data-decision-choice-label="o.label"
+          :data-decision-recommended="i === best ? '' : undefined"
           @click="pick(i)"
-        />
+        >
+          <template v-if="i === best" #trailing>
+            <UBadge label="recommended" color="neutral" variant="subtle" size="sm" class="shrink-0" data-decision-recommended-mark />
+          </template>
+        </UButton>
       </div>
+      <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
+      <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
+        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i"><span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}</li>
+      </ul>
       <UTextarea v-if="decision.type === 'clarification'" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy" data-decision-text />
       <UTextarea v-model="rationale" :rows="1" autoresize placeholder="Why (optional, kept with the answer)…" :maxlength="2000" :disabled="busy" data-decision-rationale />
 
       <div v-if="pending" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
-        <p class="text-sm">
-          Answer {{ decision.id }} <span class="font-semibold">{{ options[pending.choice]?.label }}</span>?
+        <p class="text-sm wrap-anywhere">
+          Answer {{ decision.id }} <span class="font-semibold" data-decision-confirm-choice>{{ options[pending.choice]?.label }}</span>?
           <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
         </p>
         <p v-if="answerAsWords(decision)" class="text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">
-          <UButton label="Back" color="neutral" variant="ghost" size="sm" :disabled="busy" data-decision-back @click="pending = null" />
-          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
+          <UButton label="Back" color="neutral" variant="ghost" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="busy" data-decision-back @click="pending = null" />
+          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
         </div>
       </div>
       <div v-else-if="!confirms" class="flex items-center justify-end gap-2">
         <span v-if="answerAsWords(decision)" class="mr-auto text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</span>
-        <UButton label="Answer" icon="i-lucide-send" color="primary" size="sm" :disabled="!canSend" :loading="busy" data-decision-send @click="send(picked, decision.rev)" />
+        <UButton label="Answer" icon="i-lucide-send" color="primary" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="!canSend" :loading="busy" data-decision-send @click="send(picked, decision.rev)" />
       </div>
     </template>
 
-    <p v-if="receipt" class="rounded-md bg-success/10 p-2 text-sm text-success" data-decision-receipt>{{ receipt.words }}<span v-if="receipt.k" class="font-mono text-xs text-muted"> · receipt {{ receipt.decision }}/{{ receipt.k }}</span></p>
+    <!-- Done, in neutral ink with its check, as a done step is (UX1 PR-20, invariant 7: green is a live agent's alone). -->
+    <p v-if="receipt" class="flex items-start gap-1.5 rounded-md bg-elevated/40 p-2 text-sm text-default" data-decision-receipt><UIcon name="i-lucide-circle-check" class="mt-0.5 size-4 flex-none" data-decision-receipt-mark /><span class="min-w-0 break-words">{{ receipt.words }}<span v-if="receipt.k" class="font-mono text-xs text-muted"> · receipt {{ receipt.decision }}/{{ receipt.k }}</span></span></p>
     <div v-if="refusal" class="flex flex-wrap items-center gap-2 rounded-md bg-error/10 p-2 text-sm text-error" data-decision-refusal>
       <span class="min-w-0 flex-1 break-words" data-decision-refusal-words>{{ refusal }}</span>
       <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" data-decision-read-again @click="readAgain" />

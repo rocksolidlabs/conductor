@@ -115,7 +115,7 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   await expect(gateRow).toBeVisible({ timeout: 30_000 })
   const card = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
   const closeCard = async () => {
-    await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+    await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
     await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
   }
   // Each pill by what it shows: the one it replaces leaves through its transition while the next comes in.
@@ -157,6 +157,14 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   await record.locator(`[data-ticket-decision-open="${id}"]`).click()
   const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
   await expect(modal.locator('[data-decision-question]')).toHaveText('May deploy go out?')
+  // UX1 PR-20: one set of choices, the buttons; what a yes lets happen in the gate's own sentence; Details open for a plan's
+  // approval, with the id and where it comes from.
+  await expect(modal.locator('[data-decision-choice]')).toHaveCount(2)
+  await expect(modal.locator('[data-decision-option]')).toHaveCount(0)
+  await expect(modal.locator('[data-decision-authorizes-line]')).toHaveText('Approve lets deploy start; Reject cancels it.')
+  await expect(modal.locator('[data-decision-details-toggle]')).toHaveAttribute('aria-expanded', 'true')
+  await expect(modal.locator('[data-decision-card-id]')).toHaveText(id)
+  await expect(modal.locator('[data-decision-from-plan]')).toContainText('From the plan')
   await expect(modal.locator('[data-decision-more]')).toBeDisabled()
   await expect(modal.locator('[data-decision-more-why]')).toHaveText(`${id} is the plan's: no agent asked it, comment instead`)
   await modal.locator('[data-decision-choice-label="Approve"]').click()
@@ -165,7 +173,7 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   const applied = await decisionUntil(api, id, 'applied')
   expect(applied.applied).toMatchObject({ how: 'released', tasks: ['deploy'] })
   await expect(modal.locator('[data-decision-state-words]')).toHaveText('Applied: released deploy', { timeout: 30_000 })
-  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(record).toHaveAttribute('data-decision-state', 'applied', { timeout: 30_000 })
 
   // deploy is released: it runs and succeeds, and so does the run.
@@ -211,7 +219,7 @@ test("a second run of the revision: the operator rejects its gate on the run pag
   const applied = await decisionUntil(api, id, 'applied')
   expect(applied.applied).toMatchObject({ how: 'cancelled', tasks: ['deploy'], words: 'cancelled deploy' })
   await expect(modal.locator('[data-decision-state-words]')).toHaveText('Applied: cancelled deploy', { timeout: 30_000 })
-  await page.getByRole('dialog', { name: /^Decision dr-/ }).getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
 
   // deploy is cancelled with the rejection's words, never started; build keeps its result; the run ends cancelled.
