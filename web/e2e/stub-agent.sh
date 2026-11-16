@@ -1379,9 +1379,10 @@ dialog_end() {
 # STUB_DIALOG_PROBE names a file: each time it is drawn it prints "probe
 # draw N" and the terminal's mode as it draws (whether it echoes, whether
 # it holds a line, whether a resize is trapped), it writes each key it
-# reads into that file (printf %q, one a row) until a q, a w making each
-# later read wait 30 s at a time, and prints "probe end" once the dialog
-# has ended.
+# reads into that file (printf %q, one a row) until a q, after which it
+# waits (30 s at most) for a resize before the dialog ends, so that the
+# dialog ends with a resize noted after its last key, and prints "probe
+# end" once the dialog has ended.
 probe_draws=0
 probe_draw() {
 	local mode echo=on icanon=on winch=no
@@ -1393,11 +1394,14 @@ probe_draw() {
 	dialog_draw "probe draw $probe_draws: echo $echo, icanon $icanon, resize $winch"$'\n'
 }
 dialog_probe() {
+	local i=0
 	dialog_begin probe_draw
 	while dialog_key probe_draw; do
 		printf '%q\n' "$key" >>"$1"
-		[[ $key == w ]] && dialog_wait=30
 		[[ $key == q ]] && break
+	done
+	while [[ -z $dialog_resized ]] && ((i++ < 3000)); do
+		sleep 0.01
 	done
 	dialog_end probe_draw
 	printf 'probe end\n'

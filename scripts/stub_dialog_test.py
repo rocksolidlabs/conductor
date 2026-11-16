@@ -5,8 +5,8 @@
 The stub's probe dialog (STUB_DIALOG_PROBE) is driven through a pty with its
 read's timer made short (STUB_DIALOG_WAIT): every key is read, an Enter as
 much as any other byte, each sent as the read's timer ends; none is echoed;
-a resize sent as the dialog is first drawn is drawn; a resize that comes
-with the dialog's last key is drawn before the dialog ends.
+a resize sent as the dialog is first drawn is drawn; a resize noted after
+the dialog's last key is read is drawn as the dialog ends.
 """
 
 import fcntl
@@ -116,18 +116,17 @@ class StubDialogKeysTest(unittest.TestCase):
                     os.write(probe.fd, key)
                     sent.append(key)
                     probe.pump(random.uniform(0.9 * WAIT, 1.1 * WAIT))
-                # A resize with the key that ends the dialog, both during one
-                # read: w makes the reads after it wait 30 s at a time.
-                os.write(probe.fd, b"w")
-                sent.append(b"w")
-                end = time.monotonic() + HANG
-                while not read_keys(keys)[-1:] == ["w"]:
-                    if time.monotonic() > end:
-                        raise AssertionError("the stub never read w")
-                    probe.pump(0.01)
-                probe.resize(24, 80)
+                # The key that ends the dialog, then, once it is read, a
+                # resize: the probe holds the dialog's end until the resize
+                # is noted, so the dialog ends with it pending.
                 os.write(probe.fd, b"q")
                 sent.append(b"q")
+                end = time.monotonic() + HANG
+                while not read_keys(keys)[-1:] == ["q"]:
+                    if time.monotonic() > end:
+                        raise AssertionError("the stub never read q")
+                    probe.pump(0.01)
+                probe.resize(24, 80)
                 probe.until("probe end")
             finally:
                 probe.close()
@@ -137,11 +136,11 @@ class StubDialogKeysTest(unittest.TestCase):
             self.assertEqual(read, want)
             # Nothing but the dialog's draws, each with the terminal echoing
             # nothing and handing each byte over, and the resize trapped
-            # from the first draw: no key echoed. The resize with the last
-            # key is drawn before the dialog ends (as it ends, once nothing
-            # more is trapped, or at the read's next turn).
+            # from the first draw: no key echoed. The resize noted after the
+            # last key is drawn as the dialog ends, once nothing more is
+            # trapped.
             mode = "echo off, icanon off, resize"
-            self.assertRegex(probe.text(), f"^probe draw 1: {mode} trapped\r\nprobe draw 2: {mode} trapped\r\nprobe draw 3: {mode} (trapped|no)\r\nprobe end\r\n$")
+            self.assertRegex(probe.text(), f"^probe draw 1: {mode} trapped\r\nprobe draw 2: {mode} trapped\r\nprobe draw 3: {mode} no\r\nprobe end\r\n$")
 
 
 def read_keys(path):

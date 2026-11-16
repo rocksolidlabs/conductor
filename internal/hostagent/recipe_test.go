@@ -218,7 +218,12 @@ func TestAHostedSessionIsNotAskedCodexsToolApprovalForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	hs := httptest.NewServer(srv.Handler())
-	t.Cleanup(hs.Close)
+	t.Cleanup(func() {
+		hs.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
 	asked := func(d session.Driver, what string) session.Attention {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
