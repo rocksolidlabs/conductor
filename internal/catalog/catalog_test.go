@@ -1142,7 +1142,7 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 7 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 8 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
 	}
 	// The background-server question picks on a digit, and the update question skips on Escape: no answer
@@ -1200,7 +1200,8 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
 		// Answers read off the screen are a question asked at any time's,
-		// with no answers of its own; the mode pattern is a pattern.
+		// with answers of its own only with words (a form's top row); the
+		// mode pattern is a pattern.
 		{{Prompt: "Ready\\?", AnswersFromScreen: true}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Yes", Input: "1"}}}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "("}},
@@ -1215,7 +1216,8 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"},
+		{Prompt: "Allow\\?", Words: "^Field 1/1", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Cancel", Input: "\x1b"}}}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
 	}

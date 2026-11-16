@@ -398,5 +398,6 @@ test("at a phone's width (390 px) the list's rows wrap, the board scrolls sidewa
   const head = await phone.locator('[data-ticket-title]').boundingBox()
   const properties = await phone.locator('[data-ticket-properties]').boundingBox()
   expect(head && properties && properties.y > head.y && properties.x < 60).toBe(true)
-  await noSideways(phone)
+  // The strip of sections is one line that scrolls sideways inside itself by design; nothing else does.
+  await noSideways(phone, { allow: phone.locator('[data-ticket-strip]') })
 })

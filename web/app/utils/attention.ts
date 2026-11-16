@@ -87,13 +87,29 @@ export function choiceKey(o: AttentionOption, i: number): number | undefined {
   return o.mode || i >= 9 ? undefined : i + 1
 }
 
-/** The choice a page offers first, highlighted: the first that does not change the permission mode (#288); -1 for none. */
-export function firstChoice(options: AttentionOption[] | undefined): number {
-  return options?.findIndex((o) => !o.mode) ?? -1
+const RECOMMENDED = /\(recommended\)$/i
+
+/**
+ * The choice a page draws filled: the one the agent itself marks, its label (trimmed) ending "(Recommended)" in any case. Never one
+ * that changes the permission mode (#288); -1 when none says it or more than one does, so that a doubt draws every choice alike. A
+ * label cut short (the server's 60-character bound) loses the mark, and nothing is filled.
+ */
+export function recommendedChoice(options: AttentionOption[] | undefined): number {
+  let found = -1
+  for (const [i, o] of (options ?? []).entries()) {
+    if (!RECOMMENDED.test(o.label.trim())) continue
+    if (o.mode || found !== -1) return -1
+    found = i
+  }
+  return found
 }
 
-/** What a choice that changes the session's permission mode says on hover. */
-export const MODE_CHOICE = "Changes the session's permission mode"
+/**
+ * What a mode answer says on hover, true of every one the catalog marks (#716): Claude Code's switch to auto mode, accept edits
+ * and bypass permissions, Codex's Allow for this session and Always allow, which remembers the approval for later tool calls
+ * and changes no permission mode.
+ */
+export const MODE_CHOICE = 'Allows from now on, not this request alone'
 
 /**
  * The attention as the pages read it (#258): a question keys typed in the terminal have answered (`answered`) is no question to

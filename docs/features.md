@@ -120,7 +120,7 @@ that order.
 | Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
 |---|---|---|---|---|---|---|---|---|---|
 | Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
-| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11) | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session (a host is not sent the form), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
 | Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse` (working; a `toolCall` without the `error` field) / `PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
 | Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `userPromptSubmitted`/`preToolUse` (working), `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
 | Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `beforeSubmitPrompt`/`preToolUse` (working), `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
@@ -257,6 +257,37 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **One shape for a page with nothing in it (#937; the UX review's P23,
+  first half).** A page with nothing to show says what the page is (its
+  sentence from the pages' table), why it is empty and what fills it, and
+  the action that fills it with its key, through one component,
+  `PageEmpty`; while it reads it says so with a spinner, a first read that
+  failed shows the server's words and Read again, and a thing not found
+  shows the way back. `pageState` decides which (`web/app/utils/pageState.ts`):
+  content wins over an error beside it, and empty needs a read, so the Yard,
+  the Roundhouse, the home and the sidebar's line never draw their empty
+  picture before the sessions are read. The welcome is the home's alone;
+  the Yard says "Nothing is running…" with Launch agent and a link to the
+  README's Quick start; a focused session that went is not found, with its
+  record. History with nothing typed and nothing kept says "No session is
+  kept yet."; its search caption folds to "About this page" (`PageAbout`)
+  once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
+  `history.test.ts`).
+- **A session page where the terminal has the room (the UX review, P11, D7,
+  D9; #934).** The inspector is closed until a view is opened, one choice for
+  every session under `conductor.inspectorOpen` (the old `conductor.inspector`
+  is no longer read), and the rail's toggle opens it on Explorer. The line
+  under the name is agent · folder · branch (`sessionHeadline`), the whole
+  path its tooltip, the ids in More. Share is an outline button like Files and
+  More. The connection badge is its icon alone while open, its words as label
+  and tooltip (`transportLook`, the session page only). A reply choice is
+  filled only when its label ends "(Recommended)" (`recommendedChoice`; none
+  when two say it, never a mode choice). A session the server answers 404
+  for opens on its record's name with Open its record, or says nothing is
+  kept, with no control that cannot work (`gonePage`). Below `sm` Files,
+  Share and Fullscreen move into More. Tests: `attention.test.ts`,
+  `sessions.test.ts`, `transport/look.test.ts`; `session-page.spec.ts`,
+  `inspector-rail.spec.ts`, `hscroll.spec.ts`.
 - **The app's screens: eight defects the owner met (#702, #706, #906,
   2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
   wait for the open pull requests that hold their files.
@@ -340,6 +371,27 @@ open deferred item from rounds 1 and 2, then the features below.
   aligned before and after a selection, a phone's lines, the chips and
   the address, the keys paused while Filter is open);
   `dispatchQuery.test.ts` and `markdown.test.ts`.
+- **A Dispatch ticket's strip of sections; a plan folds once approved (UX1
+  PR-16, #931, 2026-11-16).** Under a ticket's title a strip names its
+  sections, Description, Acceptance, Plan, Runs, Decisions, To close,
+  People, Comments and History, each with its state where it has one
+  ("Plan approved", "Runs 2 of 6 done · 2 need you", "Decisions 2 open",
+  "Comments 3", "50+" past the newest page), from what the page reads
+  already (`ticketSections` and `ticketWaits` in
+  `web/app/utils/ticketSections.ts`, the waits filtered from the one list
+  of what needs you; a run's done part from `summaryDoneWords`, the
+  counts the run card shows, until the run words of UX1 PR-10 replace
+  it). It stays at the top as the page scrolls, on a
+  background of its own; a press brings its section up under it with the
+  focus, and the properties aside stays under it. The Review view has no
+  strip. An approved revision whose approval holds is folded to one line
+  of what the approval covers ("2 members · 3 tasks · 4 checks · from
+  1a2b3c4d5e6f · Yolo off", `planFold`) with "Show the whole plan", opened
+  for the page; a proposed, stale or superseded one stays open. Each
+  member's command is printed once, in the plan: the "Arguments:" line
+  and People's command lines are gone, People linking to the Plan.
+  Tests: `ticket-strip.spec.ts` on a server of its own, `ticketSections`
+  and `planFold` in vitest, `dispatch-delivery.spec.ts`'s People check.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
@@ -3038,9 +3090,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
   id, a reply lost to the network is asked for once more with the same id,
   a refusal's words come from the receipt; `useTaskCommands` for the toasts).
-  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
-  `paused` instead of the member counts, and has a Pause / Resume button for
-  the dispatch (a receipt too). The grid's tiles say the member's task
+  The header has two rows (`CrewRunHeader.vue`, UX1's PR-9). Row one: the
+  run's name, whole from 1024 px up (below it the label and the short id
+  give way first), one ticket chip ("Launched from CND-12 · plan r3", or the
+  linked ticket's when the run was not launched from one; both only when
+  they name two tickets, `runTicketChips`), then Chat with its unread
+  count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
+  (neutral until its confirm), one menu ("More for this run": Add agent and
+  Share) and full screen. Row two, at every width: what the run is doing
+  (a managed run's task badges, a run of members' counts), "scheduling paused" with the pause's words,
+  "cleaning up", the people, the Logins, who launched the run with the
+  launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
   (Tasks unless switched; the choice kept with the graph's preferences): one
   node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
@@ -7732,6 +7792,13 @@ picked.
   it the last hour as bars, where events go, who reports), Routing (the ten
   events grouped by how loud they are, destinations as switches) and
   Integrations (a table, the snippet of an agent nothing wires open below).
+  Since the UX review's P12 (PR-27) the table and the Conductor skill are
+  the Agents page's section Reporting to Conductor: each card there says
+  whether its agent reports (Reports to Conductor, Not set up with a Set up
+  link to its adapter's row, Experimental, No hooks), by one rule
+  (`reportStatus`) that the table and the feed's Reporting list read too,
+  with installed and injected drawn neutral; `/events?tab=integrations`
+  opens the section, and the palette's row is "Agents · Reporting".
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers

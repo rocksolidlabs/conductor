@@ -125,6 +125,64 @@ test("an Alt chord typed at Codex's update question never lets the member's prom
   }
 })
 
+// An Escape typed at Codex's update question in a terminal narrower than the session's 80 columns (a page of 1280 by 800 with
+// touch: 72 columns) answers it, and the question goes once the dialog has: Codex draws its view again, erased whole, when its
+// window is resized, as the stub now does, so the screen made narrower reads whole. (Found beside #716: the stub drew nothing
+// for the resize, and the question stayed, answered in the terminal, after the stub had skipped.)
+test("an Escape typed at Codex's update question in a narrower terminal skips it, and the question goes", async ({ browser, api, state }) => {
+  const dir = join(state.home, '.codex')
+  mkdirSync(dir, { recursive: true })
+  const mark = join(dir, 'stub-update')
+  const answerFile = join(dir, 'stub-update-answer')
+  const answered = () => (existsSync(answerFile) ? readFileSync(answerFile, 'utf8').trim() : '')
+  writeFileSync(mark, '')
+  rmSync(answerFile, { force: true })
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e answered narrow',
+    goal: 'answered',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    yolo: false,
+    members: [{ name: 'solo', agentId: 'codex', prompt: 'say hello', start: { when: 'immediately' } }],
+  })
+  let narrow: BrowserContext | undefined
+  try {
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    let id = ''
+    const asked = async () => {
+      id = member(await api.run(run.id), 'solo').sessionId ?? ''
+      return id ? ((await api.session(id)).attention ?? { state: '' }) : { state: '' }
+    }
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 45_000, message: 'the update question is asked' }).toMatch(/^Update available/)
+
+    narrow = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true })
+    await narrow.addInitScript((token) => {
+      try {
+        localStorage.setItem('conductor.workbenchToken', token)
+      } catch {
+        /* storage refused: the page asks for the token, and the test fails on what it cannot find */
+      }
+    }, state.token)
+    const page = await narrow.newPage()
+    await page.goto(`/sessions/${encodeURIComponent(id)}`)
+    const screen = page.locator('.terminal-host .xterm-screen').first()
+    await expect(screen).toBeVisible()
+    // The page's window sizes the session: narrower than the 80 columns it was born with.
+    await expect.poll(async () => (await api.session(id)).cols ?? 80, { timeout: 15_000, message: 'the page made the session narrower' }).toBeLessThan(80)
+    await screen.click()
+    await page.keyboard.press('Escape')
+    await expect.poll(answered, { timeout: 15_000, message: 'the stub skipped' }).toBe('skip')
+    await expect.poll(async () => (await asked()).state, { timeout: 15_000, message: 'the question goes' }).not.toBe('needs_input')
+  } finally {
+    await narrow?.close()
+    for (const m of [mark, answerFile]) rmSync(m, { force: true })
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
+})
+
 // A line typed in the session's reply bar, or its sidebar row's field, names the question it was begun for. Someone else answers
 // that question and the next one comes while it is being typed: sent, it is refused ("Already answered"), and never typed into
 // the next question. (Codex's review, twenty-ninth pass; the sidebar's, thirtieth.)

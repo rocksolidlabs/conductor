@@ -5,6 +5,7 @@ import { isActive } from '~/utils/attention'
 import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } from '~/utils/carousel'
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
+import { pageState } from '~/utils/pageState'
 import { sessionStatus } from '~/utils/status'
 
 // The Roundhouse is the Yard's second view (the UX review's P12): its header says Yard, its tab names the view.
@@ -50,6 +51,8 @@ const intervalItems = [
 // The active sessions in the strip's kept order (#310): the slides, stepping, "Next up" and follow mode all go by it. A session
 // started since goes at the end, one that ended leaves it; what shows is what is kept.
 const active = computed(() => orderSessions(attention.sessions.value.filter(isActive), settings.value.order))
+/** What the page shows when nothing is live (P23): judged once the sessions are read, never before. */
+const shownState = computed(() => pageState({ read: attention.loaded.value, error: attention.error.value, count: active.value.length }))
 // Written back at once too: the first list shown is the order a session started afterwards is appended to (Codex's round on #310).
 watch(
   active,
@@ -401,13 +404,18 @@ usePalette().registerPage(() => ({
     </template>
 
     <template #body>
-      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
+      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
-      <div v-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
-        <UIcon name="i-lucide-gallery-horizontal" class="size-10" />
-        <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>
-        <UButton label="Launch agent" icon="i-lucide-play" @click="useLaunchModal().show()" />
-      </div>
+      <PageEmpty
+        v-if="shownState !== 'content'"
+        page="roundhouse"
+        :state="shownState"
+        words="Nothing is running. The first agent you launch shows here."
+        thing="sessions"
+        :error="attention.error.value"
+        :actions="[{ label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => useLaunchModal().show() }]"
+        @again="attention.refresh()"
+      />
 
       <div v-else class="flex-1 min-h-0 flex flex-col" @focusin="onFocusIn" @focusout="onFocusOut">
         <div class="flex-1 min-h-0 px-4 pt-3">

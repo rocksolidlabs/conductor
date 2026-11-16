@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DispatchChange, HistoryPage, LaunchSummary, PlanBody, PlanSummary } from '~/composables/useDispatch'
 import {
+  planFold,
   approvable,
   approvedRevision,
   argvLine,
@@ -101,6 +102,34 @@ describe("a revision's words", () => {
     expect(approvable(rev({ state: 'superseded' }))).toBe(true)
     expect(approvable(rev({ state: 'withdrawn' }))).toBe(false)
     expect(planReasons(rev({ state: 'withdrawn', crewChanged: true, agentsChanged: true }))).toEqual([])
+  })
+})
+
+describe('a revision folded on the page', () => {
+  const crew = (members: number, tasks: number, checks: number, yolo?: boolean): Pick<PlanBody, 'base' | 'crew' | 'manifestFile'> => ({
+    base: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
+    crew: {
+      id: 'c',
+      name: 'C',
+      yolo,
+      members: Array.from({ length: members }, (_, i) => ({ name: `m${i}`, agentId: 'claude' })),
+      tasks: Array.from({ length: tasks }, (_, i) => ({ id: `t${i}`, member: 'm0', kind: 'work' as const, checks: i === 0 ? Array.from({ length: checks }, (_, j) => ({ id: `c${j}`, argv: ['true'] })) : [] })),
+    },
+  })
+
+  it('folds an approved revision whose approval holds, to one line of what the approval covers', () => {
+    expect(planFold(rev(), crew(2, 3, 4))).toEqual({ folded: true, line: '2 members · 3 tasks · 4 checks · from 1a2b3c4d5e6f · Yolo off' })
+    expect(planFold(rev(), crew(1, 1, 1, true)).line).toBe('1 member · 1 task · 1 check · from 1a2b3c4d5e6f · Yolo on')
+    // A changed crew stops nothing: the revision keeps the crew it was made from, and still folds.
+    expect(planFold(rev({ crewChanged: true }), crew(2, 3, 4)).folded).toBe(true)
+  })
+
+  it('leaves open a proposed, a superseded, a withdrawn and an approved but stale revision, and one whose agent resolves otherwise', () => {
+    expect(planFold(rev({ state: 'proposed' }), crew(2, 3, 4)).folded).toBe(false)
+    expect(planFold(rev({ state: 'superseded' }), crew(2, 3, 4)).folded).toBe(false)
+    expect(planFold(rev({ state: 'withdrawn' }), crew(2, 3, 4)).folded).toBe(false)
+    expect(planFold(rev({ stale: { words: 'the title changed since revision 3 was approved', remedy: 'approve' } }), crew(2, 3, 4)).folded).toBe(false)
+    expect(planFold(rev({ agentsChanged: true }), crew(2, 3, 4)).folded).toBe(false)
   })
 })
 
