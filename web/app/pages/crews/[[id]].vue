@@ -5,7 +5,7 @@ import { crewKey, defaultCrew, holdViewLink, keepParked, memberNameError, pageAf
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { modelProblem } from '~/utils/capacity'
-import { SheetConfirmation, refusedTarget, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
+import { SheetConfirmation, afterRefusal, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 import { CREW_CHANGED, crewLaunchBody } from '~/utils/protocol'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
@@ -576,14 +576,13 @@ async function launch(t: SheetTarget, read: CrewInfo | null, confirmed: () => bo
 
 /**
  * The launch started nothing (`why`): the server refused it, the crew saved since the copy it named (`crew_changed`), or the crew came
- * without a revision and no launch was sent. A sheet still open on that opening stays open and says why (refusedTarget: it reads the crew
- * again, or holds Launch); otherwise the page says so.
+ * without a revision and no launch was sent. A sheet still open on that opening, on this page not left, stays open and says why
+ * (afterRefusal: it reads the crew again, or holds Launch); otherwise a toast says so wherever the person now is.
  */
-function startedNothing(t: SheetTarget, c: CrewInfo, why: SheetRefusal, current: boolean) {
-  const again = refusedTarget(t, c.id, why, current && sheet.open && sheet.at === selectedKey.value, confirmation)
-  if (again) return void Object.assign(sheet, { target: again, refused: why })
-  const what = why === 'changed' ? 'was saved since the launch sheet read it' : 'came without a revision from this server'
-  toast.add({ title: 'The launch was not started', description: `${c.name} ${what}: no run was started.`, icon: 'i-lucide-circle-x', color: 'warning' })
+function startedNothing(t: SheetTarget, c: CrewInfo, why: SheetRefusal, confirmed: boolean) {
+  const next = afterRefusal(t, c, why, { confirmed, mounted, open: sheet.open, at: sheet.at, selected: selectedKey.value }, confirmation)
+  if ('target' in next) return void Object.assign(sheet, next)
+  toast.add({ title: 'The launch was not started', description: next.toast, icon: 'i-lucide-circle-x', color: 'warning' })
 }
 
 let tick: number | undefined

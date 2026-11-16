@@ -214,6 +214,20 @@ export function refusedTarget(t: SheetTarget, id: string, why: SheetRefusal, cur
   return why === 'changed' ? { id, label: t.label } : t
 }
 
+/** Where the page stands as a launch that started nothing ends: its opening still confirmed, the page still mounted, the sheet open, on the crew it was opened at. */
+export interface RefusalPlace { confirmed: boolean; mounted: boolean; open: boolean; at?: string; selected?: string }
+
+/**
+ * What the page does once a launch of crew `c` started nothing (`why`): while the sheet of its opening is on the screen (`p`), the sheet's
+ * new target and why (refusedTarget); otherwise, the page left meanwhile too (a sheet then drawn nowhere, whatever it holds), the toast's
+ * words, which name the crew: a refusal is never lost.
+ */
+export function afterRefusal(t: SheetTarget, c: { id: string; name: string }, why: SheetRefusal, p: RefusalPlace, confirmation: SheetConfirmation): { target: SheetTarget; refused: SheetRefusal } | { toast: string } {
+  const target = refusedTarget(t, c.id, why, p.confirmed && p.mounted && p.open && p.at === p.selected, confirmation)
+  if (target) return { target, refused: why }
+  return { toast: `${c.name} ${why === 'changed' ? 'was saved since the launch sheet read it' : 'came without a revision from this server'}: no run was started.` }
+}
+
 /** The sheet's words for a crew that came without a revision: Launch is held. */
 export const UNREVISED_WORDS = 'This server does not say which copy of the crew it holds, so this sheet cannot tell which copy Launch would start: nothing is launched. Load the page again.'
 

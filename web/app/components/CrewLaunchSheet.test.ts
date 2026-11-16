@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { useDispatchApi } from '../composables/useDispatch'
-import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetNotice, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
+import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, afterRefusal, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, launchYoloWords, readSheet, refusedTarget, sheetNotice, UNREVISED_WORDS, withAgent, type SheetTarget } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -179,6 +179,23 @@ describe('the launch sheet', () => {
     expect(refusedTarget(draft, 'made-2', 'unrevised', true, new SheetConfirmation())).toBe(draft)
     // An opening that is no longer the sheet's is not opened again: the page only says so.
     expect(refusedTarget(byId, 'pinned', 'changed', false, new SheetConfirmation())).toBeNull()
+  })
+
+  it('tells a refusal that lands after the page was left by a toast naming the crew, never by the sheet it no longer draws', () => {
+    const byId: SheetTarget = { id: 'pinned', label: 'fix login' }
+    const crew = { id: 'pinned', name: 'Pinned crew' }
+    const here = { confirmed: true, mounted: true, open: true, at: 'pinned', selected: 'pinned' }
+    // The page present, its sheet open on that opening: the sheet reads the crew again and says why (sheetNotice), no toast.
+    expect(afterRefusal(byId, crew, 'changed', here, new SheetConfirmation())).toEqual({ target: { id: 'pinned', label: 'fix login' }, refused: 'changed' })
+    // The page left while the launch was under way: Nuxt keeps its route and its sheet's state as they were, but it is drawn nowhere.
+    const c = new SheetConfirmation()
+    c.opened()
+    const n = c.take(true)
+    expect(afterRefusal(byId, crew, 'changed', { ...here, mounted: false }, c)).toEqual({ toast: 'Pinned crew was saved since the launch sheet read it: no run was started.' })
+    expect(c.holds(n), 'no new opening of a sheet drawn nowhere').toBe(true)
+    expect(afterRefusal(byId, crew, 'unrevised', { ...here, mounted: false }, c)).toEqual({ toast: 'Pinned crew came without a revision from this server: no run was started.' })
+    // Closed, opened on another crew, or opened again: the toast too.
+    for (const p of [{ open: false }, { selected: 'other' }, { confirmed: false }]) expect(afterRefusal(byId, crew, 'changed', { ...here, ...p }, c)).toHaveProperty('toast')
   })
 
   it('keeps the refused sheet open as a new opening, whose Launch takes a confirmation once the refused launch has ended', () => {

@@ -255,6 +255,37 @@ test('a crew another person saves after the sheet read it is refused, read again
   expect(await crewRuns(api, a.id)).toHaveLength(1)
 })
 
+test('a refusal that lands after the crew page was left is told on the page the person is on, by a toast naming the crew: no run', async ({ page, api }) => {
+  const a = await saveCrew(api, label('left'))
+  const launches = launchesOf(page, a.id)
+  const s = sheet(page)
+  const launchOf = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
+  budget(READ, READ, READ, EXPECT, EXPECT, EXPECT, EXPECT) // the page, the sheet, the page left, the sheet gone, the toast, the URL, no notice
+  await page.goto(`/crews/${encodeURIComponent(a.id)}`)
+  await expect(page.getByLabel('Crew name')).toHaveValue(a.name, { timeout: READ })
+  await page.locator('[data-launch]').click()
+  await expect(s.line('lead')).toBeVisible({ timeout: READ })
+  await expect(s.confirm).toBeEnabled()
+  await renameThroughApi(api, a.id, 'theirs')
+  // The launch, refused once it reaches the server, is held at this test's route until the crew page has been left.
+  const held = await holdOnce(page, launchOf, 'POST')
+  await s.confirm.click()
+  await held.seen
+  await navigate(page, '/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: READ })
+  await expect(s.confirm, 'the sheet went with its page').toHaveCount(0)
+  const refused = page.waitForResponse((r) => r.request().method() === 'POST' && launchOf(new URL(r.url())))
+  held.release()
+  expect((await refused).status(), 'the copy saved over is refused').toBe(409)
+  await held.off()
+  await expect(page.getByText(`${a.name} was saved since the launch sheet read it: no run was started.`).first()).toBeVisible()
+  await expect(page, 'the person is where they went').toHaveURL(/\/agents$/)
+  await expect(s.changed).toHaveCount(0)
+  await launches.settled()
+  expect(launches.seen.map((l) => l.status)).toEqual([409])
+  expect(await crewRuns(api, a.id)).toEqual([])
+})
+
 test("a crew read without a revision holds Launch with words, and so does a draft whose save answers none: nothing is launched", async ({ page, api }) => {
   const a = await saveCrew(api, label('unrevised'), true)
   const launches = launchesOf(page, a.id)
