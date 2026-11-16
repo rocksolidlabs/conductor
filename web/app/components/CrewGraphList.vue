@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { listRows, type CrewGraphData, type GraphNode } from '~/utils/crewGraph'
 import { startWords } from '~/utils/crewWords'
-import { memberDot } from '~/utils/runs'
+import { memberDot, memberOffer, type OfferRun } from '~/utils/runs'
 
 /**
  * The graph on a phone: the members as a list, parents before children,
  * each indented by its depth, with the same status dot, badges and actions
  * as a node. Handoffs are listed under the member that sent them.
  */
-const props = defineProps<{ graph: CrewGraphData; editable?: boolean; stopped?: boolean; runId?: string; selected?: string }>()
+const props = defineProps<{ graph: CrewGraphData; editable?: boolean; run?: OfferRun | null; runId?: string; selected?: string }>()
 const emit = defineEmits<{ open: [name: string]; start: [name: string]; select: [name: string] }>()
 
 const rows = computed(() => listRows(props.graph))
@@ -16,6 +16,9 @@ const rows = computed(() => listRows(props.graph))
 function handoffsFrom(n: GraphNode) {
   return props.graph.edges.filter((e) => e.kind === 'handoff' && e.from === n.id)
 }
+
+/** What a row offers by hand (memberOffer). */
+const offerOf = (n: GraphNode) => memberOffer(n.state, props.run)
 
 function startLabel(n: GraphNode): string {
   return n.warning ?? startWords(n.member.start).text
@@ -51,8 +54,8 @@ function startLabel(n: GraphNode): string {
           </li>
         </ul>
         <div v-if="!editable && (n.state === 'pending' || n.state === 'ended')" class="flex gap-1.5" @click.stop>
-          <UButton v-if="n.state === 'pending' && !stopped" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" @click="emit('start', n.id)" />
-          <ResumeButton v-else-if="n.state === 'ended' && runId" :run-id="runId" :member="n.id" stay size="xs" />
+          <UButton v-if="offerOf(n) === 'start'" label="Start now" icon="i-lucide-play" size="xs" color="neutral" variant="outline" @click="emit('start', n.id)" />
+          <ResumeButton v-else-if="offerOf(n) === 'resume' && runId" :run-id="runId" :member="n.id" stay size="xs" />
         </div>
       </div>
     </li>

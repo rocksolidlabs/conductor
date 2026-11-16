@@ -1145,7 +1145,7 @@ func TestAGateOverTheDesk(t *testing.T) {
 // A record's blocking names each task once before its bound counts what
 // it cannot keep: a gate that holds the first two tasks of a chain of 22
 // blocks the 22 tasks and the run, 23 refs, though the two held tasks
-// share their dependents.
+// share their dependents; the list counts the 22 tasks.
 func TestARecordsBlockingCountsEachTaskOnce(t *testing.T) {
 	const runID = "team-00000001"
 	var run crew.Run
@@ -1166,8 +1166,24 @@ func TestARecordsBlockingCountsEachTaskOnce(t *testing.T) {
 		}
 		seen[ref] = true
 	}
-	if len(it.Blocking.Refs) != inboxRefs || it.Blocking.More != 23-inboxRefs || it.summary().Blocks != 23 {
-		t.Fatalf("%d refs and %d more, %d blocked, of 23", len(it.Blocking.Refs), it.Blocking.More, it.summary().Blocks)
+	if len(it.Blocking.Refs) != inboxRefs || it.Blocking.More != 23-inboxRefs || it.summary().Blocks != 22 {
+		t.Fatalf("%d refs and %d more, %d blocked, of 23 (22 tasks)", len(it.Blocking.Refs), it.Blocking.More, it.summary().Blocks)
+	}
+}
+
+// The list's count of what waits on a record is the tasks its words name
+// and their dependents, never the run: one held task with no dependent is
+// one, two are two, the run's ref kept beside them.
+func TestARecordsCountIsItsTasks(t *testing.T) {
+	const runID = "team-00000001"
+	run := crew.Run{Tasks: []crew.TaskState{{ID: "build"}, {ID: "deploy"}}}
+	for _, held := range [][]string{{"deploy"}, {"build", "deploy"}} {
+		it := &inboxItem{}
+		row := ledger.DecisionRow{N: 1, RunID: runID, CurrentRun: runID, Origin: ledger.OriginPlan, Gate: "ship", State: ledger.DecisionOpen}
+		(&inboxRead{}).decisionBlocking(it, row, inboxRun{run: run, ok: true}, held, "the plan's gate ship")
+		if got := it.summary().Blocks; got != len(held) || !slices.Contains(it.Blocking.Refs, "run:"+runID) {
+			t.Fatalf("held %q: %d counted, refs %q", held, got, it.Blocking.Refs)
+		}
 	}
 }
 

@@ -96,6 +96,15 @@ describe('taskWords', () => {
     })
     expect(taskWords(task({ state: 'succeeded', importedFrom: 'r-1/build/1', result: { attempt: 1, commit: 'abc', summary: 'built', at: '' } }), {})).toEqual({ text: 'succeeded by attempt 1 (kept from the run continued): built', tone: 'success' })
   })
+  it("says a continued run's task it did not end is its continuation's, and keeps the words of one it ended", () => {
+    const continued = { stoppedAt: 'x', state: 'stopped', resumedBy: 'ship-0000000b' }
+    for (const state of ['blocked', 'ready', 'running', 'verifying', 'failed'] as const) {
+      expect(taskWords(task({ state, reason: 'attempt 1 failed at check go: exited 1' }), continued), state).toEqual({ text: 'taken up by its continuation', tone: 'muted' })
+    }
+    expect(taskWords(task({ state: 'ready' }), { ...continued, state: 'interrupted' }).text).toBe('taken up by its continuation')
+    expect(taskWords(task({ state: 'succeeded', result: { attempt: 1, commit: 'abc', summary: 'built', at: '' } }), continued)).toEqual({ text: 'succeeded by attempt 1: built', tone: 'success' })
+    expect(taskWords(task({ state: 'cancelled' }), continued)).toEqual({ text: 'cancelled', tone: 'muted' })
+  })
   it("says the dispatch is paused over the task's own reason when the run paused itself (EN1), and as before for a person's pause", () => {
     const why = 'attempt 1 could not be made usable at setup deps: exited 1: npm ERR! network'
     expect(taskWords(task({ state: 'ready', reason: why }), { paused: true, pausedWhy: why })).toEqual({ text: `ready, the dispatch is paused: ${why}`, tone: 'warning' })

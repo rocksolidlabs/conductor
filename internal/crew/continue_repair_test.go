@@ -139,6 +139,11 @@ func TestContinuationCarriesAPersonsRepair(t *testing.T) {
 	if b2.Attempt.Start != c1 {
 		t.Fatalf("attempt 2 starts at %s, not the candidate %s", short(b2.Attempt.Start), short(c1))
 	}
+	// The run's log names the attempt that takes the repair up, counting
+	// the attempt of the run it continues.
+	if r, _ := e.Get(next.ID); !logged(r, fmt.Sprintf("task build: Nate asked for changes (3 findings); attempt %d starts at the reviewed commit", b2.Attempt.N)) {
+		t.Fatalf("the continuation's log, attempt %d started:\n%s", b2.Attempt.N, logLines(e, next.ID))
+	}
 	md, f := taskFileOf(t, b2)
 	if rp := f.Repair; rp == nil || rp.Request == nil || rp.Review != "rv-0021" || rp.Attempt != 1 || rp.Commit != c1 || rp.Start != "" || rp.Summary != cr.Summary {
 		t.Fatalf("attempt 2's repair: %+v", f.Repair)
