@@ -47,7 +47,7 @@ async function startOffered(page: Page, runId: string, name: string, managed: bo
   await expect(tile.getByRole('button', { name: 'Start now' })).toHaveCount(offered ? 1 : 0)
   // The header's Add agent, in the run's menu: offered or disabled; the menu closed and gone before the next click.
   await page.locator('[data-crew-run-header] [data-run-menu]').click()
-  const add = page.locator('[data-run-add]')
+  const add = page.locator('[role="menuitem"][data-run-add]')
   await expect(add).toBeVisible()
   if (offered) await expect(add).not.toHaveAttribute('data-disabled', '')
   else await expect(add).toHaveAttribute('data-disabled', '')

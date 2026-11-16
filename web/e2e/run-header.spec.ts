@@ -62,7 +62,7 @@ test('Add agent and Share are in the run’s menu: by key on a run of members, d
   await expect(menuButton).toHaveAttribute('aria-label', 'More for this run')
   await tabTo(page, menuButton, 12, header.locator('[data-run-name]'))
   await page.keyboard.press('Enter')
-  const add = page.locator('[data-run-add]')
+  const add = page.locator('[role="menuitem"][data-run-add]')
   await expect(add).toBeFocused()
   await page.keyboard.press('Enter')
   const dialog = page.getByRole('dialog', { name: 'Add an agent' })
@@ -89,8 +89,8 @@ test('Add agent and Share are in the run’s menu: by key on a run of members, d
   // A managed run: Add agent is in the menu and disabled, as is the palette's row.
   const { page: managed, header: mh } = await ledgerPage(browser)
   await mh.locator('[data-run-menu]').click()
-  await expect(managed.locator('[data-run-add]')).toHaveAttribute('data-disabled', '')
-  await expect(managed.locator('[data-run-share]')).not.toHaveAttribute('data-disabled', '')
+  await expect(managed.locator('[role="menuitem"][data-run-add]')).toHaveAttribute('data-disabled', '')
+  await expect(managed.locator('[role="menuitem"][data-run-share]')).not.toHaveAttribute('data-disabled', '')
   await managed.keyboard.press('Escape')
   await expect(managed.locator('[role="menu"]')).toHaveCount(0)
   await managed.keyboard.press('Alt+/')
@@ -105,7 +105,7 @@ test('at 390 with touch the name, Stop and the menu are drawn apart, row two wra
   await inside(header.locator('[data-run-summary]'), page.locator('body'))
   await noSideways(page)
   await header.locator('[data-run-menu]').tap()
-  await page.locator('[data-run-share]').tap()
+  await page.locator('[role="menuitem"][data-run-share]').tap()
   await expect(page.getByRole('dialog', { name: `Share ${run.name}` })).toBeVisible()
   void day
 })
