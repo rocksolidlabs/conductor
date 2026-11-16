@@ -1,8 +1,10 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { budget, DAY_WORKER_MS, dayPage, expect, task, test, type Session } from './fixtures'
+import { Api, budget, DAY_WORKER_MS, dayPage, expect, task, test, type Session } from './fixtures'
 import { BUSY_LIVE, DAY_STEP_MS, letGo, LONG_LABEL, LONG_NAME, LONG_TITLE, SNAPSHOT_KINDS, startDay, STATES, TICKETS, type Day, type SnapshotKind } from './day'
+import { ownServer, type OwnServer } from './own-server'
+import { stopServer } from './server'
 
 // The seeded day proves itself through the API (UX1's PR-1, docs/plans/ux-review.md, the chapter Tests): each part holds what it
 // promises, read by name; the states hold once a page has attached every session; the `day` fixture's guard names what a test left
@@ -292,6 +294,50 @@ own('the guard is one rule: a change of each kind the server lists is named, and
   for (const [kind, change] of Object.entries(CHANGES)) want.push([kind, await change(own)])
   const words = await judged(own)
   for (const [kind, line] of want) expect(words, kind).toContain(line)
+})
+
+// What startDay and ownServer start is ended when they return no day and no server (AGENTS.md, end what a test started before its
+// directories go): no process of theirs left, their root removed, the error saying what failed.
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test("a day whose first snapshot fails is ended: its server's process gone, its root removed", async () => {
+  budget(DAY_WORKER_MS)
+  let server: OwnServer | undefined
+  // The seam: once the server answers, its API refuses the first snapshot's first read, as a route of the test's own.
+  const refuse = (s: OwnServer) => {
+    server = s
+    s.api = new (class extends Api {
+      override async call<T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+        if (path === '/api/dispatch/people') return { status: 503, body: { error: 'refused by the test' } as unknown as T }
+        return super.call<T>(method, path, body)
+      }
+    })(s.started)
+  }
+  try {
+    const started = startDay(`day-start-fails-${test.info().repeatEachIndex}`, refuse)
+    await expect(started).rejects.toThrow(/did not start: its first snapshot failed: GET \/api\/dispatch\/people: 503 .*refused by the test.* \(it was ended\)$/)
+    expect(alive(server!.started.pid), "the day's server is still running").toBe(false)
+    expect(existsSync(server!.root), "the day's root is still there").toBe(false)
+  } finally {
+    // What the product left is ended here, so that this test's failure leaves nothing either.
+    if (server && existsSync(server.root)) {
+      await stopServer(server.started.pid)
+      rmSync(server.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a server of its own whose start fails leaves no root', async () => {
+  const name = `own-start-fails-${process.pid}-${test.info().repeatEachIndex}`
+  await expect(ownServer(name, { agents: [{ id: 'nowhere', from: 'no-such-agent', env: {} }] })).rejects.toThrow('the e2e catalog has no agent no-such-agent')
+  expect(readdirSync(tmpdir()).filter((f) => f.startsWith(`conductor-e2e-${name}-`))).toEqual([])
 })
 
 // To look at the day by hand: CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open. It builds the whole day, prints its

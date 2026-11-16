@@ -675,8 +675,11 @@ function ledgerProblem(r: Run, approval: string): string {
 /**
  * Starts a day's server: an own server with the day's agents, its repository at DAY_REPO, exited sessions kept a day, a host token;
  * Dispatch, the crews and the links as it starts are the guard's first snapshot. `name` names its root and its log in test-results.
+ * `started`, a test's seam, is called with the server once it answers, before the first snapshot. A step that fails after the server
+ * has started ends the day (end: the server stopped, its log kept, its root removed) before its error is thrown: no caller holds a
+ * day to end yet (AGENTS.md, end what a test started before its directories go).
  */
-export async function startDay(name = 'day'): Promise<Day> {
+export async function startDay(name = 'day', started?: (s: OwnServer) => void | Promise<void>): Promise<Day> {
   const server = await ownServer(name, {
     agents: DAY_AGENTS,
     repoPath: DAY_REPO,
@@ -684,7 +687,15 @@ export async function startDay(name = 'day'): Promise<Day> {
     hostToken: 'e2e-day-host-' + randomBytes(12).toString('hex'),
   })
   const day = new Day(server)
-  day.base = await day.snapshot()
+  let step = "the test's seam"
+  try {
+    await started?.(server)
+    step = 'its first snapshot'
+    day.base = await day.snapshot()
+  } catch (e) {
+    const ended = await day.end().then(() => 'it was ended', (x: Error) => `ending it: ${x.message}`)
+    throw new Error(`the day ${name} did not start: ${step} failed: ${(e as Error).message} (${ended})`, { cause: e })
+  }
   return day
 }
 

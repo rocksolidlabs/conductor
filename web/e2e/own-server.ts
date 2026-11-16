@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,9 +69,26 @@ async function crash(pid: number): Promise<void> {
  * server answers (startServer: up to START_WAIT_MS); `name` names its temporary root and the log copied at `stop`.
  */
 export async function ownServer(name: string, o: OwnServerOptions = {}): Promise<OwnServer> {
-  const here = dirname(fileURLToPath(import.meta.url))
   // Resolved: the server reports paths with their links resolved, and on macOS the temporary directory is under a link.
   const root = realpathSync(mkdtempSync(join(tmpdir(), `conductor-e2e-${name}-`)))
+  const log = join(root, 'server.log')
+  // The log kept in test-results and the root removed: at stop, and when a step of the start fails (startServer ends each child it
+  // started before it throws), so that a start that fails leaves nothing behind.
+  const remove = () => {
+    mkdirSync('test-results', { recursive: true })
+    if (existsSync(log)) copyFileSync(log, `test-results/${name}-server.log`)
+    rmSync(root, { recursive: true, force: true })
+  }
+  try {
+    return await startOwn(o, root, log, remove)
+  } catch (e) {
+    remove()
+    throw e
+  }
+}
+
+async function startOwn(o: OwnServerOptions, root: string, log: string, remove: () => void): Promise<OwnServer> {
+  const here = dirname(fileURLToPath(import.meta.url))
   const home = join(root, 'home')
   const data = join(root, 'data')
   const repo = join(root, o.repoPath ?? 'repo')
@@ -86,7 +103,6 @@ export async function ownServer(name: string, o: OwnServerOptions = {}): Promise
     cfg.catalog.agents.push({ ...JSON.parse(JSON.stringify(base)), id: a.id, name: `${base.name}, ${a.id}`, env: { ...base.env, ...a.env } })
   }
   writeFileSync(config, JSON.stringify(cfg, null, 2) + '\n')
-  const log = join(root, 'server.log')
   const start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log, env: o.env, hostToken: o.hostToken })
   const started = await start()
   const srv: OwnServer = {
@@ -104,9 +120,7 @@ export async function ownServer(name: string, o: OwnServerOptions = {}): Promise
     },
     stop: async () => {
       await stopServer(srv.started.pid)
-      mkdirSync('test-results', { recursive: true })
-      copyFileSync(log, `test-results/${name}-server.log`)
-      rmSync(root, { recursive: true, force: true })
+      remove()
     },
   }
   return srv
