@@ -63,7 +63,9 @@ type probeCall struct {
 // probeCache runs the identity probes and keeps their answers for probeTTL,
 // the way lookupCache keeps the lookups: a probe runs in a goroutine of its
 // own, at most probeWorkers at once, askers wait at most probeWait and get
-// Pending otherwise, and askers of a probe under way join it.
+// Pending otherwise, and askers of a probe under way join it. A probe
+// outlives its asker's request but not the server: close ends every probe
+// under way and waits for it, and none starts after (#961).
 type probeCache struct {
 	mu       sync.Mutex
 	entries  map[string]probeEntry
@@ -72,9 +74,17 @@ type probeCache struct {
 	now      func() time.Time
 	wait     time.Duration
 	sem      chan struct{}
+	// life is the probes' context, ended by close (end): a probe's program
+	// is killed with its process group then (agents.RunProbe). closed and
+	// probing change under mu, so close waits for every probe started.
+	life    context.Context
+	end     context.CancelFunc
+	closed  bool
+	probing sync.WaitGroup
 }
 
 func newProbeCache() *probeCache {
+	life, end := context.WithCancel(context.Background())
 	return &probeCache{
 		entries:  map[string]probeEntry{},
 		inflight: map[string]*probeCall{},
@@ -82,6 +92,33 @@ func newProbeCache() *probeCache {
 		now:      time.Now,
 		wait:     probeWait,
 		sem:      make(chan struct{}, probeWorkers),
+		life:     life,
+		end:      end,
+	}
+}
+
+// errProbeStopping is a probe's error once the server is stopping: it was
+// not run, or was ended.
+const errProbeStopping = "the server is stopping"
+
+// close ends the probes: none starts from now on, and every one under way
+// has its program killed (by its process group) and is waited for, as long
+// as ctx allows, so that no probe of this server still runs, or writes in
+// its temporary folder or the HOME it was given, once the stop returns. A
+// second call waits the same way.
+func (c *probeCache) close(ctx context.Context) {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	c.end()
+	done := make(chan struct{})
+	go func() {
+		c.probing.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -109,6 +146,10 @@ func probeKey(command []string, adapter string, env map[string]string) string {
 func (c *probeCache) identity(ctx context.Context, command []string, adapter, name string, p agents.Probe, env map[string]string, force bool) Identity {
 	key := probeKey(command, adapter, env)
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return Identity{Verified: p.Verified, Name: name, Error: errProbeStopping}
+	}
 	if e, ok := c.entries[key]; ok && !force && c.now().Sub(e.at) < probeTTL {
 		c.mu.Unlock()
 		return toIdentity(e.res, name, p)
@@ -120,9 +161,13 @@ func (c *probeCache) identity(ctx context.Context, command []string, adapter, na
 		joined = false
 	}
 	wait := c.wait
+	if !joined {
+		// Counted under mu, where close sets closed: close waits for it.
+		c.probing.Add(1)
+	}
 	c.mu.Unlock()
 	if !joined {
-		go c.probe(ctx, key, command, p, env, call)
+		go c.probe(key, command, p, env, call)
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -135,15 +180,30 @@ func (c *probeCache) identity(ctx context.Context, command []string, adapter, na
 	return Identity{Pending: true, Verified: p.Verified, Name: name}
 }
 
-func (c *probeCache) probe(ctx context.Context, key string, command []string, p agents.Probe, env map[string]string, call *probeCall) {
-	c.sem <- struct{}{}
-	// The probe outlives the asker's request: its answer is kept.
-	res := c.run(context.WithoutCancel(ctx), command, p, env)
-	<-c.sem
+// probe runs one probe once a slot is free, unless close came first, and
+// settles call. It runs under the cache's life, not the asker's request:
+// the probe outlives the request, its answer kept, but not the server.
+func (c *probeCache) probe(key string, command []string, p agents.Probe, env map[string]string, call *probeCall) {
+	defer c.probing.Done()
+	res := agents.ProbeResult{Error: errProbeStopping}
+	select {
+	case c.sem <- struct{}{}:
+		if c.life.Err() == nil {
+			res = c.run(c.life, command, p, env)
+		}
+		<-c.sem
+	case <-c.life.Done():
+	}
 	c.mu.Lock()
 	call.e = probeEntry{res: res, at: c.now()}
 	if c.inflight[key] == call {
 		delete(c.inflight, key)
+	}
+	if c.closed {
+		// Ended by the stop, or not run: not an answer to keep.
+		c.mu.Unlock()
+		close(call.done)
+		return
 	}
 	for k, old := range c.entries {
 		if c.now().Sub(old.at) >= probeTTL {

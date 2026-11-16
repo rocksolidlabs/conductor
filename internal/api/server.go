@@ -1390,6 +1390,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// No usage read starts from now on, and those under way are ended,
 	// their outcomes recorded, before capacity/owner.lock goes.
 	s.capacity.close()
+	// No identity probe starts from now on, and those under way are killed
+	// and waited for: none outlives the stop, writing in the HOME it was
+	// given after the server is gone (#961).
+	s.probes.close(ctx)
 	s.runs.Draining(ctx)
 	s.shutDesks()
 	s.stopRevokeRetries()
