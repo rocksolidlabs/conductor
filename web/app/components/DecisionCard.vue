@@ -1,39 +1,47 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { acceptedAnswer, approverWords, askedWhere, assignmentWords, decisionWords, historyWords, optionsOf, recommended, routedFor, subjectWords } from '~/utils/decisions'
+import { acceptedAnswer, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
- * A durable decision whole (Program item DR1, docs/plans/decisions.md, "web/app"): the question, the context (Markdown, as Dispatch
- * renders a description), the alternatives with their tradeoffs and the recommended one marked, the uncertainty, what a yes
- * authorizes, the evidence as chips (each handed its resolution from the record's `refs`, in the chip's baseline mode: what changed
- * since the question was asked, from the resolution alone), the subject, who may answer, the four states apart (open, response
- * recorded, validated by Yardmaster, applied or why not, each with its receipt and time) and the history. What it is answered with is
- * DecisionRespond's. Brand palette and Nuxt UI only.
+ * A durable decision whole (Program item DR1, docs/plans/decisions.md, "web/app"; UX1 PR-20, docs/plans/ux-review.md): the question,
+ * the context (Markdown, as Dispatch renders a description), what a yes lets happen in one line, the alternatives with their tradeoffs
+ * and the recommended one marked, the uncertainty, the evidence as chips (each handed its resolution from the record's `refs`, in the
+ * chip's baseline mode: what changed since the question was asked, from the resolution alone), who may answer, the four states apart
+ * (asked, the answer, checked by Yardmaster, applied or why not, each with its time) and the history. The id, the type, the plan's
+ * origin, the subject and the steps' receipts fold under Details, open at first for a plan's approval (`detailsOpen`).
+ *
+ * `controls` says the card is drawn above DecisionRespond while it draws its buttons: the buttons are then the one list of choices,
+ * with the recommendation and the tradeoffs on them, and the card leaves out its option rows. A card drawn where nobody answers (a
+ * decision link's, a person's page) or a record no longer answered keeps them: there they are the only list of choices. What it is
+ * answered with is DecisionRespond's. Brand palette and Nuxt UI only.
  */
-const props = defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number }>()
+const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean }>(), { controls: false })
 
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
 const runHeld = useDecisionRun(() => props.decision.run)
-const words = computed(() => decisionWords(props.decision, { runHeld: runHeld.value }))
+const words = computed(() => decisionWords(props.decision, { runHeld: runHeld.value, controls: props.controls }))
 /** The accepted answer, once there is one: the option picked, the words, the rationale and who. */
 const answer = computed(() => acceptedAnswer(props.decision))
 const options = computed(() => optionsOf(props.decision))
 const best = computed(() => recommended(props.decision))
 const subject = computed(() => subjectWords(props.decision.request.subject))
+const yes = computed(() => authorizesLine(props.decision))
+const receipts = computed(() => words.value.steps.filter((s) => s.receipt))
 const refOf = (ref: string) => props.refs?.find((r) => r.ref === ref)
-const tones = { warning: 'text-warning', success: 'text-success', muted: 'text-muted', error: 'text-error', default: 'text-default' }
-const stepIcon = { done: 'i-lucide-circle-check', waiting: 'i-lucide-loader-circle', pending: 'i-lucide-circle', ended: 'i-lucide-circle-slash' }
-const stepTone = { done: 'text-success', waiting: 'text-warning', pending: 'text-dimmed', ended: 'text-muted' }
+const tones = { warning: 'text-warning', success: 'text-success', muted: 'text-muted', error: 'text-error', default: 'text-default', dimmed: 'text-dimmed' }
 const showHistory = ref(false)
+/** Details open or folded: as `detailsOpen` says for the decision, then as the person leaves it, through every new rev of the record. */
+const showDetails = ref(detailsOpen(props.decision))
+watch(
+  () => props.decision.id,
+  () => (showDetails.value = detailsOpen(props.decision)),
+)
 </script>
 
 <template>
   <article class="flex min-w-0 flex-col gap-3 text-sm" data-decision-card :data-decision-id="decision.id" :data-decision-state="decision.state">
     <header class="flex min-w-0 flex-wrap items-center gap-2">
-      <span class="font-mono font-semibold text-highlighted" data-decision-card-id>{{ decision.id }}</span>
-      <UBadge :label="decision.type" color="neutral" variant="subtle" size="sm" />
-      <UBadge v-if="decision.origin === 'plan'" label="plan gate" color="info" variant="subtle" size="sm" />
       <span class="min-w-0 break-words text-xs" :class="tones[words.tone]" data-decision-state-words>{{ words.state }}</span>
     </header>
 
@@ -47,7 +55,10 @@ const showHistory = ref(false)
 
     <MarkdownPreview v-if="decision.request.context" :text="decision.request.context" dir="" :relative-links="false" class="text-sm" data-decision-context />
 
-    <ol v-if="decision.type !== 'assignment' && options.length" class="flex flex-col gap-1" data-decision-options>
+    <!-- What a yes lets happen, in one line: a gate's own sentence, or an agent's words led by "A yes authorizes". -->
+    <p v-if="yes" class="break-words text-sm text-default" data-decision-authorizes-line>{{ yes.lead }}<span data-decision-authorizes>{{ yes.words }}</span></p>
+
+    <ol v-if="!controls && decision.type !== 'assignment' && options.length" class="flex flex-col gap-1" data-decision-options>
       <li v-for="(o, i) in options" :key="i" class="flex min-w-0 flex-col rounded-md px-2.5 py-1.5 ring ring-default" :data-decision-option="i">
         <span class="flex flex-wrap items-center gap-2">
           <span class="font-medium">{{ o.label }}</span>
@@ -57,30 +68,44 @@ const showHistory = ref(false)
       </li>
     </ol>
 
-    <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-      <template v-if="decision.request.uncertainty">
-        <dt class="text-muted">Uncertainty</dt>
-        <dd class="break-words" data-decision-uncertainty>{{ decision.request.uncertainty }}</dd>
-      </template>
-      <template v-if="decision.request.authorizes">
-        <dt class="text-muted">A yes authorizes</dt>
-        <dd class="break-words" data-decision-authorizes>{{ decision.request.authorizes }}</dd>
-      </template>
-      <template v-if="subject.text">
-        <dt class="text-muted">About</dt>
-        <dd class="break-words font-mono" data-decision-subject>
-          <NuxtLink v-if="subject.to" :to="subject.to" class="hover:underline">{{ subject.text }}</NuxtLink>
-          <template v-else>{{ subject.text }}</template>
-        </dd>
-      </template>
-      <template v-if="decision.request.expertise?.length">
-        <dt class="text-muted">Needs</dt>
-        <dd>{{ decision.request.expertise.join(', ') }}</dd>
-      </template>
-    </dl>
+    <p v-if="decision.request.uncertainty" class="break-words text-xs"><span class="text-muted">Uncertainty: </span><span data-decision-uncertainty>{{ decision.request.uncertainty }}</span></p>
 
     <div v-if="decision.request.evidence?.length" class="flex flex-wrap gap-1.5" data-decision-evidence>
       <BrakemanRefChip v-for="ref in decision.request.evidence" :key="ref" :ref-name="ref" :resolution="refOf(ref)" baseline />
+    </div>
+
+    <!-- The fine print, folded as the inbox folds its evidence: the id, the type, where it comes from, the subject, the receipts. -->
+    <div class="flex flex-col gap-1.5" data-decision-details>
+      <UButton
+        label="Details"
+        :icon="showDetails ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        class="min-h-11 self-start"
+        :aria-expanded="showDetails"
+        data-decision-details-toggle
+        @click="showDetails = !showDetails"
+      />
+      <dl v-if="showDetails" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-elevated/40 p-2 text-xs" data-decision-details-list>
+        <dt class="text-muted">Decision</dt>
+        <dd class="break-words"><span class="font-mono" data-decision-card-id>{{ decision.id }}</span> · <span data-decision-type>{{ decision.type }}</span><span v-if="decision.origin === 'plan'" data-decision-from-plan> · From the plan</span></dd>
+        <template v-if="subject.text">
+          <dt class="text-muted">About</dt>
+          <dd class="break-words font-mono" data-decision-subject>
+            <NuxtLink v-if="subject.to" :to="subject.to" class="hover:underline">{{ subject.text }}</NuxtLink>
+            <template v-else>{{ subject.text }}</template>
+          </dd>
+        </template>
+        <template v-if="decision.request.expertise?.length">
+          <dt class="text-muted">Needs</dt>
+          <dd class="break-words" data-decision-expertise>{{ decision.request.expertise.join(', ') }}</dd>
+        </template>
+        <template v-for="s in receipts" :key="s.key">
+          <dt class="text-muted">{{ s.label }}</dt>
+          <dd class="break-words font-mono" data-step-receipt :data-step-receipt-of="s.key">{{ s.receipt }}</dd>
+        </template>
+      </dl>
     </div>
 
     <!-- The accepted answer: what was picked or said, why, and who (Codex's round 1 on #719). -->
@@ -111,14 +136,13 @@ const showHistory = ref(false)
       </template>
     </dl>
 
-    <!-- The four states apart: each with what it rests on and when. -->
+    <!-- The four states apart: each with what it rests on and when; the receipts are in Details. -->
     <ol class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2" data-decision-steps>
-      <li v-for="s in words.steps" :key="s.key" class="flex min-w-0 items-start gap-2 text-xs" :data-decision-step="s.key" :data-step-status="s.status">
-        <UIcon :name="stepIcon[s.status]" class="mt-0.5 size-3.5 flex-none" :class="stepTone[s.status]" />
+      <li v-for="s in words.steps" :key="s.key" class="flex min-w-0 items-start gap-2 text-xs" :data-decision-step="s.key" :data-step-status="s.status" :data-step-icon="stepLook(s).icon">
+        <UIcon :name="stepLook(s).icon" class="mt-0.5 size-3.5 flex-none" :class="tones[stepLook(s).tone]" data-step-mark />
         <span class="min-w-0 flex-1 break-words">
-          <span class="font-medium">{{ s.label }}</span>
+          <span class="font-medium" data-step-label>{{ s.label }}</span>
           <span class="text-muted" data-step-words> · {{ s.words }}</span>
-          <span v-if="s.receipt" class="font-mono text-dimmed" data-step-receipt> · {{ s.receipt }}</span>
         </span>
         <span v-if="s.at" class="flex-none text-dimmed" :title="s.at">{{ relativeTime(s.at, now, { suffix: true }) }}</span>
       </li>

@@ -80,6 +80,30 @@ async function phonePage(browser: Browser, s: Started): Promise<Page> {
   return ctx.newPage()
 }
 
+// The measures below are this spec's own until the stream's shared helpers land (UX1 PR-1, web/e2e/layout.ts: `tapTarget`,
+// `noSideways`, `inside`), where they move. Each fails when it matched nothing.
+
+/** A control a thumb can hit: at least 44 px each way. */
+async function tapTarget(l: ReturnType<Page['locator']>) {
+  const b = await l.boundingBox()
+  expect(b, 'the control is drawn').not.toBeNull()
+  expect(Math.min(b!.width, b!.height), 'the control is 44 px each way').toBeGreaterThanOrEqual(44 - 0.5)
+}
+
+/** The page never scrolls sideways. */
+async function noSideways(page: Page) {
+  const [scroll, client] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth])
+  expect(scroll, `the page is ${scroll} px wide in ${client} px`).toBeLessThanOrEqual(client)
+}
+
+/** Each element of `parts` lies within the window's width, whole. */
+async function onScreen(page: Page, parts: ReturnType<Page['locator']>) {
+  const width = page.viewportSize()!.width
+  const boxes = await parts.evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => [r.left, r.right]))
+  expect(boxes.length, 'the parts are drawn').toBeGreaterThan(0)
+  for (const [left, right] of boxes) expect(left! >= -0.5 && right! <= width + 0.5, `a part runs ${left}..${right} in ${width} px`).toBe(true)
+}
+
 /** DR1's card's four states as drawn: each step's key and status. */
 function states(card: ReturnType<Page['locator']>): Promise<Record<string, string>> {
   return card.locator('[data-decision-step]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-decision-step'), e.getAttribute('data-step-status')])))
@@ -119,6 +143,21 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await expect(item.locator('[data-inbox-question]')).toHaveCount(0)
   await expect(item.locator('[data-inbox-actions]')).toHaveCount(0)
   await expect(item.locator('[data-inbox-delivery]')).toHaveCount(0)
+  // UX1 PR-20: its choices once, as the buttons; the gate's own sentence for what a yes lets happen; Details open at once for a
+  // plan's approval, the plan revision it approves in view. On the phone: nothing sideways, the buttons whole on screen, the
+  // toggle a thumb's size.
+  await expect(item.locator('[data-decision-choice]')).toHaveCount(2)
+  await expect(card.locator('[data-decision-option]')).toHaveCount(0)
+  await expect(card.locator('[data-decision-authorizes-line]')).toHaveText('Approve lets deploy start; Reject cancels it.')
+  const details = card.locator('[data-decision-details-toggle]')
+  await expect(details).toHaveAttribute('aria-expanded', 'true')
+  await expect(card.locator('[data-decision-subject]')).toBeInViewport()
+  await expect(card.locator('[data-decision-subject]')).toContainText('plan revision')
+  await expect(card.locator('[data-decision-card-id]')).toHaveText(gate1)
+  await expect(card.locator('[data-decision-from-plan]')).toContainText('From the plan')
+  await tapTarget(details)
+  await onScreen(phone, item.locator('[data-decision-choice]'))
+  await noSideways(phone)
 
   // A response at a stale record: Approve picked at the rev shown, the record moved by a comment, Confirm refused with words.
   budget(6)
@@ -142,6 +181,11 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   budget(1)
   await expect.poll(() => states(card), { timeout: STEP_MS }).toEqual({ open: 'done', recorded: 'done', validated: 'done', applied: 'done' })
   const before = await states(card)
+  // The record's new revs drew the card again: Details still open, and its choices back as rows once nothing is left to answer.
+  await expect(details).toHaveAttribute('aria-expanded', 'true')
+  await expect(card.locator('[data-decision-subject]')).toContainText('plan revision')
+  await expect(card.locator('[data-decision-option]')).toHaveCount(2)
+  await expect(item.locator('[data-decision-choice]')).toHaveCount(0)
 
   // The ticket page's record links to its item on the decision page.
   budget(3)
@@ -156,6 +200,21 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   budget(5)
   await phone.goto(`/decisions?item=${encodeURIComponent(`decision:${asked}`)}`)
   const asks = phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-respond]`)
+  // UX1 PR-20: an agent's clarification starts with Details folded; a tap opens them, and they stay open through the rev the
+  // request for more makes below.
+  const askedCard = phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-card]`)
+  const askedDetails = askedCard.locator('[data-decision-details-toggle]')
+  await expect(askedCard.locator('[data-decision-question]')).toBeVisible()
+  await expect(askedDetails).toHaveAttribute('aria-expanded', 'false')
+  await expect(askedCard.locator('[data-decision-card-id]')).toHaveCount(0)
+  await expect(asks.locator('[data-decision-choice]')).toHaveCount(2)
+  await expect(askedCard.locator('[data-decision-option]')).toHaveCount(0)
+  await expect(asks.locator('[data-decision-choice][data-decision-recommended]')).toHaveAttribute('data-decision-choice-label', 'stub-a')
+  await expect(asks.locator('[data-decision-tradeoff]')).toHaveText(['stub-a: the short name'])
+  await askedDetails.tap()
+  await expect(askedDetails).toHaveAttribute('aria-expanded', 'true')
+  await expect(askedCard.locator('[data-decision-card-id]')).toHaveText(asked)
+  const askedRev = (await decision(srv.api, asked)).rev
   const note = 'Which tests did you run?'
   await asks.locator('[data-decision-comment-text]').fill(note)
   await expect(asks.locator('[data-decision-comment-text]')).toHaveValue(note)
@@ -164,6 +223,12 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
   await expect(asks.locator('[data-decision-op-words]')).not.toBeEmpty()
   await expect.poll(async () => (await decision(srv.api, asked)).history?.some((h) => h.kind === 'info_requested') ?? false, { timeout: STEP_MS }).toBe(true)
   expect((await decision(srv.api, asked)).state).toBe('open')
+  // The card drawn at the new rev (its history toggle counts the request's row) keeps Details open.
+  const moreAsked = await decision(srv.api, asked)
+  expect(moreAsked.rev).toBeGreaterThan(askedRev)
+  await expect(askedCard.locator('[data-decision-history-toggle]')).toHaveText(`History (${moreAsked.history!.length})`, { timeout: STEP_MS })
+  await expect(askedDetails).toHaveAttribute('aria-expanded', 'true')
+  await expect(askedCard.locator('[data-decision-card-id]')).toHaveText(asked)
   const history = phone.locator(`[data-inbox-item="decision:${asked}"] [data-decision-card]`)
   await history.locator('[data-decision-history-toggle]').tap()
   await expect(history.locator('[data-decision-history]')).toContainText(note)

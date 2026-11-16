@@ -4,7 +4,8 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
- * button per option; a clarification's text beside them), a rationale, Comment and Ask for more (disabled, with the record's words,
+ * button per option, the recommended one marked on it and each option's tradeoffs in a line under them, UX1 PR-20; a clarification's
+ * text beside them), a rationale, Comment and Ask for more (disabled, with the record's words,
  * when no live agent asked it). An approval's and an assignment's answer is asked first: the choice, then Confirm, which sends it
  * against the rev the card showed when it was picked. The receipt is shown (Recorded); a refusal is shown in the server's words (who
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
@@ -12,7 +13,7 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
  * (useDecisionRecord's), so a reply from before the stream came back is dropped (Codex's round 3 on #719).
  */
 const props = defineProps<{ decision: Decision; begin: () => (decision: Decision) => void }>()
-const emit = defineEmits<{ read: [] }>()
+const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
 
 const { request } = useApi()
 const identity = useIdentity()
@@ -40,6 +41,11 @@ const commentBusy = ref(false)
 /** The controls show while it is open, and while a picked choice waits for Confirm whatever happened since. */
 const answering = computed(() => d.value.state === 'open' || !!pending.value)
 const moved = computed(() => !!pending.value && (d.value.state !== 'open' || d.value.rev !== pending.value.rev))
+// Whether the buttons are drawn, said to the card above (UX1 PR-20): while they are, they are the one list of choices.
+watch(answering, (shown) => emit('controls', shown), { immediate: true })
+onBeforeUnmount(() => emit('controls', false))
+/** The options that say what they cost, in order: one muted line each under the buttons. */
+const tradeoffs = computed(() => options.value.flatMap((o, i) => (o.tradeoffs ? [{ i, label: o.label, tradeoffs: o.tradeoffs }] : [])))
 
 function pick(i: number) {
   refusal.value = ''
@@ -125,9 +131,18 @@ watch(
           :disabled="busy"
           :data-decision-choice="i"
           :data-decision-choice-label="o.label"
+          :data-decision-recommended="i === best ? '' : undefined"
           @click="pick(i)"
-        />
+        >
+          <template v-if="i === best" #trailing>
+            <UBadge label="recommended" color="neutral" variant="subtle" size="sm" />
+          </template>
+        </UButton>
       </div>
+      <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
+      <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
+        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i"><span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}</li>
+      </ul>
       <UTextarea v-if="decision.type === 'clarification'" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy" data-decision-text />
       <UTextarea v-model="rationale" :rows="1" autoresize placeholder="Why (optional, kept with the answer)…" :maxlength="2000" :disabled="busy" data-decision-rationale />
 

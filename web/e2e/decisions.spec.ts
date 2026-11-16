@@ -66,9 +66,44 @@ async function openPalette(page: Page) {
 
 /** Closes the decision's modal by its own Close button (a page's Escape may be its own: the Yard's leaves the focused panel). */
 async function closeCard(page: Page) {
-  const dialog = page.getByRole('dialog', { name: /^Decision dr-/ })
+  const dialog = page.getByRole('dialog', { name: 'A decision for you' })
   await dialog.getByRole('button', { name: 'Close' }).click()
   await expect(page.locator('[data-decision-modal]')).toHaveCount(0)
+}
+
+// The measures below are this spec's own until the stream's shared helpers land (UX1 PR-1, web/e2e/layout.ts: `tabTo`, `probeColour`),
+// where they move.
+
+/** The colour a class of the app's resolves to on the page now, through a probe element (no parsing of oklch). */
+function probeColour(page: Page, cls: string): Promise<string> {
+  return page.evaluate((c) => {
+    const e = document.createElement('span')
+    e.className = c
+    document.body.append(e)
+    const colour = getComputedStyle(e).color
+    e.remove()
+    return colour
+  }, cls)
+}
+
+/** Presses Tab from `from` until `target` has the focus, at most `max` times; it then draws a focus ring (an outline or a shadow). */
+async function tabTo(page: Page, from: ReturnType<Page['locator']>, target: ReturnType<Page['locator']>, max: number) {
+  await from.focus()
+  let n = 0
+  while (!(await target.evaluate((e) => e === document.activeElement))) {
+    expect(++n, `Tab reaches the control within ${max} presses`).toBeLessThanOrEqual(max)
+    await page.keyboard.press('Tab')
+  }
+  const ring = await target.evaluate((e) => {
+    const s = getComputedStyle(e)
+    return (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) || s.boxShadow !== 'none'
+  })
+  expect(ring, 'the focused control draws a ring').toBe(true)
+}
+
+/** The colour of a step's mark, and of its icon's class, as drawn. */
+function stepColour(modal: ReturnType<Page['locator']>, key: string): Promise<string> {
+  return modal.locator(`[data-decision-step="${key}"] [data-step-mark]`).evaluate((e) => getComputedStyle(e).color)
 }
 
 /** The question bar of a page, with no reply field and no number key, its question the decision's. */
@@ -127,8 +162,50 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await row.locator(`[data-task-answer="build"]`).click()
   const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
   await expect(modal.locator('[data-decision-question]')).toHaveText(question)
+  // UX1 PR-20: the choices once, as the buttons, the recommended one marked on its button and each tradeoff in a line under them;
+  // what a yes lets happen in one line; the modal titled for the person, the id folded under Details.
+  await expect(page.getByRole('dialog', { name: 'A decision for you' })).toBeVisible()
+  await expect(modal.locator('[data-decision-choice]')).toHaveCount(2)
+  await expect(modal.locator('[data-decision-option]')).toHaveCount(0)
   await expect(modal.locator('[data-decision-recommended]')).toHaveCount(1)
+  await expect(modal.locator('[data-decision-choice][data-decision-recommended]')).toHaveCount(1)
+  await expect(modal.locator('[data-decision-choice][data-decision-recommended]')).toHaveAttribute('data-decision-choice-label', 'Approve')
+  await expect(modal.locator('[data-decision-choice-label="Approve"]')).toContainText('recommended')
+  await expect(modal.locator('[data-decision-tradeoff="0"]')).toHaveText('Approve: the change goes in as it is')
+  await expect(modal.locator('[data-decision-tradeoff="1"]')).toHaveText('Reject: nothing is committed')
   await expect(modal.locator('[data-decision-authorizes]')).toHaveText('build commits stub-builder.txt and submits it')
+  await expect(modal.locator('[data-decision-authorizes-line]')).toHaveText('A yes authorizes: build commits stub-builder.txt and submits it')
+  // Details, folded for an agent's request, reached by Tab from the run's link and opened by Enter: the id, its type, the subject.
+  const details = modal.locator('[data-decision-details-toggle]')
+  await expect(details).toHaveAttribute('aria-expanded', 'false')
+  await expect(modal.locator('[data-decision-card-id]')).toHaveCount(0)
+  await tabTo(page, modal.locator('[data-decision-run]'), details, 8)
+  await page.keyboard.press('Enter')
+  await expect(details).toHaveAttribute('aria-expanded', 'true')
+  await expect(modal.locator('[data-decision-card-id]')).toHaveText(id)
+  await expect(modal.locator('[data-decision-type]')).toHaveText('approval')
+  await expect(modal.locator('[data-decision-from-plan]')).toHaveCount(0)
+  // The steps in a person's words; the answer owed is a still amber dot, the step reached a neutral check, nothing a loader. In
+  // both themes, the stored colour mode switched and the card drawn again.
+  await expect(modal.locator('[data-decision-step="recorded"]')).toHaveAttribute('data-step-icon', 'i-lucide-circle-dot')
+  await expect(modal.locator('[data-decision-step="recorded"] [data-step-label]')).toHaveText('Your answer')
+  await expect(modal.locator('[data-decision-step] [data-step-label]')).toHaveText(['Asked', 'Your answer', 'Checked by Yardmaster', 'Applied'])
+  await expect(modal.locator('[data-decision-step][data-step-icon="i-lucide-loader-circle"]')).toHaveCount(0)
+  for (const theme of ['dark', 'light'] as const) {
+    if (theme === 'light') {
+      budget(4 * STEP_MS)
+      await page.evaluate(() => localStorage.setItem('conductor-color-mode', 'light'))
+      await page.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
+      await expect(page.locator('html')).not.toHaveClass(/\bdark\b/)
+      await expect(modal.locator('[data-decision-step="recorded"]')).toHaveAttribute('data-step-icon', 'i-lucide-circle-dot')
+    } else {
+      await expect(page.locator('html')).toHaveClass(/\bdark\b/)
+    }
+    const [warning, ink, success] = [await probeColour(page, 'text-warning'), await probeColour(page, 'text-default'), await probeColour(page, 'text-success')]
+    expect(ink, `${theme}: the success token is not the ink`).not.toBe(success)
+    expect(await stepColour(modal, 'recorded'), `${theme}: the answer owed is amber`).toBe(warning)
+    expect(await stepColour(modal, 'open'), `${theme}: the step reached is neutral ink`).toBe(ink)
+  }
   const ticketChip = modal.locator(`[data-ref-chip="ticket:${ticket}"]`)
   await expect(ticketChip.locator('[data-ref-changed]')).toHaveText(`changed since r${before.rev}`)
   await expect(modal.locator(`[data-ref-chip="run:${runId}"]`)).toBeVisible()
@@ -174,6 +251,7 @@ test("build's approval waits while docs finishes, is answered in its card from t
   const secondModal = second.locator(`[data-decision-modal][data-decision-modal-id="${id}"]`)
   await secondModal.locator('[data-decision-choice-label="Approve"]').click()
   await expect(secondModal.locator('[data-decision-confirm]')).toBeVisible()
+  await expect(secondModal.locator('[data-decision-option]')).toHaveCount(0)
 
   // The palette's row opens the card, where the operator approves: Recorded at once, then Applied, typed into build's attempt 1.
   budget(6 * STEP_MS)
@@ -202,6 +280,9 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await expect(modal.locator('[data-decision-answer-choice]')).toHaveText('Approve')
   await expect(modal.locator('[data-decision-answer-rationale]')).toHaveText('Small enough.')
   await expect(modal.locator('[data-decision-answer-by]')).toHaveText('Nate')
+  // Applied, the buttons gone: the card lists its choices again, the one place they are left (UX1 PR-20).
+  await expect(modal.locator('[data-decision-choice]')).toHaveCount(0)
+  await expect(modal.locator('[data-decision-option]')).toHaveCount(2)
 
   // The stub took the typed line as its answer and went on: build succeeds with stub-answer.txt in its result.
   const done = await runUntil(api, runId, (r) => task(r, 'build').state === 'succeeded', 'build succeeds once its answer is typed')
@@ -210,8 +291,26 @@ test("build's approval waits while docs finishes, is answered in its card from t
   const answer = execFileSync('git', ['show', `${commit}:stub-answer.txt`], { cwd: srv.repo, encoding: 'utf8' })
   expect(answer).toContain(`Decision ${id} (approval) answered by Nate: Approve. Why: Small enough. (receipt ${id}/1)`)
 
-  // The second tab confirms its Approve now: told who answered first, nothing applied twice.
-  budget(3 * STEP_MS)
+  // The card opened again from the run page, the record applied: its choices as rows, no buttons; its steps done in neutral checks,
+  // their receipts in Details.
+  budget(4 * STEP_MS)
+  await page.goto(`${base}/runs/${runId}?view=tasks&decision=${id}`)
+  await expect(modal.locator('[data-decision-state-words]')).toHaveText("Applied: typed into build's attempt 1")
+  await expect(modal.locator('[data-decision-option]')).toHaveCount(2)
+  await expect(modal.locator('[data-decision-option="0"] [data-decision-recommended]')).toHaveCount(1)
+  await expect(modal.locator('[data-decision-choice]')).toHaveCount(0)
+  await expect(modal.locator('[data-decision-step][data-step-icon="i-lucide-circle-check"]')).toHaveCount(4)
+  await modal.locator('[data-decision-details-toggle]').click()
+  await expect(modal.locator('[data-step-receipt-of="recorded"]')).toHaveText(`${id}/1`)
+  await expect(modal.locator('[data-step-receipt-of="applied"]')).toHaveText(`${id}/1 applied`)
+  await closeCard(page)
+
+  // The second tab, its Approve still waiting for Confirm on a record applied since: the buttons stay, the rows do not come back.
+  budget(4 * STEP_MS)
+  await expect(secondModal.locator('[data-decision-moved]')).toBeVisible({ timeout: 30_000 })
+  await expect(secondModal.locator('[data-decision-choice]')).toHaveCount(2)
+  await expect(secondModal.locator('[data-decision-option]')).toHaveCount(0)
+  // It confirms its Approve now: told who answered first, nothing applied twice.
   await secondModal.locator('[data-decision-confirm]').click()
   await expect(secondModal.locator('[data-decision-refusal-words]')).toContainText(`${id} was answered by Nate`)
   const after = await api.ok<{ decision: { history: Array<{ kind: string }> } }>('GET', `/api/decisions/${id}`)
