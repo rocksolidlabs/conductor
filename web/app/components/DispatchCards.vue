@@ -192,7 +192,7 @@ defineExpose({ unfold, fold, focusCard })
           <UIcon :name="c.icon" class="size-4 flex-none" :class="c.tone" />
           <h3 class="min-w-0 truncate text-sm font-medium text-highlighted">{{ c.label }}</h3>
           <span class="text-xs text-muted tabular-nums" data-column-count>{{ c.tickets.length }}</span>
-          <UButton v-if="c.folded" icon="i-lucide-chevrons-left" size="xs" color="neutral" variant="ghost" class="ml-auto" :aria-label="`Fold ${c.label}`" data-column-fold @click="fold(c.id)" />
+          <IconButton v-if="c.folded" icon="i-lucide-chevrons-left" size="xs" color="neutral" variant="ghost" class="ml-auto" :label="`Fold ${c.label}`" data-column-fold @click="fold(c.id)" />
         </header>
         <div class="flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
           <NuxtLink

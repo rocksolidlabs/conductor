@@ -184,21 +184,20 @@ defineExpose({ views, openSave, apply, applied })
 <template>
   <div class="flex min-w-0 flex-none items-center" v-bind="$attrs" data-views-bar :data-loaded="loaded ? '' : undefined">
     <UPopover v-model:open="menuOpen" :content="{ align: 'end', sideOffset: 6 }">
-      <UButton
+      <IconButton
         size="sm"
         :color="appliedView ? 'primary' : 'neutral'"
         :variant="appliedView ? 'soft' : 'outline'"
         icon="i-lucide-bookmark"
         class="max-w-56"
-        :title="appliedView ? `Views · ${appliedView.name}` : undefined"
         :aria-expanded="menuOpen"
-        :aria-label="appliedView ? `Saved views: ${appliedView.name} is applied` : 'Saved views'"
+        :label="appliedView ? `Saved views: ${appliedView.name} is applied` : 'Saved views'"
         :data-applied="appliedView?.id"
         data-views-open
       >
         <!-- Below sm the bookmark alone (its tone says a view is applied, its label which), so that the toolbar's second line fits. -->
         <span class="hidden truncate sm:inline">{{ appliedView ? `Views · ${appliedView.name}` : 'Views' }}</span>
-      </UButton>
+      </IconButton>
       <template #content>
         <div class="flex w-[min(20rem,calc(100vw-2rem))] flex-col p-1" data-views-menu>
           <p v-if="!loaded" class="px-2 py-1.5 text-xs text-dimmed">Reading the saved views…</p>
@@ -219,7 +218,7 @@ defineExpose({ views, openSave, apply, applied })
               <span class="flex-none text-xs text-dimmed">{{ v.projectId ? project : 'every project' }}</span>
             </UButton>
             <UDropdownMenu :items="menu(v)" :content="{ align: 'end' }">
-              <UButton size="sm" color="neutral" variant="ghost" icon="i-lucide-ellipsis" class="flex-none" :aria-label="`${v.name}: its actions`" :data-view-menu="v.id" />
+              <IconButton size="sm" color="neutral" variant="ghost" icon="i-lucide-ellipsis" class="flex-none" :label="`${v.name}: its actions`" :data-view-menu="v.id" />
             </UDropdownMenu>
           </div>
           <div class="my-1 border-t border-default" />

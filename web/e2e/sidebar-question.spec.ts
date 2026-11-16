@@ -209,9 +209,9 @@ test('on a touch screen a tap on Answer opens the panel and a tap on a choice an
 })
 
 // With the pages as six tiles at the sidebar's foot the list is about 625 px tall at 900 px, where the column of pages left it
-// about 440: four asking rows are whole in view where three were (the review counted two, each row holding its question whole).
-// The plan asked for five: an asking row at 200 px is 100 to 116 px tall and the busy day's three runs each add a header and an
-// "and N more" line, so the fifth starts below the window's foot; a sixth tile row would not change that.
+// about 440 (the review counted two asking rows in view, each holding its question whole). A plan's, a task's and a decision's row
+// of Needs you (UX1 PR-13) count as asking rows. The plan asked for five: an asking session's row at 200 px is 100 to 116 px tall and
+// the busy day's runs each add a header and an "and N more" line, so the list holds four.
 test("on the day's busy part, at 200 px, the list shows more asking rows whole than with each question whole", async ({ day, browser }) => {
   await day.part('busy')
   const page = await dayPage(browser, { path: '/crews' })
@@ -219,5 +219,6 @@ test("on the day's busy part, at 200 px, the list shows more asking rows whole t
   const list = page.locator('[data-session-list="sidebar"]')
   await expect(list).toHaveAttribute('data-list-width', 'narrow')
   await expect(list.locator('[data-row-clamped]').first()).toBeVisible()
-  expect(await rowsInView(list, '[data-row-kind="session"][data-row-state="needs"]')).toBeGreaterThanOrEqual(4)
+  // A row that asks: a session's question, or (UX1 PR-13) a plan's, a task's or a decision's row of Needs you.
+  expect(await rowsInView(list, '[data-row-kind="session"][data-row-state="needs"], [data-row-kind="item"]')).toBeGreaterThanOrEqual(4)
 })

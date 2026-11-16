@@ -62,7 +62,7 @@ const interactive = computed(() => props.role === 'control')
           <span class="font-mono text-[10px] font-semibold text-muted">{{ agentInitials(m.agentId) }}</span>
           <span class="flex-1 truncate text-[13px] font-semibold">{{ m.name }}</span>
           <span class="flex items-center gap-1.5 text-[11.5px]" :class="joinTileStatus(m, heard[m.name]).cls"><span class="size-[7px] rounded-full" :class="joinTileStatus(m, heard[m.name]).dot" aria-hidden="true" />{{ joinTileStatus(m, heard[m.name]).label }}</span>
-          <UButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :aria-label="`Open ${m.name}`" data-tile-open @click.stop="open(m)" />
+          <IconButton icon="i-lucide-maximize-2" size="xs" color="neutral" variant="ghost" :label="`Open ${m.name}`" data-tile-open @click.stop="open(m)" />
         </div>
         <div class="min-h-0 flex-1" :class="!interactive && 'pointer-events-none'">
           <TerminalView

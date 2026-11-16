@@ -205,7 +205,7 @@ async function showOlder() {
 
         <DispatchRunCard v-if="entryRunId(e)" :run-id="entryRunId(e)" :summary="e.run" :run="runOf(entryRunId(e))" :now="now">
           <template #actions>
-            <UButton v-if="e.kind === 'link' && e.link && !locked" icon="i-lucide-unlink" size="xs" color="neutral" variant="ghost" :aria-label="`Unlink the run ${e.link.ref}`" :loading="removing === e.link.id" data-ticket-run-remove @click="unlink(e.link)" />
+            <IconButton v-if="e.kind === 'link' && e.link && !locked" icon="i-lucide-unlink" size="xs" color="neutral" variant="ghost" :label="`Unlink the run ${e.link.ref}`" :loading="removing === e.link.id" data-ticket-run-remove @click="unlink(e.link)" />
           </template>
         </DispatchRunCard>
       </li>

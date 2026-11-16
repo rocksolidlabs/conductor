@@ -1,5 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import { budget, dayPage, expect, test, type Session } from './fixtures'
+import { inboxItem, summary } from './inbox-stub'
+import { tapTarget } from './layout'
 import type { Day } from './day'
 import { DAY_STEP_MS } from './day'
 import { ownServer, type OwnServer } from './own-server'
@@ -17,17 +19,8 @@ async function oracle(day: Day) {
   const [items, sessions] = await Promise.all([day.inbox() as Promise<Item[]>, day.listSessions()])
   const open = items.filter((it) => !it.tracking)
   const plansTasks = open.filter((it) => it.kind === 'plan' || it.kind === 'task').length
-  // A decision of a run that no longer runs is on the page, not in the sidebar's section.
-  let stopped = 0
-  for (const it of open.filter((it) => it.kind === 'decision')) {
-    const d = (await day.api.ok<{ decision: { run: string } }>('GET', `/api/decisions/${encodeURIComponent(it.ref.slice('decision:'.length))}`)).decision
-    const r = await day.api.call<{ run?: { stoppedAt?: string; record?: boolean; resumedBy?: string } }>('GET', `/api/runs/${encodeURIComponent(d.run)}`)
-    const run = r.status === 200 ? r.body.run : undefined
-    if (!run || run.stoppedAt || run.record || run.resumedBy) stopped++
-  }
   const grid = sessions.filter((s) => (s.status === 'running' || s.status === 'starting') && s.attention?.state === 'needs_input' && !(s.attention as { answered?: string }).answered).length
   const n = open.length
-  const more = plansTasks + stopped
   return {
     n,
     want: {
@@ -40,8 +33,9 @@ async function oracle(day: Day) {
       phone: n ? String(n) : '',
       phoneYard: grid ? String(grid) : '',
       yardChip: String(grid),
-      section: String(n - more),
-      sectionMore: more ? `+${more} on the page` : '',
+      // The sidebar's section lists every kind (UX1 PR-13): it counts the one number, and says nothing is left out.
+      section: n ? String(n) : '',
+      sectionMore: 0,
       yardNavBadge: 0,
       railYardChip: 0,
     },
@@ -59,7 +53,7 @@ async function readAll(desk: Page, rail: Page, phone: Page) {
     desk.evaluate(() => document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.href.startsWith('data:') ?? false),
     text(desk, '[data-palette-row="go:decisions"] [data-palette-label]'),
     text(desk, '[data-sidebar-section="needs"] [data-section-count]'),
-    text(desk, '[data-sidebar-section="needs"] [data-section-more]'),
+    desk.locator('[data-sidebar-section="needs"] [data-section-more]').count(),
     desk.locator('#dashboard-sidebar-main [data-sidebar-tile="yard"] [data-tile-badge]').count(),
   ])
   const [railCount, railLabel, railYardChip, yardChip] = await Promise.all([
@@ -140,19 +134,134 @@ test('one number of what needs you on every surface that shows it, on the busy d
     await desk.locator('input[data-palette-input]').fill('Needs you')
     const again = await agree(day, desk, rail, phone, 'every reader after a reload')
     expect(again.n).toBe(before.n)
-    // The section's "+N on the page" opens the page.
-    await desk.keyboard.press('Escape')
-    await expect(desk.locator('[data-palette]')).toBeHidden()
-    if (again.want.sectionMore) {
-      await desk.locator('[data-sidebar-section="needs"] [data-section-more]').click()
-      await expect(desk).toHaveURL(/\/decisions$/)
-    }
   } finally {
     await day.api.stopSession(mine.id)
     await expect.poll(() => day.statusOf(mine.id), { timeout: DAY_STEP_MS }).toMatch(/^(exited|stopped|gone)$/)
     await day.api.stopSession(mine.id)
     await expect.poll(() => day.statusOf(mine.id), { timeout: DAY_STEP_MS }).toBe('gone')
   }
+})
+
+/** Where the sidebar lists each open item of the inbox: a question (or a decision its session's question mirrors) by its session's row, any other by its own ref and kind. */
+async function listedAs(day: Day): Promise<Array<{ ref: string; sel: string }>> {
+  const [items, sessions] = await Promise.all([day.inbox() as Promise<Item[]>, day.listSessions()])
+  return items
+    .filter((it) => !it.tracking)
+    .map((it) => {
+      if (it.kind === 'question') return { ref: it.ref, sel: `[data-sidebar-row="s:${it.ref.slice('question:'.length).split('/')[0]}"]` }
+      const mirror = it.kind === 'decision' ? sessions.find((x) => x.attention?.state === 'needs_input' && x.attention.decision === it.ref.slice('decision:'.length)) : undefined
+      if (mirror) return { ref: it.ref, sel: `[data-sidebar-row="s:${mirror.id}"]` }
+      return { ref: it.ref, sel: `[data-sidebar-item="${it.ref}"][data-sidebar-item-kind="${it.kind}"]` }
+    })
+}
+
+// The UX review's P3, the list: Needs you lists every kind that waits on a person, each once, and a run that waits sits there.
+test('Needs you in the sidebar lists every kind of what needs you, each once, and a waiting run in it, on the busy day', async ({ day, browser }) => {
+  test.setTimeout(test.info().timeout + 4 * DAY_STEP_MS)
+  await day.part('busy')
+  const w = await day.part('waiting')
+  const desk = await dayPage(browser, { path: '/crews' })
+  const needs = desk.locator('[data-session-list="sidebar"] [data-sidebar-section="needs"]')
+  // Every open item listed once, and the run whose task failed in Needs you and not in Running: one read of the page, of one moment,
+  // beside the oracle read at the same poll.
+  budget(DAY_STEP_MS)
+  await expect
+    .poll(
+      async () => {
+        const want = await listedAs(day)
+        const seen = await desk.evaluate(
+          ({ want, run }) => {
+            const list = document.querySelector('[data-session-list="sidebar"]')
+            const section = list?.querySelector('[data-sidebar-section="needs"]')
+            return {
+              counts: Object.fromEntries(want.map((x) => [x.ref, section ? section.querySelectorAll(x.sel).length : -1])),
+              runInNeeds: section?.querySelectorAll(`[data-sidebar-run-block="${run}"]`).length ?? 0,
+              runAnywhere: list?.querySelectorAll(`[data-sidebar-run-block="${run}"]`).length ?? 0,
+            }
+          },
+          { want, run: w['Paging spike']! },
+        )
+        const twice = Object.entries(seen.counts).filter(([, n]) => n !== 1)
+        return want.length && !twice.length && seen.runInNeeds === 1 && seen.runAnywhere === 1 ? 'each once' : JSON.stringify(seen)
+      },
+      { timeout: DAY_STEP_MS, message: 'every open item is listed once in Needs you, the failed task under its run there' },
+    )
+    .toBe('each once')
+  // The failed task under its run's header, before its members.
+  const spike = needs.locator(`[data-sidebar-run-block="${w['Paging spike']}"]`)
+  await expect(spike.locator(`[data-sidebar-item="task:${w['Paging spike']}/index"]`)).toHaveAttribute('data-sidebar-item-kind', 'task')
+  // Enter on the plan's row, focused, opens it on the page.
+  const plan = needs.locator('[data-sidebar-item="plan:CND-2/1"]')
+  await expect(plan).toHaveAttribute('data-sidebar-item-kind', 'plan')
+  await plan.focus()
+  await desk.keyboard.press('Enter')
+  await expect(desk).toHaveURL(new RegExp(`/decisions\\?item=${encodeURIComponent('plan:CND-2/1')}$`))
+  // A click on the gate's row, under its run's header (the run has no session yet), opens its card.
+  const gate = needs.locator(`[data-sidebar-run-block="${w['Pairing rollout']}"] [data-sidebar-item="decision:${w.gate}"]`)
+  await expect(gate).toHaveAttribute('data-sidebar-decision', w.gate!)
+  await gate.click()
+  await expect(desk.locator(`[data-decision-modal][data-decision-modal-id="${w.gate}"]`)).toBeVisible()
+  await desk.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
+  await expect(desk.locator('[data-decision-modal]')).toHaveCount(0)
+  // The palette lists the loose question once: its session's row in Needs you, no second row of the same question.
+  const asker = w['proc-race-tests']!
+  await desk.keyboard.press('Alt+/')
+  const palette = desk.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await palette.locator('input[data-palette-input]').fill('proc-race-tests')
+  await expect(palette.locator(`[data-palette-group="needs"] [data-palette-row="session:${asker}"]`)).toHaveCount(1)
+  // Its one row: the session's, in Needs you alone; no row of the question's own (the old "Decide: …").
+  await expect(palette.locator(`[data-palette-row="session:${asker}"]`)).toHaveCount(1)
+  await expect(palette.locator(`[data-palette-row*="question:${asker}/"]`)).toHaveCount(0)
+  await desk.keyboard.press('Escape')
+
+  // The phone's list holds the plan and the task, each a 44 px target.
+  const phone = await dayPage(browser, { width: 390, height: 844, touch: true, path: '/sessions' })
+  const list = phone.locator('[data-session-list="page"] [data-sidebar-section="needs"]')
+  await tapTarget(list.locator('[data-sidebar-item="plan:CND-2/1"]'))
+  await tapTarget(list.locator(`[data-sidebar-item="task:${w['Paging spike']}/index"]`))
+})
+
+test('Needs you says when plans and tasks could not be read, and when the inbox holds more than its first page', async ({ day, browser }) => {
+  await day.part('busy')
+  const w = await day.part('waiting')
+  const desk = await dayPage(browser, { path: '/crews' })
+  const needs = desk.locator('[data-session-list="sidebar"] [data-sidebar-section="needs"]')
+  // The inbox's read answering 500, then let go, then a first page of one plan with a next one and a total of 212: a route of the
+  // spec's own that stands before the page loads again, and counts the reads it answered.
+  let mode: 'fail' | 'server' | 'paged' = 'fail'
+  let reads = 0
+  const paged = inboxItem('plan', { title: 'A plan on the first page' })
+  await desk.route(/\/api\/inbox(\?.*)?$/, (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    reads++
+    if (mode === 'fail') return route.fulfill({ status: 500, json: { error: { code: 'internal', message: 'the inbox failed' } } })
+    if (mode === 'paged') return route.fulfill({ status: 200, json: { items: [summary(paged)], total: 212, next: 'page-2', at: new Date().toISOString() } })
+    return route.fallback()
+  })
+  await desk.reload()
+  await expect(desk.locator('#dashboard-sidebar-main')).toBeVisible()
+  const failed = needs.locator('[data-sidebar-inbox-failed]')
+  await expect(failed).toContainText('Plans and tasks could not be read')
+  // The questions are still listed; the plans are not.
+  await expect(needs.locator(`[data-sidebar-row="s:${w['proc-race-tests']}"]`)).toHaveCount(1)
+  await expect(needs.locator('[data-sidebar-item="plan:CND-2/1"]')).toHaveCount(0)
+  // Let go, Read again: the line is gone once the route has answered a read after it.
+  mode = 'server'
+  const before = reads
+  await failed.locator('[data-sidebar-inbox-read]').click()
+  await expect.poll(() => reads).toBeGreaterThan(before)
+  await expect(failed).toHaveCount(0)
+  await expect(needs.locator('[data-sidebar-item="plan:CND-2/1"]')).toHaveCount(1)
+  await expect(needs.locator('[data-sidebar-inbox-showing]')).toHaveCount(0)
+  // A first page with more behind it: the line says how many of how many, and leads to the page.
+  mode = 'paged'
+  await desk.reload()
+  const showing = needs.locator('[data-sidebar-inbox-showing]')
+  await expect(showing).toHaveText('Showing 1 of 212 · all on Needs you')
+  await expect(needs.locator(`[data-sidebar-item="${paged.ref}"]`)).toHaveCount(1)
+  await showing.locator('[data-sidebar-inbox-all]').click()
+  await expect(desk).toHaveURL(/\/decisions$/)
 })
 
 // The row's rule is the rail's: in the full sidebar Needs you is a tile of the six (PR-15), which stays at zero and loses its number.

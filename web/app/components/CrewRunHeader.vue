@@ -258,7 +258,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
          and sentence move into row one, after the name and its chips. -->
     <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 border-b-0 [@media(max-height:480px)]:h-11', left: 'min-w-0 flex-1', right: 'flex-none gap-1.5' }" data-run-row-one>
       <template #leading>
-        <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+        <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       </template>
       <template #title>
         <span class="flex min-w-0 items-baseline gap-2">
@@ -307,16 +307,16 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
       </template>
       <template #right>
         <!-- The run's chat (design 2e): an icon with the count while the drawer is closed. -->
-        <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" title="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
+        <IconButton icon="i-lucide-message-circle" color="neutral" variant="outline" label="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
           <ChatUnreadPill :count="chatUnread" />
-        </UButton>
+        </IconButton>
         <!-- Icons only on a phone: the labels would push the name off the bar. -->
-        <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :aria-label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></UButton>
-        <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
+        <IconButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></IconButton>
+        <IconButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></IconButton>
         <!-- Neutral at rest: red only in its confirm. -->
-        <UButton v-if="!stopped && !record" icon="i-lucide-square" color="neutral" variant="outline" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
+        <IconButton v-if="!stopped && !record" icon="i-lucide-square" color="neutral" variant="outline" label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></IconButton>
         <UDropdownMenu :items="menu" :content="{ align: 'end' }">
-          <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" aria-label="More for this run" title="More for this run" data-run-menu />
+          <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" label="More for this run" data-run-menu />
         </UDropdownMenu>
         <FullscreenButton class="hidden sm:inline-flex" />
       </template>

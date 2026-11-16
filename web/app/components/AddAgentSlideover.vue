@@ -296,7 +296,7 @@ async function testLaunch() {
                 <UInput v-model="row.key" placeholder="NAME" size="sm" aria-label="Variable name" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
                 <UInput v-model="row.value" type="password" autocomplete="new-password" placeholder="pass through" size="sm" aria-label="Value; empty passes the server's value through" class="w-full" />
               </template>
-              <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Remove ${row.key || 'variable'}`" @click="removeEnv(row.uid)" />
+              <IconButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :label="`Remove ${row.key || 'variable'}`" @click="removeEnv(row.uid)" />
             </div>
             <p v-if="shown.env" class="text-sm text-error">{{ shown.env }}</p>
             <UButton label="Add variable" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" class="self-start" @click="addEnv" />
@@ -318,7 +318,7 @@ async function testLaunch() {
               <div v-for="row in form.yoloEnv" :key="row.uid" class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2">
                 <UInput v-model="row.key" placeholder="NAME" size="sm" aria-label="Yolo variable name" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
                 <UInput v-model="row.value" placeholder="value" size="sm" aria-label="Yolo variable value" autocapitalize="off" spellcheck="false" :ui="{ base: 'font-mono' }" class="w-full" />
-                <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Remove ${row.key || 'variable'}`" @click="removeYoloEnv(row.uid)" />
+                <IconButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :label="`Remove ${row.key || 'variable'}`" @click="removeYoloEnv(row.uid)" />
               </div>
               <UButton label="Add variable" icon="i-lucide-plus" size="xs" color="neutral" variant="ghost" class="self-start" @click="addYoloEnv" />
             </div>
