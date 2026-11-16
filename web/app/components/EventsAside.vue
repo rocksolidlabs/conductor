@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Integration } from '~/composables/useSessions'
 import { enough } from '~/utils/charts'
+import { reportStatus } from '~/utils/integrations'
 import { routeSummary, sparkBuckets, type EventType, type FeedEntry, type RouteRow, type SparkKind } from '~/utils/events'
 import { tickLabel } from '~/utils/timeline'
 
@@ -30,11 +31,16 @@ const axis = computed(() => {
 })
 const where = computed(() => routeSummary(props.routes))
 
+/** Whether the agent reports, by reportStatus (the one rule), in this list's own words; installed and injected neutral: green is for a live agent. */
 function reporting(it: Integration): { dot: string; text: string; tone: string } {
-  if (it.installed) return { dot: 'bg-success', text: `${it.events.length} hooks installed`, tone: 'text-muted' }
-  if (it.launchInjection) return { dot: 'bg-success', text: 'injected at launch', tone: 'text-muted' }
-  if (it.experimental) return { dot: 'bg-neutral-400', text: 'experimental', tone: 'text-muted' }
-  return { dot: 'bg-warning', text: 'not configured', tone: 'text-warning' }
+  switch (reportStatus(it).key) {
+    case 'reports':
+      return { dot: 'bg-neutral-400', text: it.installed ? `${it.events.length} hooks installed` : 'injected at launch', tone: 'text-muted' }
+    case 'experimental':
+      return { dot: 'bg-neutral-400', text: 'experimental', tone: 'text-muted' }
+    default:
+      return { dot: 'bg-warning', text: 'not configured', tone: 'text-warning' }
+  }
 }
 </script>
 
@@ -76,7 +82,10 @@ function reporting(it: Integration): { dot: string; text: string; tone: string }
     </section>
 
     <section v-if="integrations.length" class="flex flex-col gap-2" data-reporting>
-      <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Reporting</h3>
+      <div class="flex items-baseline">
+        <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted">Reporting</h3>
+        <UButton label="Set up on Agents" to="/agents#reporting" size="xs" color="secondary" variant="link" class="ml-auto px-0" data-reporting-link />
+      </div>
       <div v-for="it in integrations" :key="it.id" class="flex items-center gap-2 text-[12.5px]" :data-reporting-agent="it.id">
         <span class="size-[7px] flex-none rounded-full" :class="reporting(it).dot" />
         <span class="truncate font-medium text-highlighted">{{ it.name }}</span>

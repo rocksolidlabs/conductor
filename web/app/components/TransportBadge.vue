@@ -1,48 +1,19 @@
 <script setup lang="ts">
 import type { TransportKind } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
+import { transportLook } from '~/utils/transport/look'
 
-const props = defineProps<{ kind: TransportKind; state: TransportState; rtt?: number | null }>()
+defineOptions({ inheritAttrs: false })
 
-const name = computed(() => {
-  switch (props.kind) {
-    case 'ws':
-      return 'WebSocket'
-    case 'webrtc':
-      return 'WebRTC direct'
-    case 'relay':
-      return 'Relay'
-  }
-  return props.kind
-})
+/** `compact` (the session page): a healthy connection is its icon alone, its words the label and the tooltip. */
+const props = defineProps<{ kind: TransportKind; state: TransportState; rtt?: number | null; compact?: boolean }>()
 
-const label = computed(() => {
-  switch (props.state) {
-    case 'connecting':
-      return 'connecting'
-    case 'signaling':
-      return 'negotiating WebRTC'
-    case 'closed':
-      return 'disconnected'
-    case 'idle':
-      return 'idle'
-  }
-  return props.rtt != null ? `${name.value} · ${props.rtt} ms` : name.value
-})
-
-const color = computed(() => {
-  if (props.state === 'closed') return 'error'
-  if (props.state !== 'open') return 'warning'
-  // A direct connection is neutral: green is for a live agent (docs/design/system.md, Status).
-  return 'neutral'
-})
-
-const icon = computed(() => {
-  if (props.state !== 'open') return 'i-lucide-loader-circle'
-  return props.kind === 'webrtc' ? 'i-lucide-radio' : props.kind === 'relay' ? 'i-lucide-route' : 'i-lucide-cable'
-})
+const look = computed(() => transportLook(props.kind, props.state, props.rtt, props.compact === true))
 </script>
 
 <template>
-  <UBadge :data-transport-kind="kind" :data-transport-state="state" :label="label" :icon="icon" :color="color" variant="subtle" size="sm" class="font-mono" />
+  <UTooltip v-if="!look.showWords" :text="look.words">
+    <UBadge v-bind="$attrs" :data-transport-kind="kind" :data-transport-state="state" :aria-label="look.words" role="img" :icon="look.icon" :color="look.color" variant="subtle" size="sm" class="font-mono" />
+  </UTooltip>
+  <UBadge v-else v-bind="$attrs" :data-transport-kind="kind" :data-transport-state="state" :label="look.words" :icon="look.icon" :color="look.color" variant="subtle" size="sm" class="font-mono" />
 </template>
