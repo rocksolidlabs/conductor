@@ -33,7 +33,8 @@ make build                # generates the SPA and builds bin/conductor with it e
 CONDUCTOR_WORKBENCH_TOKEN=change-me ./bin/conductor serve
 ```
 
-Open <http://localhost:8080> and paste the workbench token when prompted. A
+Open <http://localhost:8080>: the page Connect to Conductor asks for the
+workbench token and says where it is; paste it and press **Connect**. A
 server with no session shows a welcome: the agents found on this machine, each
 with its version (press one to launch it), how to bring one in from another
 machine, and the example crews, then each page of the app in one line. Without `CONDUCTOR_WORKBENCH_TOKEN` the server makes a random

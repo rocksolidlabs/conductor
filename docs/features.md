@@ -377,6 +377,20 @@ open deferred item from rounds 1 and 2, then the features below.
   the card
   (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
   `empty-pages.spec.ts`).
+- **A page to connect (#946; the UX review's P18).** A browser that holds
+  no workbench token, or whose token the server refused, sees Connect to
+  Conductor in place of the app: the mark, one sentence, the field (from the
+  token this browser keeps) and Connect, and where the token is
+  (`CONDUCTOR_WORKBENCH_TOKEN`, `workbenchToken`, or the file
+  `workbench-token` in the data directory, whose path the server printed;
+  never the real path). No Cancel: it leaves when a token is given and comes
+  back at the next refusal. The app stays mounted under it, hidden, so an
+  unsaved edit and a session's viewer survive a refusal. In the desktop app
+  it waits for the shell's bridge to answer (`connectShown`). The dialog
+  Workbench token… stays, with Cancel, for the menu, the palette and Set
+  token on an alert (`useTokenDialog`) (`workbenchGate.test.ts`;
+  `connect.spec.ts`, `token-fragment.spec.ts` and the specs that met the
+  ask, through `tokenAsk`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`

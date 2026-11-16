@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page, Request, Route } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, test, tokenAsk } from './fixtures'
 import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, setFragment, workbenchHeld } from './fragment-helpers'
 
 // The decide page and a pass taken from the fragment (docs/plans/decide-grant.md, "web/app", Tests per surface): on the shipped
@@ -435,6 +435,7 @@ test('the decide page alone: the list newest first, the address first, an empty 
   await expect(card(page, 'dr-7').getByText('May dr-7 go out?')).toBeVisible()
   await expect(page.locator('[data-sidebar-brand]')).toHaveCount(0)
   await expect(page.getByRole('dialog', { name: 'Workbench token' })).toHaveCount(0)
+  await expect(tokenAsk(page)).toHaveCount(0)
   expect(page.url()).not.toContain(PASS)
 
   // dr-8 taken back: the list no longer holds it, its read is refused; its draft stays in its field, dr-7 stays answerable.
