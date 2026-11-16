@@ -115,7 +115,9 @@ test('the run page shows the tasks, their attempts and results, the task graph, 
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('succeeded by attempt 1')
   const commit = git(state.repo, 'rev-parse', `crew/${run.id}/build.2`)
   await expect(page.locator('[data-task-row="build"] [data-task-commit]')).toHaveText(commit.slice(0, 12))
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').first()).toHaveText('2/2 tasks')
+  // The header's bar (UX1 PR-10): both tasks done.
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
   // The selected task, in the URL: its result and both attempts, the first failed at its check with what it submitted.
   await page.locator('[data-task-row="build"] [role="button"]').click()
   await expect(page).toHaveURL(/task=build/)
@@ -186,7 +188,15 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   // The first check after the navigation, the same first-paint bound (#281).
   await expect(build).toHaveAttribute('data-task-state', 'failed', { timeout: 30_000 })
   await expect(build.locator('[data-task-words]')).toContainText('attempt 3 failed at check never')
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').nth(1)).toHaveText('1 failed')
+  // Out of its attempts with Retry and Accept anyway named, it waits on a person: the status language's needs, as the inbox lists it
+  // (UX1 PR-10), the engine's sentence beside it.
+  await expect(build.locator('[data-task-retry="build"]')).toBeVisible()
+  await expect(build.locator('[data-task-accept="build"]')).toBeVisible()
+  await expect(build.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
+  await expect(build.locator('[data-status-word]')).toHaveText('needs you')
+  // The task out of its attempts waits on a person: the bar's needs segment, one task held, and the sentence's one item (UX1 PR-10).
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="needs"]')).toHaveAttribute('data-count', '1')
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="failed"]')).toHaveCount(0)
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('will not succeed')
   // Pause and resume the dispatch: a receipt each, the header's note following.
   await page.locator('[data-run-pause]').click()
@@ -207,7 +217,9 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   expect(task(after, 'build').result?.commit).toBe(before.attempt?.result)
   expect(task(after, 'docs').attempt?.start).toBe(before.attempt?.result)
   expect(logged(after, "task build: attempt 3's result accepted by admin")).toBe(true)
-  await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').first()).toHaveText('2/2 tasks')
+  // The header's bar (UX1 PR-10): both tasks done.
+  await expect(page.locator('[data-crew-run-header] [data-run-bar] [data-part="done"]')).toHaveAttribute('data-count', '2')
+  await expect(page.locator('[data-crew-run-header] [data-run-progress]')).toHaveText('Succeeded')
 })
 
 /** Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares), else Ctrl+K where no terminal has the focus. */

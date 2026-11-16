@@ -84,7 +84,8 @@ function onAltChord(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onAltChord))
 onBeforeUnmount(() => document.removeEventListener('keydown', onAltChord))
 
-/** The collapse and expand buttons go away with their mode: focus moves to the other one rather than falling to the page. */
+/** Your menu's Collapse to the rail and the rail's Expand button go away with their mode: the focus moves to the rail's Expand
+ * button, or to your menu's button in the header, rather than falling to the page. */
 async function collapseByButton() {
   sidebar.collapse()
   await nextTick()
@@ -93,7 +94,7 @@ async function collapseByButton() {
 async function expandByButton() {
   sidebar.expand()
   await nextTick()
-  sidebarRoot()?.querySelector<HTMLElement>('[data-sidebar-collapse]')?.focus()
+  sidebarRoot()?.querySelector<HTMLElement>('[data-slot="header"] [data-header-account]')?.focus()
 }
 
 // The full sidebar's width survives a reload, kept by useSidebar too: with
@@ -311,9 +312,9 @@ defineShortcuts({
       :max-size="sidebar.bounds.value.max"
       :style="sidebar.rail.value ? undefined : { width: SIDEBAR_WIDTH }"
       :ui="{
-        header: sidebar.rail.value ? 'lg:px-0 lg:justify-center' : undefined,
-        body: sidebar.rail.value ? 'gap-0 py-2 lg:px-1' : 'gap-0 py-2',
-        footer: sidebar.rail.value ? 'border-t border-default flex-col items-stretch lg:items-center gap-1 lg:px-1' : 'border-t border-default flex-col items-stretch gap-1',
+        header: sidebar.rail.value ? 'lg:px-0 lg:justify-center' : 'px-2',
+        body: sidebar.rail.value ? 'gap-0 py-2 lg:px-1' : 'gap-0 py-2 px-1',
+        footer: sidebar.rail.value ? 'border-t border-default flex-col items-stretch lg:items-center gap-1 lg:px-1' : 'border-t border-default flex-col items-stretch gap-1 px-2',
       }"
     >
       <template #header="{ collapsed }">
@@ -321,21 +322,18 @@ defineShortcuts({
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
         </div>
-        <!-- With an update pending the header holds one more button (1.625 rem with its gap). Where the row's content is
-             narrower than at the minimum width plus that button (15.8125 rem: 16.75 rem less the header's 1 px border and 2 rem
-             padding and the row's 0.5 rem, 14.1875 rem, plus the button), the mark steps aside so that the name keeps at least the
-             width it has there without the update (#604); wider, nothing changes. -->
+        <!-- The mark, the name and your menu (Alerts and the collapse to the rail are in it). With an update pending the header
+             holds one more button (1.625 rem with its gap). Where the row's content is narrower than at the minimum width plus that
+             button (12.5625 rem: 12.5 rem less the header's 1 px border and 1 rem padding and the row's 0.5 rem, 10.9375 rem, plus
+             the button), the mark steps aside so that the name keeps at least the width it has there without the update (#604);
+             wider, nothing changes. -->
         <div v-else class="@container flex items-center gap-1.5 px-1 w-full min-w-0" data-sidebar-brand>
-          <span class="flex shrink-0" :class="update.ready.value && '@max-[15.8125rem]:hidden'" data-sidebar-mark>
+          <span class="flex shrink-0" :class="update.ready.value && '@max-[12.5625rem]:hidden'" data-sidebar-mark>
             <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
             <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
           </span>
           <span class="font-semibold truncate" title="Conductor" data-sidebar-name>Conductor</span>
-          <!-- Alerts and your menu beside the name (design 3b): the foot holds only the pages. -->
-          <SidebarHeaderMenus class="ml-auto" @token="showToken = true" />
-          <UTooltip text="Collapse to the rail" :kbds="['meta', 'B']" ignore-non-keyboard-focus>
-            <UButton icon="i-lucide-panel-left-close" color="neutral" variant="ghost" size="xs" aria-label="Collapse sidebar" class="hidden lg:inline-flex" data-sidebar-collapse @click="collapseByButton" />
-          </UTooltip>
+          <SidebarHeaderMenus class="ml-auto" @token="showToken = true" @collapse="collapseByButton" />
         </div>
       </template>
 
@@ -384,6 +382,7 @@ defineShortcuts({
 
     <BottomBar @token="showToken = true" />
     <WorkbenchTokenGate v-model:open="showToken" />
+    <AlertsPanel />
     <UpdateRestartModal />
     <ShortcutsModal />
     <CommandPalette @token="showToken = true" />

@@ -5,7 +5,8 @@ import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
 import { latestReads, ownedBy, type Owned } from '~/utils/latestReads'
-import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskDot, taskWords } from '~/utils/tasks'
+import { prerequisitesRefused, stepManifest, taskActions, taskAnswer, taskWords } from '~/utils/tasks'
+import { attemptSession, taskStatus } from '~/utils/status'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
@@ -75,19 +76,10 @@ const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
 const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
 const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
-function stateColor(state: RunTask['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' | 'primary' {
-  switch (state) {
-    case 'running':
-      return 'success'
-    case 'verifying':
-      return 'info'
-    case 'failed':
-      return 'error'
-    case 'succeeded':
-      return 'primary'
-  }
-  return 'neutral'
-}
+// Each task's state in the status language (utils/status.ts, taskStatus): its attempt's session read from the live store.
+const attention = useAttention()
+const clock = useNow()
+const statusOf = (t: RunTask) => taskStatus(t, props.run, attemptSession(t, attention.sessions.value), clock.value)
 function attemptColor(state: RunAttempt['state']): 'success' | 'warning' | 'error' | 'neutral' | 'info' {
   switch (state) {
     case 'running':
@@ -246,10 +238,9 @@ async function confirm() {
           @click="emit('select', selected === t.id ? '' : t.id)"
           @keydown.enter.self.prevent="emit('select', t.id)"
         >
-          <span class="size-2 flex-none rounded-full" :class="taskDot(t.state)" aria-hidden="true" />
           <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />
           <span class="font-mono font-semibold text-highlighted" data-task-id>{{ t.id }}</span>
-          <UBadge :label="t.state" :color="stateColor(t.state)" variant="subtle" size="sm" class="flex-none" data-task-state-badge />
+          <StatusMark :status="statusOf(t)" word class="flex-none" data-task-status />
           <span class="flex flex-none items-center gap-1.5 text-muted"><SessionAvatar :agent-id="agentOf(t.member)" /><span>{{ t.member }}</span></span>
           <span v-if="t.owner" class="flex flex-none items-center gap-1 text-xs text-muted" :data-task-owner="t.owner" :data-task-owner-from="t.ownerFrom"><UIcon name="i-lucide-user" class="size-3.5" />{{ ownerWords(t) }}</span>
           <span v-if="t.attempts" class="flex-none font-mono text-xs text-muted" data-task-attempt>attempt {{ t.attempt?.n ?? t.attempts }}</span>

@@ -103,19 +103,20 @@ export interface TaskBadge {
  * The header's badges for a managed run: `3/7 tasks`, then what is wrong or moving (`1 failed`, `2 running`, `1 checking`), `paused`
  * (titled with why the run paused itself, when it did) and `cleaning up` while trees are being ended (EN1: their services stopped, their
  * cleanup steps run). `decisions` are the run's open decision records as the app's store read them (useDecisions): counted with the
- * tasks' open holds, so a plan's gate that holds no task (`before: []`) is counted too (Codex's round 3 on #719).
+ * tasks' open holds, so a plan's gate that holds no task (`before: []`) is counted too (Codex's round 3 on #719). The colours are the
+ * status language's (utils/status.ts): neutral but for what waits on a person (amber) and what failed (red); green is a live agent's.
  */
 export function taskBadges(run: Pick<RunInfo, 'tasks' | 'paused' | 'outcome' | 'pausedWhy' | 'cleaning'>, decisions: readonly string[] = []): TaskBadge[] {
   const c = taskCounts(run.tasks)
-  const out: TaskBadge[] = [{ label: `${c.done}/${c.total} tasks`, color: run.outcome === 'succeeded' ? 'success' : 'neutral' }]
+  const out: TaskBadge[] = [{ label: `${c.done}/${c.total} tasks`, color: 'neutral' }]
   if (c.failed) out.push({ label: `${c.failed} failed`, color: 'error' })
   if (c.cancelled) out.push({ label: `${c.cancelled} cancelled`, color: 'neutral' })
-  if (c.running) out.push({ label: `${c.running} running`, color: 'success' })
-  if (c.checking) out.push({ label: `${c.checking} checking`, color: 'info' })
+  if (c.running) out.push({ label: `${c.running} running`, color: 'neutral' })
+  if (c.checking) out.push({ label: `${c.checking} checking`, color: 'neutral' })
   const open = openDecisions(run.tasks, decisions)
   if (open) out.push({ label: `${open} ${open === 1 ? 'decision' : 'decisions'} open`, color: 'warning', title: 'Decisions wait for the operator: Answer on a held task, Needs you or the palette opens the card' })
   if (run.paused) out.push(run.pausedWhy ? { label: 'paused', color: 'warning', title: `Paused: ${run.pausedWhy}` } : { label: 'paused', color: 'warning', title: 'Paused by a person' })
-  if ((run.cleaning ?? 0) > 0) out.push({ label: 'cleaning up', color: 'info', title: `${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run` })
+  if ((run.cleaning ?? 0) > 0) out.push({ label: 'cleaning up', color: 'neutral', title: `${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run` })
   return out
 }
 
@@ -173,23 +174,6 @@ export function taskWords(t: RunTask, run: TaskRun): { text: string; tone: Tone 
       return { text: t.reason && t.reason !== 'cancelled' ? `cancelled: ${t.reason}` : 'cancelled', tone: 'muted' }
   }
   return { text: t.state, tone: 'muted' }
-}
-
-/** A task's state as a dot: running green, checking blue, failed red, done the brand colour, waiting hollow, cancelled grey. */
-export function taskDot(state: RunTask['state']): string {
-  switch (state) {
-    case 'running':
-      return 'bg-success'
-    case 'verifying':
-      return 'bg-info'
-    case 'failed':
-      return 'bg-error'
-    case 'succeeded':
-      return 'bg-primary'
-    case 'blocked':
-      return 'bg-transparent ring-1 ring-neutral-400'
-  }
-  return 'bg-neutral-400'
 }
 
 /** The decisions that hold a task and wait for an answer (open, or answered and not applied yet). */

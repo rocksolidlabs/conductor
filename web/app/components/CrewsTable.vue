@@ -46,8 +46,8 @@ function where(c: CrewSummary): { cwd: string; mode: string } {
       <div class="col-start-1 row-start-1 flex min-w-0 flex-col gap-0.5">
         <div class="flex min-w-0 items-center gap-2">
           <NuxtLink :to="`/crews/${encodeURIComponent(c.id)}`" class="truncate text-[14.5px] font-semibold text-highlighted hover:underline" data-crew-item>{{ c.name || 'Untitled crew' }}</NuxtLink>
-          <NuxtLink v-if="liveOf(c.id).length" :to="liveTo(c.id)" class="flex flex-none items-center gap-1 text-[11px] text-success hover:underline" data-crew-live>
-            <span class="size-1.5 rounded-full bg-success" aria-hidden="true" />{{ liveOf(c.id).length }} live {{ liveOf(c.id).length === 1 ? 'run' : 'runs' }}
+          <NuxtLink v-if="liveOf(c.id).length" :to="liveTo(c.id)" class="flex flex-none items-center gap-1 text-[11px] text-muted hover:underline" data-crew-live>
+            <span class="size-1.5 rounded-full bg-(--ui-text-muted)" aria-hidden="true" />{{ liveOf(c.id).length }} live {{ liveOf(c.id).length === 1 ? 'run' : 'runs' }}
           </NuxtLink>
         </div>
         <span class="truncate text-[12.5px] text-muted" :title="c.goal">{{ c.goal || 'no goal yet' }}</span>
