@@ -1113,10 +1113,11 @@ button (≤ 60 runes; a longer one is cut where a word ends, with an ellipsis)
 and `input` (≤ 48 bytes) is what is written when the
 human picks it: an `answer`'s `input`, naming the question (see Answering a
 question), or, to an owner that predates `answer`, an INPUT frame. `mode:
-true` marks a choice that changes the session's permission mode (Claude
-Code's "switch to auto mode", "accept edits", "bypass permissions"): pages
-give it no number key and never offer it first, highlighted; it is omitted
-when false. Clearing the state drops `kind` and `options`. A `needs_input`
+true` marks a choice that lasts beyond this one answer: a permission mode
+(Claude Code's "switch to auto mode", "accept edits", "bypass
+permissions"), or an approval that is remembered (Codex's "Allow for this
+session", "Always allow"): pages give it no number key and never offer it
+first, highlighted; it is omitted when false. Clearing the state drops `kind` and `options`. A `needs_input`
 of kind `permission` with no `options` is a dialog whose choices the page is
 not given: pages take no typed reply for it (its Enter would pick what the
 dialog highlights) and say to answer it in the terminal.
@@ -1674,9 +1675,9 @@ between "Field 1/1" and its list (the message and the arguments), its
 choices read off the form, Allow and the choices that remember it each its
 digit, which picks it and submits the form at once, Cancel an Escape, the
 key the footer names. Codex's Escape cancels this call and closes the form
-together with any other approval forms Codex had waiting behind it: those
-calls are not asked again, and wait until the agent's turn is interrupted,
-as when Escape is pressed in the terminal. The form is asked only where
+together with every form Codex had waiting behind it, a server's own among
+them: they are not asked again, and their calls keep waiting, as when
+Escape is pressed in the terminal. The form is asked only where
 exactly one of its choices is named Cancel; where none is, it is answered
 in the terminal. "Allow for this session" and "Always allow" are mode
 answers (`modeAnswers`): a page gives them no number key and never offers
@@ -1687,21 +1688,26 @@ rows at 52, 14 at 40); narrower they are not, and the form is answered in
 the terminal. The two choices are asked at 40 columns too. A screen that
 is not plainly the one form (a second row that opens a form, a numbered
 row between the form's top and its list, choices without a description
-column) asks nothing of the form either. Where no choices are offered the
-session shows what Codex's status says: from 0.167 a wait on a permission,
-with no choices, answered in the terminal; with 0.163, which says only that
-it is blocked, it reads as working (or needs you, with no choices, when
-Codex rings its bell). A server's own one-field form whose rows carry a
-column aligned like the tool approval's is asked the same way: a choice's
-label is the row's name before the column, and a row named Cancel is sent
-as Escape, which cancels the form. Once the form is answered from a page it
-is not asked again while it stays on the screen, whatever is drawn or fed,
-as every question read off the screen (below); after a whole frame drawn
-without it, a form is a new question. So an identical form Codex shows
-directly behind an answered one (the same server, tool and arguments) is
-not offered with choices: the session shows what Codex's status says, and
-the form is answered in the terminal. A form that differs in any row is a
-new question with its choices.
+column, a choice's name with white space other than ASCII spaces or a
+control character) asks nothing of the form either. Where the form is not
+asked the session shows what Codex's status says: from 0.167 a wait on a
+permission, with no choices, answered in the terminal; with 0.163, which
+says only that it is blocked, it reads as working (or needs you, with no
+choices, when Codex rings its bell). A server's own one-field form whose
+choices are named as the tool approval's are (the first beginning with
+Allow, the last Cancel, and between them only names that begin with an A),
+in a column aligned like its, is asked the same way: a choice's label is
+the row's name before the column, and the row named Cancel is sent as
+Escape. Once the form is answered (from a page, or by a key typed in the
+terminal) it is not asked again until a look finds no row on the screen
+that opens a form ("Field n/m"): a look that finds such a row and cannot
+read the form (the window made narrower, a second form's top row above
+it) keeps it answered. After a look with no such row, a form is a new
+question. So an identical form Codex shows directly behind an answered one
+(the same server, tool and arguments) is held as answered: a page shows
+no question for it and the inbox does not list it; it is answered in the
+terminal. A form that differs in any row is a new question with its
+choices.
 
 A question with `answersFromScreen: true` (only with `anytime`) has its
 answers read off the screen each time it is asked: the numbered list its
@@ -1719,8 +1725,9 @@ it is a form: `words` matches the form's top row, which must be the only
 row of the screen it matches and stand above the list; its words are every
 row between that row and the list, 16 at most and no longer than a
 message, none of them a numbered row; each choice's label is its name, up
-to the one column at which every choice row draws its description, and a
-form without that column asks nothing; each of `answers` is the label of
+to the one column at which every choice row draws its description, its
+ASCII spaces trimmed, and a form without that column, or with a name that
+holds other white space or a control character, asks nothing; each of `answers` is the label of
 exactly one choice, which is sent as that answer's keys (a form where one
 is not asks nothing), the others as their numbers. What a reply to it is
 weighed against is those words and the whole list: the form with any row
