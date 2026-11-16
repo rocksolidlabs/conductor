@@ -7,12 +7,21 @@ import { expect, test, type Api, type Session } from './fixtures'
 // stub as Codex 0.163.0 to 0.169.0 draw it): the session asks, as it does
 // for Codex's other dialogs, with the form's words and its own four choices,
 // in the sidebar's row, the session page's question bar and Needs your
-// decision; a choice types its digit alone, which the stub reads, and the
-// session stops asking.
+// decision; an allowing choice types its digit alone and Cancel an Escape,
+// which the stub reads, and the session stops asking. The two choices that
+// remember the approval are mode answers: no number key, never offered first.
 test.describe.configure({ mode: 'serial' })
 
 const WORDS = 'Allow the conductor MCP server to run tool "guide"?'
 const CHOICES = ['Allow', 'Allow for this session', 'Always allow', 'Cancel']
+const OPTIONS = [
+  { label: 'Allow', input: '1' },
+  { label: 'Allow for this session', input: '2', mode: true },
+  { label: 'Always allow', input: '3', mode: true },
+  { label: 'Cancel', input: '\u001b' },
+]
+// The number key a page gives each choice: none for a mode answer.
+const KEYS = ['1', '', '', '4']
 const sessions: string[] = []
 
 test.beforeAll(({ state }) => {
@@ -45,7 +54,7 @@ for (const size of [
 ]) {
   test.describe(`a page ${size.name}`, () => {
     test.use(size.use)
-    test("Codex's tool approval asks with the form's own choices, and a choice types its digit alone", async ({ page, api, state }) => {
+    test("Codex's tool approval asks with the form's own choices, and a choice types its key alone", async ({ page, api, state }) => {
       await toolApproval(page, api, state, size.narrower)
     })
   })
@@ -60,13 +69,13 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   await expect.poll(async () => { const c = (await api.session(s.id)).cols ?? 80; return narrower ? c < 80 : c > 80 }, { timeout: 15_000, message: 'the page sized the session' }).toBe(true)
   await typeLine(page, 'stub mcp-allow')
 
-  // The session asks: a question of the dialog's, a permission, with the form's words and its choices, each its digit.
+  // The session asks: a question of the dialog's, a permission, with the form's words and its choices.
   await expect.poll(async () => (await api.session(s.id)).attention?.source, { timeout: 30_000, message: 'the form is asked' }).toBe('question')
   const att = (await api.session(s.id)).attention
   expect(att?.state).toBe('needs_input')
   expect(att?.message).toBe(WORDS)
   expect(att?.kind).toBe('permission')
-  expect(att?.options).toEqual(CHOICES.map((label, i) => ({ label, input: String(i + 1) })))
+  expect(att?.options).toEqual(OPTIONS)
 
   // The sidebar's row: needs you, the words and the four choices.
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
@@ -75,23 +84,27 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   await expect(row.locator('[data-row-choice]')).toHaveCount(4)
   for (const [i, label] of CHOICES.entries()) await expect(row.locator(`[data-row-choice="${i + 1}"]`)).toContainText(label)
 
-  // The page's question bar: the words and the four choices, each with its number key.
+  // The page's question bar: the words and the four choices, Allow and Cancel with their number keys, the two that remember
+  // the approval marked as mode answers, with none.
   const bar = page.locator('[data-quick-reply]')
   await expect(bar.locator('[data-quick-reply-message]')).toHaveText(WORDS)
   const choices = bar.locator('button:not([data-quick-reply-plan]):not([data-quick-reply-plan-preview])')
   await expect(choices).toHaveCount(4)
   for (const [i, label] of CHOICES.entries()) {
     await expect(choices.nth(i)).toContainText(label)
-    await expect(choices.nth(i).locator('kbd')).toHaveText(String(i + 1))
+    if (KEYS[i]) await expect(choices.nth(i).locator('kbd')).toHaveText(KEYS[i]!)
+    else await expect(choices.nth(i).locator('kbd')).toHaveCount(0)
+    if (OPTIONS[i]!.mode) await expect(choices.nth(i)).toHaveAttribute('data-choice-mode', 'true')
+    else await expect(choices.nth(i)).not.toHaveAttribute('data-choice-mode')
   }
 
-  // Needs your decision: the question's item, its answers the form's choices.
+  // Needs your decision: the question's item, its answers the form's choices, the two mode answers after the others.
   const ref = `question:${s.id}/${att?.id ?? ''}`
   await page.goto('/decisions')
   await page.locator(`[data-inbox-row="${ref}"]`).click()
   const item = page.locator(`[data-inbox-item="${ref}"]`)
   await expect(item.locator('[data-inbox-question]')).toHaveText(WORDS)
-  await expect(item.locator('[data-inbox-action="answer"]')).toHaveText(CHOICES)
+  await expect(item.locator('[data-inbox-action="answer"]')).toHaveText(['Allow', 'Cancel', 'Allow for this session', 'Always allow'])
 
   // Allow for this session, from the question bar: the stub reads 2, and nothing else (the next line it reads is the one typed next).
   await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
@@ -103,4 +116,14 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
   await typeLine(page, 'after the form')
   await expect.poll(async () => transcript(state.home, await api.session(s.id)), { timeout: 15_000, message: 'the stub read the next line' }).toContain('mcp-allow next line: after the form\n')
   expect(transcript(state.home, await api.session(s.id)).match(/^mcp-allow: /gm)).toHaveLength(1)
+
+  // The same form again is a question of its own; Cancel, from the question bar, types an Escape, which the stub reads as
+  // the form's cancel.
+  await typeLine(page, 'stub mcp-allow')
+  await expect.poll(async () => { const a = (await api.session(s.id)).attention; return a?.source === 'question' && a.id !== att?.id && !a.answered }, { timeout: 30_000, message: 'the form is asked again' }).toBe(true)
+  await expect(choices).toHaveCount(4)
+  await choices.nth(3).click()
+  await expect.poll(async () => transcript(state.home, await api.session(s.id)), { timeout: 15_000, message: 'the stub read the cancel' }).toContain('mcp-allow: cancel\n')
+  await expect.poll(async () => (await api.session(s.id)).attention?.source, { timeout: 15_000, message: 'the session stops asking' }).not.toBe('question')
+  expect(transcript(state.home, await api.session(s.id)).match(/^mcp-allow: /gm)).toHaveLength(2)
 }
