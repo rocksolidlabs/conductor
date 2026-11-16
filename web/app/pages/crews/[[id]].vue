@@ -721,7 +721,7 @@ usePalette().registerPage(() => ({
             :data-crews-empty="crewsState === 'empty' ? '' : undefined"
             @again="refresh"
           />
-          <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green finished, grey stopped, red a member failed; amber edge = someone had to answer).</p>
+          <p v-if="crews.length" class="text-xs text-muted">Bars: the last runs' durations, coloured by how each ended (green still going, grey ended, lighter grey stopped, red a member failed; amber edge = someone had to answer).</p>
           <UPagination v-if="total > PAGE_SIZE" v-model:page="page" :total="total" :items-per-page="PAGE_SIZE" size="xs" class="self-center" />
         </section>
       </div>

@@ -2,15 +2,16 @@
 import type { RunSummary } from '~/composables/useDispatch'
 import type { RunInfo } from '~/composables/useSessions'
 import { runTitle, shortRunId } from '~/utils/crewWords'
-import { runBlockers, runQuestions, summaryBadges, summaryState } from '~/utils/dispatchEvidence'
+import { runBlockers, runQuestions, summaryBadges } from '~/utils/dispatchEvidence'
 import { revisionTag } from '~/utils/dispatchPlans'
-import { runBadge, runState } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
+import { runItems, runStatusLine, summaryStatusLine } from '~/utils/status'
 import { taskBadges } from '~/utils/tasks'
 
 /**
  * One run of a ticket's Runs (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11): its name, linked to its page, its
- * state and its tasks counted, its blockers, and the questions its members wait on now, each with Open on the member's session, counted
+ * sentence (runStatusLine of the live run; summaryStatusLine of the ticket's summary while the live store does not hold it: what a
+ * summary can carry, "2 of 6 done · 2 need you", its "N need you" the run's items of the one list either way), its tasks counted, its blockers, and the questions its members wait on now, each with Open on the member's session, counted
  * from the live sessions joined to the members (utils/dispatchEvidence.ts, runQuestions): a question needs no run event and no reload.
  * Then the run page's own task rows (RunTasks.vue, embedded, not a copy) for the run the live store holds or its record, and its
  * candidates with their receipts and repairs (DispatchCandidates). The header's own actions (a hand link's Unlink) are the slot's.
@@ -31,13 +32,12 @@ const router = useRouter()
 const liveRun = computed(() => live.runOf(props.runId))
 const title = computed(() => (props.run ? runTitle(props.run) : props.summary?.label || props.runId))
 const questions = computed(() => runQuestions(props.summary ?? { record: !!props.run?.record, members: [], questions: props.run?.needsInput ?? 0 }, liveRun.value, live.sessions.value))
+const needsYou = useNeedsYou()
+const items = computed(() => runItems(needsYou.items.value, props.runId))
 const state = computed(() => {
   const r = liveRun.value
-  if (r) {
-    const s = runState(r, live.sessions.value)
-    return runBadge(s.state, questions.value.count)
-  }
-  if (props.summary) return summaryState(props.summary, questions.value.count)
+  if (r) return runStatusLine(r, live.sessions.value, items.value, props.now)
+  if (props.summary) return summaryStatusLine(props.summary, items.value)
   return null
 })
 // The run's open decisions, as the app's store read them: a gate that holds no task is counted too (taskBadges).
@@ -64,7 +64,7 @@ const selected = ref('')
       <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId">{{ shortRunId(runId) }}</span>
       <UBadge v-if="ticket" :label="revisionTag(ticket.planN)" color="neutral" variant="outline" size="sm" class="flex-none font-mono" :title="`Launched from ${ticket.key} at its revision ${ticket.rev}, plan revision ${ticket.planN}`" data-run-card-plan />
       <UBadge v-if="run?.record || (!run && summary?.record)" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-ticket-run-record />
-      <UBadge v-else-if="state" :label="state.label" :color="state.color" variant="subtle" size="sm" class="flex-none" data-ticket-run-state />
+      <UBadge v-else-if="state" :label="state.text" :color="state.needs ? 'warning' : state.outcome === 'Failed' ? 'error' : 'neutral'" variant="subtle" size="sm" class="min-w-0 max-w-full truncate" :title="state.text" data-ticket-run-state :data-run-status-from="liveRun ? 'run' : 'summary'" />
       <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-ticket-run-badge />
       <span v-if="summary?.startedAt" class="text-xs text-dimmed">started {{ relativeTime(summary.startedAt, now, { suffix: true }) }}</span>
       <div class="flex-1" />

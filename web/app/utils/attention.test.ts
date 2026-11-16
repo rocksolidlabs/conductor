@@ -139,11 +139,14 @@ describe('the choices of a dialog read off the screen (#288)', () => {
       { label: 'Always allow', input: '3', mode: true },
       { label: 'Cancel', input: '\u001b' },
     ]
-    expect(firstChoice(form)).toBe(0)
+    // The form marks no choice as recommended, so none is drawn filled.
+    expect(recommendedChoice(form)).toBe(-1)
     expect(form.map(choiceKey)).toEqual([1, undefined, undefined, 4])
-    // Listed first, they are still not the one offered first.
-    expect(firstChoice([form[1]!, form[2]!, form[0]!, form[3]!])).toBe(2)
-    expect(firstChoice([form[1]!, form[2]!, form[3]!])).toBe(2)
+    // One that remembers the approval is never the filled one, whatever its label says or wherever it is listed.
+    expect(recommendedChoice([{ ...form[1]!, label: 'Allow for this session (Recommended)' }, form[0]!, form[3]!])).toBe(-1)
+    expect(recommendedChoice([form[0]!, { ...form[2]!, label: 'Always allow (Recommended)' }, form[3]!])).toBe(-1)
+    // Allow itself, marked by the agent, is.
+    expect(recommendedChoice([{ ...form[0]!, label: 'Allow (Recommended)' }, form[1]!, form[2]!, form[3]!])).toBe(0)
   })
 
   it('answers a permission dialog without choices in the terminal', () => {

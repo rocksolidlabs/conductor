@@ -9,6 +9,7 @@ import {
   filterRuns,
   readRunFilter,
   runSubtitle,
+  runTicketChips,
   runTitle,
   sinceStart,
   crewShape,
@@ -16,7 +17,6 @@ import {
   medianMinutes,
   memberWords,
   minutesLabel,
-  ownError,
   runBars,
   runNote,
   runOutcome,
@@ -25,8 +25,8 @@ import {
   shortRunId,
   startSentence,
   startWords,
-  STOPPED_ERROR,
 } from './crewWords'
+import { ownError, STOPPED_ERROR } from './crews'
 
 const m = (name: string, start: CrewMember['start'] = { when: 'immediately' }): CrewMember => ({ name, agentId: 'claude', prompt: '', start })
 const after = (member: string): CrewMember['start'] => ({ when: 'after', member })
@@ -109,7 +109,8 @@ describe('runOutcome', () => {
     expect(runOutcome(run({ ...failed, stoppedAt: iso(30) }), 'stopped')).toBe('failed')
     expect(runOutcome(run(), 'running')).toBe('running')
     expect(runOutcome(run(), 'needs_input')).toBe('needs you')
-    expect(runOutcome(run({ members: [member({ status: 'ended' })] }), 'finished')).toBe('finished')
+    // A run that has ended says so: "finished" is a session's word, never a run's.
+    expect(runOutcome(run({ members: [member({ status: 'ended' })] }), 'finished')).toBe('ended')
     expect(ownError({ error: STOPPED_ERROR })).toBe('')
     expect(ownError({ error: 'boom' })).toBe('boom')
   })
@@ -226,18 +227,18 @@ describe('run names and the Runs tab filter', () => {
     const at = (d: number, h: number) => new Date(2026, 9, d, h, 0, 0).toISOString()
     const rows = [
       { run: { startedAt: at(4, 9) }, outcome: 'needs you' as const },
-      { run: { startedAt: at(4, 0) }, outcome: 'finished' as const },
+      { run: { startedAt: at(4, 0) }, outcome: 'ended' as const },
       { run: { startedAt: at(3, 23) }, outcome: 'stopped' as const },
       { run: { startedAt: at(1, 9) }, outcome: 'failed' as const },
       { run: { startedAt: at(1, 10) }, outcome: 'running' as const },
-      { run: { startedAt: new Date(2026, 8, 1).toISOString() }, outcome: 'finished' as const },
+      { run: { startedAt: new Date(2026, 8, 1).toISOString() }, outcome: 'ended' as const },
     ]
     expect(filterRuns(rows, { state: 'all', since: 'today' }, now)).toHaveLength(2)
     expect(filterRuns(rows, { state: 'live', since: 'all' }, now).map((r) => r.outcome)).toEqual(['needs you', 'running'])
-    expect(filterRuns(rows, { state: 'finished', since: '7d' }, now)).toHaveLength(1)
-    expect(filterRuns(rows, { state: 'finished', since: '30d' }, now)).toHaveLength(1)
-    expect(filterRuns(rows, { state: 'finished', since: 'all' }, now)).toHaveLength(2)
-    expect(filterCounts(rows, '7d', now)).toEqual({ all: 5, live: 2, finished: 1, stopped: 1, failed: 1 })
+    expect(filterRuns(rows, { state: 'ended', since: '7d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'ended', since: '30d' }, now)).toHaveLength(1)
+    expect(filterRuns(rows, { state: 'ended', since: 'all' }, now)).toHaveLength(2)
+    expect(filterCounts(rows, '7d', now)).toEqual({ all: 5, live: 2, ended: 1, stopped: 1, failed: 1 })
     expect(sinceStart('today', now)).toBe(new Date(2026, 9, 4).getTime())
   })
 
@@ -246,6 +247,8 @@ describe('run names and the Runs tab filter', () => {
     expect(readRunFilter('{not json')).toEqual(DEFAULT_RUN_FILTER)
     expect(readRunFilter('{"state":"failed","since":"7d"}')).toEqual({ state: 'failed', since: '7d' })
     expect(readRunFilter('{"state":"nope","since":"1y"}')).toEqual(DEFAULT_RUN_FILTER)
+    // The chip named Finished before it read Ended: what this browser kept still picks it.
+    expect(readRunFilter('{"state":"finished","since":"all"}')).toEqual({ state: 'ended', since: 'all' })
   })
 })
 
@@ -273,4 +276,34 @@ describe('runOutcome', () => {
     expect(filterState('interrupted')).toBe('stopped')
     expect(outcomeBadge('interrupted')).toEqual({ label: 'interrupted', color: 'warning', variant: 'outline' })
   })
+
+  it('says "ended" for a run that ended, and draws only a live run in green', async () => {
+    const { outcomeBadge, barClass } = await import('./crewWords')
+    expect(outcomeBadge('ended')).toEqual({ label: 'ended', color: 'neutral', variant: 'outline' })
+    expect(outcomeBadge('running').color).toBe('success')
+    // The bars: live green (the working green), ended neutral ink, stopped lighter, failed red; no ended run is green.
+    expect(barClass('running')).toBe('bg-success')
+    expect(barClass('needs you')).toBe('bg-success')
+    expect(barClass('ended')).toBe('bg-(--ui-text-muted)')
+    expect(barClass('stopped')).toBe('bg-accented')
+    expect(barClass('interrupted')).toBe('bg-accented')
+    expect(barClass('failed')).toBe('bg-error')
+    for (const o of ['ended', 'stopped', 'interrupted', 'failed'] as const) expect(barClass(o)).not.toContain('success')
+  })
 })
+
+describe('runTicketChips', () => {
+  const launched = { id: 't12', key: 'CND-12', rev: 4, plan: 'p3', planN: 3, launch: 'l1', digest: 'd' }
+  const linked = (key: string) => ({ id: `id-${key}`, key, title: `The ticket ${key}`, status: 'in_progress' as const })
+  it('draws one chip for one ticket: launched from CND-12 and linked to it gives the launched chip alone', () => {
+    expect(runTicketChips(launched, linked('CND-12'))).toEqual({ launched, linked: null })
+  })
+  it('draws both only when they name two tickets', () => {
+    expect(runTicketChips(launched, linked('CND-9'))).toEqual({ launched, linked: linked('CND-9') })
+  })
+  it('draws the linked chip alone for a run not launched from a ticket, and none for neither', () => {
+    expect(runTicketChips(undefined, linked('CND-9'))).toEqual({ launched: null, linked: linked('CND-9') })
+    expect(runTicketChips(undefined, null)).toEqual({ launched: null, linked: null })
+  })
+})
+
