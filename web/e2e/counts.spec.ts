@@ -115,6 +115,9 @@ test('one number of what needs you on every surface that shows it, on the busy d
   await rail.addInitScript((ms) => ((window as Window & { conductorPillMs?: number }).conductorPillMs = ms), test.info().timeout)
   await rail.reload()
   await expect(rail.locator('[data-rail]')).toBeVisible()
+  // The pill counts what the stores hold when it is pressed: wait for the reloaded page to know the one number (the rail's count is
+  // drawn only once every store is read), never for the clock.
+  await expect(rail.locator('[data-rail-count="needs"]')).toHaveText(before.want.railCount)
   await rail.keyboard.press(']')
   await expect(rail.locator('[data-pill-count]')).toHaveText(before.pill)
   await rail.keyboard.press('Escape')
@@ -187,6 +190,8 @@ test.describe('the row leaves at zero', () => {
     test.setTimeout(test.info().timeout + 4 * DAY_STEP_MS)
     const page = await at(browser)
     await expect(yard(page)).toBeVisible()
+    // Every store read (a positive state, never only an absence), and then the row is gone.
+    await expect(page.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
     await expect(row(page)).toHaveCount(0)
     // G then N: the page open, its row shown while it is.
     await page.keyboard.press('g')
@@ -227,6 +232,7 @@ test.describe('the row leaves at zero', () => {
     // Another browser, which answered nothing: no row.
     const other = await at(browser)
     await expect(yard(other)).toBeVisible()
+    await expect(other.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
     await expect(row(other)).toHaveCount(0)
     // On a phone the tab stays, whatever waits.
     const phone = await at(browser, { width: 390, path: '/sessions' })
@@ -240,6 +246,7 @@ test.describe('the row leaves at zero', () => {
     const held = await at(browser, { inbox: () => {} })
     await expect(yard(held)).toBeVisible()
     await expect(row(held)).toBeVisible()
+    await expect(held.locator('#dashboard-sidebar-main nav[data-needs-read="false"]')).toHaveCount(1)
     await expect(row(held).locator('[data-count-of="needs"]')).toHaveCount(0)
     // Answering 500: a read that failed says nothing of what waits.
     const failed = await at(browser, { inbox: (r) => void r.fulfill({ status: 500, json: { error: { code: 'internal', message: 'the inbox failed' } } }) })
@@ -248,6 +255,7 @@ test.describe('the row leaves at zero', () => {
     // Answering 403 switchyard: the inbox is not served here, and the row is gone.
     const sy = await at(browser, { inbox: (r) => void r.fulfill({ status: 403, json: { error: { code: 'switchyard', message: 'this server coordinates hosted sessions and launches none' } } }) })
     await expect(yard(sy)).toBeVisible()
+    await expect(sy.locator('#dashboard-sidebar-main nav[data-needs-read="true"]')).toHaveCount(1)
     await expect(row(sy)).toHaveCount(0)
   })
 })

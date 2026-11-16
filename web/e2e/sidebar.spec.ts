@@ -951,6 +951,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   const sidebar = page.locator('#dashboard-sidebar-main')
   const tip = (text: string) => page.locator('[data-slot="content"] [data-slot="text"]').filter({ hasText: new RegExp(`^${text}$`) })
   const yardTip = 'Yard: every live terminal on one screen'
+  // Needs you's row shows until every store of the one list is read, then leaves when nothing waits: hover once it is in its place.
+  await expect(sidebar.locator('nav[data-needs-read="true"]')).toHaveCount(1)
   await sidebar.locator('[data-nav-label]').filter({ hasText: /^Yard$/ }).hover()
   await expect(tip(yardTip)).toBeVisible()
   // Folded to the rail by its key, pressed once the layout that listens for it is drawn (dayPage waits for it).
@@ -958,7 +960,8 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   await page.keyboard.press('Alt+b')
   await expect(sidebar.locator('[data-rail]')).toBeVisible()
   const nav = sidebar.getByRole('navigation').last()
-  await tabTo(page, nav.locator('a[href="/yard"]'), 2, nav.locator('a[href="/decisions"]'))
+  // From the rail's search button, down its squares and past Needs you's row when it shows (it leaves when nothing waits).
+  await tabTo(page, nav.locator('a[href="/yard"]'), 80, sidebar.locator('[data-rail] button[aria-label="Filter sessions"]'))
   await expect(tip(yardTip)).toBeVisible()
   await expect(nav.locator('a[href="/yard"]')).toHaveAttribute('aria-label', /^Yard/)
   // The palette: "terminal" finds the Yard by its sentence.
