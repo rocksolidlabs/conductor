@@ -560,7 +560,7 @@ open deferred item from rounds 1 and 2, then the features below.
   line (its first paragraph as text, else its first text of any kind,
   `descriptionLine` in `web/app/utils/markdown.ts`; only for an empty
   description "Add a description of CND…", which opens the editor), the
-  tracker's link and About at its end, the
+  tracker's link (its icon alone on a phone) and About at its end, the
   whole description
   opened in place under it and remembered per browser
   (`conductor.dispatchAbout` keeps "opened"; a browser that kept the older

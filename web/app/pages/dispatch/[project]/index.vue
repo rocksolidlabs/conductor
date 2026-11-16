@@ -624,12 +624,14 @@ palette.registerPage((): PageGroup => {
               :href="projectRead.project.trackerUrl"
               target="_blank"
               rel="noopener noreferrer"
-              class="flex min-w-0 max-w-64 flex-none items-center gap-1 text-muted hover:underline"
+              class="flex min-w-0 flex-none items-center gap-1 text-muted hover:underline sm:max-w-64"
               :title="`Its tickets are tracked at ${projectRead.project.trackerUrl}`"
+              :aria-label="`Its tickets are tracked at ${projectRead.project.trackerUrl}`"
               data-project-tracker
             >
               <UIcon :name="TRACKERS.external.icon" class="size-3.5 flex-none" />
-              <span class="truncate">{{ projectRead.project.trackerUrl }}</span>
+              <!-- On a phone the link is its icon alone (named by its label and title), so that the description keeps the line. -->
+              <span class="hidden truncate sm:block" data-project-tracker-url>{{ projectRead.project.trackerUrl }}</span>
             </a>
             <UButton :icon="aboutOpen ? 'i-lucide-chevron-up' : 'i-lucide-info'" size="xs" color="neutral" variant="ghost" class="h-5 flex-none py-0" :label="aboutOpen ? 'Fold' : 'About'" :aria-expanded="aboutOpen" :aria-label="aboutOpen ? 'Fold the description' : `About ${project}`" data-project-about-toggle @click="aboutOpen = !aboutOpen" />
           </div>

@@ -102,9 +102,22 @@ async function patched(browser: Parameters<typeof dayPage>[0], patch: Record<str
   return page
 }
 
+/** A tracker's address as long as a real one (an issues page under its organisation and project). */
+const TRACKER_URL = 'https://tracker.example.com/organisation/project/issues'
+const DESCRIBED = 'Ship the tracker, the board and the roadmap for every team that files its tickets here.'
+
 test("on a phone (390 x 844, touch) a row's second line lines up its priority and age, nothing scrolls sideways, and Filter's popover fits", async ({ day, browser }) => {
   await day.part('dispatch')
-  const page = await project(browser, { width: 390, height: 844, touch: true })
+  // CND tracked elsewhere, at an address as long as a real one: the description keeps most of its line, the tracker's link is its icon.
+  const page = await patched(browser, { description: DESCRIBED, tracker: 'external', trackerUrl: TRACKER_URL }, { width: 390, height: 844, touch: true })
+  const line = page.locator('[data-project-description-line]')
+  const tracker = page.getByRole('link', { name: `Its tickets are tracked at ${TRACKER_URL}`, exact: true })
+  await expect(tracker).toBeVisible()
+  await expect(tracker).toHaveAttribute('title', `Its tickets are tracked at ${TRACKER_URL}`)
+  await expect(line.locator('[data-project-description-text]')).toHaveText(DESCRIBED)
+  const [whole, text] = [await line.boundingBox(), await line.locator('[data-project-description-text]').boundingBox()]
+  expect(text!.width, `the description's ${text!.width.toFixed(0)} px of its line's ${whole!.width.toFixed(0)}`).toBeGreaterThanOrEqual(whole!.width * 0.6)
+  await noOverlap(line)
   for (const c of ['[data-row-priority]', '[data-row-updated]']) await aligned(page.locator(ROWS), c)
   const above = await page.locator(ROWS).evaluateAll((rows) => rows.filter((r) => r.querySelector('[data-row-title]')!.getBoundingClientRect().bottom <= r.querySelector('[data-row-updated]')!.getBoundingClientRect().top + 0.5).length)
   expect(above).toBe(TICKETS.length)
