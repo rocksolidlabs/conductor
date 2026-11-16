@@ -85,7 +85,8 @@ test("a run linked from a ticket shows its task rows there, the run page's chip 
   await expect(linked.locator('[data-task-row]')).toHaveCount(2)
   await expect(linked.locator('[data-task-row="build"]')).toHaveAttribute('data-task-state', 'succeeded')
   await expect(linked.locator('[data-task-row="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
-  await expect(linked.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('attempt 2')
+  await expect(linked.locator('[data-task-row="build"] [data-task-words]')).toContainText('succeeded by attempt 2')
+  await expect(linked.locator('[data-task-row="build"] [data-task-attempt]')).toHaveText('')
   await expect(linked.locator('[data-ticket-run-badge]').first()).toHaveText('2/2 tasks')
   // A task opened in place: its attempts, as on the run page.
   await linked.locator('[data-task-row="build"] [role="button"]').click()

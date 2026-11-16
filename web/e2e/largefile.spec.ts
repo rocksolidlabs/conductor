@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // A file larger than a read carries (about 960 KiB, so that its frame fits
 // the viewer's 1 MiB queue) opens in the editor cut short: its first lines,
@@ -26,7 +26,7 @@ test('a file of more than 1 MiB opens cut short, marked truncated and read-only,
     await page.goto(`/sessions/${s.id}`)
     const transport = page.locator('[data-transport-state]').first()
     await expect(transport).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     const tree = page.locator('[data-files-tree]')
     await expect(tree.locator(`[data-file-node="${cwd}/large.txt"]`)).toBeVisible({ timeout: 30_000 })
     await tree.locator(`[data-file-node="${cwd}/large.txt"]`).click()

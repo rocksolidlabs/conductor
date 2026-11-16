@@ -98,6 +98,11 @@ sidebar, the phone's first tab, the palette and the tab's title. The
 sidebar's Needs you section lists every one of them with its kind's mark,
 a run that waits with its item under its header. The Needs you row leaves
 the nav when nothing waits and nothing was decided in the last day.
+Launch's **What should it do?** takes a first message for the agent: it is
+typed once the agent is ready (after any startup question, such as trusting
+the folder, is answered; line breaks go in as spaces), the session is named
+by its first words unless you name it, and a line above the terminal says
+what it waits for. Keys you type in the terminal first withdraw it.
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your

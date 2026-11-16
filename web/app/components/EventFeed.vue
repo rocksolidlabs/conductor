@@ -24,7 +24,15 @@ function who(e: FeedEntry): { name: string; agent: string; runId?: string } {
 
 <template>
   <section class="flex min-w-0 flex-col" aria-label="Live feed" data-event-feed>
-    <p v-if="!entries.length" class="py-6 text-sm text-muted">Nothing yet. Events show up here as agents report them.</p>
+    <!-- The feed is this tab's alone (useEvents keeps it in memory): empty at every load, so its words say so. -->
+    <PageEmpty
+      v-if="!entries.length"
+      page="events"
+      state="empty"
+      words="Nothing yet since this tab opened. An agent reports when it needs input, finishes a turn, hands work off or hits an error."
+      :actions="[{ label: 'Which agents report', icon: 'i-lucide-plug', to: '/agents#reporting' }]"
+      data-feed-empty
+    />
     <div v-for="g in groups" :key="g.key" class="@container flex flex-col" data-feed-group>
       <div class="pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted">{{ g.label }}</div>
       <ol class="flex flex-col">

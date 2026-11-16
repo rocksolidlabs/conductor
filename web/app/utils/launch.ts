@@ -1,3 +1,5 @@
+import { MAX_SESSION_NAME, MAX_SUBMIT } from './protocol'
+
 /**
  * Whether the launch dialog asks where the agent runs. There are two answers
  * only when the workbench is served from another machine: in the desktop
@@ -56,4 +58,57 @@ function isLoopbackIP(h: string): boolean {
     return false
   }
   return canonical === '::1' || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(canonical)
+}
+
+/**
+ * The server's one rule for a cut at a word (`session.CutAtWord`, and `cutAtWord` in internal/dispatch), held to it by one table,
+ * internal/session/testdata/cut-at-word.json: s whole when it fits in `chars` characters (and `bytes` bytes, when a byte bound is
+ * given); else cut to `chars - 1` characters (and `bytes - 3` bytes) at the last space after the first `keep` characters, trailing
+ * spaces trimmed, and "…" added, inside both bounds. A first word past the bound is cut at a character.
+ */
+export function cutAtWord(s: string, keep: number, chars: number, bytes = 0): string {
+  const size = (r: string[]) => new TextEncoder().encode(r.join('')).length
+  let r = Array.from(s)
+  if (r.length <= chars && (bytes === 0 || size(r) <= bytes)) return s
+  r = r.slice(0, Math.max(chars - 1, 0))
+  if (bytes > 0) while (r.length > 0 && size(r) > bytes - 3) r.pop()
+  for (let i = r.length - 1; i > keep; i--) {
+    if (r[i] === ' ') {
+      r = r.slice(0, i)
+      break
+    }
+  }
+  return `${r.join('').replace(/ +$/, '')}…`
+}
+
+/** The most characters of a session's name made from its first message (`session.NameFromMessage`). */
+export const NAME_FROM_MESSAGE = 40
+
+/**
+ * The name a launch with this first message and no name gets (`session.NameFromMessage`): control characters as spaces, runs of
+ * spaces as one, trimmed, then cut at a word to 40 characters and the name's 120 bytes with "…". "" when nothing is left, for which
+ * the server names the session "<agent> #N".
+ */
+export function namePreview(message: string): string {
+  const flat = message
+    .split(/[\s\p{Cc}]+/u)
+    .filter(Boolean)
+    .join(' ')
+  return flat ? cutAtWord(flat, 0, NAME_FROM_MESSAGE, MAX_SESSION_NAME) : ''
+}
+
+/** Why a first message cannot be sent, in the words the field shows: past MAX_SUBMIT bytes as sent; "" when it can. */
+export function messageProblem(text: string): string {
+  const n = new TextEncoder().encode(text).length
+  return n > MAX_SUBMIT ? `At most ${MAX_SUBMIT.toLocaleString('en-US')} bytes: this is ${n.toLocaleString('en-US')}.` : ''
+}
+
+/**
+ * The line above a session's terminal while its first message waits (`firstMessage` "waiting"): that a startup question comes first
+ * while one shows (a needs_input of source `trust`), else that the agent must be ready; "" once it no longer waits.
+ */
+export function firstMessageLine(s: { firstMessage?: string; attention?: { state: string; source?: string } } | null | undefined, agent: string): string {
+  if (s?.firstMessage !== 'waiting') return ''
+  if (s.attention?.state === 'needs_input' && s.attention.source === 'trust') return 'Your first message is typed once its question is answered.'
+  return `Your first message is typed once ${agent} is ready.`
 }
