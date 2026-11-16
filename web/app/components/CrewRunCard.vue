@@ -3,11 +3,13 @@ import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { memberTiles, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { runState } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
+import { runItems, runStatusLine } from '~/utils/status'
 
 /**
- * One live run on the Crews page: named by its crew and its start, its state
- * as a badge, its members as chips in the shape of the crew with each one's
- * status dot, a line for each member that asks a question (with the way to
+ * One live run on the Crews page: named by its crew and its start, its
+ * sentence as a badge (runStatusLine: "1 working · 2 finished · 1 needs you",
+ * amber while something of it waits on a person), its members as chips in
+ * the shape of the crew with each one's status mark, a line for each member that asks a question (with the way to
  * answer it), how long it has been up, Stop and Open run.
  */
 const props = defineProps<{ run: RunInfo; sessions: SessionInfo[]; now: number }>()
@@ -17,9 +19,12 @@ const live = useAttention()
 const toast = useToast()
 
 const state = computed(() => runState(props.run, props.sessions))
-const tiles = computed(() => memberTiles(props.run, props.sessions))
-const states = computed(() => new Map(tiles.value.map((t) => [t.m.name, t.status])))
-const needs = computed(() => state.value.needs)
+const tiles = computed(() => memberTiles(props.run, props.sessions, props.now))
+const states = computed(() => new Map(tiles.value.map((t) => [t.m.name, { status: t.status, mark: t.mark }])))
+// The run's sentence, its "N need you" the run's items of the one list (each thing a person can act on, once).
+const needsYou = useNeedsYou()
+const statusLine = computed(() => runStatusLine(props.run, props.sessions, runItems(needsYou.items.value, props.run.id), props.now))
+const needs = computed(() => statusLine.value.needs)
 const asks = computed(() =>
   tiles.value
     .filter((t) => t.status === 'needs_input')
@@ -53,12 +58,12 @@ async function stop() {
     :aria-label="`${run.name}, ${runSubtitle(run)}`"
   >
     <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <UIcon name="i-lucide-circle-play" class="size-4.5 flex-none" :class="needs ? 'text-warning' : 'text-success'" />
+      <UIcon name="i-lucide-circle-play" class="size-4.5 flex-none" :class="needs ? 'text-warning' : 'text-muted'" />
       <NuxtLink :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate text-[15px] font-semibold text-highlighted hover:underline">{{ run.name }}</NuxtLink>
       <span class="truncate text-[13px] text-muted" data-run-subtitle>{{ runSubtitle(run) }}</span>
       <span class="font-mono text-[11px] text-dimmed" :title="run.id">{{ shortRunId(run.id) }}</span>
       <YoloBadge v-if="run.yolo" icon class="flex-none" />
-      <UBadge :label="needs ? `${needs} need${needs === 1 ? 's' : ''} you` : 'running'" :color="needs ? 'warning' : 'success'" variant="subtle" size="sm" class="ml-auto flex-none" data-run-state />
+      <UBadge :label="statusLine.text" :color="needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="ml-auto min-w-0 max-w-full truncate" :title="statusLine.text" data-run-state data-run-status-line />
     </div>
 
     <div class="overflow-x-auto" data-run-members>

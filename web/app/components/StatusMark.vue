@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { STATUS_LOOK, type StatusView } from '~/utils/status'
+import { markLook, type MarkView } from '~/utils/status'
 
 /**
- * A state's mark and, with `word`, its word (docs/design/system.md, Status): the one way every surface draws a session's state. The
- * mark is 8 px, drawn from STATUS_LOOK alone (its shape and tone; the line diagram's station draws the same table as circles and
- * rings), and carries the colour; the word is drawn in muted text, never in a status colour. The mark is an image named by the word,
- * with the legend as its title. `quiet` hides the amber dot (the Events page's Badge route for needs input is off), the word stays;
- * `badge` sets the mark on a disc of the surface with a 2 px ring, for a corner over an avatar.
+ * A state's mark and, with `word`, its word (docs/design/system.md, Status): the one way every surface draws a session's, a member's or
+ * a task's state. The mark is 8 px, drawn from STATUS_LOOK and TASK_LOOK alone (markLook: its shape and tone; the line diagram's station
+ * draws the same table as circles and rings), and carries the colour; the word is drawn in muted text, never in a status colour. The mark
+ * is an image named by the word, with the legend as its title. `quiet` hides the amber dot (the Events page's Badge route for needs input
+ * is off), the word stays; `badge` sets the mark on a disc of the surface with a 2 px ring, for a corner over an avatar.
  */
-const props = withDefaults(defineProps<{ status: Pick<StatusView, 'key' | 'word' | 'legend'>; word?: boolean; quiet?: boolean; badge?: boolean }>(), { word: false, quiet: false, badge: false })
+const props = withDefaults(defineProps<{ status: Pick<MarkView, 'key' | 'word' | 'legend'>; word?: boolean; quiet?: boolean; badge?: boolean }>(), { word: false, quiet: false, badge: false })
 
-const look = computed(() => STATUS_LOOK[props.status.key])
+const look = computed(() => markLook(props.status.key))
 // The mark is a dot or a ring: drawn in the status fill colours (the dots' and fills', not the text-safe tones `text-warning` and
 // `text-success` draw words with in the light theme, main.css).
-const tone: Record<string, string> = { warning: 'text-(--ui-warning)', success: 'text-(--ui-success)', neutral: 'text-muted' }
+const tone: Record<string, string> = { warning: 'text-(--ui-warning)', success: 'text-(--ui-success)', error: 'text-(--ui-error)', neutral: 'text-muted' }
 const hidden = computed(() => props.quiet && props.status.key === 'needs')
 /** The title: the legend, after the word where the legend does not begin with it ("finished 12m ago · finished: …"). */
 const title = computed(() => (props.status.legend.startsWith(`${props.status.word}:`) ? props.status.legend : `${props.status.word} · ${props.status.legend}`))
@@ -42,7 +42,12 @@ const title = computed(() => (props.status.legend.startsWith(`${props.status.wor
         <circle cx="4" cy="4" r="2" fill="currentColor" />
       </template>
       <circle v-else-if="look.shape === 'ring'" cx="4" cy="4" r="3.25" fill="none" stroke="currentColor" stroke-width="1.5" />
-      <circle v-else cx="4" cy="4" r="3.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 1.2" />
+      <circle v-else-if="look.shape === 'dashed-ring'" cx="4" cy="4" r="3.25" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 1.2" />
+      <!-- A task's own: a hollow square (waiting), a check (done), a cross (failed), a dash (cancelled). -->
+      <rect v-else-if="look.shape === 'square'" x="0.75" y="0.75" width="6.5" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <path v-else-if="look.shape === 'check'" d="M0.8 4.3 L3 6.4 L7.2 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      <path v-else-if="look.shape === 'cross'" d="M1.2 1.2 L6.8 6.8 M6.8 1.2 L1.2 6.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      <path v-else d="M1 4 L7 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
     </svg>
     <span v-if="word" class="truncate text-muted" data-status-word>{{ status.word }}</span>
   </span>

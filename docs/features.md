@@ -41,7 +41,10 @@ for the wire details.
 
 - **Status marks.** Every surface draws a session's state with one of five
   marks and its word, as the status section of
-  [design/system.md](design/system.md#status) says. Terracotta stays on the
+  [design/system.md](design/system.md#status) says; a run's tasks, members,
+  graph and cards speak the same language, a task's own states (waiting,
+  ready, done, failed, cancelled) with marks of their own, and a run says
+  one sentence ("2 of 6 done · 1 working · 1 checking · 2 need you"). Terracotta stays on the
   brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
   code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
@@ -3010,7 +3013,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
   rows 5 and 6. A managed run's page has a **Tasks** tab first
   (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
-  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  in the crew's order (`RunTasks.vue`) with its state's mark and word
+  (`taskStatus`, since the UX review's PR-10), kind,
   member, attempt, what it does in words (`taskWords`: what it waits for,
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
@@ -7793,7 +7797,7 @@ screen. Nothing said which was the plan and which the thing running.
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
   (one card per live run: badge, the members as chips in the crew's shape
-  with a status dot each, a line per member that asks with Answer beside it,
+  with a status mark each, a line per member that asks with Answer beside it,
   up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
   shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
   alone", where it runs, the last runs as bars, Edit, Launch run).

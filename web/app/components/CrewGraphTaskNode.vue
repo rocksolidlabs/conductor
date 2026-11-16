@@ -2,11 +2,12 @@
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import type { GraphDirection } from '~/utils/crewGraph'
 import type { TaskNode } from '~/utils/taskGraph'
-import { taskDot, taskWords, type TaskRun } from '~/utils/tasks'
+import { taskWords, type TaskRun } from '~/utils/tasks'
+import type { MarkView } from '~/utils/status'
 
 /**
  * One task on a managed run's graph (#334, row 7): its kind, id and state
- * dot, its member, which attempt runs, and what it does now in words; Open
+ * mark with its word (taskStatus), its member, which attempt runs, and what it does now in words; Open
  * goes to the attempt's session. The target handle takes the edges from
  * the tasks it needs. Enter opens it; the graph handles clicks.
  */
@@ -17,6 +18,8 @@ export interface TaskNodeData {
   run: TaskRun
   /** The member's agent, for its avatar. */
   agentId: string
+  /** Its state in the status language (taskStatus); absent while it is not known. */
+  mark?: MarkView
 }
 
 const props = defineProps<NodeProps<TaskNodeData>>()
@@ -33,7 +36,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
 <template>
   <div
     class="flex h-24 w-60 flex-col gap-1 rounded-lg border bg-default p-2.5 text-left shadow-xs outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-primary"
-    :class="[selected ? 'border-primary ring-1 ring-primary' : t.state === 'failed' ? 'border-error' : t.state === 'blocked' || t.state === 'ready' ? 'border-dashed border-accented' : 'border-default', t.state === 'cancelled' && 'opacity-70']"
+    :class="[selected ? 'border-primary ring-1 ring-primary' : data.mark?.key === 'needs' ? 'border-warning' : t.state === 'blocked' || t.state === 'ready' ? 'border-dashed border-accented' : 'border-default', t.state === 'cancelled' && 'opacity-70']"
     tabindex="0"
     :data-graph-task="t.id"
     :data-task-state="t.state"
@@ -44,9 +47,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
     <div class="flex min-w-0 items-center gap-2">
       <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />
       <span class="max-w-[8.5rem] flex-none truncate font-mono text-[13px] font-semibold text-highlighted">{{ t.id }}</span>
-      <span class="size-2 flex-none rounded-full" :class="taskDot(t.state)" :title="words.text" aria-hidden="true" />
-      <UBadge v-if="t.state === 'failed'" label="failed" color="error" variant="subtle" size="sm" class="ml-auto flex-none" />
-      <UBadge v-else-if="t.state === 'succeeded'" label="done" color="success" variant="subtle" size="sm" class="ml-auto flex-none" />
+      <StatusMark v-if="data.mark" :status="data.mark" word class="ml-auto" />
     </div>
     <div class="flex min-w-0 items-center gap-2 text-[11.5px] text-muted">
       <SessionAvatar :agent-id="data.agentId" />

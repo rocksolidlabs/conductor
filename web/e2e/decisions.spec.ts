@@ -183,7 +183,10 @@ test("build's approval waits while docs finishes, is answered in its card from t
   await page.goto(`${base}/runs/${runId}?view=tasks`)
   const row = page.locator('[data-task-row="build"]')
   await expect(row.locator('[data-task-words]')).toHaveText(`attempt 1 waits for decision ${id}`, { timeout: 30_000 })
+  // Held by an open decision, it waits on a person: the status language's needs (UX1 PR-10), never the running green.
+  await expect(row.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
   await expect(page.locator('[data-task-row="docs"]')).toHaveAttribute('data-task-state', 'succeeded')
+  await expect(page.locator('[data-task-row="docs"] [data-status-mark]')).toHaveAttribute('data-status-mark', 'done')
   await expect(page.locator('[data-crew-run-header]')).toContainText('1 decision open')
 
   // The run page's Answer, reached by the keyboard, opens the card on Enter and on Space; Enter on the row itself selects the row

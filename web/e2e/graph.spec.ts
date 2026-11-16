@@ -50,6 +50,19 @@ test('the run page draws the members and their start rules, and a handoff as it 
   await expect(canvas.locator('[data-graph-node]')).toHaveCount(4)
   await expect(canvas.locator('[data-graph-node="lead"]')).toHaveAttribute('data-status', 'running')
   await expect(canvas.locator('[data-graph-node="docs"]')).toHaveAttribute('data-status', 'pending')
+  // Each node draws its state in the status language (UX1 PR-10): lead its session's key, docs, not started, the waiting mark.
+  // lead's mark is its session's, the one the sidebar's row draws for that session: both read at once, the state may move.
+  const leadSession = r.members.find((m) => m.name === 'lead')?.sessionId ?? ''
+  expect(leadSession, "lead's session").not.toBe('')
+  const keys = () =>
+    page.evaluate((id) => {
+      const node = document.querySelector('[data-graph-canvas] [data-graph-node="lead"] [data-status-mark]')?.getAttribute('data-status-mark') ?? ''
+      const row = document.querySelector(`[data-sidebar-row="s:${id}"] [data-status-mark]`)?.getAttribute('data-status-mark') ?? ''
+      return node && node === row ? node : `${node} against ${row}`
+    }, leadSession)
+  await expect.poll(keys, { message: "lead's node draws its session's mark" }).toMatch(/^(working|finished|running|needs)$/)
+  await expect(canvas.locator('[data-graph-node="docs"] [data-status-mark]')).toHaveAttribute('data-status-mark', 'waiting')
+  await expect(canvas.locator('[data-graph-node="docs"] [data-status-word]')).toHaveText('waiting to start')
   await expect(canvas.locator('[data-graph-edge-kind="after"]')).toHaveCount(2)
   await expect(canvas.locator('[data-graph-edge="lead-core"][data-graph-edge-kind="after"]')).toHaveCount(1)
   await expect(canvas.locator('[data-graph-edge="core-tests"][data-graph-edge-kind="after"]')).toHaveCount(1)

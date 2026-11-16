@@ -59,27 +59,17 @@ export function mergeEntries(pages: ReadonlyArray<{ entries: readonly TicketRunE
   return out
 }
 
-/** A run summary's tasks as the run page's badges say them: done of all, then failed, cancelled, running, checking, paused. */
+/** A run summary's tasks as the run page's badges say them: done of all, then failed, cancelled, running, checking, paused; neutral but for failed (red) and paused (amber). */
 export function summaryBadges(s: Pick<RunSummary, 'tasks' | 'paused' | 'outcome'>): Chip[] {
   const n = (st: RunTask['state']) => s.tasks?.[st] ?? 0
   const total = Object.values(s.tasks ?? {}).reduce((a, b) => a + (b ?? 0), 0)
-  const out: Chip[] = [{ label: `${n('succeeded')}/${total} tasks`, color: s.outcome === 'succeeded' ? 'success' : 'neutral' }]
+  const out: Chip[] = [{ label: `${n('succeeded')}/${total} tasks`, color: 'neutral' }]
   if (n('failed')) out.push({ label: `${n('failed')} failed`, color: 'error' })
   if (n('cancelled')) out.push({ label: `${n('cancelled')} cancelled`, color: 'neutral' })
-  if (n('running')) out.push({ label: `${n('running')} running`, color: 'success' })
-  if (n('verifying')) out.push({ label: `${n('verifying')} checking`, color: 'info' })
+  if (n('running')) out.push({ label: `${n('running')} running`, color: 'neutral' })
+  if (n('verifying')) out.push({ label: `${n('verifying')} checking`, color: 'neutral' })
   if (s.paused) out.push({ label: 'paused', color: 'warning' })
   return out
-}
-
-/** A run summary's state as a badge, its questions counted as the page counts them (runQuestions). */
-export function summaryState(s: Pick<RunSummary, 'state' | 'stoppedAt' | 'outcome' | 'record'>, questions: number): Chip {
-  if (s.stoppedAt) return { label: 'Stopped', color: 'neutral' }
-  if (s.outcome) return { label: s.outcome === 'succeeded' ? 'Succeeded' : s.outcome === 'failed' ? 'Failed' : 'Cancelled', color: s.outcome === 'succeeded' ? 'success' : s.outcome === 'failed' ? 'error' : 'neutral' }
-  if (s.state === 'interrupted') return { label: 'Interrupted', color: 'warning' }
-  if (s.state === 'finished') return { label: 'Finished', color: 'neutral' }
-  if (questions > 0) return { label: `Needs input ${questions}`, color: 'warning' }
-  return { label: s.record ? 'Recorded' : 'Running', color: s.record ? 'neutral' : 'success' }
 }
 
 /** A task of a run that its attempt in flight says is stopped: the task, why, who said so, when. */

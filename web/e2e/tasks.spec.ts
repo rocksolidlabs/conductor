@@ -186,6 +186,12 @@ test('a task that fails its checks three times offers Retry and Accept anyway; t
   // The first check after the navigation, the same first-paint bound (#281).
   await expect(build).toHaveAttribute('data-task-state', 'failed', { timeout: 30_000 })
   await expect(build.locator('[data-task-words]')).toContainText('attempt 3 failed at check never')
+  // Out of its attempts with Retry and Accept anyway named, it waits on a person: the status language's needs, as the inbox lists it
+  // (UX1 PR-10), the engine's sentence beside it.
+  await expect(build.locator('[data-task-retry="build"]')).toBeVisible()
+  await expect(build.locator('[data-task-accept="build"]')).toBeVisible()
+  await expect(build.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
+  await expect(build.locator('[data-status-word]')).toHaveText('needs you')
   await expect(page.locator('[data-crew-run-header] [data-run-task-badge]').nth(1)).toHaveText('1 failed')
   await expect(page.locator('[data-task-row="docs"] [data-task-words]')).toContainText('will not succeed')
   // Pause and resume the dispatch: a receipt each, the badge following.

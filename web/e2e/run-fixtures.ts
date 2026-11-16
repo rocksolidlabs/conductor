@@ -137,16 +137,18 @@ function stubMembers(run: string, tasks: StubTask[]): StubMember[] {
 
 /**
  * A managed run of `tasks` tasks (6, 40 or 128: a crew's bound), each in its state from `states` in turn (every state at once, in
- * TASK_STATES' order, when not given), ids t01, t02…, its members four stubs of the catalog's worker-cli. Its id is a run id of its
- * own. Nothing of it is on the server: serveRun answers its reads.
+ * TASK_STATES' order, when not given), ids t01, t02…, its members four stubs of the catalog's worker-cli. `sessions` names, by task id,
+ * the session its attempt runs in (a session the day holds, so that the task's state is that session's); a task not named runs in a
+ * session of its own that no server holds. Its id is a run id of its own. Nothing of it is on the server: serveRun answers its reads.
  */
-export function runInfo(o: { tasks: 6 | 40 | 128; states?: TaskState[] }): StubRun {
+export function runInfo(o: { tasks: 6 | 40 | 128; states?: TaskState[]; sessions?: Record<string, string> }): StubRun {
   const n = ++made
   const states = o.states ?? [...TASK_STATES]
   const width = String(o.tasks).length
   const id = `stub-run-${(0x1000_0000 + n).toString(16)}`
   const ids = Array.from({ length: o.tasks }, (_, i) => `t${String(i + 1).padStart(Math.max(2, width), '0')}`)
   const tasks = ids.map((t, i) => stubTask(id, n, t, i, states[i % states.length]!, ids[i - 1]))
+  for (const t of tasks) if (o.sessions?.[t.id] && t.attempt) t.attempt.sessionId = o.sessions[t.id]
   const name = `Stub run of ${o.tasks}`
   return {
     id,
@@ -296,4 +298,44 @@ export async function serveRun(page: Page, runs: StubRun | StubRun[]): Promise<S
     },
   )
   return { answered, unanswered }
+}
+
+/**
+ * The run as a ticket's runs summarize it (GET /api/dispatch/tickets/{key}/runs, internal/api/dispatch_evidence.go runSummary): its
+ * tasks counted by state, its members with their sessions, its questions as the run counts them (needsInput), no blockers.
+ */
+export function runSummary(run: StubRun): Record<string, unknown> {
+  const tasks: Record<string, number> = {}
+  for (const t of run.tasks ?? []) tasks[t.state] = (tasks[t.state] ?? 0) + 1
+  return {
+    id: run.id,
+    label: run.label,
+    state: run.state,
+    paused: !!run.paused,
+    startedAt: run.startedAt,
+    record: !!run.record,
+    members: run.members.map((m) => ({ name: m.name, ...(m.sessionId ? { sessionId: m.sessionId } : {}), status: m.status })),
+    tasks,
+    questions: run.needsInput,
+    blockers: [],
+  }
+}
+
+/**
+ * Answers GET /api/dispatch/tickets/{key}/runs with `run`'s summary (runSummary) as its one entry, a run of the ticket's chain, and no
+ * next page: the ticket's Runs section draws the run's card from it. Its reads are counted. Leave the run out of serveRun (the server
+ * then answers GET /api/runs/<id> 404) for the card that has the summary alone: neither the live store nor the records hold it then.
+ * Set before the page loads.
+ */
+export async function serveTicketRuns(page: Page, key: string, run: StubRun): Promise<{ readonly reads: number }> {
+  const served = { reads: 0 }
+  await page.route(
+    (u) => u.pathname === `/api/dispatch/tickets/${key}/runs`,
+    (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      served.reads++
+      return fulfil(route, 200, { entries: [{ kind: 'run', run: runSummary(run) }] })
+    },
+  )
+  return served
 }
