@@ -32,14 +32,14 @@ const moreItems = computed<DropdownMenuItem[]>(() => props.more.map((p) => ({ la
 
 // On the canvas the theme's raised hover would vanish in light (sage on sage): a tile hovers to the canvas's hover tone, and the
 // current page's tile takes the page's tone, as the sidebar's rows do.
-const TILE = 'relative flex h-12 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-0 py-1 text-[11px] font-medium leading-tight'
+const TILE = 'relative flex h-12 w-full min-w-0 flex-col items-center justify-center gap-0.5 rounded-md px-0 py-1 text-[11px] font-medium leading-tight tracking-tight'
 function tileClass(on: boolean): string {
   return `${TILE} ${on ? 'bg-default text-highlighted' : 'text-muted hover:bg-canvas-hover hover:text-highlighted'}`
 }
 </script>
 
 <template>
-  <nav aria-label="Pages" class="grid w-full grid-cols-3 gap-1" data-sidebar-tiles>
+  <nav aria-label="Pages" class="grid w-full grid-cols-3 gap-x-0.5 gap-y-1" data-sidebar-tiles>
     <template v-for="(t, i) in tiles" :key="t.kind === 'page' ? t.page.id : t.kind">
       <div v-if="t.kind === 'held'" class="h-12" aria-hidden="true" data-sidebar-tile="held" />
       <UTooltip v-else-if="t.kind === 'page'" :text="pageTip(t.page)" :kbds="t.page.chord ? [...t.page.chord] : undefined" :content="{ side: 'right' }" :delay-duration="300" ignore-non-keyboard-focus>
