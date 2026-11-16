@@ -1171,6 +1171,26 @@ watches: the member is in Needs you with the question, the command and the
 three choices, each of which types its own key (`y`, `p`, Esc); typed text
 is refused while it shows, since its letters are the dialog's keys and its
 Enter would approve. A catalog question marked `anytime` is held this way.
+Its form asking to allow a tool of an MCP server ("Allow the conductor MCP
+server to run tool "guide"?", Conductor's own tools in a session as much as
+your own servers') is held the same way: the session needs you with the
+form's message and its own choices (**Allow**, **Allow for this session**,
+**Always allow** and **Cancel**, or Allow and Cancel alone): Allow and the
+two that remember it type their number, and the two that remember it have
+no number key and are never offered first (Always allow remembers the
+approval for later tool calls). Cancel types Esc: Codex cancels the call
+and closes the form together with every form it had waiting behind it, a
+server's own among them; they are not asked again, and their calls keep
+waiting, as when you press Esc in the terminal. The four choices are
+offered in a terminal at least 53 columns wide (Allow and Cancel alone at
+40 too). Narrower, as a phone's 40 columns, on a screen that does not
+plainly show the one form, and on a hosted session (`conductor host`),
+Conductor offers no choices: you answer the form in the terminal (Codex
+0.167 and later say they wait on a permission, and the session needs you
+with no choices; with 0.163 it reads as working). The same form shown
+again right after you answered it is held as answered: no page shows a
+question for it and the inbox does not list it; you answer it in the
+terminal.
 Claude Code's dialogs during the work are held the same way, their choices
 read off the dialog each time it shows (the catalog's `answersFromScreen`),
 since they change with the tool, the permission mode and the release.

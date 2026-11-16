@@ -793,8 +793,13 @@ hosted session watches what a server session of the same agent watches:
 `{trustPrompt?, trustAnswers?: [{label, input}], questions?: [{prompt,
 words?, anytime?, answers?, answersFromScreen?, modeAnswers?,
 typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields
-(`internal/agents`' `Recipe`, which the server's own sessions are started
-with too). With it the host holds the trust question and the startup
+(`internal/agents`' `HostRecipe`: the recipe the server's own sessions are
+started with, `Recipe`, without the questions that are forms, a question
+asked at any time whose answers are read off the screen and that names
+answers of its own, below). So a host is not sent Codex's MCP tool
+approval form: on a hosted session that form is answered in the terminal,
+and the recipe a host is sent is the one it was sent before the form was a
+question (#716). With it the host holds the trust question and the startup
 questions at start, raises the questions asked during the work with their
 choices (Codex's command approval, Claude Code's dialogs read off the
 screen), refuses a line typed into the session while one shows (a crew's
@@ -1201,10 +1206,11 @@ button (≤ 60 runes; a longer one is cut where a word ends, with an ellipsis)
 and `input` (≤ 48 bytes) is what is written when the
 human picks it: an `answer`'s `input`, naming the question (see Answering a
 question), or, to an owner that predates `answer`, an INPUT frame. `mode:
-true` marks a choice that changes the session's permission mode (Claude
-Code's "switch to auto mode", "accept edits", "bypass permissions"): pages
-give it no number key and never offer it first, highlighted; it is omitted
-when false. Clearing the state drops `kind` and `options`. A `needs_input`
+true` marks a choice that lasts beyond this one answer: a permission mode
+(Claude Code's "switch to auto mode", "accept edits", "bypass
+permissions"), or an approval that is remembered (Codex's "Allow for this
+session", "Always allow"): pages give it no number key and never offer it
+first, highlighted; it is omitted when false. Clearing the state drops `kind` and `options`. A `needs_input`
 of kind `permission` with no `options` is a dialog whose choices the page is
 not given: pages take no typed reply for it (its Enter would pick what the
 dialog highlights) and say to answer it in the terminal.
@@ -1750,21 +1756,82 @@ highlighted Yes); the same dialog with "No, continue without running it
 (d)" is offered `y`, `d` and Escape (Cancel), the one without the "don't ask
 again" choice Yes and No alone, and any other of Codex's approvals with the
 same footer (network access: "Do you want to approve network access to
-…?", "Yes, just this once (y)") its `y` and Escape.
+…?", "Yes, just this once (y)") its `y` and Escape. Its form asking to
+allow a tool of an MCP server (Codex 0.163.0 to 0.169.0, #716: "Field
+1/1", "Allow the <server> MCP server to run tool "<tool>"?" and up to
+three of the call's arguments, "› 1. Allow", "Allow for this session" and
+"Always allow" when the server's approval mode remembers a choice,
+"Cancel", each with its description in a column beside it, then "enter to
+submit | esc to cancel" on the last row) is found by that whole shape, at
+most 8 rows from Allow to Cancel, and asked as a form (below) on a server's
+own session. A host is not sent it (`registered.recipe`): on a hosted
+session the form is answered in the terminal. Its words are every row
+between "Field 1/1" and its list (the message and the arguments), its
+choices read off the form, Allow and the choices that remember it each its
+digit, which picks it and submits the form at once, Cancel an Escape, the
+key the footer names. Codex's Escape cancels this call and closes the form
+together with every form Codex had waiting behind it, a server's own among
+them: they are not asked again, and their calls keep waiting, as when
+Escape is pressed in the terminal. The form is asked only where
+exactly one of its choices is named Cancel; where none is, it is answered
+in the terminal. "Allow for this session" and "Always allow" are mode
+answers (`modeAnswers`): a page gives them no number key and never offers
+them first ("Always allow" remembers the approval for later tool calls; it
+changes no permission mode). The four choices are asked where Codex lays
+them over 8 rows or fewer from Allow to Cancel, from 53 columns wide (9
+rows at 52, 14 at 40); narrower they are not, and the form is answered in
+the terminal. The two choices are asked at 40 columns too. A screen that
+is not plainly the one form (a second row that opens a form, a numbered
+row between the form's top and its list, choices without a description
+column, a choice's name with white space other than ASCII spaces or a
+control character) asks nothing of the form either. Where the form is not
+asked the session shows what Codex's status says: from 0.167 a wait on a
+permission, with no choices, answered in the terminal; with 0.163, which
+says only that it is blocked, it reads as working (or needs you, with no
+choices, when Codex rings its bell). A server's own one-field form whose
+choices are named as the tool approval's are (the first beginning with
+Allow, the last Cancel, and between them only names that begin with an A),
+in a column aligned like its, is asked the same way: a choice's label is
+the row's name before the column, and the row named Cancel is sent as
+Escape. Once the form is answered (from a page, or by a key typed in the
+terminal) it is not asked again until a look finds no row on the screen
+that opens a form ("Field n/m"): a look that finds such a row and cannot
+read the form (the window made narrower, a second form's top row above
+it) keeps it answered. After a look with no such row, a form is a new
+question. So an identical form Codex shows directly behind an answered one
+(the same server, tool and arguments) is held as answered: a page shows
+no question for it and the inbox does not list it; it is answered in the
+terminal. A form that differs in any row is a new question with its
+choices.
 
-A question with `answersFromScreen: true` (only with `anytime`, and no
-`answers` of its own) has its answers read off the screen each time it is
-asked: the numbered list its dialog draws at the bottom, from the last row
-numbered N up through the rows numbered N−1 to 1 at that column, at most 8
-rows apart (a choice's description, a rule, the rest of a long label), each
-choice its first row's label and its number as the key (no Enter). Its
-words, without a `words` pattern, are the rows above the list up to the
-dialog's top rule (a row of `─` alone), rules within it left out. A screen
-its prompt finds with no such list (fewer than two choices, a number out of
-turn) asks nothing. `modeAnswers`, a pattern bounded as a prompt, marks
-`mode` the answers it matches, each read whole: its label with the rows
-that follow it up to the next choice (a narrow screen wraps "switch to" and
-"BYPASS PERMISSIONS" onto two rows). `typedAnswers`, a pattern bounded the
+A question with `answersFromScreen: true` (only with `anytime`) has its
+answers read off the screen each time it is asked: the numbered list its
+dialog draws at the bottom, from the last row numbered N, with at most 8
+rows that are not blank after it (a hint, a footer, each wrapped on a
+narrow screen), up
+through the rows numbered N−1 to 1 at that column, at most 8 rows apart (a
+choice's description, a rule, the rest of a long label), each choice its
+first row's label, whole, and its number as the key (no Enter). Its words,
+without a `words` pattern, are the rows above the list up to the dialog's
+top rule (a row of `─` alone), 16 at most, rules within it left out. A
+screen its prompt finds with no such list (fewer than two choices, a
+number out of turn) asks nothing. With `answers` of its own (and `words`)
+it is a form: `words` matches the form's top row, which must be the only
+row of the screen it matches and stand above the list; its words are every
+row between that row and the list, 16 at most and no longer than a
+message, none of them a numbered row; each choice's label is its name, up
+to the one column at which every choice row draws its description, its
+ASCII spaces trimmed, and a form without that column, or with a name that
+holds other white space or a control character, asks nothing; each of `answers` is the label of
+exactly one choice, which is sent as that answer's keys (a form where one
+is not asks nothing), the others as their numbers. What a reply to it is
+weighed against is those words and the whole list: the form with any row
+changed is another question. After an answer it is not asked again while
+it stays on the screen, as any question read off the screen (below). A
+host is not sent a form (`registered.recipe`). `modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
+matches, each read whole: its label with the rows that follow it up to the
+next choice (a narrow screen wraps "switch to" and "BYPASS PERMISSIONS"
+onto two rows). `typedAnswers`, a pattern bounded the
 same way, matches the answers that take typed words, each read whole: while
 the dialog's highlight stands before one, its keys type into that field,
 so the question offers no choices and is answered in the terminal. A reply

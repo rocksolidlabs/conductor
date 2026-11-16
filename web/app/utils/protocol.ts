@@ -176,7 +176,10 @@ export type AttentionKind = '' | 'permission' | 'prompt' | 'done'
 export interface AttentionOption {
   label: string
   input: string
-  /** The choice changes the session's permission mode (a dialog's "switch to auto mode"): no number key, never offered first (#288). */
+  /**
+   * The choice lasts beyond this one answer (a permission mode: a dialog's "switch to auto mode"; an approval that is remembered:
+   * Codex's "Always allow"): no number key, never offered first (#288, #716).
+   */
   mode?: boolean
 }
 
