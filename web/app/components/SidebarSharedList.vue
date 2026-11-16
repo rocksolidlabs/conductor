@@ -16,10 +16,11 @@ const route = useRoute()
 const hovers = useMedia('(hover: hover)')
 
 // The mark is what the entry knows (joinedStatus): running, starting or exited; a link that does not answer draws none and says so.
+// Revoked and gone are standing facts, muted; a link that does not answer is a read that failed, amber (the UX review's P16).
 function line(e: JoinedEntry): { text: string; warn: boolean } {
-  if (e.lastStatus === 'revoked') return { text: 'revoked', warn: true }
-  if (e.lastStatus === 'gone') return { text: 'gone', warn: true }
-  if (e.lastStatus === 'unreachable') return { text: 'not answering', warn: false }
+  if (e.lastStatus === 'revoked') return { text: 'revoked', warn: false }
+  if (e.lastStatus === 'gone') return { text: 'gone', warn: false }
+  if (e.lastStatus === 'unreachable') return { text: 'not answering', warn: true }
   return { text: `through ${e.host}${e.hostedOn ? ` · on ${e.hostedOn}` : ''}`, warn: false }
 }
 function title(e: JoinedEntry): string {
@@ -33,7 +34,7 @@ function title(e: JoinedEntry): string {
       v-for="e in joined.list.value"
       :key="e.id"
       class="group relative flex items-center rounded-md"
-      :class="[(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75', focusedId === `j:${e.id}` && 'ring-2 ring-primary/40']"
+      :class="[focusedId === `j:${e.id}` && 'ring-2 ring-primary/40']"
       :data-row-focused="focusedId === `j:${e.id}` ? '' : undefined"
       :data-shared-entry="e.id"
       :data-shared-status="e.lastStatus ?? ''"
@@ -50,7 +51,7 @@ function title(e: JoinedEntry): string {
         <!-- As a session's row (SidebarSessionRow): the name on one line across the row, the mark at its end; the agent's initials (a
              crew's icon for a run) as a chip at the start of the line below. -->
         <span class="flex min-w-0 items-center gap-1.5">
-          <span class="truncate text-sm font-medium text-highlighted" data-shared-name>{{ e.name }}</span>
+          <span class="truncate text-sm font-medium" :class="e.lastStatus === 'revoked' || e.lastStatus === 'gone' ? 'text-muted' : 'text-highlighted'" data-shared-name>{{ e.name }}</span>
           <UIcon :name="e.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5 flex-none text-muted" :aria-label="e.role === 'control' ? 'control' : 'view only'" />
           <StatusMark v-if="joinedStatus(e)" :status="joinedStatus(e)!" class="ml-auto" />
         </span>
@@ -63,7 +64,7 @@ function title(e: JoinedEntry): string {
             data-row-initials
           >{{ agentInitials(e.agentId ?? '') }}</span>
           <span v-else class="grid h-4 flex-none place-items-center rounded bg-default px-1 text-toned" data-row-initials><UIcon name="i-lucide-users" class="size-3" /></span>
-          <span class="min-w-0 truncate font-mono text-[11px]" :class="line(e).warn ? 'text-warning' : 'text-muted'">{{ line(e).text }}</span>
+          <span class="min-w-0 truncate text-[11px]" :class="line(e).warn ? 'text-warning' : 'text-muted'" data-shared-line>{{ line(e).text }}</span>
         </span>
       </NuxtLink>
       <!-- Forget shows over the row's corner on hover or focus, as a session row's actions do, so the name has the row's width (#906);
