@@ -144,6 +144,17 @@
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
 # prints what was typed into it before; with CLAUDE_CONFIG_DIR set it begins
 # with "env: CLAUDE_CONFIG_DIR=<dir>" (a copy of the agent, #291).
+# STUB_TURN, read at start, sets the agent's state with no line typed (the
+# seeded day of web/e2e/day.ts): `finished` reports one turn's start and its
+# end through the agent's hooks (STUB_REPORT), as a typed line's turn does,
+# then reads lines as ever; `working` draws its prompt, reports the turn's
+# start and holds it, reading nothing more (a line typed meanwhile, a run's
+# task, waits in the terminal), until $HOME/.stub-sessions/<id>.hold says
+# `stop`, <id> being the stub's own session id (the server lists it as the
+# session's agentSession.id; never the session's id on the server): the
+# stub writes `hold` into it first, and a test (letGo in web/e2e/day.ts) or
+# the day's end writes `stop`. Then it reports the turn's end and reads
+# lines as ever.
 set -euo pipefail
 
 identity=${STUB_IDENTITY:-stub}
@@ -1725,6 +1736,26 @@ if [[ -n ${STUB_CHOICES:-} ]]; then
 	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"
 	report --state needs_input --message "${STUB_ASK:-Which one?}" --choices "$STUB_CHOICES"
 fi
+# STUB_TURN (the header): a turn reported with no line typed, finished at
+# once or held until its hold file says stop.
+case ${STUB_TURN:-} in
+finished)
+	report_working
+	report_done "a turn of its own, finished" "STUB_TURN=finished"
+	;;
+working)
+	put "$transcripts/$id.hold" $'hold\n'
+	printf '\e[?2004h> '
+	report_working
+	hold=
+	until [[ $hold == stop ]]; do
+		sleep 0.2
+		hold=
+		IFS= read -r hold <"$transcripts/$id.hold" || true
+	done
+	report_done "a held turn, let go" "STUB_TURN=working"
+	;;
+esac
 # handle_line takes one line entered: the stub's own lines, or a line to
 # answer.
 handle_line() {

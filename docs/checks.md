@@ -96,3 +96,55 @@ the full set for affected surfaces before finishing. Every harness that launches
 a server publishes its sessions to the public switchyard by default, and a
 test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
 reported limitation, not a pass.
+
+The seeded day (`web/e2e/day.ts`, the plan `docs/plans/ux-review.md`) is a
+day of work on a server of its own, started at a worker's first test that
+asks for the `day` fixture and built in named parts on demand: `states` (a
+session in each state: asking, working, finished, running with no hooks,
+exited), `dispatch` (projects CND and OPS, fourteen tickets), `waiting`
+(an item of each kind the inbox holds), `runs` (Ledger migration's six
+tasks, Release notes succeeded), `long` (a name, a label and a title at
+their bounds) and `busy` (all of them, and eighteen live sessions). The stub
+holds its states with no timer (`STUB_TURN`, a question, a check that exits
+1). Two rules: the day is read-only, and a measure of how much fits is made
+on `busy`, so that it measures the same page whatever ran before it. The
+`day` fixture holds the first at each test's end (`guard` in `day.ts`) by
+one rule: what the day's server lists is the same as the day's start and
+its parts' builds left it. One snapshot holds every session (name, status,
+exit code, agent, folder, run and member, its attention whole), every run
+(name, label, state, outcome, each member's status and session, each
+task's state, attempts and the decisions that hold it), the inbox's items,
+Dispatch (people, projects, labels, milestones, saved views, every
+project's tickets with their status, labels, owner, priority, assignees and
+revision, each plan's state), the crews and the share links. The guard
+names each item added or gone and each field changed, from what to what,
+and ends the sessions and runs a test added. Left out, as what moves by
+itself: every time and a run's log; a session's viewers and size, which
+every page attached moves; a member's diff, which the server counts again
+in the background (it moved within a minute on an idle day); and what
+follows a field compared (a run's needsInput and ledger revision, a
+member's attempt, branch and worktree). Not guarded: a browser context opened by hand (not `dayPage`) and left
+attached, which views until the worker ends (viewers come and go with
+every page, so the guard counts none; `dayPage`'s are closed before it);
+what is typed into a day session's terminal and its screen, which the API
+does not list (a line into a finished session starts a turn, which is
+named); a ticket's comments, attachments and links, which the ticket list
+does not carry (one that moves the ticket's revision is named); the
+activity log and history, which every test that looks at the day appends
+to; and the server's settings, catalog, webhooks and alert rules and the
+day's repository's files and branches, which no spec on the day may
+write (a spec that must starts a server of its own, `ownServer`).
+`dayPage` opens the day only in a test that asked for `day`. A shard that asks for the day builds its own (a shard is a run
+with a worker of its own): on CI's runner `busy` takes about 17 s
+(2026-11-16), `waiting` alone about 8 s (2026-11-15, when a spec last
+asked for it alone). On a 64-core development machine (2026-11-16):
+`day.spec.ts`'s proofs of the guard start ten days of their own, about
+33 s in all (two of them build `runs` or `waiting`, about 10 s each),
+and one guard, one snapshot of the busy day, is 53 reads in 0.1 to
+0.15 s at a load average of 4 to 20. To look at it by hand,
+`CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
+`web/`, after `make web-build build-go`) prints its address and the path of
+a file only its owner reads that holds its token, and holds it until Ctrl+C.
+`dayPage` and `useTheme` (`web/e2e/fixtures.ts`) set the colour mode the way
+the app keeps it (`conductor-color-mode`): a `colorScheme` context does not
+switch this app, which opens dark whatever the system prefers.

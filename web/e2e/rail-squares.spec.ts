@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, test, useTheme, type Session } from './fixtures'
 
 // The collapsed sidebar (#314): the session open on the page carries the
 // selection mark on its square (a primary bar down the rail's edge beside
@@ -70,11 +70,12 @@ test('the open session is marked on the rail, and two squares of one agent diffe
     await expect(page).toHaveURL(new RegExp(`/sessions/${b.id}$`))
     await expect(square(b.id).locator('[data-rail-current]')).toBeVisible()
     await expect(square(a.id).locator('[data-rail-current]')).toHaveCount(0)
-    // The mark is drawn in both colour modes (a colour, never transparent).
-    for (const mode of ['dark', 'light']) {
-      await page.evaluate((m) => localStorage.setItem('nuxt-color-mode', m), mode)
-      await page.reload()
-      await expect(rail).toBeVisible()
+    // The mark is drawn in both colour modes (a colour, never transparent), each mode set the way the app keeps it and seen on
+    // `html` before the colour is read: a mode the app did not take would read the other's colour twice.
+    for (const mode of ['dark', 'light'] as const) {
+      await useTheme(page, mode, '[data-rail]')
+      if (mode === 'dark') await expect(page.locator('html'), mode).toHaveClass(/\bdark\b/)
+      else await expect(page.locator('html'), mode).not.toHaveClass(/\bdark\b/)
       const bg = await square(b.id).locator('[data-rail-current]').evaluate((el) => getComputedStyle(el).backgroundColor)
       expect(bg, mode).not.toMatch(/rgba\(\d+, \d+, \d+, 0\)|transparent/)
     }
