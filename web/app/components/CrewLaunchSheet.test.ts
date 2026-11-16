@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { useDispatchApi } from '../composables/useDispatch'
-import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, readSheet, withAgent } from '../utils/crewLaunch'
+import { AT_LAUNCH, OWN_LOGIN, SHEET_DEADLINE_MS, SheetConfirmation, accountName, accountUnreadable, addMemberProblem, boundWords, brakemanAccount, cleanFolder, launchAccountWords, launchLines, memberAccountItems, memberAccountProblem, namedAccounts, readNamedAccounts, readSheet, targetAfterChanged, withAgent, type SheetTarget } from '../utils/crewLaunch'
 import { capacityKey, type After, type CapacityView } from '../utils/capacity'
 import { draftMember, toCrewInput, toCrewMember } from '../utils/crews'
 
@@ -164,6 +164,35 @@ describe('the launch sheet', () => {
     expect(c.holds(n), 'opened again while the launch was under way').toBe(false)
     c.done()
     expect(c.holds(c.take(true)), "the new opening's own launch").toBe(true)
+  })
+
+  it("reads the crew again by its id once the server refused the launch crew_changed, as a new opening: a draft's too, the run's name kept", () => {
+    const byId: SheetTarget = { id: 'pinned', label: 'fix login' }
+    const again = targetAfterChanged(byId, 'pinned', true)
+    // A new target even for the same id: the sheet reads again only for a target it has not read (CrewLaunchSheet's watch).
+    expect(again).toEqual({ id: 'pinned', label: 'fix login' })
+    expect(again).not.toBe(byId)
+    // A draft's launch named the revision its save answered: the crew is then read as saved, by the id the save gave it.
+    const draft = { key: 'new', draft: {} as never, label: '' } as SheetTarget
+    expect(targetAfterChanged(draft, 'made-2', true)).toEqual({ id: 'made-2', label: '' })
+    // An opening that is no longer the sheet's is not opened again: the page only says so.
+    expect(targetAfterChanged(byId, 'pinned', false)).toBeNull()
+    // The refused confirmation is spent; the opening made for the read again is the one its Launch takes.
+    const c = new SheetConfirmation()
+    c.opened()
+    const n = c.take(true)
+    c.opened()
+    expect(c.holds(n), 'the refused opening, once read again').toBe(false)
+    c.done()
+    expect(c.take(true), 'the read again').toBe(2)
+  })
+
+  it("source: the page sends the revision of what it launches and answers crew_changed by reading again; the sheet says why", () => {
+    const page = readFileSync(new URL('../pages/crews/[[id]].vue', import.meta.url), 'utf8')
+    expect(page).toContain('api.launchCrew(c.id, crewLaunchBody(t.label, c.revision))')
+    expect(page).toContain('e.code === CREW_CHANGED) changedSinceRead(t, c, confirmed())')
+    const src = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
+    expect(src).toContain('data-crew-launch-changed')
   })
 
   it("source: the sheet's lines draw compact panels that read on open, the ticket dialog's compact panels do not", () => {

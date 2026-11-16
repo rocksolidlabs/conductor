@@ -8,10 +8,9 @@ import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/util
  * line of what the server knows of that agent's usage on that account, then Launch. It keeps what it was opened for (`target`), and its
  * Launch hands the page exactly that: a saved crew is read from the server as the sheet opens and that copy is drawn, Launch held until
  * it is here (a failed read says why and offers to read again); the crew page's draft is drawn as it is and saved as it launches. The
- * sheet shows the crew as the server held it when the sheet read it; its Launch starts the crew by id, and the server starts the crew as
- * it holds it at that moment. The launch names no revision yet, so a change saved after the sheet's read (a save of this page still under
- * way, a save from another page or another person) is not shown by the sheet; issue #957 gives the launch its revision and has the
- * server refuse another. A crew that inherits its yolo setting is drawn with the server's default once that is read
+ * sheet shows the crew as the server held it when the sheet read it, and its Launch names that copy's revision: a change saved after the
+ * read (a save of this page still under way, a save from another page or another person) is refused by the server, which starts nothing
+ * (#957); the page then gives the sheet a new target, which it reads again, and `changed` says why. A crew that inherits its yolo setting is drawn with the server's default once that is read
  * (readSheet), never before. Each read ends at its deadline in words with Read again, and closing the sheet or opening it for another
  * target ends the reads under way. A crew gone when it is read closes the sheet (`gone`). A compact panel is read as the sheet opens once
  * its first view has answered (at most once in five minutes per agent and account, as the server holds it); a view that failed first is
@@ -22,7 +21,7 @@ import { launchLines, readSheet, type SheetRead, type SheetTarget } from '~/util
  * takes a sheet opened again meanwhile with it.
  */
 const open = defineModel<boolean>('open', { default: false })
-const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean }>()
+const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean; changed?: boolean }>()
 const emit = defineEmits<{ launch: [crew: CrewInfo | null]; gone: [] }>()
 
 const api = useSessions()
@@ -65,6 +64,10 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
 <template>
   <UModal v-model:open="open" :title="crew ? `Launch ${crew.name}` : 'Launch'" :description="target?.label ? `As the run ${target.label}` : 'Each member with its agent, model and account'" :ui="{ content: 'max-w-2xl' }">
     <template #body>
+      <p v-if="changed" class="mb-3 flex items-start gap-2 text-sm text-warning" data-crew-launch-changed>
+        <UIcon name="i-lucide-refresh-cw" class="mt-0.5 size-4 shrink-0" />
+        <span class="min-w-0">The crew was saved since this sheet read it, so nothing was launched. It is read again and shown as the server holds it now: Launch starts what is shown.</span>
+      </p>
       <p v-if="failed" class="flex flex-wrap items-center gap-2 text-sm text-error [overflow-wrap:anywhere]" data-crew-launch-read-error>
         <span class="min-w-0">{{ failed.what === 'crew' ? 'The crew could not be read' : "The server's yolo default could not be read" }}, so nothing is launched: {{ failed.error }}</span>
         <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="outline" :disabled="!open" data-crew-launch-read-again @click="readNow" />

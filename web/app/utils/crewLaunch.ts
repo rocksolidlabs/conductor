@@ -194,6 +194,17 @@ export class SheetConfirmation {
   }
 }
 
+/**
+ * The sheet's target once its launch was refused `crew_changed` (#957): the server holds another copy of the crew than the one the sheet
+ * read, and started nothing. The sheet reads the saved crew again by its id (a new target, so it reads even when it was opened by that id),
+ * the run's name kept, and its Launch then names the revision of what it now shows. null when the refused launch's opening is no longer
+ * the sheet's (`current` false: it was closed or opened again, the page or the token changed): the page then only says so. The page keeps
+ * nothing of its own about which copy is current: the server's refusal alone decides.
+ */
+export function targetAfterChanged(t: SheetTarget, id: string, current: boolean): SheetTarget | null {
+  return current ? { id, label: t.label } : null
+}
+
 /** Where a run member's login comes from (MemberAccount.source), in words, for a source that is not a registered account. */
 const SOURCE_WORDS: Record<string, string> = {
   own: "the agent's own login",

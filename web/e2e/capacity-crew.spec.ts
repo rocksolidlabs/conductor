@@ -837,8 +837,17 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await expect(confirm, 'the sheet opened again stays open, its Launch free once the first launch ended').toBeEnabled()
   expect(launches, 'the first confirmation started nothing').toEqual([])
 
-  // The sheet opened again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
+  // That sheet read the crew while the save was held: its Launch names the copy from before the save, which the server refuses (#957,
+  // crew-launch-revision.spec.ts); the sheet reads the crew again and draws the copy saved.
   const launchA = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
+  const refusedLaunch = page.waitForResponse((r) => r.request().method() === 'POST' && launchA(new URL(r.url())))
+  await confirm.click()
+  expect((await refusedLaunch).status(), 'the copy from before the save is refused').toBe(409)
+  await expect(page.locator('[data-crew-launch-changed]')).toBeVisible()
+  await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toContainText(`Launch ${a.name} 3`, { timeout: 30_000 })
+  await expect(confirm).toBeEnabled({ timeout: 30_000 })
+
+  // The sheet read again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
   const held = await holdOnce(page, launchA, 'POST')
   await confirm.click()
   await held.seen
@@ -854,7 +863,7 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await held.off()
   await expect(confirm, 'the launch closed none of the sheet opened since').toBeEnabled()
   await expect(page.locator('[role="dialog"]').filter({ has: confirm })).toHaveAttribute('data-state', 'open')
-  expect(launches, 'one launch, from its own confirmation').toHaveLength(1)
+  expect(launches, 'the refused launch, then one from its own confirmation').toHaveLength(2)
   await cancel.click()
   await expect(confirm).toHaveCount(0)
 })
