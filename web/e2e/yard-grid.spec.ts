@@ -25,15 +25,18 @@ function bestGrid(n: number, width: number, height: number): { cols: number; row
   return best
 }
 
-/** The grid's box and its tiles, read in one evaluation, with the panel's box (the Yard's UDashboardPanel). */
+/** The grid's box and its tiles, read in one evaluation, with the panel's box (the Yard's UDashboardPanel, id `<storage key>-panel-wall`). */
 async function measure(page: Page) {
   return page.locator('[data-yard-grid]').evaluate((grid) => {
     const box = (el: Element) => {
       const r = el.getBoundingClientRect()
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }
     }
-    const panel = grid.closest('#wall')!
-    return { grid: box(grid), panel: box(panel), tiles: Array.from(grid.querySelectorAll('[data-session-tile]')).map(box) }
+    // The panel's inside: its box less its border (clientLeft, clientWidth).
+    const p = grid.closest('[id$="-panel-wall"]')!
+    const r = p.getBoundingClientRect()
+    const panel = { left: r.left + p.clientLeft, width: p.clientWidth }
+    return { grid: box(grid), panel, tiles: Array.from(grid.querySelectorAll('[data-session-tile]')).map(box) }
   })
 }
 

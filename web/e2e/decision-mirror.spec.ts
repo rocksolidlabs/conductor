@@ -5,7 +5,7 @@ import { expect, rowAnswer, test, type Session } from './fixtures'
 // only as the decision, by the operator: no page offers it a typed reply.
 // Every place that draws a reply field for an attention reads the same one
 // answer (noReply, web/app/utils/attention.ts), and says where the decision
-// is answered instead: the sidebar's row, the Yard's queue and the command
+// is answered instead: the sidebar's row, an expanded Yard tile's bar and the command
 // palette (#638, review round 1). The stub, a worker of a managed run, asks
 // the decision over its own token when its task's instructions say STUB
 // DECIDE, and submits nothing while it waits.
@@ -64,7 +64,7 @@ async function openPalette(page: Page) {
   return palette
 }
 
-test("a decision's question takes no reply in the sidebar's row, the Yard's queue or the palette: each says where it is answered", async ({ page, api }) => {
+test("a decision's question takes no reply in the sidebar's row, the Yard's tile and its bar or the palette: each says where it is answered", async ({ page, api }) => {
   const run = await api.launchCrew(crewId)
   runs.push(run.id)
   // The attempt's session, once it shows the decision's question.
