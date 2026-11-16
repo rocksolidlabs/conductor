@@ -3293,8 +3293,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
   apply). Since the UX review's PR-11 the rows are a table, state, task,
-  who, what and actions each read straight down (two lines a row under
-  48 rem): the state said once, the attempt once (in the words when they
+  who, what and actions each read straight down (under 48 rem a row is
+  two lines, and its actions a line of their own below them): the state
+  said once, the attempt once (in the words when they
   name it, else "attempt N" past the first), the owner only when the task
   names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
   menu, so nothing in a row at rest is red. The selected task, kept in the
