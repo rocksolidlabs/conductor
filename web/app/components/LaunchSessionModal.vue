@@ -316,7 +316,8 @@ async function submit() {
             <template v-else>No agents in the catalog.</template>
           </p>
         </div>
-        <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono">{{ selected.command.join(' ') }}</code></p>
+        <!-- The command breaks anywhere (a long path has no space): on a phone it would push the dialog's body sideways. -->
+        <p v-if="selected?.description" class="-mt-2 text-xs text-muted">{{ selected.description }} <code class="font-mono break-all">{{ selected.command.join(' ') }}</code></p>
 
         <UFormField v-if="runsOnChoice" label="Where it runs" name="runsOn" data-runs-on>
           <div class="grid grid-cols-2 rounded-md bg-elevated p-0.5 text-sm">
