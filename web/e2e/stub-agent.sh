@@ -22,6 +22,12 @@
 #                   $HOME/.codex/config.toml; Down then Enter, or Esc,
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
+#   STUB_DIALOG_WAIT  how long, in seconds, a dialog's read of a key waits
+#                   at a time before it looks for a resize (dialog_key):
+#                   0.2 unless set
+#   STUB_DIALOG_PROBE  a file: the stub runs its probe dialog alone
+#                   (dialog_probe, scripts/stub_dialog_test.py) and writes
+#                   the keys it reads there
 #   STUB_SIGNIN     an invented code: the stub starts on Claude Code's
 #                   sign-in screen and takes that code alone (claude_sign_in)
 #   STUB_CHOICES    a|b|c: the stub asks STUB_ASK (else "Which one?") with
@@ -613,12 +619,12 @@ mcp_allow() {
 	local key seq answer= pasted
 	title_stop
 	printf '\a'
-	mcp_form
+	dialog_begin mcp_form
 	title_action
 	status_set blocked permission
 	while dialog_key mcp_form; do
 		case $key in
-		1 | '' | $'\r') answer=allow ;;
+		1 | $'\n' | $'\r') answer=allow ;;
 		2) answer=allow-session ;;
 		3) answer=always ;;
 		4) answer=cancel ;;
@@ -640,7 +646,7 @@ mcp_allow() {
 		esac
 		break
 	done
-	dialog_end
+	dialog_end mcp_form
 	title_working
 	printf 'mcp-allow: %s\n' "$answer" >>"$transcript"
 	mcp_next=1
@@ -1315,30 +1321,37 @@ dialog_draw() {
 	printf '\e[?2026h\e[1;1H\e[J%s\e[?2026l' "$1"
 }
 
-# dialog_key reads one key of a dialog into key (the caller's): 0, or 1 at
-# the end of the input. The command $1 draws the dialog as it stands now (a
-# choice moved to, the window's width), and runs again when the window is
-# resized meanwhile (SIGWINCH: Bash runs a trap only between reads, so the
-# read waits a moment at a time). A byte the read took as its timer ran out
-# (a busy machine) is the key all the same. From the dialog's first key to
+# dialog_begin begins a dialog and draws it with the command $1, which draws
+# it as it stands now (a choice moved to, the window's width). From here to
 # dialog_end the terminal echoes nothing and hands each byte over as it
-# comes, so that a key typed between two reads is neither drawn on the
-# screen nor held back.
+# comes, and a resize is noted (SIGWINCH), both set before the first draw:
+# no key typed after it is echoed or held back, and no resize is missed.
 dialog_resized= dialog_tty=
+dialog_wait=${STUB_DIALOG_WAIT:-0.2}
+dialog_begin() {
+	dialog_tty=$(stty -g 2>/dev/null) || dialog_tty=none
+	stty -echo -icanon min 1 time 0 2>/dev/null
+	dialog_resized=
+	trap 'dialog_resized=1' WINCH
+	"$1"
+}
+
+# dialog_key reads one key of a dialog into key (the caller's): 0, or 1 at
+# the end of the input. An Enter is read as any other byte, a newline (the
+# terminal turns the Enter typed into one; NUL ends the read and is no
+# key). The command $1 draws the dialog as it stands now, again when the
+# window has been resized (Bash runs a trap only between reads, so the read
+# waits STUB_DIALOG_WAIT seconds at a time, 0.2 unless set). A byte the
+# read took as its timer ran out is the key all the same.
 dialog_key() {
 	local rc
-	if [[ -z $dialog_tty ]]; then
-		dialog_tty=$(stty -g 2>/dev/null) || dialog_tty=none
-		stty -echo -icanon min 1 time 0 2>/dev/null
-		trap 'dialog_resized=1' WINCH
-	fi
 	while :; do
 		if [[ -n $dialog_resized ]]; then
 			dialog_resized=
 			"$1"
 		fi
 		key='' rc=0
-		IFS= read -rsn1 -t 0.2 key || rc=$?
+		IFS= read -rsn1 -d '' -t "$dialog_wait" key || rc=$?
 		if ((rc == 0)) || [[ -n $key ]]; then
 			return 0
 		fi
@@ -1346,15 +1359,53 @@ dialog_key() {
 	done
 }
 
-# dialog_end ends a dialog's wait (dialog_key): the terminal's settings as
-# they were, and a resize drawn no more.
+# dialog_end ends a dialog (dialog_begin): a resize noted until now drawn
+# with the command $1, then the terminal's settings as they were. A dialog
+# never ends with a resize pending, so what erases it erases it at the
+# window's width.
 dialog_end() {
 	trap - WINCH
+	if [[ -n $dialog_resized ]]; then
+		"$1"
+	fi
 	if [[ -n $dialog_tty && $dialog_tty != none ]]; then
 		stty "$dialog_tty" 2>/dev/null
 	fi
 	dialog_tty='' dialog_resized=''
 }
+
+# dialog_probe is a dialog of its own for the test of the dialog's keys
+# (scripts/stub_dialog_test.py), run in place of everything else when
+# STUB_DIALOG_PROBE names a file: each time it is drawn it prints "probe
+# draw N" and the terminal's mode as it draws (whether it echoes, whether
+# it holds a line, whether a resize is trapped), it writes each key it
+# reads into that file (printf %q, one a row) until a q, a w making each
+# later read wait 30 s at a time, and prints "probe end" once the dialog
+# has ended.
+probe_draws=0
+probe_draw() {
+	local mode echo=on icanon=on winch=no
+	mode=" $(stty -a 2>/dev/null | tr '\n;' '  ') "
+	[[ $mode == *' -echo '* ]] && echo=off
+	[[ $mode == *' -icanon '* ]] && icanon=off
+	[[ -n $(trap -p WINCH) ]] && winch=trapped
+	probe_draws=$((probe_draws + 1))
+	dialog_draw "probe draw $probe_draws: echo $echo, icanon $icanon, resize $winch"$'\n'
+}
+dialog_probe() {
+	dialog_begin probe_draw
+	while dialog_key probe_draw; do
+		printf '%q\n' "$key" >>"$1"
+		[[ $key == w ]] && dialog_wait=30
+		[[ $key == q ]] && break
+	done
+	dialog_end probe_draw
+	printf 'probe end\n'
+}
+if [[ -n ${STUB_DIALOG_PROBE:-} ]]; then
+	dialog_probe "$STUB_DIALOG_PROBE"
+	exit 0
+fi
 
 # dialog_text draws the dialog in text (the caller's) as it is.
 dialog_text() { dialog_draw "$text"; }
@@ -1457,9 +1508,9 @@ trust_dialog() {
 		printf -v t 'Trust this folder?\n%s 1. Trust and continue\n%s 2. Quit\nenter continue · esc quit\n' "$y" "$n"
 		dialog_draw "$t"
 	}
-	trust_now
+	dialog_begin trust_now
 	while dialog_key trust_now; do
-		if [[ -z $key || $key == $'\r' ]]; then
+		if [[ $key == $'\n' || $key == $'\r' ]]; then
 			break
 		fi
 		if [[ $key == $'\e' ]]; then
@@ -1472,7 +1523,7 @@ trust_dialog() {
 			draw
 		fi
 	done
-	dialog_end
+	dialog_end trust_now
 	if ((sel == 0)); then
 		mkdir -p "${HOME:-/tmp}/.codex"
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
@@ -1495,21 +1546,33 @@ erase_dialog() {
 }
 
 # hooks_review draws Codex's "Hooks need review" and waits for Enter; a
-# digit moves the highlight.
+# digit moves the highlight, and the dialog is drawn again with it there.
 hooks_review() {
 	local sel=1 key
-	local text
-	printf -v text 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n> 1. Review hooks\n  2. Trust all and continue\n  3. Continue without trusting (hooks won'"'"'t run)\n'
-	dialog_draw "$text"
-	while dialog_key dialog_text; do
-		if [[ -z $key || $key == $'\r' ]]; then
+	# hooks_now draws the dialog whole, the highlight where it stands.
+	hooks_now() {
+		local t m1=' ' m2=' ' m3=' '
+		case $sel in
+		1) m1='>' ;;
+		2) m2='>' ;;
+		3) m3='>' ;;
+		esac
+		printf -v t 'Hooks need review\n7 hooks are new or changed.\nHooks can run outside the sandbox after you trust them.\n%s 1. Review hooks\n%s 2. Trust all and continue\n%s 3. Continue without trusting (hooks won'"'"'t run)\n' "$m1" "$m2" "$m3"
+		dialog_draw "$t"
+	}
+	dialog_begin hooks_now
+	while dialog_key hooks_now; do
+		if [[ $key == $'\n' || $key == $'\r' ]]; then
 			break
 		fi
 		case $key in
-		1 | 2 | 3) sel=$key ;;
+		1 | 2 | 3)
+			sel=$key
+			hooks_now
+			;;
 		esac
 	done
-	dialog_end
+	dialog_end hooks_now
 	erase_dialog 6
 	printf '%s\n' "$sel" >"${HOME:-/tmp}/.codex/stub-hooks-answer"
 	case $sel in
@@ -1524,13 +1587,13 @@ background_question() {
 	local key
 	local text
 	printf -v text 'Background server has incompatible feature settings\nThis session requires api_key_model_discovery to be enabled\n  1. Run without daemon this time\n  2. Restart with these settings\n> 3. Cancel\n'
-	dialog_draw "$text"
+	dialog_begin dialog_text
 	while dialog_key dialog_text; do
 		case $key in
 		1 | 2 | 3) break ;;
 		esac
 	done
-	dialog_end
+	dialog_end dialog_text
 	erase_dialog 5
 	printf '%s\n' "$key" >"${HOME:-/tmp}/.codex/stub-background-answer"
 	if [[ $key == 3 ]]; then
@@ -1546,10 +1609,10 @@ update_question() {
 	local key answer= next
 	local text
 	printf -v text 'Update available · 0.161.0 → 0.162.0\nRelease notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\nenter continue · esc skip\n'
-	dialog_draw "$text"
+	dialog_begin dialog_text
 	while dialog_key dialog_text; do
 		case $key in
-		'' | $'\r' | 1) answer=update ;;
+		$'\n' | $'\r' | 1) answer=update ;;
 		$'\e')
 			# ESC and a key at once (Alt+z, an arrow) is one key, as
 			# Codex's crossterm reads it, and the question ignores it; an
@@ -1566,7 +1629,7 @@ update_question() {
 		esac
 		break
 	done
-	dialog_end
+	dialog_end dialog_text
 	erase_dialog 8
 	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
 	if [[ $answer == update ]]; then
