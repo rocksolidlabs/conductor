@@ -551,9 +551,9 @@ type ErrorInfo struct {
 }
 
 // AttentionOption is a quick-reply choice; Input is sent verbatim as INPUT.
-// Mode marks a choice that changes the session's permission mode: a page
-// gives it no number key and never offers it first (docs/protocol.md,
-// Attention).
+// Mode marks a choice that lasts beyond this one answer (a permission
+// mode, an approval that is remembered): a page gives it no number key
+// and never offers it first (docs/protocol.md, Attention).
 type AttentionOption struct {
 	Label string `json:"label"`
 	Input string `json:"input"`

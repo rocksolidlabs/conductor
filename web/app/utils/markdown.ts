@@ -95,6 +95,36 @@ export function localPath(href: string): string {
 }
 
 
+/** An inline token's children as plain text: a link's words, code's text, no emphasis marks, nothing of an image; breaks as spaces. */
+function plainText(children: ReadonlyArray<{ type: string; content: string }>): string {
+  let out = ''
+  for (const c of children) {
+    if (c.type === 'text' || c.type === 'code_inline' || c.type === 'html_inline') out += c.content
+    else if (c.type === 'softbreak' || c.type === 'hardbreak') out += ' '
+  }
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * A description as one line of plain text (a Dispatch project's line above its tickets): its first paragraph of prose, a top-level one
+ * before one in a list or a quote, whole (the cut is the page's), as text (a link gives its words, emphasis and code marks go, an image
+ * gives nothing, so a paragraph of images alone is passed over); a heading only when the description has no paragraph; '' for none.
+ * Pure: parsed by the renderer's markdown-it, raw HTML as text.
+ */
+export function descriptionLine(src: string): string {
+  const tokens = new MarkdownIt({ html: false, linkify: false, typographer: false }).parse(src, {})
+  const inlineAfter = (open: string, top: boolean | null) => {
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      const t = tokens[i]!
+      if (t.type !== open || (top !== null && (t.level === 0) !== top)) continue
+      const text = plainText(tokens[i + 1]!.children ?? [])
+      if (text) return text
+    }
+    return ''
+  }
+  return inlineAfter('paragraph_open', true) || inlineAfter('paragraph_open', false) || inlineAfter('heading_open', null)
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

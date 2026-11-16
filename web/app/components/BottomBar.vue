@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { accountItems } from '~/utils/sidebarActions'
+import { pageActive, phoneMore, phoneTabs, type PageId } from '~/utils/pages'
 
 /**
  * The phone's bar at the foot (design 3e): Decide first (Needs your
@@ -19,28 +20,18 @@ const { hasToken, clear } = useWorkbenchToken()
 const shortcuts = useShortcutsModal()
 const colorMode = useColorMode()
 
-const tabs = computed(() => [
-  { key: 'decide', label: 'Decide', to: '/decisions', icon: 'i-lucide-gavel', count: inbox.count.value },
-  { key: 'sessions', label: 'Sessions', to: '/sessions', icon: 'i-lucide-list', count: 0 },
-  { key: 'yard', label: 'Yard', to: '/yard', icon: 'i-lucide-layout-grid', count: attention.count.value },
-  { key: 'crews', label: 'Crews', to: '/crews', icon: 'i-lucide-users', count: 0 },
-])
-function active(to: string): boolean {
-  if (to === '/sessions') return route.path === '/sessions' || route.path.startsWith('/sessions/') || route.path === '/'
-  if (to === '/crews') return route.path.startsWith('/crews') || route.path.startsWith('/runs/')
-  return route.path.startsWith(to)
+// The bar's tabs and More's pages, from the one table (utils/pages.ts); the hook a test finds Decide's tab by stays `decide`.
+const TAB_HOOKS: Partial<Record<PageId, string>> = { decisions: 'decide' }
+const tabs = computed(() =>
+  phoneTabs().map((p) => ({ key: TAB_HOOKS[p.id] ?? p.id, id: p.id, label: p.label, to: p.to, icon: p.icon, count: p.id === 'decisions' ? inbox.count.value : p.id === 'yard' ? attention.count.value : 0 })),
+)
+function active(id: PageId): boolean {
+  return pageActive(id, route.path)
 }
 
 const more = ref(false)
 const nameOpen = ref(false)
-const pages = computed(() => [
-  { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
-  { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch' },
-  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
-  { label: 'History', icon: 'i-lucide-history', to: '/history' },
-  ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
-])
+const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value }))
 /** Your menu's items as buttons, the sheet closed before each acts. */
 const account = computed(() =>
   accountItems(hasToken.value, {
@@ -65,13 +56,13 @@ function act(fn?: (e: Event) => void) {
       :key="t.key"
       :to="t.to"
       class="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium"
-      :class="active(t.to) ? 'text-primary' : 'text-muted'"
-      :aria-current="active(t.to) ? 'page' : undefined"
+      :class="active(t.id) ? 'text-primary' : 'text-muted'"
+      :aria-current="active(t.id) ? 'page' : undefined"
       :data-bottom-tab="t.key"
     >
       <span class="relative">
         <UIcon :name="t.icon" class="size-5" />
-        <span v-if="t.count" class="absolute -right-2.5 -top-1.5 rounded-full bg-warning px-1 text-[9px] font-semibold leading-3.5 text-inverted" data-bottom-count>{{ t.count }}</span>
+        <span v-if="t.count" class="absolute -right-2.5 -top-1.5 rounded-full bg-warning px-1 text-[9px] font-semibold leading-3.5 text-(--ui-color-neutral-900)" data-bottom-count>{{ t.count }}</span>
       </span>
       {{ t.label }}
     </NuxtLink>
