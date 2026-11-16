@@ -19,8 +19,11 @@ export interface PageEntry {
   about: string
   /** Where the page is offered: everywhere, in the desktop app alone, or while the server has Brakeman. */
   when: 'always' | 'desktop' | 'brakeman'
-  /** Its place on each surface, in order; a surface it has no place on leaves it out. */
-  place: { nav?: number; tab?: number; more?: number; palette?: number }
+  /**
+   * Its place on each surface, in order; a surface it has no place on leaves it out. `nav` is the rail's, `tile` the full sidebar's
+   * tiles (a page of the rail with no tile is under the tiles' More).
+   */
+  place: { nav?: number; tile?: number; tab?: number; more?: number; palette?: number }
   /**
    * The page this one is a view of (the Roundhouse is the Yard's second view): the nav, the rail and the phone's bar and More leave it
    * out, the palette keeps its row and key, and the page it is a view of is current on its route (pageActive).
@@ -38,10 +41,10 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'N'],
     about: 'Everything that waits for your answer, in one list.',
     when: 'always',
-    place: { nav: 1, tab: 1, palette: 1 },
+    place: { nav: 1, tile: 1, tab: 1, palette: 1 },
   },
   { id: 'sessions', label: 'Sessions', title: 'Sessions', to: '/sessions', icon: 'i-lucide-list', about: 'Every session, the ones that need you first.', when: 'always', place: { tab: 2 } },
-  { id: 'yard', label: 'Yard', title: 'Yard', to: '/yard', icon: 'i-lucide-layout-grid', chord: ['G', 'Y'], about: 'Every live terminal on one screen.', when: 'always', place: { nav: 2, tab: 3, palette: 2 } },
+  { id: 'yard', label: 'Yard', title: 'Yard', to: '/yard', icon: 'i-lucide-layout-grid', chord: ['G', 'Y'], about: 'Every live terminal on one screen.', when: 'always', place: { nav: 2, tile: 2, tab: 3, palette: 2 } },
   {
     id: 'roundhouse',
     label: 'Roundhouse',
@@ -65,7 +68,7 @@ export const PAGES: readonly PageEntry[] = [
     when: 'always',
     place: { nav: 4, more: 2, palette: 6 },
   },
-  { id: 'crews', label: 'Crews', title: 'Crews', to: '/crews', icon: 'i-lucide-users', chord: ['G', 'C'], about: 'Saved teams of agents, and each run of one.', when: 'always', place: { nav: 5, tab: 4, palette: 4 } },
+  { id: 'crews', label: 'Crews', title: 'Crews', to: '/crews', icon: 'i-lucide-users', chord: ['G', 'C'], about: 'Saved teams of agents, and each run of one.', when: 'always', place: { nav: 5, tile: 3, tab: 4, palette: 4 } },
   {
     id: 'dispatch',
     label: 'Dispatch',
@@ -75,9 +78,9 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'D'],
     about: 'Tickets, the plans you approve, the runs they start.',
     when: 'always',
-    place: { nav: 6, more: 3, palette: 5 },
+    place: { nav: 6, tile: 4, more: 3, palette: 5 },
   },
-  { id: 'events', label: 'Events', title: 'Events', to: '/events', icon: 'i-lucide-radio-tower', chord: ['G', 'E'], about: 'What your agents report, as it happens.', when: 'always', place: { nav: 7, more: 4, palette: 7 } },
+  { id: 'events', label: 'Events', title: 'Events', to: '/events', icon: 'i-lucide-radio-tower', chord: ['G', 'E'], about: 'What your agents report, as it happens.', when: 'always', place: { nav: 7, more: 5, palette: 7 } },
   {
     id: 'history',
     label: 'History',
@@ -87,9 +90,9 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'H'],
     about: 'What was said, decided and checked, kept after the work ends.',
     when: 'always',
-    place: { nav: 8, more: 5, palette: 8 },
+    place: { nav: 8, more: 6, palette: 8 },
   },
-  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 9 } },
+  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 9, tile: 5, more: 4 } },
   {
     id: 'settings',
     label: 'Settings',
@@ -99,7 +102,7 @@ export const PAGES: readonly PageEntry[] = [
     chord: ['G', 'S'],
     about: 'How the desktop app runs its server and shares.',
     when: 'desktop',
-    place: { nav: 10, more: 6, palette: 9 },
+    place: { nav: 10, more: 7, palette: 9 },
   },
 ]
 
@@ -125,10 +128,7 @@ export function pageById(id: PageId): PageEntry {
   return PAGES.find((p) => p.id === id)!
 }
 
-/**
- * The sidebar's foot (and the rail): Needs you while its row shows, the Yard, …, History, then Brakeman while the server has it and
- * Settings in the desktop app.
- */
+/** The rail: Needs you while its row shows, the Yard, …, History, then Brakeman while the server has it and Settings in the desktop app. */
 export function navPages(s: PageScope = {}): PageEntry[] {
   return placed('nav', s).filter((p) => p.id !== 'decisions' || s.needs !== false)
 }
@@ -138,8 +138,36 @@ export function phoneTabs(): PageEntry[] {
   return placed('tab', {})
 }
 
-/** The pages under the phone's More, in order. */
-export function phoneMore(s: Pick<PageScope, 'desktop'> = {}): PageEntry[] {
+/**
+ * A cell of the full sidebar's tiles: a page; Brakeman's slot, held empty while the server has not said whether it has Brakeman, so
+ * that nothing moves when it fills; or More, the menu of the rail's other pages.
+ */
+export type NavTile = { kind: 'page'; page: PageEntry } | { kind: 'held' } | { kind: 'more' }
+
+/** What decides the tiles: as PageScope, with `brakeman` undefined while the server has not said, and a switchyard's server. */
+export interface TileScope extends PageScope {
+  /** A switchyard serves no inbox: the Needs you tile is left out there (the nav's row rule hides it), its slot taken by the next. */
+  switchyard?: boolean
+}
+
+/**
+ * The full sidebar's foot: the tiles in order, then More, and the pages More holds (the rail's pages that have no tile, in the
+ * rail's order). A page that is a view of another has no tile and is not under More (it is reached from its page's switch). Where
+ * the server says it has no Brakeman, or on a switchyard, the tiles after the missing one close up and More moves into its slot.
+ */
+export function navTiles(s: TileScope = {}): { tiles: NavTile[]; more: PageEntry[] } {
+  const tiles: NavTile[] = []
+  for (const p of PAGES.filter((p) => p.place.tile !== undefined).sort((a, b) => a.place.tile! - b.place.tile!)) {
+    if (p.id === 'decisions' && s.switchyard) continue
+    if (p.when === 'brakeman' && s.brakeman === undefined) tiles.push({ kind: 'held' })
+    else if (offered(p, s)) tiles.push({ kind: 'page', page: p })
+  }
+  tiles.push({ kind: 'more' })
+  return { tiles, more: placed('nav', s).filter((p) => p.place.tile === undefined) }
+}
+
+/** The pages under the phone's More, in order: Brakeman after Dispatch while the server has it. */
+export function phoneMore(s: Pick<PageScope, 'desktop' | 'brakeman'> = {}): PageEntry[] {
   return placed('more', s)
 }
 

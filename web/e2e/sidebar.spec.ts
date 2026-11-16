@@ -4,7 +4,7 @@ import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
 import { dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
-import { inside, tabTo, uncut } from './layout'
+import { inside, noOverlap, tabTo, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
 
@@ -487,13 +487,13 @@ test('your menu holds Alerts and the collapse; the foot holds only the pages', a
   await dialog.getByRole('button', { name: 'Save' }).click()
   await expect(dialog).toBeHidden()
   await expect(account).toHaveAttribute('aria-label', 'Your menu, Nate R')
-  // The foot: the pages, nothing else. Needs you's row leaves when nothing waits and nothing was decided that day, which this shared
-  // server's earlier specs decide: here it is first when present, and the pages after it are in order (counts.spec.ts proves the
-  // row's rule on servers whose state it knows).
-  const foot = page.locator('#dashboard-sidebar-main').getByRole('navigation').last()
-  const pages = [/^Yard/, /^Agents/, /^Crews/, /^Dispatch/, /^Events/, /^History/, /^Brakeman/]
-  await expect(foot.getByRole('link').filter({ hasNotText: /^Needs you/ })).toHaveText(pages)
-  await expect(foot.getByRole('link').first()).toHaveText(/^(Needs you|Yard)/)
+  // The foot: the pages as six tiles, nothing else, Needs you first; More holds the rest (this server has Brakeman: its slot fills).
+  const foot = page.getByRole('navigation', { name: 'Pages' })
+  await expect(foot.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
+  await foot.locator('[data-sidebar-tile="more"]').click()
+  await expect(page.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
 })
 
 test('the rail: the counts on top, a capsule holding its members, the corner tiles, +N for the exited', async ({ page, api }) => {
@@ -1274,6 +1274,119 @@ test.describe('on a server of its own', () => {
       await own.api.stopSession(s.id)
     }
   })
+})
+
+// The pages as six tiles (the UX review's P6): the full sidebar's foot is Needs you, Yard, Crews, Dispatch, Brakeman and More in two
+// rows of three, and gives the list the room the column of pages took.
+test('the pages as six tiles', async ({ day, browser }) => {
+  const runs = await day.part('runs')
+  await day.part('busy')
+  for (const size of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }]) {
+    const page = await dayPage(browser, { path: '/crews', ...size })
+    const root = page.locator('#dashboard-sidebar-main')
+    await expect.poll(() => root.evaluate((el) => el.getBoundingClientRect().width)).toBeCloseTo(200, 0)
+    const tiles = page.getByRole('navigation', { name: 'Pages' })
+    const tile = (id: string) => tiles.locator(`[data-sidebar-tile="${id}"]`)
+    // Six tiles in order, once the server has said it has Brakeman (its slot is held until then).
+    await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^Brakeman/, /^More$/])
+    // Two rows: the foot is at most 120 px tall; each label whole, each tile inside the sidebar, none over another.
+    const foot = await root.locator('[data-slot="footer"]').boundingBox()
+    expect(foot!.height, `the foot at ${size.width}x${size.height}`).toBeLessThanOrEqual(120)
+    await uncut(tiles.locator('[data-nav-label]'))
+    await inside(tiles.locator('[data-sidebar-tile]'), root)
+    await noOverlap(tiles)
+    const tops = await tiles.locator('[data-sidebar-tile]').evaluateAll((els) => [...new Set(els.map((el) => Math.round(el.getBoundingClientRect().top)))])
+    expect(tops).toHaveLength(2)
+    // The busy day's list has the room the pages gave up.
+    if (size.height === 900) {
+      const list = await page.locator('[data-session-list="sidebar"]').boundingBox()
+      expect(list!.height).toBeGreaterThanOrEqual(600)
+    }
+    // More, by a click: Agents, Events and History, each opening its page; the menu is gone after each pick.
+    const menu = page.getByRole('menu')
+    for (const [name, path] of [['Agents', '/agents'], ['Events', '/events'], ['History', '/history']] as const) {
+      await tile('more').click()
+      await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
+      await menu.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
+      await expect(menu).toHaveCount(0)
+      await expect(page).toHaveURL(new RegExp(`${path}$`))
+    }
+    // On History, a page of More's, More is lit and no tile is the current page.
+    await expect(tile('more')).toHaveAttribute('data-active', '')
+    await expect(tiles.locator('[aria-current="page"]')).toHaveCount(0)
+    // More by Enter after Tab from Dispatch; Escape closes it.
+    await tabTo(page, tile('more'), 2, tile('dispatch'))
+    await page.keyboard.press('Enter')
+    await expect(menu.getByRole('menuitem')).toHaveText([/^Agents/, /^Events/, /^History/])
+    await page.keyboard.press('Escape')
+    await expect(menu).toHaveCount(0)
+    // A tile's tooltip shows on keyboard focus: its page's sentence and key.
+    const tip = page.locator('[data-slot="content"]').filter({ has: page.locator('[data-slot="text"]', { hasText: /^Yard: every live terminal on one screen$/ }) })
+    await tabTo(page, tile('yard'), 1, tile('decisions'))
+    await expect(tip).toBeVisible()
+    await expect(tip.locator('kbd')).toHaveText(['G', 'Y'])
+    // A run's page keeps Crews lit; G then H, pressed once the layout listens, still goes to History.
+    await page.goto(`/runs/${runs['Ledger migration']}`)
+    await expect(root).toBeVisible()
+    await expect(tile('crews')).toHaveAttribute('aria-current', 'page')
+    await expect(tile('more')).not.toHaveAttribute('data-active', '')
+    await page.keyboard.press('g')
+    await page.keyboard.press('h')
+    await expect(page).toHaveURL(/\/history$/)
+    await page.context().close()
+  }
+})
+
+// Brakeman's slot is held while the server has not said whether it has Brakeman, so that More does not move when the tile fills; on a
+// server without it More moves into the slot.
+test("Brakeman's slot is held", async ({ day, browser }) => {
+  void day
+  const page = await dayPage(browser, { path: '/crews' })
+  const tiles = page.getByRole('navigation', { name: 'Pages' })
+  const more = tiles.locator('[data-sidebar-tile="more"]')
+  let release = () => {}
+  const held = new Promise<void>((r) => (release = r))
+  let asked = 0
+  // A standing route before the page loads again: the read of whether the server has Brakeman, held unanswered.
+  await page.route(
+    (u) => u.pathname === '/api/brakeman',
+    async (route) => {
+      asked++
+      await held
+      await route.continue().catch(() => {})
+    },
+  )
+  await page.reload()
+  await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+  await expect.poll(() => asked).toBeGreaterThan(0)
+  const cell = tiles.locator('[data-sidebar-tile="held"]')
+  await expect(cell).toBeAttached()
+  await expect(cell).toBeEmpty()
+  await expect(tiles.locator('[data-sidebar-brakeman]')).toHaveCount(0)
+  const box = async (l: Locator) => {
+    const b = (await l.boundingBox())!
+    return { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.width), height: Math.round(b.height) }
+  }
+  const before = await box(more)
+  // The cell is a tile's size: the Dispatch tile's.
+  const dispatch = await box(tiles.locator('[data-sidebar-tile="dispatch"]'))
+  const slot = await box(cell)
+  expect({ width: slot.width, height: slot.height }).toEqual({ width: dispatch.width, height: dispatch.height })
+  release()
+  // Filled: Brakeman's tile in the slot, the cell gone, and More where it was (compared after the fill, not before it).
+  await expect(tiles.locator('[data-sidebar-brakeman]')).toBeVisible()
+  await expect(cell).toHaveCount(0)
+  expect(await box(more)).toEqual(before)
+  // A server without Brakeman (no data directory: it answers 503 store_unavailable): More moves into the slot, the cell never left.
+  await page.unroute((u) => u.pathname === '/api/brakeman')
+  await page.route(
+    (u) => u.pathname === '/api/brakeman',
+    (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'store_unavailable', message: 'Brakeman needs a data directory' } }) }),
+  )
+  await page.reload()
+  await expect(tiles.locator('[data-sidebar-tile]')).toHaveText([/^Needs you/, /^Yard/, /^Crews/, /^Dispatch/, /^More$/])
+  await expect(cell).toHaveCount(0)
+  expect(await box(more)).toEqual(slot)
 })
 
 /** Nothing of the sidebar spills sideways, and `part` sits whole inside it: at the minimum width every spec runs at (#437). */
