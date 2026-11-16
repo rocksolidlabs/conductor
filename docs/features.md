@@ -265,11 +265,29 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
-- **Sidebar width (#437, #706).** The full sidebar opens at its minimum,
-  16.75 rem (268 px) on every screen, which shows its header's every part
-  whole, the name too, with 10 px to spare (12.5 rem before #706), and a
-  drag on its edge widens it up to 26 % of the window, never less than the
-  minimum plus 5 rem (348 px) and never below the minimum; a drag on toward the window's left edge
+- **A question in the narrow sidebar (UX1 PR-8, owner decision 7).** Below
+  280 px (`NARROW_SIDEBAR_PX`, `narrowSidebar` in `web/app/utils/sidebar.ts`,
+  from the sidebar's drawn width) a row's question is clamped to two lines
+  (`data-row-clamped`) and the row shows an Answer button in place of its
+  choices; one panel for the list (`SidebarRowPanel.vue`, a popover that is
+  not modal, `data-row-panel`, `data-panel-for`) holds the name, the whole
+  question and the row's own prompt controls, labels wrapped. It is for the
+  focused row while it asks, or the row whose Answer was pressed
+  (`panelRow`); focus opens it without moving the focus, Answer moves the
+  focus into it, Escape gives the focus back to the row, and the list counts
+  the panel as its own, so typing in its field keeps the row focused (#596).
+  The phone's list, the palette, the pill, the Yard and the session page keep
+  the question whole. Specs reach a row's answer through `rowAnswer`
+  (`web/e2e/fixtures.ts`).
+- **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
+  minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
+  UX review's P5): its header is the mark, "Conductor" and your menu, about
+  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
+  `accountActions`, which the phone's More and the palette show). A drag on
+  its edge widens it up to 26 % of the window, never less than the minimum
+  plus 5 rem (280 px, the width at which a row shows its question whole) and
+  never below the minimum; a width dragged under #706 is kept as saved; a drag on toward the window's left edge
   gives the rail, a double-click returns to the minimum. The bounds are
   `SIDEBAR_SIZE` and `sidebarBounds` in `web/app/utils/sidebar.ts`; the
   layout's `UDashboardGroup` works in rem. Nuxt UI clamps only during a drag,
@@ -367,6 +385,43 @@ open deferred item from rounds 1 and 2, then the features below.
     Checks: typecheck, typecheck of the specs, vitest whole, and the four
     specs with `--repeat-each 10` and once more beside a Go race package
     as load; the pull request's Verification has the counts.
+- **One number of what needs you, under one name (the UX review's P2, P24's
+  nav row and P3's name; #920, after #919).** The pages are one table
+  (`web/app/utils/pages.ts`: a page's name, its sentence, its key and its
+  place on the nav, the rail, the phone's bar and the palette); a page's
+  sentence is its tooltip in the nav and its palette row's second line.
+  What needs a person is one list (`web/app/utils/needsYou.ts`, read through
+  `useNeedsYou`): a session's question, an open decision no question
+  mirrors (a stopped run's too), a plan and a task waiting on a person, each
+  once. Its number is the one amber number: on Needs you in the nav, on the
+  rail's top count and its label, on the phone's first tab, in the
+  palette's row, in the tab's title and the favicon's dot; "9+" past a store
+  read in part, and no number while a store is unread or its read failed.
+  The Yard's nav badge is gone; the phone's Yard tab counts the asking
+  sessions on its grid in neutral ink, and the Yard's own chip says what it
+  counts. The page is "Needs you" wherever its name is read (the decide-only
+  page stays "Decide"); its row in the nav leaves when nothing waits and
+  nothing was decided in the last day, and stays while its page is open. The
+  sidebar's section says what it leaves out: "+3 on the page", linked to the
+  page. The pill steps through what it can answer, a stopped run's decision
+  too, and says how many more wait in Needs you.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in

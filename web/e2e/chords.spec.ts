@@ -25,10 +25,10 @@ test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse
     // The Yard's Alt+Q with nothing to fold leaves the focus and goes back to the grid.
     await expect(page).toHaveURL(/\/yard$/)
     expect(await inTerminal()).toBe(false)
-    // To the Roundhouse by the sidebar's link, not a load: the next page is set up before the last goes, and both take Alt+Q
-    // (whole-batch round).
+    // To the Roundhouse by the Yard's view switch, a link and not a load: the next page is set up before the last goes, and both take
+    // Alt+Q (whole-batch round).
     await page.locator('[data-session-list]').click({ position: { x: 5, y: 5 } })
-    await page.locator('a[href="/roundhouse"]').first().click()
+    await page.locator('[data-yard-view="roundhouse"]').click()
     await expect(page).toHaveURL(/\/roundhouse$/)
     const slide = page.locator('[aria-roledescription="slide"]').filter({ has: page.getByText('e2e chords', { exact: true }) })
     await expect(slide).toBeVisible({ timeout: 30_000 })

@@ -15,7 +15,7 @@ const STEP_MS = 15_000
 /** The pages' sentences, word for word as the pages' table gives them (web/app/utils/pages.ts). */
 const ABOUT = {
   yard: 'Every live terminal on one screen.',
-  roundhouse: 'One terminal at a time, on rotation.',
+  roundhouse: "The Yard's second view: one terminal at a time, on rotation.",
   history: 'What was said, decided and checked, kept after the work ends.',
   crews: 'Saved teams of agents, and each run of one.',
   dispatch: 'Tickets, the plans you approve, the runs they start.',

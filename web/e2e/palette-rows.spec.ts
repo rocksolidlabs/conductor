@@ -197,9 +197,9 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   // The Yard: a chip row sets the filter and reads as on.
   await page.goto('/yard')
   await expect(page.locator('[data-yard-filter="all"]')).toBeVisible({ timeout: 30_000 })
-  await runRow(page, 'page:filter:running')
-  await expect(page.locator('[data-yard-filter="running"]')).toHaveAttribute('data-active', '')
-  expect(await switchOf(page, 'page:filter:running')).toBe('on')
+  await runRow(page, 'page:filter:working')
+  await expect(page.locator('[data-yard-filter="working"]')).toHaveAttribute('data-active', '')
+  expect(await switchOf(page, 'page:filter:working')).toBe('on')
   await runRow(page, 'page:filter:all')
   await expect(page.locator('[data-yard-filter="all"]')).toHaveAttribute('data-active', '')
   // The Roundhouse: the two switches flip and flip back; the rotation row's words follow the rotation.

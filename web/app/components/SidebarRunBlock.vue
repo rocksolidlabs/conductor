@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import type { RunBlock, SessionRow } from '~/utils/sidebar'
+import { blockRows, type ListSection, type RunBlock, type SessionRow } from '~/utils/sidebar'
 
-/** A run as one block (design 3b): its header, then its members joined by a line, an exited member inside with Resume. The members' and the header's actions pass up to the list. */
-withDefaults(defineProps<{ block: RunBlock; now: number; needsDot?: boolean; open?: boolean; busy?: Set<string>; focusedId?: string | null; confirmingId?: string | null; big?: boolean }>(), { needsDot: true, open: false, busy: () => new Set(), focusedId: null, confirmingId: null, big: false })
-const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; confirm: [id: string | null]; sheet: [target: SessionRow | RunBlock] }>()
+/**
+ * A run as one block (design 3b): its header, then its members joined by a line, an exited member inside with Resume. In Needs you
+ * it shows the members that ask and one line for the rest ("and 2 more · 1 working · 1 finished", blockRows), a button that shows
+ * them all for the visit. The members' and the header's actions pass up to the list.
+ */
+const props = withDefaults(defineProps<{ block: RunBlock; now: number; section?: ListSection; unfolded?: boolean; narrow?: boolean; panelFor?: string | null; needsDot?: boolean; open?: boolean; busy?: Set<string>; focusedId?: string | null; confirmingId?: string | null; big?: boolean }>(), { section: 'running', unfolded: false, narrow: false, panelFor: null, needsDot: true, open: false, busy: () => new Set(), focusedId: null, confirmingId: null, big: false })
+const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBlock]; share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; confirm: [id: string | null]; sheet: [target: SessionRow | RunBlock]; unfold: [runId: string]; answerOpen: [row: SessionRow] }>()
+const shown = computed(() => blockRows(props.block, props.section, props.unfolded))
 </script>
 
 <template>
@@ -23,7 +28,7 @@ const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBloc
     <!-- The line joining the members is neutral, never a status colour: the state is each row's own. -->
     <ol class="ml-4 flex flex-col gap-0.5 border-l border-default pl-1">
       <SidebarSessionRow
-        v-for="m in block.members"
+        v-for="m in shown.members"
         :key="m.id"
         :row="m"
         :now="now"
@@ -41,7 +46,23 @@ const emit = defineEmits<{ shareRun: [block: RunBlock]; stopRun: [block: RunBloc
         @answer="(row, i, q) => emit('answer', row, i, q)"
         @reply="(row, text, q) => emit('reply', row, text, q)"
         @sheet="emit('sheet', $event)"
+        :narrow="narrow"
+        :panel-open="panelFor === `s:${m.id}`"
+        @answer-open="emit('answerOpen', $event)"
       />
+      <li v-if="shown.more" :data-sidebar-row="`m:${block.runId}`" data-row-kind="more" :data-row-focused="focusedId === `m:${block.runId}` ? '' : undefined">
+        <button
+          type="button"
+          class="flex w-full min-w-0 items-center rounded-md px-2.5 py-1 text-left text-xs text-muted outline-none transition-colors hover:bg-canvas-hover focus-visible:ring-2 focus-visible:ring-primary"
+          :class="[focusedId === `m:${block.runId}` && 'ring-2 ring-primary/40', big && 'min-h-11']"
+          :title="shown.more.words"
+          :aria-label="`Show every member of ${block.title}: ${shown.more.words}`"
+          data-run-more
+          @click="emit('unfold', block.runId)"
+        >
+          <span class="truncate">{{ shown.more.words }}</span>
+        </button>
+      </li>
     </ol>
   </li>
 </template>

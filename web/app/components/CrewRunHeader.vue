@@ -254,7 +254,9 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
 <template>
   <!-- Two rows: the name, its ticket and the run's actions; under them, at every width, what the run is doing and who is in it. -->
   <div class="flex-none border-b border-default" data-crew-run-header>
-    <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 border-b-0', left: 'min-w-0 flex-1', right: 'flex-none gap-1.5' }" data-run-row-one>
+    <!-- A low window (480 px tall or less) gives the page's tiles their rows: row one is lower, row two gives way, and the run's bar
+         and sentence move into row one, after the name and its chips. -->
+    <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 border-b-0 [@media(max-height:480px)]:h-11', left: 'min-w-0 flex-1', right: 'flex-none gap-1.5' }" data-run-row-one>
       <template #leading>
         <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
       </template>
@@ -295,6 +297,12 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
             :data-run-ticket-key="chips.linked.key"
             :data-run-ticket-deleted="chips.linked.deletedAt ? '' : undefined"
           />
+          <span v-if="statusLine?.text" class="hidden min-w-0 shrink-[3] items-center gap-2 self-center text-xs font-normal text-default [@media(max-height:480px)]:inline-flex" :title="statusLine.text" data-run-progress-low>
+            <span v-if="bar.length" class="flex h-1.5 w-16 flex-none overflow-hidden rounded-full bg-elevated" aria-hidden="true">
+              <span v-for="b in bar" :key="b.part" class="h-full" :class="SEGMENT[b.part]" :style="{ flexGrow: b.count, flexBasis: 0 }" />
+            </span>
+            <span class="truncate">{{ statusLine.text }}</span>
+          </span>
         </span>
       </template>
       <template #right>
@@ -315,7 +323,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     </UDashboardNavbar>
 
     <!-- Row two: what the run is doing, its pause, its people and logins, who launched it, how long it has been up. -->
-    <div v-if="run" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2 text-xs" data-run-summary>
+    <div v-if="run" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2 text-xs [@media(max-height:480px)]:hidden" data-run-summary>
       <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
       <span v-if="bar.length" class="flex h-1.5 w-28 flex-none overflow-hidden rounded-full bg-elevated" role="img" :aria-label="bar.map((b) => b.words).join(', ')" data-run-bar>
         <span v-for="b in bar" :key="b.part" class="h-full" :class="SEGMENT[b.part]" :style="{ flexGrow: b.count, flexBasis: 0 }" :title="b.words" :data-part="b.part" :data-count="b.count" />
