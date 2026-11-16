@@ -91,6 +91,14 @@ sessions do (see the Files tab).
 The sidebar is the session list, grouped into **Needs you**, **Running** and
 **Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
 **Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
+Its foot holds the pages, each with a tooltip that says what it is. The one
+amber number there is on **Needs you**: every question, decision, plan and
+task that waits on you, each once; the same number is on the folded
+sidebar, the phone's first tab, the palette and the tab's title. While the
+sidebar's section lists only the questions and the decisions of running
+runs, its header says what else waits ("+3 on the page"), linked to the
+page. The Needs you row leaves the nav when nothing waits and nothing was
+decided in the last day.
 Launch's **What should it do?** takes a first message for the agent: it is
 typed once the agent is ready (after any startup question, such as trusting
 the folder, is answered; line breaks go in as spaces), the session is named

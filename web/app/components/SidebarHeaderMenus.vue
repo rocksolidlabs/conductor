@@ -38,8 +38,9 @@ const sidebarItems = computed<DropdownMenuItem[]>(() => {
   if (!props.collapsed) out.push({ label: 'Collapse to the rail', icon: 'i-lucide-panel-left-close', kbds: ['meta', 'b'], onSelect: () => emit('collapse') })
   return out
 })
+const phone = useOpenOnPhone()
 const items = computed(() => {
-  const [name = [], ...rest] = accountItems(hasToken.value, { name: openName, shortcuts: () => shortcuts.show(), theme: toggleTheme, token: () => emit('token'), forget: () => clear() })
+  const [name = [], ...rest] = accountItems(hasToken.value, { name: openName, shortcuts: () => shortcuts.show(), theme: toggleTheme, token: () => emit('token'), forget: () => clear(), phone: phone.show })
   return sidebarItems.value.length ? [name, sidebarItems.value, ...rest] : [name, ...rest]
 })
 const side = computed(() => (props.collapsed ? { side: 'right' as const } : undefined))
