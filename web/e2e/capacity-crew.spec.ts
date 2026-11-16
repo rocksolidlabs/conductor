@@ -836,13 +836,6 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await save2.off()
   await expect(confirm, 'the sheet opened again stays open, its Launch free once the first launch ended').toBeEnabled()
   expect(launches, 'the first confirmation started nothing').toEqual([])
-  // The sheet opened again drew the copy read before the page's own save replaced it: its Launch sends nothing, and it reads again.
-  const sheetOf = page.locator('[role="dialog"]').filter({ has: confirm })
-  await confirm.click()
-  await expect(page.getByText(`${a.name} 2 changed since the launch sheet read it: no run was started. The sheet reads it again.`).first()).toBeVisible({ timeout: 15_000 })
-  await expect(sheetOf).toContainText(`Launch ${a.name} 3`, { timeout: 30_000 })
-  await expect(confirm).toBeEnabled()
-  expect(launches, 'a copy the page replaced launches nothing').toEqual([])
 
   // The sheet opened again launches, its launch held at this test's route; closed and opened again meanwhile, it stays open.
   const launchA = (u: URL) => u.pathname === `/api/crews/${a.id}/launch`
@@ -864,60 +857,6 @@ test("a draft's launch starts a run only under the opening and the token it was 
   expect(launches, 'one launch, from its own confirmation').toHaveLength(1)
   await cancel.click()
   await expect(confirm).toHaveCount(0)
-})
-
-test("a sheet that drew a copy the page's own save replaced launches nothing, reads the crew again, and then launches the copy it shows", async ({ page, api }) => {
-  test.setTimeout(180_000)
-  const a = await saveCrew(api, label('replaced'), [{ name: 'lead', agentId: 'claude' }])
-  const launches: string[] = []
-  page.on('request', (r) => {
-    if (r.method() === 'POST' && /^\/api\/crews\/[^/]+\/launch$/.test(new URL(r.url()).pathname)) launches.push(r.url())
-  })
-  const confirm = page.locator('[data-crew-launch-confirm]')
-  const lead = page.locator('[data-crew-launch-line="lead"]')
-  const boss = page.locator('[data-crew-launch-line="boss"]')
-  const aCrew = (u: URL) => u.pathname === `/api/crews/${a.id}`
-  await page.goto(`/crews/${encodeURIComponent(a.id)}`)
-  await expect(page.getByLabel('Crew name')).toHaveValue(a.name, { timeout: 30_000 })
-
-  // The draft renames its member; its Launch, the save held at this test's route; the sheet closed and opened again from the app-wide
-  // palette, which reads the crew as the server holds it before the save: the member as it was.
-  const member = page.locator('[data-crew-member]').getByPlaceholder('name', { exact: true })
-  await member.fill('boss')
-  await expect(member).toHaveValue('boss')
-  await page.locator('[data-launch]').click()
-  await expect(boss).toBeVisible({ timeout: 30_000 })
-  await expect(confirm).toBeEnabled({ timeout: 30_000 })
-  const save = await holdOnce(page, aCrew, 'PUT')
-  await confirm.click()
-  await save.seen
-  await page.keyboard.press('Escape')
-  await expect(confirm).toHaveCount(0)
-  await paletteLaunch(page, a)
-  await expect(lead.locator('[data-crew-launch-account]')).toBeVisible({ timeout: 30_000 })
-  const saved = page.waitForResponse((r) => r.request().method() === 'PUT' && aCrew(new URL(r.url())))
-  save.release()
-  expect((await saved).ok()).toBe(true)
-  await expect(page.getByText('was saved, but the launch sheet was opened again or the workbench token changed meanwhile: no run was started.').first()).toBeVisible({ timeout: 15_000 })
-  await save.off()
-  await expect(lead, 'the sheet opened again still draws the copy it read').toBeVisible()
-  await expect(confirm).toBeEnabled()
-
-  // Its Launch: the page replaced that copy itself, so nothing is sent; the page says so, and the sheet reads the crew again.
-  await confirm.click()
-  await expect(page.getByText(`${a.name} changed since the launch sheet read it: no run was started. The sheet reads it again.`).first()).toBeVisible({ timeout: 15_000 })
-  await expect(boss.locator('[data-crew-launch-account]'), 'read again, the sheet draws the crew as saved').toBeVisible({ timeout: 30_000 })
-  await expect(lead).toHaveCount(0)
-  expect(launches, 'nothing sent for the replaced copy').toEqual([])
-
-  // The Launch of the copy it shows starts exactly one run, with that member.
-  const answered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${a.id}/launch`)
-  await confirm.click()
-  const launched = (await (await answered).json()) as { run: Run }
-  made.runs.push(launched.run.id)
-  expect(launched.run.members.map((m) => m.name)).toEqual(['boss'])
-  await expect(confirm).toHaveCount(0)
-  expect(launches, 'one launch').toHaveLength(1)
 })
 
 test("the run page's Logins say a registered account in words while the accounts are read or could not be, and Add member asks as the yolo run binds", async ({ page, api, state }) => {

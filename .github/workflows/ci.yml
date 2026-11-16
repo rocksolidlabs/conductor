@@ -166,6 +166,17 @@ jobs:
     # 22.04: Playwright 1.44.1's dependency list names libasound2, which 24.04 no longer has.
     runs-on: ubuntu-22.04
     needs: web
+    # The suite in two shards side by side, `e2e (1)` and `e2e (2)`, each a Playwright run of
+    # its own with its own server (docs/checks.md); the job keeps its id, so required-checks
+    # still fails when either shard does. fail-fast: false lets the other shard finish, so
+    # both reports are kept. The bound catches a hang: the set-up steps' own caps (Neovim's
+    # download 5, the mirrors' 5, the browser's packages and download 40 each: 90) and the
+    # longest whole-suite run (67, main on 2026-11-15) are 157 together, under 160.
+    timeout-minutes: 160
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -249,7 +260,7 @@ jobs:
       # package install runs `timeout` as root, so its TERM, and the KILL 30 s after it,
       # reach apt and dpkg under it, and the next try first finishes what a killed dpkg
       # left. Each step takes at most 3 x (600 + 30) s + 2 x 60 s = 33.5 min, under its own
-      # 40 and the job's 360 (#281).
+      # 40 and the job's 160 (#281).
       - name: Install Chromium's system packages
         timeout-minutes: 40
         working-directory: web
@@ -273,12 +284,15 @@ jobs:
           exit 1
       - run: npm run typecheck:e2e
         working-directory: web
-      - run: npm run test:e2e
+      # Playwright shards by test group, a whole file here (fullyParallel is off), and balances
+      # the shards by their counts of tests; preflight_test.py holds the matrix to the step's N.
+      - run: npx playwright test --shard=${{ matrix.shard }}/2
         working-directory: web
+      # One name a shard: upload-artifact@v4 refuses a second artifact of one name in a run.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             web/playwright-report
             web/test-results
