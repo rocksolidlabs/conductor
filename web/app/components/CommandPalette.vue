@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PaletteItem } from '~/composables/usePalette'
 import type { Action } from '~/utils/actions'
-import { choiceKey } from '~/utils/attention'
+import { MODE_CHOICE, choiceKey } from '~/utils/attention'
 import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
 import type { TicketSummary } from '~/composables/useDispatch'
@@ -550,7 +550,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                         :disabled="row.prompt.held || row.prompt.away"
                         :label="`${choiceKey(o, i) ?? '·'} ${o.label}`"
                         :data-palette-choice="choiceKey(o, i) ?? ''"
-                        :title="o.mode ? 'Changes the session’s permission mode' : undefined"
+                        :title="o.mode ? MODE_CHOICE : undefined"
                         @click.stop="answerChoice(row, i)"
                       />
                     </div>
