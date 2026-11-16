@@ -4,9 +4,9 @@ import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, responsibilityWords, type DraftMember } from '~/utils/crews'
 import { avatarTone } from '~/utils/avatar'
 import { personPath } from '~/utils/people'
-import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
+import { runResumable, runStateBadges, runSubtitle, runTicketChips, shortRunId } from '~/utils/crewWords'
 import { initials, relativeTime } from '~/utils/sessions'
-import { commandBody, sendCommand, taskBadges } from '~/utils/tasks'
+import { commandBody, sendCommand } from '~/utils/tasks'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
@@ -182,11 +182,16 @@ async function resumeRun() {
   }
 }
 
-// A managed run: its task badges, and Pause / Resume of its dispatch.
-// The run's open decisions, as the app's store read them: a gate that holds no task is counted too (taskBadges).
+// The ticket chips beside the name: one for one ticket (the launch's), both only when they name two.
+const chips = computed(() => runTicketChips(props.run?.ticket, props.ticket))
+
+// What the run is doing, in row two: its task badges, or its members' counts (runStateBadges, until the run's status words). The
+// run's open decisions as the app's store read them: a gate that holds no task is counted too.
 const decisionStore = useDecisions()
 const runDecisions = computed(() => decisionStore.open.value.filter((d) => d.run === props.runId).map((d) => d.id))
-const badges = computed(() => (props.run?.managed ? taskBadges(props.run, runDecisions.value) : null))
+const stateBadges = computed(() => (props.run ? runStateBadges(props.run, props.counts, runDecisions.value) : []))
+
+// A managed run's Pause / Resume of its dispatch.
 const pausing = ref(false)
 async function togglePause() {
   const r = props.run
@@ -221,132 +226,134 @@ async function stopAll() {
   }
 }
 
-// The run page's command palette (#302) runs the header's buttons: Add agent, Share, Stop (asked in the palette's row), Resume.
+// Add agent and Share, in the run's one menu: each disabled where its button was.
+const menu = computed(() => [
+  [
+    { label: 'Add agent', icon: 'i-lucide-user-plus', disabled: !runOffer(props.run).add, onSelect: () => void openAdd(), 'data-run-add': '' },
+    { label: 'Share', icon: 'i-lucide-share-2', disabled: !props.run, onSelect: () => (shareOpen.value = true), 'data-run-share': '' },
+  ],
+])
+
+// The run page's command palette (#302) runs the header's actions: Add agent, Share, Stop (asked in the palette's row), Resume.
 defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause })
 </script>
 
 <template>
-  <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14', left: 'min-w-0 flex-1', right: 'flex-none' }" data-crew-run-header>
-    <template #leading>
-      <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
-    </template>
-    <template #title>
-      <span class="flex min-w-0 items-baseline gap-2">
-        <!-- The name gives way last: the subtitle shrinks first (it may be cut), the name keeps a readable minimum. -->
-        <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="min-w-[12ch] shrink truncate hover:underline" :title="`The saved crew ${run.name}`" data-run-name>{{ run.name }}</NuxtLink>
-        <span v-else class="truncate">Run</span>
-        <span v-if="run" class="min-w-0 shrink-[4] truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" :title="runSubtitle(run)" data-run-subtitle>{{ runSubtitle(run) }}</span>
-        <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed md:inline" :title="runId">{{ shortRunId(runId) }}</span>
-        <UButton
-          v-if="ticket"
-          :to="ticketPath(ticket.key)"
-          :label="ticket.deletedAt ? `${ticket.key} (deleted)` : ticket.key"
-          icon="i-lucide-ticket"
-          size="xs"
-          color="neutral"
-          :variant="ticket.deletedAt ? 'ghost' : 'soft'"
-          class="flex-none self-center font-mono"
-          :class="ticket.deletedAt && 'text-muted'"
-          :title="`${ticket.key} ${ticket.title}${ticket.deletedAt ? ' (deleted)' : ''}: the ticket this run is linked to`"
-          :aria-label="`The ticket ${ticket.key}${ticket.deletedAt ? ', deleted' : ''}: ${ticket.title}`"
-          data-run-ticket
-          :data-run-ticket-key="ticket.key"
-          :data-run-ticket-deleted="ticket.deletedAt ? '' : undefined"
-        />
-        <UButton
-          v-if="run?.ticket"
-          :to="ticketPath(run.ticket.key)"
-          :label="`Launched from ${run.ticket.key} · plan ${revisionTag(run.ticket.planN)}`"
-          icon="i-lucide-ticket"
-          size="xs"
-          color="neutral"
-          variant="soft"
-          class="flex-none self-center"
-          :title="`Launched from ${run.ticket.key} at its revision ${run.ticket.rev}, by plan revision ${run.ticket.planN}: the run follows the ticket as launched`"
-          data-run-launched-from
-          :data-run-launched-key="run.ticket.key"
-        />
-        <span v-if="run?.ticket?.launch" class="hidden flex-none items-center gap-1 self-center text-xs text-muted sm:inline-flex" data-run-launch :data-run-launch-by="launchBy || undefined">
-          <template v-if="launchBy">by {{ launchBy }}</template>
-          <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
+  <!-- Two rows: the name, its ticket and the run's actions; under them, at every width, what the run is doing and who is in it. -->
+  <div class="flex-none border-b border-default" data-crew-run-header>
+    <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 border-b-0', left: 'min-w-0 flex-1', right: 'flex-none gap-1.5' }" data-run-row-one>
+      <template #leading>
+        <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+      </template>
+      <template #title>
+        <span class="flex min-w-0 items-baseline gap-2">
+          <!-- The name is whole from lg up (a crew's name is at most 60 characters); below it, the label and the short id give way first. -->
+          <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="min-w-[12ch] shrink truncate hover:underline lg:min-w-0 lg:flex-none" :title="`The saved crew ${run.name}`" data-run-name>{{ run.name }}</NuxtLink>
+          <span v-else class="truncate">Run</span>
+          <span v-if="run" class="min-w-0 shrink-[4] truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" :title="runSubtitle(run)" data-run-subtitle>{{ runSubtitle(run) }}</span>
+          <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed xl:inline" :title="runId">{{ shortRunId(runId) }}</span>
+          <UButton
+            v-if="chips.launched"
+            :to="ticketPath(chips.launched.key)"
+            :label="`Launched from ${chips.launched.key} · plan ${revisionTag(chips.launched.planN)}`"
+            icon="i-lucide-ticket"
+            size="xs"
+            color="neutral"
+            variant="soft"
+            class="min-w-0 shrink-[2] self-center"
+            :ui="{ label: 'truncate' }"
+            :title="`Launched from ${chips.launched.key} at its revision ${chips.launched.rev}, by plan revision ${chips.launched.planN}: the run follows the ticket as launched`"
+            data-run-launched-from
+            :data-run-launched-key="chips.launched.key"
+          />
+          <UButton
+            v-if="chips.linked"
+            :to="ticketPath(chips.linked.key)"
+            :label="chips.linked.deletedAt ? `${chips.linked.key} (deleted)` : chips.linked.key"
+            icon="i-lucide-ticket"
+            size="xs"
+            color="neutral"
+            :variant="chips.linked.deletedAt ? 'ghost' : 'soft'"
+            class="flex-none self-center font-mono"
+            :class="chips.linked.deletedAt && 'text-muted'"
+            :title="`${chips.linked.key} ${chips.linked.title}${chips.linked.deletedAt ? ' (deleted)' : ''}: the ticket this run is linked to`"
+            :aria-label="`The ticket ${chips.linked.key}${chips.linked.deletedAt ? ', deleted' : ''}: ${chips.linked.title}`"
+            data-run-ticket
+            :data-run-ticket-key="chips.linked.key"
+            :data-run-ticket-deleted="chips.linked.deletedAt ? '' : undefined"
+          />
         </span>
-        <!-- Each member's login and model as the launch bound them, behind a button: the bar keeps its height, the tiles theirs. -->
-        <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && loginsOpened()">
-          <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none self-center" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button><span class="hidden sm:inline">Logins</span></UButton>
-          <template #content>
-            <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
-              <li v-if="namedNow?.error" class="text-warning [overflow-wrap:anywhere]" data-run-logins-unread>Plan revision {{ run?.ticket?.planN }} could not be read, so which member took the default at the launch is not said: {{ namedNow.error }}</li>
-              <li v-if="namedReading" class="flex items-center gap-1.5 text-muted" data-run-logins-reading><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Reading plan revision {{ run?.ticket?.planN }}: each member's login is said once it is read.</li>
-              <li v-for="l in namedReading ? [] : logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
-                <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
-                <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>
-                <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
-                <span class="text-muted [overflow-wrap:anywhere]" data-run-login-model>· {{ l.model }}</span>
-              </li>
-            </ul>
-          </template>
-        </UPopover>
-      </span>
-    </template>
-    <template #trailing>
-      <div v-if="run" class="ml-2 hidden min-w-0 items-center gap-1.5 sm:flex">
-        <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
-        <template v-if="badges">
-          <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
-          <span v-if="run.paused && run.pausedWhy" class="min-w-0 max-w-[24rem] shrink truncate text-xs text-warning" :title="run.pausedWhy" data-run-paused-why>{{ run.pausedWhy }}</span>
-          <UBadge v-if="counts.needs" :label="`${counts.needs} need input`" color="warning" variant="subtle" size="sm" class="flex-none" />
-        </template>
-        <template v-else>
-          <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
-          <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
-        </template>
-        <span class="ml-1 truncate font-mono text-xs text-muted">{{ uptime }}</span>
-      </div>
-    </template>
-    <template #right>
-      <!-- Icons only on a phone: the labels would push the name off the bar. -->
-      <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!runOffer(run).add" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
-      <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
-      <!-- The run's chat (design 2e): the count while the drawer is closed. -->
-      <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
-        <span class="hidden sm:inline">Chat</span>
-        <ChatUnreadPill :count="chatUnread" />
-      </UButton>
-      <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :aria-label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></UButton>
-      <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
-      <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
-      <FullscreenButton class="hidden sm:inline-flex" />
-    </template>
-  </UDashboardNavbar>
-  <!-- On a phone the counts and the uptime take a line of their own: the bar keeps the name and the buttons. -->
-  <div v-if="run" class="flex items-center gap-1.5 border-b border-default px-4 py-1.5 sm:hidden" data-run-header-strip>
-    <template v-if="badges">
-      <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
-      <span v-if="run.paused && run.pausedWhy" class="min-w-0 shrink truncate text-[11px] text-warning" :title="run.pausedWhy" data-run-paused-why>{{ run.pausedWhy }}</span>
-    </template>
-    <template v-else>
-      <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-needs />
-      <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-running />
-    </template>
-    <span class="min-w-0 truncate font-mono text-[11px] text-muted">{{ uptime }}</span>
-  </div>
+      </template>
+      <template #right>
+        <!-- The run's chat (design 2e): an icon with the count while the drawer is closed. -->
+        <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" title="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
+          <ChatUnreadPill :count="chatUnread" />
+        </UButton>
+        <!-- Icons only on a phone: the labels would push the name off the bar. -->
+        <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :aria-label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></UButton>
+        <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
+        <!-- Neutral at rest: red only in its confirm. -->
+        <UButton v-if="!stopped && !record" icon="i-lucide-square" color="neutral" variant="outline" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
+        <UDropdownMenu :items="menu" :content="{ align: 'end' }">
+          <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" aria-label="More for this run" title="More for this run" data-run-menu />
+        </UDropdownMenu>
+        <FullscreenButton class="hidden sm:inline-flex" />
+      </template>
+    </UDashboardNavbar>
 
-  <!-- The run's people as launched: names, never sessions. -->
-  <div v-if="run?.people?.length" class="flex flex-wrap items-center gap-1.5 border-b border-default px-4 py-1.5" data-run-people>
-    <span class="text-xs text-muted">People</span>
-    <NuxtLink
-      v-for="p in run.people"
-      :key="p.name"
-      :to="personPath(p.name)"
-      class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs ring ring-default hover:bg-elevated"
-      :title="p.note || undefined"
-      :data-run-person="p.name"
-      :data-run-person-responsibilities="(p.responsibilities ?? []).join(' ')"
-    >
-      <span class="grid size-4 flex-none place-items-center rounded-full text-[8px] font-semibold" :class="avatarTone(p.name)" aria-hidden="true">{{ initials(p.name) }}</span>
-      <span class="min-w-0 truncate font-medium text-highlighted">{{ p.name }}</span>
-      <span v-if="p.responsibilities?.length" class="truncate text-muted" data-run-person-words>{{ responsibilityWords(p.responsibilities) }}</span>
-    </NuxtLink>
+    <!-- Row two: what the run is doing, its pause, its people and logins, who launched it, how long it has been up. -->
+    <div v-if="run" class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2 text-xs" data-run-summary>
+      <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
+      <span v-if="stateBadges.length" class="inline-flex flex-wrap items-center gap-1.5" data-run-state>
+        <UBadge v-for="b in stateBadges" :key="b.label" :label="b.label" :color="b.color" :title="b.title" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+      </span>
+      <span v-if="run.paused" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused by a person'" data-run-paused-note>
+        <UIcon name="i-lucide-pause" class="size-3.5 flex-none" />
+        <span class="flex-none">scheduling paused</span>
+        <span v-if="run.pausedWhy" class="min-w-0 truncate" data-run-paused-why>{{ run.pausedWhy }}</span>
+      </span>
+      <span v-if="(run.cleaning ?? 0) > 0" class="inline-flex flex-none items-center gap-1 text-muted" :title="`${run.cleaning} ${run.cleaning === 1 ? 'tree is' : 'trees are'} being ended: services stopped, cleanup steps run`" data-run-cleaning>
+        <UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />cleaning up
+      </span>
+      <!-- The run's people as launched: names, never sessions. -->
+      <span v-if="run.people?.length" class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5" data-run-people>
+        <span class="text-muted">People</span>
+        <NuxtLink
+          v-for="p in run.people"
+          :key="p.name"
+          :to="personPath(p.name)"
+          class="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-0.5 ring ring-default hover:bg-elevated"
+          :title="p.note || undefined"
+          :data-run-person="p.name"
+          :data-run-person-responsibilities="(p.responsibilities ?? []).join(' ')"
+        >
+          <span class="grid size-4 flex-none place-items-center rounded-full text-[8px] font-semibold" :class="avatarTone(p.name)" aria-hidden="true">{{ initials(p.name) }}</span>
+          <span class="min-w-0 truncate font-medium text-highlighted">{{ p.name }}</span>
+          <span v-if="p.responsibilities?.length" class="truncate text-muted" data-run-person-words>{{ responsibilityWords(p.responsibilities) }}</span>
+        </NuxtLink>
+      </span>
+      <!-- Each member's login and model as the launch bound them, behind a button. -->
+      <UPopover v-if="logins.length" :content="{ align: 'start' }" @update:open="(o: boolean) => o && loginsOpened()">
+        <UButton icon="i-lucide-key-round" size="xs" color="neutral" variant="ghost" class="flex-none" aria-label="Logins" title="Each member's login and model, as the launch bound them" data-run-logins-button>Logins</UButton>
+        <template #content>
+          <ul class="flex max-w-[min(32rem,calc(100vw-2rem))] flex-col gap-1.5 p-3 text-xs" data-run-logins>
+            <li v-if="namedNow?.error" class="text-warning [overflow-wrap:anywhere]" data-run-logins-unread>Plan revision {{ run?.ticket?.planN }} could not be read, so which member took the default at the launch is not said: {{ namedNow.error }}</li>
+            <li v-if="namedReading" class="flex items-center gap-1.5 text-muted" data-run-logins-reading><UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Reading plan revision {{ run?.ticket?.planN }}: each member's login is said once it is read.</li>
+            <li v-for="l in namedReading ? [] : logins" :key="l.name" class="flex min-w-0 flex-wrap items-baseline gap-x-1.5" :data-run-login="l.name">
+              <span class="font-mono font-medium text-highlighted">{{ l.name }}</span>
+              <span class="[overflow-wrap:anywhere]" data-run-login-account>{{ l.account }}</span>
+              <span v-if="l.atLaunch" class="text-muted" data-run-login-at-launch>(the default at the launch)</span>
+              <span class="text-muted [overflow-wrap:anywhere]" data-run-login-model>· {{ l.model }}</span>
+            </li>
+          </ul>
+        </template>
+      </UPopover>
+      <span v-if="run.ticket?.launch" class="inline-flex flex-none items-center gap-1 text-muted" data-run-launch :data-run-launch-by="launchBy || undefined">
+        <template v-if="launchBy">launched by {{ launchBy }}</template>
+        <BrakemanRefChip :ref-name="`launch:${run.ticket.launch}`" />
+      </span>
+      <span class="ml-auto flex-none text-muted" data-run-uptime>{{ uptime }}</span>
+    </div>
   </div>
 
   <USlideover v-model:open="addOpen" title="Add an agent" description="It joins this run, not the saved crew. One that starts at launch starts now; its prompt is typed once it is ready." :ui="{ content: 'sm:max-w-4xl' }">
