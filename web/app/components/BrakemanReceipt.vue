@@ -15,7 +15,7 @@ const { open, loading, error, text, sha256, shown, comment, read } = useRefRecei
 </script>
 
 <template>
-  <UButton icon="i-lucide-receipt-text" size="xs" color="neutral" variant="link" class="p-0" :aria-label="`Read ${label}`" :title="`Read ${label}`" data-ref-receipt @click.prevent="read" />
+  <IconButton icon="i-lucide-receipt-text" size="xs" color="neutral" variant="link" class="p-0" :label="`Read ${label}`" data-ref-receipt @click.prevent="read" />
   <UModal v-model:open="open" :title="label" :description="refName" :ui="{ content: 'sm:max-w-3xl' }">
     <template #body>
       <div class="flex flex-col gap-2" data-ref-receipt-modal>

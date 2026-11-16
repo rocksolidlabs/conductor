@@ -587,7 +587,7 @@ palette.registerPage(() => {
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }" data-session-bar>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the list" class="lg:hidden" to="/sessions" data-back-to-list />
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
@@ -614,12 +614,12 @@ palette.registerPage(() => {
             <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="hidden sm:inline-flex xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles">Files</UButton>
             <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" class="hidden sm:inline-flex" data-share-button @click="share = true">Share</UButton>
             <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-            <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+            <IconButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
               <span class="hidden sm:inline">Chat</span>
               <ChatUnreadPill :count="chatUnread" />
-            </UButton>
+            </IconButton>
             <UDropdownMenu :items="menu">
-              <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" data-more-button />
+              <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" data-more-button />
             </UDropdownMenu>
           </template>
           <div class="hidden sm:flex"><FullscreenButton /></div>

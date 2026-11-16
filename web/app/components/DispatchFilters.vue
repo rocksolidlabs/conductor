@@ -205,12 +205,12 @@ const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string =>
     <slot name="trailing" />
     <div class="order-6 flex flex-none items-center gap-1 sm:order-none">
       <USelect :model-value="modelValue.sort" :items="sortItems" size="sm" class="w-28 sm:w-32" aria-label="Sort by" data-filter-sort @update:model-value="setSort" />
-      <UButton
+      <IconButton
         :icon="modelValue.desc ? 'i-lucide-arrow-down-wide-narrow' : 'i-lucide-arrow-up-narrow-wide'"
         size="sm"
         color="neutral"
         variant="outline"
-        :aria-label="modelValue.desc ? 'Descending: turn it' : 'Ascending: turn it'"
+        :label="modelValue.desc ? 'Descending: turn it' : 'Ascending: turn it'"
         data-filter-direction
         @click="set('desc', !modelValue.desc)"
       />

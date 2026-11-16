@@ -415,9 +415,27 @@ open deferred item from rounds 1 and 2, then the features below.
   counts. The page is "Needs you" wherever its name is read (the decide-only
   page stays "Decide"); its row in the nav leaves when nothing waits and
   nothing was decided in the last day, and stays while its page is open. The
-  sidebar's section says what it leaves out: "+3 on the page", linked to the
-  page. The pill steps through what it can answer, a stopped run's decision
-  too, and says how many more wait in Needs you.
+  pill steps through what it can answer, a stopped run's decision too, and
+  says how many more wait in Needs you.
+- **One inbox: the sidebar lists everything that needs you (UX1 PR-13,
+  #928).** The sidebar's Needs you lists every item of the one list, each
+  with its kind's mark and word: the questions as their sessions' rows, and
+  a row each for a plan waiting for approval, a task out of its attempts and
+  a run's decision (`SidebarInboxRow`: the title and the question or brief,
+  each on one line with its whole text in its title). A run that waits on
+  an item sits in Needs you in the same moment, the item under its header
+  before its members, whatever its members do: a run whose task failed
+  while its members work, a stopped run with an open decision, and a run
+  with no session listed yet (a gate held before any attempt), drawn as its
+  header and its items; its capsule on the rail is amber. A plan, and an
+  item whose run the app does not hold, is a loose row. A decision opens its
+  card; a plan or a task opens on the Needs you page; each is a row the keys
+  land on. The section's count is the nav's one number. Below the rows:
+  "Showing 150 of 212 · all on Needs you" while the inbox holds a next page,
+  and "Plans and tasks could not be read" with Read again after a failed
+  read, the questions still listed. The palette's two groups of what waits
+  are one, "Needs you": answer-all, the questions, the decisions as "Answer
+  dr-7", then "Plan: <title>" and "Task: <title>", nothing listed twice.
 - **The Yard's tiles lead with the name; the Roundhouse is a view of the
   Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
   agent's initials, the event mark as its icon alone (its words in its
@@ -2930,7 +2948,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
 - **No scoping on a run page** (3f, S1): the full list shows with the open
   run's block marked, its section unfolded and scrolled into view; the Crew
   box and the laptop headings are gone.
-- The counts: Needs you is how many sessions need you, members included;
+- The counts: Needs you is the one number of what needs you (UX1 PR-13);
   Running is that section's live sessions; Exited is that section's.
 - **Actions on a row** (3c, S2): Share, Stop and More appear on hover in
   place of the dot, outside the row's link (a link holds no button); a run

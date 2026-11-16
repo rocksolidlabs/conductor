@@ -387,11 +387,11 @@ usePalette().registerPage(() => ({
         </template>
         <template #right>
           <div class="flex items-center gap-0.5 rounded-md border border-default p-0.5">
-            <UButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" aria-label="Previous session" @click="prev" />
+            <IconButton icon="i-lucide-chevron-left" size="xs" color="neutral" variant="ghost" label="Previous session" @click="prev" />
             <UTooltip :text="holding ? 'Release the hold and keep rotating' : paused ? 'Resume rotation' : 'Pause rotation'" :kbds="['space']">
               <UButton :label="stateLabel" :icon="rotating ? 'i-lucide-play' : 'i-lucide-pause'" size="xs" color="neutral" variant="soft" class="font-semibold" @click="togglePlay" />
             </UTooltip>
-            <UButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" aria-label="Next session" @click="next" />
+            <IconButton icon="i-lucide-chevron-right" size="xs" color="neutral" variant="ghost" label="Next session" @click="next" />
           </div>
           <span class="hidden md:flex items-center gap-1.5 text-xs text-muted">Every <USelect v-model="settings.intervalMs" :items="intervalItems" size="xs" class="w-20 font-mono" :disabled="!settings.autoplay" /></span>
           <USwitch v-model="settings.autoplay" label="Auto-rotate" size="sm" class="hidden md:flex" />

@@ -499,7 +499,7 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await pressInTurn(page, 'g', 'n')
   await expect(page).toHaveURL(opened)
 
-  // The palette's row for the item opens it.
+  // The palette lists the question once (UX1 PR-13), as its session's row in Needs you: no second row for the page's item.
   budget(4)
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()
@@ -508,10 +508,12 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await expect(palette).toBeVisible()
   await palette.locator('input[data-palette-input]').fill('decide desk')
   await expect(palette.locator('input[data-palette-input]')).toHaveValue('decide desk')
-  const row = palette.locator(`[data-palette-row="decide:${ref}"]`)
-  await expect(row).toBeVisible()
-  await row.click()
-  await expect(page).toHaveURL(new RegExp(`/decisions\\?item=${encodeURIComponent(ref).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
+  await expect(palette.locator(`[data-palette-group="needs"] [data-palette-row="session:${s.id}"]`)).toBeVisible()
+  // Its one row: the session's, in Needs you alone; no row of the question's own (the old "Decide: …").
+  await expect(palette.locator(`[data-palette-row="session:${s.id}"]`)).toHaveCount(1)
+  await expect(palette.locator(`[data-palette-row*="question:${s.id}/"]`)).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.goto(`/decisions?item=${encodeURIComponent(ref)}`)
   await expect(page.locator(`[data-inbox-item="${ref}"]`)).toBeVisible()
 
   // Open on your phone, on this machine's own address: a phone cannot reach it, and the page says so.

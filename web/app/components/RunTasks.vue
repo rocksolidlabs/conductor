@@ -278,7 +278,7 @@ async function confirm() {
               <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
               <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
               <UDropdownMenu v-if="rowOf(t).menu.length" :items="menuOf(t)" :content="{ align: 'end' }">
-                <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${t.id}`" :data-task-menu="t.id" />
+                <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`More for ${t.id}`" :data-task-menu="t.id" />
               </UDropdownMenu>
             </div>
           </div>
@@ -291,7 +291,7 @@ async function confirm() {
       <div class="flex items-center gap-2">
         <span class="font-mono font-semibold text-highlighted">{{ selectedTask.id }}</span>
         <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}<span v-if="selectedTask.owner" data-task-detail-owner> · <NuxtLink :to="personPath(selectedTask.owner)" class="hover:underline" data-task-detail-owner-link>{{ ownerWords(selectedTask) }}</NuxtLink></span>{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
-        <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-task-detail-close @click="emit('select', '')" />
+        <IconButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
       <!-- Its candidate reviewed on the ticket that holds the run (RV1), or why not. -->
       <div v-if="selectedTask.kind === 'work' && reviewTarget" class="flex flex-wrap items-center gap-2" data-task-review-entry>

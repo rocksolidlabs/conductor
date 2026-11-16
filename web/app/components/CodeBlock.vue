@@ -28,7 +28,7 @@ const copyClass = 'text-active-300 hover:bg-forest-900 hover:text-active-200'
       <li v-for="c in commands" :key="c" class="flex gap-2" :class="wrap ? 'items-start' : 'items-center'">
         <span class="select-none text-forest-400" aria-hidden="true">$</span>
         <span class="min-w-0 flex-1" :class="wrap ? 'break-all select-all' : 'truncate select-text'" :title="c">{{ c }}</span>
-        <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :aria-label="`Copy ${c}`" :class="copyClass" :disabled="disabled" @click="copy(c, copyTitle ?? 'Command copied', copyDescription ?? c)" />
+        <IconButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :label="`Copy ${c}`" :class="copyClass" :disabled="disabled" @click="copy(c, copyTitle ?? 'Command copied', copyDescription ?? c)" />
       </li>
     </ul>
     <template v-else-if="text">
