@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { expect, test, type Api, type Session } from './fixtures'
+import { expect, showView, test, type Api, type Session } from './fixtures'
 
 // The editor and the terminal side by side as well as stacked (#309): the
 // switch in the editor's tab strip, the bar between them draggable either
@@ -65,7 +65,8 @@ test('the editor goes beside the terminal and back, the split drags and steps, a
     // Kept per browser: the layout and its split come back after a reload; the stacked split is its own.
     const kept = (await area.boundingBox())!.width
     await page.reload()
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    // The panel was left open on Explorer, and is kept so across the load (P11): Explorer shown, not clicked closed.
+    await showView(page, 'explorer')
     await page.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
     await expect(column).toHaveAttribute('data-editor-layout', 'side')
     expect(Math.abs((await area.boundingBox())!.width - kept)).toBeLessThan(4)

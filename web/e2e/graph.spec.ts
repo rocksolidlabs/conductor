@@ -1,4 +1,5 @@
 import { expect, logged, member, test, type Run } from './fixtures'
+import { noOverlap } from './layout'
 
 // The crew graph: the run page draws the members with their start rules and
 // the handoffs as they are delivered; the editor sets a start rule by
@@ -152,10 +153,8 @@ test('a phone gets the list, indented by depth', async ({ browser, state }) => {
   await expect(page.locator('[data-graph-canvas]')).toHaveCount(0)
   await expect(list.locator('[data-graph-list-row="core"]')).toHaveAttribute('data-depth', '1')
   await expect(list.locator('[data-graph-list-row="tests"]')).toHaveAttribute('data-depth', '2')
-  // The run header keeps the name clear of the buttons; the counts take a line of their own.
-  await expect(page.locator('[data-run-header-strip]')).toBeVisible()
-  const title = (await page.locator('[data-crew-run-header] a').first().boundingBox())!
-  const firstButton = (await page.locator('[data-crew-run-header] button:visible').nth(1).boundingBox())!
-  expect(title.x + title.width).toBeLessThanOrEqual(firstButton.x)
+  // The run header keeps the name clear of the buttons; what the run is doing takes its own row, under the bar.
+  await expect(page.locator('[data-crew-run-header] [data-run-summary]')).toBeVisible()
+  await noOverlap(page.locator('[data-crew-run-header] [data-run-row-one]'))
   await context.close()
 })
