@@ -2,7 +2,7 @@ import type { Locator, Page } from '@playwright/test'
 import { walk, worst, type Failure } from './contrast'
 import { KNOWN, type Known, type WalkedPage } from './contrast-known'
 import type { Day } from './day'
-import { budget, dayPage, expect, test } from './fixtures'
+import { budget, dayPage, expect, showView, test } from './fixtures'
 import { MEASURE_WAIT_MS } from './layout'
 
 // The contrast actually drawn (the UX review's PR-25): every text the browser draws on six pages of the seeded day, in both themes,
@@ -78,7 +78,17 @@ async function where(day: Day, name: WalkedPage, width: number): Promise<Walked>
     }
     case 'session': {
       const n = await day.part('states')
-      return { path: `/sessions/${n.driver}`, ready: width < 1024 ? '.terminal-host' : '[data-inspector-open="true"]', row: sidebarRow }
+      return {
+        path: `/sessions/${n.driver}`,
+        ready: width < 1024 ? '.terminal-host' : '[data-inspector]',
+        row: sidebarRow,
+        // The inspector opens closed: its People view opened from its rail, as a person opens it.
+        prepare: async (page) => {
+          if (width < 1024) return
+          await showView(page, 'people')
+          await expect(page.locator('[data-inspector-open="true"]')).toBeVisible()
+        },
+      }
     }
     case 'needs': {
       const ref = [...day.refs.keys()].find((r) => r.startsWith('question:'))!
