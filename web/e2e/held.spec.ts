@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures'
+import { expect, rowAnswer, test } from './fixtures'
 import { HELD, holdOne } from './held-helpers'
 
 // A line a link's controller sent is typed into the session, and the link is
@@ -23,7 +23,7 @@ test('a line typed for a link that is let go holds the session: the view says so
     // The sidebar's row says it too, and takes no reply either.
     const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
     await expect(row.locator('[data-row-prompt]')).toHaveText(HELD, { timeout: 10_000 })
-    await expect(row.locator('[data-row-reply] input, input[data-row-reply]').first()).toBeDisabled()
+    await expect((await rowAnswer(page, row)).locator('[data-row-reply] input, input[data-row-reply]').first()).toBeDisabled()
 
     // The pointer moved over the terminal reaches the agent (its mouse reports) and types nothing: the hold and its words
     // stay, and so does the guest's line, not entered.

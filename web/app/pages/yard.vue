@@ -8,7 +8,7 @@ import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { sessionStatus } from '~/utils/status'
-import { bestGrid } from '~/utils/wall'
+import { bestGrid, yardFilterOf, yardChips, yardCounts, yardFilter, type YardFilter } from '~/utils/wall'
 import { replyFailure } from '~/utils/reply'
 import { pageState } from '~/utils/pageState'
 import { QUICK_START_URL } from '~/utils/about'
@@ -29,23 +29,21 @@ const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
 usePageAltCodes().register(['KeyQ'])
 
-type Filter = 'all' | 'needs' | 'running'
-function isFilter(v: unknown): v is Filter {
-  return v === 'all' || v === 'needs' || v === 'running'
-}
-// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes.
-const filter = ref<Filter>(isFilter(route.query.filter) ? route.query.filter : 'all')
+// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes; an unknown word opens All.
+const filter = ref<YardFilter>(yardFilterOf(route.query.filter))
 watch(
   () => route.query.filter,
-  (q) => {
-    if (isFilter(q)) filter.value = q
-  },
+  (q) => (filter.value = yardFilterOf(q)),
 )
+// The chips filter the live sessions by one state each (utils/wall.ts, on sessionStatus); the queue lists the grid's needs set.
+const now = useNow()
 const active = computed(() => attention.sessions.value.filter(isActive))
-const waiting = computed(() => attention.needsInput.value.filter(isActive))
-const gridAsksWords = computed(() => `${waiting.value.length} ${waiting.value.length === 1 ? 'session on this grid asks' : 'sessions on this grid ask'} you. Plans, tasks and decisions wait in Needs you.`)
-const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
-const tiles = computed(() => (filter.value === 'needs' ? waiting.value : filter.value === 'running' ? running.value : active.value))
+const waiting = computed(() => yardFilter(attention.sessions.value, 'needs', now.value))
+const counts = computed(() => yardCounts(attention.sessions.value, now.value))
+const chips = computed(() => yardChips(counts.value, filter.value))
+const tiles = computed(() => yardFilter(attention.sessions.value, filter.value, now.value))
+// Below sm the chips and the polling badge leave the header for a row of their own under it (the bar shows from sm up).
+const phone = useIsPhone()
 const answered = computed(() =>
   attention.sessions.value
     .filter((s) => s.lastAnswer)
@@ -79,7 +77,6 @@ const missingActions = computed(() => [
   { label: 'Back to the grid', icon: 'i-lucide-arrow-left', onClick: backToGrid },
   { label: 'Its record', icon: 'i-lucide-history', to: `/history/sessions/${encodeURIComponent(focusId.value)}` },
 ])
-const now = useNow()
 const focusTerminal = ref<{ focus: () => void; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any> } | null>(null)
 const viewers = ref(0)
 const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number | null }>({ kind: 'ws', state: 'idle', rtt: null })
@@ -228,11 +225,6 @@ const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 // This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid; the focused
 // tile's editor rows (#321).
 usePalette().registerPage(() => {
-  const chips: Array<[Filter, string, number]> = [
-    ['all', 'All', active.value.length],
-    ['needs', 'Needs you', waiting.value.length],
-    ['running', 'Running', running.value.length],
-  ]
   const sel = waiting.value[queueSel.value]
   return {
     label: focused.value ? focused.value.name : 'Yard',
@@ -240,7 +232,7 @@ usePalette().registerPage(() => {
     cwd: focused.value?.cwd,
     openFile: focused.value ? openFile : undefined,
     rows: [
-      ...chips.map(([f, label, n]) => ({ key: `page:filter:${f}`, label: `${label} · ${n}`, icon: 'i-lucide-filter', on: filter.value === f, run: () => (filter.value = f) })),
+      ...chips.value.map((c) => ({ key: `page:filter:${c.key}`, label: `${c.label} · ${c.count}`, icon: 'i-lucide-filter', on: c.active, run: () => (filter.value = c.key) })),
       ...(sel && !focused.value ? [{ key: 'page:expand', label: `Expand ${sel.name}`, detail: 'The queue’s selected session, in place', icon: 'i-lucide-maximize-2', agentId: sel.agentId, run: () => focusSession(sel) }] : []),
       ...(focused.value ? [{ key: 'page:grid', label: 'Back to the grid', icon: 'i-lucide-layout-grid', kbds: ['escape'], run: backToGrid }] : []),
       ...(focused.value ? editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }) : []),
@@ -267,15 +259,10 @@ usePalette().registerPage(() => {
               <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden sm:inline-flex" />
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>
-            <div v-else class="flex items-center gap-1.5 text-xs">
-              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" data-yard-filter="all" :data-active="filter === 'all' ? '' : undefined" @click="filter = 'all'" />
-              <!-- It counts the sessions of this grid alone, and says so: the one number of what needs you is on Needs you. -->
-              <UTooltip :text="gridAsksWords">
-                <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" :aria-label="gridAsksWords" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
-              </UTooltip>
-              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" data-yard-filter="running" :data-active="filter === 'running' ? '' : undefined" @click="filter = 'running'" />
-              <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
-              <AttentionBar :sessions="attention.sessions.value" />
+            <div v-else class="flex min-w-0 items-center gap-1.5 text-xs">
+              <YardViews current="grid" />
+              <YardChips v-if="!phone" :chips="chips" :connected="attention.connected.value" @pick="filter = $event" />
+              <AttentionBar v-if="!phone" :sessions="attention.sessions.value" />
             </div>
           </div>
         </template>
@@ -294,6 +281,11 @@ usePalette().registerPage(() => {
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
+      <UDashboardToolbar v-if="phone && !focusId" :ui="{ root: 'h-auto py-1.5', left: 'flex-wrap' }" data-yard-toolbar>
+        <template #left>
+          <YardChips :chips="chips" :connected="attention.connected.value" wrap @pick="filter = $event" />
+        </template>
+      </UDashboardToolbar>
     </template>
 
     <template #body>

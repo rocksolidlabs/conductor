@@ -1,27 +1,50 @@
 import { describe, expect, it } from 'vitest'
 import { GLOBAL_SHORTCUTS } from '~/composables/useShortcuts'
-import { PAGES, navPages, pageActive, pageById, pageTip, palettePages, phoneMore, phoneTabs, type PageId } from './pages'
+import { PAGES, navPages, pageActive, pageById, pageTip, palettePages, phoneMore, phoneTabs, yardRoute, type PageId } from './pages'
 
 const ids = (ps: ReadonlyArray<{ id: string }>) => ps.map((p) => p.id)
 const labels = (ps: ReadonlyArray<{ label: string }>) => ps.map((p) => p.label)
 
 describe('the pages in one table', () => {
-  it("gives the sidebar's foot as it was: Brakeman while the server has it, Settings in the desktop app", () => {
-    const base = ['Needs you', 'Yard', 'Roundhouse', 'Agents', 'Crews', 'Dispatch', 'Events', 'History']
+  it("gives the sidebar's foot: Brakeman while the server has it, Settings in the desktop app, and no view of another page", () => {
+    const base = ['Needs you', 'Yard', 'Agents', 'Crews', 'Dispatch', 'Events', 'History']
     expect(labels(navPages())).toEqual(base)
     expect(labels(navPages({ brakeman: true }))).toEqual([...base, 'Brakeman'])
     expect(labels(navPages({ desktop: true }))).toEqual([...base, 'Settings'])
     expect(labels(navPages({ brakeman: true, desktop: true }))).toEqual([...base, 'Brakeman', 'Settings'])
-    expect(navPages().map((p) => p.to)).toEqual(['/decisions', '/yard', '/roundhouse', '/agents', '/crews', '/dispatch', '/events', '/history'])
+    expect(navPages().map((p) => p.to)).toEqual(['/decisions', '/yard', '/agents', '/crews', '/dispatch', '/events', '/history'])
+    expect(ids(navPages({ brakeman: true, desktop: true }))).not.toContain('roundhouse')
+
     // Needs you's row leaves when nothing waits and nothing was decided that day (needsRowShown); the rest keep their places.
     expect(labels(navPages({ needs: false, desktop: true }))).toEqual([...base.slice(1), 'Settings'])
   })
 
-  it("gives the phone's bar and its More as they were", () => {
+  it("gives the phone's bar and its More, the Roundhouse in neither", () => {
     expect(labels(phoneTabs())).toEqual(['Needs you', 'Sessions', 'Yard', 'Crews'])
     expect(phoneTabs().map((p) => p.to)).toEqual(['/decisions', '/sessions', '/yard', '/crews'])
-    expect(labels(phoneMore())).toEqual(['Roundhouse', 'Agents', 'Dispatch', 'Events', 'History'])
-    expect(labels(phoneMore({ desktop: true }))).toEqual(['Roundhouse', 'Agents', 'Dispatch', 'Events', 'History', 'Settings'])
+    expect(labels(phoneMore())).toEqual(['Agents', 'Dispatch', 'Events', 'History'])
+    expect(labels(phoneMore({ desktop: true }))).toEqual(['Agents', 'Dispatch', 'Events', 'History', 'Settings'])
+  })
+
+  it("makes the Roundhouse the Yard's second view: a palette row with G R, the Yard current on both routes", () => {
+    const rh = palettePages().find((p) => p.id === 'roundhouse')
+    expect(rh?.chord).toEqual(['G', 'R'])
+    expect(rh?.to).toBe('/roundhouse')
+    expect(rh?.about).toBe("The Yard's second view: one terminal at a time, on rotation.")
+    expect(pageById('roundhouse').viewOf).toBe('yard')
+    const cases: Array<[string, boolean]> = [
+      ['/yard', true],
+      ['/yard?focus=s1', true],
+      ['/roundhouse', true],
+      ['/roundhouse?x=1', true],
+      ['/yardx', false],
+      ['/roundhousex', false],
+      ['/runs/r1', false],
+      ['/sessions/s1', false],
+    ]
+    expect(cases.filter(([path, want]) => yardRoute(path) !== want)).toEqual([])
+    expect(pageActive('yard', '/roundhouse')).toBe(true)
+    expect(pageActive('sessions', '/roundhouse')).toBe(false)
   })
 
   it("gives the palette's page rows in their order, by the page's own name", () => {
@@ -52,6 +75,7 @@ describe('the pages in one table', () => {
       ['sessions', '/yard', false],
       ['yard', '/yard', true],
       ['yard', '/yardx', false],
+      ['yard', '/roundhouse', true],
       ['decisions', '/decisions', true],
       ['decisions', '/decide', false],
       ['settings', '/settings', true],

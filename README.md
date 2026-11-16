@@ -596,7 +596,10 @@ session open in two windows at once keeps the first one's size, the other
 showing it scaled until **Fit to my window**. Click into a
 tile and type: the keys go to that session, the plain-key shortcuts pause
 while the tile has focus and the **Alt** chords still work. The chips in the
-header filter tiles (**All**, **Needs you**, **Running**). A queue on the left
+header filter tiles by state (**All**, **Needs you**, **Working**, **Finished**,
+and **Running** while an agent that reports no turns, or one still starting,
+is on the grid); **Needs you** counts the sessions on this grid that ask. A
+tile's header is its name; its state is at its foot. A queue on the left
 lists every session waiting for input with its prompt: answer from there
 (**J**/**K** select, **Enter** types a reply) without opening the session,
 and see who answered what under **Answered**. The expand button in a tile's
@@ -608,7 +611,9 @@ fullscreen button turns a spare monitor into a status board.
 
 ## The Roundhouse
 
-`/roundhouse` (`/carousel` still lands there) rotates through the active sessions one at a time, full size and
+The Yard's second view: **Grid** and **Roundhouse** in the Yard's header switch
+between the two, and the Yard's row in the sidebar stays current on both.
+`/roundhouse` (`/carousel` still lands there, and **G R** opens it) rotates through the active sessions one at a time, full size and
 interactive: click into the terminal and type. Rotation pauses while the mouse
 is over the pane or a terminal has keyboard focus, and the interval, auto-rotate
 and pause controls are in the navbar. With **Follow routed events** on, the
@@ -661,7 +666,13 @@ its choices are numbered buttons (1 Yes, 2 No), a free-text prompt gets a
 reply field where Enter sends; the answer goes over a short-lived connection
 as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
-away".
+away". In a sidebar narrower than 280 px a row shows two lines of
+its question, and the whole question with its choices or its reply field
+opens in a panel beside the row, to the right of the sidebar: while the row
+has the focus, or from its **Answer** button, which moves the focus into the
+panel; **Escape** closes it, and **1**–**9** answer the focused row as
+before. At 280 px and wider, and on the phone's list, the question is whole
+in the row.
 
 **The command palette** is the sidebar's row actions and the Yard's queue
 from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
@@ -753,7 +764,7 @@ opening its page and **Back** returning to the list; a long press on a row
 opens its actions as a sheet (Open, Share…, Show in the Yard, Stop…; a run's
 header: Open run, Share run, Stop run), Stop asking again, and there are no
 swipe actions. The pages sit in a bar at the foot: Sessions, Yard (with the
-count), Crews, Events, and under More: Roundhouse, Agents, Settings, Alerts
+count), Crews, Events, and under More: Agents, Settings, Alerts
 and your menu. **F** toggles fullscreen on
 every page (**Alt+F** in a terminal); every page header has the button (where
 the browser can do it), and the key is ignored while you type in a field or

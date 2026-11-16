@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { test as base, expect, type Browser, type BrowserContext, type Page } from '@playwright/test'
+import { test as base, expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
 import { startDay, type Day } from './day'
 import { git, START_WAIT_MS } from './server'
 import { readState, type E2EState } from './state'
@@ -224,6 +224,27 @@ export function member(run: Run, name: string): RunMember {
 export async function showView(page: Page, item: 'people' | 'explorer' | 'changes' | 'commits' | 'activity' | 'chat'): Promise<void> {
   const button = page.locator(`[data-inspector] [data-rail-item="${item}"]`)
   if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click()
+}
+
+/**
+ * Where a spec answers a row's question (the UX review's P5): the one way to reach a row's choices, reply field or decision words.
+ * The list says how wide it is once it has measured itself (`data-list-width`): in a narrow sidebar (below 280 px) the row shows two
+ * lines of its question (`data-row-clamped`) and its controls are in the panel beside it, which this opens by focusing the row's link
+ * (a tap on its Answer button on a touch screen) and returns once the panel for that row (`data-panel-for`) shows; otherwise, and on
+ * the phone's list, it returns the row. `row` is one row (`[data-sidebar-row="s:<id>"]`), asking.
+ */
+export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
+  const r = row.first()
+  await expect(r.locator('[data-row-prompt]')).toBeVisible()
+  const list = r.locator('xpath=ancestor::*[@data-session-list][1]')
+  await expect(list).toHaveAttribute('data-list-width', /^(narrow|wide)$/)
+  if ((await list.getAttribute('data-list-width')) !== 'narrow') return r
+  const id = await r.getAttribute('data-sidebar-row')
+  if (await page.evaluate(() => matchMedia('(pointer: coarse)').matches)) await r.locator('[data-row-answer-open]').tap()
+  else await r.locator('a[href]').first().focus()
+  const panel = page.locator(`[data-row-panel][data-panel-for="${id}"]`)
+  await expect(panel).toBeVisible()
+  return panel
 }
 
 /** The hrefs of the session and run links of the full sidebar's list, in the order they show. */

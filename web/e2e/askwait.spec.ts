@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, member, test, type Api } from './fixtures'
+import { expect, member, rowAnswer, test, type Api } from './fixtures'
 
 // An agent's own question outlasts its turn (#193). An agent asks with
 // `conductor notify --ask` (the stub's `stub ask-wait`), then waits for the
@@ -175,7 +175,7 @@ test("an agent's question still shows Needs you once its turn ends, on its row, 
   expect((await api.session(id)).attention?.id).toBe(asked.attention?.id)
 
   // A reply from the row answers it: the stub reads the line, and the row moves on.
-  const field = row(page, id).locator('[data-row-reply] input, input[data-row-reply]').first()
+  const field = (await rowAnswer(page, row(page, id))).locator('[data-row-reply] input, input[data-row-reply]').first()
   await field.fill(REPLY)
   await field.press('Enter')
   await expect.poll(() => stubFile(state.home, stub, 'txt').split('\n'), { timeout: 15_000, message: 'the reply was typed' }).toContain(REPLY)

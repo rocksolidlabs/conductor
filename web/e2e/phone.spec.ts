@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, rowAnswer, test, type Session } from './fixtures'
 
 // The phone (design 3e): the list is a page of its own, not a drawer; the
 // pages sit in a bar at the foot, Decide first; a prompt is answered in the row with
@@ -73,7 +73,8 @@ test('the list is the home screen: the bar at the foot, the filter on top, a pro
   // The prompt in the row: full-width 44 px buttons; one answers.
   const row = list.locator(`[data-sidebar-row="s:${s.id}"]`).first()
   await expect(row.locator('[data-row-prompt]')).toHaveText('Which database?')
-  const choice = row.locator('[data-row-choice="2"]')
+  // The phone's list keeps its choices in the row, whole across its width (rowAnswer gives the row there).
+  const choice = (await rowAnswer(list.page(), row)).locator('[data-row-choice="2"]')
   const box = (await choice.boundingBox())!
   expect(box.height).toBeGreaterThanOrEqual(44)
   expect(box.width).toBeGreaterThanOrEqual(300)
@@ -151,7 +152,7 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more).toBeVisible()
-  await expect(more.getByRole('link')).toHaveText([/Roundhouse/, /Agents/, /Dispatch/, /Events/, /History/])
+  await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Events/, /History/])
   await expect(more.getByText('Browser notification')).toBeVisible()
   await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()

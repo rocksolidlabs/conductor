@@ -265,6 +265,20 @@ open deferred item from rounds 1 and 2, then the features below.
   active). Clicking an avatar opens the session; the rail has an expand
   button; `meta+B` / Alt+B toggles rail and full width. The choice is
   persisted per browser as before. Narrow screens keep the slideover.
+- **A question in the narrow sidebar (UX1 PR-8, owner decision 7).** Below
+  280 px (`NARROW_SIDEBAR_PX`, `narrowSidebar` in `web/app/utils/sidebar.ts`,
+  from the sidebar's drawn width) a row's question is clamped to two lines
+  (`data-row-clamped`) and the row shows an Answer button in place of its
+  choices; one panel for the list (`SidebarRowPanel.vue`, a popover that is
+  not modal, `data-row-panel`, `data-panel-for`) holds the name, the whole
+  question and the row's own prompt controls, labels wrapped. It is for the
+  focused row while it asks, or the row whose Answer was pressed
+  (`panelRow`); focus opens it without moving the focus, Answer moves the
+  focus into it, Escape gives the focus back to the row, and the list counts
+  the panel as its own, so typing in its field keeps the row focused (#596).
+  The phone's list, the palette, the pill, the Yard and the session page keep
+  the question whole. Specs reach a row's answer through `rowAnswer`
+  (`web/e2e/fixtures.ts`).
 - **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
   minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
   UX review's P5): its header is the mark, "Conductor" and your menu, about
@@ -377,6 +391,23 @@ open deferred item from rounds 1 and 2, then the features below.
   sidebar's section says what it leaves out: "+3 on the page", linked to the
   page. The pill steps through what it can answer, a stopped run's decision
   too, and says how many more wait in Needs you.
+- **The Yard's tiles lead with the name; the Roundhouse is a view of the
+  Yard (UX1 PR-17, #932).** A tile's header is its name, whole, with the
+  agent's initials, the event mark as its icon alone (its words in its
+  title), Yolo's icon, Resume and Open; the state is at the tile's foot, its
+  mark and word ("needs you", "working", "finished 28m ago", "running",
+  "starting"), before the host ("server" or the host's name) and the
+  viewers, and before a run page's branch and diff. The chips are All,
+  Needs you, Working and Finished, and Running while a session is in it,
+  each one state of the status table (`utils/wall.ts`, `yardFilter`); the
+  Needs you chip's number is in the text's colour, its mark amber, and its
+  tooltip says it counts the sessions on this grid alone. Below `sm` the
+  chips move to a row under the header. A switch in the header, Grid and
+  Roundhouse (`YardViews.vue`), goes between the two views; the Roundhouse
+  keeps `/roundhouse`, G R, Alt+R and `/carousel`, its header says Yard, and
+  it leaves the nav, the rail and the phone's More, where the Yard's row and
+  tab are current on both views (`pages.ts`, `viewOf`, `yardRoute`). Tests:
+  `wall.test.ts`, `pages.test.ts`, `yard-tiles.spec.ts`, `yard-views.spec.ts`.
 - **A Dispatch project's one toolbar, and columns that line up (UX1 PR-12,
   #927, 2026-11-16).** A project's page opens with its description as one
   line (its first paragraph as text, `descriptionLine` in
