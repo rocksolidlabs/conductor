@@ -127,6 +127,14 @@ function attemptTranscript(home: string, taskId: string, n: number): string {
 
 const command = () => ({ commandId: randomBytes(8).toString('hex') })
 
+// A route that lets every request through, set before the page loads and kept to its end: the tests' own routes come and go on top
+// of it, so the browser's interception is never switched on or off while the page has a request on its way. Playwright 1.44 never
+// lets through a request that the browser holds for interception just as its last route is removed: the sheet's capacity GET,
+// asked as `page.unroute` ended, hung until the store's 30 s deadline (#281).
+test.beforeEach(async ({ page }) => {
+  await page.route('**/*', (route) => route.fallback())
+})
+
 test.afterEach(async ({ api }) => {
   if (made.brakeman) {
     const { config } = await api.ok<{ config: { rev: number } }>('GET', '/api/brakeman')
