@@ -7,8 +7,8 @@ import { MEASURE_WAIT_MS, probeColour } from './layout'
 // off the seeded day as the browser draws it, at 1440 x 900 and at 390 x 844 with touch, in both themes. The pages are only looked
 // at: nothing is pressed, so the read-only day stays as it was.
 //
-// - The main action: a session page's bar has one filled button (`--ui-primary`, the forest fill) at most and Share is outlined; a
-//   live run's Open run is outlined.
+// - The main action: on the Needs you page the failed task's Retry and the waiting plan revision's Approve are the forest fill
+//   (`--ui-primary`); a session page's bar has one filled button at most and Share is outlined; a live run's Open run is outlined.
 // - The code font: the sentences (the run card's meta line, the inspector's People line) are set in the app's face; the ids (the run
 //   card's short run id, a task's id on the run page) stay in the code font.
 // - Amber: Not installed and an identified agent's badge on Agents are neither amber nor green; the Yard's Needs you chip keeps its
@@ -46,6 +46,23 @@ for (const size of SIZES) {
   for (const theme of THEMES) {
     const where = `${theme} at ${size.width}`
     const open = (browser: Parameters<typeof dayPage>[0], path: string) => dayPage(browser, { path, theme, width: size.width, height: size.height, touch: size.touch })
+
+    test(`the Needs you page's Retry and Approve are the forest fill, ${where}`, async ({ day, browser }) => {
+      budget(2 * MEASURE_WAIT_MS)
+      const w = await day.part('waiting')
+      // The failed task's Retry (a run's decision item has no Approve: the waiting plan revision's is read instead).
+      const task = `task:${w['Paging spike']}/index`
+      const page = await open(browser, `/decisions?item=${encodeURIComponent(task)}`)
+      const primary = await probeColour(page, 'var(--ui-primary)')
+      const retry = page.locator(`[data-inbox-item="${task}"] [data-inbox-action="retry"]`)
+      await expect(retry).toBeVisible({ timeout: MEASURE_WAIT_MS })
+      expect(await background(page, retry), "Retry is the failed task's main action").toBe(primary)
+      await page.goto(`/decisions?item=${encodeURIComponent('plan:CND-2/1')}`)
+      const approve = page.locator('[data-inbox-item="plan:CND-2/1"] [data-inbox-action="approve"]')
+      await expect(approve).toBeVisible({ timeout: MEASURE_WAIT_MS })
+      expect(await background(page, approve), "Approve is the waiting revision's main action").toBe(primary)
+      expect(await filledPrimaries(page.locator('[data-inbox-item="plan:CND-2/1"] [data-inbox-actions]')), 'one filled choice').toHaveLength(1)
+    })
 
     test(`a session's bar has one filled button and a run's card none, ${where}`, async ({ day, browser }) => {
       budget(4 * MEASURE_WAIT_MS)
