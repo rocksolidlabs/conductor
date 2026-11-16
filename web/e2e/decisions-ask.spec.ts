@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { inboxItem, stubInbox } from './inbox-stub'
 
 // Needs your decision, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
 // the address opened with no workbench token asks for it at once, the token saved shows the decision list, and a decide pass held
@@ -41,14 +42,11 @@ test('the address opened with no token asks for it at once; the token saved show
 
 const LONG = `${'Deploy the release candidate to every region '.repeat(5)}`.slice(0, 200)
 
-/** The list as the server shapes it: one open item and one answered and not yet applied, each with a 200-character title. */
+/** The list as the server shapes it (inbox-stub.ts): one open item and one answered and not yet applied, each with a 200-character title. */
 async function longRows(page: Page) {
-  const since = new Date(Date.now() - 5 * 60_000).toISOString()
-  const row = (ref: string, tracking: boolean) => ({ ref, kind: 'decision', since, title: LONG, brief: 'b', question: 'May it go out?', answerer: 'you', actions: ['Approve', 'Reject'], blocks: 1, ...(tracking ? { state: 'answered', tracking: true } : { state: 'open' }) })
-  await page.route(
-    (u) => u.pathname === '/api/inbox',
-    (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [row('decision:dr-901', false), row('decision:dr-902', true)], total: 2, tracking: 1, at: new Date().toISOString() }) }),
-  )
+  const row = (ref: string, tracking: boolean) =>
+    inboxItem('decision', { ref, title: LONG, brief: 'b', question: 'May it go out?', answerer: 'you', actions: ['Approve', 'Reject'], blocks: 1, ...(tracking ? { state: 'answered', tracking: true } : { state: 'open' }) })
+  await stubInbox(page, [row('decision:dr-901', false), row('decision:dr-902', true)])
 }
 
 for (const width of [360, 1440]) {
