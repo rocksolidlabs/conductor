@@ -61,7 +61,7 @@ watch(
     <ol v-if="!controls && decision.type !== 'assignment' && options.length" class="flex flex-col gap-1" data-decision-options>
       <li v-for="(o, i) in options" :key="i" class="flex min-w-0 flex-col rounded-md px-2.5 py-1.5 ring ring-default" :data-decision-option="i">
         <span class="flex flex-wrap items-center gap-2">
-          <span class="font-medium">{{ o.label }}</span>
+          <span class="min-w-0 font-medium wrap-anywhere" :data-decision-option-label="o.label">{{ o.label }}</span>
           <UBadge v-if="i === best" label="recommended" color="primary" variant="subtle" size="sm" data-decision-recommended />
         </span>
         <span v-if="o.tradeoffs" class="break-words text-xs text-muted">{{ o.tradeoffs }}</span>
@@ -112,7 +112,7 @@ watch(
     <dl v-if="answer" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-elevated/40 p-2 text-xs ring ring-default" data-decision-answer>
       <template v-if="answer.choice">
         <dt class="text-muted">Answer</dt>
-        <dd class="break-words font-medium" data-decision-answer-choice>{{ answer.choice }}</dd>
+        <dd class="font-medium wrap-anywhere" data-decision-answer-choice>{{ answer.choice }}</dd>
       </template>
       <template v-if="answer.text">
         <dt class="text-muted">{{ answer.choice ? 'Said' : 'Answer' }}</dt>

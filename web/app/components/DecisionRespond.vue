@@ -120,8 +120,9 @@ watch(
 <template>
   <section class="flex min-w-0 flex-col gap-2" data-decision-respond :data-decision-id="decision.id">
     <template v-if="answering">
-      <!-- The buttons are the choices (UX1 PR-20, invariant 6): each label whole, its words wrapped inside its button, never cut; the
-           buttons wrap, a choice longer than the row taking a row of its own; 44 px each way under touch (invariant 8). -->
+      <!-- The buttons are the choices (UX1 PR-20, invariant 6): each label whole, wrapped inside its button, a run with no space
+           (a hash) broken anywhere, never cut; the buttons wrap, a choice longer than the row taking a row of its own; 44 px each
+           way under touch (invariant 8). -->
       <div class="flex flex-wrap gap-2" data-decision-choices>
         <UButton
           v-for="(o, i) in options"
@@ -129,7 +130,7 @@ watch(
           :label="o.label"
           size="sm"
           class="max-w-full max-lg:min-h-11 max-lg:min-w-11"
-          :ui="{ label: 'text-clip whitespace-normal break-words text-start' }"
+          :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }"
           :color="(pending?.choice ?? picked) === i ? 'primary' : 'neutral'"
           :variant="(pending?.choice ?? picked) === i ? 'solid' : i === best ? 'soft' : 'outline'"
           :disabled="busy"
@@ -151,15 +152,15 @@ watch(
       <UTextarea v-model="rationale" :rows="1" autoresize placeholder="Why (optional, kept with the answer)…" :maxlength="2000" :disabled="busy" data-decision-rationale />
 
       <div v-if="pending" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
-        <p class="text-sm">
-          Answer {{ decision.id }} <span class="font-semibold">{{ options[pending.choice]?.label }}</span>?
+        <p class="text-sm wrap-anywhere">
+          Answer {{ decision.id }} <span class="font-semibold" data-decision-confirm-choice>{{ options[pending.choice]?.label }}</span>?
           <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
         </p>
         <p v-if="answerAsWords(decision)" class="text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">
           <UButton label="Back" color="neutral" variant="ghost" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="busy" data-decision-back @click="pending = null" />
-          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'text-clip whitespace-normal break-words text-start' }" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
+          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
         </div>
       </div>
       <div v-else-if="!confirms" class="flex items-center justify-end gap-2">
