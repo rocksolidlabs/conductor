@@ -381,7 +381,7 @@ usePalette().registerPage(() => ({
         <template #trailing>
           <div class="flex items-center gap-2 ml-2">
             <YardViews current="roundhouse" />
-            <span v-if="active.length" class="font-mono text-xs text-muted">{{ selected + 1 }} / {{ active.length }}</span>
+            <span v-if="active.length" class="text-xs text-muted tabular-nums">{{ selected + 1 }} / {{ active.length }}</span>
             <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
           </div>
         </template>
@@ -435,7 +435,7 @@ usePalette().registerPage(() => ({
                 <SessionAvatar :agent-id="item.agentId" size="md" solid />
                 <div class="flex min-w-0 flex-col">
                   <div class="flex items-center gap-2"><span class="truncate text-base font-semibold">{{ item.name }}</span><StatusMark :status="sessionStatus(item, clock)" word class="text-xs" :data-roundhouse-status="item.id" /></div>
-                  <span class="truncate font-mono text-[11.5px] text-muted">{{ meta(item) }}</span>
+                  <span class="truncate text-[11.5px] text-muted tabular-nums">{{ meta(item) }}</span>
                 </div>
                 <div class="ml-auto flex items-center gap-2">
                   <UBadge v-if="holdingId === item.id && jumpedAt" color="warning" variant="subtle" size="sm" icon="i-lucide-hand" :label="`Jumped here ${relativeTime(jumpedAt, now)} ago · holding ${holdLeft}s more`" />

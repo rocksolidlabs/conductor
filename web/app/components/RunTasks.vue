@@ -259,7 +259,7 @@ async function confirm() {
             <span class="flex min-w-0 items-center [grid-area:state]" data-task-col="state"><StatusMark :status="statusOf(t)" word data-task-status /></span>
             <span class="flex min-w-0 items-center gap-2 [grid-area:task]" data-task-col="task">
               <UIcon :name="t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" :title="t.kind" />
-              <span class="min-w-0 truncate font-mono font-semibold text-highlighted" :title="t.id" data-task-id>{{ t.id }}</span>
+              <span class="min-w-0 truncate font-mono font-semibold text-highlighted" :title="t.id" data-mono="id" data-task-id>{{ t.id }}</span>
             </span>
             <span class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-muted [grid-area:who]" data-task-col="who">
               <SessionAvatar :agent-id="agentOf(t.member)" />

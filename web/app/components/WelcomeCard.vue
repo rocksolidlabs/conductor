@@ -102,7 +102,7 @@ async function loadExamples() {
                 @click="launch.show({ agentId: a.id })"
               >
                 <span class="min-w-0 truncate" data-welcome-agent-name>{{ a.name }}</span>
-                <span v-if="a.version" class="ml-auto flex-none font-mono text-xs opacity-80" data-welcome-version>{{ a.version }}</span>
+                <span v-if="a.version" class="ml-auto flex-none font-mono text-xs opacity-80" data-mono="id" data-welcome-version>{{ a.version }}</span>
                 <span v-else-if="a.checking" class="ml-auto flex-none text-xs opacity-80" data-welcome-checking>checking…</span>
               </UButton>
               <UButton v-if="offered.rest" :label="`and ${offered.rest} more`" color="neutral" variant="link" class="self-start px-0 pointer-coarse:min-h-11" data-welcome-more @click="launch.show()" />

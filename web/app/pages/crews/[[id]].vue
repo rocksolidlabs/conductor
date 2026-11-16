@@ -798,7 +798,7 @@ usePalette().registerPage(() => ({
         <template #body>
           <div class="flex items-start gap-2.5 rounded-md bg-elevated px-3.5 py-3">
             <code class="min-w-0 flex-1 break-all font-mono text-xs select-all" data-view-link-url>{{ shownLink?.url }}</code>
-            <UButton label="Copy" icon="i-lucide-clipboard" size="sm" class="flex-none" @click="shownLink && copy(shownLink.url, 'Link copied', 'Anyone with it can watch every member.')" />
+            <UButton label="Copy" icon="i-lucide-clipboard" size="sm" color="neutral" variant="outline" class="flex-none" @click="shownLink && copy(shownLink.url, 'Link copied', 'Anyone with it can watch every member.')" />
           </div>
         </template>
         <template #footer>
