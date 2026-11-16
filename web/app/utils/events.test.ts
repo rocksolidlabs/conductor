@@ -474,7 +474,7 @@ describe('eventsRedirect', () => {
     expect(eventsRedirect({})).toEqual({ path: '/history', query: { view: 'feed' } })
     expect(eventsRedirect({ tab: 'feed' })).toEqual({ path: '/history', query: { view: 'feed' } })
     expect(eventsRedirect({ tab: 'routing' })).toEqual({ path: '/history', query: { view: 'feed', alerts: null } })
-    expect(eventsRedirect({ tab: 'integrations' })).toEqual({ path: '/agents', hash: '#reporting' })
+    expect(eventsRedirect({ tab: 'integrations' })).toEqual({ path: '/agents', query: {}, hash: '#reporting' })
     expect(eventsRedirect({ tab: 'nonsense' })).toEqual({ path: '/history', query: { view: 'feed' } })
     expect(eventsRedirect({ tab: ['routing', 'feed'] })).toEqual({ path: '/history', query: { view: 'feed' } })
   })

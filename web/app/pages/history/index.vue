@@ -207,7 +207,8 @@ const CAPTION = 'What was said (Conversation), decided (Decision) and checked (a
 
     <template #body>
       <div class="mx-auto w-full max-w-6xl min-w-0">
-        <UTabs v-model="view" :items="views" :content="false" color="neutral" variant="link" size="sm" aria-label="History's views" data-history-views />
+        <!-- Manual activation: a view changes on a click or Enter, never on the focus coming back to a tab (the palette closing). -->
+        <UTabs v-model="view" :items="views" :content="false" activation-mode="manual" color="neutral" variant="link" size="sm" aria-label="History's views" data-history-views />
       </div>
       <div v-if="view === 'feed'" class="mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col" data-history-feed>
         <p class="text-xs text-muted" data-history-feed-caption>Since this tab opened</p>

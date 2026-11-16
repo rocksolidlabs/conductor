@@ -5,10 +5,9 @@ import { dayPage, expect, test } from './fixtures'
 // rail, the palette's Go to rows, the phone's bar and its More. Each is compared with a literal list written here, so a change to the
 // pages' table (web/app/utils/pages.ts) changes this test with it. This server has Brakeman and is no desktop app: no Settings.
 
-/** The words of each match, read at one moment, once there are `n` of them. */
-async function words(l: Locator, n: number): Promise<string[]> {
-  await expect(l).toHaveCount(n)
-  return (await l.allTextContents()).map((s) => s.trim())
+/** The list drawn equals `want`, by each entry's name, polled while it fills: a failure names the first entry that differs. */
+async function drawn(l: Locator, want: string[], read: (s: string) => string = (s) => s) {
+  await expect.poll(async () => (await l.allTextContents()).map((s) => name(read(s).trim())), { message: `${l}` }).toEqual(want)
 }
 
 /** The first word group of a label: "Needs you 9" reads "Needs you", "Agents G A" reads "Agents". */
@@ -25,10 +24,10 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   // The sidebar's tiles, once the server has said it has Brakeman (its slot is held until then), and More's menu.
   const tiles = page.getByRole('navigation', { name: 'Pages' })
   await expect(tiles.locator('[data-sidebar-brakeman]')).toBeVisible()
-  expect((await words(tiles.locator('[data-sidebar-tile] [data-nav-label]'), 6)).map(name)).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'More'])
+  await drawn(tiles.locator('[data-sidebar-tile] [data-nav-label]'), ['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'More'])
   await tiles.locator('[data-sidebar-tile="more"]').click()
   const menu = page.getByRole('menu')
-  expect((await words(menu.getByRole('menuitem').locator('[data-slot="itemLabel"]'), 2)).map(name)).toEqual(['Agents', 'History'])
+  await drawn(menu.getByRole('menuitem').locator('[data-slot="itemLabel"]'), ['Agents', 'History'])
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
 
@@ -38,7 +37,7 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   const go = palette.locator('[data-palette-group="goto"] [data-palette-row] [data-palette-label]')
-  expect((await words(go, 10)).map(name)).toEqual(['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Feed', 'Paste invite'])
+  await drawn(go, ['Needs you', 'Yard', 'Roundhouse', 'Crews', 'Dispatch', 'Agents', 'Agents · Reporting', 'History', 'History · Feed', 'Paste invite'])
   await page.keyboard.press('Escape')
   await expect(palette).toBeHidden()
 
@@ -58,10 +57,10 @@ test('every list of the pages, as drawn', async ({ browser, state }) => {
   // The phone, with touch: the bar's five places, then More's pages.
   const phone = await dayPage(browser, { server: state, path: '/sessions', width: 390, height: 844, touch: true })
   const bar = phone.locator('[data-bottom-bar]')
-  expect((await words(bar.locator('[data-bottom-tab]'), 5)).map((s) => name(s.replace(/\d+\+?/g, '')))).toEqual(['Needs you', 'Sessions', 'Yard', 'Crews', 'More'])
+  await drawn(bar.locator('[data-bottom-tab]'), ['Needs you', 'Sessions', 'Yard', 'Crews', 'More'], (s) => s.replace(/\d+\+?/g, ''))
   // Brakeman shows once the phone's page has read that the server has it.
   await phone.locator('[data-bottom-tab="more"]').tap()
   const more = phone.locator('[data-bottom-more]')
   await expect(more.getByRole('link', { name: 'Brakeman' })).toBeVisible()
-  expect((await words(more.getByRole('link'), 4)).map(name)).toEqual(['Dispatch', 'Brakeman', 'Agents', 'History'])
+  await drawn(more.getByRole('link'), ['Dispatch', 'Brakeman', 'Agents', 'History'])
 })

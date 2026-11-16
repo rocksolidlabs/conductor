@@ -608,7 +608,7 @@ export function sparkBuckets(entries: ReadonlyArray<Pick<FeedEntry, 'at' | 'even
 /** Where an old link to the retired Events page lands (`/events`, `?tab=`): the feed in History, the rules in Alerts, Agents' Reporting. */
 export interface EventsLanding {
   path: string
-  query?: Record<string, string | null>
+  query: Record<string, string | null>
   hash?: string
 }
 
@@ -619,7 +619,8 @@ export interface EventsLanding {
  */
 export function eventsRedirect(query: Record<string, unknown>): EventsLanding {
   const tab = typeof query.tab === 'string' ? query.tab : ''
-  if (tab === 'integrations') return { path: '/agents', hash: '#reporting' }
+  // A redirect keeps the old address's query unless it gives one: each gives its own, so `tab=` never follows.
+  if (tab === 'integrations') return { path: '/agents', query: {}, hash: '#reporting' }
   if (tab === 'routing') return { path: '/history', query: { view: 'feed', alerts: null } }
   return { path: '/history', query: { view: 'feed' } }
 }
