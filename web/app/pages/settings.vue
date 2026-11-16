@@ -511,7 +511,12 @@ usePalette().registerPage(() => {
         </UCard>
 
         <UCard v-if="agents.length" :ui="cardUi" :class="sectionClass" data-settings-section="agents">
-          <template #header><SettingsCardTitle title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." /></template>
+          <template #header>
+            <div class="flex items-start gap-3">
+              <SettingsCardTitle class="min-w-0 flex-1" title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." />
+              <UButton label="Open Agents" to="/agents" icon="i-lucide-bot" size="xs" color="neutral" variant="outline" class="flex-none" data-settings-agents-link />
+            </div>
+          </template>
           <!-- Two columns once the column has room, so a long catalog stays within the visible body (#433). -->
           <ul class="grid gap-x-8 gap-y-1.5 text-sm @3xl:grid-cols-2">
             <li v-for="a in agents" :key="a.id" class="flex min-w-0 items-center gap-2" :data-agent="a.id">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Integration } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { noInstallText, snippetLeft } from '~/utils/integrations'
+import { noInstallText, reportStatus, snippetLeft } from '~/utils/integrations'
 import { shortCwd } from '~/utils/sessions'
 
 /**
@@ -24,17 +24,26 @@ const api = useSessions()
 const toast = useToast()
 const installing = ref('')
 
-/** Conductor's hooks reach the agent, from its own config or through a launch from this server. */
+/** Conductor's hooks reach the agent, from its own config or through a launch from this server (reportStatus, the one rule). */
 function wired(it: Integration): boolean {
-  return it.installed || it.launchInjection
+  return reportStatus(it).key === 'reports'
 }
 
-/** The status in the table; the snippet's header names the host. */
+/**
+ * The status in the table, in its own longer words; the snippet's header names the host. Installed and injected are drawn neutral:
+ * green is for a live agent.
+ */
 function status(it: Integration, long = false): { label: string; cls: string; dot: string } {
-  if (it.installed) return { label: `${it.events.length} ${it.events.length === 1 ? 'hook' : 'hooks'} installed`, cls: 'text-success', dot: 'bg-success' }
-  if (it.launchInjection) return { label: 'injected at launch', cls: 'text-success', dot: 'bg-success' }
-  if (it.experimental) return { label: 'experimental', cls: 'text-muted', dot: 'bg-neutral-400' }
-  return { label: long ? `not configured on ${props.host}` : 'not configured', cls: 'text-warning', dot: 'bg-warning' }
+  switch (reportStatus(it).key) {
+    case 'reports':
+      return it.installed
+        ? { label: `${it.events.length} ${it.events.length === 1 ? 'hook' : 'hooks'} installed`, cls: 'text-muted', dot: 'bg-neutral-400' }
+        : { label: 'injected at launch', cls: 'text-muted', dot: 'bg-neutral-400' }
+    case 'experimental':
+      return { label: 'experimental', cls: 'text-muted', dot: 'bg-neutral-400' }
+    default:
+      return { label: long ? `not configured on ${props.host}` : 'not configured', cls: 'text-warning', dot: 'bg-warning' }
+  }
 }
 
 // The open snippet: the first agent nothing wires, until the person picks another or hides it.
@@ -86,12 +95,13 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[12rem_9rem_
       <div
         v-for="it in integrations"
         :key="it.id"
-        class="grid items-center gap-x-4 gap-y-2 border-b border-default px-4 py-3 last:border-b-0"
+        class="grid scroll-mt-4 items-center gap-x-4 gap-y-2 border-b border-default px-4 py-3 last:border-b-0"
         :class="[cols, openId === it.id && 'bg-warning/8']"
         data-integration
         :data-id="it.id"
+        :id="`reporting-${it.id}`"
       >
-        <span class="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
+        <span class="col-span-2 col-start-1 row-start-1 flex min-w-0 items-center gap-2 @min-[64rem]:col-span-1">
           <SessionAvatar :agent-id="it.id" :solid="wired(it)" />
           <span class="truncate text-sm font-medium text-highlighted">{{ it.name }}</span>
         </span>
@@ -105,7 +115,7 @@ const cols = 'grid-cols-[minmax(0,1fr)_auto] @min-[64rem]:grid-cols-[12rem_9rem_
           <code v-if="it.where" class="block truncate font-mono text-[11.5px]" :title="it.where">{{ shortCwd(it.where) }}</code>
           <span v-else class="line-clamp-2" :title="noInstallText(it, homeKnown)" data-no-install>{{ noInstallText(it, homeKnown) }}</span>
         </span>
-        <span class="col-start-2 row-start-1 flex items-center justify-end gap-1.5 @min-[64rem]:col-start-5">
+        <span class="col-span-2 row-start-5 flex flex-wrap items-center gap-1.5 @min-[64rem]:col-span-1 @min-[64rem]:col-start-5 @min-[64rem]:row-start-1 @min-[64rem]:justify-end">
           <UButton v-if="it.snippet" :label="openId === it.id ? 'Hide snippet' : 'Snippet'" size="xs" color="neutral" variant="link" :aria-expanded="openId === it.id" data-snippet-toggle @click="toggle(it.id)" />
           <UButton v-if="it.where" label="Install on this machine" icon="i-lucide-download" size="xs" :color="it.installed ? 'neutral' : 'primary'" :variant="it.installed ? 'outline' : 'solid'" :loading="installing === it.id" @click="install(it)" />
         </span>

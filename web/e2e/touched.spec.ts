@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 import { scratchRepo } from './server'
 
 // Touched (design 4e): the files the agent read, edited, wrote or deleted,
@@ -141,7 +141,8 @@ for (const agent of ['codex', 'copilot', 'agy', 'goose'] as const) {
       await screen.click()
       await page.keyboard.type(`stub tools ${agent}`)
       await page.keyboard.press('Enter')
-      await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+      // The panel was left open on Explorer, and is kept so across the load (P11): Explorer shown, not clicked closed.
+      await showView(page, 'explorer')
       await page.locator('[data-inspector] [data-rail-item="activity"]').click()
       await page.locator('[data-inspector] [data-activity-filter="files"]').click()
       const readme = page.locator(`[data-inspector] [data-files-touched] [data-touched="${cwd}/README.md"]`)

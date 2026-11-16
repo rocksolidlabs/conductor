@@ -21,7 +21,10 @@ test('each rail item opens its view, the active one collapses the panel, the cou
     const item = (id: string) => rail.locator(`[data-rail-item="${id}"]`)
     await expect(rail).toBeVisible()
     await expect(rail.locator('[data-rail-item]')).toHaveCount(6)
-    // People opens first, pressed, with its bar.
+    // The panel is closed as the page opens (P11): the rail and its items shown, none pressed. People opens it, pressed, with its bar.
+    await expect(inspector).toHaveAttribute('data-inspector-open', 'false')
+    await expect(rail.locator('[data-rail-item][aria-pressed="true"]')).toHaveCount(0)
+    await item('people').click()
     await expect(item('people')).toHaveAttribute('aria-pressed', 'true')
     await expect(item('people').locator('[data-rail-active]')).toBeVisible()
     await expect(inspector.locator('[data-inspector-head="people"]')).toContainText('People')
@@ -49,11 +52,10 @@ test('each rail item opens its view, the active one collapses the panel, the cou
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')
     await page.locator('[data-inspector] [data-rail-toggle]').click()
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'true')
-    // At xl the bar has no Files or Chat button (#329): the rail's items are the way in. Explorer selects, and collapses when it
-    // already shows; Chat selects the chat item.
+    // At xl the bar has no Files or Chat button (#329): the rail's items are the way in. The toggle, no view chosen since the reload,
+    // opened on Explorer; Explorer collapses when it already shows; Chat selects the chat item.
     await expect(page.locator('button[aria-label="Files"]')).toBeHidden()
     await expect(page.locator('[data-chat-button]')).toBeHidden()
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator('[data-inspector] [data-rail-item="explorer"]')).toHaveAttribute('aria-pressed', 'true')
     await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')

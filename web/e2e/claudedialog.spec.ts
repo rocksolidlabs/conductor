@@ -7,8 +7,8 @@ import { expect, test, type Session } from './fixtures'
 // the dialog itself, never a fixed Yes / Always / No. The plan's approval
 // (drawn by the stub as Claude Code 2.1.304 draws it, after its hooks)
 // offers its own three choices in the reply bar and the sidebar's row; the
-// one that switches to auto mode has no number key and is not the
-// highlighted one, so its digit does nothing; each button writes its own
+// one that switches to auto mode has no number key and is never filled,
+// so its digit does nothing; each button writes its own
 // digit. A permission whose dialog the screen does not show is answered in
 // the terminal: no choices, and no reply field takes a line.
 test.describe.configure({ mode: 'serial' })
@@ -49,7 +49,7 @@ test("the plan's approval offers its own choices, the change of mode without a n
     { label: 'Tell Claude what to change', input: '3' },
   ])
 
-  // The reply bar: three choices, the change of mode without a number and outlined; the next one is the highlighted one.
+  // The reply bar: three choices, the change of mode without a number and outlined; none filled, since the agent recommends none.
   const bar = page.locator('[data-quick-reply]')
   await expect(bar.locator('[data-quick-reply-message]')).toHaveText(PLAN)
   // The choices alone: the bar also offers Open plan and Preview plan for the plan the approval is about (#289, #432).
@@ -58,7 +58,7 @@ test("the plan's approval offers its own choices, the change of mode without a n
   const mode = bar.locator('button[data-choice-mode]')
   await expect(mode).toHaveCount(1)
   await expect(mode).toContainText('Yes, and use auto mode')
-  await expect(mode).toHaveAttribute('title', "Changes the session's permission mode")
+  await expect(mode).toHaveAttribute('title', 'Allows from now on, not this request alone')
   await expect(mode.locator('kbd')).toHaveCount(0)
   await expect(choices.nth(1).locator('kbd')).toHaveText('2')
   await expect(choices.nth(2).locator('kbd')).toHaveText('3')
