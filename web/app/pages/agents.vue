@@ -238,7 +238,7 @@ usePalette().registerPage(() => ({
 <template>
   <UDashboardPanel id="agents">
     <template #header>
-      <UDashboardNavbar :toggle="false" title="Agents">
+      <UDashboardNavbar :toggle="false" title="Agents" data-agents-header>
         <template #right>
           <UButton icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="loading" aria-label="Refresh" data-agents-refresh @click="refresh"><span class="max-sm:sr-only">Refresh</span></UButton>
           <UButton label="Add agent" icon="i-lucide-plus" color="neutral" variant="outline" @click="addAgent" />

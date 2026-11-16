@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import { budget, dayPage, expect, test, type Api } from './fixtures'
-import { noSideways, probeColour, tapTarget, uncut } from './layout'
+import { noOverlap, noSideways, probeColour, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
@@ -73,6 +73,8 @@ test('each card says whether its agent reports to Conductor as the server answer
       const row = page.locator('[data-integration][data-id="claude"] [data-status]')
       expect(await background(page, row.locator('span').first()), `the claude row's dot at ${at}`).not.toBe(green)
       expect(await row.evaluate((el) => getComputedStyle(el).color).then((c) => probeColour(page, c)), `the claude row's words at ${at}`).not.toBe(green)
+      // The header's new Refresh fits beside Add agent and Launch agent, on a phone as on a desktop.
+      await noOverlap(page.locator('[data-agents-header]'))
       if (size.touch) await noSideways(page)
       await page.context().close()
     }
