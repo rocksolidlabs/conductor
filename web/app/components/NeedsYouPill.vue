@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { choiceKey } from '~/utils/attention'
 import { pillGoes } from '~/utils/needsCursor'
+import { pillWords } from '~/utils/needsYou'
 import { replyFailure } from '~/utils/reply'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
@@ -21,10 +22,13 @@ const attention = useAttention()
 const quick = useQuickReply()
 const toast = useToast()
 const router = useRouter()
+const route = useRoute()
 const root = useTemplateRef<HTMLElement>('root')
 
 const session = computed(() => (cursor.shown.value && !cursor.shown.value.decision ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
 const decisions = useDecisions()
+/** "2 of 4", and " · 2 more in Needs you" for the plans and tasks it cannot answer. */
+const countWords = computed(() => (cursor.shown.value ? pillWords(cursor.shown.value.n, cursor.shown.value.of, cursor.shown.value.more) : ''))
 const decisionModal = useDecisionModal()
 /** The decision the pill shows, while it is still open. */
 const lone = computed(() => (cursor.shown.value?.decision ? decisions.open.value.find((d) => d.id === cursor.shown.value!.decision) : undefined))
@@ -64,7 +68,8 @@ function open() {
   const s = session.value
   if (!s) return
   cursor.hide()
-  void router.push(`/sessions/${s.id}`)
+  // On the Yard the tile expands in place, where its bar takes a typed reply; elsewhere the session's page.
+  void router.push(pillTarget(route.path, s.id))
 }
 function answer(i: number) {
   const s = session.value
@@ -141,8 +146,8 @@ watch(
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate text-sm font-semibold text-highlighted">{{ session.name }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ cursor.shown.value.n }} of {{ cursor.shown.value.of }}</span>
-          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
+          <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
+          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || session.attention?.message || 'needs you' }}</p>
         <div v-if="prompt?.choices.length" class="mt-1.5 flex flex-wrap gap-1">
@@ -176,9 +181,9 @@ watch(
       <UIcon name="i-lucide-scale" class="mt-0.5 size-5 flex-none text-warning" />
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
-          <span class="truncate font-mono text-sm font-semibold text-highlighted">{{ lone.id }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ cursor.shown.value.n }} of {{ cursor.shown.value.of }}</span>
-          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
+          <span class="truncate font-mono text-sm font-semibold text-highlighted" data-mono="id">{{ lone.id }}</span>
+          <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
+          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ lone.request.question }}</p>
       </div>

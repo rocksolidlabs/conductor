@@ -188,7 +188,7 @@ test('the session page: the views show and never hide, Share, Copy a view link, 
   await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/stopped|ended/)
 })
 
-test("the other pages: the Yard's chips, the Roundhouse's switches and rotation, Crews' New crew, Events' tabs and refresh, Agents' Launch, Settings' Save", async ({ page, api }) => {
+test("the other pages: the Yard's chips, the Roundhouse's switches and rotation, Crews' New crew, Agents' refresh and Launch, Settings' Save", async ({ page, api }) => {
   // Six pages and some thirty palette opens and closes in one test: on a loaded machine (a load of 140, PR #503's full run) every step
   // went on and the whole took 2.1 m, past the config's 120 s for one test. Its own budget, tripled; each step keeps its own waits.
   test.slow()
@@ -197,9 +197,9 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   // The Yard: a chip row sets the filter and reads as on.
   await page.goto('/yard')
   await expect(page.locator('[data-yard-filter="all"]')).toBeVisible({ timeout: 30_000 })
-  await runRow(page, 'page:filter:running')
-  await expect(page.locator('[data-yard-filter="running"]')).toHaveAttribute('data-active', '')
-  expect(await switchOf(page, 'page:filter:running')).toBe('on')
+  await runRow(page, 'page:filter:working')
+  await expect(page.locator('[data-yard-filter="working"]')).toHaveAttribute('data-active', '')
+  expect(await switchOf(page, 'page:filter:working')).toBe('on')
   await runRow(page, 'page:filter:all')
   await expect(page.locator('[data-yard-filter="all"]')).toHaveAttribute('data-active', '')
   // The Roundhouse: the two switches flip and flip back; the rotation row's words follow the rotation.
@@ -225,14 +225,12 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await expect(page.locator('[data-palette]')).toBeHidden()
   await runRow(page, 'page:new')
   await expect(page).toHaveURL(/\/crews\/new/)
-  // Events: a tab row shows its tab and reads as on; Refresh asks the server again and shows its answer (the answer rewritten
-  // on the way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
-  await page.goto('/events')
-  await expect(page.locator('[data-events-tabs]')).toBeVisible({ timeout: 30_000 })
-  await runRow(page, 'page:tab:routing')
-  expect(await switchOf(page, 'page:tab:routing')).toBe('on')
-  await runRow(page, 'page:tab:integrations')
-  await expect(page.locator('[data-events-integrations-tab]')).toBeVisible()
+  // The Events page is retired: its tab row is History's Feed view row now (history-feed.spec.ts), its Refresh is Agents' below.
+  // Agents: Refresh asks the server again and its section Reporting to Conductor shows the answer (the answer rewritten on the
+  // way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[data-agents-reporting] [data-integration]').first()).toBeVisible({ timeout: 30_000 })
   await page.route('**/api/integrations', async (route) => {
     const res = await route.fetch()
     const body = (await res.json()) as { integrations: Array<{ name: string }> }
@@ -242,11 +240,9 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   const asked = page.waitForResponse((r) => r.url().includes('/api/integrations'))
   await runRow(page, 'page:refresh')
   await asked
-  await expect(page.locator('[data-events-integrations-tab]').getByText('(refreshed)').first()).toBeVisible()
+  await expect(page.locator('[data-agents-reporting]').getByText('(refreshed)').first()).toBeVisible()
   await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
-  await page.goto('/agents')
-  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
   await runRow(page, 'page:launch')
   await expect(page.getByLabel('Working directory')).toBeVisible({ timeout: 15_000 })
   await page.keyboard.press('Escape')
@@ -464,15 +460,23 @@ test("the Dispatch pages' rows (#409): go dispatch; the projects page's New proj
   await expect(page.locator('[data-view-dialog]')).toBeVisible()
   await page.locator('[data-view-dialog] [data-view-name-input]').fill('All of it')
   await page.locator('[data-view-submit]').click()
-  const chip = page.locator('[data-view-chip][data-view-name="All of it"]')
-  await expect(chip).toHaveAttribute('data-active', '')
-  const viewId = (await chip.getAttribute('data-view-chip')) ?? ''
+  // The Views button names the view applied, by its id.
+  const views = page.locator('[data-views-open]')
+  await expect(views).toHaveText('Views · All of it')
+  const viewId = (await views.getAttribute('data-applied')) ?? ''
+  expect(viewId).toMatch(/^[0-9a-f]{16}$/)
   try {
     await runRow(page, 'page:view:roadmap', 'show the roadmap')
     await expect(page.locator('[data-roadmap]')).toBeVisible()
+    await expect(views).not.toHaveAttribute('data-applied', /./)
     await runRow(page, `page:saved-view:${viewId}`, 'saved view: all of it')
     await expect(page.locator(`[data-ticket-row="${key}-1"]`)).toBeVisible()
-    await expect(chip).toHaveAttribute('data-active', '')
+    await expect(views).toHaveAttribute('data-applied', viewId)
+    // Filter the tickets… opens the toolbar's Filter popover.
+    await runRow(page, 'page:filter', 'filter the tickets')
+    await expect(page.locator('[data-filter-popover]')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('[data-filter-popover]')).toHaveCount(0)
     await runRow(page, 'page:new-ticket', `new ticket in ${key}`)
     await expect(page.locator('[data-new-ticket]')).toBeVisible()
     await page.keyboard.press('Escape')

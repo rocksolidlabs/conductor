@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { joinedDot, joinedOpen, joinedPath, type JoinedEntry } from '~/utils/joined'
+import { joinedOpen, joinedPath, type JoinedEntry } from '~/utils/joined'
+import { joinedStatus } from '~/utils/status'
 import { agentInitials } from '~/utils/sessions'
 
 /**
@@ -14,10 +15,12 @@ const route = useRoute()
 // it. Hidden, it takes no tap or click: a tap on the row opens the link, never forgets it unseen.
 const hovers = useMedia('(hover: hover)')
 
-const dots = { running: 'bg-success', idle: 'bg-neutral-400', ended: '', revoked: '', unreachable: 'bg-warning' }
+// The mark is what the entry knows (joinedStatus): running, starting or exited; a link that does not answer draws none and says so.
+// Revoked and gone are standing facts, muted; a link that does not answer is a read that failed, amber (the UX review's P16).
 function line(e: JoinedEntry): { text: string; warn: boolean } {
-  if (e.lastStatus === 'revoked') return { text: 'revoked', warn: true }
-  if (e.lastStatus === 'gone') return { text: 'gone', warn: true }
+  if (e.lastStatus === 'revoked') return { text: 'revoked', warn: false }
+  if (e.lastStatus === 'gone') return { text: 'gone', warn: false }
+  if (e.lastStatus === 'unreachable') return { text: 'not answering', warn: true }
   return { text: `through ${e.host}${e.hostedOn ? ` · on ${e.hostedOn}` : ''}`, warn: false }
 }
 function title(e: JoinedEntry): string {
@@ -31,7 +34,7 @@ function title(e: JoinedEntry): string {
       v-for="e in joined.list.value"
       :key="e.id"
       class="group relative flex items-center rounded-md"
-      :class="[(e.lastStatus === 'revoked' || e.lastStatus === 'gone') && 'opacity-75', focusedId === `j:${e.id}` && 'ring-2 ring-primary/40']"
+      :class="[focusedId === `j:${e.id}` && 'ring-2 ring-primary/40']"
       :data-row-focused="focusedId === `j:${e.id}` ? '' : undefined"
       :data-shared-entry="e.id"
       :data-shared-status="e.lastStatus ?? ''"
@@ -40,21 +43,29 @@ function title(e: JoinedEntry): string {
     >
       <NuxtLink
         :to="joinedPath(e)"
-        class="flex min-w-0 flex-1 items-start gap-2.5 rounded-md border px-2.5 py-2 transition-colors"
-        :class="[joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-elevated/60', !hovers && 'pr-10']"
+        class="flex min-w-0 flex-1 flex-col gap-0.5 rounded-md border px-2.5 py-2 transition-colors"
+        :class="[joinedOpen(route.path, e.token) ? 'bg-default border-default shadow-xs' : 'border-transparent hover:bg-canvas-hover', !hovers && 'pr-10']"
         :aria-current="joinedOpen(route.path, e.token) ? 'page' : undefined"
         :title="title(e)"
       >
-        <SessionAvatar v-if="e.kind === 'session'" :agent-id="e.agentId ?? ''" :dashed="e.lastStatus === 'revoked' || e.lastStatus === 'gone'" />
-        <span v-else class="grid size-6 flex-none place-items-center rounded-md bg-elevated text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
-        <span class="flex min-w-0 flex-1 flex-col">
-          <span class="flex items-center gap-1.5">
-            <span class="truncate text-sm font-medium text-highlighted" data-shared-name>{{ e.name }}</span>
-            <UIcon :name="e.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5 flex-none text-muted" :aria-label="e.role === 'control' ? 'control' : 'view only'" />
-          </span>
-          <span class="truncate font-mono text-[11px]" :class="line(e).warn ? 'text-warning' : 'text-muted'">{{ line(e).text }}</span>
+        <!-- As a session's row (SidebarSessionRow): the name on one line across the row, the mark at its end; the agent's initials (a
+             crew's icon for a run) as a chip at the start of the line below. -->
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span class="truncate text-sm font-medium" :class="e.lastStatus === 'revoked' || e.lastStatus === 'gone' ? 'text-muted' : 'text-highlighted'" data-shared-name>{{ e.name }}</span>
+          <UIcon :name="e.role === 'control' ? 'i-lucide-keyboard' : 'i-lucide-eye'" class="size-3.5 flex-none text-muted" :aria-label="e.role === 'control' ? 'control' : 'view only'" />
+          <StatusMark v-if="joinedStatus(e)" :status="joinedStatus(e)!" class="ml-auto" />
         </span>
-        <span v-if="dots[joinedDot(e)]" class="mt-2 size-[7px] flex-none rounded-full" :class="dots[joinedDot(e)]" />
+        <span class="flex min-w-0 items-center gap-1.5">
+          <span
+            v-if="e.kind === 'session'"
+            class="flex-none rounded px-1 font-mono text-[10px] leading-4 font-semibold select-none"
+            :class="e.lastStatus === 'revoked' || e.lastStatus === 'gone' ? 'border border-dashed border-accented text-muted' : 'bg-default text-toned'"
+            :title="e.agentId"
+            data-row-initials
+          >{{ agentInitials(e.agentId ?? '') }}</span>
+          <span v-else class="grid h-4 flex-none place-items-center rounded bg-default px-1 text-toned" data-row-initials><UIcon name="i-lucide-users" class="size-3" /></span>
+          <span class="min-w-0 truncate text-[11px]" :class="line(e).warn ? 'text-warning' : 'text-muted'" data-shared-line>{{ line(e).text }}</span>
+        </span>
       </NuxtLink>
       <!-- Forget shows over the row's corner on hover or focus, as a session row's actions do, so the name has the row's width (#906);
            on a touch screen it always shows (hovers). -->

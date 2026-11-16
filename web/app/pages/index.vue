@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { homeLeavesFor, sessionWorthOpening } from '~/utils/sessions'
 import { firstLandingInTab, homeNext, type HomeLanding } from '~/utils/inbox'
+import { pageState } from '~/utils/pageState'
 
 useHead({ title: 'Sessions' })
 
 const attention = useAttention()
 const admin = useWorkbenchToken()
 const launch = useLaunchModal()
+/** Set token opens the token dialog over the page: with a token held, the store's ask alone would open nothing. */
+const tokenDialog = useTokenDialog()
 /** Below lg the list is a page of its own (design 3e): a phone opens on it. */
 const wide = useMedia('(min-width: 64rem)')
 
@@ -44,6 +47,11 @@ watch(
 
 /** Wide with nothing to open, once the sessions have been read (an empty store before that says nothing): the welcome, which is not the sidebar's empty line (#359). The page stays, so that nothing moves under an open dialog. */
 const welcome = computed(() => wide.value && attention.loaded.value && !target.value && !attention.sessions.value.length)
+/**
+ * The other picture: nothing worth opening, judged once the sessions are read (P23); before, the reading shape. A session worth
+ * opening is the page's content: the home is leaving for it, and says it reads until it has.
+ */
+const shownState = computed(() => pageState({ read: attention.loaded.value, error: attention.error.value, count: target.value ? 1 : 0 }))
 
 onMounted(() => {
   if (!admin.hasToken.value) admin.needsToken.value = true
@@ -63,13 +71,22 @@ onMounted(() => {
     </template>
 
     <template #body>
-      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
+      <UAlert v-if="attention.error.value && shownState !== 'failed'" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: tokenDialog.show }]" />
       <WelcomeCard v-if="welcome" />
-      <div v-else class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8 text-center">
-        <UIcon name="i-lucide-terminal" class="size-10" />
-        <p class="text-sm">No active sessions. Launch an agent here or run <code>conductor host</code> from your machine.</p>
-        <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
-      </div>
+      <!-- The home is not a destination of the pages' table: no first line. -->
+      <PageEmpty
+        v-else
+        icon="i-lucide-terminal"
+        :state="shownState === 'content' ? 'reading' : shownState"
+        words="Nothing is running. Launch an agent, or resume one from Exited in the list."
+        thing="sessions"
+        :error="attention.error.value"
+        :actions="[
+          { label: 'Launch agent', icon: 'i-lucide-play', kbd: 'N', onClick: () => launch.show() },
+          { label: 'Set token', icon: 'i-lucide-key-round', failed: true, onClick: tokenDialog.show },
+        ]"
+        @again="attention.refresh()"
+      />
     </template>
   </UDashboardPanel>
 </template>

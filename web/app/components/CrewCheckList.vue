@@ -79,7 +79,7 @@ function setTimeout(i: number, text: string) {
         <UInput v-if="!noTimeout || !!c.timeoutSeconds" :model-value="secondsText(c.timeoutSeconds)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.timeout" :placeholder="String(timeoutDefault ?? TASK_LIMITS.timeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="w-24" @update:model-value="setTimeout(i, String($event))">
           <template #trailing><span class="text-xs text-muted">s</span></template>
         </UInput>
-        <UButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :aria-label="`Remove ${what} ${i + 1}`" @click="remove(i)" />
+        <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" :label="`Remove ${what} ${i + 1}`" @click="remove(i)" />
       </div>
       <span v-if="problem(c, i)" class="text-xs leading-snug text-error" data-check-error>{{ problem(c, i) }}</span>
     </div>

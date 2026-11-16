@@ -13,6 +13,7 @@ import { asBrakemanEvent, brakemanLive } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
+import { needsCount } from '~/utils/needsYou'
 
 const SETTINGS_KEY = 'conductor.attention.settings'
 /** Shortest gap between two chimes, so a burst of routed events plays one. */
@@ -107,7 +108,7 @@ export function useAttentionStore() {
  * Live session state for the whole app: one streaming fetch of
  * /api/events (workbench token in the Authorization header, never in the URL)
  * with polling as a fallback. Drives badges, counters, the tab title, the
- * favicon, browser notifications and the chime, as the Events page routes
+ * favicon, browser notifications and the chime, as the Alerts rules route
  * them, and hands every activity entry to useEvents.
  */
 export function useAttention() {
@@ -200,7 +201,7 @@ export function useAttention() {
   }
 
   /**
-   * Alerts for sessions that newly need input, when the Events page routes
+   * Alerts for sessions that newly need input, when the Alerts rules route
    * needs_input to Browser. They come from the session state, so each prompt
    * alerts once. A quiet session's question (a background Brakeman turn's)
    * stays in Needs you and alerts no one (alerting).
@@ -228,7 +229,7 @@ export function useAttention() {
     })
   }
 
-  /** Alerts for any other event the Events page routes to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
+  /** Alerts for any other event the Alerts rules route to Browser: artifact, tool_denied, error, exit_nonzero by default (eventAlert). */
   function reactToEvent(e: RoutedEvent) {
     const alert = eventAlert(e, events.routes.value)
     if (!alert) return
@@ -264,7 +265,8 @@ export function useAttention() {
   async function stream() {
     // The stream of the token before goes first, even with no token now: after "Forget token" it must not refill the store.
     abort?.abort()
-    if (!admin.token.value) return
+    // While the page to connect shows, the stream is not asked for with the missing or refused token: it opens once one is taken.
+    if (!admin.token.value || admin.gated.value) return
     abort = new AbortController()
     const signal = abort.signal
     try {
@@ -371,7 +373,7 @@ export function useAttention() {
   }
 
   async function poll() {
-    if (!admin.token.value) return
+    if (!admin.token.value || admin.gated.value) return
     try {
       replaceAll(await api.list())
       // The fallback while the stream is down reads the runs with the sessions, and the decision inbox.
@@ -393,19 +395,24 @@ export function useAttention() {
     pollTimer = window.setInterval(() => {
       // While the stream is down, or open but without its first snapshot yet (a stall before it), the list is read
       // directly, so that a page waiting for the sessions to be read (#359) is not left waiting.
-      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') {
+      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible' && !admin.gated.value) {
         poll()
         decisionsLive().down()
       }
     }, 3000)
+    // Another token: what the store holds goes and the stream opens with it. The page to connect shown: the stream stays shut; gone
+    // (a token taken, the same one again among them), the stream opens once, and its snapshot reads the rest as at a first load.
     watch(
-      () => admin.token.value,
-      () => {
-        store.value.sessions = new Map()
-        bump()
-        runs.clear()
-        events.reset()
-        stream()
+      () => [admin.token.value, admin.gated.value] as const,
+      ([token, gated], [before, wasGated]) => {
+        if (token !== before) {
+          store.value.sessions = new Map()
+          bump()
+          runs.clear()
+          events.reset()
+        }
+        if (gated) abort?.abort()
+        else if (token !== before || wasGated) stream()
       },
     )
   }
@@ -432,24 +439,32 @@ export function useAttention() {
   return { sessions, needsInput, count, connected, loaded, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
 }
 
-/** Tab title prefix and favicon dot while sessions need input. Call once, in app.vue. */
+/**
+ * The tab title's "(N)" and the favicon's dot: the one number of what needs you (useNeedsYou), the nav's, "(9+)" past a store cut short,
+ * none while it is not known. Call once, in app.vue.
+ */
 export function useAttentionHead() {
-  const { count } = useAttention()
+  const needs = useNeedsYou()
+  const shown = computed(() => (needs.number.value ? needsCount(needs.list.value) : ''))
   const faviconHref = ref('/brand/conductor-favicon.svg')
   if (import.meta.client) {
     watch(
-      count,
-      async (n) => {
-        faviconHref.value = await attentionFavicon(n > 0)
+      () => !!shown.value,
+      async (on) => {
+        faviconHref.value = await attentionFavicon(on)
       },
       { immediate: true },
     )
   }
-  useHead({
-    titleTemplate: (t) => {
-      const base = t ? `${t} · Conductor` : 'Conductor'
-      return count.value > 0 ? `(${count.value}) ${base}` : base
-    },
-    link: [{ key: 'icon', rel: 'icon', type: computed(() => (faviconHref.value.startsWith('data:') ? 'image/png' : 'image/svg+xml')), href: faviconHref }],
+  // A getter, so that the number read here is the head's dependency: the title follows it as it changes, not at the next page's title.
+  useHead(() => {
+    const n = shown.value
+    return {
+      titleTemplate: (t?: string) => {
+        const base = t ? `${t} · Conductor` : 'Conductor'
+        return n ? `(${n}) ${base}` : base
+      },
+      link: [{ key: 'icon', rel: 'icon', type: faviconHref.value.startsWith('data:') ? 'image/png' : 'image/svg+xml', href: faviconHref.value }],
+    }
   })
 }

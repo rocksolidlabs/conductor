@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
       </template>
     </UInputMenu>
   </div>
-  <UButton icon="i-lucide-folder" color="neutral" variant="outline" :aria-label="props.pickerTitle || 'Choose a folder'" data-dir-input-pick @click="openPicker" />
+  <IconButton icon="i-lucide-folder" color="neutral" variant="outline" :label="props.pickerTitle || 'Choose a folder'" data-dir-input-pick @click="openPicker" />
   <DirPickerModal v-if="pickerOpen" v-model:open="pickerOpen" :start="pickerStart" :title="props.pickerTitle || 'Choose a folder'" :anywhere="props.anywhere" @pick="onPicked" />
   </div>
 </template>

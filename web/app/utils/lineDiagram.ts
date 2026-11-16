@@ -243,6 +243,56 @@ export function placeLabels(stations: readonly LineStation[], direction: GraphDi
   })
 }
 
+/** A member as a station: the member it starts after is its one need; one started by hand is `manual`. */
+export interface MemberNode {
+  id: string
+  needs?: string[]
+  manual?: boolean
+}
+
+/**
+ * A crew's members as the line diagram draws them (UX1 PR-34): a member that starts after another needs it, so a crew without tasks
+ * is drawn by its start rules as lines too; a member after one not in the crew is a root (its need is left out, never warned of: the
+ * editor says it); one started by hand is marked `manual`.
+ */
+export function memberNodes(members: ReadonlyArray<{ name: string; start: { when: string; member?: string } }>): MemberNode[] {
+  const names = new Set(members.map((m) => m.name))
+  return members.map((m) => {
+    const n: MemberNode = { id: m.name }
+    if (m.start.when === 'after' && m.start.member && m.start.member !== m.name && names.has(m.start.member)) n.needs = [m.start.member]
+    if (m.start.when === 'manual') n.manual = true
+    return n
+  })
+}
+
+/** A step of the focus over a drawing, named as in `LR`: right and left along a line, down and up across the lanes. */
+export type LineStep = 'right' | 'left' | 'down' | 'up'
+
+/**
+ * The station a key moves the focus to from `id` (UX1 PR-33): right is the next station along its line and left the one before it (the
+ * station a branch leaves from, before a line's first); down and up the nearest station by depth on the lane below or above, the lower
+ * depth on a tie. Where there is none, the focus stays: `id` itself. The drawing maps the keys in `TB`, where a line runs down.
+ */
+export function stepFrom(layout: Pick<LineLayout, 'stations' | 'lines'>, id: string, step: LineStep): string {
+  const s = layout.stations.find((x) => x.id === id)
+  if (!s) return id
+  if (step === 'right' || step === 'left') {
+    const line = layout.lines.find((l) => l.id === s.line)
+    if (!line) return id
+    const i = line.stations.indexOf(id)
+    if (step === 'right') return line.stations[i + 1] ?? id
+    return line.stations[i - 1] ?? line.from ?? id
+  }
+  const lane = s.lane + (step === 'down' ? 1 : -1)
+  let best: LineStation | undefined
+  for (const o of layout.stations) {
+    if (o.lane !== lane) continue
+    const [dO, dB] = [Math.abs(o.depth - s.depth), best ? Math.abs(best.depth - s.depth) : Infinity]
+    if (!best || dO < dB || (dO === dB && o.depth < best.depth)) best = o
+  }
+  return best?.id ?? id
+}
+
 /** The tasks laid out as lines and stations; see the module's comment for the rule. */
 export function lineLayout(nodes: readonly DepthNode[], opts: LineOptions = {}): LineLayout {
   const direction = opts.direction ?? 'LR'

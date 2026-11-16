@@ -79,7 +79,7 @@ const decisionPage = (id: string) => `/decisions?item=${encodeURIComponent(`deci
             {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
             <NuxtLink :to="`/runs/${encodeURIComponent(r.run)}?view=tasks`" class="hover:underline">open the run</NuxtLink>
             ·
-            <NuxtLink :to="decisionPage(r.id)" class="hover:underline" :data-ticket-decision-item="r.id">on Needs your decision</NuxtLink>
+            <NuxtLink :to="decisionPage(r.id)" class="hover:underline" :data-ticket-decision-item="r.id">on Needs you</NuxtLink>
           </p>
         </div>
         <UButton :label="r.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="r.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="flex-none" :data-ticket-decision-open="r.id" @click="decisionModal.open(r.id)" />

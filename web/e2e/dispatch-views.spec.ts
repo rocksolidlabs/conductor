@@ -1,16 +1,29 @@
 import type { BrowserContext } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { freeProjectKey, makeMilestone, makeProject, makeTicket, mark, marked, rowKeys, secondBrowser, sideways, storedTicket } from './dispatch-helpers'
+import type { Page } from '@playwright/test'
+import { freeProjectKey, makeMilestone, makeProject, makeTicket, mark, marked, rowKeys, secondBrowser, storedTicket } from './dispatch-helpers'
+import { noSideways } from './layout'
 
 // A project's views (docs/plans/dispatch.md, PR-9): the filter in the link (?status=, ?q=), the list filtered by it; a saved view made,
-// its chip applying its filter, renamed and deleted; a view of every project saved by a second browser, its chip shown on the first's
-// open list with no reload and gone when the second deletes it; the board's columns with each ticket in its status, a drag to In review,
+// its row in the Views menu applying its filter, renamed and deleted, the button naming the view applied; a view of every project saved
+// by a second browser, its row shown in the first's open menu with no reload and gone when the second deletes it; the board's columns with each ticket in its status, a drag to In review,
 // a drop on Done the close policy refuses snapping back with its words, and ← → on a focused card; the roadmap's columns, Next and Now
 // by → and ← on a focused card, the milestones beside with done/total; and a phone's width (390 px) for the list, the board and the
 // ticket's page. Each test makes a project of its own (EV, EV1, EV2…) and counts only its rows.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
+
+/** The Views menu opened, its rows drawn (they draw in the popover's portal, outside the bar). */
+async function openViews(page: Page) {
+  // Whether the menu is open is the button's to say (aria-expanded): a menu just closed (applying a view closes it) is still drawn
+  // through its closing animation, and a check of the drawn menu alone would take it for open and lose the next click to its going.
+  const button = page.locator('[data-views-open]')
+  if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click()
+  await expect(button).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('[data-views-menu]')).toBeVisible()
+  return page.locator('[data-views-menu]')
+}
 
 test.afterEach(async () => {
   await other?.close()
@@ -43,60 +56,76 @@ test('the filter in the link: ?status= and ?q= list what they name, together too
   await expect(page).not.toHaveURL(/status=|q=/)
 })
 
-test('a saved view made, its chip applying its filter, renamed and deleted; a view of every project saved by a second browser shows on the first with no reload, and goes when it is deleted', async ({ page, api, state, browser }) => {
+test('a saved view made, its row applying its filter, renamed and deleted; a view of every project saved by a second browser shows on the first with no reload, and goes when it is deleted', async ({ page, api, state, browser }) => {
   const key = await freeProjectKey(api, 'EV')
   await makeProject(api, key)
   await makeTicket(api, key, '1', { title: 'Doing it', status: 'in_progress' })
   await makeTicket(api, key, '2', { title: 'Not yet' })
   const total = page.locator('[data-list-total]')
   const bar = page.locator('[data-views-bar]')
+  const button = page.locator('[data-views-open]')
 
-  // Saved from the filter shown: its chip says it is applied.
+  // Saved from the filter shown: its row says it is applied, and the button names it.
   await page.goto(`/dispatch/${key}?status=in_progress`)
   await expect(total).toHaveAttribute('data-count', '1')
   await expect(bar).toHaveAttribute('data-loaded', '')
-  await page.locator('[data-view-save]').click()
+  await expect(button).toHaveText('Views')
+  await (await openViews(page)).locator('[data-view-save]').click()
   const dialog = page.locator('[data-view-dialog]')
   await expect(dialog).toBeVisible()
   await dialog.locator('[data-view-name-input]').fill('Doing')
   await page.locator('[data-view-submit]').click()
   await expect(dialog).toBeHidden()
-  const chip = bar.locator('[data-view-chip][data-view-name="Doing"]')
-  await expect(chip).toHaveAttribute('data-active', '')
-  const id = (await chip.getAttribute('data-view-chip')) ?? ''
+  await expect(button).toHaveText('Views · Doing')
+  const id = (await button.getAttribute('data-applied')) ?? ''
   expect(id).toMatch(/^[0-9a-f]{16}$/)
+  const chip = (await openViews(page)).locator('[data-view-chip][data-view-name="Doing"]')
+  await expect(chip).toHaveAttribute('data-active', '')
+  expect(await chip.getAttribute('data-view-chip')).toBe(id)
   const saved = await api.ok<{ views: Array<{ id: string; name: string; kind: string; projectId: string; query: { status?: string[] } }> }>('GET', `/api/dispatch/views?project=${key}`)
   expect(saved.views.find((v) => v.id === id)).toMatchObject({ name: 'Doing', kind: 'list', query: { status: ['in_progress'] } })
 
-  // The list unfiltered: the chip is not applied; a click applies it, the filter written to the link.
+  // The list unfiltered: the row is not applied and the button names none; a click applies it, the filter written to the link.
   await page.goto(`/dispatch/${key}`)
   await expect(total).toHaveAttribute('data-count', '2')
-  const byId = bar.locator(`[data-view-chip="${id}"]`)
+  await expect(bar).toHaveAttribute('data-loaded', '')
+  await expect(button).toHaveText('Views')
+  await expect(button).not.toHaveAttribute('data-applied', /./)
+  const byId = page.locator(`[data-views-menu] [data-view-chip="${id}"]`)
+  await openViews(page)
   await expect(byId).toBeVisible()
   await expect(byId).not.toHaveAttribute('data-active', '')
   await byId.locator('[data-view-apply]').click()
   await expect(page).toHaveURL(/status=in_progress/)
   await expect(total).toHaveAttribute('data-count', '1')
+  await expect(button).toHaveAttribute('data-applied', id)
+  await openViews(page)
   await expect(byId).toHaveAttribute('data-active', '')
 
-  // Renamed from its menu.
+  // Renamed from its row's menu.
   await page.locator(`[data-view-menu="${id}"]`).click()
   await page.getByRole('menuitem', { name: 'Rename…' }).click()
   await expect(dialog.locator('[data-view-name-input]')).toHaveValue('Doing')
   await dialog.locator('[data-view-name-input]').fill('In flight')
   await page.locator('[data-view-submit]').click()
+  await expect(dialog).toBeHidden()
+  await expect(button).toHaveText('Views · In flight')
+  await openViews(page)
   await expect(byId).toHaveAttribute('data-view-name', 'In flight')
   await expect.poll(async () => (await api.ok<{ views: Array<{ id: string; name: string }> }>('GET', `/api/dispatch/views?project=${key}`)).views.find((v) => v.id === id)?.name).toBe('In flight')
 
-  // Deleted from its menu, asked first.
+  // Deleted from its row's menu, asked first.
   await page.locator(`[data-view-menu="${id}"]`).click()
   await page.getByRole('menuitem', { name: 'Delete…' }).click()
   await page.locator('[data-view-delete-confirm]').click()
+  await expect(button).toHaveText('Views')
+  await openViews(page)
   await expect(byId).toHaveCount(0)
+  await expect(page.locator('[data-views-menu] [data-views-none]')).toHaveText('No saved views yet.')
   expect((await api.ok<{ views: Array<{ id: string }> }>('GET', `/api/dispatch/views?project=${key}`)).views.some((v) => v.id === id)).toBe(false)
 
-  // A view of every project, saved by a second browser on another project's page: the first, open on its list, shows its chip with no
-  // reload, and loses it when the second deletes it.
+  // A view of every project, saved by a second browser on another project's page: the first, its Views menu open on its list, shows its
+  // row with no reload, and loses it when the second deletes it.
   const key2 = await freeProjectKey(api, 'EV')
   await makeProject(api, key2)
   await mark(page)
@@ -104,15 +133,17 @@ test('a saved view made, its chip applying its filter, renamed and deleted; a vi
   const second = await secondBrowser(other, state.token)
   await second.goto(`/dispatch/${key2}?priority=urgent`)
   await expect(second.locator('[data-views-bar]')).toHaveAttribute('data-loaded', '')
-  await second.locator('[data-view-save]').click()
+  await openViews(page)
+  await (await openViews(second)).locator('[data-view-save]').click()
   const name = `Urgent everywhere ${key}`
   await second.locator('[data-view-dialog] [data-view-name-input]').fill(name)
   await second.getByRole('radio', { name: /Every project/ }).click()
   await second.locator('[data-view-submit]').click()
-  const every = bar.locator(`[data-view-chip][data-view-name="${name}"]`)
+  const every = page.locator(`[data-views-menu] [data-view-chip][data-view-name="${name}"]`)
   await expect(every).toHaveAttribute('data-view-every', '')
   expect(await marked(page)).toBe('kept')
   const everyId = (await every.getAttribute('data-view-chip')) ?? ''
+  await openViews(second)
   await second.locator(`[data-view-menu="${everyId}"]`).click()
   await second.getByRole('menuitem', { name: 'Delete…' }).click()
   await second.locator('[data-view-delete-confirm]').click()
@@ -317,7 +348,7 @@ test('the save dialog holds while its save is on its way: Escape and Cancel leav
     await route.continue()
   })
   try {
-    await page.locator('[data-view-save]').click()
+    await (await openViews(page)).locator('[data-view-save]').click()
     const dialog = page.locator('[data-view-dialog]')
     await expect(dialog).toBeVisible()
     await dialog.locator('[data-view-name-input]').fill('Held')
@@ -330,7 +361,7 @@ test('the save dialog holds while its save is on its way: Escape and Cancel leav
     await expect(dialog.locator('[data-view-name-input]')).toHaveValue('Held')
     release()
     await expect(dialog).toBeHidden()
-    await expect(page.locator('[data-views-bar] [data-view-chip][data-view-name="Held"]')).toHaveAttribute('data-active', '')
+    await expect(page.locator('[data-views-open]')).toHaveText('Views · Held')
   } finally {
     release()
     await page.unroute(views)
@@ -351,19 +382,19 @@ test("at a phone's width (390 px) the list's rows wrap, the board scrolls sidewa
   const title = await row.locator('[data-row-title]').boundingBox()
   const updated = await row.locator('[data-row-updated]').boundingBox()
   expect(title && updated && updated.y > title.y).toBe(true)
-  expect(await sideways(phone)).toBeLessThanOrEqual(0)
+  await noSideways(phone)
 
   // The board: its columns scroll sideways inside it, the page does not.
   await phone.goto(`/dispatch/${key}?view=board`)
   const board = phone.locator('[data-board]')
   await expect(board.locator(`[data-column="in_progress"] [data-card="${key}-1"]`)).toBeVisible()
   expect(await board.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
-  expect(await sideways(phone)).toBeLessThanOrEqual(0)
+  await noSideways(phone, { allow: board })
 
   // The roadmap, the same.
   await phone.goto(`/dispatch/${key}?view=roadmap`)
   await expect(phone.locator('[data-roadmap] [data-column="none"]')).toBeVisible()
-  expect(await sideways(phone)).toBeLessThanOrEqual(0)
+  await noSideways(phone, { allow: phone.locator('[data-roadmap]') })
 
   // The ticket's page: one column, its properties under its title.
   await phone.goto(`/dispatch/${key}/1`)
@@ -371,5 +402,6 @@ test("at a phone's width (390 px) the list's rows wrap, the board scrolls sidewa
   const head = await phone.locator('[data-ticket-title]').boundingBox()
   const properties = await phone.locator('[data-ticket-properties]').boundingBox()
   expect(head && properties && properties.y > head.y && properties.x < 60).toBe(true)
-  expect(await sideways(phone)).toBeLessThanOrEqual(0)
+  // The strip of sections is one line that scrolls sideways inside itself by design; nothing else does.
+  await noSideways(phone, { allow: phone.locator('[data-ticket-strip]') })
 })

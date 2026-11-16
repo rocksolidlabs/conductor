@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, test, viaMore } from './fixtures'
 
 // The Agents page draws its list at once and fills each agent's state in as
 // the server's check of it answers (#704). The page's first read waits for
@@ -206,11 +206,11 @@ test('the reads of a page that was left are aborted, never stacked past two', as
     await expect(page.locator('[data-agent="codex"] [data-checking]')).toBeVisible()
     await expect.poll(() => asked).toBe(2 * round)
     await expect.poll(() => open).toBe(2)
-    await page.locator('a[href="/events"]').first().click()
-    await expect(page).toHaveURL(/\/events$/)
+    await viaMore(page, 'History')
+    await expect(page).toHaveURL(/\/history$/)
     // Left: the page's reads are aborted, none left open.
     await expect.poll(() => open).toBe(0)
-    if (round < 3) await page.locator('a[href="/agents"]').first().click()
+    if (round < 3) await viaMore(page, 'Agents')
   }
   expect(most).toBe(2)
   release()
@@ -251,13 +251,13 @@ test('a hide that answers after the page was left starts no read, and the page o
     await hiding
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
-    await page.locator('a[href="/events"]').first().click()
-    await expect(page).toHaveURL(/\/events$/)
+    await viaMore(page, 'History')
+    await expect(page).toHaveURL(/\/history$/)
     const before = quick
     const hidden = page.waitForResponse((r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname === '/api/catalog/opencode')
     release()
     expect((await hidden).ok()).toBe(true)
-    await page.locator('a[href="/agents"]').first().click()
+    await viaMore(page, 'Agents')
     await expect(page.getByRole('button', { name: 'Restore opencode' })).toBeVisible()
     await expect(page.locator('[data-agent="opencode"]')).toHaveCount(0)
     // One read of the catalog since the hide was let go: the reopened page's.

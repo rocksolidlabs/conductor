@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, member, test } from './fixtures'
+import { expect, member, rowAnswer, test } from './fixtures'
 
 // Codex's command approval (Codex 0.161, seen in the rc.7 app on
 // 2026-10-11): a crew member whose Codex asks, after its prompt, "Would you
@@ -72,8 +72,10 @@ test("a Codex member's command approval is in Needs you with its words and three
     }
   }, state.token)
   await yard.goto('/yard')
-  const yardCard = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
-  await expect(yardCard).toBeVisible({ timeout: 30_000 })
+  const yardAsk = yard.locator(`[data-session-tile][data-session-id="${id}"] [data-tile-ask]`)
+  const yardRow = yard.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
+  await expect(yardAsk).toBeVisible({ timeout: 30_000 })
+  await expect(yardRow).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await page.goto(`/sessions/${id}`)
   const screen = page.locator('.terminal-host .xterm-screen').first()
   await expect(screen).toBeVisible()
@@ -81,7 +83,9 @@ test("a Codex member's command approval is in Needs you with its words and three
   await page.keyboard.press('y')
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read y' }).toContain('approval: approved\n')
   await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
-  await expect(yardCard).toHaveCount(0, { timeout: 15_000 })
+  // The other tab, read where the answer is judged: the tile no longer asks, and its row left Needs you.
+  await expect(yardAsk).toHaveCount(0, { timeout: 15_000 })
+  await expect(yardRow).not.toHaveAttribute('data-row-state', 'needs', { timeout: 15_000 })
   // The session's own report: the question answered in the terminal, or gone already with the screen.
   await expect.poll(async () => { const a = (await api.session(id)).attention; return a?.state !== 'needs_input' || a.answered === 'terminal' }, { timeout: 15_000 }).toBe(true)
   expect(member(await api.run(run.id), 'fetch').needsInput, 'the run view no longer counts the member waiting').not.toBe(true) // left out when false
@@ -95,15 +99,17 @@ test("a Codex member's command approval is in Needs you with its words and three
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
   await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
   await expect(row.locator('[data-row-prompt]')).toHaveText(words)
-  await expect(row.locator('[data-row-choice]')).toHaveCount(3)
-  await expect(row.locator('[data-row-choice="2"]')).toContainText("Yes, and don't ask again")
-  // Every choice, the long third one included, stays within the row's edge (#137).
-  const edges = await row.evaluate((el) => {
+  // In the row, or in the panel beside it in a narrow sidebar (rowAnswer).
+  const answers = await rowAnswer(page, row)
+  await expect(answers.locator('[data-row-choice]')).toHaveCount(3)
+  await expect(answers.locator('[data-row-choice="2"]')).toContainText("Yes, and don't ask again")
+  // Every choice, the long third one included, stays within the edge of what holds it (#137).
+  const edges = await answers.evaluate((el) => {
     const right = el.getBoundingClientRect().right
     return Array.from(el.querySelectorAll('[data-row-choice]')).map((b) => Math.round(b.getBoundingClientRect().right - right))
   })
   for (const over of edges) expect(over, `a choice past the row's edge by ${over}px`).toBeLessThanOrEqual(0)
-  await row.locator('[data-row-choice="1"]').click()
+  await answers.locator('[data-row-choice="1"]').click()
   await expect.poll(async () => ((await transcript()).match(/^approval: approved$/gm) ?? []).length, { timeout: 15_000, message: 'the stub read y' }).toBe(2)
   // The turn ends as Codex's did in the rc.7 app: done, then the bell. The bell is the turn's own: the member stays done.
   await expect.poll(async () => ((await transcript()).match(/^bell: after done$/gm) ?? []).length, { timeout: 15_000, message: 'the stub rang after its done' }).toBe(2)
@@ -116,11 +122,12 @@ test("a Codex member's command approval is in Needs you with its words and three
   await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/broadcast`, { text: 'stub approve curl -sI https://example.com' })
   await expect.poll(source, { timeout: 30_000, message: 'the approval is asked again' }).toBe('question')
   expect((await api.session(id)).attention?.message).toBe(words)
-  await page.goto('/yard')
-  const card = page.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
+  await page.goto(`/yard?focus=${id}`)
+  const card = page.locator('[data-yard-focus] [data-quick-reply]')
   await expect(card).toBeVisible({ timeout: 30_000 })
-  await expect(card).toContainText(words)
-  await expect(card.getByRole('button', { name: /^(Yes, proceed|Yes, and don't ask again|No, tell Codex what to do differently)$/ })).toHaveCount(3)
+  await expect(card.locator('[data-quick-reply-message]')).toHaveText(words)
+  // The bar's buttons lead with their number key: each named by its label after it.
+  await expect(card.getByRole('button', { name: /(Yes, proceed|Yes, and don't ask again|No, tell Codex what to do differently)$/ })).toHaveCount(3)
   await card.getByRole('button', { name: /No, tell Codex what to do differently/ }).click()
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read Escape' }).toContain('approval: declined\n')
   expect((await transcript()).match(/^approval: /gm)).toHaveLength(3)

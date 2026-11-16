@@ -57,6 +57,18 @@ const (
 	SourceScreen = "screen"
 )
 
+// ReportsTurn reports whether a change of state from source is the agent
+// saying where its turn stands (Info.Turns): a working or a done from its
+// hooks (api), its window title or its program status. A bell, an OSC
+// notification, the screen pattern and an operator's mark (admin) say
+// nothing of a turn.
+func ReportsTurn(state AttentionState, source string) bool {
+	if state != AttentionWorking && state != AttentionDone {
+		return false
+	}
+	return source == SourceAPI || source == SourceTitle || source == SourceStatus
+}
+
 // Attention kinds describe the shape of a needs-input prompt so clients can
 // offer quick replies. An empty kind is a free-text prompt of unknown shape.
 const (
@@ -181,6 +193,9 @@ type Attention struct {
 	// that approval names the plan for, and the one that keeps the plan of
 	// the report it takes the place of. Kept by the session, never sent.
 	approval bool
+	// form marks a dialog read off the screen as a form (StartupQuestion.form,
+	// #716). Kept by the session, never sent.
+	form bool
 }
 
 // Asked reports whether a is the agent's own question (Local.Ask): what a

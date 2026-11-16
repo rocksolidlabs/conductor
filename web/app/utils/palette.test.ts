@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { capGroup, dropPrefix, frecency, matchRange, MODE_PREFIX, noteUse, PAGES, parsePrefix, parseVerb, placeAfter, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
+import type { SessionInfo } from '~/composables/useSessions'
+import type { Decision } from './decisions'
+import type { InboxSummary } from './inbox'
+import { needsYou } from './needsYou'
+import { DEFAULT_FOLDS, sidebarModel } from './sidebar'
+import { foldActions, sessionGroups, capGroup, dropPrefix, frecency, matchRange, MODE_PREFIX, noteUse, GO_PAGES, parsePrefix, parseVerb, placeAfter, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
 
 const names: Named[] = [
   { kind: 'session', id: 's1', name: 'api sweep', words: ['/home/dev/conductor', 'claude'] },
@@ -150,7 +155,7 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
   })
 
   it('goes to Dispatch with go dispatch, and keeps twelve verbs', () => {
-    expect(PAGES).toContain('dispatch')
+    expect(GO_PAGES).toContain('dispatch')
     expect(parseVerb('go dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
     expect(parseVerb('go Dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
     expect(VERBS).toHaveLength(12)
@@ -158,7 +163,7 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
   })
 
   it('goes to History with go history, under no prefix and under `>` (Program item HS1, PR-7)', () => {
-    expect(PAGES).toContain('history')
+    expect(GO_PAGES).toContain('history')
     expect(parseVerb('go history', names)).toEqual({ verb: 'go', page: 'history' })
     expect(parseVerb('go History', names)).toEqual({ verb: 'go', page: 'history' })
     // `> go history`: the actions mode reads the rest as the verb, as under no prefix.
@@ -220,5 +225,64 @@ describe("history's prefix (Program item HS1, docs/plans/history.md, PR-7)", () 
     expect(ids(placeAfter([g('runs'), g('shared')], g('history'), after))).toEqual(['runs', 'history', 'shared'])
     expect(ids(placeAfter([g('shared'), g('goto')], g('history'), after))).toEqual(['history', 'shared', 'goto'])
     expect(ids(placeAfter([g('tickets'), g('shared')], g('history', 0), after))).toEqual(['tickets', 'shared'])
+  })
+})
+
+// The UX review's P3: the palette's two groups of what waits are one, "Needs you", and nothing in it is listed twice.
+describe('sessionGroups: one Needs you group (UX1 PR-13)', () => {
+  const T = (m: number) => `2026-10-01T09:${String(m).padStart(2, '0')}:00Z`
+  const session = (id: string, over: Partial<SessionInfo> = {}) =>
+    ({ id, name: id, kind: 'server', agentId: 'claude', command: [], cwd: '/w', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: T(0), ...over }) as SessionInfo
+  const asks = (id: string, at: number, decision?: string) => session(id, { attention: { state: 'needs_input', id: `q-${id}`, since: T(at), message: 'May I?', ...(decision ? { decision } : {}) } as SessionInfo['attention'] })
+  const record = (id: string, run: string, at: number) => ({ id, run, openedIn: run, origin: 'plan', type: 'approval', gate: 'g', request: { question: `${id}?` }, policy: {}, state: 'open', rev: 1, createdAt: T(at) }) as unknown as Decision
+  const summary = (ref: string, kind: string, at: number): InboxSummary => ({ ref, kind, since: T(at), title: `the ${kind}`, brief: '', question: '', answerer: '', actions: [] })
+
+  const sessions = [asks('loose', 3), asks('mirror', 4, 'dr-1'), session('worker'), session('gone', { status: 'exited' })]
+  const records = [record('dr-1', 'r1', 1), record('dr-2', 'r2', 2)]
+  // The inbox lists the question too, and the gate: never a second row of either.
+  const inbox = [summary('question:loose/q-loose', 'question', 3), summary('decision:dr-2', 'decision', 2), summary('plan:CND-2/1', 'plan', 5), summary('task:r3/build', 'task', 6)]
+  const list = needsYou({
+    sessions: { list: sessions, loaded: true, error: '' },
+    decisions: { records, loaded: true, error: '', cut: false },
+    inbox: { items: inbox, loaded: true, error: '', next: '', unavailable: '' },
+    runOf: () => ({}),
+  })
+  const make = {
+    answerAll: () => ['answer-all'],
+    session: (s: SessionInfo) => `session:${s.id}`,
+    decisions: (open: readonly Decision[], inSession: (id: string) => string | undefined) => open.map((d) => `decision:${d.id}${inSession(d.id) ? ` in ${inSession(d.id)}` : ''}`),
+    item: (it: { kind: string; ref: string }) => `${it.kind === 'plan' ? 'Plan' : 'Task'}: ${it.ref}`,
+  }
+
+  it('lists every item once: the question, the decisions (a mirrored question as its record), the plan and the task', () => {
+    const groups = sessionGroups(sidebarModel(sessions, () => undefined, list.items), list.items, make)
+    expect(groups.needs).toEqual(['answer-all', 'session:loose', 'decision:dr-2', 'decision:dr-1 in mirror', 'Plan: plan:CND-2/1', 'Task: task:r3/build'])
+    // The question that is also an inbox item: one row.
+    expect(groups.needs.filter((r) => r.includes('loose'))).toHaveLength(1)
+    // The mirrored question's session is in Working; nothing of Needs you is listed again.
+    expect(groups.working).toEqual(['session:mirror', 'session:worker'])
+    expect(groups.finished).toEqual([])
+    expect(groups.exited).toEqual(['session:gone'])
+  })
+
+  // The UX review's P4: the palette's Running group is Finished then Working, and the fold actions name the five sections.
+  it('groups the sessions Finished then Working, a host away that does not ask in Exited', () => {
+    const turns = (id: string, state: 'done' | 'working') => session(id, { turns: true, attention: { state, source: 'api', since: T(state === 'done' ? 7 : 8) } as SessionInfo['attention'] })
+    const list2 = [turns('ended-turn', 'done'), turns('in-turn', 'working'), session('quiet'), session('away', { status: 'host_disconnected' as SessionInfo['status'] })]
+    const groups = sessionGroups(sidebarModel(list2), [], make)
+    expect(Object.keys(groups)).toEqual(['needs', 'finished', 'working', 'exited'])
+    expect(groups.finished).toEqual(['session:ended-turn'])
+    expect(groups.working.sort()).toEqual(['session:in-turn', 'session:quiet'])
+    expect(groups.exited).toEqual(['session:away'])
+  })
+
+  it('names one fold action per section, in the sidebar\'s order', () => {
+    expect(foldActions({ ...DEFAULT_FOLDS }).map((f) => f.label)).toEqual([
+      "Fold the sidebar's Needs you",
+      "Fold the sidebar's Finished",
+      "Fold the sidebar's Working",
+      "Fold the sidebar's Shared with you",
+      "Unfold the sidebar's Exited",
+    ])
   })
 })

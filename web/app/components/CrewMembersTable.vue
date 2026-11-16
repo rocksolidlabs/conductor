@@ -275,7 +275,7 @@ const focusedPrompt = ref<number | null>(null)
 
         <div :class="cell.menu" class="flex h-8 items-center justify-end">
           <UDropdownMenu v-if="!single" :items="menu(m, i)" :content="{ align: 'end' }">
-            <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${who(m, i)}: more`" data-member-menu />
+            <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :label="`${who(m, i)}: more`" data-member-menu />
           </UDropdownMenu>
         </div>
       </div>

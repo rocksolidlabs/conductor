@@ -1,5 +1,19 @@
 import type { Integration } from '~/composables/useSessions'
 
+/** Where an agent stands with Conductor's hooks: the one rule the Agents page's cards, its table and History's feed's aside read. */
+export type ReportKey = 'reports' | 'experimental' | 'unset' | 'none'
+
+/**
+ * Whether an agent reports to Conductor, from its adapter's integration (`undefined`: an agent with no adapter). Its hooks reach it
+ * when they are installed or a launch from this server injects them; an adapter still in preview says so; any other is not set up.
+ */
+export function reportStatus(it: Pick<Integration, 'installed' | 'launchInjection' | 'experimental'> | undefined): { key: ReportKey; words: string } {
+  if (!it) return { key: 'none', words: 'No hooks: it reports by the bell or a screen pattern' }
+  if (it.installed || it.launchInjection) return { key: 'reports', words: 'Reports to Conductor' }
+  if (it.experimental) return { key: 'experimental', words: 'Experimental' }
+  return { key: 'unset', words: 'Not set up' }
+}
+
 /** Why an integration card has no Install button. An adapter with no file to install into says so first, whatever the server's home. */
 export function noInstallText(it: Pick<Integration, 'installable' | 'launchInjection'>, homeKnown: boolean): string {
   if (!it.installable) return it.launchInjection ? 'Nothing to install: this server wires it at launch; anywhere else, paste the snippet.' : 'Nothing to install: paste the snippet.'

@@ -64,7 +64,7 @@ const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : needs.value ? 
       </UPopover>
       <span v-else class="flex items-center gap-0.5 rounded bg-default/90 px-1 text-[10px] text-muted">
         {{ needs ? 'needs' : 'when done' }}
-        <UButton v-if="data.editable && !needs" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="-mr-1 size-4 p-0" :aria-label="`${e.to} no longer starts after ${e.from}`" data-graph-edge-delete @click="emit('disconnect', e.to)" />
+        <IconButton v-if="data.editable && !needs" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="-mr-1 size-4 p-0" :label="`${e.to} no longer starts after ${e.from}`" data-graph-edge-delete @click="emit('disconnect', e.to)" />
       </span>
     </div>
   </EdgeLabelRenderer>

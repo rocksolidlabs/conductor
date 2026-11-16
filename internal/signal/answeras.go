@@ -26,10 +26,19 @@ import (
 // to the attention shown with a new kept takes the kept and records
 // nothing else.
 func (h *HostedSession) HostAttentionKept(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool, answered, plan string, kept []string) {
+	h.HostAttentionTurns(state, message, source, kind, options, id, ask, answered, plan, kept, false)
+}
+
+// HostAttentionTurns is HostAttentionKept with the host's word that its
+// session's agent reports its turns (proto.HostAttentionMsg.Turns, its
+// Info.Turns): true is learned, as a report of the agent's own teaches it,
+// and kept; false, an older host's or a session whose agent has reported
+// nothing yet, leaves the copy learning from the reports alone.
+func (h *HostedSession) HostAttentionTurns(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool, answered, plan string, kept []string, turns bool) {
 	if !proto.ValidQuestionID(id) {
 		id = ""
 	}
-	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan, kept)
+	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan, kept, turns, "")
 }
 
 // HostView is the session as its host last said it: its Info, with the

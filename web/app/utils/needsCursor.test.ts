@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { nextNeeding, PILL_MS, pillGoes, pillMs, sameQuestions } from './needsCursor'
+import { nextNeeding, PILL_MS, pillGoes, pillMs, pillTarget, sameQuestions } from './needsCursor'
 
 function asking(id: string, message: string, labels: string[], extra: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -82,5 +82,17 @@ describe('pillGoes', () => {
     const decision = { decision: 'dr-1' }
     expect(pillGoes(decision, undefined, undefined)).toBe(false)
     expect(pillGoes(decision, 'working', 'q1')).toBe(false)
+  })
+})
+
+describe("the pill's Enter", () => {
+  it('expands the tile in place on the Yard, and opens the session page everywhere else', () => {
+    expect(pillTarget('/yard', 's1')).toBe('/yard?focus=s1')
+    expect(pillTarget('/yard?filter=needs', 's1')).toBe('/yard?focus=s1')
+    expect(pillTarget('/roundhouse', 's1')).toBe('/sessions/s1')
+    expect(pillTarget('/agents', 's1')).toBe('/sessions/s1')
+    expect(pillTarget('/yardx', 's1')).toBe('/sessions/s1')
+    expect(pillTarget('/yard', 'a/b')).toBe('/yard?focus=a%2Fb')
+    expect(pillTarget('/agents', 'a/b')).toBe('/sessions/a%2Fb')
   })
 })

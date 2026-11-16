@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, test } from './fixtures'
+import { Api, expect, test, tokenAsk } from './fixtures'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
 // Brakeman's authorized actions on the app's pages (docs/plans/brakeman.md, PR-13), on a server of its own (as brakeman-cards.spec.ts).
@@ -503,13 +503,13 @@ test('Settings opened before the right token was saved offers the grants once it
     localStorage.setItem('conductor.displayName', 'Nate')
   }, wrong)
   await page.goto(`${server!.baseURL}/settings`)
-  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  const gate = tokenAsk(page)
   await expect(gate).toBeVisible({ timeout: 30_000 })
   await expect.poll(() => heldWrong).toBeGreaterThanOrEqual(1)
   const field = gate.getByPlaceholder('paste the workbench token')
   await field.fill(server!.token)
   await expect(field).toHaveValue(server!.token)
-  await gate.getByRole('button', { name: 'Save' }).click()
+  await gate.getByRole('button', { name: 'Connect' }).click()
   await expect(gate).toHaveCount(0)
   // The wrong token's refusal, answered after the save: the page has its whole body before the right token's read is let go.
   const late = page.waitForResponse((r) => r.url().includes('/api/guide?') && r.request().headers()['authorization'] === `Bearer ${wrong}`)

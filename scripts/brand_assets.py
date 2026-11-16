@@ -134,11 +134,15 @@ def validate() -> None:
         if junction.tag != f"{{{NS}}}path" or not junction.get("d", "").endswith("Z"):
             raise ValueError(f"{path.name}: missing closed parallelogram")
     css = (ASSETS / "tokens.css").read_text(encoding="utf-8")
+    # The brand's own tokens only: the switchyard's block after them sets the same names to its zinc values.
+    css = css.split("[data-conductor-theme", 1)[0]
     tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9A-Fa-f]{6});", css))
     for front, back in (("--conductor-text", "--conductor-surface"),
                         ("--conductor-muted", "--conductor-surface"),
                         ("--conductor-accent-text", "--conductor-surface"),
-                        ("--conductor-on-action", "--conductor-action")):
+                        ("--conductor-on-action", "--conductor-action"),
+                        ("--conductor-dark-text", "--conductor-dark-panel"),
+                        ("--conductor-dark-muted", "--conductor-dark-panel")):
         a, b = sorted((luminance(tokens[front]), luminance(tokens[back])))
         ratio = (b + 0.05) / (a + 0.05)
         if ratio < 4.5:

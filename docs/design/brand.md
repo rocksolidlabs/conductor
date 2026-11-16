@@ -69,6 +69,18 @@ in the generator; simply shrinking the double-route mark is not optical sizing.
 | Accent text / focus | `#A44727` | Darker accent for text and focus outlines |
 | Panel | `#FFFFFF` | Light content panels |
 | Border | `#BFC9BE` | Decorative separation, not the sole control affordance |
+| Deep ink | `#0C1410` | The dark theme's sidebar canvas, a step below the ink page |
+
+The workbench draws every grey from one scale between these anchors, the
+neutral `ink` (`web/app/assets/css/main.css`): sage at 100, ink at 900, the
+border at 300 and deep ink at 950, with the steps between interpolated in
+OKLCH and each step's lightness set by the contrast it must give. Light pages
+are white on a sage sidebar; dark pages are ink on a deep-ink sidebar. Words in
+amber and green take the darker `#805000` and `#246B41` in light, and solid
+amber fills carry ink text. `web/app/utils/themeContrast.test.ts` holds every
+text token on every surface of both themes to its floor: 4.5:1 for text, 3:1
+for large text, and for dimmed text 3:1 on the page and 2.7:1 on the canvas and
+raised surfaces.
 
 Raw terracotta is artwork, not an ordinary-text color or a default white-label
 button background. Use the darker accent-text token on light surfaces. The
@@ -87,6 +99,8 @@ controls, focus, disabled states and dark-mode combinations when adopting tokens
 Brand and operational status are separate. Never animate or recolor the junction
 to imply approval, execution, verification or health. Use dedicated status tokens,
 explicit text and supporting facts. Keep dedicated operational statuses and their explicit labels when applying the palette.
+How the screens draw a state, its mark and its word, is the Status rule of
+[the design system](system.md#status).
 
 ## Typography and layout
 
@@ -98,11 +112,15 @@ Prefer a 4 px spacing basis with 8, 12, 16, 24 and 32 px steps, restrained 6 px 
 corners, quiet borders and clear hierarchy. Keep panels flat instead of using heavy
 decorative shadows. Show one visually primary next action within each work area.
 Keep design prose readable and evidence compact but legible.
+How the screens apply these, the main action, the code font, the page
+header, the list row, cutting text and tooltips, is
+[the design system](system.md), with the checks that hold each rule.
 
-The browser workbench imports these tokens for its light canvas, flat panels,
-buttons, typography and focus treatment. The workbench opens dark (Nuxt UI's
-dark palette with forest-300 as the primary) whatever the OS prefers; light is
-a choice its theme button makes. The switchyard's own pages are dark always (zinc
+The browser workbench carries these values as Tailwind scales in
+`web/app/assets/css/main.css`; `tokens.css` names the same values, light and
+dark, and the token test holds that the two agree. The workbench opens dark
+(the ink scale, with forest-300 as the primary) whatever the OS prefers; light
+is a choice its theme button makes. The switchyard's own pages are dark always (zinc
 surfaces, forest-300 as the action colour, terracotta-400 for links), whatever
 the system prefers; `tokens.css` keeps that palette under
 `data-conductor-theme="dark"`.

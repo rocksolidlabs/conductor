@@ -151,6 +151,11 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// EchoWait bounds how long the Enter of a submission typed into the
+	// agent's prompt that must hold its text (Submission.PromptHoldsText)
+	// waits for the screen to show the prompt holding it; EchoWait when
+	// zero.
+	EchoWait time.Duration
 	// InputWait bounds how long a write to the process waits for the
 	// program to take it (input.go); InputWait when zero.
 	InputWait time.Duration
@@ -303,6 +308,9 @@ type Local struct {
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
 	resultIDs        []string
+	// dialogAnsweredForm says the dialog answered (dialogAnswered) is a
+	// form (formKept). Guarded by mu.
+	dialogAnsweredForm bool
 	// resuming is the questions answered whose results wait for their
 	// resumption (Answer.Resumed), oldest first, each its own: the first
 	// attention change after its answer that says how the session went on
@@ -428,6 +436,27 @@ type Local struct {
 	// ended is still the last one, and a bell or OSC notification now is
 	// that turn's own (unlessTurnEnded). Guarded by mu.
 	turnEnded bool
+	// lastDone is the last done reported while the done shown stands (the
+	// one shown, then each one of its turn after it): a done the same as it
+	// records nothing (setAttentionLooked). Guarded by mu.
+	lastDone Attention
+	// personTyped is closed at the first keys a person writes that reach
+	// the program's text (PersonTyped), once (personOnce).
+	personTyped chan struct{}
+	personOnce  sync.Once
+	// endedTurn is the agent's name for the last turn whose end was
+	// recorded (a done whose report named its turn): a done naming it
+	// again is the same report, however much has happened since, and a
+	// report of the agent's own naming it that is not a done says the turn
+	// went on, and forgets it (setAttentionLooked). An Enter, a
+	// submission, an operator's mark, a bell, a title, a status sequence
+	// and the screen leave it. Guarded by mu.
+	endedTurn string
+	// startsTold says the session's agent tells its turns' starts: a
+	// working of its own from its hooks (api) has shown. Such an agent's
+	// next turn ends a done shown by itself, so a done over a done is its
+	// turn's again (setAttentionLooked). Never cleared. Guarded by mu.
+	startsTold bool
 	// turn counts the turns begun after a done (beginTurn), changed under
 	// mu: output read before one began, and scanned after, is the ended
 	// turn's own (scanOutput). The pump takes it as soon as a read
@@ -541,6 +570,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.ConfirmWait <= 0 {
 		opts.ConfirmWait = ConfirmWait
 	}
+	if opts.EchoWait <= 0 {
+		opts.EchoWait = EchoWait
+	}
 	if opts.InputWait <= 0 {
 		opts.InputWait = InputWait
 	}
@@ -568,6 +600,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		ended:  make(chan struct{}),
 
 		submitting:  make(chan struct{}, 1),
+		personTyped: make(chan struct{}),
 		attnChanged: make(chan struct{}),
 		nvimEndWait: nvimEndWait,
 	}
@@ -1191,7 +1224,8 @@ func (s *Local) fireTrust(text string) {
 // program waits on now, and its choices are the only safe answer: typed
 // text, or another question's choice, would reach the dialog's keys. A
 // dialog with other words than the one last answered is that one gone
-// (dialogAnswered); one with its words is that question still (sameDialog).
+// (dialogAnswered; a form, on a screen with no row that opens one:
+// formKept); one with its words is that question still (sameDialog).
 // The question it takes the place of, answered by a key typed while it
 // showed that did not clear it (an Escape, which may have been read with
 // what came next), is answered by that key, as when it goes (missAsked).
@@ -1204,7 +1238,7 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	_, words, answers, whole := s.askedIn(text, cols)
+	q, words, answers, whole := s.askedIn(text, cols)
 	if words == "" {
 		// Found, and no list to read on it (a question whose answers are
 		// read off the screen): the screen shows none of the questions.
@@ -1212,7 +1246,7 @@ func (s *Local) fireAsked(text string) {
 		return
 	}
 	s.mu.Lock()
-	if settled && !sameWords(s.dialogAnswered, words) {
+	if settled && !sameWords(s.dialogAnswered, words) && !s.formKept(text) {
 		s.dialogGone(look)
 	}
 	s.mu.Unlock()
@@ -1227,16 +1261,20 @@ func (s *Local) fireAsked(text string) {
 	if planApprovalShown(text) {
 		rules |= planApproval
 	}
+	if q.form() {
+		rules |= formAsked
+	}
 	s.setAttentionWith(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), rules, planFooter(text))
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
-// the questions: the dialog last answered has gone (dialogAnswered), and a
-// question asked during the work still shown is withdrawn: the screen
+// the questions: the dialog last answered has gone (dialogAnswered; a form,
+// on a screen with no row that opens one: formKept), and a question asked
+// during the work still shown is withdrawn: the screen
 // moved on from it (the program took a key, Conductor's or not, a click,
 // or went on by itself), and one drawn again is asked again. A reply being
 // written to it keeps its claim (withdraw): it resolves or lets go.
-func (s *Local) missAsked(string) {
+func (s *Local) missAsked(text string) {
 	s.escGone()
 	look, settled, _ := s.asked.Look()
 	if !settled {
@@ -1245,7 +1283,9 @@ func (s *Local) missAsked(string) {
 		return
 	}
 	s.mu.Lock()
-	s.dialogGone(look)
+	if !s.formKept(text) {
+		s.dialogGone(look)
+	}
 	att := s.info.Attention
 	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && att.ID != ""
 	s.mu.Unlock()
@@ -1377,7 +1417,9 @@ type StartupQuestion struct {
 	// FromScreen has the answers read off the screen each time the
 	// question is asked (the catalog's answersFromScreen, with Anytime):
 	// the numbered list its dialog draws (readList), in place of Answers,
-	// and without Words its words are the rows above that list.
+	// and without Words its words are the rows above that list. With
+	// Answers and Words too it is a form (form): Answers then give the
+	// keys of the choices of their labels.
 	FromScreen bool
 	// Mode, when set, matches the labels of the answers that change the
 	// session's permission mode (the catalog's modeAnswers): they are
@@ -1400,7 +1442,11 @@ type StartupQuestion struct {
 // reply is weighed against (stillOnScreen). While the highlight stands
 // before a choice that takes typed words (Typed), the dialog's keys type
 // into its field: no answers, and no list (it changes with each letter).
-// "" and none when text does not show it, or shows no list to read.
+// A form's (form) are its words as formWords reads them and its choices
+// named at their description column (dialogList.named), each sent as the
+// answer of its label when q has one. "" and none when text does not show
+// it, or shows no list to read, or a form not as one, or a form where an
+// answer of q's own is not exactly one choice's label.
 func (q StartupQuestion) read(text string) (words string, answers []Option, whole string) {
 	if words = q.words(text); words == "" {
 		return "", nil, ""
@@ -1420,6 +1466,25 @@ func (q StartupQuestion) read(text string) (words string, answers []Option, whol
 		return "", nil, ""
 	}
 	answers, whole = l.choices, strings.Join(l.whole, "\n")
+	if q.form() {
+		if answers, ok = l.named(); !ok {
+			return "", nil, ""
+		}
+		if words = q.formWords(text, l); words == "" {
+			return "", nil, ""
+		}
+		// Each answer of its own names exactly one choice, or the form is
+		// not asked: a choice it names under another name is answered in
+		// the terminal.
+		for _, a := range q.Answers {
+			same := func(o Option) bool { return o.Label == a.Label }
+			i := slices.IndexFunc(answers, same)
+			if i < 0 || slices.ContainsFunc(answers[i+1:], same) {
+				return "", nil, ""
+			}
+			answers[i].Input = a.Input
+		}
+	}
 	if q.Typed != nil && l.at >= 0 && q.Typed.MatchString(l.whole[l.at]) {
 		answers, whole = nil, ""
 	}
@@ -1433,6 +1498,44 @@ func (q StartupQuestion) read(text string) (words string, answers []Option, whol
 		}
 	}
 	return words, answers, whole
+}
+
+// form reports whether q is a form read off the screen (the catalog's
+// answersFromScreen with answers and words of its own, Codex's MCP tool
+// approval, #716): Words matches its top row, its words are the rows
+// between that row and its list, and its choices draw a description
+// column.
+func (q StartupQuestion) form() bool {
+	return q.FromScreen && len(q.Answers) > 0 && q.Words != nil
+}
+
+// formWords returns the words of the form q whose list text shows (l):
+// every row between the form's top row and its list, as rows (asRows), when
+// text holds exactly one row Words matches, above the list, and none of the
+// rows between is a choice's (listItem); "" otherwise, and when they are
+// more than listHead rows or longer than a message can show whole.
+func (q StartupQuestion) formWords(text string, l dialogList) string {
+	rows, top := strings.Split(text, "\n"), -1
+	for i, row := range rows {
+		if q.Words.MatchString(row) {
+			if top >= 0 {
+				return ""
+			}
+			top = i
+		}
+	}
+	if top < 0 || top >= l.top || l.top-top-1 > listHead {
+		return ""
+	}
+	between := rows[top+1 : l.top]
+	if slices.ContainsFunc(between, listItem.MatchString) {
+		return ""
+	}
+	words := asRows(cleanRows(strings.Join(between, "\n")), true)
+	if len(strings.Join(strings.Fields(words), " ")) > MaxAttentionMessage {
+		return ""
+	}
+	return words
 }
 
 // listMark begins, in the words fireAsked asks a dialog with, its whole
@@ -1698,6 +1801,94 @@ func (s *Local) TrySetAttentionPlan(state AttentionState, message, source, kind 
 	return s.setAttentionWith(state, message, source, kind, options, spendToken|fromReport, plan)
 }
 
+// PersonTyped is closed at the first keys a person writes that reach the
+// program's text: a viewer's keys (Input, InputContext, InputWaiting)
+// written while no startup question shows or may show (startupMayShow)
+// and no dialog asked during the work shows, a terminal's own report
+// aside; and a person's
+// line (Submission.By or From) naming no question, as its text is
+// written. Keys that answer a startup question or a dialog, a reply to a
+// question and Conductor's own text leave it open. A launch's first
+// message is withdrawn by it (crew.TypeFirstMessage).
+func (s *Local) PersonTyped() <-chan struct{} { return s.personTyped }
+
+// notePersonTyped closes PersonTyped, once.
+func (s *Local) notePersonTyped() {
+	s.personOnce.Do(func() { close(s.personTyped) })
+}
+
+// SetFirstMessage sets Info.FirstMessage ("waiting", or ""), told to
+// OnChange as a rename is when it changes.
+func (s *Local) SetFirstMessage(v string) {
+	s.mu.Lock()
+	changed := s.info.FirstMessage != v
+	s.info.FirstMessage = v
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// MarkFirstMessageTyped sets Info.FirstMessage to "typed": the launch's
+// first message sits in the agent's input, its Enter left out, until a
+// person's next key or line (firstMessageKeys). A person who has typed
+// already (PersonTyped) is at the keyboard: nothing is set then.
+func (s *Local) MarkFirstMessageTyped() {
+	s.mu.Lock()
+	select {
+	case <-s.personTyped:
+		s.mu.Unlock()
+		return
+	default:
+	}
+	changed := s.info.FirstMessage != "typed"
+	s.info.FirstMessage = "typed"
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// firstMessageKeys ends a first message's "typed" (MarkFirstMessageTyped)
+// at a person's key or line: the person deals with what sits in the input.
+func (s *Local) firstMessageKeys() {
+	s.mu.Lock()
+	changed := s.info.FirstMessage == "typed"
+	if changed {
+		s.info.FirstMessage = ""
+	}
+	s.mu.Unlock()
+	if changed {
+		s.notifyChange()
+	}
+}
+
+// SetAttentionTurn is SetAttentionPlan for a report that names its turn
+// (turn, the agent's own name for it: Codex's turn id), as a host applies
+// what its server sends on: a done naming the turn whose end the session
+// recorded last is that report again, and changes and records nothing;
+// another report of the agent's own naming it says the turn went on. A
+// name out of its bound (proto.ValidTurnID), or from another source than
+// the agent's (api), is no name.
+func (s *Local) SetAttentionTurn(state AttentionState, message, source, kind string, options []Option, plan, turn string) {
+	_ = s.setAttentionLooked(state, message, source, kind, options, fromReport, anyTurn, 0, plan, turnOpt(turn)...)
+}
+
+// TrySetAttentionTurn is SetAttentionTurn for a report from outside the
+// session, as TrySetAttentionFull: the token spent first, and with none
+// left ErrRateLimited and nothing changed.
+func (s *Local) TrySetAttentionTurn(state AttentionState, message, source, kind string, options []Option, plan, turn string) error {
+	return s.setAttentionLooked(state, message, source, kind, options, spendToken|fromReport, anyTurn, 0, plan, turnOpt(turn)...)
+}
+
+// turnOpt is the option of a change that names its turn, none for "".
+func turnOpt(turn string) []attentionOpt {
+	if turn == "" {
+		return nil
+	}
+	return []attentionOpt{{turn: turn}}
+}
+
 // Ask is SetAttentionFull for the agent's own question: needs_input, from a
 // report that says the agent asks it (the MCP tool ask, conductor notify
 // --ask), which the session keeps until it is answered (own). In the turn it
@@ -1872,6 +2063,9 @@ const (
 	// planApproval (fireAsked) marks a dialog read off the screen as a
 	// plan's approval, by its footer (Attention.approval, #289).
 	planApproval
+	// formAsked (fireAsked) marks a dialog read off the screen as a form
+	// (Attention.form, #716).
+	formAsked
 	// fromReport marks a report from outside the session (an agent's or an
 	// admin's through the API, or one the server sends on to a hosted
 	// session's host): one that says the session waits does not hide a
@@ -1925,6 +2119,9 @@ type attentionOpt struct {
 	// decision is the durable decision the agent's question asked
 	// mirrors (TryAskDecision), "" for any other change.
 	decision string
+	// turn is the agent's name for the turn the report belongs to
+	// (SetAttentionTurn), "" when it names none.
+	turn string
 }
 
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, opts ...attentionOpt) error {
@@ -1967,7 +2164,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
-	if len(opts) > 0 && opt.asked == nil && (opt.only == "" || s.info.Attention.ID != opt.only) {
+	if len(opts) > 0 && opt.asked == nil && opt.turn == "" && (opt.only == "" || s.info.Attention.ID != opt.only) {
 		// A change for one question (WithdrawQuestion) that is not the one
 		// shown: under this same lock, the agent's own kept aside and the
 		// question the hold of the turn holds over go if they are that one
@@ -1988,6 +2185,31 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.notifyChange()
 		}
 		return nil
+	}
+	// The agent's own word on its turn (ReportsTurn), past the bucket,
+	// whatever the rules below make of it: the session's agent reports its
+	// turns (Info.Turns), told (OnChange) once the change is through.
+	if ReportsTurn(state, source) && !s.info.Turns {
+		s.info.Turns = true
+		defer s.notifyChange()
+	}
+	// The turn the report names (endedTurn), weighed before every path
+	// below that records a done: a done naming the turn whose end was
+	// recorded last is that end told again (Codex's hook, then its notify
+	// program), whatever was written or shown since; nothing changes and
+	// nothing is recorded. Another report naming that turn says it went
+	// on (Codex's Stop that another Stop hook blocked): its next done is a
+	// new end. A report naming no turn, or another, is judged as ever.
+	if turn := opt.turn; turn != "" && source == SourceAPI && proto.ValidTurnID(turn) {
+		switch {
+		case state == AttentionDone && turn == s.endedTurn:
+			s.mu.Unlock()
+			return nil
+		case state == AttentionDone:
+			s.endedTurn = turn
+		case turn == s.endedTurn:
+			s.endedTurn = ""
+		}
 	}
 	// The plan the change names (#289), learnt now, past the bucket, under
 	// the lock the change takes: a question's alone, and nothing when the
@@ -2221,10 +2443,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 	}
+	// A done while a done shows is weighed below against the last report
+	// of the done shown, which may not be the one shown.
+	doneOverDone := state == AttentionDone && cur.State == AttentionDone && own.ID == ""
 	// The same question again: its words, its choices and, read off the
 	// screen, its whole list (a choice changed past what its label shows is
 	// another question, whose reply is weighed against the list now).
-	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list &&
+	if !doneOverDone && cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list &&
 		opt.decision == "" && cur.Decision == "" {
 		if rows != "" && rows != cur.rows {
 			// The same question read at another width (the window
@@ -2267,11 +2492,48 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	if doneOverDone {
+		// A done while a done shows, no other state shown between (an Enter
+		// or a submission ends a done shown: nextTurn). The same as the last
+		// report of the done shown (its words, source, kind and choices) is
+		// that report again: nothing changes and nothing is recorded.
+		last := s.lastDone
+		if last.ID != cur.ID {
+			last = cur
+		}
+		if sameWords(last.Message, message) && last.Source == source && last.Kind == kind && sameOptions(last.Options, options) {
+			s.mu.Unlock()
+			return nil
+		}
+		if s.startsTold && ReportsTurn(state, source) && ReportsTurn(cur.State, cur.Source) {
+			// An agent that tells its turns' starts ends a done shown as its
+			// next turn begins: a done of its own over its own is the same
+			// turn's (Claude Code's idle_prompt a minute after its Stop). The
+			// one shown keeps its id, its Since (the turn's end) and its
+			// words (the turn's first); this one is recorded as the report
+			// it is, at its own time. Another agent's ends another turn, and
+			// an operator's mark over the agent's done or under it is
+			// another done: a new done, below.
+			s.lastDone = Attention{ID: cur.ID, State: state, Message: message, Source: source, Kind: kind, Options: options}
+			if rules&bellPaced != 0 {
+				s.lastBell = time.Now()
+			}
+			now := s.activity.Stamp(1)
+			s.mu.Unlock()
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, state)
+			return nil
+		}
+	}
 	if state != AttentionDone {
 		// Another state after a done (a working report: the agent went on
 		// by itself, a question, a clear) begins the next turn, as an
 		// Enter does.
 		s.beginTurn()
+		s.startsTold = s.startsTold || state == AttentionWorking && source == SourceAPI
 	}
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
@@ -2286,6 +2548,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if state == AttentionNeedsInput {
 		att.Plan = plan
 		att.approval = rules&planApproval != 0
+		att.form = rules&formAsked != 0
 		if att.Plan == "" && att.approval && cur.State == AttentionNeedsInput && cur.Source != SourceQuestion {
 			att.Plan = cur.Plan
 		}
@@ -2317,6 +2580,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.consumeLocked(att.ID)
 			s.holdAskedAgain(att.ID, words, heldAsked, startupStill)
 		}
+	}
+	if state == AttentionDone {
+		// The turn's last done so far, by the id of the one shown.
+		s.lastDone = att
 	}
 	if cur.ID != "" && cur.ID != att.ID && source != SourceSubmit {
 		// The question showing leaves (withdrawn, or replaced by the next):
@@ -3197,6 +3464,7 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 				// Read off the screen and offering none: the highlight is in
 				// a field, where a digit is typed.
 				onScreen.field = q.FromScreen && answers == nil
+				onScreen.form = q.form()
 			}
 		}
 		// A startup question a key surely answers is consumed, its screen
@@ -3218,6 +3486,17 @@ func (s *Local) input(ctx context.Context, who typist, question string, data []b
 		// not yet, read off the screen (startupMayShow): then they did not
 		// enter a stranded line's text, and its hold is kept (rawKeys, #224).
 		startup := s.startupMayShow()
+		if typed && !quiet && !isTerminalReport(data) {
+			// A person's key: a first message left typed is theirs now.
+			s.firstMessageKeys()
+		}
+		if typed && !quiet && question == "" && !isTerminalReport(data) && !startup &&
+			!(shown.State == AttentionNeedsInput && (shown.Source == SourceTrust || shown.Source == SourceQuestion)) {
+			// A person's keys at the program's text, no dialog on show:
+			// a launch's first message, still waiting, is theirs to type
+			// now (PersonTyped).
+			s.notePersonTyped()
+		}
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
 		ownAnswer := question != "" && shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && shown.ID == question
@@ -3452,11 +3731,25 @@ func listKey(data []byte) bool {
 }
 
 // nextTurn says an Enter is about to be written: the turn a done ended is
-// behind, and a bell is a question again (unlessTurnEnded).
+// behind, and a bell is a question again (unlessTurnEnded). A done that
+// shows gives way to the empty state with source input, as an Enter
+// withdraws a bell's wait (rawKeys): the agent works on what the Enter
+// gave it, and its done no longer says where its turn stands. The empty
+// state records nothing (no entry, no webhook, no turn's end for a crew).
+// A done of an ended session stays. It runs as the writer takes the
+// Enter, so the change is told (OnChange) off the writer's way, as the
+// bell's wait withdrawn is.
 func (s *Local) nextTurn() {
 	s.mu.Lock()
 	s.beginTurn()
+	gave := s.info.Attention.State == AttentionDone && !s.info.Status.Ended()
+	if gave {
+		s.withdrawShownLocked(SourceInput)
+	}
 	s.mu.Unlock()
+	if gave {
+		go s.notifyChange()
+	}
 }
 
 // beginTurn begins the next turn after a done, whichever comes first: an
@@ -3545,7 +3838,7 @@ func (s *Local) claimLocked(id, decision string) (uint64, error) {
 	att := s.info.Attention
 	switch att.Source {
 	case SourceQuestion:
-		s.noteDialogAnswered(att.words())
+		s.noteDialogAnswered(att.words(), att.form)
 	case SourceTrust:
 		s.startupAnsweredWords = att.words()
 	}
@@ -4416,12 +4709,25 @@ func (s *Local) startupShown(text string) (*StartupQuestion, string) {
 }
 
 // noteDialogAnswered notes the dialog of words as answered (dialogAnswered),
-// as the screen is now. The caller holds s.mu.
-func (s *Local) noteDialogAnswered(words string) {
-	s.dialogAnswered = words
+// as the screen is now, and whether it is a form. The caller holds s.mu.
+func (s *Local) noteDialogAnswered(words string, form bool) {
+	s.dialogAnswered, s.dialogAnsweredForm = words, form
 	if s.asked != nil {
 		s.dialogAnsweredAt = s.asked.Fed()
 	}
+}
+
+// formKept reports whether the dialog answered is a form and text, the
+// screen a look took, holds a row that opens a form (a form's Words): an
+// answered form is forgotten only by a look whose screen holds none (#716).
+// The caller holds s.mu.
+func (s *Local) formKept(text string) bool {
+	if !s.dialogAnsweredForm {
+		return false
+	}
+	return slices.ContainsFunc(strings.Split(text, "\n"), func(row string) bool {
+		return slices.ContainsFunc(s.askedQuestions, func(q StartupQuestion) bool { return q.form() && q.Words.MatchString(row) })
+	})
 }
 
 // dialogGone forgets the dialog answered when the look in progress, which
@@ -4512,7 +4818,7 @@ func (s *Local) answeredLeft() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.dialogAnswered != words {
+	if s.dialogAnswered != words || s.formKept(text) {
 		return ""
 	}
 	s.dialogGone(fed)
@@ -4563,7 +4869,7 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 	}()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
-		s.noteDialogAnswered(onScreen.words)
+		s.noteDialogAnswered(onScreen.words, onScreen.form)
 	}
 	if person && s.own.ID != "" && s.ownAside && s.own.Decision == "" {
 		s.dropOwnLocked(ChatLeftTerminal)
@@ -4623,6 +4929,8 @@ type dialogView struct {
 	// takes typed words, StartupQuestion.Typed): a printable key is typed
 	// into it, no choice or key of the dialog's.
 	field bool
+	// form says the dialog is a form (StartupQuestion.form).
+	form bool
 }
 
 // picks reports whether data, whose keys are keys (keyReader), picks an
@@ -5668,6 +5976,84 @@ func (s *Local) atPrompt() bool {
 		return false
 	}
 	return !startupChoiceShown(text)
+}
+
+// promptHolds stands for the text a submission typed into the agent's
+// prompt, in its place on the screen, as atPromptHolding judges it: a
+// word every prompt shape takes in its input row.
+const promptHolds = "text"
+
+// atPromptHolding is atPrompt for the screen once text has been typed
+// into the agent's prompt: the screen is the prompt holding that text and
+// nothing else. The text's words, each as typed, are found last on the
+// screen with only spaces and line breaks between them (the prompt's own
+// wrapping); the row they begin on has nothing but the prompt's mark
+// before them (no letter, no digit), the row they end on nothing after
+// them; and the screen with them put back as one word (promptHolds) is the
+// prompt by atPrompt's rule, its shape and no numbered choice. A text
+// shown otherwise (folded as a paste, rewritten, cut mid-word by a
+// narrow window, scrolled out of the composer) is not found, and the
+// screen is not taken for the prompt holding it.
+func (s *Local) atPromptHolding(text string) bool {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return s.atPrompt()
+	}
+	frame, _, uncut, _, _ := s.shot.Frame()
+	if !uncut {
+		return false
+	}
+	frame = plainSpaces(frame)
+	quoted := make([]string, len(words))
+	for i, w := range words {
+		quoted[i] = regexp.QuoteMeta(w)
+	}
+	re, err := regexp.Compile(strings.Join(quoted, `\s+`))
+	if err != nil {
+		return false
+	}
+	all := re.FindAllStringIndex(frame, -1)
+	if len(all) == 0 {
+		return false
+	}
+	at := all[len(all)-1]
+	rowStart := strings.LastIndexByte(frame[:at[0]], '\n') + 1
+	rowEnd := len(frame)
+	if i := strings.IndexByte(frame[at[1]:], '\n'); i >= 0 {
+		rowEnd = at[1] + i
+	}
+	if strings.ContainsFunc(frame[rowStart:at[0]], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) ||
+		strings.TrimSpace(frame[at[1]:rowEnd]) != "" {
+		return false
+	}
+	held := frame[:at[0]] + promptHolds + frame[at[1]:]
+	if s.opts.PromptShape != nil && !s.opts.PromptShape.MatchString(held) {
+		return false
+	}
+	return !startupChoiceShown(held)
+}
+
+// awaitEcho waits, up to Options.EchoWait, for the screen to show the
+// agent's prompt holding text (atPromptHolding): the agent draws what it
+// was given in its own time. It returns at once when it does, and after
+// the wait, or as ctx or the session ends, when it does not: the Enter's
+// guard judges again as the writer takes it.
+func (s *Local) awaitEcho(ctx context.Context, text string) {
+	deadline := time.NewTimer(s.opts.EchoWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for !s.atPromptHolding(text) {
+		select {
+		case <-deadline.C:
+			return
+		case <-ctx.Done():
+			return
+		case <-s.ended:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // plainSpaces is text with every Unicode space (unicode.IsSpace: a

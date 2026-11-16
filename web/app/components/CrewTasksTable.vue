@@ -200,7 +200,7 @@ const focused = ref<number | null>(null)
           </div>
           <div :class="cell.menu" class="flex h-8 items-center justify-end">
             <UDropdownMenu :items="menu(t, i)" :content="{ align: 'end' }">
-              <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${who(t, i)}: more`" data-task-menu />
+              <IconButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :label="`${who(t, i)}: more`" data-task-menu />
             </UDropdownMenu>
           </div>
         </div>

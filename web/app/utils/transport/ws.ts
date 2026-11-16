@@ -8,7 +8,8 @@ export class WebSocketTransport extends BaseTransport {
   private ws?: WebSocket
 
   constructor(
-    private readonly url: string,
+    /** The address, or what makes it as the connection opens (a token read then: useTerminalTransport). */
+    private readonly url: string | (() => string),
     opts: { name?: string; chatOnly?: boolean } = {},
   ) {
     super('ws', opts)
@@ -27,7 +28,7 @@ export class WebSocketTransport extends BaseTransport {
       }, HELLO_TIMEOUT_MS)
       let ws: WebSocket
       try {
-        ws = new WebSocket(this.url)
+        ws = new WebSocket(typeof this.url === 'function' ? this.url() : this.url)
       } catch (e) {
         window.clearTimeout(timer)
         this.emitClose(1006, (e as Error).message)

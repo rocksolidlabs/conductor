@@ -20,7 +20,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyD', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyD', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -30,13 +30,13 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it', terminal: ['alt', 'B'] },
     { keys: ['?'], label: 'Keyboard shortcuts', terminal: ['alt', 'H'] },
     { keys: ['N'], label: 'Launch an agent', terminal: ['alt', 'N'] },
-    { keys: ['G', 'N'], label: 'Go to Needs your decision' },
+    { keys: ['G', 'N'], label: 'Go to Needs you' },
     { keys: ['G', 'Y'], label: 'Go to the Yard', terminal: ['alt', 'Y'] },
     { keys: ['G', 'R'], label: 'Go to the Roundhouse', terminal: ['alt', 'R'] },
     { keys: ['G', 'C'], label: 'Go to Crews', terminal: ['alt', 'C'] },
     { keys: ['G', 'D'], label: 'Go to Dispatch', terminal: ['alt', 'D'] },
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
-    { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
+    { keys: ['G', 'E'], label: "Go to History's feed", terminal: ['alt', 'E'] },
     // No terminal twin: Alt+H is the shortcuts' own (chords.ts), so History has the plain chord alone.
     { keys: ['G', 'H'], label: 'Go to History' },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
@@ -144,9 +144,6 @@ export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [
     { keys: ['escape'], label: 'Back to the grid (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
-    { keys: ['J'], label: 'Next in the queue', terminal: ['alt', 'J'] },
-    { keys: ['K'], label: 'Previous in the queue', terminal: ['alt', 'K'] },
-    { keys: ['enter'], label: 'Reply to the selected queue item' },
   ],
 }
 

@@ -1,4 +1,6 @@
-import { expect, logged, test } from './fixtures'
+import { dayPage, expect, logged, test } from './fixtures'
+import { inside, noSideways, probeColour } from './layout'
+import { ledgerRun, serveRun } from './run-fixtures'
 
 // The Crews pages tell a saved crew (a plan) from a run (one launch of it):
 // the home lists the runs going now above the saved crews; a crew's page has
@@ -95,8 +97,11 @@ test('Launch run from the home opens the run page; the crew then says a run is l
   await page.goto(`/crews/${crewId}`)
   const banner = page.locator('[data-live-run-banner]')
   await expect(banner).toContainText('live run')
-  await expect(banner).toContainText('1 running')
-  await expect(banner).toContainText('docs waits for Start now')
+  // The banner says the run's one sentence (runStatusLine, UX1 PR-34): lead counted by its session's state, docs not yet started
+  // counted in none, nothing that needs a person; no member's name in amber.
+  await expect(banner.locator('[data-live-run-line]')).toHaveText(/^1 (working|finished|running)$/)
+  await expect(banner.locator('.text-warning')).toHaveCount(0)
+  await expect(banner).not.toHaveClass(/border-warning/)
   // The bar says a live run keeps the version it launched with.
   await page.getByLabel('Goal').fill('changed under a live run')
   await expect(page.locator('[data-unsaved-words]')).toHaveText('Goal edited. The live run keeps the version it launched with.')
@@ -177,4 +182,39 @@ test("a comparison's crew edited and saved in the editor keeps its compare block
   const { crew: read } = await api.ok<{ crew: { goal: string; compare?: unknown } }>('GET', `/api/crews/${encodeURIComponent(id)}`)
   expect(read.goal).toBe('compare two ways, edited')
   expect(read.compare).toEqual(compare)
+})
+
+// A live run's card draws the run as lines, each station lit by its task's state (UX1 PR-34): the Ledger stub served as live, its
+// six tasks on the card under Running now, amber where a task needs a person.
+for (const theme of ['light', 'dark'] as const) {
+  test(`a live run's card draws its tasks as lines, lit by their states; in the ${theme} theme a needs station is amber`, async ({ day, browser }) => {
+    const run = ledgerRun()
+    const page = await dayPage(browser, { path: '/', theme })
+    await serveRun(page, run)
+    await page.goto('/crews')
+    const card = page.locator(`[data-running-now] [data-run="${run.id}"]`)
+    const stations = card.locator('[data-run-drawing] [data-station]')
+    await expect(stations).toHaveCount(6)
+    await expect(card.locator('[data-station="migrate"]')).toHaveAttribute('data-status-mark', 'needs')
+    await expect(card.locator('[data-station="release-notes"]')).toHaveAttribute('data-status-mark', 'needs')
+    await expect(card.locator('[data-station="schema"]')).toHaveAttribute('data-status-mark', 'done')
+    const fill = await card.locator('[data-station="migrate"] [data-status-glyph] circle').first().evaluate((c) => getComputedStyle(c).fill)
+    expect(await probeColour(page, fill)).toBe(await probeColour(page, 'var(--ui-warning)'))
+    // The hidden member lines stand beside the drawing.
+    await expect(card.locator('[data-run-member]')).toHaveCount(run.members.length)
+    void day
+  })
+}
+
+test("at 390 with touch a live run's drawing lies inside its card, and nothing scrolls sideways", async ({ day, browser }) => {
+  const run = ledgerRun()
+  const page = await dayPage(browser, { path: '/', width: 390, height: 844, touch: true })
+  await serveRun(page, run)
+  await page.goto('/crews')
+  const card = page.locator(`[data-running-now] [data-run="${run.id}"]`)
+  await expect(card.locator('[data-run-drawing] [data-station]')).toHaveCount(6)
+  await inside(card.locator('[data-run-drawing]'), card)
+  await inside(card.locator('[data-run-drawing] [data-station] [data-status-glyph]'), card)
+  await noSideways(page)
+  void day
 })

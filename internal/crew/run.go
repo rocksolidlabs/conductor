@@ -102,7 +102,7 @@ const (
 	MemberEnded    = "ended"    // its session ended, or it could not start (Err says why)
 )
 
-// When a member is ready for its prompt (awaitReady).
+// When a member is ready for its prompt (AwaitReady).
 const (
 	readyPoll  = 250 * time.Millisecond // how often it looks
 	readyQuiet = time.Second            // output silence after the first output
@@ -166,7 +166,7 @@ var (
 	// a managed run dispatches its own tasks, and continues after a restart
 	// through the ledger, not through a member resumed in its old worktree.
 	ErrManaged = errors.New("the run is managed: its tasks are scheduled by the run, and a member is never started, added or resumed by hand")
-	// errNotReady is awaitReady giving up after readyCap.
+	// errNotReady is AwaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
 
@@ -334,7 +334,7 @@ type Engine struct {
 	launcher Launcher
 	lookup   func(sessionID string) (*session.Local, bool)
 	// await waits for a member's session to be ready, calling held with the
-	// question once each time a trust question holds the prompt: awaitReady,
+	// question once each time a trust question holds the prompt: AwaitReady,
 	// but for tests.
 	await func(ctx context.Context, l *session.Local, held func(question string)) error
 	// now is the clock of the diff cache.
@@ -830,7 +830,7 @@ type member struct {
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	root, cut := context.WithCancel(context.Background())
 	life, endLife := context.WithCancel(context.Background())
-	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
+	return &Engine{launcher: l, lookup: lookup, await: AwaitReady, now: time.Now,
 		runs: map[string]*run{}, offered: local.Native(), exec: execFor(local.Native()), native: local.Native(), teardownRoot: root, teardownCut: cut, boot: newBoot(),
 		life: life, endLife: endLife}
 }
@@ -1608,7 +1608,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // prompt waits for m's session to be ready and submits m's prompt, the goal
 // in it, as one line (typedPrompt), and m is running; a member without a
 // prompt runs at once. A trust question on the member's screen holds the
-// prompt until a person answers it (awaitReady), noted once in the run log
+// prompt until a person answers it (AwaitReady), noted once in the run log
 // each time; so does a question the session finds only as the prompt is
 // submitted (Submit refuses it, nothing typed), and the wait starts over.
 // m is prompted as the Enter is written, so a done the agent
@@ -2674,13 +2674,15 @@ func runState(r Run) (string, int) {
 	return RunRunning, 0
 }
 
-// awaitReady waits until l is ready for its prompt (readyAt), looking every
-// readyPoll. While a trust question shows it calls held with the question,
-// once until the question goes, and the wait starts over when it goes: the
-// cap does not run meanwhile, so a prompt is never typed into the question.
+// AwaitReady waits until l is ready for its prompt (readyAt), looking every
+// readyPoll: the one rule a crew member's prompt and a launch's first
+// message wait on. While a trust question shows it calls held with the
+// question, once for each question (a question after it, with another id,
+// is held anew), and the wait starts over when it goes: the cap does not
+// run meanwhile, so a prompt is never typed into the question.
 // After readyCap it returns errNotReady, and the prompt is typed anyway; once
 // the session has ended it returns session.ErrSessionEnded.
-func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
+func AwaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
 	return productReady.await(ctx, l, held)
 }
 
@@ -2710,16 +2712,26 @@ func (e *Engine) SetNotReadyForTest(gate <-chan struct{}) {
 // output has been quiet for quiet and min has passed since the wait began.
 // The product's is productReady; a test that is not about readiness gives
 // its sessions a short one, as the product's bounds are not the test's.
-type readyWait struct{ poll, quiet, min time.Duration }
+type readyWait struct {
+	poll, quiet, min time.Duration
+	// ticks, when set, are the wait's polls in place of a ticker: a test
+	// hands them one by one (each send returns once the wait has taken
+	// it), so that it says when the wait looks.
+	ticks <-chan time.Time
+}
 
-var productReady = readyWait{readyPoll, readyQuiet, readyMin}
+var productReady = readyWait{poll: readyPoll, quiet: readyQuiet, min: readyMin}
 
-// await is awaitReady with w's bounds.
+// await is AwaitReady with w's bounds.
 func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
 	start := time.Now()
-	tick := time.NewTicker(w.poll)
-	defer tick.Stop()
-	holding := false
+	ticks := w.ticks
+	if ticks == nil {
+		tick := time.NewTicker(w.poll)
+		defer tick.Stop()
+		ticks = tick.C
+	}
+	holding, heldID := false, ""
 	for {
 		select {
 		case <-l.Ended():
@@ -2732,10 +2744,12 @@ func (w readyWait) await(ctx context.Context, l *session.Local, held func(questi
 		ready, capped, hold := w.at(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
 		switch {
 		case hold:
-			if !holding {
+			if !holding || att.ID != heldID {
+				// Each question once: a startup question drawn right after
+				// the one answered is held anew.
 				held(att.Message)
 			}
-			holding = true
+			holding, heldID = true, att.ID
 			start = now // once it is answered, the wait starts over
 		case ready:
 			return nil
@@ -2749,7 +2763,7 @@ func (w readyWait) await(ctx context.Context, l *session.Local, held func(questi
 			return ctx.Err()
 		case <-l.Ended():
 			return session.ErrSessionEnded
-		case <-tick.C:
+		case <-ticks:
 		}
 	}
 }

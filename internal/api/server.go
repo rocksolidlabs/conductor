@@ -391,6 +391,14 @@ type Server struct {
 	bgMu   sync.Mutex
 	bgDone bool
 
+	// firstCtx bounds the launches' first messages waiting to be typed
+	// (typeFirstMessage, on track): firstStop ends it at the start of
+	// Shutdown and WaitBackground, so that both wait for none. firstWait is
+	// their readiness wait (crew.AwaitReady), a test's gate in its place.
+	firstCtx  context.Context
+	firstStop context.CancelFunc
+	firstWait func(ctx context.Context, l *session.Local, held func(question string)) error
+
 	// exts is the providers the composition root gave New (WithExtensions),
 	// the free defaults where nothing is registered, each behind the guard
 	// (extensions.go). extCtx ends with stopExtensions, and the queues'
@@ -510,7 +518,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	if err != nil || !filepath.IsAbs(home) {
 		home = ""
 	}
+	firstCtx, firstStop := context.WithCancel(context.Background())
 	s := &Server{
+		firstCtx:    firstCtx,
+		firstStop:   firstStop,
+		firstWait:   crew.AwaitReady,
 		notices:     o.notices,
 		cfg:         cfg,
 		base:        base,
@@ -918,6 +930,8 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, waited for with the usage reads below (#961).
 	s.probes.stop()
+	// A first message still waiting is typed by no one now.
+	s.firstStop()
 	// From now on no call enters the one door to GitHub of a ticket's
 	// item (atGitHub).
 	s.external.end()
@@ -1383,6 +1397,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, before any wait (#961); they are waited for below.
 	s.probes.stop()
+	// A first message still waiting is typed by no one now: its goroutine
+	// ends, and the wait for the server's own below finds it gone.
+	s.firstStop()
 	// From now on no call enters the one door to GitHub of a ticket's
 	// item (atGitHub), and a tree's read that ends is unread (the reads'
 	// mark; their indexes go below), before any wait.

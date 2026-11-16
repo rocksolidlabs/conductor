@@ -133,8 +133,12 @@ test("a revision's gate holds deploy until the operator approves it on the ticke
   await expect(card.locator('[data-decision-question]')).toHaveText('May deploy go out?')
   await expect(page.locator('[data-needs-pill]')).toHaveCount(0)
   await closeCard()
+  // The gate's row sits under its run's header (UX1 PR-13): ↓ from the session's row lands on the header, ↓ again on the gate.
   const gateButton = gateRow.locator(`[data-sidebar-decision="${id}"]`)
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-section="needs"] [data-sidebar-run-block="${runId}"] [data-sidebar-row="d:${id}"]`)).toHaveCount(1)
   await sideRow.locator('a[href]').first().focus()
+  await page.keyboard.press('ArrowDown')
+  await expect(page.locator(`[data-session-list="sidebar"] [data-sidebar-row="r:${runId}"] a[href]`).first()).toBeFocused()
   await page.keyboard.press('ArrowDown')
   await expect(gateButton).toBeFocused()
   await page.keyboard.press('Enter')

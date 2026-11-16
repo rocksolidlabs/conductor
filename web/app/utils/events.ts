@@ -2,7 +2,7 @@ import type { SessionInfo, WebhookInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
 
 /**
- * Something a session reported, as the Events page routes it: the six event
+ * Something a session reported, as the Alerts rules route it: the six event
  * types agents report, the three attention states (an `attention` entry counts
  * as the state it recorded) and `exit_nonzero`, a process that exited on its
  * own with a non-zero code.
@@ -57,7 +57,7 @@ export interface EventInfo {
 
 export const EVENT_INFO: Record<EventType, EventInfo> = {
   needs_input: { title: 'An agent asks for input', label: 'needs input', icon: 'i-lucide-hand', color: 'warning', source: 'permission and question hooks · bell · OSC 9/777 · screen pattern' },
-  done: { title: 'An agent finished its turn', label: 'done', icon: 'i-lucide-check', color: 'success', source: 'the agent finished its turn' },
+  done: { title: 'An agent finished its turn', label: 'finished', icon: 'i-lucide-check', color: 'neutral', source: 'the agent finished its turn' },
   working: { title: 'An agent is at work', label: 'working', icon: 'i-lucide-loader-circle', color: 'neutral', source: 'a prompt submitted · a tool about to run (the hooks) · Codex\'s title saying Working · clears the badge' },
   tool_denied: { title: 'A tool call was refused', label: 'denied', icon: 'i-lucide-shield-x', color: 'error', source: 'a tool call was refused' },
   progress: { title: 'A step of a long task', label: 'progress', icon: 'i-lucide-list-checks', color: 'success', source: 'skill: a step of a long task' },
@@ -603,4 +603,24 @@ export function sparkBuckets(entries: ReadonlyArray<Pick<FeedEntry, 'at' | 'even
     totals[k]++
   }
   return { buckets, totals }
+}
+
+/** Where an old link to the retired Events page lands (`/events`, `?tab=`): the feed in History, the rules in Alerts, Agents' Reporting. */
+export interface EventsLanding {
+  path: string
+  query: Record<string, string | null>
+  hash?: string
+}
+
+/**
+ * The Events page is retired (the UX review's P12): its feed is History's Feed view, its Routing the rules in the Alerts panel (opened
+ * over History's Feed by `alerts` in the address), and its Integrations tab Agents' section Reporting to Conductor. Any other tab, or
+ * none, lands on the feed.
+ */
+export function eventsRedirect(query: Record<string, unknown>): EventsLanding {
+  const tab = typeof query.tab === 'string' ? query.tab : ''
+  // A redirect keeps the old address's query unless it gives one: each gives its own, so `tab=` never follows.
+  if (tab === 'integrations') return { path: '/agents', query: {}, hash: '#reporting' }
+  if (tab === 'routing') return { path: '/history', query: { view: 'feed', alerts: null } }
+  return { path: '/history', query: { view: 'feed' } }
 }

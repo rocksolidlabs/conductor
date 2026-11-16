@@ -2,12 +2,15 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
+import { navPages, navTiles, pageActive, pageTip, type PageId } from '~/utils/pages'
+import { needsCount, needsRowShown } from '~/utils/needsYou'
+import { connectShown } from '~/utils/workbenchGate'
 
-const showToken = ref(false)
+/** The workbench token dialog, opened by the person over a working app (the menu, the palette, an alert's Set token). */
+const showToken = useTokenDialog().open
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
 const desktopWide = useMedia('(min-width: 64rem)')
-const attention = useAttention()
-// The decision inbox (Needs your decision): read for the whole app, its count on the sidebar's Decide row and the phone's tab.
+// The decision inbox: read for the whole app, one of the stores of the one number on Needs you (useNeedsYou).
 const inbox = useInbox()
 onMounted(() => inbox.start())
 const desktop = useDesktop()
@@ -83,7 +86,8 @@ function onAltChord(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onAltChord))
 onBeforeUnmount(() => document.removeEventListener('keydown', onAltChord))
 
-/** The collapse and expand buttons go away with their mode: focus moves to the other one rather than falling to the page. */
+/** Your menu's Collapse to the rail and the rail's Expand button go away with their mode: the focus moves to the rail's Expand
+ * button, or to your menu's button in the header, rather than falling to the page. */
 async function collapseByButton() {
   sidebar.collapse()
   await nextTick()
@@ -92,7 +96,7 @@ async function collapseByButton() {
 async function expandByButton() {
   sidebar.expand()
   await nextTick()
-  sidebarRoot()?.querySelector<HTMLElement>('[data-sidebar-collapse]')?.focus()
+  sidebarRoot()?.querySelector<HTMLElement>('[data-slot="header"] [data-header-account]')?.focus()
 }
 
 // The full sidebar's width survives a reload, kept by useSidebar too: with
@@ -190,15 +194,22 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
   document.addEventListener(end, () => void keepWidth(before), { once: true })
 }
 
-// A run page keeps the Crews page lit in the foot: a run is the Crews page's.
-const runRoute = computed(() => route.path.startsWith('/runs/'))
-// Dispatch's pages (its projects, a project's list, a ticket) keep it lit.
-const dispatchRoute = computed(() => route.path === '/dispatch' || route.path.startsWith('/dispatch/'))
-
 // Brakeman's row (docs/plans/brakeman.md, PR-6): the briefs this browser has not opened, counted as they arrive; nothing else
 // happens when one does (no toast, no dialog, no navigation). Shown once the server says it has Brakeman (not a switchyard's).
 const brakeman = useBrakeman()
 const workbench = useWorkbenchToken()
+/**
+ * The connect page in place of the app (the UX review's P18): no token held, or the held one refused; in the desktop app not before its
+ * bridge answered. The app stays mounted under it, hidden, so a refusal in the middle of work keeps every draft and view.
+ */
+const connect = computed(() =>
+  connectShown({ desktop: workbench.desktop, bridged: workbench.bridged.value, hasToken: workbench.hasToken.value, standing: workbench.standing.value }),
+)
+// `?alerts` opens the Alerts panel (mounted below) and leaves the address; while the connect page shows it waits for a token.
+useAlertsFromAddress(() => connect.value)
+// While the page to connect shows, the app's reads that would go with the missing or refused token wait (useApi, the events stream,
+// a terminal's connection), and go once a token is taken: the hidden app sends nothing the server would refuse.
+onBeforeUnmount(workbench.hold())
 // Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
 // held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
 onMounted(() =>
@@ -213,50 +224,67 @@ onMounted(() =>
 )
 const brakemanCount = computed(() => brakeman.unopened.value.length)
 
-const nav = computed<NavigationMenuItem[]>(() => [
-  {
-    label: 'Decide',
-    icon: 'i-lucide-gavel',
-    to: '/decisions',
-    'data-sidebar-decide': '',
-    badge: inbox.count.value ? { label: String(inbox.count.value), color: 'warning' as const, variant: 'solid' as const } : undefined,
-  },
-  { label: 'Yard', icon: 'i-lucide-layout-grid', to: '/yard', badge: attention.count.value ? { label: String(attention.count.value), color: 'warning', variant: 'solid' } : undefined },
-  { label: 'Roundhouse', icon: 'i-lucide-gallery-horizontal', to: '/roundhouse' },
-  { label: 'Agents', icon: 'i-lucide-bot', to: '/agents' },
-  {
-    label: 'Crews',
-    icon: 'i-lucide-users',
-    to: '/crews',
-    active: route.path.startsWith('/crews') || runRoute.value,
-  },
-  { label: 'Dispatch', icon: 'i-lucide-ticket', to: '/dispatch', active: dispatchRoute.value },
-  { label: 'Events', icon: 'i-lucide-radio-tower', to: '/events' },
-  { label: 'History', icon: 'i-lucide-history', to: '/history', active: route.path.startsWith('/history') },
-  ...(brakeman.available.value
-    ? [{ label: 'Brakeman', icon: 'i-lucide-notebook-pen', to: '/brakeman', 'data-sidebar-brakeman': '', badge: brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary' as const, variant: 'subtle' as const } : undefined }]
-    : []),
-  ...(desktop.isDesktop.value ? [{ label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }] : []),
-])
+// The one number of what needs you (utils/needsYou.ts), on Needs you alone: drawn "9", "9+" past a store cut short, and not at all
+// while it is not known. Every place that draws it carries data-count-of="needs".
+const needs = useNeedsYou()
+const needsWords = computed(() => needsCount(needs.list.value))
+// The row leaves when nothing waits and nothing was decided that day (needsRowShown); the clock moves its day on every minute.
+const minute = ref(Date.now())
+onMounted(() => {
+  const t = window.setInterval(() => (minute.value = Date.now()), 60_000)
+  onBeforeUnmount(() => window.clearInterval(t))
+})
+const needsRow = computed(() => needsRowShown(inbox.state.value, needs.list.value, route.path, minute.value))
+/** Every store of the one list read: the rail's Needs you row is where it stays and the tile's number is drawn (a test waits on it). */
+const needsRead = computed(() => (needs.known.value || needs.more.value ? 'true' : 'false'))
 
-// On the rail Nuxt UI's collapsed menu hides the links' labels and the Yard's
-// count: each link is named by an aria-label instead, and the Yard's icon
-// carries an amber chip while any session needs you.
-const railNav = computed<NavigationMenuItem[]>(() =>
-  nav.value.map((item) => {
-    const n = item.to === '/yard' ? attention.count.value : 0
-    if (item.to === '/decisions') {
-      const d = inbox.count.value
-      return { ...item, 'aria-label': d ? `Needs your decision, ${d} waiting` : 'Needs your decision', chip: d ? { color: 'warning' } : undefined }
-    }
-    if (item.to === '/brakeman') {
-      const b = brakemanCount.value
-      return { ...item, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
-    }
-    return { ...item, 'aria-label': n ? `${item.label}, ${n} ${n === 1 ? 'needs' : 'need'} you` : item.label, chip: n ? { color: 'warning' } : undefined }
+/** A page's badge in the foot: Needs you's one number in amber, Brakeman's briefs not yet opened. */
+function navBadge(id: PageId): NavigationMenuItem['badge'] {
+  // The hook rides on the badge as an attribute (Nuxt UI binds the badge object onto its UBadge).
+  if (id === 'decisions') return needsWords.value && needs.number.value ? ({ label: needsWords.value, color: 'warning', variant: 'solid', 'data-count-of': 'needs' } as NavigationMenuItem['badge']) : undefined
+  if (id === 'brakeman') return brakemanCount.value ? { label: String(brakemanCount.value), color: 'primary', variant: 'subtle' } : undefined
+  return undefined
+}
+/** The hooks the tests find a page's row by. */
+const NAV_HOOKS: Partial<Record<PageId, string>> = { decisions: 'data-sidebar-decide', brakeman: 'data-sidebar-brakeman' }
+
+// The full sidebar's foot: the pages as tiles and More (SidebarTiles), from the one table. Brakeman's slot is held while the server
+// has not said; a switchyard serves no inbox, so it has no Needs you tile.
+const tiles = computed(() => navTiles({ brakeman: brakeman.available.value, desktop: desktop.isDesktop.value, switchyard: !!inbox.state.value.unavailable }))
+function tileBadge(id: PageId) {
+  const b = navBadge(id)
+  return b && typeof b === 'object' ? b : undefined
+}
+
+// The rail's pages, from the one table (utils/pages.ts): each one's sentence is its tooltip (pageTip).
+const navEntries = computed(() => navPages({ brakeman: !!brakeman.available.value, desktop: desktop.isDesktop.value, needs: needsRow.value }))
+const nav = computed<NavigationMenuItem[]>(() =>
+  navEntries.value.map((p) => {
+    const hook = NAV_HOOKS[p.id]
+    return { label: p.label, icon: p.icon, to: p.to, active: pageActive(p.id, route.path), badge: navBadge(p.id), ...(hook ? { [hook]: '' } : {}) }
   }),
 )
 
+// On the rail Nuxt UI's collapsed menu hides the links' labels and their
+// badges: each link is named by an aria-label instead, and Needs you's icon
+// carries an amber chip while anything waits, its label the one number. Its
+// tooltip, on hover and on focus, is the page's sentence (Nuxt UI takes
+// `text` from the item's tooltip object over the label).
+const railNav = computed<NavigationMenuItem[]>(() =>
+  nav.value.map((item, i) => {
+    const p = navEntries.value[i]!
+    const tooltip = { text: pageTip(p) }
+    if (p.id === 'decisions') {
+      const d = needs.number.value ? needsWords.value : ''
+      return { ...item, tooltip, 'aria-label': d ? `${p.title}, ${d} waiting` : p.title, 'data-count-of': 'needs', chip: d ? { color: 'warning' } : undefined }
+    }
+    if (p.id === 'brakeman') {
+      const b = brakemanCount.value
+      return { ...item, tooltip, 'aria-label': b ? `${item.label}, ${b} new ${b === 1 ? 'brief' : 'briefs'}` : item.label, chip: b ? { color: 'primary' } : undefined }
+    }
+    return { ...item, tooltip, 'aria-label': item.label }
+  }),
+)
 
 // Shortcuts pause while a terminal or a text field has focus (see useShortcuts).
 // Plain keys work outside terminals and text fields; the Alt chords also
@@ -273,7 +301,7 @@ defineShortcuts({
   'g-y': chord(() => router.push('/yard')),
   'g-r': chord(() => router.push('/roundhouse')),
   'g-a': chord(() => router.push('/agents')),
-  'g-e': chord(() => router.push('/events')),
+  'g-e': chord(() => router.push('/history?view=feed')),
   'g-h': chord(() => router.push('/history')),
   'g-c': chord(() => router.push('/crews')),
   'g-d': chord(() => router.push('/dispatch')),
@@ -287,15 +315,16 @@ defineShortcuts({
   alt_y: { ...inTerminal, handler: () => router.push('/yard') },
   alt_r: { ...inTerminal, handler: () => router.push('/roundhouse') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
-  alt_e: { ...inTerminal, handler: () => router.push('/events') },
+  alt_e: { ...inTerminal, handler: () => router.push('/history?view=feed') },
   alt_c: { ...inTerminal, handler: () => router.push('/crews') },
   alt_d: { ...inTerminal, handler: () => router.push('/dispatch') },
 })
 </script>
 
 <template>
+  <ConnectPage v-if="connect" />
   <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
-  <UDashboardGroup :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
+  <UDashboardGroup v-show="!connect" :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"
@@ -307,9 +336,9 @@ defineShortcuts({
       :max-size="sidebar.bounds.value.max"
       :style="sidebar.rail.value ? undefined : { width: SIDEBAR_WIDTH }"
       :ui="{
-        header: sidebar.rail.value ? 'lg:px-0 lg:justify-center' : undefined,
-        body: sidebar.rail.value ? 'gap-0 py-2 lg:px-1' : 'gap-0 py-2',
-        footer: sidebar.rail.value ? 'border-t border-default flex-col items-stretch lg:items-center gap-1 lg:px-1' : 'border-t border-default flex-col items-stretch gap-1',
+        header: sidebar.rail.value ? 'lg:px-0 lg:justify-center' : 'px-2',
+        body: sidebar.rail.value ? 'gap-0 py-2 lg:px-1' : 'gap-0 py-2 px-1',
+        footer: sidebar.rail.value ? 'border-t border-default flex-col items-stretch lg:items-center gap-1 lg:px-1' : 'border-t border-default flex-col items-stretch gap-1 px-2',
       }"
     >
       <template #header="{ collapsed }">
@@ -317,21 +346,18 @@ defineShortcuts({
           <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
         </div>
-        <!-- With an update pending the header holds one more button (1.625 rem with its gap). Where the row's content is
-             narrower than at the minimum width plus that button (15.8125 rem: 16.75 rem less the header's 1 px border and 2 rem
-             padding and the row's 0.5 rem, 14.1875 rem, plus the button), the mark steps aside so that the name keeps at least the
-             width it has there without the update (#604); wider, nothing changes. -->
+        <!-- The mark, the name and your menu (Alerts and the collapse to the rail are in it). With an update pending the header
+             holds one more button (1.625 rem with its gap). Where the row's content is narrower than at the minimum width plus that
+             button (12.5625 rem: 12.5 rem less the header's 1 px border and 1 rem padding and the row's 0.5 rem, 10.9375 rem, plus
+             the button), the mark steps aside so that the name keeps at least the width it has there without the update (#604);
+             wider, nothing changes. -->
         <div v-else class="@container flex items-center gap-1.5 px-1 w-full min-w-0" data-sidebar-brand>
-          <span class="flex shrink-0" :class="update.ready.value && '@max-[15.8125rem]:hidden'" data-sidebar-mark>
+          <span class="flex shrink-0" :class="update.ready.value && '@max-[12.5625rem]:hidden'" data-sidebar-mark>
             <img src="/brand/conductor-mark.svg" alt="" class="size-7 dark:hidden" />
             <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-7 hidden dark:block" />
           </span>
           <span class="font-semibold truncate" title="Conductor" data-sidebar-name>Conductor</span>
-          <!-- Alerts and your menu beside the name (design 3b): the foot holds only the pages. -->
-          <SidebarHeaderMenus class="ml-auto" @token="showToken = true" />
-          <UTooltip text="Collapse to the rail" :kbds="['meta', 'B']" ignore-non-keyboard-focus>
-            <UButton icon="i-lucide-panel-left-close" color="neutral" variant="ghost" size="xs" aria-label="Collapse sidebar" class="hidden lg:inline-flex" data-sidebar-collapse @click="collapseByButton" />
-          </UTooltip>
+          <SidebarHeaderMenus class="ml-auto" @token="showToken = true" @collapse="collapseByButton" />
         </div>
       </template>
 
@@ -354,12 +380,17 @@ defineShortcuts({
       </template>
 
       <template #footer="{ collapsed }">
-        <UNavigationMenu :items="collapsed ? railNav : nav" orientation="vertical" :collapsed="collapsed" tooltip :ui="{ link: collapsed ? 'justify-center' : undefined }" class="w-full" />
+        <!-- On the canvas the theme's raised pill would vanish in light (sage on sage): a hovered link takes the canvas's hover tone and
+             the current page's link the page's tone, as the sidebar's rows do. -->
+        <!-- The full sidebar's foot is the pages as tiles; on the rail each page is an icon. data-needs-read: every store of the one
+             list has been read, so the rail's Needs you row is where it stays and the tile's number is drawn (a test waits on it). -->
+        <SidebarTiles v-if="!collapsed" :tiles="tiles.tiles" :more="tiles.more" :badge="tileBadge" :data-needs-read="needsRead" />
+        <UNavigationMenu v-else :items="railNav" orientation="vertical" collapsed tooltip :ui="{ link: 'justify-center hover:before:bg-canvas-hover data-active:before:bg-default' }" class="w-full" :data-needs-read="needsRead" />
         <!-- On the rail the header's menus and the expand button stack in the foot. -->
         <div v-if="collapsed" class="flex flex-col items-center gap-1 px-1 pt-1" data-rail-foot>
           <SidebarHeaderMenus collapsed @token="showToken = true" />
           <UTooltip text="Expand sidebar" :kbds="['meta', 'B']" :content="{ side: 'right' }" ignore-non-keyboard-focus>
-            <UButton icon="i-lucide-panel-left-open" color="neutral" variant="ghost" size="sm" aria-label="Expand sidebar" class="hidden lg:inline-flex" data-rail-expand @click="expandByButton" />
+            <UButton icon="i-lucide-panel-left-open" color="neutral" variant="ghost" size="sm" aria-label="Expand sidebar" class="hidden lg:inline-flex hover:bg-canvas-hover active:bg-canvas-hover" data-rail-expand @click="expandByButton" />
           </UTooltip>
         </div>
       </template>
@@ -369,6 +400,7 @@ defineShortcuts({
 
     <BottomBar @token="showToken = true" />
     <WorkbenchTokenGate v-model:open="showToken" />
+    <AlertsPanel />
     <UpdateRestartModal />
     <ShortcutsModal />
     <CommandPalette @token="showToken = true" />
@@ -377,5 +409,6 @@ defineShortcuts({
     <RenameSessionModal />
     <CloneSessionModal />
     <DecisionModal />
+    <OpenOnPhone />
   </UDashboardGroup>
 </template>

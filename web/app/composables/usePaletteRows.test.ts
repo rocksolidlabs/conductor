@@ -1,30 +1,28 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RunInfo, RunMember } from '~/composables/useSessions'
-import { decisionRows, waitingRows } from './usePaletteRows'
+import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { NeedsItem } from '~/utils/needsYou'
+import { sidebarModel, type RunBlock } from '~/utils/sidebar'
+import { needsItemRow, runRowLook, waitingRows } from './usePaletteRows'
 
 // The palette's store keeps module state in Nuxt's auto-imported refs: not needed by the rows' builder.
 vi.mock('~/composables/usePalette', () => ({ usePalette: () => ({}) }))
 
-// The palette's rows for the decision page (docs/plans/decision-inbox.md, PR-2): one per open item, by its ref, each opening the item.
-
-describe("the palette's decision rows", () => {
-  it('names each open item by its ref and opens it on the decision page', () => {
+// A plan's and a task's rows in the palette's Needs you (the UX review's P3): their kind's word, each opening its item on the page.
+describe("the palette's plan and task rows", () => {
+  it("says the kind's word and opens the item on the Needs you page", () => {
     const went: string[] = []
-    const rows = decisionRows(
-      [
-        { ref: 'question:s1/q1', title: 'Claude Code in api-fix asks', question: 'Which database?', brief: '' },
-        { ref: 'task:r1/build', title: 'build failed in run release', question: '', brief: 'Task build of run release is failed after 3 attempts' },
-      ],
-      (to) => went.push(to),
-    )
+    const summary = (ref: string, kind: string, title: string, question: string, brief: string) => ({ ref, kind, since: '', title, question, brief, answerer: '', actions: [] })
+    const rows = [
+      needsItemRow({ kind: 'plan', ref: 'plan:CND-2/1', summary: summary('plan:CND-2/1', 'plan', 'Pairing rollout, revision 1', 'Approve the plan?', '') }, (to) => went.push(to)),
+      needsItemRow({ kind: 'task', ref: 'task:r1/build', summary: summary('task:r1/build', 'task', 'build failed in run release', '', 'Task build of run release is failed after 3 attempts') }, (to) => went.push(to)),
+    ]
     expect(rows.map((r) => [r.key, r.label, r.detail])).toEqual([
-      ['decide:question:s1/q1', 'Decide: Claude Code in api-fix asks', 'Which database?'],
-      ['decide:task:r1/build', 'Decide: build failed in run release', 'Task build of run release is failed after 3 attempts'],
+      ['needs:plan:CND-2/1', 'Plan: Pairing rollout, revision 1', 'Approve the plan?'],
+      ['needs:task:r1/build', 'Task: build failed in run release', 'Task build of run release is failed after 3 attempts'],
     ])
     rows[1]!.run()
     expect(went).toEqual([`/decisions?item=${encodeURIComponent('task:r1/build')}`])
-    expect(rows[0]!.href).toBe(`/decisions?item=${encodeURIComponent('question:s1/q1')}`)
-    expect(decisionRows([], () => {})).toEqual([])
+    expect(rows[0]!.href).toBe(`/decisions?item=${encodeURIComponent('plan:CND-2/1')}`)
   })
 })
 
@@ -50,5 +48,30 @@ describe("the # palette's waiting members", () => {
     ])
     rows[1]!.run()
     expect(started).toEqual(['plain/review'])
+  })
+})
+
+// A run's row: its members' tally said once, after the names of those who ask, and the mark of the run's own state (the one that
+// places it in the sidebar's list), never its members' alone.
+describe("the palette's run row", () => {
+  const session = (id: string, attention: Partial<NonNullable<SessionInfo['attention']>>) =>
+    ({ id, name: id, kind: 'server', agentId: 'claude', command: [], cwd: '/w', status: 'running', cols: 80, rows: 24, viewers: 0, createdAt: '2026-10-01T09:00:00Z', turns: true, crew: { runId: 'r1', crewId: 'c', member: id }, attention: { since: '2026-10-01T09:01:00Z', source: 'api', ...attention } }) as SessionInfo
+  const run = { id: 'r1', crewId: 'c', name: 'API sweep', goal: '', cwd: '/w', isolation: 'none', startedAt: '2026-10-01T08:31:00Z', members: ['review', 'core', 'lead'].map((name) => ({ name, agentId: 'claude', start: { when: 'immediately' }, status: 'running' })), log: [], state: 'running', needsInput: 0, yolo: false } as unknown as RunInfo
+  const block = (sessions: SessionInfo[], needs: NeedsItem[] = []) => {
+    const m = sidebarModel(sessions, () => run, needs)
+    return [...m.needs, ...m.finished, ...m.working].find((it): it is RunBlock => it.kind === 'run')!
+  }
+
+  it('says the tally once and draws the run\'s own state', () => {
+    const three = block([session('review', { state: 'needs_input' }), session('core', { state: 'working' }), session('lead', { state: 'done' })])
+    const look = runRowLook(three, run)
+    expect(look.detail).toMatch(/^started \d\d:\d\d · 3 agents · review asks · 1 working · 1 finished$/)
+    expect(look.status.key).toBe('needs')
+    // A run that waits on a failed task while its members work: amber, as the sidebar lists it in Needs you.
+    const task: NeedsItem = { kind: 'task', ref: 'task:r1/build', run: 'r1', since: '2026-10-01T09:03:00Z', summary: { ref: 'task:r1/build', kind: 'task', since: '', title: 'build failed', brief: '', question: '', answerer: '', actions: [] } }
+    const waits = block([session('core', { state: 'working' }), session('lead', { state: 'working' })], [task])
+    expect(waits.state).toBe('needs')
+    expect(runRowLook(waits, run).status.key).toBe('needs')
+    expect(runRowLook(waits, run).detail).toMatch(/ · 2 working$/)
   })
 })
