@@ -39,7 +39,7 @@ async function oracle(day: Day) {
       railLabel: n ? `Needs you, ${n} waiting` : 'Needs you',
       phone: n ? String(n) : '',
       phoneYard: grid ? String(grid) : '',
-      yardChip: `Needs you ${grid}`,
+      yardChip: String(grid),
       section: String(n - more),
       sectionMore: more ? `+${more} on the page` : '',
       yardNavBadge: 0,
@@ -66,7 +66,7 @@ async function readAll(desk: Page, rail: Page, phone: Page) {
     text(rail, '[data-rail-count="needs"][data-count-of="needs"]'),
     rail.locator('#dashboard-sidebar-main nav a[data-count-of="needs"]').getAttribute('aria-label').catch(() => ''),
     rail.locator('#dashboard-sidebar-main nav a[href="/yard"] [data-slot="linkLeadingChip"]').count(),
-    text(rail, '[data-yard-filter="needs"]'),
+    text(rail, '[data-yard-filter="needs"] [data-yard-count]'),
   ])
   const [phoneN, phoneYard] = await Promise.all([text(phone, '[data-bottom-tab="decide"] [data-count-of="needs"]'), text(phone, '[data-bottom-tab="yard"] [data-bottom-count]')])
   return { nav, title, favicon, palette, railCount, railLabel: railLabel ?? '', phone: phoneN, phoneYard, yardChip, section, sectionMore, yardNavBadge, railYardChip }

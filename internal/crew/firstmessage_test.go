@@ -222,11 +222,28 @@ func TestAFirstMessageWaitsForEachStartupQuestion(t *testing.T) {
 
 // A person's keys at the prompt while the message waits withdraw it: the
 // wait ends at once, nothing of the message is written, the session's
-// Activity says why, and it no longer says a message waits.
+// Activity says why, and it no longer says a message waits. The prompt
+// is drawn, so the session is ready the moment the wait looks: the typer
+// is held in its wait (a gate), the keys typed once it is there and in,
+// so that they come first by the test's order, not the scheduler's; the
+// gate is opened after them, and the message, withdrawn, is still not
+// typed.
 func TestAPersonsKeysWithdrawTheFirstMessage(t *testing.T) {
 	l, p, sub := firstSession(t, session.Options{})
 	p.Print("> ")
-	_, done := typeFirst(t, l, FirstMessage{})
+	gate, waiting := make(chan struct{}), make(chan struct{})
+	hold := func(ctx context.Context, _ *session.Local, _ func(string)) error {
+		close(waiting)
+		select {
+		case <-gate:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	_, done := typeFirst(t, l, FirstMessage{Wait: hold})
+	// The typer is in its wait, ready to type once let go.
+	<-waiting
 	for _, k := range []string{"ls", "\r"} {
 		if err := l.Input(sub, []byte(k)); err != nil {
 			t.Fatal(err)
@@ -235,6 +252,7 @@ func TestAPersonsKeysWithdrawTheFirstMessage(t *testing.T) {
 			t.Fatalf("written %q", b)
 		}
 	}
+	close(gate)
 	returned(t, done)
 	noInput(t, p)
 	untilEntries(t, l, session.ActivityStatus, "the first message was not typed: a person typed in the session first", 1)

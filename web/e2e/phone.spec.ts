@@ -154,7 +154,7 @@ test('More holds the other pages, the alerts and your menu', async () => {
   await expect(more).toBeVisible()
   await expect(more.getByRole('link')).toHaveText([/Agents/, /Dispatch/, /Events/, /History/])
   await expect(more.getByText('Browser notification')).toBeVisible()
-  await expect(more.getByRole('button')).toHaveText([/Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
+  await expect(more.getByRole('button')).toHaveText([/All alert rules/, /Your name/, /Keyboard shortcuts/, /Toggle theme/, /Workbench token/, /Forget token/])
   await more.getByRole('button', { name: /Your name/ }).tap()
   await expect(phone.locator('[data-name-dialog]')).toBeVisible()
 })
@@ -173,7 +173,7 @@ async function choicesOnScreen(bar: Locator) {
   expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.body.scrollWidth <= window.innerWidth)).toBe(true)
 }
 
-test("a plan approval's three choices wrap inside the window, on the session page and the Yard's card", async ({ page, api }) => {
+test("a plan approval's three choices wrap inside the window, on the session page and an expanded Yard tile's bar", async ({ page, api }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'phone plan' })
   sessions.push(s.id)
   // Typed from the desktop's page: the phone only reads the bar.

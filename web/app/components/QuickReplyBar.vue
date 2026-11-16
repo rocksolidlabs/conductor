@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_TERMINAL, MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_TERMINAL, answersInTerminal, choiceTitle, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -110,7 +110,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         :variant="i === recommended ? 'solid' : 'outline'"
         :color="i === recommended ? 'primary' : o.mode ? 'warning' : 'neutral'"
         :data-recommended="i === recommended || undefined"
-        :title="o.mode ? MODE_CHOICE : undefined"
+        :title="choiceTitle(o)"
         :disabled="!canReply"
         :loading="busy"
         :data-choice-mode="o.mode || undefined"

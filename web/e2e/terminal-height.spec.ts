@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
-import { expect, member, stopStrays, test, type Api, type Run, type Session } from './fixtures'
+import { expect, member, showView, stopStrays, test, type Api, type Run, type Session } from './fixtures'
 
 // A short pane (#189, #201): the terminal fits the rows that show in its pane, never more: its last row and the cursor's row lie
 // inside the pane. In the editor column (the session page, the Yard's focus, a guest's join page), whose slot can be 8rem tall, on a
@@ -163,7 +163,7 @@ async function open(where: Where, page: Page, browser: Browser, api: Api, s: Ses
 /** Opens the folder's file in the editor above the terminal, from the Files tab of the session page's inspector or the Files pane beside the column. */
 async function openFile(where: Where, p: Page, cwd: string): Promise<void> {
   if (where === 'the session page') {
-    await p.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(p, 'explorer')
     await p.locator(`[data-files-tree] [data-file-node="${cwd}/notes.md"]`).click()
   } else {
     await p.locator(`[data-files-aside] [data-file-node="${cwd}/notes.md"]`).click()

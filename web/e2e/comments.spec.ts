@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 // Comments on lines (design round 12, F7): select lines in the editor, the
 // bar offers Comment, Ask the agent and Copy; the composer carries the quote
@@ -19,7 +19,7 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
   const editorLine = (text: string) => area.locator('.monaco-editor .view-line', { hasText: text })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-files-mode] [data-file-node="${file}"]`).click()
     await expect(editorLine('func A()')).toBeVisible({ timeout: 30_000 })
     // Select lines 3 and 4: the bar shows over them.
@@ -96,7 +96,7 @@ test('the editor\'s comment box is as wide as the editor, its heading whole and 
   try {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    await showView(page, 'explorer')
     await page.locator(`[data-files-mode] [data-file-node="${file}"]`).click()
     await expect(editorLine('func (s *Store) Put')).toBeVisible({ timeout: 30_000 })
     // Select lines 3 to 5 and ask the agent.
