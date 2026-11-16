@@ -538,6 +538,14 @@ export function cutWords(cut?: string): string {
   return 'the search stopped at its bound: add a word or a filter to reach the rest'
 }
 
+/**
+ * What History says when its answer holds nothing: with nothing typed the page asked for the latest sessions, so none is kept yet;
+ * with a query, nothing matches it.
+ */
+export function historyNoneWords(query: string): string {
+  return query.trim() ? 'Nothing in the history matches.' : 'No session is kept yet.'
+}
+
 /** The index's state in words, or '' when it is ready and nothing is behind: "Indexing: 3 sources behind". */
 export function indexingWords(x?: Indexing | null): string {
   if (!x) return ''
