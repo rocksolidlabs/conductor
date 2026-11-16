@@ -660,9 +660,9 @@ usePalette().registerPage(() => ({
           </div>
         </template>
         <template #right>
-          <UButton v-if="saved" icon="i-lucide-copy" color="neutral" variant="outline" aria-label="Duplicate" :disabled="saving || !!launchingKey" @click="duplicate"><span class="hidden sm:inline">Duplicate</span></UButton>
+          <IconButton v-if="saved" icon="i-lucide-copy" color="neutral" variant="outline" label="Duplicate" :disabled="saving || !!launchingKey" @click="duplicate"><span class="hidden sm:inline">Duplicate</span></IconButton>
           <UDropdownMenu v-if="saved || unreadable" :items="menu" :content="{ align: 'end' }">
-            <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
+            <IconButton icon="i-lucide-ellipsis" color="neutral" variant="outline" label="More" />
           </UDropdownMenu>
           <UTooltip :text="launchBlocked" :disabled="!launchBlocked">
             <UFieldGroup>

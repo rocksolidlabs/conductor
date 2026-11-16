@@ -106,7 +106,7 @@ function created(key: string) {
     <template #header>
       <UDashboardNavbar :toggle="false" title="Dispatch">
         <template #right>
-          <UButton icon="i-lucide-plus" aria-label="New project" data-new-project-open @click="newOpen = true"><span class="hidden sm:inline">New project</span></UButton>
+          <IconButton icon="i-lucide-plus" label="New project" data-new-project-open @click="newOpen = true"><span class="hidden sm:inline">New project</span></IconButton>
           <FullscreenButton class="hidden sm:inline-flex" />
         </template>
       </UDashboardNavbar>

@@ -573,7 +573,7 @@ palette.registerPage((): PageGroup => {
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ left: 'min-w-0 flex-1' }" data-project-header>
         <template #leading>
-          <UButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" aria-label="Back to the projects" to="/dispatch" class="lg:hidden" />
+          <IconButton icon="i-lucide-arrow-left" color="neutral" variant="ghost" label="Back to the projects" to="/dispatch" class="lg:hidden" />
         </template>
         <template #title>
           <span class="flex min-w-0 items-baseline gap-2">
@@ -584,8 +584,8 @@ palette.registerPage((): PageGroup => {
           </span>
         </template>
         <template #right>
-          <UButton icon="i-lucide-settings-2" color="neutral" variant="ghost" aria-label="The project's settings: its close policy, labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Settings</span></UButton>
-          <UButton icon="i-lucide-plus" aria-label="New ticket" :disabled="!projectRead || archived" data-new-ticket-open @click="newOpen = true"><span class="hidden sm:inline">New ticket</span></UButton>
+          <IconButton icon="i-lucide-settings-2" color="neutral" variant="ghost" label="The project's settings: its close policy, labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Settings</span></IconButton>
+          <IconButton icon="i-lucide-plus" label="New ticket" :disabled="!projectRead || archived" data-new-ticket-open @click="newOpen = true"><span class="hidden sm:inline">New ticket</span></IconButton>
           <FullscreenButton class="hidden sm:inline-flex" />
         </template>
       </UDashboardNavbar>

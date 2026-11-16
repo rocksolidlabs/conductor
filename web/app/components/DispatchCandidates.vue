@@ -88,7 +88,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
               <span class="font-medium">attempt {{ c.attempt }}</span>
               <template v-if="c.kind === 'work' && c.commit">
                 <code class="font-mono text-default" :title="c.commit" data-candidate-commit-short>{{ shortCommit(c.commit) }}</code>
-                <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :aria-label="`Copy the commit of ${t.task} attempt ${c.attempt}`" data-candidate-copy @click="copy(c.commit, 'Commit copied', c.commit)" />
+                <IconButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :label="`Copy the commit of ${t.task} attempt ${c.attempt}`" data-candidate-copy @click="copy(c.commit, 'Commit copied', c.commit)" />
               </template>
               <span v-else-if="c.kind === 'review' && c.start" class="text-muted">reviewed <code class="font-mono" :title="c.start">{{ shortCommit(c.start) }}</code></span>
               <UBadge v-if="c.standing" label="result" color="primary" variant="subtle" size="sm" title="The task's result now" data-candidate-standing />

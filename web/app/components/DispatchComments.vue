@@ -368,8 +368,8 @@ defineExpose({ insert: (text: string) => composer.value?.insert(text) })
               <span :title="c.createdAt">{{ relativeTime(c.createdAt, now, { suffix: true }) }}</span>
               <span v-if="c.editedAt && !c.deletedAt" :title="c.editedAt" data-comment-edited>· edited</span>
               <span v-if="!locked && !c.deletedAt && editing?.id !== c.id" class="ml-auto flex gap-0.5">
-                <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Edit comment #${c.n}`" data-comment-edit @click="edit(c)" />
-                <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Delete comment #${c.n}`" data-comment-delete @click="confirming = c.id" />
+                <IconButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :label="`Edit comment #${c.n}`" data-comment-edit @click="edit(c)" />
+                <IconButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :label="`Delete comment #${c.n}`" data-comment-delete @click="confirming = c.id" />
               </span>
             </p>
             <p v-if="c.deletedAt" class="text-sm italic text-dimmed">This comment was deleted.</p>

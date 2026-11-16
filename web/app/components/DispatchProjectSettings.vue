@@ -347,8 +347,8 @@ const milestoneOver = computed(() => new TextEncoder().encode(milestoneDescripti
                 </form>
                 <span v-else class="min-w-0 flex-1 truncate text-sm" data-label-name>{{ l.name }}</span>
                 <template v-if="!archived && renaming !== l.id">
-                  <UButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Rename ${l.name}`" data-label-rename @click="startRename(l)" />
-                  <UButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :aria-label="`Delete ${l.name}`" data-label-delete @click="confirming = l.id" />
+                  <IconButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :label="`Rename ${l.name}`" data-label-rename @click="startRename(l)" />
+                  <IconButton icon="i-lucide-trash-2" size="xs" color="neutral" variant="ghost" :label="`Delete ${l.name}`" data-label-delete @click="confirming = l.id" />
                 </template>
               </div>
               <p v-if="renaming === l.id && renameTheirs" class="text-xs text-warning" data-label-theirs>It was renamed {{ renameTheirs }} while you typed: Save again to replace that with yours, or Escape to keep it.</p>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GLOBAL_SHORTCUTS } from '~/composables/useShortcuts'
-import { PAGES, navPages, pageActive, pageById, pageTip, palettePages, phoneMore, phoneTabs, yardRoute, type PageId } from './pages'
+import { PAGES, navPages, navTiles, pageActive, pageById, pageTip, palettePages, phoneMore, phoneTabs, yardRoute, type PageId } from './pages'
 
 const ids = (ps: ReadonlyArray<{ id: string }>) => ps.map((p) => p.id)
 const labels = (ps: ReadonlyArray<{ label: string }>) => ps.map((p) => p.label)
@@ -24,6 +24,35 @@ describe('the pages in one table', () => {
     expect(phoneTabs().map((p) => p.to)).toEqual(['/decisions', '/sessions', '/yard', '/crews'])
     expect(labels(phoneMore())).toEqual(['Agents', 'Dispatch', 'Events', 'History'])
     expect(labels(phoneMore({ desktop: true }))).toEqual(['Agents', 'Dispatch', 'Events', 'History', 'Settings'])
+  })
+
+  it("gives the phone's More Brakeman after Dispatch while the server has it, so every page is reached from the phone", () => {
+    expect(labels(phoneMore({ brakeman: true }))).toEqual(['Agents', 'Dispatch', 'Brakeman', 'Events', 'History'])
+    expect(labels(phoneMore({ brakeman: true, desktop: true }))).toEqual(['Agents', 'Dispatch', 'Brakeman', 'Events', 'History', 'Settings'])
+    expect(labels(phoneMore({ brakeman: false }))).toEqual(['Agents', 'Dispatch', 'Events', 'History'])
+  })
+
+  it("gives the full sidebar's foot as six tiles, Brakeman's slot held while the server has not said, the rest under More", () => {
+    const cells = (s: Parameters<typeof navTiles>[0]) => navTiles(s).tiles.map((t) => (t.kind === 'page' ? t.page.label : t.kind))
+    // While the server has not said: an empty cell of a tile's size in Brakeman's place, so More does not move when it fills.
+    expect(cells({})).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'held', 'more'])
+    expect(cells({ brakeman: true })).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'Brakeman', 'more'])
+    // A server without Brakeman: More moves into its slot.
+    expect(cells({ brakeman: false })).toEqual(['Needs you', 'Yard', 'Crews', 'Dispatch', 'more'])
+    // A switchyard serves no inbox: no Needs you tile, the next ones close up.
+    expect(cells({ brakeman: false, switchyard: true })).toEqual(['Yard', 'Crews', 'Dispatch', 'more'])
+    expect(cells({ brakeman: true, switchyard: true })).toEqual(['Yard', 'Crews', 'Dispatch', 'Brakeman', 'more'])
+    // More holds the rail's other pages in the rail's order, Settings in the desktop app alone, never the Roundhouse or Brakeman.
+    expect(labels(navTiles({ brakeman: true }).more)).toEqual(['Agents', 'Events', 'History'])
+    expect(labels(navTiles({ brakeman: false }).more)).toEqual(['Agents', 'Events', 'History'])
+    expect(labels(navTiles({}).more)).toEqual(['Agents', 'Events', 'History'])
+    expect(labels(navTiles({ brakeman: true, desktop: true }).more)).toEqual(['Agents', 'Events', 'History', 'Settings'])
+    // Every page of the rail is a tile or under More: nothing the rail offers is lost.
+    for (const s of [{ brakeman: true }, { brakeman: true, desktop: true }, { brakeman: false, desktop: true }]) {
+      const { tiles, more } = navTiles(s)
+      const shown = [...tiles.flatMap((t) => (t.kind === 'page' ? [t.page.id] : [])), ...ids(more)]
+      expect(shown.sort()).toEqual(ids(navPages(s)).sort())
+    }
   })
 
   it("makes the Roundhouse the Yard's second view: a palette row with G R, the Yard current on both routes", () => {
