@@ -22,6 +22,11 @@
 #                   $HOME/.codex/config.toml; Down then Enter, or Esc,
 #                   quits; a launch with -c projects=… (the yolo trust
 #                   override) asks nothing
+#   STUB_TUI=1      the prompt reads keys one by one from the start, the
+#                   terminal's line editing and echo off, and draws what is
+#                   typed in its own row (a paste's markers not shown), as
+#                   Claude Code and Codex do: "stub tui on" from the first
+#                   prompt
 #   STUB_DIALOG_WAIT  how long, in seconds, a dialog's read of a key waits
 #                   at a time before it looks for a resize (dialog_key):
 #                   0.2 unless set
@@ -2079,6 +2084,12 @@ handle_line() {
 	fi
 }
 
+if [[ ${STUB_TUI:-} == 1 ]]; then
+	stty -icanon -echo min 1 time 0
+	tui=1
+	tui_save_mice
+	tui_save
+fi
 printf '\e[?2004h> '
 while :; do
 	if [[ -n $tui ]]; then

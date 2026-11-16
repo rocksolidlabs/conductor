@@ -91,6 +91,15 @@ describe('a launch with a first message (P19)', () => {
     expect(firstMessageLine({ attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe('')
     expect(firstMessageLine(null, 'Codex')).toBe('')
   })
+  it('says the message is typed and not sent, and how to send it; a word it does not know shows nothing', () => {
+    expect(firstMessageLine({ firstMessage: 'typed', attention: { state: 'working', source: 'api' } }, 'Codex')).toBe(
+      "Your first message is typed in the agent's input and not sent: press Enter in the terminal to send it.",
+    )
+    expect(firstMessageLine({ firstMessage: 'typed', attention: { state: 'needs_input', source: 'trust' } }, 'Codex')).toBe(
+      'Your first message is typed: answer the question, then press Enter in the terminal to send it.',
+    )
+    expect(firstMessageLine({ firstMessage: 'later' }, 'Codex')).toBe('')
+  })
 })
 
 describe('which agents take a first message', () => {

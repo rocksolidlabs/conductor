@@ -33,6 +33,11 @@ func firstSession(t *testing.T, opts session.Options) (*session.Local, *sessiont
 	if opts.SubmitPause == 0 {
 		opts.SubmitPause = 5 * time.Millisecond
 	}
+	if opts.EchoWait == 0 {
+		// The test's agent draws the text as soon as it reads it (typedOn):
+		// this bounds a hang alone.
+		opts.EchoWait = 30 * time.Second
+	}
 	l := session.NewLocal(session.Info{ID: session.NewID(), Name: "first", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, opts)
 	sub, err := l.Attach("", session.RoleControl, "", 80, 24, nopSink{})
 	if err != nil {
@@ -41,8 +46,9 @@ func firstSession(t *testing.T, opts session.Options) (*session.Local, *sessiont
 	return l, p, sub
 }
 
-// promptRe is the test agent's prompt shape: a row "> " alone.
-var promptRe = regexp.MustCompile(`(?m)^> *$`)
+// promptRe is the test agent's prompt shape: a row "> " and what is
+// typed after it.
+var promptRe = regexp.MustCompile(`(?m)^>( [^\n]*)?$`)
 
 // typeFirst starts TypeFirstMessage on l, for an agent whose prompt the
 // server knows, its wait looking at each tick
@@ -122,16 +128,28 @@ func noInput(t *testing.T, p *sessiontest.FakeProc) {
 }
 
 // tickUntilTyped hands ticks until the message's text and its Enter are
-// written, and returns what was written, in order.
+// written, and returns what was written, in order: typedOn with ticks.
 func tickUntilTyped(t *testing.T, ticks chan<- time.Time, p *sessiontest.FakeProc) string {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
+	return typedOn(t, ticks, p, "> ")
+}
+
+// typedOn reads what is written to p until the message's text and its
+// Enter are, handing ticks meanwhile when ticks is set; as the text
+// arrives the agent draws it in its prompt's row, after prompt, as an
+// agent echoes what it is given. It returns what was written, in order.
+func typedOn(t *testing.T, ticks chan<- time.Time, p *sessiontest.FakeProc, prompt string) string {
+	t.Helper()
+	deadline := time.After(30 * time.Second)
 	var got string
 	for !strings.HasSuffix(got, "\r") || !strings.Contains(got, firstText) {
 		select {
 		case ticks <- time.Now():
 		case b := <-p.Input:
 			got += string(b)
+			if strings.Contains(string(b), firstText) {
+				_ = p.Print("\r\x1b[2K" + prompt + string(b))
+			}
 		case <-deadline:
 			t.Fatalf("the first message was not typed: written %q", got)
 		}
@@ -290,16 +308,13 @@ func notReady(context.Context, *session.Local, func(string)) error { return errN
 // at that prompt: it waits, noted once, while the screen is another, and
 // is typed once the prompt is drawn.
 func TestAFirstMessagePastTheCapWaitsForTheAgentsPrompt(t *testing.T) {
-	l, p, _ := firstSession(t, session.Options{PromptShape: regexp.MustCompile(`(?m)^agent> *$`)})
+	l, p, _ := firstSession(t, session.Options{PromptShape: regexp.MustCompile(`(?m)^›( [^\n]*)?$`)})
 	p.Print("Loading the agent…")
 	_, done := typeFirst(t, l, FirstMessage{Wait: notReady, PromptShape: true})
 	untilEntries(t, l, session.ActivityStatus, "the first message waits for the agent's prompt", 1)
 	noInput(t, p)
-	p.Print("\x1b[2J\x1b[Hagent> ")
-	got := ""
-	for !strings.HasSuffix(got, "\r") {
-		got += string(<-p.Input)
-	}
+	p.Print("\x1b[2J\x1b[H› ")
+	got := typedOn(t, nil, p, "› ")
 	returned(t, done)
 	if !strings.Contains(got, firstText) {
 		t.Fatalf("written %q", got)
@@ -342,10 +357,7 @@ func TestAFirstMessageWaitsForTheAgentsPromptBeforeTheCap(t *testing.T) {
 	untilEntries(t, l, session.ActivityStatus, "the first message waits for the agent's prompt", 1)
 	noInput(t, p)
 	p.Print("\x1b[2J\x1b[H> ")
-	got := ""
-	for !strings.HasSuffix(got, "\r") {
-		got += string(<-p.Input)
-	}
+	got := typedOn(t, nil, p, "> ")
 	returned(t, done)
 	if !strings.Contains(got, firstText) {
 		t.Fatalf("written %q", got)
@@ -390,5 +402,46 @@ func TestAPersonsKeyBeforeTheFirstMessagesEnterHoldsNothing(t *testing.T) {
 	}
 	if n := len(entriesWith(l, session.ActivityStatus, "the first message was typed without its Enter: a person typed in the session first")); n != 1 {
 		t.Fatalf("%d notes, want one", n)
+	}
+}
+
+// When the message's Enter is left out, the words say what is true, and
+// the session says the message is typed and not sent until a person's
+// key: with no question come, that the screen was not the prompt holding
+// the text (the agent drew it otherwise: folded as a paste); with a
+// question drawn in its place, that the question comes first.
+func TestAFirstMessageTypedAndNotSentSaysSo(t *testing.T) {
+	for _, tc := range []struct {
+		name, note string
+		after      string
+	}{
+		{"no question", "the first message is typed in the agent's input and was not sent: press Enter in the terminal to send it", "\r\x1b[2K> [Pasted text #1]"},
+		{"a question in its place", "the first message was typed without its Enter: answer the question, then press Enter in the terminal", trustScreen},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, p, sub := firstSession(t, session.Options{EchoWait: 100 * time.Millisecond, TrustPattern: trustRe, TrustAnswers: []session.Option{{Label: "Yes", Input: "\r"}}})
+			p.Print("> ")
+			_, done := typeFirst(t, l, FirstMessage{Wait: ready})
+			if b := <-p.Input; string(b) != firstText {
+				t.Fatalf("written %q", b)
+			}
+			_ = p.Print(tc.after)
+			returned(t, done)
+			noInput(t, p)
+			if n := len(entriesWith(l, session.ActivityStatus, tc.note)); n != 1 {
+				t.Fatalf("%d notes %q, want one: %+v", n, tc.note, l.Activity())
+			}
+			if fm := l.Info().FirstMessage; fm != "typed" {
+				t.Fatalf("the session says its first message is %q, want typed", fm)
+			}
+			// A person's key: what sits in the input is theirs now.
+			if err := l.Input(sub, []byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+			<-p.Input
+			if fm := l.Info().FirstMessage; fm != "" {
+				t.Fatalf("after a person's key the session says %q", fm)
+			}
+		})
 	}
 }

@@ -105,9 +105,15 @@ export function messageProblem(text: string): string {
 
 /**
  * The line above a session's terminal while its first message waits (`firstMessage` "waiting"): that a startup question comes first
- * while one shows (a needs_input of source `trust`), else that the agent must be ready; "" once it no longer waits.
+ * while one shows (a needs_input of source `trust`), else that the agent must be ready; while it is typed and not sent ("typed"),
+ * that Enter in the terminal sends it, after the question when one shows; "" otherwise, a word it does not know among it.
  */
 export function firstMessageLine(s: { firstMessage?: string; attention?: { state: string; source?: string } } | null | undefined, agent: string): string {
+  if (s?.firstMessage === 'typed') {
+    // Typed into the agent's input, its Enter left out: a question came, or Conductor did not recognise the prompt holding it.
+    if (s.attention?.state === 'needs_input') return 'Your first message is typed: answer the question, then press Enter in the terminal to send it.'
+    return "Your first message is typed in the agent's input and not sent: press Enter in the terminal to send it."
+  }
   if (s?.firstMessage !== 'waiting') return ''
   if (s.attention?.state === 'needs_input' && s.attention.source === 'trust') return 'Your first message is typed once its question is answered.'
   return `Your first message is typed once ${agent} is ready.`

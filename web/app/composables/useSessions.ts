@@ -37,8 +37,11 @@ export interface SessionInfo {
    * status), never cleared. Missing when it has not, and from an older server.
    */
   turns?: boolean
-  /** "waiting" while the message the session was launched with waits to be typed; absent otherwise. */
-  firstMessage?: 'waiting'
+  /**
+   * "waiting" while the message the session was launched with waits to be typed; "typed" once it sits in the agent's input with its
+   * Enter left out, until a person's key; absent otherwise. A word this page does not know shows nothing.
+   */
+  firstMessage?: 'waiting' | 'typed'
   /** Who last answered a needs-input prompt (server-reported). */
   lastAnswer?: { by?: string; byName: string; at: string; message?: string }
   createdAt: string

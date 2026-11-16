@@ -220,7 +220,10 @@ that order.
   one, and the Launch dialog offers the field only for them). A person's
   own keys first withdraw it; keys between its text and its Enter leave
   the Enter out and hold nothing; a session that ends first gets nothing;
-  each is noted.
+  each is noted. Its Enter is written only while the screen is the prompt
+  holding the text as typed (the composer's own wrapping allowed); a
+  text the agent shows otherwise is left typed, the session says
+  `typed` until a person's key, and the page says to press Enter.
   `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
   server's memory until typed, then only in the activity as Conductor's
   own line by `launch`: a resume or a clone never types it again. A
