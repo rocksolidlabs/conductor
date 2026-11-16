@@ -95,7 +95,15 @@ test('the reply bar fills a choice only when the agent recommends it, in both th
   const bar = page.locator('[data-quick-reply]')
   const choices = bar.getByRole('button')
   const ask = (message: string, labels: string[]) => api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message, options: labels.map((label, i) => ({ label, input: String(i + 1) })) })
-  const backgrounds = () => choices.evaluateAll((els) => els.map((e) => getComputedStyle(e).backgroundColor))
+  // The colours read in a state that holds: the pointer off the bar (no hover shade) and every transition of the choices ended (a
+  // choice that turns filled fades in over its transition; read mid-way it is a shade between).
+  const backgrounds = async () => {
+    await page.mouse.move(0, 0)
+    return choices.evaluateAll(async (els) => {
+      await Promise.all(els.flatMap((e) => e.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined))))
+      return els.map((e) => getComputedStyle(e).backgroundColor)
+    })
+  }
 
   const plain = async () => {
     await expect(bar.locator('[data-quick-reply-message]')).toHaveText('Which merge?')

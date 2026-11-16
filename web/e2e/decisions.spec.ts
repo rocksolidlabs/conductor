@@ -182,7 +182,8 @@ test("build's approval waits while docs finishes, is answered in its card from t
   budget(10 * STEP_MS)
   await page.goto(`${base}/runs/${runId}?view=tasks`)
   const row = page.locator('[data-task-row="build"]')
-  await expect(row.locator('[data-task-words]')).toHaveText(`attempt 1 waits for decision ${id}`, { timeout: 30_000 })
+  // The row says the attempt once: attempt 1 is the norm, so the words alone (UX1 PR-11).
+  await expect(row.locator('[data-task-words]')).toHaveText(`waits for decision ${id}`, { timeout: 30_000 })
   // Held by an open decision, it waits on a person: the status language's needs (UX1 PR-10), never the running green.
   await expect(row.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'needs')
   await expect(page.locator('[data-task-row="docs"]')).toHaveAttribute('data-task-state', 'succeeded')

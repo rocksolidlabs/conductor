@@ -1,13 +1,13 @@
 import type { Page, Route } from '@playwright/test'
-import { budget, dayPage, expect, test, useTheme, type Session } from './fixtures'
+import { budget, dayPage, expect, readAgain, test, useTheme, type Session } from './fixtures'
 import { inside, noSideways, tapTarget, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
-// One shape for a page with nothing in it (UX1 PR-22, docs/plans/ux-review.md, P23): the page's own sentence, why it is empty and
-// what fills it, and the action that fills it; the reading shape before the first read, the failed shape when that read failed, the
-// not-found shape for a thing that is not there. Never the empty picture before the sessions are read: a server with sessions never
-// flashes the welcome or an empty shape.
+// One shape for a page with nothing in it (UX1 PR-22 and PR-23, docs/plans/ux-review.md, P23): the page's own sentence, why it is
+// empty and what fills it, and the action that fills it; the reading shape before the first read, the failed shape when that read
+// failed, the not-found shape for a thing that is not there. Never the empty picture before the sessions are read: a server with
+// sessions never flashes the welcome or an empty shape. A page's standing paragraph folds to About this page once it has content.
 
 /** An expect's bound and an action's (the config's expect timeout). */
 const STEP_MS = 15_000
@@ -17,6 +17,11 @@ const ABOUT = {
   yard: 'Every live terminal on one screen.',
   roundhouse: "The Yard's second view: one terminal at a time, on rotation.",
   history: 'What was said, decided and checked, kept after the work ends.',
+  crews: 'Saved teams of agents, and each run of one.',
+  dispatch: 'Tickets, the plans you approve, the runs they start.',
+  events: 'What your agents report, as it happens.',
+  brakeman: 'A sidekick that reads all of it and briefs you.',
+  agents: 'The agents this machine can launch, and how each reports to Conductor.',
 }
 const YARD_WHY = 'Nothing is running. A terminal shows here when you launch an agent, or bring one in from another machine.'
 const ROUNDHOUSE_WHY = 'Nothing is running. The first agent you launch shows here.'
@@ -48,7 +53,7 @@ const shape = (page: Page, state = 'empty') => page.locator(`[data-page-empty][d
  * not given), its second `why`, its first action `action` with its key `kbd`; each part whole and inside the page's panel; at the phone
  * the action is big enough to tap and nothing scrolls sideways.
  */
-async function readEmpty(page: Page, at: string, o: { panel: string; about?: string; why: string; action: string; kbd?: string; phone?: boolean }) {
+async function readEmpty(page: Page, at: string, o: { panel: string; about?: string; why: string; action?: string; kbd?: string; phone?: boolean }) {
   const s = shape(page)
   await expect(s, `${at}: the empty shape`).toBeVisible()
   await expect(page.locator('[data-page-empty]'), `${at}: one shape`).toHaveCount(1)
@@ -57,13 +62,18 @@ async function readEmpty(page: Page, at: string, o: { panel: string; about?: str
   else await expect(s.locator('[data-page-about]'), `${at}: no first line`).toHaveCount(0)
   await expect(s.locator('[data-page-why]'), `${at}: why it is empty`).toHaveText(o.why)
   const action = s.locator('[data-page-action]').first()
-  await expect(action.locator('[data-slot="label"]'), `${at}: the action`).toHaveText(o.action)
-  if (o.kbd) await expect(action.locator('[data-page-kbd]'), `${at}: the action's key`).toHaveText(o.kbd)
+  if (o.action) {
+    await expect(action.locator('[data-slot="label"]'), `${at}: the action`).toHaveText(o.action)
+    if (o.kbd) await expect(action.locator('[data-page-kbd]'), `${at}: the action's key`).toHaveText(o.kbd)
+    else await expect(action.locator('[data-page-kbd]'), `${at}: the action has no key`).toHaveCount(0)
+  } else await expect(s.locator('[data-page-action]'), `${at}: no action`).toHaveCount(0)
   const parts = s.locator('[data-page-about], [data-page-why], [data-page-action] [data-slot="label"]')
+  // A shape below the page's other parts (Brakeman's, under its Ask card) is scrolled to, as a person would.
+  await s.scrollIntoViewIfNeeded()
   await uncut(parts)
   await inside(s.locator('[data-page-about], [data-page-why], [data-page-action]'), page.locator(o.panel))
   if (o.phone) {
-    await tapTarget(s.locator('[data-page-action]'))
+    if (o.action) await tapTarget(s.locator('[data-page-action]'))
     await noSideways(page)
   }
 }
@@ -269,3 +279,187 @@ test('About this page: History with entries folds its caption to a popover, whic
   }
 })
 
+
+// ---- PR-23: the rest of the pages, the not-found shapes, and About this page.
+
+const CREWS_WHY =
+  'A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew by start rules and one by tasks, where Yardmaster gives each member its tasks as the results they need come in; they are ordinary crews once loaded.'
+const DISPATCH_WHY = "Dispatch keeps a team's work as tickets: what is asked, who owns it, what became of it. A project holds them under its key."
+const EVENTS_WHY = 'Nothing yet since this tab opened. An agent reports when it needs input, finishes a turn, hands work off or hits an error.'
+const BRAKEMAN_WHY = 'No brief yet. Ask for the first one above.'
+const AGENTS_WHY = "The catalog has no agent. Add one here, or in the config file's catalog."
+
+test('a server with nothing on it: Crews, Dispatch, Brakeman and the Events feed draw the one empty shape, at the desktop and the phone, in both themes', async ({ browser }) => {
+  const srv = await empty()
+  const pages = [
+    ['/crews', { panel: '#dashboard-panel-crews', about: ABOUT.crews, why: CREWS_WHY, action: 'New crew' }],
+    ['/dispatch', { panel: '#dashboard-panel-dispatch', about: ABOUT.dispatch, why: DISPATCH_WHY, action: 'New project' }],
+    ['/brakeman', { panel: '#dashboard-panel-brakeman', about: ABOUT.brakeman, why: BRAKEMAN_WHY }],
+    ['/events', { panel: '#dashboard-panel-events', about: ABOUT.events, why: EVENTS_WHY, action: 'Which agents report' }],
+  ] as const
+  // The feed's way to the agents that report: Agents' Reporting section.
+  {
+    const page = await dayPage(browser, { ...DESK, path: '/events', server: srv.started })
+    await expect(shape(page).locator('[data-page-action]')).toHaveAttribute('href', '/agents#reporting')
+    await page.context().close()
+  }
+  for (const win of [DESK, PHONE]) {
+    budget(pages.length * 2 * 12 * STEP_MS)
+    for (const [path, o] of pages) {
+      const page = await dayPage(browser, { ...win, path, server: srv.started })
+      const at = `${path} at ${win.width}`
+      await readEmpty(page, `${at}, dark`, { ...o, phone: win === PHONE })
+      await useTheme(page, 'light')
+      await readEmpty(page, `${at}, light`, { ...o, phone: win === PHONE })
+      await page.context().close()
+    }
+  }
+  // Nothing to show: the standing paragraphs stand in place, and no page offers About this page.
+  budget(6 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, path: '/brakeman', server: srv.started })
+  await expect(shape(page)).toBeVisible()
+  await expect(page.locator('[data-brakeman-about]')).toBeVisible()
+  await expect(page.locator('[data-page-about-button]')).toHaveCount(0)
+  await page.goto('/crews')
+  await expect(shape(page)).toBeVisible()
+  await expect(page.locator('[data-crews-caption]').first()).toBeVisible()
+  await expect(page.locator('[data-page-about-button]')).toHaveCount(0)
+})
+
+test('an empty catalog: Agents reads, then says the catalog has no agent, with Add agent', async ({ browser }) => {
+  const srv = await empty()
+  budget(6 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, path: '/settings', server: srv.started })
+  // A server of its own still has the e2e catalog: the page's read of it is answered with none, once the test lets it go.
+  const held: Route[] = []
+  await page.route('**/api/catalog?*', (r) => (r.request().method() === 'GET' ? void held.push(r) : r.fallback()))
+  await page.goto('/agents')
+  await expect(shape(page, 'reading')).toBeVisible()
+  await expect(shape(page, 'reading').locator('[data-page-about]')).toHaveText(ABOUT.agents)
+  await expect.poll(() => held.length).toBeGreaterThan(0)
+  for (const r of held.splice(0)) await r.fulfill({ status: 200, contentType: 'application/json', body: '{"agents":[],"hidden":[]}' })
+  await readEmpty(page, 'Agents', { panel: '#dashboard-panel-agents', about: ABOUT.agents, why: AGENTS_WHY, action: 'Add agent' })
+  await expect(page.locator('[data-agents-about]')).toBeVisible()
+  await expect(page.locator('[data-page-about-button]')).toHaveCount(0)
+})
+
+test("the first read fails: Dispatch says the server's words with Read again, and reads again into its empty shape", async ({ browser }) => {
+  const srv = await empty()
+  budget(6 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, path: '/settings', server: srv.started })
+  let failing = true
+  await page.route('**/api/dispatch/projects*', (r) =>
+    failing && r.request().method() === 'GET' ? r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"the projects are not readable"}}' }) : r.fallback(),
+  )
+  await page.goto('/dispatch')
+  const failed = shape(page, 'failed')
+  await expect(failed).toBeVisible()
+  await expect(failed.locator('[data-page-about]')).toHaveText(ABOUT.dispatch)
+  await expect(failed.locator('[data-page-why]')).toContainText('the projects are not readable')
+  failing = false
+  // The page asks again by itself too: Read again is pressed until the empty shape shows.
+  await readAgain(failed.locator('[data-page-again]'), shape(page))
+  await expect(page.locator('[data-projects-empty]')).toBeVisible()
+})
+
+test('not found: a crew, a project, a ticket and a run that are not there draw one shape, with their words and the way back', async ({ browser }) => {
+  budget(START_WAIT_MS + 12 * STEP_MS)
+  const srv = await ownServer('empty-pages-missing')
+  try {
+    const key = 'NF'
+    await srv.api.ok('POST', '/api/dispatch/projects', { opId: 'empty-pages-nf', key, name: 'Not found' })
+    const page = await dayPage(browser, { ...DESK, path: '/settings', server: srv.started })
+    for (const [path, words, back, to] of [
+      ['/crews/nope', 'No crew has the id nope.', 'All crews', '/crews'],
+      ['/dispatch/NOPE', 'No project has the key NOPE.', 'Dispatch', '/dispatch'],
+      [`/dispatch/${key}/999`, `No ticket has the key ${key}-999.`, `Back to ${key}`, `/dispatch/${key}`],
+      ['/runs/nope', 'No run has the id nope. The server forgets runs when it restarts.', 'Crews', '/crews'],
+    ] as const) {
+      await page.goto(path)
+      const s = shape(page, 'missing')
+      await expect(s, path).toBeVisible()
+      await expect(page.locator('[data-page-empty]'), `${path}: one shape`).toHaveCount(1)
+      await expect(s.locator('[data-page-about]'), `${path}: no first line`).toHaveCount(0)
+      await expect(s.locator('[data-page-why]'), path).toHaveText(words)
+      const action = s.locator('[data-page-action]')
+      await expect(action, path).toHaveText(back)
+      await expect(action, path).toHaveAttribute('href', to)
+    }
+  } finally {
+    await srv.stop()
+  }
+})
+
+test('a project with no ticket: the list, the Board and the Roadmap each say so, with New ticket and its key', async ({ browser }) => {
+  budget(START_WAIT_MS + 14 * STEP_MS)
+  const srv = await ownServer('empty-pages-project')
+  try {
+    const key = 'NT'
+    await srv.api.ok('POST', '/api/dispatch/projects', { opId: 'empty-pages-nt', key, name: 'No tickets' })
+    const page = await dayPage(browser, { ...DESK, path: `/dispatch/${key}`, server: srv.started })
+    for (const view of ['list', 'board', 'roadmap'] as const) {
+      if (view !== 'list') await page.goto(`/dispatch/${key}?view=${view}`)
+      await readEmpty(page, `${key}, ${view}`, { panel: '#dashboard-panel-dispatch-project', why: `${key} has no tickets yet.`, action: 'New ticket', kbd: 'C' })
+      await expect(page.locator('[data-list-empty]'), view).toBeVisible()
+    }
+    // C opens the new ticket's dialog: the layout's root is drawn (the page's keys are the layout's), then the key pressed once.
+    await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+    await page.keyboard.press('c')
+    await expect(page.locator('[data-new-ticket-title]')).toBeVisible()
+  } finally {
+    await srv.stop()
+  }
+})
+
+/** The page's standing paragraph is not in its body; About this page opens it, Escape closes it, and it is gone before the next step. */
+async function aboutFolds(page: Page, at: string, body: string, words: string) {
+  await expect(page.locator(body), `${at}: no paragraph in the body`).toHaveCount(0)
+  await page.locator('[data-page-about-button]').click()
+  const open = page.locator('[data-page-about-open]')
+  await expect(open, at).toContainText(words)
+  await uncut(open.locator('p').first())
+  await page.keyboard.press('Escape')
+  // A popover that has closed is not gone at once.
+  await expect(open, `${at}: closed`).toHaveCount(0)
+}
+
+test('About this page: Agents and Crews fold their paragraphs once they have content, in both themes', async ({ day, browser }) => {
+  await day.part('runs')
+  budget(2 * 2 * 10 * STEP_MS)
+  for (const theme of ['dark', 'light'] as const) {
+    const page = await dayPage(browser, { ...DESK, theme, path: '/agents' })
+    await expect(page.locator('[data-agent]').first()).toBeVisible()
+    await aboutFolds(page, `Agents, ${theme}`, '[data-agents-about]', 'Commands are argv arrays; nothing goes through a shell.')
+    // The theme switched as the app keeps it, and the check made again after the redraw.
+    await useTheme(page, theme === 'dark' ? 'light' : 'dark')
+    await expect(page.locator('[data-agent]').first()).toBeVisible()
+    await aboutFolds(page, `Agents, switched from ${theme}`, '[data-agents-about]', 'Commands are argv arrays; nothing goes through a shell.')
+    await page.goto('/crews')
+    await expect(page.locator('[data-crews-table], [data-running-now]').first()).toBeVisible()
+    await aboutFolds(page, `Crews, ${theme}`, '[data-crews-caption]', 'Nothing runs until you launch one.')
+    await page.context().close()
+  }
+})
+
+test("About this page: Brakeman folds its paragraph once a request is done, and keeps Settings in its header", async ({ browser }) => {
+  budget(START_WAIT_MS + 60_000 + 10 * STEP_MS)
+  const srv = await ownServer('empty-pages-brakeman')
+  try {
+    const { config: c } = await srv.api.ok<{ config: Record<string, unknown> & { rev: number } }>('GET', '/api/brakeman')
+    await srv.api.ok('PUT', '/api/brakeman/config', { rev: c.rev, config: { ...c, enabled: true, agentId: 'brakeman-stub' } })
+    const asked = await srv.api.ok<{ request: { id: string } }>('POST', '/api/brakeman/requests', { opId: 'empty-pages-bk', kind: 'overlaps' })
+    // The turn's end: the stub writes its brief and the request is briefed (a state that holds).
+    await expect
+      .poll(async () => (await srv.api.ok<{ request: { state: string } }>('GET', `/api/brakeman/requests/${asked.request.id}`)).request.state, { timeout: 60_000 })
+      .toBe('briefed')
+    for (const theme of ['dark', 'light'] as const) {
+      const page = await dayPage(browser, { ...DESK, theme, path: '/brakeman', server: srv.started })
+      await expect(page.locator(`[data-brakeman-briefs] [data-request="${asked.request.id}"]`)).toBeVisible()
+      await expect(page.locator('[data-brakeman-settings-link]')).toHaveAttribute('href', '/settings')
+      await aboutFolds(page, `Brakeman, ${theme}`, '[data-brakeman-about]', 'nothing it writes becomes work until you act')
+      await page.context().close()
+    }
+  } finally {
+    await srv.stop()
+  }
+})

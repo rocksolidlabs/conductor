@@ -207,7 +207,8 @@ test("launched from the approved revision: the run's people and owners, a sessio
   await expect(page.locator('[data-run-people] [data-run-person="ana"]')).toContainText('acceptance owner')
   await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveText('owner nate')
   await expect(page.locator('[data-task-row="build"] [data-task-owner]')).toHaveAttribute('data-task-owner-from', 'task')
-  await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveText('owner ana, the acceptance owner')
+  // The acceptance owner is said once, in the people above and the task's detail, never on each row (UX1 PR-11).
+  await expect(page.locator('[data-task-row="docs"] [data-task-owner]')).toHaveCount(0)
   await page.locator('[data-task-row="docs"] [role="button"]').click()
   await expect(page.locator('[data-task-detail-id="docs"] [data-task-detail-owner]')).toContainText('owner ana, the acceptance owner')
 

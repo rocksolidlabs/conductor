@@ -24,6 +24,8 @@ fs.shortcuts()
 const router = useRouter()
 const toast = useToast()
 const route = useRoute()
+// `?alerts` opens the Alerts panel (mounted below) and leaves the address.
+useAlertsFromAddress()
 const list = useTemplateRef<{ focusFilter: () => void }>('list')
 
 // The sidebar's collapsed state is the rail, and useSidebar (localStorage) is

@@ -8,8 +8,9 @@ import { isActive } from '~/utils/attention'
  * The phone's bar at the foot (design 3e): Needs you first (with the one
  * number of what waits), Sessions, Yard (the asking sessions on its grid,
  * in neutral ink), Crews; Agents, Dispatch, Brakeman (while the server has
- * it), Events, History, Settings, Alerts and your menu under More. Every
- * target is at least 44 px tall; the padding reads the safe
+ * it), Events, History, Settings, Alerts and your menu under More; the
+ * alerts end with "All alert rules", the Alerts panel. Every target is at
+ * least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
  */
@@ -56,6 +57,14 @@ const account = computed(() =>
     forget: () => clear(),
   }).flat(),
 )
+const alertsPanel = useAlertsPanel()
+const moreButton = useTemplateRef<HTMLButtonElement>('moreButton')
+/** All alert rules: the sheet closes, then the layout's Alerts panel opens; closed, it gives the focus to More. */
+async function openRules() {
+  more.value = false
+  await nextTick()
+  alertsPanel.show(moreButton.value)
+}
 function act(fn?: (e: Event) => void) {
   more.value = false
   fn?.(new Event('select'))
@@ -87,7 +96,7 @@ function act(fn?: (e: Event) => void) {
       </span>
       {{ t.label }}
     </NuxtLink>
-    <button type="button" class="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium text-muted" :class="more && 'text-primary'" data-bottom-tab="more" @click="more = true">
+    <button ref="moreButton" type="button" class="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium text-muted" :class="more && 'text-primary'" data-bottom-tab="more" @click="more = true">
       <UIcon name="i-lucide-ellipsis" class="size-5" />
       More
     </button>
@@ -98,7 +107,7 @@ function act(fn?: (e: Event) => void) {
         <div class="flex flex-col">
           <UButton v-for="p in pages" :key="p.to" :label="p.label" :icon="p.icon" :to="p.to" color="neutral" variant="ghost" size="lg" class="min-h-11 justify-start" @click="more = false" />
         </div>
-        <AlertSwitches />
+        <AlertSwitches rules @rules="openRules" />
         <div class="flex flex-col border-t border-default pt-2">
           <UButton v-for="i in account" :key="i.label" :label="i.label" :icon="i.icon" :color="i.color ?? 'neutral'" variant="ghost" size="lg" class="min-h-11 justify-start" @click="act(i.onSelect)" />
         </div>

@@ -130,10 +130,12 @@ export type TaskRun = Pick<RunInfo, 'stoppedAt' | 'paused' | 'resumedBy'> & { st
 
 /**
  * A task's state in words: what it waits for, which attempt runs, how it ended; on an interrupted run, what its continuation takes up;
- * on a run continued, a task it did not end is the continuation's.
+ * on a run continued, a task it did not end is the continuation's. `attempt: false` leaves the attempt out of a live attempt's words
+ * ("running", "waits for decision dr-7", "checking the result"): the task table says the attempt in a column of its own (taskRow).
  */
-export function taskWords(t: RunTask, run: TaskRun): { text: string; tone: Tone } {
+export function taskWords(t: RunTask, run: TaskRun, o: { attempt?: boolean } = {}): { text: string; tone: Tone } {
   const n = t.attempt?.n ?? t.attempts
+  const live = (words: string, sep = ' ') => (o.attempt === false ? words : `attempt ${n}${sep}${words}`)
   if (run.resumedBy && t.state !== 'succeeded' && t.state !== 'cancelled') return { text: 'taken up by its continuation', tone: 'muted' }
   switch (t.state) {
     case 'blocked':
@@ -154,11 +156,11 @@ export function taskWords(t: RunTask, run: TaskRun): { text: string; tone: Tone 
     }
     case 'running':
       // Its attempt asked a durable decision and waits for it (Program item DR1): what it waits for, which Answer opens.
-      if (openHolds(t).length) return { text: `attempt ${n} ${holdsWords(t)}`, tone: 'warning' }
-      if (t.blocker) return { text: `attempt ${n} blocked by ${t.blocker.by}: ${t.blocker.reason}`, tone: 'warning' }
-      return { text: `attempt ${n} running`, tone: 'default' }
+      if (openHolds(t).length) return { text: live(holdsWords(t)), tone: 'warning' }
+      if (t.blocker) return { text: live(`blocked by ${t.blocker.by}: ${t.blocker.reason}`), tone: 'warning' }
+      return { text: live('running'), tone: 'default' }
     case 'verifying':
-      return { text: `attempt ${n}: checking the result`, tone: 'default' }
+      return { text: live('checking the result', ': '), tone: 'default' }
     case 'succeeded': {
       const r = t.result
       if (!r) return { text: 'succeeded', tone: 'success' }
@@ -241,6 +243,47 @@ export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy
     preview: t.attempt?.preview ?? '',
     askWhy: t.state === 'failed' || t.state === 'cancelled' || t.state === 'blocked' || !!t.blocker,
   }
+}
+
+/** An action a task's row offers: in the row (`shown`) or behind its menu (`menu`). */
+export type RowAction = 'answer' | 'retry' | 'accept' | 'open' | 'preview' | 'cancel' | 'copyBranch' | 'askWhy'
+
+/** A task as the task table draws its row: each part said once. */
+export interface TaskRowParts {
+  /** What it does, without the attempt (taskWords with `attempt: false`). */
+  words: string
+  /** "attempt N" when N is above 1 and the words do not already say it; '' else. */
+  attempt: string
+  /** The owner's words when the task itself names its owner; '' for none, and for the crew's acceptance owner (said in the header). */
+  owner: string
+  /** The actions in the row, in this order: Answer, Retry, Accept anyway, Open, Open preview. */
+  shown: RowAction[]
+  /** The actions behind the row's menu, in this order: Cancel, Copy branch, Ask Brakeman why. */
+  menu: RowAction[]
+}
+
+/**
+ * A task's row in the task table (the UX review's P7): its words without the attempt, the attempt said once, the owner only when the
+ * task names one, the actions a waiting state asks for in the row (Answer, Retry, Accept anyway, Open, Open preview) and the rest behind
+ * a menu (Cancel, Copy branch, Ask Brakeman why), from taskActions and taskAnswer as the row offered them. `brakeman`: the server has
+ * Brakeman, so Ask Brakeman why is offered where it applies.
+ */
+export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'>, o: { brakeman?: boolean } = {}): TaskRowParts {
+  const words = taskWords(t, run, { attempt: false }).text
+  const n = t.attempt?.n ?? t.attempts
+  const attempt = n > 1 && !words.includes(`attempt ${n}`) ? `attempt ${n}` : ''
+  const a = taskActions(t, run)
+  const shown: RowAction[] = []
+  if (taskAnswer(t)) shown.push('answer')
+  if (a.retry) shown.push('retry')
+  if (a.accept) shown.push('accept')
+  if (a.open) shown.push('open')
+  if (a.preview) shown.push('preview')
+  const menu: RowAction[] = []
+  if (a.cancel) menu.push('cancel')
+  if (a.copyBranch) menu.push('copyBranch')
+  if (a.askWhy && o.brakeman) menu.push('askWhy')
+  return { words, attempt, owner: t.owner && t.ownerFrom === 'task' ? `owner ${t.owner}` : '', shown, menu }
 }
 
 /** A step's duration in words: `4.2 s` under ten seconds, `60 s` under two minutes, `3 min 5 s` after. */

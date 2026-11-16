@@ -3,6 +3,7 @@ import type { ProjectSummary } from '~/composables/useDispatch'
 import { projectsWatch } from '~/composables/useDispatchLive'
 import { TRACKERS, projectPath } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
+import { pageState } from '~/utils/pageState'
 
 // Dispatch's projects (docs/plans/dispatch.md, PR-8): each with its key, its name, how many of its tickets are open and done, and its
 // tracker; New project makes one. The list is read through the page's ordering gate as the page opens, and again after the window on
@@ -22,6 +23,9 @@ const loaded = ref(false)
 const error = ref('')
 const newOpen = ref(false)
 const now = ref(Date.now())
+
+/** What the page shows of its read (P23): reading, a first read that failed, no project yet, or the projects. */
+const shownState = computed(() => pageState({ read: loaded.value, error: error.value, count: projects.value.length }))
 
 /** At most this many pages of 200 projects are read for the page. */
 const MAX_PAGES = 10
@@ -109,17 +113,21 @@ function created(key: string) {
     </template>
 
     <template #body>
-      <div v-if="error" class="flex-none px-4 pt-3 sm:px-6">
+      <div v-if="error && shownState !== 'failed'" class="flex-none px-4 pt-3 sm:px-6">
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
       </div>
 
-      <div v-if="!loaded" class="flex flex-1 items-center justify-center p-8 text-sm text-muted">{{ error ? '' : 'Reading the projects…' }}</div>
-
-      <div v-else-if="!projects.length" class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center" data-projects-empty>
-        <UIcon name="i-lucide-ticket" class="size-8 text-muted" />
-        <p class="max-w-md text-sm text-muted">Dispatch keeps a team's work as tickets: what is asked, who owns it, what became of it. A project holds them under its key.</p>
-        <UButton label="New project" icon="i-lucide-plus" @click="newOpen = true" />
-      </div>
+      <PageEmpty
+        v-if="shownState !== 'content'"
+        page="dispatch"
+        :state="shownState"
+        words="Dispatch keeps a team's work as tickets: what is asked, who owns it, what became of it. A project holds them under its key."
+        thing="projects"
+        :error="error"
+        :actions="[{ label: 'New project', icon: 'i-lucide-plus', onClick: () => (newOpen = true) }]"
+        :data-projects-empty="shownState === 'empty' ? '' : undefined"
+        @again="load"
+      />
 
       <div v-else class="flex flex-col divide-y divide-default" data-projects>
         <NuxtLink

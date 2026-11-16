@@ -302,7 +302,8 @@ open deferred item from rounds 1 and 2, then the features below.
 - **Sidebar width (#437, #706, UX1 PR-7).** The full sidebar opens at its
   minimum, 12.5 rem (200 px) on every screen (16.75 rem from #706 until the
   UX review's P5): its header is the mark, "Conductor" and your menu, about
-  186 px, and Alerts… (a slideover of the alert switches, `AlertsPanel.vue`)
+  186 px, and Alerts… (a slideover of the alert switches and, since PR-28,
+  the rules where each event goes, `AlertsPanel.vue`)
   and Collapse to the rail (⌘B) are in your menu, the sidebar's alone (not in
   `accountActions`, which the phone's More and the palette show). A drag on
   its edge widens it up to 26 % of the window, never less than the minimum
@@ -316,6 +317,15 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **Launch with a first message (the UX review, P19; #951).** The Launch
+  dialog's "What should it do?" (on this server, not for a clone or "On this
+  computer") sends `message` with the launch; past 4,096 bytes the field says
+  so and Launch waits (`messageProblem`). The Name field's placeholder is the
+  name the message gives (`namePreview`, the server's `NameFromMessage`, its
+  cut held to the server's table `cut-at-word.json` by `cutAtWord`). While
+  `firstMessage` is "waiting" the session page says above the terminal what
+  it waits for (`firstMessageLine`). Tests: `launch.test.ts`;
+  `launch-first-message.spec.ts`.
 - **One shape for a page with nothing in it (#937; the UX review's P23,
   first half).** A page with nothing to show says what the page is (its
   sentence from the pages' table), why it is empty and what fills it, and
@@ -332,6 +342,20 @@ open deferred item from rounds 1 and 2, then the features below.
   kept yet."; its search caption folds to "About this page" (`PageAbout`)
   once it has entries (`empty-pages.spec.ts`, `pageState.test.ts`,
   `history.test.ts`).
+- **The rest of the pages take the one shape, and About this page (#938;
+  P23, second half).** Crews, Dispatch, a project, the Events feed,
+  Brakeman's briefs and Agents draw `PageEmpty` when they have nothing to
+  show, and its reading and could-not-read shapes while they read
+  (Dispatch's first read that fails says the server's words with Read
+  again, in place of an alert over a blank page). A crew, a project, a
+  ticket and a run that are not found draw its not-found shape with the
+  way back. A project's Board and Roadmap say the project has no tickets,
+  with New ticket (C), in place of empty columns; a filter that matches
+  nothing stays a plain line. The standing paragraphs of Brakeman and
+  Agents, and the Crews page's two section captions, fold to About this
+  page once the page has content; Brakeman's Settings link is a header
+  button. The feed says it is this tab's alone and links Agents'
+  Reporting (`empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
@@ -3164,7 +3188,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
   Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
-  apply); the selected task, kept in the URL as `?task=`, opens its result
+  apply). Since the UX review's PR-11 the rows are a table, state, task,
+  who, what and actions each read straight down (two lines a row under
+  48 rem): the state said once, the attempt once (in the words when they
+  name it, else "attempt N" past the first), the owner only when the task
+  names one, and Cancel…, Copy branch and Ask Brakeman why behind the row's
+  menu, so nothing in a row at rest is red. The selected task, kept in the
+  URL as `?task=`, opens its result
   (summary, issues, findings) and every attempt with what it submitted
   (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
@@ -7895,6 +7925,17 @@ picked.
   (`reportStatus`) that the table and the feed's Reporting list read too,
   with installed and injected drawn neutral; `/events?tab=integrations`
   opens the section, and the palette's row is "Agents · Reporting".
+  Since the UX review's P12 and P13 (PR-28) the Routing tab is gone too:
+  the rules are in the Alerts panel (`AlertsPanel.vue`, at most 44 rem wide,
+  the whole width on a phone), under the two switches, with the webhooks of
+  `conductor.json` read while it is open. One open state
+  (`useAlertsPanel`) is shared by your menu's Alerts…, the palette's
+  Alerts… (`action:alerts`, in place of "Events · Routing"), the phone
+  More's All alert rules (its switches stay inline above it), the feed's
+  Edit routing and `?alerts` on any page of the layout, which the address
+  then loses (`useAlertsFromAddress`); `/events?tab=routing` opens it over
+  the feed. Below lg the rules' pills are 44 px targets. The routes stay in
+  this browser (`conductor.events.routes`).
   The bars are divs; with the Wall's donut gone too, `nuxt-charts` has no
   user and is dropped.
 - **The switchyard's pages are dark always**, whatever the system prefers
