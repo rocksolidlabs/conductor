@@ -203,6 +203,17 @@ test('Needs you in the sidebar lists every kind of what needs you, each once, an
   await expect(desk.locator(`[data-decision-modal][data-decision-modal-id="${w.gate}"]`)).toBeVisible()
   await desk.getByRole('dialog', { name: 'A decision for you' }).getByRole('button', { name: 'Close' }).click()
   await expect(desk.locator('[data-decision-modal]')).toHaveCount(0)
+  // The rail is drawn from the same model: the run that waits on its gate (no session yet) and the run whose task failed are each
+  // a capsule there, amber, with the needs mark.
+  const rail = await dayPage(browser, { path: '/crews' })
+  await rail.keyboard.press('Alt+b')
+  await expect(rail.locator('[data-rail]')).toBeVisible()
+  for (const run of [w['Pairing rollout']!, w['Paging spike']!]) {
+    const capsule = rail.locator(`[data-rail] [data-rail-run="${run}"]`)
+    await expect(capsule.locator('[data-rail-play]')).toHaveAttribute('data-rail-play', 'needs')
+    await expect(capsule.locator('[data-status-mark]').first()).toHaveAttribute('data-status-mark', 'needs')
+  }
+  await rail.close()
   // The palette lists the loose question once: its session's row in Needs you, no second row of the same question.
   const asker = w['proc-race-tests']!
   await desk.keyboard.press('Alt+/')

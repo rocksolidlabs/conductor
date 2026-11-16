@@ -171,8 +171,11 @@ test("the panel's reply field keeps the focus and every key while the rows chang
     // A fresh panel: Escape gives the focus back to the row. Asked once the turn the line began has ended (its done would overwrite it).
     await expect.poll(async () => (await day.api.session(a.id)).attention?.state ?? '', { message: 'the turn the line began ended' }).toBe('done')
     await ask(day, a.id, 'And the next branch?', [])
-    await row.locator('[data-row-answer-open]').click()
+    // This time from the keyboard: Enter on Answer moves the focus into the panel, as its click does, and opens no page.
+    await open.focus()
+    await page.keyboard.press('Enter')
     await expect(panel.locator('[data-row-reply] input, input[data-row-reply]').first()).toBeFocused()
+    await expect(page).toHaveURL(/\/crews$/)
     await page.keyboard.press('Escape')
     await expect(page.locator('[data-row-panel]')).toHaveCount(0)
     await expect(row.locator('a[href]').first()).toBeFocused()
