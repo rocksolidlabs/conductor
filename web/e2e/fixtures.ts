@@ -244,6 +244,16 @@ export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
   else await r.locator('a[href]').first().focus()
   const panel = page.locator(`[data-row-panel][data-panel-for="${id}"]`)
   await expect(panel).toBeVisible()
+  // The panel scales in as it opens (the popover's 100 ms): it is returned at rest, its opening animations ended, so that a spec
+  // that measures it does not measure a panel still moving.
+  await panel.evaluate((el) =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect instanceof KeyframeEffect && a.effect.target instanceof Element && a.effect.target.contains(el))
+        .map((a) => a.finished.catch(() => undefined)),
+    ).then(() => undefined),
+  )
   return panel
 }
 
@@ -255,6 +265,17 @@ export async function viaMore(page: Page, name: string): Promise<void> {
   await page.locator('#dashboard-sidebar-main [data-sidebar-tile="more"]').click()
   await page.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
   await expect(page.getByRole('menu')).toHaveCount(0)
+}
+
+/** The count of what needs you that leads the tab's title while something does ("(3) ", "(9+) " when a store was only partly read). */
+export const TITLE_COUNT = /^\(\d+\+?\) /
+
+/**
+ * The tab's title without its leading count of what needs you (TITLE_COUNT): the page's own part, whatever the count. A spec that
+ * anchors a title at its start reads it through this, polled (`expect.poll(() => pageTitle(page)).toMatch(...)`).
+ */
+export async function pageTitle(page: Page): Promise<string> {
+  return (await page.title()).replace(TITLE_COUNT, '')
 }
 
 /** The hrefs of the session and run links of the full sidebar's list, in the order they show. */
@@ -480,6 +501,15 @@ export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise
   await page.goto(o.path ?? '/')
   await drawn(page, theme, o.ready ?? (width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main'))
   return page
+}
+
+/**
+ * The page that asks for the workbench token (the UX review's P18): drawn in place of the app while the page holds no token or the
+ * server refused the one it holds. Its field has the placeholder "paste the workbench token" and its button is Connect; it has no Cancel.
+ * The dialog named "Workbench token" is the menu's, over a working app.
+ */
+export function tokenAsk(page: Page): Locator {
+  return page.locator('[data-connect-page]')
 }
 
 /** Waits for what says the page is drawn, the theme's class on `html`, and the fonts. */

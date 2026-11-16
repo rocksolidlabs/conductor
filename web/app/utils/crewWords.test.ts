@@ -13,7 +13,6 @@ import {
   runTitle,
   sinceStart,
   crewShape,
-  liveRunLine,
   medianMinutes,
   memberWords,
   minutesLabel,
@@ -192,15 +191,6 @@ describe('names and times', () => {
     expect(minutesLabel(0.5)).toBe('30s')
     expect(minutesLabel(64)).toBe('1h 4m')
     expect(minutesLabel(120)).toBe('2h')
-  })
-
-  it('reads the live-run banner from the members', () => {
-    const r = run({ members: [member({ sessionId: 's1' }), member({ name: 'review', sessionId: 's2' }), member({ name: 'docs', status: 'pending', start: { when: 'manual' } })] })
-    const line = liveRunLine(r, [session({ id: 's1' }), session({ id: 's2', attention: { state: 'needs_input' } })])
-    expect(line.running).toBe(1)
-    expect(line.needs).toEqual(['review'])
-    expect(line.waits).toEqual(['docs'])
-    expect(line.started).toMatch(/\d/)
   })
 })
 

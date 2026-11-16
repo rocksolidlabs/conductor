@@ -154,6 +154,72 @@ func TestListPagesThroughTheDirectory(t *testing.T) {
 	}
 }
 
+// A crew's summary carries the shape of its tasks (UX1 PR-34): each task's
+// id, member, kind and needs, in the crew's order, and nothing of what it is
+// told to do; a crew without tasks has none. A save that changes a task's
+// needs is listed at once.
+func TestStoreSummaryCarriesTaskShape(t *testing.T) {
+	s, _ := newStore(t)
+	c := testCrew(taskMember("builder"), taskMember("writer"), taskMember("reviewer"))
+	c.ID, c.Name, c.Isolation = "shaped", "Shaped", IsolationWorktree
+	c.People = []Person{{Name: "nate", Responsibilities: []string{RespAcceptance}}}
+	c.Tasks = []Task{
+		{ID: "build", Member: "builder", Kind: TaskWork, Instructions: "Assemble the zeppelin.", Checks: []Check{{ID: "unit", Argv: []string{"go", "test", "./..."}}}, Owner: "nate"},
+		{ID: "docs", Member: "writer", Kind: TaskWork, Instructions: "Describe the gondola.", Needs: []string{"build"}},
+		{ID: "review", Member: "reviewer", Kind: TaskReview, Instructions: "Inspect the rigging.", Needs: []string{"build"}},
+	}
+	if err := s.Put(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(validCrew("plain", "Plain")); err != nil {
+		t.Fatal(err)
+	}
+	byID := func() map[string]Summary {
+		page, _, err := s.List(0, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]Summary{}
+		for _, p := range page {
+			out[p.ID] = p
+		}
+		return out
+	}
+	sums := byID()
+	want := []TaskShape{{ID: "build", Member: "builder", Kind: TaskWork}, {ID: "docs", Member: "writer", Kind: TaskWork, Needs: []string{"build"}}, {ID: "review", Member: "reviewer", Kind: TaskReview, Needs: []string{"build"}}}
+	if got := sums["shaped"].Tasks; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the task shape %+v, want %+v", got, want)
+	}
+	b, err := json.Marshal(sums["shaped"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, never := range []string{`"instructions"`, `"checks"`, `"owner"`, "zeppelin", "gondola", "rigging", "go test"} {
+		if strings.Contains(string(b), never) {
+			t.Fatalf("a summary carries %s: %s", never, b)
+		}
+	}
+	if !strings.Contains(string(b), `{"id":"build","member":"builder","kind":"work"}`) {
+		t.Fatalf("a task that needs nothing carries needs: %s", b)
+	}
+	if b, _ := json.Marshal(sums["plain"]); strings.Contains(string(b), `"tasks"`) {
+		t.Fatalf("a crew without tasks lists tasks: %s", b)
+	}
+	// A change to the summary's copy never reaches the store's.
+	sums["shaped"].Tasks[1].Needs[0] = "changed"
+	if got := byID()["shaped"].Tasks[1].Needs; !slices.Equal(got, []string{"build"}) {
+		t.Fatalf("a caller's change reached the cache: %v", got)
+	}
+	// docs comes to need nothing: listed so at once.
+	c.Tasks[1].Needs = nil
+	if _, err := s.Update("shaped", c); err != nil {
+		t.Fatal(err)
+	}
+	if got := byID()["shaped"].Tasks[1]; got.ID != "docs" || got.Needs != nil {
+		t.Fatalf("after the save docs is %+v", got)
+	}
+}
+
 // A crew file that cannot be used is named at startup, left out of the list,
 // and never overwritten: a new crew of the same name takes another ID, an
 // update is refused, a delete removes it. The other crews load.

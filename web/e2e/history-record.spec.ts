@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, task, test, type Run, type Session } from './fixtures'
+import { Api, expect, task, test, type Run, type Session, tokenAsk } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
@@ -194,17 +194,18 @@ test("the run page at a check's step shows its log and hash, and at a command it
   await expect(panel.locator('[data-run-command-actor]')).toHaveText('admin')
   await expect(panel.locator('[data-run-command-at]')).toContainText(receipt.command.createdAt)
 
-  // Opened with a token the server refuses: the read is refused and the gate asks; the right token saved, the panel, still mounted,
+  // Opened with a token the server refuses: the read is refused and the page to connect asks, the app under it; the right token given, the panel, still mounted,
   // reads the receipt again (no reload: this script would set the wrong token again).
   await page.addInitScript(() => localStorage.setItem('conductor.workbenchToken', 'not-the-workbench-token'))
   await page.goto(`/runs/${encodeURIComponent(run.id)}?command=${pauseId}&actor=admin`)
-  const gate = page.getByRole('dialog', { name: 'Workbench token' })
+  const gate = tokenAsk(page)
   await expect(gate).toBeVisible()
-  await expect(panel.locator('[data-run-command-error]')).toBeVisible()
+  // The app is hidden under the page, not unmounted: the panel's error is there.
+  await expect(panel.locator('[data-run-command-error]')).toBeAttached()
   const field = gate.getByPlaceholder('paste the workbench token')
   await field.fill(api.server.token)
   await expect(field).toHaveValue(api.server.token)
-  await gate.getByRole('button', { name: 'Save' }).click()
+  await gate.getByRole('button', { name: 'Connect' }).click()
   await expect(gate).toHaveCount(0)
   await expect(panel.locator('[data-run-command-intent]')).toHaveText(receipt.command.intent)
 })

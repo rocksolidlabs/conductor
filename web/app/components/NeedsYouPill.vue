@@ -146,8 +146,8 @@ watch(
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="truncate text-sm font-semibold text-highlighted">{{ session.name }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ countWords }}</span>
-          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
+          <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
+          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> open <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ prompt?.message || session.attention?.message || 'needs you' }}</p>
         <div v-if="prompt?.choices.length" class="mt-1.5 flex flex-wrap gap-1">
@@ -181,9 +181,9 @@ watch(
       <UIcon name="i-lucide-scale" class="mt-0.5 size-5 flex-none text-warning" />
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
-          <span class="truncate font-mono text-sm font-semibold text-highlighted">{{ lone.id }}</span>
-          <span class="flex-none font-mono text-[11px] text-muted" data-pill-count>{{ countWords }}</span>
-          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
+          <span class="truncate font-mono text-sm font-semibold text-highlighted" data-mono="id">{{ lone.id }}</span>
+          <span class="flex-none text-[11px] text-muted tabular-nums" data-pill-count>{{ countWords }}</span>
+          <span class="ml-auto flex flex-none items-center gap-1 font-mono text-[11px] text-muted" data-mono="key"><UKbd value="enter" size="sm" /> answer <UKbd value="escape" size="sm" /></span>
         </div>
         <p class="break-words text-xs text-muted" data-pill-message>{{ lone.request.question }}</p>
       </div>

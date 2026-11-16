@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { followAsk } from '~/utils/workbenchGate'
+import { tokenDialog } from '~/utils/workbenchGate'
 
 const open = defineModel<boolean>('open', { default: false })
 const admin = useWorkbenchToken()
 const draft = ref('')
 
-// A 401 anywhere opens the gate, also one met while a page of another layout was shown; every close ends the ask (followAsk).
-followAsk(open, draft, admin)
+// Opened by the person only, over an app that works (the menu, the palette, Set token): a refusal shows the connect page instead
+// (ConnectPage.vue). Its draft starts from the token this browser keeps; every close ends the ask (tokenDialog).
+tokenDialog(open, draft, admin)
 
 function save() {
   admin.set(draft.value)

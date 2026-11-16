@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, task, test, type Run } from './fixtures'
+import { Api, expect, task, test, type Run, tokenAsk } from './fixtures'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
 // A brief's decision cards, proposals, drafts and handoff with Conductor's controls (docs/plans/brakeman.md, PR-7), on a server of
@@ -390,13 +390,16 @@ test('a make kept before it is sent is finished after the page is read again wit
   await expect(d.locator('[data-draft-finish]')).toBeVisible({ timeout: 30_000 })
   await expect(title).toHaveValue('Kept while it was out')
   await expect(title).toBeDisabled()
-  // Refused before the route ran: still kept, and the token gate asks for the token.
+  // Refused before the route ran: still kept, and the page to connect asks for the token.
   await d.locator('[data-draft-finish]').click()
   await expect(d.locator('[data-draft-error]')).toContainText('workbench token required')
-  await expect(d.locator('[data-draft-finish]')).toBeVisible()
-  const gate = page.getByRole('dialog', { name: 'Workbench token' })
-  await gate.getByRole('button', { name: 'Save' }).click()
+  // The page that asks stands in for the app, which is hidden under it, not unmounted: the card keeps its Finish.
+  const gate = tokenAsk(page)
+  await expect(gate).toBeVisible()
+  await expect(d.locator('[data-draft-finish]')).toBeAttached()
+  await gate.getByRole('button', { name: 'Connect' }).click()
   await expect(gate).toHaveCount(0)
+  await expect(d.locator('[data-draft-finish]')).toBeVisible()
   await d.locator('[data-draft-finish]').click()
   await expect(d).toHaveAttribute('data-made-state', 'made')
   // The held ask, the refused finish and the finish that made it: one id and one content throughout.

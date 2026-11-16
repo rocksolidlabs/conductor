@@ -545,8 +545,8 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   await expect(sidebar).toBeAttached()
   await openFromMenu(page)
   await expect(page.locator('[data-phone-offer="loopback"]')).toContainText('A phone cannot reach')
-  // Closed by its own button: the Yard's Escape is its own (back to the grid) and takes the key before the dialog does.
-  await page.getByRole('dialog').locator('[data-slot="close"]').click()
+  // Closed by Escape, as anywhere else: the Yard's own Escape stands aside while a dialog is open.
+  await page.keyboard.press('Escape')
   await expect(page.locator('[data-phone-offer]')).toHaveCount(0)
 
   // On an address of the network (a name this browser resolves to the server): the page's address alone, as a QR code.

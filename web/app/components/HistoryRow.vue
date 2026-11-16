@@ -28,10 +28,11 @@ const session = computed(() => {
         <UBadge v-if="badge" :label="badge.label" :color="badge.color" variant="subtle" size="sm" class="flex-none" data-history-row-badge />
       </div>
       <!-- The six fields, wrapped on a phone. -->
-      <p class="mt-0.5 flex flex-wrap gap-x-1.5 font-mono text-[11.5px] text-muted" data-history-row-detail>
+      <!-- Words in the app's face; the revision, a commit, alone in the code font. -->
+      <p class="mt-0.5 flex flex-wrap gap-x-1.5 text-[11.5px] text-muted" data-history-row-detail>
         <template v-for="(p, i) in parts" :key="p.field">
           <span v-if="i" aria-hidden="true">·</span>
-          <span :title="p.title" :data-history-field="p.field" class="break-all">{{ p.text }}</span>
+          <span :title="p.title" :data-history-field="p.field" class="break-all" :class="p.field === 'revision' && 'font-mono'" :data-mono="p.field === 'revision' ? 'commit' : undefined">{{ p.text }}</span>
         </template>
       </p>
       <p v-if="links" class="mt-0.5 text-xs text-toned" data-history-row-links>{{ links }}</p>

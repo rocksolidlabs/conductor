@@ -26,18 +26,6 @@ const PAGES: WalkedPage[] = ['yard', 'session', 'needs', 'agents', 'dispatch', '
 const THEMES = ['dark', 'light'] as const
 
 export const KNOWN: Known[] = [
-  // An agent that is not installed: its whole card at opacity-60 (pages/agents.vue), every word under its floor in both themes.
-  ...THEMES.flatMap((theme) =>
-    ([1440, 390] as const).map((width): Known => ({
-      page: 'agents',
-      theme,
-      width,
-      at: 'rest',
-      path: '[data-available="false"]',
-      reason: 'the unavailable card is faded with opacity-60, and its muted words fall under 4.5:1',
-      removedBy: 'PR-26',
-    })),
-  ),
   // An exited session's row in the sidebar at opacity-75 (SidebarSessionRow.vue): the loose one in the unfolded Exited section on the
   // Yard, and on every page at 1440 the exited member rows the day's runs leave in their run's block.
   ...PAGES.flatMap((page) =>

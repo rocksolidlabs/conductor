@@ -11,6 +11,8 @@ useHead({ title: 'Sessions' })
 
 const attention = useAttention()
 const admin = useWorkbenchToken()
+/** Set token and the menu's Workbench token… open the token dialog over the page (the store's ask opens nothing with a token held). */
+const tokenDialog = useTokenDialog()
 const wide = useMedia('(min-width: 64rem)')
 
 const target = computed(() => sessionWorthOpening(attention.sessions.value))
@@ -40,14 +42,17 @@ onMounted(() => {
           <img src="/brand/conductor-mark-reversed.svg" alt="" class="size-6 hidden dark:block" />
         </template>
         <template #right>
-          <SidebarHeaderMenus page @token="admin.needsToken.value = true" />
+          <SidebarHeaderMenus page @token="tokenDialog.show()" />
         </template>
       </UDashboardNavbar>
     </template>
     <template #body>
-      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
+      <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" :actions="[{ label: 'Set token', onClick: tokenDialog.show }]" />
       <div class="flex min-h-0 flex-1 flex-col px-2 pt-2">
-        <SessionSidebar page />
+        <!-- A server with no session at all, once read: the welcome in place of the list's empty line (the UX review's P17). -->
+        <SessionSidebar page>
+          <template v-if="!wide" #empty><WelcomeCard in-list /></template>
+        </SessionSidebar>
       </div>
     </template>
   </UDashboardPanel>

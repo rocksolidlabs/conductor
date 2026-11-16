@@ -4,8 +4,10 @@ import { SIDEBAR_SIZE, SIDEBAR_WIDTH } from '~/utils/sidebar'
 import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
 import { navPages, navTiles, pageActive, pageTip, type PageId } from '~/utils/pages'
 import { needsCount, needsRowShown } from '~/utils/needsYou'
+import { connectShown } from '~/utils/workbenchGate'
 
-const showToken = ref(false)
+/** The workbench token dialog, opened by the person over a working app (the menu, the palette, an alert's Set token). */
+const showToken = useTokenDialog().open
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
 const desktopWide = useMedia('(min-width: 64rem)')
 // The decision inbox: read for the whole app, one of the stores of the one number on Needs you (useNeedsYou).
@@ -198,6 +200,13 @@ function keepWidthAfter(end: 'mouseup' | 'touchend') {
 // happens when one does (no toast, no dialog, no navigation). Shown once the server says it has Brakeman (not a switchyard's).
 const brakeman = useBrakeman()
 const workbench = useWorkbenchToken()
+/**
+ * The connect page in place of the app (the UX review's P18): no token held, or the held one refused; in the desktop app not before its
+ * bridge answered. The app stays mounted under it, hidden, so a refusal in the middle of work keeps every draft and view.
+ */
+const connect = computed(() =>
+  connectShown({ desktop: workbench.desktop, bridged: workbench.bridged.value, hasToken: workbench.hasToken.value, standing: workbench.standing.value }),
+)
 // Read with a token only: a read without one would ask for it. A new token may be another server's, whose br-1 is not the one
 // held: what the store holds goes first, and replies to the reads sent with the token before are dropped.
 onMounted(() =>
@@ -310,8 +319,9 @@ defineShortcuts({
 </script>
 
 <template>
+  <ConnectPage v-if="connect" />
   <!-- Below lg the bottom bar needs the room; with viewport-fit=cover its padding reads the safe area. -->
-  <UDashboardGroup :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
+  <UDashboardGroup v-show="!connect" :persistent="false" unit="rem" class="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
     <!-- The rail's classes are lg: only: below lg the slideover gets the same header, body and footer classes, and keeps the full sidebar's. -->
     <UDashboardSidebar
       :id="SIDEBAR_ID"

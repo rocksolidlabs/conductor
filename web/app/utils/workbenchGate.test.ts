@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, effectScope, nextTick, ref } from 'vue'
 import { useWorkbenchToken } from '~/composables/useWorkbenchToken'
-import { followAsk } from './workbenchGate'
+import { connectShown, tokenDialog } from './workbenchGate'
 
 // The gate's open state kept with the workbench token's ask (WorkbenchTokenGate.vue runs followAsk as it mounts; an effect scope
 // stands for its mount here, stopped for its unmount). The store is the app's own over a Nuxt app of this test's; tokens are invented.
 const KEPT = 'kept-token-0123456789'
 const KEY = 'conductor.workbenchToken'
 
-describe('the workbench token gate', () => {
+describe('the workbench token dialog', () => {
   let local: Map<string, string>
   beforeEach(() => {
     local = new Map([[KEY, KEPT]])
@@ -19,55 +19,53 @@ describe('the workbench token gate', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  /** A gate mounted now: its open state and draft. */
+  /** A dialog mounted now: its open state and draft. */
   function mount() {
     const scope = effectScope()
     const open = ref(false)
     const draft = ref('')
-    scope.run(() => followAsk(open, draft, useWorkbenchToken()))
+    scope.run(() => tokenDialog(open, draft, useWorkbenchToken()))
     return { open, draft, unmount: () => scope.stop() }
   }
 
-  it('mounted with no ask, stays closed until a refusal, which opens it with the kept token as its draft', async () => {
+  it('is not opened by a refusal: the connect page asks then', async () => {
     const admin = useWorkbenchToken()
-    const gate = mount()
-    await nextTick()
-    expect(gate.open.value).toBe(false)
+    const dialog = mount()
     admin.answered(KEPT, false)
     await nextTick()
-    expect(gate.open.value).toBe(true)
-    expect(gate.draft.value).toBe(KEPT)
-  })
-
-  it('mounted while the ask stands (left open with its layout): open at once; cancelled, the ask ends and the next refusal opens it again', async () => {
-    const admin = useWorkbenchToken()
-    const first = mount()
-    admin.answered(KEPT, false)
-    await nextTick()
-    expect(first.open.value).toBe(true)
-    // A page of another layout: the gate goes with its layout while open, and nothing closed it.
-    first.unmount()
     expect(admin.needsToken.value).toBe(true)
-    const again = mount()
-    expect(again.open.value).toBe(true)
-    await nextTick()
-    expect(again.draft.value).toBe(KEPT)
-    again.open.value = false
-    await nextTick()
-    expect(admin.needsToken.value).toBe(false)
-    admin.answered(KEPT, false)
-    await nextTick()
-    expect(again.open.value).toBe(true)
+    expect(dialog.open.value).toBe(false)
   })
 
-  it('closes when a token is saved, and the ask is over', async () => {
+  it('opened by the person, starts from the kept token; closed, the ask ends', async () => {
     const admin = useWorkbenchToken()
+    const dialog = mount()
     admin.answered(KEPT, false)
-    const gate = mount()
-    expect(gate.open.value).toBe(true)
-    admin.set('another-token-0123456789')
+    dialog.open.value = true
     await nextTick()
-    expect(gate.open.value).toBe(false)
+    expect(dialog.draft.value).toBe(KEPT)
+    dialog.open.value = false
+    await nextTick()
     expect(admin.needsToken.value).toBe(false)
+  })
+})
+
+describe('the connect page', () => {
+  const browser = { desktop: false, bridged: true }
+  it('shows in a browser with no token, and when the held token was refused', () => {
+    expect(connectShown({ ...browser, hasToken: false, standing: '' })).toBe(true)
+    expect(connectShown({ ...browser, hasToken: true, standing: 'refused' })).toBe(true)
+  })
+  it('does not show for a held token the server has not refused, nor while a link\'s token is tried or, refused, the page loads again', () => {
+    expect(connectShown({ ...browser, hasToken: true, standing: '' })).toBe(false)
+    expect(connectShown({ ...browser, hasToken: true, standing: 'trying' })).toBe(false)
+    expect(connectShown({ ...browser, hasToken: true, standing: 'dropped' })).toBe(false)
+  })
+  it('in the desktop app, waits for its bridge: no page before it answered, then as in a browser', () => {
+    // The case a rule keyed on the token alone gets wrong: it would flash the page while the shell hands over its token.
+    expect(connectShown({ desktop: true, bridged: false, hasToken: false, standing: '' })).toBe(false)
+    expect(connectShown({ desktop: true, bridged: true, hasToken: false, standing: '' })).toBe(true)
+    expect(connectShown({ desktop: true, bridged: true, hasToken: true, standing: 'refused' })).toBe(true)
+    expect(connectShown({ desktop: true, bridged: true, hasToken: true, standing: '' })).toBe(false)
   })
 })

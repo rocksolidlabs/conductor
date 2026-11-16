@@ -140,6 +140,36 @@ test("a question asked again shows its new start on the tile, and the grid's wid
   }
 })
 
+test("on the Yard your menu's Alerts… and Open on your phone close on Escape, the focus back on your menu; with nothing open Escape leaves the expanded tile", async ({ page, api }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e yard escape' })
+  try {
+    await expect.poll(async () => (await api.session(s.id)).status, { timeout: 30_000 }).toBe('running')
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(`/yard?focus=${s.id}`)
+    await expect(page.locator('[data-yard-focus]')).toBeVisible({ timeout: 30_000 })
+    const account = page.locator('#dashboard-sidebar-main [data-slot="header"] [data-header-account]')
+    // Each overlay's Escape is its own: it closes, the focus goes back to your menu's button, and the tile stays expanded.
+    for (const item of [/^Alerts/, /^Open on your phone/]) {
+      await account.click()
+      await page.getByRole('menuitem', { name: item }).click()
+      // A menu that has closed is not gone: the dialog is read once the menu is.
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      const dialog = page.getByRole('dialog')
+      await expect(dialog).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(dialog).toHaveCount(0)
+      await expect(account).toBeFocused()
+      await expect(page).toHaveURL(new RegExp(`/yard\\?focus=${s.id}$`))
+    }
+    // Nothing open: the Yard's own Escape, back to the grid.
+    await page.keyboard.press('Escape')
+    await expect(page).toHaveURL(/\/yard$/)
+    await expect(page.locator(`[data-session-tile][data-session-id="${s.id}"]`)).toBeVisible()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 test("the pill's Enter on the Yard expands the tile in place, and its bar takes a typed reply", async ({ page, api, state }, info) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e yard pill' })
   try {

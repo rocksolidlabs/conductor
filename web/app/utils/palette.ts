@@ -4,10 +4,9 @@
 // reads the live stores and the component renders what these return.
 
 import type { SessionInfo } from '~/composables/useSessions'
-import { isActive, isEnded } from './attention'
 import type { Decision } from './decisions'
 import type { NeedsItem } from './needsYou'
-import { SECTION_KEYS, SECTION_TITLES, type Folds, type SectionKey, type SidebarModel } from './sidebar'
+import { LIST_SECTIONS, SECTION_KEYS, SECTION_TITLES, sectionOf, type Folds, type ListSection, type SectionKey, type SidebarModel } from './sidebar'
 
 export type PaletteMode = 'search' | 'actions' | 'runs' | 'files' | 'people' | 'events' | 'shortcuts' | 'history'
 
@@ -317,15 +316,17 @@ export interface SessionGroupMakers<R> {
 
 export interface SessionGroupRows<R> {
   needs: R[]
-  running: R[]
+  finished: R[]
+  working: R[]
   exited: R[]
 }
 
 /**
  * The palette's Needs you group and its session groups. Needs you: answer-all, the questions (oldest first), the decisions (a question
  * that mirrors an open record is that record's row, its session named in it), then the plans and the tasks: every item of the one list
- * (`needs`) once. A session whose question is a decision's row is listed among the running ones. Running and Exited hold every other
- * session in the sidebar's order (a run's members where its block sits), by their own state.
+ * (`needs`) once. Finished, Working and Exited hold every other session in the sidebar's order (a run's members where its block sits),
+ * each by its own state (sectionOf): Working the working, the running and the starting, and a session whose question is a decision's
+ * row; Exited a host away that does not ask too.
  */
 export function sessionGroups<R>(model: SidebarModel, needs: readonly NeedsItem[], make: SessionGroupMakers<R>): SessionGroupRows<R> {
   const questions: SessionInfo[] = []
@@ -342,11 +343,14 @@ export function sessionGroups<R>(model: SidebarModel, needs: readonly NeedsItem[
     else if (it.kind === 'plan' || it.kind === 'task') items.push(it)
   }
   const asking = new Set(questions.map((s) => s.id))
-  const every = [...model.needs, ...model.running, ...model.exited].flatMap((it) => (it.kind === 'run' ? it.members : it.kind === 'session' ? [it] : []))
+  const every = LIST_SECTIONS.flatMap((k) => model[k]).flatMap((it) => (it.kind === 'run' ? it.members : it.kind === 'session' ? [it] : []))
+  const placed = every.filter((r) => !asking.has(r.session.id))
+  const of = (key: ListSection) => placed.filter((r) => (r.state === 'needs' ? 'working' : sectionOf(r.state)) === key).map((r) => make.session(r.session))
   return {
     needs: [...make.answerAll(), ...questions.map(make.session), ...make.decisions(decisions, (id) => mirroredIn.get(id)), ...items.map(make.item)],
-    running: every.filter((r) => !asking.has(r.session.id) && isActive(r.session)).map((r) => make.session(r.session)),
-    exited: every.filter((r) => isEnded(r.session.status)).map((r) => make.session(r.session)),
+    finished: of('finished'),
+    working: of('working'),
+    exited: of('exited'),
   }
 }
 
