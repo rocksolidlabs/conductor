@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import { MODE_CHOICE, decisionOf, firstChoice, noReply, offeredChoices } from '~/utils/attention'
+import { MODE_CHOICE, decisionOf, noReply, offeredChoices, recommendedChoice } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -85,8 +85,8 @@ defineExpose({ focusSelected })
           :key="oi"
           :label="o.label"
           size="xs"
-          :variant="oi === firstChoice(offeredChoices(s.attention)) ? 'solid' : 'outline'"
-          :color="oi === firstChoice(offeredChoices(s.attention)) ? 'primary' : o.mode ? 'warning' : 'neutral'"
+          :variant="oi === recommendedChoice(offeredChoices(s.attention)) ? 'solid' : 'outline'"
+          :color="oi === recommendedChoice(offeredChoices(s.attention)) ? 'primary' : o.mode ? 'warning' : 'neutral'"
           :title="o.mode ? `${o.label} (${MODE_CHOICE.toLowerCase()})` : o.label"
           :data-choice-mode="o.mode || undefined"
           class="max-w-full flex-1 justify-center"

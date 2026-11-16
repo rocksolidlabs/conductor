@@ -257,6 +257,21 @@ open deferred item from rounds 1 and 2, then the features below.
   browser under `conductor.sidebar.width` (rem); the percent width kept before
   under `conductor.sidebar.size` is removed on first read, so every browser
   opens at the minimum once. Below lg nothing changed.
+- **A session page where the terminal has the room (the UX review, P11, D7,
+  D9; #934).** The inspector is closed until a view is opened, one choice for
+  every session under `conductor.inspectorOpen` (the old `conductor.inspector`
+  is no longer read), and the rail's toggle opens it on Explorer. The line
+  under the name is agent · folder · branch (`sessionHeadline`), the whole
+  path its tooltip, the ids in More. Share is an outline button like Files and
+  More. The connection badge is its icon alone while open, its words as label
+  and tooltip (`transportLook`, the session page only). A reply choice is
+  filled only when its label ends "(Recommended)" (`recommendedChoice`; none
+  when two say it, never a mode choice). A session the server answers 404
+  for opens on its record's name with Open its record, or says nothing is
+  kept, with no control that cannot work (`gonePage`). Below `sm` Files,
+  Share and Fullscreen move into More. Tests: `attention.test.ts`,
+  `sessions.test.ts`, `transport/look.test.ts`; `session-page.spec.ts`,
+  `inspector-rail.spec.ts`, `hscroll.spec.ts`.
 - **The app's screens: eight defects the owner met (#702, #706, #906,
   2026-11-15).** One pull request, #908; rows 1, 6, 8, 10 and 11 of #906
   wait for the open pull requests that hold their files.
