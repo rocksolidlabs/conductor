@@ -2,16 +2,16 @@ import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { expect } from '@playwright/test'
-import { budget, DAY_PROBES_MS, DAY_RUNS_END_MS, DAY_SESSIONS_END_MS, type Api, type Run, type Session } from './fixtures'
+import { budget, DAY_PROBES_MS, DAY_RUNS_END_MS, DAY_SESSIONS_END_MS, type Api, type Run, type RunTask, type Session } from './fixtures'
 import { ownServer, type AgentCopy, type OwnServer } from './own-server'
 
 // The seeded day (UX1's PR-1, docs/plans/ux-review.md, the chapter Tests): a day of work on a server of its own, built in named parts
 // on demand and read by name, so that a spec can assert exact numbers. A part builds the parts it stands on first, once; each of its
 // waits polls the API for what it made and raises the running test's timeout by its cap (budget). No state is held on a timer: the
 // working and finished sessions are the stub's STUB_TURN, a question is the asker's, a failed task's check exits 1, and an exited
-// session is kept listed for a day (CONDUCTOR_EXITED_RETENTION). The day is read-only: the `day` fixture (fixtures.ts) ends and fails
-// on whatever a test leaves (leftovers), on what of Dispatch, the crews and the share links is not as the day's start and its parts'
-// builds left them (drift), and on any item of a built part no longer as the part promised it (check): guard() is the three.
+// session is kept listed for a day (CONDUCTOR_EXITED_RETENTION). The day is read-only, and the guard has one rule: what the day's
+// server lists (snapshot) is the same at a test's end as the day's start and its parts' builds left it. The `day` fixture
+// (fixtures.ts) fails a test naming each difference (drift), and ends the sessions and runs it added (guard).
 
 /** The parts, as the chapter Tests lists them. */
 export type PartName = 'states' | 'dispatch' | 'waiting' | 'runs' | 'long' | 'busy'
@@ -122,9 +122,9 @@ function crew(name: string, members: Array<{ name: string; agentId: string; when
   }
 }
 
-/** Something on the day's server that no part made, as leftovers() names it. */
+/** A session or a run on the day's server that no part made, as guard() names it: the `day` fixture ends it. */
 export interface Leftover {
-  kind: 'session' | 'run' | 'inbox'
+  kind: 'session' | 'run'
   id: string
   words: string
 }
@@ -132,21 +132,39 @@ export interface Leftover {
 interface Part {
   needs: PartName[]
   build: (d: Day) => Promise<Names>
-  /** What of the part is not as it promised, each naming its item: nothing when it holds. One read each, no wait. */
-  check: (d: Day, n: Names) => Promise<string[]>
 }
 
 function listed<T>(r: { sessions?: T[] } | T[]): T[] {
   return Array.isArray(r) ? r : (r.sessions ?? [])
 }
 
-/** Dispatch, the crews and the share links as the guard compares them: each item under a key that names it, with what is compared. */
+/**
+ * The kinds of what the day's server lists, as snapshot() keys them (`<kind> <its id>`): each kind's change has its proof in
+ * day.spec.ts's table, which fails on a kind without one.
+ */
+export const SNAPSHOT_KINDS = ['person', 'project', 'label', 'milestone', 'view', 'ticket', 'plan', 'crew', 'share link', 'session', 'run', 'inbox'] as const
+export type SnapshotKind = (typeof SNAPSHOT_KINDS)[number]
+
+/**
+ * What the day's server lists, each item under a key that names it (`session <id>`, `ticket CND-2`) with the JSON of what is compared.
+ * Left out, as what moves by itself (docs/checks.md): every time (since, createdAt, endedAt, startedAt, stoppedAt) and a run's log;
+ * a session's viewers, cols and rows, which every page attached moves; a member's diff, which the server counts again in the
+ * background (it moved within a minute on an idle day); and what follows a field compared: a run's needsInput and ledger revision,
+ * a member's attempt, branch and worktree.
+ */
 export type Snapshot = Map<string, string>
 
-/** What the guard compares of a session's attention: the whole of it but its times. */
-function attentionOf(s: Session): string {
-  const a = s.attention
-  return a ? JSON.stringify({ state: a.state, source: a.source, kind: a.kind, message: a.message, id: a.id }) : 'none'
+/** An item's label in what the guard says: its key, and its name when it has one (`session 3cb0 (flaky-vim-spec)`). */
+function named(key: string, v: string): string {
+  const name = (JSON.parse(v) as { name?: unknown }).name
+  return typeof name === 'string' ? `${key} (${name})` : key
+}
+
+/** An item's compared fields, a nested object's flattened to dotted names (`attention.source`, `tasks.ship.holds.dr-2`). */
+function fields(v: unknown, at = '', out: Record<string, string> = {}): Record<string, string> {
+  if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) fields(x, at ? `${at}.${k}` : k, out)
+  else out[at] = JSON.stringify(v)
+  return out
 }
 
 /** Every page of a list read by `next` (a cursor), as Dispatch pages them. */
@@ -164,13 +182,10 @@ async function pages<T>(api: Api, path: string, list: (r: Record<string, unknown
 /** The day: its server, its parts as built, what they made, and how it ends. */
 export class Day {
   readonly server: OwnServer
-  /** The sessions (loose, and each run member's as its part saw it at build), the runs and the inbox refs the parts made. */
-  readonly sessions = new Set<string>()
+  /** The runs and the inbox refs the parts made. */
   readonly runs = new Set<string>()
   readonly refs = new Map<string, PartName>()
-  /** Each session a part waited on, by id: its attention as the part saw it (attentionOf), which check() compares whole. */
-  readonly seen = new Map<string, string>()
-  /** Dispatch, the crews and the share links as the day's start left them, with each part's build applied: what drift() compares. */
+  /** What the server listed as the day's start left it, with each part's build applied: what drift() compares. */
   base: Snapshot = new Map()
   private readonly parts = new Map<PartName, Names>()
   private readonly building = new Map<PartName, Promise<Names>>()
@@ -200,13 +215,11 @@ export class Day {
       p = (async () => {
         for (const n of PARTS[name].needs) await this.part(n)
         // What the build changes, and only that, joins the day: a test's own write made before the build stays the test's.
-        const [before, runs] = [await this.snapshot(), new Set(this.runs)]
+        const before = await this.snapshot()
         const names = await PARTS[name].build(this)
         const after = await this.snapshot()
         for (const [k, v] of after) if (before.get(k) !== v) this.base.set(k, v)
         for (const k of before.keys()) if (!after.has(k)) this.base.delete(k)
-        // The sessions of the runs the build made, as it leaves them: a member's session started later is a leftover.
-        for (const s of await this.listSessions()) if (s.crew && this.runs.has(s.crew.runId) && !runs.has(s.crew.runId)) this.sessions.add(s.id)
         this.parts.set(name, names)
         return names
       })()
@@ -233,23 +246,7 @@ export class Day {
     return out
   }
 
-  /** What the server holds that no part made: a session (live or ended, still listed; one of a day's run too), a run, an inbox item. */
-  async leftovers(): Promise<Leftover[]> {
-    const out: Leftover[] = []
-    for (const s of await this.listSessions()) {
-      if (this.sessions.has(s.id)) continue
-      out.push({ kind: 'session', id: s.id, words: `session ${s.id} (${s.name}, ${s.status}${s.crew ? `, of run ${s.crew.runId}` : ''})` })
-    }
-    for (const r of (await this.api.ok<{ runs: Run[] }>('GET', '/api/runs')).runs ?? []) {
-      if (!this.runs.has(r.id)) out.push({ kind: 'run', id: r.id, words: `run ${r.id} (${r.name}, ${r.state})` })
-    }
-    for (const it of await this.inbox()) {
-      if (!this.refs.has(it.ref)) out.push({ kind: 'inbox', id: it.ref, words: `inbox item ${it.ref}` })
-    }
-    return out
-  }
-
-  /** Ends what leftovers() named: each run stopped, each session stopped, waited ended and removed (a second DELETE). */
+  /** Ends what guard() named left: each run stopped, each session stopped, waited ended and removed (a second DELETE). */
   async endLeftovers(left: Leftover[]): Promise<void> {
     for (const l of left) if (l.kind === 'run') await this.api.stopRun(l.id)
     const sessions = left.filter((l) => l.kind === 'session')
@@ -267,22 +264,18 @@ export class Day {
     return r.body.session?.status ?? r.body.status ?? `unreadable (${r.status})`
   }
 
-  /** What of every built part is not as it promised, each naming its part and item. */
-  async check(): Promise<string[]> {
-    const out: string[] = []
-    for (const [name, names] of this.parts) for (const p of await PARTS[name].check(this, names)) out.push(`${name}: ${p}`)
-    return out
-  }
-
   /**
-   * Dispatch's people, projects (archived too), labels, milestones, saved views, tickets of every project (deleted too: status,
-   * priority, owner, assignees, labels, milestone, parent, revision) and each live ticket's plans (state, stale, withdrawn,
-   * revision); the crews; and the share links of every listed session and run. About fifty reads on the busy day.
+   * Everything the day's server lists, as the guard compares it: Dispatch's people, projects (archived too), labels, milestones,
+   * saved views, tickets of every project (deleted too: title, status, priority, owner, assignees, labels, milestone, parent,
+   * revision) and each live ticket's plans (state, stale, withdrawn, revision); the crews; the share links of every listed session
+   * and run; every session (name, status, exit code, agent, folder, run and member, its attention whole: state, source, kind,
+   * message, id, decision); every run (name, label, state, outcome, paused, each member's status and session, each task's state,
+   * attempts and the decisions that hold it by id and state); and the inbox's items (kind, state). About fifty reads on the busy day.
    */
   async snapshot(): Promise<Snapshot> {
     const api = this.api
     const out: Snapshot = new Map()
-    const put = (key: string, v: unknown) => out.set(key, JSON.stringify(v))
+    const put = (key: `${SnapshotKind} ${string}`, v: unknown) => out.set(key, JSON.stringify(v))
     for (const p of (await api.ok<{ people: Array<{ name: string }> }>('GET', '/api/dispatch/people')).people) put(`person ${p.name}`, {})
     type ProjectRow = { key: string; name: string; archivedAt?: string; rev: number }
     const projects = await pages(api, '/api/dispatch/projects?archived=1', (r) => r.projects as ProjectRow[])
@@ -316,38 +309,55 @@ export class Day {
     type LinkRow = { id: string; role: string; revoked: boolean; decide?: boolean }
     const link = (l: LinkRow) => ({ role: l.role, revoked: l.revoked, decide: !!l.decide })
     for (const s of await this.listSessions()) {
+      const a = s.attention
+      const attention = { state: a?.state, source: a?.source, kind: a?.kind, message: a?.message, id: a?.id, decision: a?.decision }
+      put(`session ${s.id}`, { name: s.name, status: s.status, exit: s.exitCode, agent: s.agentId, cwd: s.cwd, run: s.crew?.runId, member: s.crew?.member, attention })
       const r = await api.call<{ links?: LinkRow[] }>('GET', `/api/sessions/${s.id}/links`)
-      for (const l of r.body.links ?? []) put(`share link ${l.id} of session ${s.name} (${s.id})`, link(l))
+      for (const l of r.body.links ?? []) put(`share link ${l.id} of session ${s.id}`, link(l))
     }
     for (const run of (await api.ok<{ runs: Run[] }>('GET', '/api/runs')).runs ?? []) {
+      const members = Object.fromEntries(run.members.map((m) => [m.name, { status: m.status, session: m.sessionId }]))
+      const holds = (t: RunTask) => Object.fromEntries((t.holds ?? []).map((h) => [h.id, h.state]))
+      const tasks = Object.fromEntries((run.tasks ?? []).map((t) => [t.id, { state: t.state, attempts: t.attempts, holds: holds(t) }]))
+      put(`run ${run.id}`, { name: run.name, label: run.label, state: run.state, outcome: run.outcome, paused: !!run.paused, members, tasks })
       const r = await api.call<{ links?: LinkRow[] }>('GET', `/api/runs/${run.id}/links`)
       for (const l of r.body.links ?? []) put(`share link ${l.id} of run ${run.id}`, link(l))
     }
-    return out
-  }
-
-  /** What of Dispatch, the crews and the share links is not as the day's start and its parts' builds left it, each named. */
-  async drift(): Promise<string[]> {
-    const now = await this.snapshot()
-    const out: string[] = []
-    for (const [k, v] of now) {
-      const was = this.base.get(k)
-      if (was === undefined) out.push(`${k} is not the day's: ${v}`)
-      else if (was !== v) out.push(`${k} is ${v} where the day left ${was}`)
-    }
-    for (const [k, v] of this.base) if (!now.has(k)) out.push(`${k} is gone (the day left ${v})`)
+    for (const it of await this.inbox()) put(`inbox ${it.ref}`, { kind: it.kind, state: it.state })
     return out
   }
 
   /**
-   * What the `day` fixture judges at a test's end, nothing changed by reading it: `left`, what leftovers() names (the fixture ends
-   * it), and `problems`, each in words: the leftovers, drift() and check(). A test of the guard calls it on a day of its own.
+   * What the server lists that is not as the day's start and its parts' builds left it (`now`, or a snapshot read for it), one line
+   * each: an item added, an item gone, or a field changed, from what to what, by the item's name.
+   */
+  async drift(now?: Snapshot): Promise<string[]> {
+    now ??= await this.snapshot()
+    const out: string[] = []
+    for (const [k, v] of now) {
+      const was = this.base.get(k)
+      if (was === undefined) out.push(`${named(k, v)} is not the day's: ${v}`)
+      else if (was !== v) {
+        const [a, b] = [fields(JSON.parse(was)), fields(JSON.parse(v))]
+        for (const f of new Set([...Object.keys(a), ...Object.keys(b)])) if (a[f] !== b[f]) out.push(`${named(k, was)}: ${f} is ${b[f] ?? 'nothing'} where the day left ${a[f] ?? 'nothing'}`)
+      }
+    }
+    for (const [k, v] of this.base) if (!now.has(k)) out.push(`${named(k, v)} is gone (the day left ${v})`)
+    return out
+  }
+
+  /**
+   * What the `day` fixture judges at a test's end, from one snapshot, nothing changed by reading it: `problems`, drift()'s lines, and
+   * `left`, the sessions and runs among them that no part made (the fixture ends them). A test of the guard calls it on a day of its own.
    */
   async guard(): Promise<{ left: Leftover[]; problems: string[] }> {
-    const left = await this.leftovers()
-    const drift = await this.drift()
-    const changed = await this.check()
-    return { left, problems: [...left.map((l) => `left: ${l.words}`), ...drift.map((d) => `Dispatch, crews, links: ${d}`), ...changed.map((c) => `changed: ${c}`)] }
+    const now = await this.snapshot()
+    const left: Leftover[] = []
+    for (const [k, v] of now) {
+      const m = /^(session|run) (\S+)$/.exec(k)
+      if (m && !this.base.has(k)) left.push({ kind: m[1] as Leftover['kind'], id: m[2]!, words: named(k, v) })
+    }
+    return { left, problems: await this.drift(now) }
   }
 
   /**
@@ -397,9 +407,7 @@ export class Day {
 
   /** A loose session of the day's: launched on `agent`, named `name`, noted as the day's. */
   async launch(name: string, agent: string): Promise<string> {
-    const s = await this.api.ok<Session>('POST', '/api/sessions', { agentId: agent, name })
-    this.sessions.add(s.id)
-    return s.id
+    return (await this.api.ok<Session>('POST', '/api/sessions', { agentId: agent, name })).id
   }
 
   /** The session read until it is as promised (within DAY_STEP_MS, the test's timeout raised by it). */
@@ -407,7 +415,6 @@ export class Day {
     budget(DAY_STEP_MS)
     let s = await this.api.session(id)
     await expect.poll(async () => promised((s = await this.api.session(id)), p), { timeout: DAY_STEP_MS, message: `${what} is to be ${p.status} with attention ${p.attention || 'none'}` }).toBe('')
-    this.seen.set(id, attentionOf(s))
     return s
   }
 
@@ -472,21 +479,6 @@ function promised(s: Session, p: Promised): string {
   return s.status === p.status && att === p.attention ? '' : `${s.status} with attention ${att || 'none'}`
 }
 
-/**
- * A session of the day read back by its id: '' when it is as promised and its attention is whole what the part saw at build (a state
- * changed and set back by another hand has another source, message or id), else the problem, naming it.
- */
-async function sessionProblem(d: Day, name: string, id: string, p: Promised, wantName = name): Promise<string> {
-  const r = await d.api.call<Session>('GET', `/api/sessions/${id}`)
-  if (r.status !== 200) return `${name} (${id}) is not listed: ${r.status}`
-  const s = (r.body as unknown as { session?: Session }).session ?? r.body
-  if (s.name !== wantName) return `${name} (${id}) is named ${JSON.stringify(s.name)}`
-  const got = promised(s, p)
-  if (got) return `${name} (${id}) is ${got} where ${p.status} with attention ${p.attention || 'none'} was promised`
-  const seen = d.seen.get(id)
-  return seen !== undefined && attentionOf(s) !== seen ?`${name} (${id})'s attention is ${attentionOf(s)} where the day saw ${seen}` : ''
-}
-
 const PARTS: Record<PartName, Part> = {
   states: {
     needs: [],
@@ -500,14 +492,6 @@ const PARTS: Record<PartName, Part> = {
         if (promise === ASKS) await d.listedRef('states', `question:${s.id}/${s.attention!.id}`)
       }
       return n
-    },
-    async check(d, n) {
-      const out: string[] = []
-      for (const [name, { promise }] of Object.entries(STATES)) {
-        const p = await sessionProblem(d, name, n[name]!, promise)
-        if (p) out.push(p)
-      }
-      return out
     },
   },
 
@@ -564,28 +548,6 @@ const PARTS: Record<PartName, Part> = {
       await d.listedRef('dispatch', 'plan:CND-5/1')
       return n
     },
-    async check(d) {
-      const out: string[] = []
-      const r = await d.api.ok<{ tickets: Array<{ key: string; title: string; owner: string; assignees: string[]; priority: number }>; total: number }>('GET', '/api/dispatch/tickets?project=CND')
-      if (r.total !== TICKETS.length) out.push(`CND holds ${r.total} tickets where ${TICKETS.length} were made`)
-      for (const [i, t] of TICKETS.entries()) {
-        const key = `CND-${i + 1}`
-        const got = r.tickets.find((x) => x.key === key)
-        if (!got) out.push(`${key} is not listed`)
-        else if (got.title !== t.title || got.owner !== t.owner || got.priority !== t.priority || [...got.assignees].sort().join() !== t.assignees.map((a) => `person:${a}`).sort().join()) {
-          out.push(`${key} is ${JSON.stringify({ title: got.title, owner: got.owner, priority: got.priority, assignees: got.assignees })}`)
-        }
-      }
-      // CND-1's revision approved and fresh (waiting launches it), CND-5's approved and stale.
-      for (const [key, stale] of [['CND-1', false], ['CND-5', true]] as const) {
-        const plans = await d.api.ok<{ plans: Array<{ n: number; state: string; stale?: unknown; withdrawnAt?: string }> }>('GET', `/api/dispatch/tickets/${key}/plans`)
-        const one = plans.plans.find((p) => p.n === 1)
-        if (one?.state !== 'approved' || !!one.stale !== stale || one.withdrawnAt) {
-          out.push(`${key} revision 1 is ${one ? `${one.state}${one.stale ? ', stale' : ''}` : 'missing'} where approved${stale ? ' and stale' : ', fresh'} was promised`)
-        }
-      }
-      return out
-    },
   },
 
   waiting: {
@@ -629,22 +591,6 @@ const PARTS: Record<PartName, Part> = {
       await d.oneSessionPerMember(n['Paging spike'])
       return n
     },
-    async check(d, n) {
-      const out: string[] = []
-      for (const name of ['proc-race-tests', 'navigator']) {
-        const p = await sessionProblem(d, name, n[name]!, ASKS)
-        if (p) out.push(p)
-      }
-      const spike = await d.api.run(n['Paging spike']!)
-      const index = spike.tasks?.find((t) => t.id === 'index')
-      if (index?.state !== 'failed' || index.attempts !== 3) out.push(`Paging spike's index is ${index?.state} after ${index?.attempts} attempts`)
-      const naming = spike.tasks?.find((t) => t.id === 'naming')
-      if (naming?.state !== 'running' || !naming.holds?.some((h) => h.id === n.clarification && h.state === 'open')) out.push(`Paging spike's naming is ${naming?.state}, not held by ${n.clarification} open`)
-      const ship = (await d.api.run(n['Pairing rollout']!)).tasks?.find((t) => t.id === 'ship')
-      if (ship?.state !== 'ready' || !ship.holds?.some((h) => h.id === n.gate && h.state === 'open')) out.push(`Pairing rollout's ship is ${ship?.state}, not held by the gate ${n.gate} open`)
-      out.push(...(await missingRefs(d, 'waiting')))
-      return out
-    },
   },
 
   runs: {
@@ -686,15 +632,6 @@ const PARTS: Record<PartName, Part> = {
       await d.oneSessionPerMember(n['Release notes'])
       return n
     },
-    async check(d, n) {
-      const out: string[] = []
-      const p = ledgerProblem(await d.api.run(n['Ledger migration']!), n.approval!)
-      if (p) out.push(`Ledger migration's tasks are ${p}`)
-      const notes = await d.api.run(n['Release notes']!)
-      if (notes.outcome !== 'succeeded') out.push(`Release notes is ${notes.state}, outcome ${notes.outcome}`)
-      out.push(...(await missingRefs(d, 'runs')))
-      return out
-    },
   },
 
   long: {
@@ -712,16 +649,6 @@ const PARTS: Record<PartName, Part> = {
       n['OPS-1'] = (await api.ok<{ ticket: { id: string } }>('POST', '/api/dispatch/tickets', { opId: 'day-ticket-ops-1', project: 'OPS', title: LONG_TITLE, owner: 'Priya' })).ticket.id
       return n
     },
-    async check(d, n) {
-      const out: string[] = []
-      const p = await sessionProblem(d, 'the long session', n.long!, FINISHED, LONG_NAME)
-      if (p) out.push(p)
-      const label = ((await d.api.run(n['Long label']!)) as Run & { label?: string }).label ?? ''
-      if (label !== LONG_LABEL) out.push(`Long label's label is ${JSON.stringify(label)}`)
-      const title = (await d.api.ok<{ ticket: { title: string } }>('GET', '/api/dispatch/tickets/OPS-1')).ticket.title
-      if (title !== LONG_TITLE) out.push(`OPS-1's title is ${title.length} characters`)
-      return out
-    },
   },
 
   busy: {
@@ -734,16 +661,6 @@ const PARTS: Record<PartName, Part> = {
       await expect.poll(async () => (await d.listSessions()).filter((s) => s.status === 'running').length, { timeout: DAY_STEP_MS, message: `the day holds ${BUSY_LIVE} live sessions` }).toBe(BUSY_LIVE)
       return n
     },
-    async check(d, n) {
-      const out: string[] = []
-      for (const [name, turn] of Object.entries(BUSY)) {
-        const p = await sessionProblem(d, name, n[name]!, turn === 'working' ? WORKING : FINISHED)
-        if (p) out.push(p)
-      }
-      const live = (await d.listSessions()).filter((s) => s.status === 'running').length
-      if (live !== BUSY_LIVE) out.push(`${live} live sessions where ${BUSY_LIVE} were promised`)
-      return out
-    },
   },
 }
 
@@ -753,12 +670,6 @@ function ledgerProblem(r: Run, approval: string): string {
   const got = Object.fromEntries((r.tasks ?? []).map((t) => [t.id, t.state]))
   const held = r.tasks?.find((t) => t.id === 'verify')?.holds?.some((h) => h.id === approval && h.state === 'open')
   return JSON.stringify(got) === JSON.stringify(want) && held ? '' : `${JSON.stringify(got)}${held ? '' : `, verify not held by ${approval} open`}`
-}
-
-/** The part's inbox refs the inbox does not list. */
-async function missingRefs(d: Day, part: PartName): Promise<string[]> {
-  const listed = new Set((await d.inbox()).map((it) => it.ref))
-  return [...d.refs].filter(([ref, p]) => p === part && !listed.has(ref)).map(([ref]) => `the inbox does not list ${ref}`)
 }
 
 /**

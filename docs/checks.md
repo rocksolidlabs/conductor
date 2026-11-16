@@ -108,15 +108,22 @@ their bounds) and `busy` (all of them, and eighteen live sessions). The stub
 holds its states with no timer (`STUB_TURN`, a question, a check that exits
 1). Two rules: the day is read-only, and a measure of how much fits is made
 on `busy`, so that it measures the same page whatever ran before it. The
-`day` fixture holds the first at each test's end (`guard` in `day.ts`): it
-ends and names a session (one started in a day's run too), a run or an
-inbox item no part made; it names what of Dispatch (people, projects,
-labels, milestones, saved views, every project's tickets with their status,
-labels, owner, priority, assignees and revision, each plan's state), the
-crews and the share links differs from a snapshot taken when the day's
-server starts, with each part's build applied (about fifty reads, under a
-second); and it rereads every built part, a session's attention whole. Not
-guarded: a browser context opened by hand (not `dayPage`) and left
+`day` fixture holds the first at each test's end (`guard` in `day.ts`) by
+one rule: what the day's server lists is the same as the day's start and
+its parts' builds left it. One snapshot holds every session (name, status,
+exit code, agent, folder, run and member, its attention whole), every run
+(name, label, state, outcome, each member's status and session, each
+task's state, attempts and the decisions that hold it), the inbox's items,
+Dispatch (people, projects, labels, milestones, saved views, every
+project's tickets with their status, labels, owner, priority, assignees and
+revision, each plan's state), the crews and the share links. The guard
+names each item added or gone and each field changed, from what to what,
+and ends the sessions and runs a test added. Left out, as what moves by
+itself: every time and a run's log; a session's viewers and size, which
+every page attached moves; a member's diff, which the server counts again
+in the background (it moved within a minute on an idle day); and what
+follows a field compared (a run's needsInput and ledger revision, a
+member's attempt, branch and worktree). Not guarded: a browser context opened by hand (not `dayPage`) and left
 attached, which views until the worker ends (viewers come and go with
 every page, so the guard counts none; `dayPage`'s are closed before it);
 what is typed into a day session's terminal and its screen, which the API
@@ -130,8 +137,11 @@ write (a spec that must starts a server of its own, `ownServer`).
 `dayPage` opens the day only in a test that asked for `day`. A shard that asks for the day builds its own (a shard is a run
 with a worker of its own): on CI's runner `busy` takes about 17 s
 (2026-11-16), `waiting` alone about 8 s (2026-11-15, when a spec last
-asked for it alone), and `day.spec.ts`'s proofs of the guard start nine
-days of their own, about 9 s in all (2026-11-16). To look at it by hand,
+asked for it alone). On a 64-core development machine (2026-11-16):
+`day.spec.ts`'s proofs of the guard start ten days of their own, about
+33 s in all (two of them build `runs` or `waiting`, about 10 s each),
+and one guard, one snapshot of the busy day, is 53 reads in 0.1 to
+0.15 s at a load average of 4 to 20. To look at it by hand,
 `CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open` (from
 `web/`, after `make web-build build-go`) prints its address and the path of
 a file only its owner reads that holds its token, and holds it until Ctrl+C.

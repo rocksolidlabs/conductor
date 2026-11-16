@@ -28,6 +28,8 @@ export interface Run {
   id: string
   crewId: string
   name: string
+  /** The label it was launched with, if any. */
+  label?: string
   state: string
   stoppedAt?: string
   members: RunMember[]
@@ -87,6 +89,9 @@ export interface Session {
   id: string
   name: string
   status: string
+  /** The catalog agent it runs, and its exit code once it has exited. */
+  agentId?: string
+  exitCode?: number
   command?: string[]
   cwd?: string
   cols?: number
@@ -487,8 +492,8 @@ export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { 
     { scope: 'worker', timeout: DAY_WORKER_MS },
   ],
   // The day, read-only, and dayPage's server while the test runs (never after it, nor for a test that did not ask for it). After
-  // the test the contexts dayPage opened are closed, then the guard (day.ts, guard) fails the test naming what it left (sessions,
-  // runs and inbox items are ended first), what of Dispatch, the crews and the links it changed, and any part's item it changed.
+  // the test the contexts dayPage opened are closed, then the guard (day.ts, guard) fails the test naming what the server lists
+  // that is not as the day left it (the sessions and runs it added are ended first).
   day: async ({ dayServer }, use) => {
     today = dayServer
     try {

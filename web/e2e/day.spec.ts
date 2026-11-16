@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { budget, DAY_WORKER_MS, dayPage, expect, task, test, type Session } from './fixtures'
-import { BUSY_LIVE, DAY_STEP_MS, letGo, LONG_LABEL, LONG_NAME, LONG_TITLE, startDay, STATES, TICKETS, type Day } from './day'
+import { BUSY_LIVE, DAY_STEP_MS, letGo, LONG_LABEL, LONG_NAME, LONG_TITLE, SNAPSHOT_KINDS, startDay, STATES, TICKETS, type Day, type SnapshotKind } from './day'
 
 // The seeded day proves itself through the API (UX1's PR-1, docs/plans/ux-review.md, the chapter Tests): each part holds what it
 // promises, read by name; the states hold once a page has attached every session; the `day` fixture's guard names what a test left
@@ -65,9 +65,10 @@ test('each part of the day holds what it promises, read through the API by name'
   expect((await day.api.run(n['Long label']!) as { label?: string }).label).toBe(LONG_LABEL)
   expect((await day.api.ok<{ ticket: { title: string } }>('GET', '/api/dispatch/tickets/OPS-1')).ticket.title).toBe(LONG_TITLE)
 
-  // busy: eighteen live sessions; and every built part reads as it promised.
+  // busy: eighteen live sessions; and the server lists what the builds left, each item of a kind the guard knows.
   expect((await day.listSessions()).filter((s) => s.status === 'running')).toHaveLength(BUSY_LIVE)
-  expect(await day.check()).toEqual([])
+  expect([...day.base.keys()].filter((k) => !SNAPSHOT_KINDS.some((kind) => k.startsWith(`${kind} `)))).toEqual([])
+  expect(await day.drift()).toEqual([])
 })
 
 test("the day's states hold once a page of the Yard has attached every live session", async ({ day, browser }) => {
@@ -84,13 +85,13 @@ test("the day's states hold once a page of the Yard has attached every live sess
     }, { timeout: DAY_STEP_MS, message: 'every live session of the day is viewed' })
     .toEqual([])
   expect(await fiveStates(day)).toEqual(FIVE)
-  expect(await day.check()).toEqual([])
+  expect(await day.drift()).toEqual([])
 })
 
 test('the guard: what a test makes on the day is named until it is removed', async ({ day }) => {
   await day.part('states')
   const mine = await day.api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'e2e day guard' })
-  const named = async () => (await day.leftovers()).filter((l) => l.id === mine.id).map((l) => l.kind)
+  const named = async () => (await day.guard()).left.filter((l) => l.id === mine.id).map((l) => l.kind)
   expect(await named()).toEqual(['session'])
   // Stopped and ended, it is still named: an ended session stays listed on the day.
   await day.api.stopSession(mine.id)
@@ -133,8 +134,9 @@ test("letGo ends the held turn of a session the test made, and the session is th
 })
 
 // The guard's own proofs leave on a day what the shared day must never hold, so each runs on a day of its own, started for the test
-// and ended after it: the shared day is never changed by them. Each leaves one thing and reads what the `day` fixture would judge
-// at its end (guard), which must name it.
+// and ended after it: the shared day is never changed by them. Each changes what the server lists and reads what the `day` fixture
+// would judge at its end (guard), which must name each change: what changed, from what to what. A session's agent and folder are
+// compared too, but no API changes them, so no test does.
 const own = test.extend<{ own: Day }>({
   // eslint-disable-next-line no-empty-pattern
   own: async ({}, use) => {
@@ -160,7 +162,7 @@ own('the guard names a Dispatch person and project a test made before Dispatch w
   await own.part('states')
   const words = await judged(own)
   expect(words).toContain("person Ana is not the day's")
-  expect(words).toContain("project CND is not the day's")
+  expect(words).toContain("project CND (Conductor) is not the day's")
 })
 
 own('the guard names a ticket made in another project than CND', async ({ own }) => {
@@ -169,54 +171,127 @@ own('the guard names a ticket made in another project than CND', async ({ own })
   expect(await judged(own)).toContain("ticket OPS-1 is not the day's")
 })
 
-own("the guard names a day's ticket moved to another status", async ({ own }) => {
-  await own.part('dispatch')
-  const rev = (await own.api.ok<{ ticket: { rev: number } }>('GET', '/api/dispatch/tickets/CND-2')).ticket.rev
-  await own.api.ok('POST', '/api/dispatch/tickets/CND-2/edit', { opId: 'e2e-guard-status', expectedRev: rev, set: { status: 'ready' } })
-  expect(await judged(own)).toMatch(/ticket CND-2 is \{[^\n]*"status":"ready"[^\n]* where the day left \{[^\n]*"status":"backlog"/)
+own("the guard names the day's Long label run stopped, its member never started", async ({ own }) => {
+  const run = (await own.part('long'))['Long label']!
+  await own.api.stopRun(run)
+  const state = (await own.runUntil(run, 'Long label stops', (r) => r.state !== 'running')).state
+  expect(await judged(own)).toContain(`run ${run} (Long label): state is "${state}" where the day left "running"`)
 })
 
-own('the guard names a label added to CND', async ({ own }) => {
-  await own.part('dispatch')
-  await own.api.ok('POST', '/api/dispatch/projects/CND/labels', { opId: 'e2e-guard-label', name: 'g14', color: 'red' })
-  expect(await judged(own)).toContain("label CND/g14 is not the day's")
-})
-
-own("the guard names CND-1's approved plan withdrawn", async ({ own }) => {
-  const plan = (await own.part('dispatch'))['plan:CND-1']!
-  await own.api.ok('POST', `/api/dispatch/plans/${plan}/withdraw`, { opId: 'e2e-guard-withdraw' })
+own("the guard names Ledger migration's member session renamed, and re-marked working by the operator", async ({ own }) => {
+  const run = (await own.part('runs'))['Ledger migration']!
+  const id = (await own.api.run(run)).members.find((m) => m.name === 'migrator')!.sessionId!
+  const name = (await own.api.session(id)).name
+  await own.api.ok('PATCH', `/api/sessions/${id}`, { name: 'e2e renamed' })
+  expect(await judged(own)).toContain(`session ${id} (${name}): name is "e2e renamed" where the day left ${JSON.stringify(name)}`)
+  await own.api.ok('PATCH', `/api/sessions/${id}`, { name })
+  expect(await judged(own)).not.toContain(`session ${id}`)
+  // Working still, as the day left it, but by another hand: the attention's source and message are not the day's.
+  await own.api.ok('POST', `/api/sessions/${id}/attention`, { state: 'working', message: 'by hand' })
   const words = await judged(own)
-  expect(words).toMatch(/plan CND-1\/1 is \{[^\n]*"withdrawn":true[^\n]* where the day left \{[^\n]*"withdrawn":false/)
-  expect(words).toContain('dispatch: CND-1 revision 1 is withdrawn where approved, fresh was promised')
+  expect(words).toContain(`session ${id} (${name}): attention.source is "admin" where the day left "api"`)
+  expect(words).not.toContain(`session ${id} (${name}): attention.state`)
 })
 
-own('the guard names a crew made and not launched', async ({ own }) => {
-  const body = { name: 'e2e guard crew', goal: 'g', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: null, members: [{ name: 'a', agentId: 'plain', prompt: '', start: { when: 'manual' } }] }
-  const id = (await own.api.ok<{ crew: { id: string } }>('POST', '/api/crews', body)).crew.id
-  expect(await judged(own)).toContain(`crew e2e guard crew (${id}) is not the day's`)
+own("the guard names a day's session renamed", async ({ own }) => {
+  const id = (await own.part('states')).driver!
+  await own.api.ok('PATCH', `/api/sessions/${id}`, { name: 'e2e driver' })
+  expect(await judged(own)).toContain(`session ${id} (driver): name is "e2e driver" where the day left "driver"`)
 })
 
-own("the guard names a share link minted on a day's session", async ({ own }) => {
-  const driver = (await own.part('states')).driver!
-  await own.api.ok('POST', `/api/sessions/${driver}/links`, { role: 'view' })
-  expect(await judged(own)).toMatch(new RegExp(`share link \\S+ of session driver \\(${driver}\\) is not the day's`))
+own("the guard names a day's asking session stopped, and its question gone from the inbox", async ({ own }) => {
+  const id = (await own.part('states'))['mac-only-flake']!
+  const ref = [...own.refs.keys()].find((r) => r.startsWith(`question:${id}/`))!
+  await own.api.stopSession(id)
+  await expect.poll(() => own.statusOf(id), { message: 'mac-only-flake ends' }).toBe('stopped')
+  const words = await judged(own)
+  expect(words).toContain(`session ${id} (mac-only-flake): status is "stopped" where the day left "running"`)
+  expect(words).toContain(`inbox ${ref} is gone`)
 })
 
 own("the guard names a session started in one of the day's runs, whichever parts are built", async ({ own }) => {
   const run = (await own.part('long'))['Long label']!
   await own.api.ok('POST', `/api/runs/${run}/members/idle/start`)
-  const { left } = await own.guard()
-  expect(left.map((l) => l.words).join('\n')).toMatch(new RegExp(`session \\S+ \\(\\S+, running, of run ${run}\\)`))
+  await own.runUntil(run, "Long label's idle runs", (r) => r.members.find((m) => m.name === 'idle')?.status === 'running')
+  const { left, problems } = await own.guard()
+  expect(left.map((l) => l.kind)).toEqual(['session'])
+  expect(problems.join('\n')).toMatch(new RegExp(`session ${left[0]!.id} \\([^\\n]*\\) is not the day's: [^\\n]*"run":"${run}","member":"idle"`))
+  expect(problems).toContain(`run ${run} (Long label): members.idle.status is "running" where the day left "pending"`)
+})
+
+own("the guard names a task's decision answered", async ({ own }) => {
+  const n = await own.part('waiting')
+  const [run, gate] = [n['Pairing rollout']!, n.gate!]
+  const rev = (await own.api.ok<{ decision: { rev: number } }>('GET', `/api/decisions/${gate}`)).decision.rev
+  await own.api.ok('POST', `/api/decisions/${gate}/respond`, { responseId: 'e2e-guard-gate', choice: 0, expectedRev: rev })
+  await own.runUntil(run, 'the gate is answered', (r) => !r.tasks?.find((t) => t.id === 'ship')?.holds?.some((h) => h.id === gate && h.state === 'open'))
+  const words = await judged(own)
+  expect(words).toMatch(new RegExp(`run ${run} \\(Pairing rollout\\): tasks\\.ship\\.holds\\.${gate} is \\S+ where the day left "open"`))
+  expect(words).toContain(`inbox decision:${gate} is gone`)
 })
 
 own("the guard names a day's finished session marked working and set back by the operator: its attention whole is not the day's", async ({ own }) => {
-  const finished = (await own.part('states'))['flaky-vim-spec']!
-  await own.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'working' })
-  expect(await judged(own)).toContain(`flaky-vim-spec (${finished}) is running with attention working where running with attention done was promised`)
-  await own.api.ok('POST', `/api/sessions/${finished}/attention`, { state: 'done', message: 'set back' })
+  const id = (await own.part('states'))['flaky-vim-spec']!
+  await own.api.ok('POST', `/api/sessions/${id}/attention`, { state: 'working' })
+  expect(await judged(own)).toContain(`session ${id} (flaky-vim-spec): attention.state is "working" where the day left "done"`)
+  await own.api.ok('POST', `/api/sessions/${id}/attention`, { state: 'done', message: 'set back' })
   // The state is the promised one again; the attention is the operator's, not the agent's the part saw.
-  expect((await own.api.session(finished)).attention?.state).toBe('done')
-  expect(await judged(own)).toMatch(new RegExp(`flaky-vim-spec \\(${finished}\\)'s attention is \\{"state":"done","source":"admin"[^\\n]*"message":"set back"[^\\n]* where the day saw \\{"state":"done","source":"api"`))
+  const words = await judged(own)
+  expect(words).not.toContain(`session ${id} (flaky-vim-spec): attention.state`)
+  expect(words).toContain(`session ${id} (flaky-vim-spec): attention.source is "admin" where the day left "api"`)
+  expect(words).toContain(`session ${id} (flaky-vim-spec): attention.message is "set back" where the day left "a turn of its own, finished"`)
+})
+
+/** One change of each kind the snapshot holds, made through the API on a day with `states` and `long` built; what the guard says of it. */
+const CHANGES: Record<SnapshotKind, (d: Day) => Promise<string>> = {
+  person: async (d) => (await d.api.ok('POST', '/api/dispatch/people', { opId: 'e2e-t-person', name: 'Bo' }), "person Bo is not the day's"),
+  project: async (d) => (await d.api.ok('POST', '/api/dispatch/projects', { opId: 'e2e-t-project', key: 'EXP', name: 'Experiments', closeRequires: [] }), "project EXP (Experiments) is not the day's"),
+  label: async (d) => (await d.api.ok('POST', '/api/dispatch/projects/CND/labels', { opId: 'e2e-t-label', name: 'g14', color: 'red' }), "label CND/g14 is not the day's"),
+  milestone: async (d) => (await d.api.ok('POST', '/api/dispatch/projects/CND/milestones', { opId: 'e2e-t-milestone', name: 'v3', target: '2026-12-09' }), "milestone CND/v3 is not the day's"),
+  view: async (d) => `view e2e view (${(await d.api.ok<{ view: { id: string } }>('POST', '/api/dispatch/views', { opId: 'e2e-t-view', name: 'e2e view', kind: 'list', query: { status: ['ready'] } })).view.id}) is not the day's`,
+  ticket: async (d) => {
+    const rev = (await d.api.ok<{ ticket: { rev: number } }>('GET', '/api/dispatch/tickets/CND-2')).ticket.rev
+    await d.api.ok('POST', '/api/dispatch/tickets/CND-2/edit', { opId: 'e2e-t-ticket', expectedRev: rev, set: { status: 'ready' } })
+    return 'ticket CND-2: status is "ready" where the day left "backlog"'
+  },
+  plan: async (d) => {
+    await d.api.ok('POST', `/api/dispatch/plans/${(await d.part('dispatch'))['plan:CND-1']}/withdraw`, { opId: 'e2e-t-plan' })
+    return 'plan CND-1/1: withdrawn is true where the day left false'
+  },
+  crew: async (d) => {
+    const body = { name: 'e2e guard crew', goal: 'g', cwd: '', where: 'server', isolation: 'none', openAfterLaunch: false, yolo: null, members: [{ name: 'a', agentId: 'plain', prompt: '', start: { when: 'manual' } }] }
+    return `crew e2e guard crew (${(await d.api.ok<{ crew: { id: string } }>('POST', '/api/crews', body)).crew.id}) is not the day's`
+  },
+  'share link': async (d) => {
+    const driver = (await d.part('states')).driver!
+    return `share link ${(await d.api.ok<{ link: { id: string } }>('POST', `/api/sessions/${driver}/links`, { role: 'view' })).link.id} of session ${driver} is not the day's`
+  },
+  session: async (d) => {
+    const id = (await d.part('states'))['flaky-vim-spec']!
+    await d.api.ok('PATCH', `/api/sessions/${id}`, { name: 'e2e renamed' })
+    return `session ${id} (flaky-vim-spec): name is "e2e renamed" where the day left "flaky-vim-spec"`
+  },
+  run: async (d) => {
+    const run = (await d.part('long'))['Long label']!
+    await d.api.stopRun(run)
+    return `run ${run} (Long label): state is "${(await d.runUntil(run, 'Long label stops', (r) => r.state !== 'running')).state}" where the day left "running"`
+  },
+  inbox: async (d) => {
+    const id = (await d.part('states'))['mac-only-flake']!
+    await d.api.stopSession(id)
+    await expect.poll(() => d.statusOf(id), { message: 'mac-only-flake ends' }).toBe('stopped')
+    return `inbox ${[...d.refs.keys()].find((r) => r.startsWith(`question:${id}/`))} is gone`
+  },
+}
+
+own('the guard is one rule: a change of each kind the server lists is named, and every kind has its change here', async ({ own }) => {
+  expect(Object.keys(CHANGES).sort()).toEqual([...SNAPSHOT_KINDS].sort())
+  await own.part('long')
+  await own.part('states')
+  const want: Array<[string, string]> = []
+  for (const [kind, change] of Object.entries(CHANGES)) want.push([kind, await change(own)])
+  const words = await judged(own)
+  for (const [kind, line] of want) expect(words, kind).toContain(line)
 })
 
 // To look at the day by hand: CONDUCTOR_E2E_DAY_OPEN=1 npx playwright test day.spec.ts -g open. It builds the whole day, prints its
