@@ -5,7 +5,9 @@ import { reportStatus } from '~/utils/integrations'
 import { agentIcon } from '~/utils/agentIcons'
 import { checkBadge, identity, isAvailable, notInstalledBadge, pageRequests, settleChecks } from '~/utils/agents'
 
-const identityColor: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = { ok: 'success', impostor: 'error', unidentified: 'warning', pending: 'neutral', failed: 'warning' }
+// Amber only where a person should look (the UX review's P16): a check that failed. An identified agent and one the check could not
+// name ask nothing, so they are neutral; green is for a live agent.
+const identityColor: Record<string, 'error' | 'warning' | 'neutral'> = { ok: 'neutral', impostor: 'error', unidentified: 'neutral', pending: 'neutral', failed: 'warning' }
 const identityIcon: Record<string, string> = { ok: 'i-lucide-badge-check', impostor: 'i-lucide-shield-alert', unidentified: 'i-lucide-help-circle', pending: 'i-lucide-loader-circle', failed: 'i-lucide-triangle-alert' }
 import { removalOf, removalText } from '~/utils/catalog'
 import { pageState } from '~/utils/pageState'
@@ -264,13 +266,14 @@ usePalette().registerPage(() => ({
         Agents come from the server catalog: the built-in entries, the <code>catalog</code> section of the config file and whatever you add here, which the server keeps in its data directory. Commands are argv arrays; nothing goes through a shell.
       </p>
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <UCard v-for="a in agents" :key="a.id" :class="!isAvailable(a) && 'opacity-60'" :data-agent="a.id" :data-available="isAvailable(a)">
+        <!-- An agent that is not installed is a standing fact: muted words and a neutral icon, never faded (P16). -->
+        <UCard v-for="a in agents" :key="a.id" :data-agent="a.id" :data-available="isAvailable(a)">
           <div class="flex items-start gap-3">
-            <UIcon :name="agentIcon(a.icon)" class="size-6 text-primary flex-none mt-0.5" />
+            <UIcon :name="agentIcon(a.icon)" class="size-6 flex-none mt-0.5" :class="isAvailable(a) ? 'text-primary' : 'text-muted'" data-agent-icon />
             <div class="min-w-0 flex-1">
-              <div class="font-medium">{{ a.name }} <span class="text-xs text-muted font-mono">{{ a.id }}</span></div>
+              <div class="font-medium" :class="!isAvailable(a) && 'text-muted'" data-agent-name>{{ a.name }} <span class="text-xs text-muted font-mono" data-mono="id">{{ a.id }}</span></div>
               <p v-if="a.description" class="text-sm text-muted">{{ a.description }}</p>
-              <code class="block text-xs mt-2 truncate" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
+              <code class="block text-xs mt-2 truncate" :class="!isAvailable(a) && 'text-muted'" :title="joinArgv(a.command)">{{ joinArgv(a.command) }}</code>
               <div class="mt-2 flex flex-wrap gap-2">
                 <UBadge
                   v-if="check(a)"
@@ -288,7 +291,7 @@ usePalette().registerPage(() => ({
                   :label="notInstalledBadge(a, serverHost.host.value).label"
                   :title="notInstalledBadge(a, serverHost.host.value).title"
                   icon="i-lucide-circle-off"
-                  color="warning"
+                  color="neutral"
                   variant="subtle"
                   size="sm"
                   data-not-installed

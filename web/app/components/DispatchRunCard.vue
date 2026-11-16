@@ -58,10 +58,10 @@ const selected = ref('')
       <UIcon name="i-lucide-workflow" class="size-4 flex-none text-muted" />
       <NuxtLink v-if="run || summary" :to="`/runs/${encodeURIComponent(runId)}?view=tasks`" class="min-w-0 truncate text-sm font-medium text-highlighted hover:underline" data-ticket-run-open>{{ title }}</NuxtLink>
       <span v-else-if="run === null" class="min-w-0 truncate text-sm text-muted" data-ticket-run-missing>
-        <span class="font-mono">{{ runId }}</span>: the server holds no run and no record of it.
+        <span class="font-mono" data-mono="id">{{ runId }}</span>: the server holds no run and no record of it.
       </span>
-      <span v-else class="min-w-0 truncate font-mono text-sm text-muted">Reading {{ runId }}…</span>
-      <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId">{{ shortRunId(runId) }}</span>
+      <span v-else class="min-w-0 truncate text-sm text-muted">Reading <span class="font-mono" data-mono="id">{{ runId }}</span>…</span>
+      <span class="flex-none font-mono text-[11px] text-dimmed" :title="runId" data-mono="id">{{ shortRunId(runId) }}</span>
       <UBadge v-if="ticket" :label="revisionTag(ticket.planN)" color="neutral" variant="outline" size="sm" class="flex-none font-mono" :title="`Launched from ${ticket.key} at its revision ${ticket.rev}, plan revision ${ticket.planN}`" data-run-card-plan />
       <UBadge v-if="run?.record || (!run && summary?.record)" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-ticket-run-record />
       <UBadge v-else-if="state" :label="state.text" :color="state.needs ? 'warning' : state.outcome === 'Failed' ? 'error' : 'neutral'" variant="subtle" size="sm" class="min-w-0 max-w-full truncate" :title="state.text" data-ticket-run-state :data-run-status-from="liveRun ? 'run' : 'summary'" />

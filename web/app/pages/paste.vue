@@ -107,7 +107,7 @@ const answerLooksRight = computed(() => isPasteBlob(answer.value))
             <template v-else>
               <UTextarea :model-value="offer" :rows="4" readonly class="w-full font-mono text-[11px]" data-paste-offer />
               <div class="flex items-center gap-2">
-                <UButton label="Copy invite" icon="i-lucide-clipboard" size="sm" @click="copy(offer, 'Invite copied', 'Send it to the person sharing.')" />
+                <UButton label="Copy invite" icon="i-lucide-clipboard" size="sm" color="neutral" variant="outline" @click="copy(offer, 'Invite copied', 'Send it to the person sharing.')" />
                 <span class="text-xs text-muted">Send this to the person sharing. Their Conductor answers with a blob; paste it below.</span>
               </div>
             </template>
@@ -116,7 +116,7 @@ const answerLooksRight = computed(() => isPasteBlob(answer.value))
           <section class="flex flex-col gap-2" :class="!offer && 'opacity-50'" data-paste-step="2">
             <h2 class="text-sm font-semibold">2. Their answer</h2>
             <UTextarea v-model="answer" :rows="4" :disabled="!offer" placeholder="cpi1.…" class="w-full font-mono text-[11px]" data-paste-answer />
-            <UButton label="Connect" icon="i-lucide-plug" :disabled="!offer || !answerLooksRight" class="self-start" data-paste-connect @click="connect" />
+            <UButton label="Connect" icon="i-lucide-plug" :color="offer ? 'primary' : 'neutral'" :variant="offer ? 'solid' : 'outline'" :disabled="!offer || !answerLooksRight" class="self-start" data-paste-connect @click="connect" />
           </section>
         </UCard>
       </div>
