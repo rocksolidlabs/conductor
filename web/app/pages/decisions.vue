@@ -74,6 +74,8 @@ const empty = computed(() => inboxEmpty(state.value))
  * applied) reads the item and the list again, so what waits and where it stands follow.
  */
 const record = useDecisionRecord(() => decisionIdOf(openRef.value))
+/** Whether the record's DecisionRespond draws its buttons: its card then leaves out its option rows (UX1 PR-20). */
+const controls = ref(false)
 watch(
   () => [record.decision.value?.id, record.decision.value?.rev, record.decision.value?.state],
   (now, was) => {
@@ -424,8 +426,8 @@ const recentWord = (e: RecentEntry) => recentBadge(e, state.value.tracks[trackKe
               </UAlert>
               <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ decisionIdOf(item.ref) }}…</p>
               <template v-if="record.decision.value && record.decision.value.id === decisionIdOf(item.ref)">
-                <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" />
-                <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" />
+                <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" />
+                <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" @controls="controls = $event" />
               </template>
             </template>
           </InboxItem>
