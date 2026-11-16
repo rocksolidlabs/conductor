@@ -247,6 +247,27 @@ export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
   return panel
 }
 
+/**
+ * Opens a page from the full sidebar's More tile (the pages that have no tile of their own: SidebarTiles.vue) by clicking it and the
+ * page's item, and waits for the menu to be gone, so that nothing typed next lands in it.
+ */
+export async function viaMore(page: Page, name: string): Promise<void> {
+  await page.locator('#dashboard-sidebar-main [data-sidebar-tile="more"]').click()
+  await page.getByRole('menuitem', { name: new RegExp(`^${name}`) }).click()
+  await expect(page.getByRole('menu')).toHaveCount(0)
+}
+
+/** The count of what needs you that leads the tab's title while something does ("(3) ", "(9+) " when a store was only partly read). */
+export const TITLE_COUNT = /^\(\d+\+?\) /
+
+/**
+ * The tab's title without its leading count of what needs you (TITLE_COUNT): the page's own part, whatever the count. A spec that
+ * anchors a title at its start reads it through this, polled (`expect.poll(() => pageTitle(page)).toMatch(...)`).
+ */
+export async function pageTitle(page: Page): Promise<string> {
+  return (await page.title()).replace(TITLE_COUNT, '')
+}
+
 /** The hrefs of the session and run links of the full sidebar's list, in the order they show. */
 export function sidebarLinks(page: Page): Promise<string[]> {
   return page

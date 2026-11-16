@@ -22,7 +22,9 @@ const ABOUT = {
   events: 'What your agents report, as it happens.',
   brakeman: 'A sidekick that reads all of it and briefs you.',
   agents: 'The agents this machine can launch, and how each reports to Conductor.',
+  decisions: 'Everything that waits for your answer, in one list.',
 }
+const DECISIONS_WHY = 'Nothing needs you now.'
 const YARD_WHY = 'Nothing is running. A terminal shows here when you launch an agent, or bring one in from another machine.'
 const ROUNDHOUSE_WHY = 'Nothing is running. The first agent you launch shows here.'
 const HOME_WHY = 'Nothing is running. Launch an agent, or resume one from Exited in the list.'
@@ -101,12 +103,17 @@ test('a server with nothing on it: the Yard and the Roundhouse draw the one empt
       await page.context().close()
     }
   }
-  // The phone's Sessions page: the sidebar's line alone, Launch agent standing above it.
+  // The phone's Sessions page: the welcome in place of the list's empty line (the UX review's P17), Launch agent standing above it.
   const page = await dayPage(browser, { ...PHONE, path: '/sessions', server: srv.started })
-  const line = page.locator('[data-sidebar-empty]')
+  await expect(page.locator('[data-welcome]')).toBeVisible()
+  await expect(page.locator('[data-sidebar-empty]')).toHaveCount(0)
+  await expect(page.locator('[data-page-empty]')).toHaveCount(0)
+  await page.context().close()
+  // At the desktop the line stays the sidebar's: the welcome is the home's, and the Yard's sidebar says the list is empty.
+  const desk = await dayPage(browser, { ...DESK, path: '/yard', server: srv.started })
+  const line = desk.locator('#dashboard-sidebar-main [data-sidebar-empty]')
   await expect(line).toHaveText('No sessions yet.')
   await uncut(line)
-  await expect(page.locator('[data-page-empty]')).toHaveCount(0)
 })
 
 test('a server whose one session has exited: the home says to resume it from Exited, the Yard is empty, the sidebar lists it', async ({ browser }) => {
@@ -324,6 +331,54 @@ test('a server with nothing on it: Crews, Dispatch, Brakeman and the Events feed
   await expect(shape(page)).toBeVisible()
   await expect(page.locator('[data-crews-caption]').first()).toBeVisible()
   await expect(page.locator('[data-page-about-button]')).toHaveCount(0)
+})
+
+test('a server with nothing on it: Needs you draws the one empty shape with what shows up there, at the desktop and the phone, in both themes', async ({ browser }) => {
+  const srv = await empty()
+  for (const win of [DESK, PHONE]) {
+    budget(2 * 12 * STEP_MS)
+    const page = await dayPage(browser, { ...win, path: '/decisions', server: srv.started })
+    const at = `/decisions at ${win.width}`
+    const o = { panel: '#dashboard-panel-decisions', about: ABOUT.decisions, why: DECISIONS_WHY, phone: win === PHONE }
+    await readEmpty(page, `${at}, dark`, o)
+    // What a page of nothing shows besides: the four kinds, and the way to every decision.
+    await expect(shape(page).locator('[data-decisions-kind]')).toHaveCount(4)
+    await expect(shape(page).locator('[data-decisions-history]')).toBeVisible()
+    await useTheme(page, 'light')
+    await readEmpty(page, `${at}, light`, o)
+    await page.context().close()
+  }
+})
+
+test("Needs you before its first answer reads, and a first read that fails says the server's words with Read again, then reads into its empty shape", async ({ browser }) => {
+  const srv = await empty()
+  budget(8 * STEP_MS)
+  const page = await dayPage(browser, { ...DESK, path: '/settings', server: srv.started })
+  // The list's read held: the reading shape; then answered 500: the failed shape; then let through.
+  const held: Route[] = []
+  let failing = true
+  await page.route(
+    (u) => u.pathname === '/api/inbox',
+    (r) => {
+      if (r.request().method() !== 'GET') return r.fallback()
+      if (!held.length) return void held.push(r)
+      return failing ? r.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"the inbox is not readable"}}' }) : r.fallback()
+    },
+  )
+  await page.goto('/decisions')
+  const reading = shape(page, 'reading')
+  await expect(reading).toBeVisible()
+  await expect(reading.locator('[data-page-about]')).toHaveText(ABOUT.decisions)
+  await expect.poll(() => held.length).toBeGreaterThan(0)
+  await held[0]!.fulfill({ status: 500, contentType: 'application/json', body: '{"error":{"code":"internal","message":"the inbox is not readable"}}' })
+  const failed = shape(page, 'failed')
+  await expect(failed).toBeVisible()
+  await expect(failed.locator('[data-page-why]')).toContainText('the inbox is not readable')
+  await expect(page.locator('[data-decisions-empty]')).toHaveCount(0)
+  failing = false
+  // The page asks again by itself too: Read again is pressed until the empty shape shows.
+  await readAgain(failed.locator('[data-page-again]'), shape(page))
+  await expect(page.locator('[data-decisions-empty]')).toBeVisible()
 })
 
 test('an empty catalog: Agents reads, then says the catalog has no agent, with Add agent', async ({ browser }) => {

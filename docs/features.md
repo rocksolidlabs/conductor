@@ -226,6 +226,26 @@ that order.
   text. One cut rule, `internal/session/testdata/cut-at-word.json`, holds
   the session's copy and Dispatch's (and the app's, PR-36).
 
+## The pages as six tiles (UX1 PR-15, P6; 2026-11-16)
+
+- **The full sidebar's foot.** Six tiles in two rows of three, an icon
+  over each name: Needs you, Yard, Crews, Dispatch, Brakeman and More,
+  whose menu holds Agents, Events, History and, in the desktop app,
+  Settings, each with its key. The foot is about 110 px tall where the
+  column of pages took about 305, and the list has the rest. A tile's
+  tooltip (hover and keyboard focus) is the page's sentence and its key;
+  the current page's tile is lit (Crews on a run's page), and More is lit
+  while one of its pages is open. The foot is a landmark named "Pages".
+- **Brakeman's slot.** Held as an empty cell while the server has not said
+  whether it has Brakeman, so More never moves when the tile fills; a
+  server that says it has none puts More in the slot. A switchyard, which
+  serves no inbox, has no Needs you tile, and the tiles close up.
+- **The phone and the rail.** The phone's More gains Brakeman after
+  Dispatch while the server has it, so every page is reached from the
+  phone. The rail keeps every page as an icon.
+- **The table.** `navTiles` in `web/app/utils/pages.ts` gives the tiles
+  and More's list from the pages' one table (a page's `tile` place).
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.
@@ -338,7 +358,25 @@ open deferred item from rounds 1 and 2, then the features below.
   Agents, and the Crews page's two section captions, fold to About this
   page once the page has content; Brakeman's Settings link is a header
   button. The feed says it is this tab's alone and links Agents'
-  Reporting (`empty-pages.spec.ts`).
+  Reporting (`empty-pages.spec.ts`). Needs you with nothing waiting is
+  the same shape, "Nothing needs you now.", with what shows up there and
+  what was decided in the last day under it; it reads, and a first read
+  that fails says so with Read again, the same way.
+- **A welcome that teaches (#945; the UX review's P17, part of #374).** A
+  server with no session at all shows the welcome on the home and, on a
+  phone, on the Sessions page in place of the list's empty line: what
+  Conductor is in one sentence, then three steps. Launch an agent offers
+  the first four agents the server can launch, in the catalog's order, each
+  with the version its check found (`welcomeAgents`), and "and N more" for
+  the rest; an agent not installed is never offered. Bring one in from
+  another machine says to run `conductor host` there and links the README's
+  Quick start. Try a crew loads the example crews and says what that does
+  (`EXAMPLES_LINE`), as Crews' empty page and the palette's two rows that
+  load them say too. "Where things are" lists the sidebar's tiles, then the
+  pages under More, each with the sentence its tooltip says. Settings left
+  the card
+  (`agents.test.ts`; `welcome.spec.ts`, `home-wide.spec.ts`,
+  `empty-pages.spec.ts`).
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`

@@ -47,7 +47,10 @@ onMounted(() => {
     <template #body>
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
       <div class="flex min-h-0 flex-1 flex-col px-2 pt-2">
-        <SessionSidebar page />
+        <!-- A server with no session at all, once read: the welcome in place of the list's empty line (the UX review's P17). -->
+        <SessionSidebar page>
+          <template v-if="!wide" #empty><WelcomeCard in-list /></template>
+        </SessionSidebar>
       </div>
     </template>
   </UDashboardPanel>

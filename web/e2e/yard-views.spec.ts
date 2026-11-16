@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { dayPage, expect, test } from './fixtures'
+import { dayPage, expect, pageTitle, test } from './fixtures'
 import { inside, noOverlap, noSideways, tapTarget } from './layout'
 
 // The Roundhouse is the Yard's second view (UX1's PR-17, docs/plans/ux-review.md, P12): a switch in each header, Grid and Roundhouse,
@@ -35,7 +35,8 @@ async function onView(page: Page, view: 'grid' | 'roundhouse') {
   await expect(page.locator(`[data-yard-view="${view}"]`)).toHaveAttribute('aria-current', 'page')
   await expect(page.locator(`[data-yard-view="${view === 'grid' ? 'roundhouse' : 'grid'}"]`)).not.toHaveAttribute('aria-current', /./)
   await expect(page.locator(view === 'grid' ? '[data-yard-header]' : '[data-roundhouse-header]').locator('[data-slot="title"]')).toHaveText('Yard')
-  await expect(page).toHaveTitle(view === 'grid' ? /^Yard\b/ : /^Yard · Roundhouse\b/)
+  // The title's page part: a count of what needs you may lead it ("(1) Yard · Conductor").
+  await expect.poll(() => pageTitle(page)).toMatch(view === 'grid' ? /^Yard\b/ : /^Yard · Roundhouse\b/)
   await expect(foot(page).getByRole('link', { name: /^Yard/ })).toHaveAttribute('aria-current', 'page')
   await expect(foot(page).getByRole('link', { name: /Roundhouse/ })).toHaveCount(0)
 }
