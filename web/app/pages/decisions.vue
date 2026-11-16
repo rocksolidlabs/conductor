@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { refRoute } from '~/utils/brakeman'
+import { pageState } from '~/utils/pageState'
 import { relativeTime } from '~/utils/sessions'
 import {
-  HISTORY_DECISIONS,
   INBOX_KINDS,
   INBOX_ROW_CLASS,
   atZero,
@@ -72,6 +72,8 @@ const openAction = computed(() => ({
   attempt: typeof route.query.attempt === 'string' ? route.query.attempt : '',
 }))
 const empty = computed(() => inboxEmpty(state.value))
+/** Before the first answer the page says it reads; a first read that failed says so with Read again (PageEmpty, UX1 PR-23). */
+const shape = computed(() => (state.value.unavailable ? 'content' : pageState({ read: state.value.loaded, error: state.value.error, count: 0 })))
 /** Nothing needs the person and nothing is open: the page is one column that says so (UX1 PR-6). */
 const zero = computed(() => atZero(state.value, openRef.value))
 /** "Pick an item" only while there is an item to pick. */
@@ -284,33 +286,38 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
         <section class="flex min-w-0 flex-col gap-4" :class="openRef && 'max-lg:hidden'" data-decisions-list>
           <UAlert v-if="state.unavailable" color="neutral" variant="subtle" icon="i-lucide-info" :title="state.unavailable" data-decisions-unavailable />
           <UAlert
-            v-else-if="state.error"
+            v-else-if="state.error && state.loaded"
             color="warning"
             variant="subtle"
             icon="i-lucide-triangle-alert"
             :title="state.error"
-            :description="state.loaded ? 'What needs you is not known now: the list below is as it was last read.' : undefined"
+            description="What needs you is not known now: the list below is as it was last read."
             data-decisions-error
           />
-          <div v-if="empty" class="flex flex-col gap-6 py-6" data-decisions-empty>
-            <div class="flex flex-col items-center gap-1 text-center">
-              <UIcon name="i-lucide-circle-check" class="size-8 text-muted" />
-              <p class="text-sm text-highlighted">Nothing needs you now.</p>
-              <p v-if="lastClosed" class="text-xs text-muted" data-decisions-last>{{ lastClosed }}</p>
+          <!-- Before the first answer, and when it failed: the one shape of a page that has nothing to show yet (PageEmpty). -->
+          <PageEmpty v-if="shape === 'reading'" page="decisions" state="reading" thing="list of what needs you" />
+          <PageEmpty v-else-if="shape === 'failed'" page="decisions" state="failed" :error="state.error" data-decisions-error @again="inbox.changed()" />
+          <!-- Nothing needs you: the empty shape, with what shows up here and what was decided in the last day. -->
+          <PageEmpty v-else-if="zero" page="decisions" state="empty" words="Nothing needs you now." data-decisions-empty>
+            <div class="flex w-full flex-col gap-6">
+              <p v-if="lastClosed" class="text-center text-xs text-muted" data-decisions-last>{{ lastClosed }}</p>
+              <section class="flex flex-col gap-2 text-left" data-decisions-kinds>
+                <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">What shows up here</h2>
+                <ul class="flex flex-col gap-2">
+                  <li v-for="k in INBOX_KINDS" :key="k" class="flex items-center gap-3 rounded-md border border-default px-3 py-2" :data-decisions-kind="k">
+                    <UIcon :name="kindLook(k).icon" class="size-5 shrink-0 text-muted" />
+                    <span class="min-w-0">
+                      <span class="block text-sm font-medium text-highlighted">{{ kindLook(k).word }}</span>
+                      <span class="block text-xs text-muted">{{ kindLook(k).line }}</span>
+                    </span>
+                  </li>
+                </ul>
+              </section>
+              <DecisionsRecent :closed="state.closed" :recent="recent" :word="recentWord" zero @open="open" @open-recent="openRecent" />
             </div>
-            <section v-if="zero" class="flex flex-col gap-2" data-decisions-kinds>
-              <h2 class="text-xs font-semibold uppercase tracking-wide text-muted">What shows up here</h2>
-              <ul class="flex flex-col gap-2">
-                <li v-for="k in INBOX_KINDS" :key="k" class="flex items-center gap-3 rounded-md border border-default px-3 py-2" :data-decisions-kind="k">
-                  <UIcon :name="kindLook(k).icon" class="size-5 shrink-0 text-muted" />
-                  <span class="min-w-0">
-                    <span class="block text-sm font-medium text-highlighted">{{ kindLook(k).word }}</span>
-                    <span class="block text-xs text-muted">{{ kindLook(k).line }}</span>
-                  </span>
-                </li>
-              </ul>
-            </section>
-          </div>
+          </PageEmpty>
+          <!-- Only records answered and not yet applied: nothing needs a person, and they are listed below. -->
+          <p v-else-if="empty" class="py-2 text-sm text-muted" data-decisions-empty>Nothing needs you now.</p>
           <ul v-else-if="sections.open.length" class="flex flex-col gap-2">
             <li v-for="s in sections.open" :key="s.ref">
               <button
@@ -366,40 +373,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
             <UButton v-if="state.next" label="More" color="neutral" variant="outline" size="sm" class="min-h-11" data-decisions-more @click="inbox.more()" />
           </div>
 
-          <section v-if="recent.length || state.closed.length || zero" class="flex flex-col gap-2" data-decisions-recent>
-            <h2 v-if="recent.length || state.closed.length" class="text-xs font-semibold uppercase tracking-wide text-muted">Decided in the last day</h2>
-            <!-- DR1's records closed in the last day: the server's, the same for every viewer. -->
-            <template v-if="state.closed.length">
-              <p class="text-xs text-muted">A run's decisions</p>
-              <ul class="flex flex-col gap-1">
-                <li v-for="s in state.closed" :key="s.ref">
-                  <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-decision="s.ref" @click="open(s.ref)">
-                    <span class="min-w-0">
-                      <span class="block truncate text-sm">{{ s.title || s.ref }}</span>
-                      <span class="block truncate text-xs text-muted">{{ s.closed ? `${relativeTime(s.closed)} ago` : '' }}</span>
-                    </span>
-                    <UBadge :label="s.state || 'closed'" :color="s.state === 'applied' ? 'success' : 'neutral'" variant="subtle" size="sm" data-recent-word />
-                  </button>
-                </li>
-              </ul>
-            </template>
-            <p v-if="recent.length" class="text-xs text-muted">From this browser</p>
-            <ul v-if="recent.length" class="flex flex-col gap-1">
-              <li v-for="e in recent" :key="trackKey(e)">
-                <button type="button" class="flex min-h-11 w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left hover:bg-elevated/50" :data-recent-row="e.ref" :data-recent-receipt="e.receipt" @click="openRecent(e)">
-                  <span class="min-w-0">
-                    <span class="block truncate text-sm">{{ e.title || e.ref }}</span>
-                    <span class="block truncate text-xs text-muted">{{ e.label }} · {{ relativeTime(new Date(e.at).toISOString()) }} ago</span>
-                  </span>
-                  <UBadge :label="recentWord(e).text" :color="recentWord(e).color" variant="subtle" size="sm" data-recent-word />
-                </button>
-              </li>
-            </ul>
-            <ULink :to="HISTORY_DECISIONS" class="inline-flex min-h-11 items-center gap-1 self-start text-sm text-muted hover:text-highlighted" data-decisions-history>
-              <UIcon name="i-lucide-history" class="size-4" />
-              Every decision, in History
-            </ULink>
-          </section>
+          <DecisionsRecent v-if="!zero" :closed="state.closed" :recent="recent" :word="recentWord" @open="open" @open-recent="openRecent" />
         </section>
 
         <!-- The open item, whole. Below lg it takes the page, with the way back to the list. -->

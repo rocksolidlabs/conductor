@@ -358,7 +358,10 @@ open deferred item from rounds 1 and 2, then the features below.
   Agents, and the Crews page's two section captions, fold to About this
   page once the page has content; Brakeman's Settings link is a header
   button. The feed says it is this tab's alone and links Agents'
-  Reporting (`empty-pages.spec.ts`).
+  Reporting (`empty-pages.spec.ts`). Needs you with nothing waiting is
+  the same shape, "Nothing needs you now.", with what shows up there and
+  what was decided in the last day under it; it reads, and a first read
+  that fails says so with Read again, the same way.
 - **A session page where the terminal has the room (the UX review, P11, D7,
   D9; #934).** The inspector is closed until a view is opened, one choice for
   every session under `conductor.inspectorOpen` (the old `conductor.inspector`
