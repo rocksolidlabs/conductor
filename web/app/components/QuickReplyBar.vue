@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ANSWER_IN_TERMINAL, MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, firstChoice, noReply, offeredChoices, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_TERMINAL, MODE_CHOICE, answersInTerminal, choiceKey, decisionAnsweredBy, decisionOf, noReply, offeredChoices, recommendedChoice, startupInTerminal, takesReply, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -30,8 +30,8 @@ const startup = computed(() => startupInTerminal(props.attention))
 // A question that mirrors a durable decision (decisionOf) is answered as the decision: no reply field, choice or number key.
 const decision = computed(() => decisionOf(props.attention))
 const options = computed(() => offeredChoices(props.attention))
-// The choice offered first, highlighted: never one that changes the permission mode.
-const first = computed(() => firstChoice(options.value))
+// The choice drawn filled: only the one the agent itself recommends (its label ends "(Recommended)"), never a mode choice.
+const recommended = computed(() => recommendedChoice(options.value))
 const canReply = computed(() => !props.busy && takesReply(props.attention, props.role))
 const placeholder = computed(() => (props.role !== 'control' ? 'View only' : (noReply(props.attention) ?? `Reply to ${props.agentName}…`)))
 /**
@@ -107,15 +107,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         :label="o.label"
         size="sm"
         class="max-w-full"
-        :variant="i === first ? 'solid' : 'outline'"
-        :color="i === first ? 'primary' : o.mode ? 'warning' : 'neutral'"
+        :variant="i === recommended ? 'solid' : 'outline'"
+        :color="i === recommended ? 'primary' : o.mode ? 'warning' : 'neutral'"
+        :data-recommended="i === recommended || undefined"
         :title="o.mode ? MODE_CHOICE : undefined"
         :disabled="!canReply"
         :loading="busy"
         :data-choice-mode="o.mode || undefined"
         @click="pick(i)"
       >
-        <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" :class="i === first ? 'opacity-70' : ''" /></template>
+        <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" :class="i === recommended ? 'opacity-70' : ''" /></template>
       </UButton>
     </div>
     <!-- A startup question with no choices is answered in the terminal (#902): no field takes it here; on the session's page a
