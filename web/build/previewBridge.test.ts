@@ -64,6 +64,8 @@ describe('the built preview bridge', () => {
     expect(checked([code])).toEqual([true])
   }, 60_000)
 
+  // Each of the three below runs the check's own node process or the dev server's route: seconds on a loaded machine. Their bound
+  // is for a hang, as the first test's is.
   it("fails make web-build's check for a file that is missing, empty or not one classic script in the server's wrapper", () => {
     const refused = [null, '', '  \n\n', 'export { a };', 'import x from "y";', 'export default 1', 'import"./y.js";', "import'./y.js';",
       '  export const a = 1;', 'var u = import.meta.url;', 'await Promise.resolve(1);', 'var a=1;export{a}', 'var a = (;',
@@ -72,7 +74,7 @@ describe('the built preview bridge', () => {
     // A classic script, and one that compiles only inside the wrapper's function.
     const accepted = ['(function(){ var a = 1; })();', 'return;']
     expect(checked([...refused, ...accepted])).toEqual([...refused.map(() => false), ...accepted.map(() => true)])
-  })
+  }, 60_000)
 
   it("compiles in the wrapper the server's fixture holds: with its parameter named otherwise, the check follows it", () => {
     const dir = mkdtempSync(join(tmpdir(), 'preview-bridge-served-'))
@@ -84,7 +86,7 @@ describe('the built preview bridge', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 
   it("answers in the dev server as the route answers a page on the loopback: its headers, its wrapper and the loopback's names", () => {
     // What internal/api's TestTheBridgeIsServedWhole wrote of the route's answer to a listener on 127.0.0.1:8080.
@@ -98,5 +100,5 @@ describe('the built preview bridge', () => {
     for (const host of [`localhost:${port}`, `[::1]:${port}`]) expect(devPreviewBridge(script, host).body).toBe(body)
     expect(wrapPreviewBridge(script, [])).toBe(served.wrapper[0] + script + served.wrapper[1] + '[]' + served.wrapper[2])
     for (const host of ['example.com:8080', '192.168.1.5:8080', '127.0.0.1:99999', '']) expect(devPreviewBridge(script, host).body).toBe(wrapPreviewBridge(script, []))
-  })
+  }, 60_000)
 })

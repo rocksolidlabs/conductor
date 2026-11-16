@@ -955,7 +955,7 @@ onBeforeUnmount(() => {
       <UBadge :label="notice" color="warning" variant="solid" size="sm" class="cursor-pointer" @click="notice = ''" />
     </div>
 
-    <div v-if="compact && overlay" class="absolute inset-0 z-20 flex items-center justify-center bg-black/50 text-[10px] text-white/80">{{ overlay.title }}</div>
+    <div v-if="compact && overlay" class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 text-[10px] text-white">{{ overlay.title }}</div>
     <div v-else-if="overlay || connecting" class="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-[1px]">
       <div class="flex flex-col items-center gap-3 rounded-lg bg-default/95 px-6 py-5 text-center shadow-lg border border-default max-w-sm">
         <template v-if="connecting && !overlay">

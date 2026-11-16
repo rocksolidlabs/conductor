@@ -4,8 +4,8 @@ import { barClass, minutesLabel, runBars, runWhen } from '~/utils/crewWords'
 
 /**
  * A saved crew's last runs in its table row: one bar per run, its height how
- * long the run went, its colour how it ended (green finished, grey stopped,
- * red a member failed, the brand colour still going), an amber edge when
+ * long the run went, its colour how it ended (grey ended, lighter grey
+ * stopped, red a member failed, the working green still going), an amber edge when
  * someone had to answer; then when the last run started, or "never". The
  * runs are the live ones and the server's records (useCrewRecords).
  */

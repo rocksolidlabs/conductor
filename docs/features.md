@@ -41,7 +41,10 @@ for the wire details.
 
 - **Status marks.** Every surface draws a session's state with one of five
   marks and its word, as the status section of
-  [design/system.md](design/system.md#status) says. Terracotta stays on the
+  [design/system.md](design/system.md#status) says; a run's tasks, members,
+  graph and cards speak the same language, a task's own states (waiting,
+  ready, done, failed, cancelled) with marks of their own, and a run says
+  one sentence ("2 of 6 done · 1 working · 1 checking · 2 need you"). Terracotta stays on the
   brand mark only, per [design/brand.md](design/brand.md). JetBrains Mono for
   code and terminal chrome.
 - **Workbench** (1a): the sidebar becomes the session list grouped into Needs
@@ -202,6 +205,24 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
+
+- **The server's side.** `POST /api/sessions` takes `message` (at most
+  4,096 bytes): typed into the agent once the session is ready, by the
+  wait a crew member's prompt takes, held behind every startup question
+  (each noted once in the session's activity), past the cap only at the
+  agent's known prompt when it has one. A person's own keys first
+  withdraw it; a session that ends first gets nothing; each is noted.
+  `Info.firstMessage` is `waiting` meanwhile. Its text lives in the
+  server's memory until typed, then only in the activity as Conductor's
+  own line by `launch`: a resume or a clone never types it again. A
+  nameless launch with a message is named by its first words, cut at a
+  word with "…". The Launch dialog's field is PR-36.
+- **A ticket's launch label (D11).** Cut at a word after the key to 60
+  characters, it ends with "…" now; labels stored before keep their
+  text. One cut rule, `internal/session/testdata/cut-at-word.json`, holds
+  the session's copy and Dispatch's (and the app's, PR-36).
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.
@@ -358,6 +379,27 @@ open deferred item from rounds 1 and 2, then the features below.
   aligned before and after a selection, a phone's lines, the chips and
   the address, the keys paused while Filter is open);
   `dispatchQuery.test.ts` and `markdown.test.ts`.
+- **A Dispatch ticket's strip of sections; a plan folds once approved (UX1
+  PR-16, #931, 2026-11-16).** Under a ticket's title a strip names its
+  sections, Description, Acceptance, Plan, Runs, Decisions, To close,
+  People, Comments and History, each with its state where it has one
+  ("Plan approved", "Runs 2 of 6 done · 2 need you", "Decisions 2 open",
+  "Comments 3", "50+" past the newest page), from what the page reads
+  already (`ticketSections` and `ticketWaits` in
+  `web/app/utils/ticketSections.ts`, the waits filtered from the one list
+  of what needs you; a run's done part from `summaryDoneWords`, the
+  counts the run card shows, until the run words of UX1 PR-10 replace
+  it). It stays at the top as the page scrolls, on a
+  background of its own; a press brings its section up under it with the
+  focus, and the properties aside stays under it. The Review view has no
+  strip. An approved revision whose approval holds is folded to one line
+  of what the approval covers ("2 members · 3 tasks · 4 checks · from
+  1a2b3c4d5e6f · Yolo off", `planFold`) with "Show the whole plan", opened
+  for the page; a proposed, stale or superseded one stays open. Each
+  member's command is printed once, in the plan: the "Arguments:" line
+  and People's command lines are gone, People linking to the Plan.
+  Tests: `ticket-strip.spec.ts` on a server of its own, `ticketSections`
+  and `planFold` in vitest, `dispatch-delivery.spec.ts`'s People check.
 - **Session clone (#434).** A server session's menu (More, a right-click, the
   phone's long-press sheet, the palette's row actions) has Clone… and Clone
   with options…, loose or a run's member, running, starting or exited.
@@ -3045,7 +3087,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
   rows 5 and 6. A managed run's page has a **Tasks** tab first
   (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
-  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  in the crew's order (`RunTasks.vue`) with its state's mark and word
+  (`taskStatus`, since the UX review's PR-10), kind,
   member, attempt, what it does in words (`taskWords`: what it waits for,
   which attempt runs or checks, how it ended, why a ready task does not
   start), its result commit, and its actions (Open the attempt's session,
@@ -3056,9 +3099,20 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Every command carries a receipt (`utils/tasks.ts`: the browser mints the
   id, a reply lost to the network is asked for once more with the same id,
   a refusal's words come from the receipt; `useTaskCommands` for the toasts).
-  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
-  `paused` instead of the member counts, and has a Pause / Resume button for
-  the dispatch (a receipt too). The grid's tiles say the member's task
+  The header has two rows (`CrewRunHeader.vue`, UX1's PR-9). Row one: the
+  run's name, whole from 1024 px up (below it the label and the short id
+  give way first), one ticket chip ("Launched from CND-12 · plan r3", or the
+  linked ticket's when the run was not launched from one; both only when
+  they name two tickets, `runTicketChips`), then Chat with its unread
+  count, Continue, Pause / Resume for the dispatch (a receipt too), Stop
+  (neutral until its confirm), one menu ("More for this run": Add agent and
+  Share) and full screen. Row two, at every width: what the run is doing
+  (its bar, the tasks counted by part, held tasks in amber; and its one
+  sentence, "2 of 6 done · 1 working · 1 checking · 2 need you", whose
+  "need you" counts the run's items of what needs you; a run of members
+  says "1 working · 2 finished"), "scheduling paused" with the pause's words,
+  "cleaning up", the people, the Logins, who launched the run with the
+  launch's receipt, and how long it has been up. The grid's tiles say the member's task
   (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
   (Tasks unless switched; the choice kept with the graph's preferences): one
   node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
@@ -7835,7 +7889,7 @@ screen. Nothing said which was the plan and which the thing running.
   launched with.
 - **One Crews page, two sections.** `/crews` is the home: "Running now"
   (one card per live run: badge, the members as chips in the crew's shape
-  with a status dot each, a line per member that asks with Answer beside it,
+  with a status mark each, a line per member that asks with Answer beside it,
   up time, Stop, Open run) above "Saved crews" (a table: name and goal, the
   shape in miniature with words such as "5 · a chain of 3, 1 by hand, 1
   alone", where it runs, the last runs as bars, Edit, Launch run).

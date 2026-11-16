@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -717,5 +718,39 @@ func TestALaunchsActorIsItsCreateRows(t *testing.T) {
 	}
 	if _, err := s.LaunchActor(ctx, "no-such-launch"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// The launch's default label is the ticket's key and title cut at a word
+// after the key, at most MaxLaunchLabel characters, ending with an
+// ellipsis when cut (D11); the cut is the session's own rule, held to its
+// table of cases.
+func TestTheDefaultLabelEndsWithAnEllipsisWhenCut(t *testing.T) {
+	data, err := os.ReadFile("../session/testdata/cut-at-word.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tab struct {
+		Cases []struct {
+			Name               string
+			S                  string
+			Keep, Chars, Bytes int
+			Want               string
+		}
+	}
+	if err := json.Unmarshal(data, &tab); err != nil || len(tab.Cases) == 0 {
+		t.Fatalf("the table: %v", err)
+	}
+	for _, c := range tab.Cases {
+		if got := cutAtWord(c.S, c.Keep, c.Chars, c.Bytes); got != c.Want {
+			t.Errorf("%s: %q, want %q", c.Name, got, c.Want)
+		}
+	}
+	got := defaultLabel("CND-12", "Make the login loop stop when the session token expires mid-request")
+	if got != "CND-12 Make the login loop stop when the session token…" || utf8.RuneCountInString(got) > MaxLaunchLabel {
+		t.Fatalf("the label %q", got)
+	}
+	if got := defaultLabel("CND-12", "Fix the login loop"); got != "CND-12 Fix the login loop" {
+		t.Fatalf("a short title's label %q", got)
 	}
 }

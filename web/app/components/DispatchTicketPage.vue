@@ -4,7 +4,7 @@ import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
 import { refusalWords } from '~/composables/useDispatchOps'
-import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, closeCard, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
 import { catchUp, serially } from '~/utils/dispatchOrder'
@@ -14,6 +14,9 @@ import { approvable, launchBlockers, revisionTag } from '~/utils/dispatchPlans'
 import { heldRuns } from '~/composables/useTicketCandidates'
 import { REVIEW_ENTRY, openFindingsOf, openFindingsOfTask, useReview, type ReviewSummary } from '~/composables/useReview'
 import { firstReviewCandidate, latestReviewable } from '~/utils/review'
+import { entryRunId } from '~/utils/dispatchEvidence'
+import { ticketSections, ticketWaits } from '~/utils/ticketSections'
+import { summaryStatusLine } from '~/utils/status'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -39,7 +42,9 @@ import { firstReviewCandidate, latestReviewable } from '~/utils/review'
  * acceptance, Accept anyway receipts, decision records), its Delivery (the close card, with `verified`, and the links, a delivery naming
  * the candidate it delivers with its verification), and its People (DispatchPeople: owner, assignees, approvers, launchers, commenters,
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
- * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections: the criteria and the
+ * Under the title (UX1 PR-16) a strip names the sections (DispatchTicketStrip, ticketSections), each with its state where it has one,
+ * staying at the top as the page scrolls; a press brings its section up under it. The properties aside stays under the strip.
+ * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections and the strip: the criteria and the
  * plan, a candidate's lineage, diff, checks and findings, the notes of a draft and the review sent, and the ticket's decisions and
  * delivery; `&repair=<id>/<k>` prepares a repair from a failed receipt of the candidate, `&focus=findings` shows the findings. Each
  * standing candidate under Runs offers Review, with the open findings of its task, counted from the ticket's reviews (every page), read
@@ -303,6 +308,33 @@ const approvedPlan = computed(() => {
   const body = a ? plan.bodies.get(a.id) : undefined
   return a && body ? { id: a.id, n: a.n, body } : null
 })
+/** The one list of what needs a person: the strip reads the ticket's items of it (ticketWaits), never a count of its own. */
+const needs = useNeedsYou()
+/** The ticket's runs, newest first, as its Runs section lists them. */
+const runIds = computed(() => [...new Set(runs.entries.value.map(entryRunId).filter((id): id is string => !!id))])
+/** The newest run's summary, as the Runs section lists it first. */
+const newestRun = computed(() => runs.entries.value.find((e) => e.run)?.run ?? null)
+const strip = computed(() => {
+  const t = ticket.value
+  if (!t) return []
+  return ticketSections({
+    plan: plan.featured.value,
+    waits: ticketWaits(needs.items.value, { key: t.key, runs: runIds.value }),
+    runs: runIds.value.length,
+    // The newest run's done part, in the status language's words (summaryStatusLine): what a summary carries; its need-you is the strip's.
+    runDone: newestRun.value ? summaryStatusLine(newestRun.value, []).done : '',
+    decisions: decisionRecords.decisions.value ?? [],
+    close: closeCard(t),
+    comments: t.comments ?? [],
+  })
+})
+/** Brings a section up under the strip and gives it the focus, as the strip's own press does (People's "in the plan"). */
+function goSection(id: string) {
+  const el = document.getElementById(`ticket-${id}`)
+  if (!el) return
+  el.scrollIntoView({ block: 'start' })
+  el.focus({ preventScroll: true })
+}
 const people = computed(() =>
   ticket.value ? ticketPeople({ ticket: ticket.value, plans: plan.plans.value, launches: knownLaunches.value, agentName: (id) => agents.value.find((a) => a.id === id)?.name }) : [],
 )
@@ -944,28 +976,31 @@ const askBrakeman = computed(() =>
           </template>
         </DispatchReview>
 
+        <!-- The strip of sections, staying at the top as the page scrolls (not in the Review view). -->
+        <DispatchTicketStrip v-if="!reviewView" :sections="strip" />
+
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
-        <div v-else class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div v-if="!reviewView" class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
-            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
-            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
-            <DispatchPlan ref="planSection" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
-            <DispatchRuns :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
+            <TicketMarkdown id="ticket-description" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
+            <TicketMarkdown id="ticket-acceptance" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
+            <DispatchPlan id="ticket-plan" ref="planSection" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
+            <DispatchRuns id="ticket-runs" tabindex="-1" class="scroll-mt-14 outline-none" :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
 
-            <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
+            <DispatchDecisions id="ticket-decisions" tabindex="-1" class="scroll-mt-14 outline-none" :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
 
-            <DispatchClosePolicy :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
+            <DispatchClosePolicy id="ticket-close" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
             <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
-            <DispatchPeople :people="people" :plan="approvedPlan" :launches="knownLaunches" :agents="agents" />
+            <DispatchPeople id="ticket-people" tabindex="-1" class="scroll-mt-14 outline-none" :people="people" :plan="approvedPlan" :launches="knownLaunches" :agents="agents" @plan="goSection('plan')" />
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />
             <DispatchAttachments :attachments="ticket.attachments ?? []" :locked="locked" :now="now" :upload="upload" :remove="removeAttachment" :image="files.image" :download="files.download" @insert="(md: string) => comments?.insert(md)" />
-            <DispatchComments ref="comments" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" :at="commentAt" />
+            <DispatchComments id="ticket-comments" ref="comments" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :gate="gate" :locked="locked" :reads="reads" :resets="resets" :attachment-url="files.resolver.value" :now="now" :at="commentAt" />
 
-            <DispatchHistory :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
+            <DispatchHistory id="ticket-history" tabindex="-1" class="scroll-mt-14 outline-none" :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
           </div>
 
-          <aside class="order-first grid grid-cols-2 gap-x-3 gap-y-4 rounded-lg p-4 ring ring-default lg:sticky lg:top-4 lg:order-none lg:flex lg:w-80 lg:flex-none lg:flex-col" data-ticket-properties>
+          <aside class="order-first grid grid-cols-2 gap-x-3 gap-y-4 rounded-lg p-4 ring ring-default lg:sticky lg:top-14 lg:order-none lg:flex lg:w-80 lg:flex-none lg:flex-col" data-ticket-properties>
             <UFormField label="Status" size="sm">
               <USelect :model-value="ticket.status" :items="statusItems" :disabled="locked" size="sm" class="w-full" :icon="statusWord(ticket.status).icon" data-ticket-status @update:model-value="setStatus" />
             </UFormField>

@@ -519,6 +519,10 @@ function pieces(text: string): [string, string, string] {
                   <SessionAvatar :agent-id="row.agentId" :solid="row.state === 'needs'" :dashed="row.state === 'exited'" />
                   <StatusMark v-if="row.status" :status="row.status" badge class="absolute -right-0.5 -top-0.5" />
                 </span>
+                <span v-else-if="row.icon && row.status" class="relative mt-1 flex-none">
+                  <UIcon :name="row.icon" class="size-4 text-muted" aria-hidden="true" />
+                  <StatusMark :status="row.status" badge class="absolute -right-1 -top-1" />
+                </span>
                 <UIcon v-else-if="row.icon" :name="row.icon" class="mt-1 size-4 flex-none text-muted" aria-hidden="true" />
                 <span v-else class="mt-1 size-4 flex-none" />
                 <div class="min-w-0 flex-1">
