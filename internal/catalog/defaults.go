@@ -62,15 +62,30 @@ const codexApprovalFooter = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+
 // every pattern of the catalog: the form's one field ("Field 1/1", a count
 // of fields unanswered after it once Backspace cleared the choice), Allow
 // first, nothing but Codex's choices that remember it (each an A's) and
-// their wrapped descriptions until Cancel, then nothing numbered until the
-// footer, on the screen's last row. So the form's words in a file, a log
-// or a quote on the screen are not taken for it (Codex's composer is below
-// them), nor another server's form (Deny among its choices, a field to
-// fill, more than one field). The choices themselves, each its label and
-// digit, are read off the form (the session's readList).
+// their wrapped descriptions until Cancel, at most 8 rows (between Allow
+// and Cancel the four choices take 4 at 72 columns and wider, 14 at 40
+// columns, where the form is answered in the terminal),
+// then nothing numbered until the footer, on the screen's last row. So the
+// form's words in a file, a log or a quote on the screen are not taken for
+// it (Codex's composer is below them), nor another server's form (Deny
+// among its choices, a field to fill, more than one field).
+//
+// The question is a form read off the screen (a question with
+// answersFromScreen and answers of its own, session.StartupQuestion): its
+// top row is codexToolApprovalTop, the only row of the screen that opens a
+// form, and its words are every row between that row and its list; its
+// choices are its rows, each its name up to the description column, which
+// every choice row of Codex's tool approval draws and a server's own form
+// does not (its choices have no description), each picked by its digit;
+// Cancel is sent as Escape, which the footer names and which cancels the
+// form; the two choices that remember the approval are mode answers. A
+// server's own form that is drawn the same way, its choices with the same
+// names and a column beside them, is asked the same way, its rows its
+// choices.
 const (
-	codexToolApproval      = `(?m)^ *Field 1/1\b.*\n(?:.*\n){1,16}? *›? *1\. Allow.*\n(?: *›? *[23]\. A.*\n| +[^\s\d›].*\n){0,8} *›? *[2-4]\. Cancel.*\n(?: *(?:[^\s\d›].*)?\n){0,16} *enter to submit\W*esc to cancel\z`
-	codexToolApprovalWords = `(?m)^ *Field 1/1\b.*\n((?:.*\n){1,16}?) *›? *1\. Allow.*$`
+	codexToolApproval    = `(?m)^ *Field 1/1\b.*\n(?:.*\n){1,16}? *›? *1\. Allow.*\n(?: *›? *[23]\. A.*\n| +[^\s\d›].*\n){0,8} *›? *[2-4]\. Cancel.*\n(?: *(?:[^\s\d›].*)?\n){0,16} *enter to submit\W*esc to cancel\z`
+	codexToolApprovalTop = `^ *Field \d+/\d+\b`
+	codexToolApprovalAll = `^(?:Allow for this session|Always allow)(?:\s|$)`
 )
 
 // defaults lists the built-in agents: one for each agent Conductor has a hook
@@ -290,11 +305,14 @@ func defaults() []Agent {
 				// servers. Its choices are read off the form, as Claude
 				// Code's are, since they change with the server's approval
 				// mode (two or four); each is its digit, which picks it at
-				// once. Its words are the message and the arguments shown.
+				// once, but Cancel, sent as Escape. Its words are the
+				// message and the arguments shown.
 				Prompt:            codexToolApproval,
-				Words:             codexToolApprovalWords,
+				Words:             codexToolApprovalTop,
 				Anytime:           true,
 				AnswersFromScreen: true,
+				Answers:           []Answer{{Label: "Cancel", Input: "\x1b"}},
+				ModeAnswers:       codexToolApprovalAll,
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

@@ -1204,7 +1204,7 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	_, words, answers, whole := s.askedIn(text, cols)
+	q, words, answers, whole := s.askedIn(text, cols)
 	if words == "" {
 		// Found, and no list to read on it (a question whose answers are
 		// read off the screen): the screen shows none of the questions.
@@ -1212,7 +1212,10 @@ func (s *Local) fireAsked(text string) {
 		return
 	}
 	s.mu.Lock()
-	if settled && !sameWords(s.dialogAnswered, words) {
+	// A form (Codex's tool approval, #716) on a screen settled since its
+	// answer was written is asked again, the same form still or the next
+	// Codex queued with the same words: a question of its own.
+	if settled && (q.form() || !sameWords(s.dialogAnswered, words)) {
 		s.dialogGone(look)
 	}
 	s.mu.Unlock()
@@ -1377,7 +1380,9 @@ type StartupQuestion struct {
 	// FromScreen has the answers read off the screen each time the
 	// question is asked (the catalog's answersFromScreen, with Anytime):
 	// the numbered list its dialog draws (readList), in place of Answers,
-	// and without Words its words are the rows above that list.
+	// and without Words its words are the rows above that list. With
+	// Answers and Words too it is a form (form): Answers then give the
+	// keys of the choices of their labels.
 	FromScreen bool
 	// Mode, when set, matches the labels of the answers that change the
 	// session's permission mode (the catalog's modeAnswers): they are
@@ -1400,7 +1405,10 @@ type StartupQuestion struct {
 // reply is weighed against (stillOnScreen). While the highlight stands
 // before a choice that takes typed words (Typed), the dialog's keys type
 // into its field: no answers, and no list (it changes with each letter).
-// "" and none when text does not show it, or shows no list to read.
+// A form's (form) are its words as formWords reads them and its choices
+// named at their description column (dialogList.named), each sent as the
+// answer of its label when q has one. "" and none when text does not show
+// it, or shows no list to read, or a form not as one.
 func (q StartupQuestion) read(text string) (words string, answers []Option, whole string) {
 	if words = q.words(text); words == "" {
 		return "", nil, ""
@@ -1420,6 +1428,19 @@ func (q StartupQuestion) read(text string) (words string, answers []Option, whol
 		return "", nil, ""
 	}
 	answers, whole = l.choices, strings.Join(l.whole, "\n")
+	if q.form() {
+		if answers, ok = l.named(); !ok {
+			return "", nil, ""
+		}
+		if words = q.formWords(text, l); words == "" {
+			return "", nil, ""
+		}
+		for i := range answers {
+			if k := slices.IndexFunc(q.Answers, func(a Option) bool { return a.Label == answers[i].Label }); k >= 0 {
+				answers[i].Input = q.Answers[k].Input
+			}
+		}
+	}
 	if q.Typed != nil && l.at >= 0 && q.Typed.MatchString(l.whole[l.at]) {
 		answers, whole = nil, ""
 	}
@@ -1433,6 +1454,44 @@ func (q StartupQuestion) read(text string) (words string, answers []Option, whol
 		}
 	}
 	return words, answers, whole
+}
+
+// form reports whether q is a form read off the screen (the catalog's
+// answersFromScreen with answers and words of its own, Codex's MCP tool
+// approval, #716): Words matches its top row, its words are the rows
+// between that row and its list, and its choices draw a description
+// column.
+func (q StartupQuestion) form() bool {
+	return q.FromScreen && len(q.Answers) > 0 && q.Words != nil
+}
+
+// formWords returns the words of the form q whose list text shows (l):
+// every row between the form's top row and its list, as rows (asRows), when
+// text holds exactly one row Words matches, above the list, and none of the
+// rows between is a choice's (listItem); "" otherwise, and when they are
+// more than listHead rows or longer than a message can show whole.
+func (q StartupQuestion) formWords(text string, l dialogList) string {
+	rows, top := strings.Split(text, "\n"), -1
+	for i, row := range rows {
+		if q.Words.MatchString(row) {
+			if top >= 0 {
+				return ""
+			}
+			top = i
+		}
+	}
+	if top < 0 || top >= l.top || l.top-top-1 > listHead {
+		return ""
+	}
+	between := rows[top+1 : l.top]
+	if slices.ContainsFunc(between, listItem.MatchString) {
+		return ""
+	}
+	words := asRows(cleanRows(strings.Join(between, "\n")), true)
+	if len(strings.Join(strings.Fields(words), " ")) > MaxAttentionMessage {
+		return ""
+	}
+	return words
 }
 
 // listMark begins, in the words fireAsked asks a dialog with, its whole

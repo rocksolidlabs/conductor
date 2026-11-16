@@ -2,8 +2,11 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Codex's form asking to allow a tool of an MCP server (#716), as its TUI
@@ -33,7 +36,9 @@ var (
 		"  enter to submit | esc to cancel",
 	)...)
 	// The server's approval mode set to prompt, 80 columns wide: Allow and
-	// Cancel, the call's argument under the message, the footer wrapped.
+	// Cancel, the call's argument under the message, the footer on one row
+	// (Codex wraps it only where the form is narrower than its 31
+	// characters, footer_hint.rs's wrap_hint_rows).
 	codexToolFormOnce = screenRows(append(append([]string{}, codexToolAbove...),
 		"  Field 1/1",
 		`  Allow the docs MCP server to run tool "search"?`,
@@ -43,8 +48,7 @@ var (
 		"  › 1. Allow   Run the tool and continue",
 		"    2. Cancel  Cancel this tool call",
 		"",
-		"  enter to submit |",
-		"  esc to cancel",
+		"  enter to submit | esc to cancel",
 	)...)
 	codexToolWords = `Allow the conductor MCP server to run tool "guide"?`
 	// codexToolCalled is Codex once the form is answered: the call's cell,
@@ -55,7 +59,10 @@ var (
 		"",
 		"• Working (3s • esc to interrupt)",
 	)...)
-	codexToolChoices = []Option{{Label: "Allow", Input: "1"}, {Label: "Allow for this session", Input: "2"}, {Label: "Always allow", Input: "3"}, {Label: "Cancel", Input: "4"}}
+	// codexToolChoices are the form's four choices as a page is handed
+	// them: each allowing choice its digit, the two that remember the
+	// approval mode answers, and Cancel the Escape the footer names.
+	codexToolChoices = []Option{{Label: "Allow", Input: "1"}, {Label: "Allow for this session", Input: "2", Mode: true}, {Label: "Always allow", Input: "3", Mode: true}, {Label: "Cancel", Input: "\x1b"}}
 )
 
 // Codex's program status (OSC 7501): working, and blocked as 0.163.0 says
@@ -181,16 +188,16 @@ func TestCodexsToolApprovalWithTwoChoicesIsAsked(t *testing.T) {
 	s, p, sub := newCodexToolSession(t, codexToolOnceCols, codexToolOnceHeight)
 	p.outW.Write(drawn(codexToolFormOnce))
 	att := waitAttention(t, s, asked)
-	if !sameOptions(att.Options, []Option{{Label: "Allow", Input: "1"}, {Label: "Cancel", Input: "2"}}) {
+	if !sameOptions(att.Options, []Option{{Label: "Allow", Input: "1"}, {Label: "Cancel", Input: "\x1b"}}) {
 		t.Fatalf("the choices %+v", att.Options)
 	}
 	if att.Message != "Allow the docs MCP server to run tool \"search\"? query: session attention" {
 		t.Fatalf("the words %q", att.Message)
 	}
-	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("2")); err != nil {
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte(att.Options[1].Input)); err != nil {
 		t.Fatal(err)
 	}
-	if got := nextWrite(t, p); got != "2" {
+	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
 }
@@ -259,6 +266,52 @@ var codexToolForm72 = []string{
 	"  enter to submit | esc to cancel",
 }
 
+// codexToolForm80 is the form 80 columns wide, laid out the same way, the
+// highlight moved to Cancel by an arrow.
+var codexToolForm80 = []string{
+	"› Look up how sessions work",
+	"",
+	"  Field 1/1",
+	`  Allow the conductor MCP server to run tool "guide"?`,
+	"    1. Allow                   Run the tool and continue",
+	"    2. Allow for this session  Run the tool and remember this choice for this",
+	"                               session",
+	"    3. Always allow            Run the tool and remember this choice for",
+	"                               future tool calls",
+	"  › 4. Cancel                  Cancel this tool call",
+	"",
+	"  enter to submit | esc to cancel",
+}
+
+// codexToolForm40 is the form 40 columns wide, laid out the same way (the
+// description column at 70% of the 36 columns inside the form's margins,
+// each name wrapped in the 23 before it, each description in the 11 after
+// it): 14 rows between Allow and Cancel.
+var codexToolForm40 = []string{
+	"  Field 1/1",
+	"  Allow the conductor MCP server to",
+	`  run tool "guide"?`,
+	"  › 1. Allow               Run the",
+	"                           tool and",
+	"                           continue",
+	"    2. Allow for this      Run the",
+	"       session             tool and",
+	"                           remember",
+	"                           this choice",
+	"                           for this",
+	"                           session",
+	"    3. Always allow        Run the",
+	"                           tool and",
+	"                           remember",
+	"                           this choice",
+	"                           for future",
+	"                           tool calls",
+	"    4. Cancel              Cancel this",
+	"                           tool call",
+	"",
+	"  enter to submit | esc to cancel",
+}
+
 // The form shown 80 columns wide, then the window made 72 columns wide:
 // Codex draws its view again, erased from its first cell (Tui::draw's
 // clear_for_viewport_change), the descriptions wrapped. The question is
@@ -289,4 +342,170 @@ func TestCodexsToolApprovalAt72ColumnsIsAskedAndGoes(t *testing.T) {
 	if a := startupLooked(t, s, "Cancelled conductor.guide"); a.State == AttentionNeedsInput {
 		t.Fatalf("once the form went at 72 columns: %+v", a)
 	}
+}
+
+// codexToolList is the form's four choices and its footer, 120 columns
+// wide; codexToolScreen the history above, then rows, then that list.
+var codexToolList = []string{
+	"  › 1. Allow                   Run the tool and continue",
+	"    2. Allow for this session  Run the tool and remember this choice for this session",
+	"    3. Always allow            Run the tool and remember this choice for future tool calls",
+	"    4. Cancel                  Cancel this tool call",
+	"",
+	"  enter to submit | esc to cancel",
+}
+
+func codexToolScreen(rows ...string) string {
+	out := append(append([]string{}, codexToolAbove...), rows...)
+	return screenRows(append(out, codexToolList...)...)
+}
+
+// Wherever the screen is not plainly the one form, no choices are offered:
+// a row between the form's top and its list that reads as a choice (an
+// argument's name holds a line break), rows that read as a second form's
+// top and message, the same with the form's first row far above the list,
+// the form drawn twice, a server's own form whose choices have no
+// description column, the four choices as Codex lays them out 40 columns
+// wide. The form asked before is withdrawn, and a reply to it, with any of
+// its choices' keys, writes nothing. Each screen is judged once the
+// watcher has looked at it, told by a marker of its own (the form asked
+// before holds none of them).
+func TestCodexsToolApprovalNotPlainlyOneFormIsNotAsked(t *testing.T) {
+	msg := `  Allow the conductor MCP server to run tool "guide"?`
+	far := []string{"  Field 1/1", `  Allow the docs MCP server to run tool "search"?`, ""}
+	for i := range 20 {
+		far = append(far, fmt.Sprintf("  line %d of the arguments", i))
+	}
+	form := strings.Split(codexToolForm, "\n")
+	for name, c := range map[string]struct{ screen, marker string }{
+		"an argument that reads as a choice": {codexToolScreen("  Field 1/1", msg, "", "  note: pick", "  1. Allow everything", ""), "note: pick"},
+		"a second top and message":           {codexToolScreen("  Field 1/1", `  Allow the docs MCP server to run tool "search"?`, "", "  query:", "  Field 1/1", msg), "query:"},
+		"the first top far above":            {codexToolScreen(append(far, "  Field 1/1", msg)...), "line 19 of"},
+		"the form twice":                     {screenRows(append(append([]string{}, form...), append([]string{"• Asked again"}, form[len(codexToolAbove):]...)...)...), "Asked again"},
+		"a server's own form":                {screenRows(append(append([]string{}, codexToolAbove...), "  Field 1/1", "  Pick one", "", "  Decision", "  › 1. Allow", "    2. Cancel", "", "  enter to submit | esc to cancel")...), "Decision"},
+		"40 columns":                         {screenRows(codexToolForm40...), "server to\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(codexToolForm, c.marker) || !strings.Contains(c.screen, c.marker) {
+				t.Fatalf("the marker %q is not the screen's own", c.marker)
+			}
+			s, p, sub := newCodexToolSession(t, codexToolFormCols, codexToolFormRows)
+			p.outW.Write(drawn(codexToolForm))
+			first := waitAttention(t, s, asked)
+			if _, words, answers, _ := s.askedIn(c.screen, codexToolFormCols); words != "" || answers != nil {
+				t.Fatalf("read as the form: %q %+v", words, answers)
+			}
+			p.outW.Write(drawn(c.screen))
+			if a := startupLooked(t, s, c.marker); asked(a) {
+				t.Fatalf("asked: %+v", a)
+			}
+			for _, o := range first.Options {
+				if err := s.AnswerInput(t.Context(), sub, first.ID, []byte(o.Input)); err == nil {
+					t.Fatalf("a reply %q to the form asked before was taken", o.Input)
+				}
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
+	}
+}
+
+// Two forms that differ only in an argument's value are two questions: the
+// second has an id of its own, a reply to the first is refused once the
+// second shows, nothing written, and the second takes its own.
+func TestTwoToolApprovalFormsThatDifferInAnArgumentAreTwoQuestions(t *testing.T) {
+	s, p, sub := newCodexToolSession(t, codexToolOnceCols, codexToolOnceHeight)
+	p.outW.Write(drawn(codexToolFormOnce))
+	first := waitAttention(t, s, asked)
+	p.outW.Write(drawn(strings.Replace(codexToolFormOnce, "query: session attention", "query: session attentiom", 1)))
+	second := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID })
+	if second.Message == first.Message || !strings.HasSuffix(second.Message, "attentiom") {
+		t.Fatalf("the second form's words %q", second.Message)
+	}
+	if err := s.AnswerInput(t.Context(), sub, first.ID, []byte("1")); err == nil {
+		t.Fatal("a reply to the first form was taken")
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	if err := s.AnswerInput(t.Context(), sub, second.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// The same form again after Conductor's answer is a question of its own
+// (Codex queues a second call of the same tool with the same arguments and
+// draws it as the first is answered): asked with a new id, not answered,
+// a reply to the first refused, its own taken. Each is answered once.
+func TestTheSameToolApprovalFormAgainIsAskedAgain(t *testing.T) {
+	s, p, sub := newCodexToolSession(t, codexToolFormCols, codexToolFormRows)
+	p.outW.Write(drawn(codexToolForm))
+	first := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), sub, first.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+	replied(t, s, first.ID)
+	p.outW.Write(drawn(codexToolForm))
+	second := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.Answered == "" })
+	if err := s.AnswerInput(t.Context(), sub, first.ID, []byte("1")); err == nil {
+		t.Fatal("the first form's reply was taken again")
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	if err := s.AnswerInput(t.Context(), sub, second.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+	replied(t, s, second.ID)
+	if a := formGone(t, s, p); a.State == AttentionNeedsInput {
+		t.Fatalf("once the form went: %+v", a)
+	}
+}
+
+// Cancel is sent as Escape, the key the form's footer names: with another
+// of Codex's views drawn over the form after the session's last look at it
+// (the pump holds the chunk that draws it, read but not yet looked at), a
+// Cancel writes Escape or nothing, never a digit, which picks a choice of
+// the view drawn over it (2 is the command approval's "don't ask again").
+func TestCodexsToolApprovalCancelWritesEscapeOrNothing(t *testing.T) {
+	s, p, sub := newCodexToolSession(t, codexToolOnceCols, codexToolOnceHeight)
+	p.outW.Write(drawn(codexToolFormOnce))
+	form := waitAttention(t, s, asked)
+	held, resume := make(chan struct{}), make(chan struct{})
+	var hold, release sync.Once
+	hook := func(chunk []byte) {
+		if strings.Contains(string(chunk), "Would you like to run") {
+			hold.Do(func() { close(held); <-resume })
+		}
+	}
+	s.beforeScan.Store(&hook)
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the approval's chunk never reached the pump")
+	}
+	cancel := form.Options[len(form.Options)-1]
+	if cancel.Label != "Cancel" {
+		t.Fatalf("the choices %+v", form.Options)
+	}
+	err := s.AnswerInput(t.Context(), sub, form.ID, []byte(cancel.Input))
+	select {
+	case b := <-p.input:
+		if string(b) != "\x1b" {
+			t.Fatalf("a Cancel wrote %q", b)
+		}
+	case <-time.After(200 * time.Millisecond):
+		if err == nil {
+			t.Fatal("a Cancel was taken and nothing written")
+		}
+	}
+	release.Do(func() { close(resume) })
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != form.ID })
+	noWrite(t, p, 100*time.Millisecond)
 }

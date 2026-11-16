@@ -1200,7 +1200,8 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
 		// Answers read off the screen are a question asked at any time's,
-		// with no answers of its own; the mode pattern is a pattern.
+		// with answers of its own only with words (a form's top row); the
+		// mode pattern is a pattern.
 		{{Prompt: "Ready\\?", AnswersFromScreen: true}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Yes", Input: "1"}}}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "("}},
@@ -1215,7 +1216,8 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"},
+		{Prompt: "Allow\\?", Words: "^Field 1/1", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Cancel", Input: "\x1b"}}}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
 	}

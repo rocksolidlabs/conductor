@@ -93,15 +93,39 @@ func codexToolQuestion(t *testing.T) (Question, *regexp.Regexp, *regexp.Regexp) 
 }
 
 // Codex's form asking to allow a tool of an MCP server (#716) is one of its
-// questions asked at any time, its choices read off the form (two or four,
-// by the server's approval mode), its words the form's message and the
-// arguments it shows. It is found as Codex draws it at every covered
+// questions asked at any time, a form read off the screen: its choices read
+// off the form (two or four, by the server's approval mode), Cancel sent as
+// Escape, the two that remember the approval mode answers, its top row the
+// one Words matches. It is found as Codex draws it at every covered
 // version, wide or narrow, the highlight on any choice; and the first of
 // Codex's questions that matches it is this one, not a command approval.
 func TestCodexToolApprovalIsAQuestionReadOffTheForm(t *testing.T) {
 	q, prompt, words := codexToolQuestion(t)
-	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.ModeAnswers != "" || q.TypedAnswers != "" {
+	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 1 || q.Answers[0] != (Answer{Label: "Cancel", Input: "\x1b"}) || q.TypedAnswers != "" {
 		t.Fatalf("the question %+v", q)
+	}
+	mode, err := CompilePattern(q.ModeAnswers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The mode pattern is matched against each choice whole (its name,
+	// its description and the rows of it wrapped below).
+	for whole, want := range map[string]bool{
+		"Allow                   Run the tool and continue":                                   false,
+		"Allow for this session  Run the tool and remember this choice for this session":      true,
+		"Always allow            Run the tool and remember this choice for future tool calls": true,
+		"Cancel                  Cancel this tool call":                                       false,
+		"Allow   Run the tool and continue":                                                   false,
+	} {
+		if mode.MatchString(whole) != want {
+			t.Errorf("mode answer %q: %v", whole, !want)
+		}
+	}
+	// Words matches the row that opens a form, any form's, and no other.
+	for row, want := range map[string]bool{"  Field 1/1": true, "  Field 2/3 (1 required unanswered)": true, "Field 1/1": true, `  Allow the conductor MCP server to run tool "guide"?`: false, "  path: Field 1/1": false, "  Field one": false} {
+		if words.MatchString(row) != want {
+			t.Errorf("words on %q: %v", row, !want)
+		}
 	}
 	codex, _ := Default().Get("codex")
 	for name, screen := range map[string]string{"four choices": toolApproval, "two choices": toolApprovalOnce, "80 columns": toolApprovalNarrow} {
@@ -129,14 +153,55 @@ func TestCodexToolApprovalIsAQuestionReadOffTheForm(t *testing.T) {
 			t.Errorf("not found:\n%s", variant)
 		}
 	}
-	for screen, want := range map[string]string{
-		toolApproval:     `Allow the conductor MCP server to run tool "guide"?`,
-		toolApprovalOnce: "Allow the docs MCP server to run tool \"search\"?\n\n  query: session attention\n",
-	} {
-		all := words.FindAllStringSubmatch(screen, -1)
-		if len(all) == 0 || strings.TrimSpace(all[len(all)-1][1]) != strings.TrimSpace(want) {
-			t.Errorf("words %q, want %q", all, want)
-		}
+}
+
+// The four choices as Codex lays them out 40 columns wide (the description
+// column at 70% of the 36 columns inside the form's margins, each name
+// wrapped in the 23 before it, each description in the 11 after it) take
+// 14 rows between Allow and Cancel, past the pattern's 8: the form is not
+// found, and is answered in the terminal. Its two choices 40 columns wide
+// are found.
+func TestCodexToolApprovalAt40ColumnsIsNotTheForm(t *testing.T) {
+	_, prompt, _ := codexToolQuestion(t)
+	four := strings.Join([]string{
+		"  Field 1/1",
+		"  Allow the conductor MCP server to",
+		`  run tool "guide"?`,
+		"  › 1. Allow               Run the",
+		"                           tool and",
+		"                           continue",
+		"    2. Allow for this      Run the",
+		"       session             tool and",
+		"                           remember",
+		"                           this choice",
+		"                           for this",
+		"                           session",
+		"    3. Always allow        Run the",
+		"                           tool and",
+		"                           remember",
+		"                           this choice",
+		"                           for future",
+		"                           tool calls",
+		"    4. Cancel              Cancel this",
+		"                           tool call",
+		"",
+		"  enter to submit | esc to cancel",
+	}, "\n")
+	if prompt.MatchString(four) {
+		t.Errorf("the four choices at 40 columns are taken for the form:\n%s", four)
+	}
+	two := strings.Join([]string{
+		"  Field 1/1",
+		"  Allow the docs MCP server to run",
+		`  tool "search"?`,
+		"  › 1. Allow   Run the tool and",
+		"               continue",
+		"    2. Cancel  Cancel this tool call",
+		"",
+		"  enter to submit | esc to cancel",
+	}, "\n")
+	if !prompt.MatchString(two) {
+		t.Errorf("the two choices at 40 columns are not found:\n%s", two)
 	}
 }
 

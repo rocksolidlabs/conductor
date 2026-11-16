@@ -41,6 +41,10 @@ type dialogList struct {
 	// at is the index of the choice the highlight stands before, -1 for
 	// none.
 	at int
+	// top is the index of the row numbered 1 among text's rows, and rows
+	// each choice's row as drawn.
+	top  int
+	rows []string
 }
 
 // readList reads the numbered list a dialog draws at the bottom of text, a
@@ -48,8 +52,7 @@ type dialogList struct {
 // work are matched against (Screen.Text): from the last row numbered N,
 // at most listTail rows from the end, up through the rows numbered N-1 to 1
 // whose numbers stand at its column, at most listGap rows apart. Each
-// choice is its row's label (its name, without a description drawn beside
-// it: choiceName) and its number, the key that picks it, with no
+// choice is its row's label and its number, the key that picks it, with no
 // Enter (a digit picks at once in Claude Code's dialogs), marked Mode when
 // mode matches it whole: its label with the rows that follow it up to the
 // next choice (the last one's up to a blank row), its description, or the
@@ -83,8 +86,8 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	var marks []bool
 	add := func(m []string) {
 		slices.Reverse(after)
-		whole := strings.TrimSpace(m[4])
-		label := choiceName(whole)
+		label := strings.TrimSpace(m[4])
+		whole := label
 		for _, row := range after {
 			if row = strings.TrimSpace(row); row != "" {
 				if rule, _ := ruleRow(row); rule {
@@ -95,6 +98,7 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 		}
 		l.choices = append(l.choices, Option{Label: label, Input: m[3], Mode: mode != nil && mode.MatchString(whole)})
 		l.whole = append(l.whole, m[3]+". "+whole)
+		l.rows = append(l.rows, m[0])
 		marks = append(marks, m[2] != "")
 		after = nil
 	}
@@ -121,8 +125,9 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	}
 	slices.Reverse(l.choices)
 	slices.Reverse(l.whole)
+	slices.Reverse(l.rows)
 	slices.Reverse(marks)
-	l.at = slices.Index(marks, true)
+	l.at, l.top = slices.Index(marks, true), top
 	var above []string
 	for i := top - 1; i >= 0 && len(above) < listHead; i-- {
 		row := strings.TrimSpace(rows[i])
@@ -139,19 +144,39 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 	return l, true
 }
 
-// columnGap is the gap a TUI leaves between a choice's name and its
-// description on the same row: two spaces or more, or a tab (Codex's
-// "› 1. Allow   Run the tool and continue", #716).
-var columnGap = regexp.MustCompile(`[ ]{2,}|\t`)
-
-// choiceName is a choice's label as its row shows it (trimmed): its name,
-// without the description a TUI draws in a column of its own beside it.
-// The description stays in the choice whole (dialogList.whole).
-func choiceName(row string) string {
-	if loc := columnGap.FindStringIndex(row); loc != nil && loc[0] > 0 {
-		return row[:loc[0]]
+// named returns l's choices with each label its name alone, for a list
+// whose rows draw each choice's description in a column of its own (a
+// form's, StartupQuestion.form: Codex's "› 1. Allow   Run the tool and
+// continue", #716). The column is found as a column: the one screen column
+// at which, on every choice row, a word begins after two spaces or more,
+// past the start of the row's label. Each label is its row from its start
+// up to that column, trimmed; the description stays in the choice whole.
+// False when the rows draw no such column, or more than one.
+func (l dialogList) named() ([]Option, bool) {
+	labelAt := func(row string) ([]rune, int) {
+		r := []rune(row)
+		return r, len(r) - utf8.RuneCountInString(listItem.FindStringSubmatch(row)[4])
 	}
-	return row
+	var cols []int
+	for i, row := range l.rows {
+		r, start := labelAt(row)
+		var at []int
+		for p := start + 2; p < len(r); p++ {
+			if r[p] != ' ' && r[p-1] == ' ' && r[p-2] == ' ' && (i == 0 || slices.Contains(cols, p)) {
+				at = append(at, p)
+			}
+		}
+		cols = at
+	}
+	if len(cols) != 1 {
+		return nil, false
+	}
+	out := slices.Clone(l.choices)
+	for i, row := range l.rows {
+		r, start := labelAt(row)
+		out[i].Label = strings.TrimSpace(string(r[start:cols[0]]))
+	}
+	return out, true
 }
 
 // ruleRow reports whether row (trimmed) is a rule, three or more of the

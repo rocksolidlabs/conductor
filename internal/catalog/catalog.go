@@ -428,8 +428,8 @@ func validate(a Agent) error {
 		if err := validateTrustAnswers(q.Answers); err != nil {
 			return fmt.Errorf("agent %s: questions[%d].answers: %w", a.ID, i, err)
 		}
-		if q.AnswersFromScreen && (!q.Anytime || len(q.Answers) > 0) {
-			return fmt.Errorf("agent %s: questions[%d].answersFromScreen: only for a question asked at any time (anytime), with no answers of its own", a.ID, i)
+		if q.AnswersFromScreen && (!q.Anytime || len(q.Answers) > 0 && q.Words == "") {
+			return fmt.Errorf("agent %s: questions[%d].answersFromScreen: only for a question asked at any time (anytime), and with answers of its own only with words (a form's top row)", a.ID, i)
 		}
 		if q.ModeAnswers != "" {
 			if _, err := CompilePattern(q.ModeAnswers); err != nil {
@@ -882,15 +882,23 @@ type Question struct {
 	// dialog draws at the bottom, each choice its label and its number (a
 	// digit picks it at once), and, without Words, its words the rows
 	// above the list up to the dialog's top rule (session.readList). A
-	// dialog whose list cannot be read is not asked. Only with Anytime and
-	// no Answers. Claude Code's dialogs are read so: their choices change
-	// with the tool, the permission mode and the release.
+	// dialog whose list cannot be read is not asked. Only with Anytime.
+	// Claude Code's dialogs are read so: their choices change with the
+	// tool, the permission mode and the release. With Answers of its own
+	// (and Words) the question is a form: Words matches its top row, which
+	// must be the only row of the screen it matches, its words are every
+	// row between that row and the list, none of them numbered, each
+	// choice's label is its name up to the description column every choice
+	// row draws (a form without that column is not asked), and a choice
+	// whose label is one of Answers' is sent as that answer's keys. Codex's
+	// MCP tool approval is one.
 	AnswersFromScreen bool `json:"answersFromScreen,omitempty"`
 	// ModeAnswers, when set, matches the labels of the question's answers
-	// that change the session's permission mode (Claude Code's "switch to
-	// auto mode", "accept edits", "bypass permissions"): a page gives such
-	// a choice no number key and never offers it first. A pattern as
-	// Prompt is.
+	// (read off the screen, each whole) that change the session's
+	// permission mode (Claude Code's "switch to auto mode", "accept
+	// edits", "bypass permissions") or allow from now on (Codex's "Allow
+	// for this session", "Always allow"): a page gives such a choice no
+	// number key and never offers it first. A pattern as Prompt is.
 	ModeAnswers string `json:"modeAnswers,omitempty"`
 	// TypedAnswers, when set, matches the answers read off the screen
 	// that take typed words, each with the rows that follow it (Claude

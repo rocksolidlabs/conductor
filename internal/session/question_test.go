@@ -84,7 +84,7 @@ var approvalChoices = []Option{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes
 
 // approvalQuestions are the questions Codex's approvals are held by, as the
 // built-in catalog entry has them: asked at any time, the tool approval's
-// choices read off its form (#716).
+// choices read off its form, those that remember it mode answers (#716).
 func approvalQuestions() []StartupQuestion {
 	codex, _ := catalog.Default().Get("codex")
 	var out []StartupQuestion
@@ -96,7 +96,11 @@ func approvalQuestions() []StartupQuestion {
 		for i, a := range q.Answers {
 			answers[i] = Option{Label: a.Label, Input: a.Input}
 		}
-		out = append(out, StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers, FromScreen: q.AnswersFromScreen})
+		sq := StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers, FromScreen: q.AnswersFromScreen}
+		if q.ModeAnswers != "" {
+			sq.Mode = regexp.MustCompile(q.ModeAnswers)
+		}
+		out = append(out, sq)
 	}
 	return out
 }
