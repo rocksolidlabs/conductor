@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Decision } from '~/utils/decisions'
 import { staleNotice } from '~/utils/decisions'
+import { ApiError } from './useApi'
 import { DECISION_PAGES, DECISION_RETRY_CAP_MS, DECISION_RETRY_FIRST_MS, DecisionRecordView, DecisionsLive, asDecisionEvent, readAll } from './useDecisions'
 
 // The app's store of open and answered decisions (Program item DR1, docs/plans/decisions.md, "web/app"): read again on a `decision`
@@ -179,6 +180,24 @@ describe('the decisions store', () => {
     await live.read()
     expect(live.error).toBe('the server is busy')
     expect(live.open().map((d) => d.id)).toEqual(['dr-1'])
+  })
+
+  // The one list of what needs you (utils/needsYou.ts): a switchyard serves no decisions, and that is a read with nothing in it, not
+  // a failure the list would wait on (it would never be known there).
+  it('reads a switchyard as serving no decisions, said why, with no failure and no retry', async () => {
+    const live = new DecisionsLive()
+    const retries: number[] = []
+    live.schedule = (_go, ms) => {
+      retries.push(ms)
+      return () => {}
+    }
+    live.attach({ list: () => Promise.reject(new ApiError(403, 'switchyard', 'this server coordinates hosted sessions and launches none')) })
+    await live.read()
+    expect([live.loaded, live.error, live.unavailable, live.decisions, live.cut, retries]).toEqual([true, '', 'this server coordinates hosted sessions and launches none', [], false, []])
+    // Another refusal is a failure, as before.
+    live.attach({ list: () => Promise.reject(new ApiError(403, 'forbidden', 'no')) })
+    await live.read()
+    expect([live.error, live.unavailable, retries]).toEqual(['no', 'this server coordinates hosted sessions and launches none', [1000]])
   })
 
   // Codex's round 3 on #719: the last read failed and no event came after it (the stream connected, nothing else reads), so a gate

@@ -14,6 +14,7 @@ import type { FeedEntry } from '~/utils/events'
 import { joinedPath } from '~/utils/joined'
 import { blockStatus, joinedStatus, sessionStatus, statusOfKey, statusTally } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
+import { PAGES, palettePages } from '~/utils/pages'
 import { capGroup, parsePrefix, parseVerb, placeAfter, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
@@ -51,18 +52,11 @@ export interface PaletteContext {
   pickTicket: (field: PickField, t: TicketSummary) => void
 }
 
-const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon: string }> = [
-  { id: 'decisions', label: 'Needs your decision', to: '/decisions', kbds: ['G', 'N'], icon: 'i-lucide-gavel' },
-  { id: 'yard', label: 'Yard', to: '/yard', kbds: ['G', 'Y'], icon: 'i-lucide-layout-grid' },
-  { id: 'roundhouse', label: 'Roundhouse', to: '/roundhouse', kbds: ['G', 'R'], icon: 'i-lucide-gallery-horizontal' },
-  { id: 'crews', label: 'Crews', to: '/crews', kbds: ['G', 'C'], icon: 'i-lucide-users' },
-  { id: 'dispatch', label: 'Dispatch', to: '/dispatch', kbds: ['G', 'D'], icon: 'i-lucide-ticket' },
-  { id: 'agents', label: 'Agents', to: '/agents', kbds: ['G', 'A'], icon: 'i-lucide-bot' },
-  { id: 'events', label: 'Events', to: '/events', kbds: ['G', 'E'], icon: 'i-lucide-radio-tower' },
-  { id: 'history', label: 'History', to: '/history', kbds: ['G', 'H'], icon: 'i-lucide-history' },
-  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', kbds: [], icon: 'i-lucide-route' },
-  { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
-  { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
+/** The Go to rows that are no page of their own (utils/pages.ts): two tabs of Events and the paste invite, after the pages. */
+const OTHER_ROWS: Array<{ id: string; label: string; to: string; icon: string }> = [
+  { id: 'events-routing', label: 'Events · Routing', to: '/events?tab=routing', icon: 'i-lucide-route' },
+  { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', icon: 'i-lucide-plug' },
+  { id: 'paste', label: 'Paste invite', to: '/paste', icon: 'i-lucide-clipboard-paste' },
 ]
 
 /**
@@ -469,21 +463,20 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
+  /** Go to: the pages of the one table (utils/pages.ts), each with its sentence as its second line (so searched), then OTHER_ROWS. */
   function pageItems(): PaletteItem[] {
     const n = attention.count.value
     const d = inbox.count.value
-    return PAGES.filter((p) => (p.id !== 'settings' ? true : desktop.isDesktop.value)).map((p) => ({
+    const pages: PaletteItem[] = palettePages({ desktop: desktop.isDesktop.value }).map((p) => ({
       key: `go:${p.id}`,
-      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `Needs your decision · ${d} waiting` : p.label,
+      label: p.id === 'yard' && n ? `Yard · ${n} ${n === 1 ? 'needs' : 'need'} you` : p.id === 'decisions' && d ? `${p.title} · ${d} waiting` : p.title,
+      detail: p.about,
       icon: p.icon,
-      kbds: p.kbds,
+      kbds: [...(p.chord ?? [])],
       run: () => go(p.to),
       href: p.to,
     }))
-  }
-
-  function settingsItem(): PaletteItem[] {
-    return desktop.isDesktop.value ? [{ key: 'go:settings', label: 'Settings', icon: 'i-lucide-settings', kbds: ['G', 'S'], run: () => go('/settings'), href: '/settings' }] : []
+    return [...pages, ...OTHER_ROWS.map((p) => ({ key: `go:${p.id}`, label: p.label, icon: p.icon, kbds: [], run: () => go(p.to), href: p.to }))]
   }
 
   // ---------------------------------------------------------------------------
@@ -896,8 +889,8 @@ export function usePaletteRows(ctx: PaletteContext) {
         return s ? { key: `verb:mark:${s.id}`, label: `Mark ${s.name} as ${v.state === 'clear' ? 'clear' : v.state}`, icon: 'i-lucide-hand', agentId: s.agentId, run: () => signal(s, state) } : null
       }
       case 'go': {
-        const p = PAGES.find((p) => p.id === v.page) ?? (v.page === 'settings' ? { to: '/settings', label: 'Settings', icon: 'i-lucide-settings' } : null)
-        return p ? { key: `verb:go:${v.page}`, label: `Go to ${p.label}`, icon: p.icon, run: () => go(p.to) } : null
+        const p = PAGES.find((p) => p.id === v.page) ?? OTHER_ROWS.find((p) => p.id === v.page)
+        return p ? { key: `verb:go:${v.page}`, label: `Go to ${'title' in p ? p.title : p.label}`, icon: p.icon, run: () => go(p.to) } : null
       }
     }
   }
@@ -963,7 +956,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     else groups.push(tickets)
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
-    groups.push({ id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] })
+    groups.push({ id: 'goto', label: 'Go to', rows: pageItems() })
     groups.push({ id: 'brakeman', label: 'Brakeman', rows: brakemanItems() })
     groups.push({ id: 'actions', label: 'Actions', rows: actionItems() })
     // One row per durable decision, whatever group gives it: Needs you's "Answer dr-7" first, which opens its card.
@@ -989,7 +982,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
     if (mode === 'actions') {
       const page = palette.page.value
-      const groups: PaletteGroup<PaletteItem>[] = [...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []), { id: 'actions', label: 'Actions', rows: actionItems() }, { id: 'goto', label: 'Go to', rows: [...pageItems(), ...settingsItem()] }]
+      const groups: PaletteGroup<PaletteItem>[] = [...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []), { id: 'actions', label: 'Actions', rows: actionItems() }, { id: 'goto', label: 'Go to', rows: pageItems() }]
       // A verb typed under `>` reads as under no prefix: "> stop docs" is the verb, first.
       const verb = rest ? parseVerb(rest, names()) : null
       const row = verb ? verbRow(verb, now) : null
