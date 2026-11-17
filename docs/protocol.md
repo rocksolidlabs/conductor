@@ -5445,8 +5445,10 @@ A person's captures of a preview (`docs/plans/browser-evidence.md`) are
 Dispatch's records, kept in its store with their screenshots as content
 files beside the attachments. Every route below is the admin's: everyone
 else (a share link, a session's token, a host token, a Brakeman turn) is
-answered `401`, and a switchyard `403 switchyard`. Each route is
-registered alone, the admin's check outermost.
+answered `401`, and a switchyard `403 switchyard`, but for two reads a
+Brakeman turn shares (`GET /api/captures/{id}` and a send's frozen
+document, Brakeman below). Each route is registered alone, the admin's
+check outermost.
 
 | Route | Body | Answer |
 |---|---|---|
@@ -5456,6 +5458,10 @@ registered alone, the admin's check outermost.
 | `GET /api/captures/{id}/image` | none | the kept PNG, whole, `200` whatever range the request names (never a part): `Content-Type: image/png`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `Content-Disposition: inline`, `X-Conductor-SHA256` (the kept file's); `404 not_found` without one, and for a deleted capture |
 | `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`, `200` for a repeat; `400 invalid` (a new element report, a kind or a note the store refuses, a region outside the screenshot); `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 stale_revision`; `409 op_conflict`; `413 bound` (the body past 2 MiB, more than 20 annotations, the 51st annotation set) |
 | `POST /api/captures/{id}/delete` | `{opId, byName?}`, at most 64 KiB | `200 {receipt}`, `200` for a repeat; `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 op_conflict`; `413 bound` (the body past 64 KiB) |
+| `POST /api/captures/{id}/send` | `{opId, byName?, rev, to: {kind: "ticket", project, title} \| {kind: "ticket", key} \| {kind: "brakeman", question} \| {kind: "decision", decision} \| {kind: "review", candidate, ks?, draft?, verdict?, severity?, summary?, continueRun?}}` (a send to a review: Request a change and Add to a review, A send to a review below), at most 8 KiB; `rev` the capture's revision the person sees, `question` 1 to 4,000 characters (a send to Brakeman alone takes one) | `201 {receipt, send}` for a send to a ticket (sent in its one step: a new ticket, its description made from the capture, or the live one with the key; the document attached as `capture-<id>-r<rev>.json` and the screenshot as `.png`, the document alone without one; a comment in the store's words) and for a send to Brakeman the desk admitted (sent, `target` its request `br-<n>`), and for a send to a decision whose comment DR1 kept (sent, `target` the decision's `dr-<n>`; one whose comment DR1 refuses is refused with DR1's code and words: `404 not_found`, `429 decision_limit` past its 32 operations, `409` for another); `202 {receipt, send}` for one left `pending`, `send.waiting` the desk's words (`brakeman_stuck`, not yet the owner of its records, `pins_full`, the server stopping): the settlement asks again (Sends, below); `200` for a repeat (a pending send to Brakeman tried again); the desk's refusal of the first try with `{error, receipt, send}`, the send `refused` with the desk's words: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`; the store's refusals with `{error, receipt}`: `409 stale_revision` (another revision, a capture changed meanwhile), `404 not_found` (a deleted or unknown capture, a ticket's key the store holds no live ticket of), `400 invalid` (a project or a title the store refuses), `413 bound` (50 sends of a capture, 50 attachments of a ticket, a request past 8 KiB); `400 invalid_request` (the gate's refusals: the body's form, no question to Brakeman or one past 4,000 characters, a question to a ticket, `rev` below 1); `413 bound` (the body past 8 KiB) |
+| `POST /api/captures/{id}/sends/{send}/cancel` | `{opId, byName?}`, at most 64 KiB | `200 {receipt, send, cancel: {asked, done, words?}}`, `200` for a repeat (answered by its receipt, its steps finished again); `done` once the send is cancelled or refused, or its request is closed or pruned at the desk; `words` `the request had finished before the cancel reached it` when the request had closed before; `409 stale_revision` with `{error, receipt, send}` for a send to a ticket (made in its one step) and a refused or cancelled one, its state named; `404 not_found` for a send that is not the capture's; `409 op_conflict` for an `opId` another cancel of the send took; `413 bound` past 20 cancels of a send |
+| `GET /api/decisions/{did}/captures` | `?after=` (a page's `next`), `?limit=` (1 to 100) | `{sends, next?}`: the sends of captures sent to the decision, newest first, their requests aside; `400 invalid_request` for a decision's id that is not one |
+| `GET /api/captures/{id}/sends/{send}` | none | `{send, document}`: the send (its request among it, `waiting?` as above) and the document it froze (`conductor.capture/1`), read from the content file its `digest` names and checked against it, the same after the capture's edit or its delete; `404 not_found` for a send that is not the capture's, and for a document no longer kept (a send that ended unsent after its capture was deleted) |
 
 **The bounds.** A capture holds at most 20 annotations, each note at most
 4,000 characters; its page's address at most 2 KiB and its title at most
@@ -5639,6 +5645,69 @@ attribute's name is not of an element's or an attribute's form keeps no
 all of the form. The store's field rules hold every other text (no
 control character but a line feed and a tab in the long ones).
 
+**Sends.** A send freezes the capture at `rev`: its document, a content
+file named by its SHA-256 (the send's `digest`), and its screenshot, held
+by the send (nothing removes a send). A sent send keeps both for as long
+as the store keeps it, its capture deleted or not; one that ended
+refused or cancelled after its capture's delete lets them go. A send to
+Brakeman is two steps. Its input is committed `pending` first, with the
+request the desk is to be asked: `{kind: "ask", subjects, note, by?}`,
+the note the person's question scrubbed of every tree's secret held now,
+the subjects the attempt's `attempt:<run>/<task>/<n>` when the capture
+is of one (the desk is asked them after the send's own frozen document,
+`capture:<id>/<send>`, which names the send's id and so is not known
+before the input is kept), `by` the display name when it is at most 60
+bytes on one line. The desk is then asked under the send's id as its
+`opId`, the request pinned (below), and the send is recorded `sent` to
+the request's `br-<n>`, then the pin let go. Every step that can reach
+the desk for a send (the route's first try, a settlement's, a cancel's)
+runs under a lock of that send's in the server and reads the send's
+state and its cancels again under it: a try that finds the send no longer
+pending, or a cancel asked, asks nothing. The desk's own record is looked
+at first: a request it holds under the send's id makes the send `sent`
+to it, one it pruned `sent` to its number, and only an id it never saw is
+asked, always from the stored request, never from the capture as it is
+now. Brakeman off refuses the send (`refused` with the desk's words); the
+queue full and the day's budget spent refuse a first try and leave a
+settlement's pending; every other answer leaves it pending with the
+desk's words (`waiting`, kept in the server's memory beside the send,
+never a row). **The settlement** runs as the server starts, once
+Brakeman's desk holds its records, and every minute: it tries every
+pending send to Brakeman, finishes every cancel not done, and lets go
+every pin of a send no longer pending or gone. It is ended first as the
+server stops: no try and no cancel's step reaches the desk after it.
+**A send to a decision** is a comment on a DR1 decision record (kind
+`comment`, under the person's actor), made by the server with the send's
+id as its operation's id: the send's input is committed `pending` first
+with its request, `{decision, comment}`, the comment's words the store's
+own ("Capture <id> is attached at revision <rev>: what was sent is"), to
+which the send's own ref, `capture:<id>/<send>`, is put as the comment
+is made; no text of the page's is in it. The decision's rev is read and
+the comment made at it; a rev that moved meanwhile (an answer, another
+comment) is read again and the same comment made, so a send that races
+an answer lands as a comment on the answered decision. DR1's receipt for
+the send's id (its history keeps an operation's row for as long as it
+keeps the decision: its operations are bounded by refusal, never
+trimmed) answers a try made again after a stop, so the settlement, which
+tries every pending send to a decision whatever Brakeman's desk holds,
+never makes a second comment. A send to a decision takes no cancel
+(`409 stale_revision`): DR1 keeps or refuses the comment at once. The
+decision's card lists the captures sent to it.
+**A cancel** commits the person's intent first (its row and receipt),
+outside the send's lock, then acts under it: a pending send whose id the
+desk never saw is `cancelled`; one the desk admitted (a try that stopped
+before its `sent` was kept) is `sent` to that request and goes on as a
+sent one; a sent one has its request cancelled at the desk, which closes
+an open request and leaves a closed one as it is, and the close is
+recorded in the store's open sends (`CloseCancel`). What a stop left is
+finished by the next start's settlement. **A pinned request**: the desk
+keeps the op ids of its newest 1,000 requests to answer a repeat, and a
+send can wait past a thousand others, so a send's request is pinned: its
+op id is kept past those 1,000 until the send is no longer pending, at
+most 1,000 pinned (`pins_full` past it, which leaves the send pending);
+a pinned op id whose request was pruned answers its number. No log line
+carries a question, a request or a document.
+
 **A send to a review** (`POST /api/captures/{id}/send` with `to: {kind:
 "review", candidate, ks?, draft?, verdict?, severity?, summary?,
 continueRun?}`): Request a change and Add to a review, offered only on a
@@ -5668,8 +5737,23 @@ alone: one review whatever the tries. A send to a review takes no cancel
 (`409 stale_revision`).
 
 **Brakeman.** A turn's read of Dispatch's changes passes over a
-capture's and a send's rows, whatever its grant, until a turn has a read
-of captures (the plan's PR-6).
+capture's and a send's rows, whatever its grant. A turn reads a capture
+through two shared reads, each under Dispatch's class (`403 not_visible`
+without it) and its grant (`403 outside_scope`), read again at each read:
+`GET /api/captures/{id}` (the guide's `observe_capture`) and `GET
+/api/captures/{id}/sends/{send}` (`observe_capture_send`). A capture is
+admitted as what it is of, as its save recorded it, never as its sends'
+targets: an attempt's capture as its run with the crew, repository and
+project it recorded, and, while the run is still held or in the ledger,
+as the run is now too; a send's frozen document as its capture; a link's
+capture as nothing, so only a grant that scopes no run, crew, repository
+or project admits it. A turn's capture carries its `ref`,
+`capture:<id>`, noted `live` at its revision (a tombstone `deleted`), and
+its sends cut to `{id, capture, rev, kind, digest, createdAt, state,
+ref}`; a frozen send's read is `{send, document, ref}`, the send cut the
+same, noted at its state with the revision and the digest it froze.
+Neither carries the screenshot's bytes (the image route is the admin's
+alone): the capture names their size and SHA-256.
 
 Where this differs from the plan: a page's origin is quoted in a refusal
 only in the form above; the scrub takes the secret of every tree the
@@ -5678,7 +5762,11 @@ least 8 characters long, and an edit is scrubbed without looking its
 capture up; what is kept of a screenshot is the server's own encoding of
 its pixels as 8-bit RGBA; a source
 may be `unknown`; a tag and an attribute's name are any name with no
-control character; Brakeman's reads pass over captures until PR-6.
+control character; a send's request keeps the subjects after the send's
+own frozen ref, which the desk is asked first; a send's `bound` is `413`,
+as every capture route's; the plan's `capture_read` and
+`capture_send_read` are the guide's `observe_capture` and
+`observe_capture_send`, as every turn's read is an `observe_<what>`.
 
 #### GitHub tokens
 
@@ -6610,7 +6698,12 @@ revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
 attempt's state, at the commit it submitted), and DR1's
 `decision:<dr-n>` (a decision record: its state and `rev`, as its run's
-read lists it), and AC1's `capacity:<agent>/<account>@<readAt>` (a
+read lists it), PV1's `capture:<id>` (a capture as it is now: `live` at
+its revision and its document's SHA-256, `deleted` for a tombstone) and
+`capture:<id>/<send>` (what that send froze: the send's state, the
+revision and the digest it froze, the same after an edit or a delete),
+each 16 hex digits and admitted as the capture is (Captures, Brakeman),
+and AC1's `capacity:<agent>/<account>@<readAt>` (a
 reading of an agent's usage on an account, `readAt` in UTC as RFC 3339
 with its nanoseconds, as the view gives it: the reading's own state;
 the readings the server holds are asked first and at once: one they no

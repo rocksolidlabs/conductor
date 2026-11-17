@@ -90,6 +90,9 @@ describe('a ref, to its route and its label', () => {
     ['decision:dr-7', null, 'decision dr-7'],
     // AC1's reading: kept with the brief, no page of its own.
     ['capacity:claude/a-abcdefghijk2@2026-11-11T03:00:00.5Z', null, 'capacity of claude on a-abcdefghijk2'],
+    // PV1's capture, live and as one send froze it: served by its API routes, no page of its own.
+    ['capture:00112233aabbccdd', null, 'capture 00112233aabbccdd'],
+    ['capture:00112233aabbccdd/8899aabbccddeeff', null, 'capture 00112233aabbccdd, as sent'],
   ]
   it.each(cases)('%s', (ref, route, label) => {
     expect(parseRef(ref)).not.toBeNull()
@@ -100,7 +103,7 @@ describe('a ref, to its route and its label', () => {
   it('covers every kind of ref the server names', () => {
     const src = readFileSync(new URL('../../../internal/brakeman/refs.go', import.meta.url), 'utf8')
     const kinds = [...src.matchAll(/\bRef[A-Z][a-z]+\s*=\s*"([a-z]+)"/g)].map((m) => m[1])
-    expect(kinds.length).toBe(20)
+    expect(kinds.length).toBe(21)
     expect([...new Set(cases.map(([ref]) => ref.slice(0, ref.indexOf(':'))))].sort()).toEqual([...kinds].sort())
   })
 
@@ -168,7 +171,7 @@ describe('a ref, to its route and its label', () => {
   })
 
   it('takes no ref the server would refuse', () => {
-    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', 'decision:dr-0', 'decision:7', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
+    for (const bad of ['', 'run', 'run:', 'run:Nope-0a1b2c3d', `task:${RUN}`, `attempt:${RUN}/build/0`, `attempt:${RUN}/build/01`, 'session:0123', 'ticket:cnd-4', `file:${SESSION}/relative`, `file:${SESSION}//a/../b`, 'brief:br-1/100', 'brief:br-0/1', 'plan:CND-4/0', 'plan:CND-4', 'launch:0011', 'decision:dr-0', 'decision:7', 'capture:0011', 'capture:00112233aabbccdd/', 'capture:00112233aabbccdd/8899aabbccddeeff/1', `candidate:${RUN}/build`, `candidate:${RUN}/build/0`, `run:${RUN}\n`, 'nope:x', `run:${'a'.repeat(600)}-0a1b2c3d`]) {
       expect(parseRef(bad), bad).toBeNull()
     }
     expect(parseRef('op:a/b/c.1')).toEqual({ kind: 'op', actor: 'a/b', op: 'c.1' })

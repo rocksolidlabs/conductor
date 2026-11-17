@@ -982,6 +982,7 @@ const askBrakeman = computed(() =>
             <TicketMarkdown id="ticket-acceptance" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
             <DispatchPlan id="ticket-plan" ref="planSection" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
             <DispatchRuns id="ticket-runs" tabindex="-1" class="scroll-mt-14 outline-none" :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
+            <DispatchCaptures id="ticket-captures" tabindex="-1" class="scroll-mt-14 outline-none" :ticket-key="ticket.key" :attachments="ticket.attachments ?? []" :image="files.image" :now="now" />
 
             <DispatchDecisions id="ticket-decisions" tabindex="-1" class="scroll-mt-14 outline-none" :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
 

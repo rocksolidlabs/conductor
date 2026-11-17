@@ -65,7 +65,8 @@ const (
 	MaxReadsDoc  = 2 << 20
 	MaxMakeDoc   = 4 << 20
 	MaxReadLog   = 5000 // entries of a read log
-	MaxOps       = 1000 // op ids state.json keeps
+	MaxOps       = 1000 // op ids state.json keeps, past the pinned ones
+	MaxPinnedOps = 1000 // pinned op ids state.json keeps (Request.Pin)
 	Keep         = 500  // closed requests Prune keeps
 	MaxPage      = 100  // requests a List page
 	ChargeDays   = 8    // local days state.json keeps charges for
@@ -88,6 +89,7 @@ var (
 	ErrNotTurn     = errors.New("brakeman: the request is not starting or running")
 	ErrDamaged     = errors.New("brakeman: a request that does not parse, kept as it is")
 	ErrPruned      = errors.New("brakeman: pruned: the op id's request was made and has since been pruned")
+	ErrPinsFull    = errors.New("brakeman: pins_full: as many requests are pinned as the store keeps")
 )
 
 // ErrStateDamaged is a state.json that does not parse, is incomplete, or
@@ -581,12 +583,14 @@ type state struct {
 
 // opRef is an op id and its request: the hex SHA-256 of what was asked
 // (askSum), and whether Prune has removed the request, so a repeat of a
-// pruned request is told from a creation whose file never landed.
+// pruned request is told from a creation whose file never landed. A
+// pinned one (Request.Pin) outlives the trim to MaxOps until Release.
 type opRef struct {
 	OpID   string `json:"opId"`
 	ID     string `json:"id"`
 	Sum    string `json:"sum"`
 	Pruned bool   `json:"pruned,omitempty"`
+	Pinned bool   `json:"pinned,omitempty"`
 }
 
 // askSum is the hex SHA-256 of what a request asks, as sameAsk compares
@@ -688,12 +692,27 @@ func (st state) check() error {
 	return nil
 }
 
-// saveState writes state.json, its days past ChargeDays dropped. The
-// caller holds mu.
+// saveState writes state.json, its days past ChargeDays dropped and its
+// op ids trimmed to the newest MaxOps that are not pinned, every pinned
+// one kept where it stands. The caller holds mu.
 func (s *Store) saveState(st state) error {
 	st.Schema = Schema
-	if len(st.Ops) > MaxOps {
-		st.Ops = st.Ops[len(st.Ops)-MaxOps:]
+	unpinned := 0
+	for _, o := range st.Ops {
+		if !o.Pinned {
+			unpinned++
+		}
+	}
+	if drop := unpinned - MaxOps; drop > 0 {
+		kept := make([]opRef, 0, len(st.Ops)-drop)
+		for _, o := range st.Ops {
+			if !o.Pinned && drop > 0 {
+				drop--
+				continue
+			}
+			kept = append(kept, o)
+		}
+		st.Ops = kept
 	}
 	oldest := s.day(s.now().AddDate(0, 0, -(ChargeDays - 1)))
 	for d := range st.Days {
@@ -839,7 +858,8 @@ func measureRequest(r Request) error {
 // not; once its request is pruned, ErrPruned when in asks the same and
 // ErrOpConflict when it does not, so an op id never makes two requests.
 // Only an op id whose request never landed makes a new one. The request
-// is queued.
+// is queued. One made with in.Pin keeps its op id past the trim to MaxOps
+// until Release, at most MaxPinnedOps of them (ErrPinsFull past it).
 func (s *Store) Create(in Request) (r Request, created bool, err error) {
 	ask := Request{OpID: in.OpID, Kind: in.Kind, Subjects: in.Subjects, Note: in.Note, Since: in.Since, By: in.By, Batch: in.Batch}
 	if err := ask.checkAsked(); err != nil {
@@ -879,6 +899,9 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 		}
 		return prev, false, nil
 	}
+	if in.Pin && pinnedOps(st) >= MaxPinnedOps {
+		return Request{}, false, fmt.Errorf("%w: %d", ErrPinsFull, MaxPinnedOps)
+	}
 	st.Last++
 	// The number is new to state.json; a request kept under it says
 	// state.json is behind the requests, and nothing is written over it.
@@ -895,7 +918,7 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 		r.Since = r.Since.UTC()
 	}
 	st.Ops = slices.DeleteFunc(st.Ops, func(o opRef) bool { return o.OpID == ask.OpID })
-	st.Ops = append(st.Ops, opRef{OpID: ask.OpID, ID: r.ID, Sum: askSum(ask)})
+	st.Ops = append(st.Ops, opRef{OpID: ask.OpID, ID: r.ID, Sum: askSum(ask), Pinned: in.Pin})
 	if err := s.saveState(st); err != nil {
 		return Request{}, false, err
 	}
@@ -906,7 +929,9 @@ func (s *Store) Create(in Request) (r Request, created bool, err error) {
 }
 
 // ByOp answers the request an op id names, when state.json still holds
-// it.
+// it. A pinned op id whose request Prune removed answers ErrPruned with
+// the request's id alone (its number), so its caller knows the request
+// was made and never asks for another.
 func (s *Store) ByOp(opID string) (Request, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -915,15 +940,79 @@ func (s *Store) ByOp(opID string) (Request, bool, error) {
 		return Request{}, false, err
 	}
 	for i := len(st.Ops) - 1; i >= 0; i-- {
-		if st.Ops[i].OpID == opID {
-			r, err := s.loadLocked(st.Ops[i].ID)
-			if errors.Is(err, ErrNotFound) {
+		if o := st.Ops[i]; o.OpID == opID {
+			r, err := s.loadLocked(o.ID)
+			switch {
+			case errors.Is(err, ErrNotFound) && o.Pinned && o.Pruned:
+				return Request{ID: o.ID}, false, fmt.Errorf("%w: %s", ErrPruned, o.ID)
+			case errors.Is(err, ErrNotFound):
 				return Request{}, false, nil
 			}
 			return r, err == nil, err
 		}
 	}
 	return Request{}, false, nil
+}
+
+// pinnedOps is how many of st's op ids are pinned.
+func pinnedOps(st state) int {
+	n := 0
+	for _, o := range st.Ops {
+		if o.Pinned {
+			n++
+		}
+	}
+	return n
+}
+
+// PinnedOp is a pinned op id as Pinned lists it: the op id, its request's
+// id, and whether Prune removed the request.
+type PinnedOp struct {
+	OpID   string
+	ID     string
+	Pruned bool
+}
+
+// Pinned lists the pinned op ids, oldest first.
+func (s *Store) Pinned() ([]PinnedOp, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadState()
+	if err != nil {
+		return nil, err
+	}
+	var out []PinnedOp
+	for _, o := range st.Ops {
+		if o.Pinned {
+			out = append(out, PinnedOp{OpID: o.OpID, ID: o.ID, Pruned: o.Pruned})
+		}
+	}
+	return out, nil
+}
+
+// Release lets the pinned op id go: it is trimmed with the others from
+// then on (the trim of this write among them). An op id not pinned, or
+// not held, is released already.
+func (s *Store) Release(opID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.writable(); err != nil {
+		return err
+	}
+	st, err := s.loadState()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range st.Ops {
+		if st.Ops[i].OpID == opID && st.Ops[i].Pinned {
+			st.Ops[i].Pinned, changed = false, true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.saveState(st)
 }
 
 // Get answers the request id.

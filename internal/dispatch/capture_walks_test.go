@@ -437,6 +437,18 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 			}
 			return enc(v, w), nil
 		},
+		// What a capture is of, for a turn's admission: a deleted one's
+		// origin alone, its scope hidden with the tombstone.
+		"CaptureOf": func() ([]byte, error) {
+			v, err := s.CaptureOf(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if !v.Deleted || v.Scope != (CaptureScope{}) {
+				return enc(v), errors.New("the deleted capture's scope is read")
+			}
+			return enc(v), nil
+		},
 		"LaunchActor": func() ([]byte, error) {
 			a, err := s.LaunchActor(ctx, id)
 			if err != nil && !errors.Is(err, ErrNotFound) {

@@ -24,8 +24,8 @@ import (
 // the screenshot's content file when there is one; the send holds both
 // (capture_files, holder its id) while something can still use them: a
 // send of a live capture, and a sent one for as long as the store keeps
-// the send (nothing removes a send; what a sent send of a deleted capture
-// keeps is the settlement's to say, #794); a send of a deleted capture
+// the send (nothing removes a send, and the settlement keeps what a sent
+// send of a deleted capture holds, #794); a send of a deleted capture
 // that ended refused or cancelled lets them go (releaseEnded). A
 // send to a ticket writes, in its one transaction, the ticket when it is
 // new (its description ticketText), an attachment row naming each of the
@@ -63,8 +63,10 @@ import (
 // capture for findings of kind capture: Request a change, pending with the
 // review it asks for until the API records that review and its sent names
 // it, or Add to a review, sent at once (its target ReviewDraft) for the
-// person's draft to cite (the plan's PR-10). SendDecision is reserved: the
-// store refuses it until the item that owns decisions lifts it (PR-11).
+// person's draft to cite (the plan's PR-10). A send to a decision (PR-11)
+// is a comment on a decision record of DR1's, made by the API with the
+// send's id as its operation's id: pending with the comment's text as its
+// request until the decision's receipt answers.
 const (
 	SendTicket    = "ticket"
 	SendBrakeman  = "brakeman"
@@ -95,11 +97,16 @@ const (
 // the copy to that source.
 var brakemanTarget = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 
+// decisionTarget is a decision record's id, dr-<n> of at most 18 digits: a
+// copy of the ledger's form (ledger.DecisionID), which this package does
+// not import; TestADecisionsIDIsTheLedgers holds the copy to it.
+var decisionTarget = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
+
 // Destination is where a send goes as the person named it, kept as its
 // asked: a new ticket (Project, a project's key, and Title), an existing
-// one (Key), Brakeman (Kind alone), or a review of the candidate the
-// capture shows (Candidate, its annotations Ks, all when none, and Draft
-// for Add to a review).
+// one (Key), Brakeman (Kind alone), a review of the candidate the capture
+// shows (Candidate, its annotations Ks, all when none, and Draft for Add to
+// a review), or a decision record (Decision, its dr-<n>).
 type Destination struct {
 	Kind      string `json:"kind"`
 	Project   string `json:"project,omitempty"`
@@ -108,6 +115,7 @@ type Destination struct {
 	Candidate string `json:"candidate,omitempty"`
 	Ks        []int  `json:"ks,omitempty"`
 	Draft     bool   `json:"draft,omitempty"`
+	Decision  string `json:"decision,omitempty"`
 }
 
 // SendFacts is what the API made of a send: for Brakeman the request as
@@ -262,6 +270,7 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 		if to.Kind != SendReview {
 			c.must(to.Candidate == "" && len(to.Ks) == 0 && !to.Draft, RefusalInvalid, "only a send to a review names a candidate, annotations or a draft")
 		}
+		c.must(to.Kind == SendDecision || to.Decision == "", RefusalInvalid, "only a send to a decision names a decision")
 		switch to.Kind {
 		case SendTicket:
 			_, _, isKey := ParseKey(to.Key)
@@ -294,9 +303,12 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 				c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
 			}
 		case SendDecision:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman or to a review; a send to a %s comes with its item", to.Kind)
+			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to a decision names no ticket")
+			c.must(decisionTarget.MatchString(to.Decision), RefusalInvalid, "the decision %q is no decision's id (dr-<n>)", to.Decision)
+			c.field("send.request", "the request", string(f.Request))
+			c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
 		default:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman or to a review, not to %q", to.Kind)
+			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman, to a review or to a decision, not to %q", to.Kind)
 		}
 		if c.err != nil {
 			return c.err
@@ -584,6 +596,11 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			case SendReview:
 				if err := t.reviewCites(args.Target, args.ID); err != nil {
 					return err
+				}
+			case SendDecision:
+				var to Destination
+				if err := json.Unmarshal(sv.Asked, &to); err != nil || to.Decision != args.Target {
+					return refuse(RefusalInvalid, "a send to a decision is sent as the decision it names")
 				}
 			default:
 				return refuse(RefusalInvalid, "a send to a %s is sent in its one step", sv.Kind)
@@ -972,8 +989,8 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, open st
 // page.
 func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, limit int) (SendsPage, error) {
 	_, _, isKey := ParseKey(target)
-	if !(kind == SendTicket && isKey) && !(kind == SendBrakeman && brakemanTarget.MatchString(target)) {
-		return SendsPage{}, badQuery("the sends named are a ticket's, by its key, or Brakeman's, by br-<n>")
+	if !(kind == SendTicket && isKey) && !(kind == SendBrakeman && brakemanTarget.MatchString(target)) && !(kind == SendDecision && decisionTarget.MatchString(target)) {
+		return SendsPage{}, badQuery("the sends named are a ticket's, by its key, Brakeman's, by br-<n>, or a decision's, by dr-<n>")
 	}
 	return s.sendsPage(ctx, `s.kind = ? AND s.id IN (SELECT send_id FROM capture_send_outcomes WHERE kind = 'sent' AND target = ?) AND `+sentTo("s.id", "?"),
 		[]any{kind, target, target}, "", true, after, limit)
