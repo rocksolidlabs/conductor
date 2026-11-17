@@ -390,7 +390,10 @@ func (s *Server) compareShape(ctx context.Context, req brakeman.Request) (brakem
 	if err != nil {
 		return shape, fmt.Errorf("the ledger's run %s: %w", req.Subjects[0].Run, err)
 	}
-	var c crew.Crew
+	// The block alone of the crew as launched, never its members.
+	var c struct {
+		Compare *crew.Compare `json:"compare"`
+	}
 	if !ok || json.Unmarshal([]byte(row.Crew), &c) != nil || c.Compare == nil {
 		return shape, nil
 	}

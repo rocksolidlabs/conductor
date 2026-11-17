@@ -132,8 +132,8 @@ func (s *Server) comparisonSupporting(ctx context.Context, c crew.Comparison) *c
 // compareChain is the runs of the comparison's chain, from its launched
 // run on along its continuations (at most maxSupportedChains), and the
 // crew as launched.
-func (s *Server) compareChain(ctx context.Context, launched string) ([]string, crew.Crew, error) {
-	var c crew.Crew
+func (s *Server) compareChain(ctx context.Context, launched string) ([]string, launchedTasks, error) {
+	var c launchedTasks
 	var chain []string
 	for id := launched; id != "" && len(chain) < maxSupportedChains; {
 		row, ok, err := s.ledger.Run(ctx, id)
@@ -154,6 +154,12 @@ func (s *Server) compareChain(ctx context.Context, launched string) ([]string, c
 	return chain, c, nil
 }
 
+// launchedTasks is what the supporting part reads of the crew as
+// launched: its tasks alone, never its members.
+type launchedTasks struct {
+	Tasks []crew.Task `json:"tasks"`
+}
+
 // resultOf is the attempt's submitted result, ok false for none.
 func resultOf(a ledger.AttemptRow) (crew.Result, bool) {
 	var r crew.Result
@@ -167,7 +173,7 @@ func resultOf(a ledger.AttemptRow) (crew.Result, bool) {
 // with a result, along the chain from its newest run, of a review task
 // of the launched crew whose one need is the candidate's task and that
 // started at the candidate's commit.
-func (s *Server) reviewOf(launched crew.Crew, chain []string, attemptsOf func(string) []ledger.AttemptRow, cand crew.ComparedCandidate) (supportReview, bool) {
+func (s *Server) reviewOf(launched launchedTasks, chain []string, attemptsOf func(string) []ledger.AttemptRow, cand crew.ComparedCandidate) (supportReview, bool) {
 	var reviews []string
 	for _, t := range launched.Tasks {
 		if t.Kind == crew.TaskReview && slices.Equal(t.Needs, []string{cand.Task}) {
