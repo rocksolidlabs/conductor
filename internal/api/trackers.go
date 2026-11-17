@@ -153,8 +153,17 @@ type trackerKeep struct {
 	lockFile     func(*os.File) error
 }
 
+// trackerLoopbackWords is the start's one line when the tracker test seam
+// is on (CONDUCTOR_TRACKER_LOOPBACK=1, config.TrackerLoopback).
+const trackerLoopbackWords = "the tracker test seam is on (CONDUCTOR_TRACKER_LOOPBACK): plain http is admitted for a loopback tracker host only; it is for tests, never for use with a real token"
+
 func newTrackers(cfg *config.Config, st *store.Store, log *slog.Logger) *trackerKeep {
 	k := &trackerKeep{cfg: cfg, st: st, log: log, checking: map[string]int{}, seen: map[string]trackerSeen{}, now: time.Now, lockFile: lockTrackerFile}
+	if cfg.TrackerLoopback {
+		// The test seam, said once at the start: its words name no token,
+		// host or address.
+		log.Warn(trackerLoopbackWords)
+	}
 	k.gh = k.adapter(nil)
 	k.sweep()
 	return k

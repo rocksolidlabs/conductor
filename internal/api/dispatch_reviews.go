@@ -989,6 +989,9 @@ func receiptOfID(s string) (run, task string, n int, phase, id string, k int, ok
 // given no evidence: the store refuses its shape first, its receipt kept.
 func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, key string, c dispatch.Candidate, rv dispatch.NewReview, external externalFill) (dispatch.ReviewEvidence, *apiError, error) {
 	ev := dispatch.ReviewEvidence{Findings: make([]dispatch.FindingEvidence, len(rv.Findings))}
+	// One budget for every external job's fresh read (externalBudget),
+	// begun at the first: the review's own bound stays for its store steps.
+	var ectx context.Context
 	for i, f := range rv.Findings {
 		k := i + 1
 		e := dispatch.FindingEvidence{K: k}
@@ -1003,7 +1006,12 @@ func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, key str
 				if external == nil {
 					return ev, newAPIError(http.StatusForbidden, "not_granted", "a CI job on GitHub is read with the person's token: only the person names one in a request for changes"), nil
 				}
-				ref, aerr := external(ctx, ds, key, k, c, *f.Check)
+				if ectx == nil {
+					var cancel context.CancelFunc
+					ectx, cancel = context.WithTimeout(ctx, s.externalBudget())
+					defer cancel()
+				}
+				ref, aerr := external(ectx, ds, key, k, c, *f.Check)
 				if aerr != nil {
 					return ev, aerr, nil
 				}

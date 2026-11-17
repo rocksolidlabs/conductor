@@ -131,6 +131,8 @@ const isGitHub = (l: TicketLink) => !!summaryOf(l) || !!props.readable?.(l.url)
 /** The item's host, for the one rule of what is a link: the link's own URL's host. */
 const hostOf = (url: string) => /^https:\/\/([^/?#]+)\//.exec(url)?.[1] ?? ''
 const whole = ref(new Map<string, LinkRead | null>())
+/** The words of a Read again that failed, by link, until a later read is recorded. */
+const readFailed = ref(new Map<string, string>())
 const wholeAsked = new Map<string, string>()
 watch(
   () => shown.value.map((l) => `${l.id}@${summaryOf(l)?.readAt ?? ''}`).join(' '),
@@ -140,6 +142,12 @@ watch(
       if (!s?.readAt || !props.readWhole) continue
       const mark = s.readAt
       if (wholeAsked.get(l.id) === mark) continue
+      // A read recorded since (the server's own, another tab's): a failed press's words are the past.
+      if (wholeAsked.has(l.id) && readFailed.value.has(l.id)) {
+        const left = new Map(readFailed.value)
+        left.delete(l.id)
+        readFailed.value = left
+      }
       wholeAsked.set(l.id, mark)
       void props
         .readWhole(l)
@@ -152,7 +160,6 @@ watch(
   { immediate: true },
 )
 const readingNow = ref('')
-const readFailed = ref(new Map<string, string>())
 async function readIt(l: TicketLink) {
   if (!props.readAgain || readingNow.value) return
   readingNow.value = l.id

@@ -3,7 +3,7 @@ import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, LaunchSu
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
-import { refusalWords } from '~/composables/useDispatchOps'
+import { dispatchFailureWords, refusalWords } from '~/composables/useDispatchOps'
 import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, closeCard, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
@@ -248,7 +248,9 @@ watch(
     historyPages.value = 1
     historyNext.value = 0
     missing.value = false
-    // The title being edited and the assignees being picked were the other ticket's.
+    // The title being edited and the assignees being picked were the other ticket's, and so was the read of its GitHub item.
+    githubReading.value = false
+    githubReadFailure.value = ''
     leaveTitle()
     picks.clear()
     labelPicks.clear()
@@ -759,6 +761,8 @@ async function githubAct(make: (key: string) => Act | null | false): Promise<str
 /** The linked item read again: the fields GitHub owns follow it; the status never moves. */
 async function refreshGitHub(): Promise<{ words: string; changed: boolean }> {
   let changed = false
+  // A Refresh pressed reads again: what the page's own read on opening said is the past.
+  githubReadFailure.value = ''
   const words = await githubAct((key) =>
     locked.value || !ticket.value?.externalId
       ? false
@@ -807,13 +811,47 @@ const ownedByGitHub = (field: 'title' | 'description') => !!ticket.value?.extern
 
 // A page that opens on a linked item read more than ten minutes ago reads it again, once per ticket it shows (Owner decision 5): nothing
 // else reads GitHub by itself.
+// That read is the page's, not the person's: it goes outside the queue of the ticket's edits, so no edit waits for it; the panel says
+// "reading GitHub…" while it runs and keeps its failure in its own words, with Refresh to read again, never in a toast; and it is asked
+// only once the tokens are listed, for an item on a host a token is kept for (with none, there is nothing to ask GitHub).
 let staleAsked = ''
+/** The page's own read of the linked item on opening is under way, and why it failed ('' for none). */
+const githubReading = ref(false)
+const githubReadFailure = ref('')
+async function readOnOpen(key: string): Promise<void> {
+  githubReading.value = true
+  githubReadFailure.value = ''
+  try {
+    await ops.run<ActReply>(
+      async (body: OpBody) => {
+        const r: RefreshReply = await api.refreshExternal(key, body)
+        return { receipt: r.receipt ?? { opId: body.opId, intent: 'ticket.refresh', status: 'done' }, ticket: r.ticket }
+      },
+      {
+        thing: `ticket:${key}`,
+        what: key,
+        raise: true,
+        apply: (r) => {
+          if (r.ticket && key === props.ticketKey) ticket.value = r.ticket
+        },
+        rev: (r) => r.ticket?.rev,
+      },
+    )
+    if (key === props.ticketKey) void readHistory().catch(() => {})
+  } catch (e) {
+    if (key === props.ticketKey) githubReadFailure.value = trackerFailure(e) || dispatchFailureWords(e)
+  } finally {
+    if (key === props.ticketKey) githubReading.value = false
+  }
+}
 watch(
-  () => [ticket.value?.key, ticket.value?.externalRead?.readAt, !!ticket.value?.externalId, locked.value] as const,
-  ([key, readAt, linked, isLocked]) => {
-    if (!key || !linked || isLocked || staleAsked === key || key !== props.ticketKey) return
+  () => [ticket.value?.key, ticket.value?.externalRead?.readAt, !!ticket.value?.externalId, locked.value, tracker.available.value, tracker.entries.value] as const,
+  ([key, readAt, linked, isLocked, listed, kept]) => {
+    if (!key || !linked || isLocked || listed === null || staleAsked === key || key !== props.ticketKey) return
     staleAsked = key
-    if (readIsStale(readAt, Date.now())) void refreshGitHub()
+    const host = snapshotOf(ticket.value?.externalSnapshot)?.host
+    if (!host || !kept.some((e) => e.host === host)) return
+    if (readIsStale(readAt, Date.now())) void readOnOpen(key)
   },
 )
 
@@ -1106,6 +1144,8 @@ const askBrakeman = computed(() =>
               :can-link="tracker.entries.value.length > 0"
               :image="files.image"
               :refresh="refreshGitHub"
+              :reading="githubReading"
+              :read-failure="githubReadFailure"
               :authority="authorityGitHub"
               :link="linkGitHub"
               :unlink="unlinkGitHub"

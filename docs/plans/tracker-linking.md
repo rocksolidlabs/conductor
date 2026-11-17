@@ -1074,7 +1074,8 @@ path a session or a launch uses is. `tracker.Parse` turns
   There is no configuration file key for it: a token in `conductor.json`
   would be one more file holding it.
 - `CONDUCTOR_TRACKER_LOOPBACK=1` admits an `http` loopback host (tests
-  and the e2e harness only).
+  and the e2e harness only). It is a test seam, never for use with a real
+  token: a server started with it says so in one warning at its start.
 - `internal/export/leftout.go` gains `{dir: "credentials", why:
   WhySecret}`: an archive never carries the token, and a restore refuses
   an archive that has the directory.

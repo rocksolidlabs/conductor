@@ -19,7 +19,7 @@ import (
 // as by its route (actArgs, turnRoute).
 var actBodies = map[string]reflect.Type{
 	brakeman.ActLaunchApprovedPlan: reflect.TypeOf(ticketLaunchBody{}),
-	brakeman.ActPrepareFollowup:    reflect.TypeOf(planProposeBody{}),
+	brakeman.ActPrepareFollowup:    reflect.TypeOf(followupActBody{}),
 	brakeman.ActRequestRepair:      reflect.TypeOf(reviewSubmitBody{}),
 	brakeman.ActRouteDecision:      reflect.TypeOf(decisionRouteBody{}),
 }
@@ -40,6 +40,11 @@ var actWords = map[string]map[string]string{
 		"constraints": "planted", "decisions[].id": "planted", "decisions[].question": "planted", "decisions[].kind": "one of the decision kinds",
 		"decisions[].before[]": "the plan's tasks", "decisions[].for": "a person or a responsibility of the crew's",
 		"note": "planted",
+		// The propose route's source, which a turn's follow-up may not
+		// send (followupActBody): the history keeps none of it.
+		"source.repro.identity": "a turn's follow-up hands over no source (refused when sent)",
+		"source.repro.sha256":   "a turn's follow-up hands over no source (refused when sent)",
+		"source.evidence[]":     "a turn's follow-up hands over no source (refused when sent)",
 	},
 	brakeman.ActRequestRepair: {
 		"opId": "the act's op id", "byName": "planted", "candidate": "a candidate the operation resolves", "base": "a commit the operation resolves",

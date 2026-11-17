@@ -8,7 +8,8 @@ import { relativeTime } from '~/utils/sessions'
  * Enterprise Server, so Dispatch can read GitHub's issues and pull requests and publish what the person chooses. Check and save is this
  * card's own action, never part of the page's one Save: the token goes to the server in that one request, GitHub is asked whose it is,
  * and it is kept only then. The field is a password field the browser does not fill, emptied as the request goes whatever its answer;
- * the token is never shown again, nor held by the page, a toast or the address. Each saved host shows its account, when it was saved,
+ * the token is never shown again, nor held by the page, a toast, the address or a password manager (a masked text field, marked for none
+ * to save). Each saved host shows its account, when it was saved,
  * its fingerprint (this server's mark, never a character of the token, different after a restart), its state and Remove, which stops
  * Conductor's use of it only. A token given in the server's environment is shown as such and cannot be removed here.
  */
@@ -22,6 +23,8 @@ const failure = ref('')
 const asking = ref('')
 const removing = ref('')
 const now = ref(Date.now())
+/** The field is drawn masked by the browser's text security: a text field no password manager takes for a password. */
+const masked = typeof CSS !== 'undefined' && CSS.supports('-webkit-text-security', 'disc')
 
 onMounted(() => {
   void store.load()
@@ -92,7 +95,8 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
             <span>· fingerprint <span class="font-mono" data-mono="id" data-github-fingerprint>{{ e.fingerprint }}</span></span>
           </p>
           <p v-if="e.source === 'environment'" class="text-xs text-dimmed">Given to the server in CONDUCTOR_GITHUB_TOKEN: it cannot be removed here, only where the server is started.</p>
-          <div v-if="asking === e.host" class="flex flex-col gap-2 rounded-md bg-elevated/60 p-2.5 text-xs" data-github-remove-ask>
+          <!-- Under the row it was asked for alone: the environment's token, listed for the same host, cannot be removed here. -->
+          <div v-if="e.source === 'settings' && asking === e.host" class="flex flex-col gap-2 rounded-md bg-elevated/60 p-2.5 text-xs" data-github-remove-ask>
             <p>
               Remove stops Conductor's use of this token only: it stays valid on GitHub until you revoke it there<template v-if="revokeHref(e.host)">,
                 in <a :href="revokeHref(e.host)!" target="_blank" rel="noopener noreferrer" class="underline" data-github-revoke>GitHub's token settings</a></template>.
@@ -117,7 +121,27 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
             or a classic token with <code data-mono="key">repo</code>. A fine-grained token cannot call GitHub's Checks API: with one, a pull
             request's checks are its commit statuses and its GitHub Actions jobs, and other apps' check runs need a classic token.
           </template>
-          <UInput v-model="token" type="password" class="w-full" autocomplete="new-password" spellcheck="false" aria-label="The GitHub token" data-github-token />
+          <!--
+            Not a password field: a browser's password manager offers to save a password field's value as this origin's password, and
+            the token is kept by the server alone. A text field drawn masked where the browser can (every Chromium, the desktop app's
+            among them, and Safari), a password field elsewhere, each marked for no manager to fill or save it.
+          -->
+          <UInput
+            v-model="token"
+            :type="masked ? 'text' : 'password'"
+            class="w-full"
+            :ui="{ base: masked ? '[-webkit-text-security:disc]' : '' }"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore
+            data-form-type="other"
+            aria-label="The GitHub token"
+            data-github-token
+          />
         </UFormField>
         <div class="flex flex-wrap items-center gap-2">
           <UButton type="submit" label="Check and save" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="saving" :disabled="!token || !host.trim()" data-github-save />

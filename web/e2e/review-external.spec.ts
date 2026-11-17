@@ -32,6 +32,8 @@ const LOG_END = '--- FAIL: TestEmptyList (0.00s)\nFAIL\tpackage/list\t0.012s\n'
 let own: OwnServer
 let gh: FakeGitHub
 const opened: BrowserContext[] = []
+/** The runs this spec launched: stopped before its server stops (AGENTS.md: end what a test started before its directories go). */
+const runs: string[] = []
 
 test.beforeAll(async () => {
   test.setTimeout(test.info().timeout + 120_000)
@@ -42,6 +44,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await Promise.all(opened.splice(0).map((c) => c.close()))
+  for (const id of runs.splice(0)) await own?.api.stopRun(id)
   await gh?.stop()
   await own?.stop()
 })
@@ -106,6 +109,7 @@ async function deliveredCandidate(): Promise<{ ticketKey: string; run: string; c
   await api.ok('POST', `/api/dispatch/plans/${proposed.plan.id}/approve`, { opId: opOf(key, 'ap1'), note: 'Go.' })
   const l = await api.ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${ticketKey}/launch`, { opId: opOf(key, 'l1'), plan: proposed.plan.id })
   const run = l.launch.runId
+  runs.push(run)
   let c: Candidate | undefined
   await expect
     .poll(
@@ -196,6 +200,8 @@ test("a delivery's failed CI job: listed, the cut read said, prepared as GitHub'
   )
   expect(review.review.findings[0]).toMatchObject({ kind: 'check', check: { source: 'external', receipt: `github:${gh.host}/${gh.owner}/${gh.repo}/check-runs/${FAILED}`, headSha: commit, name: 'test (ubuntu)', run: '' } })
   expect(gh.count('checks')).toBeGreaterThan(reads)
+  // The Findings list names it by its job's name, as GitHub's.
+  await expect(page.locator('[data-review-finding][data-finding-kind="check"]')).toContainText('CI job test (ubuntu) failed on GitHub', within(30_000))
 
   // The pull request's head moved on: its jobs tested another commit, and none is offered.
   const other = 'e'.repeat(40)

@@ -4,7 +4,7 @@ import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { ApiError } from '~/composables/useApi'
 import { PRIORITIES, TICKET_STATUSES, statusWord } from '~/utils/dispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
-import { githubStateWords, needsSettings, ownersWords, trackerRefusalWords } from '~/utils/tracker'
+import { githubStateWords, importReady, needsSettings, ownersWords, trackerRefusalWords } from '~/utils/tracker'
 
 /**
  * Import from GitHub (Program item IN1a, docs/plans/tracker-linking.md, PR-8): a GitHub issue or pull request made a ticket of the project.
@@ -33,8 +33,13 @@ const errorCode = ref('')
 const status = ref<TicketStatus>('backlog')
 const priority = ref(0)
 
+/** Each read, numbered: an answer lands only while it is the last read asked in this opening of the dialog. */
+let readGen = 0
 watch(open, (o) => {
   if (!o) return
+  // A read still on its way from an earlier opening lands nowhere: its preview is not this opening's.
+  readGen++
+  reading.value = false
   url.value = ''
   preview.value = null
   previewed.value = ''
@@ -48,6 +53,10 @@ const statusItems = TICKET_STATUSES.map((s) => ({ label: statusWord(s).label, va
 const priorityItems = PRIORITIES.map((p) => ({ label: p.label, value: p.value, icon: p.icon }))
 const state = computed(() => (preview.value ? githubStateWords(preview.value) : null))
 const busy = computed(() => reading.value || importing.value)
+/** Import sends only the item previewed for the address the field holds now (importReady): a changed address is read again first. */
+const ready = computed(() => importReady({ preview: preview.value, previewed: previewed.value, url: url.value, reading: reading.value }))
+/** The field names another address than the preview shown: said where Import is. */
+const stale = computed(() => !!preview.value && url.value.trim() !== previewed.value)
 
 function failed(e: unknown) {
   if (e instanceof ApiError) {
@@ -62,22 +71,27 @@ function failed(e: unknown) {
 async function read() {
   const u = url.value.trim()
   if (!u || busy.value) return
+  const gen = ++readGen
   reading.value = true
   error.value = ''
   errorCode.value = ''
   try {
-    preview.value = await api.externalPreview(u, props.project)
+    const got = await api.externalPreview(u, props.project)
+    if (gen !== readGen) return
+    preview.value = got
     previewed.value = u
   } catch (e) {
+    if (gen !== readGen) return
     preview.value = null
+    previewed.value = ''
     failed(e)
   } finally {
-    reading.value = false
+    if (gen === readGen) reading.value = false
   }
 }
 
 async function submit() {
-  if (!preview.value || preview.value.linked || busy.value) return
+  if (!preview.value || !ready.value || importing.value) return
   importing.value = true
   error.value = ''
   try {
@@ -169,8 +183,9 @@ function imageName(id: string): string {
     <template #footer>
       <div class="flex w-full items-center justify-end gap-2">
         <span v-if="importing" class="mr-auto text-xs text-muted">reading GitHub…</span>
+        <span v-else-if="stale && !reading" class="mr-auto text-xs text-muted" data-import-stale>The address changed: Read it again to import it.</span>
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="importing" @click="open = false" />
-        <UButton label="Import" icon="i-lucide-download" :loading="importing" :disabled="!preview || !!preview.linked || reading" data-import-submit @click="submit" />
+        <UButton label="Import" icon="i-lucide-download" :loading="importing" :disabled="!ready" data-import-submit @click="submit" />
       </div>
     </template>
   </UModal>
