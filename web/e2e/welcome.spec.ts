@@ -287,6 +287,28 @@ test("every button of the welcome says what it does in a tooltip, on hover and o
   }
 })
 
+test("a tooltip closes as the pointer leaves its button: a press on the agent below one whose tooltip was open opens that agent's Launch dialog", async ({ browser }) => {
+  const srv = await empty()
+  budget(8 * STEP_MS)
+  const page = await dayPage(browser, { width: 1440, height: 900, path: '/', server: srv.started })
+  const card = await settled(page)
+  const agents = card.locator('[data-welcome-agent]')
+  expect(await agents.count(), 'the e2e catalog offers two agents or more').toBeGreaterThanOrEqual(2)
+  const [first, second] = [agents.nth(0), agents.nth(1)]
+  const name = (await second.locator('[data-welcome-agent-name]').textContent())!.trim()
+  await first.hover()
+  await tipShown(page, first, TIPS.agent((await first.locator('[data-welcome-agent-name]').textContent())!.trim()), 'the first agent, hovered')
+  // Straight down onto the middle of the next agent, where the first's tooltip lies while it is open, and pressed there: the mouse
+  // itself, so that a press that lands on the tooltip fails here rather than waiting on the locator's own check.
+  const box = (await second.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 })
+  await page.mouse.down()
+  await page.mouse.up()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog, 'the press reached the second agent').toBeVisible()
+  await expect(dialog.getByRole('radio', { checked: true })).toContainText(name)
+})
+
 test('the welcome with no agent found offers Agents, and with the agents not read offers Launch agent, each saying what it does', async ({ browser }) => {
   const srv = await empty()
   budget(2 * 20 * STEP_MS)

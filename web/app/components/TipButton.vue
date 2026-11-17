@@ -16,12 +16,17 @@ defineProps<{
 
 const { open, onPointer, onOpen } = useTipOpen()
 
-/** A sentence wraps inside a bounded box, never cut to one line as a tooltip's few words are. */
-const ui = { content: 'h-auto max-w-72', text: 'text-clip whitespace-normal' }
+/**
+ * A sentence wraps inside a bounded box, never cut to one line as a tooltip's few words are. The box is taller than a button and can
+ * lie over the next one (the welcome's agents, one under another): it closes as the pointer leaves its button
+ * (`disable-hoverable-content`: there is nothing in it to reach) and is gone at once, with no closing animation to keep it over the
+ * next button for a moment, so a press on the button below lands on that button.
+ */
+const ui = { content: 'h-auto max-w-72 data-[state=closed]:animate-none', text: 'text-clip whitespace-normal' }
 </script>
 
 <template>
-  <UTooltip :open="open" :text="tip" :disabled="!tip" :content="side ? { side } : undefined" :ui="ui" ignore-non-keyboard-focus @update:open="onOpen">
+  <UTooltip :open="open" :text="tip" :disabled="!tip" :content="side ? { side } : undefined" :ui="ui" ignore-non-keyboard-focus disable-hoverable-content @update:open="onOpen">
     <UButton v-bind="$attrs" data-tip-button @pointerenter="onPointer($event, true)" @pointerleave="onPointer($event, false)">
       <template v-for="(_, name) in $slots" #[name]="slotProps">
         <slot :name="name" v-bind="slotProps ?? {}" />
