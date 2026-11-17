@@ -626,6 +626,12 @@ function textChange(what: string, c: DispatchChange): string {
 /** One change of a ticket's own fields or sets, in words: "set the priority to High", "assigned Alice". */
 function ticketChange(c: DispatchChange, names: ChangeNames): string {
   if (c.op === 'create') return 'made the ticket'
+  // A linked GitHub item's rows (IN1a): a field set from a read of it, and a field taken over from it, each by its own kind.
+  if (c.op === 'observe' || c.op === 'adopt') {
+    const what = c.field === 'title' ? 'the title' : c.field === 'description' ? 'the description' : (c.field ?? 'a field')
+    if (c.op === 'adopt') return `${what}, taken over from ${systemWord(c.prior)}`
+    return c.field === 'title' ? `${what}, from GitHub: "${c.value}"` : `${what}, from GitHub`
+  }
   if (c.op === 'add' || c.op === 'remove') {
     const adds = c.op === 'add'
     switch (c.field) {
@@ -700,6 +706,11 @@ export function changeWords(c: DispatchChange, names: ChangeNames = {}): string 
   const words = c.entity === 'comment' ? commentChange(c) : c.entity === 'plan' ? planChange(c, names) : c.entity === 'launch' ? launchChange(c, names) : ticketChange(c, names)
   if (!words) return ''
   return c.op === 'reconcile' ? `${words} (a merge's repair)` : c.op === 'migrate' ? `${words} (an upgrade's)` : words
+}
+
+/** A linked item's system in words: GitHub for `github`. */
+function systemWord(system: string | undefined): string {
+  return !system || system === 'github' ? 'GitHub' : system
 }
 
 /** One change of a comment in words: its add (the create row; the body's row beside it says nothing more), its edit, its delete. */

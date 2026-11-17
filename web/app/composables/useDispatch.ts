@@ -483,7 +483,8 @@ export interface DispatchChange {
   ticketId?: string
   projectId?: string
   field?: string
-  op: 'set' | 'add' | 'remove' | 'create' | 'delete' | 'reconcile' | 'migrate'
+  /** `observe` a field set from a read of the linked item, `adopt` one taken over from it (IN1a). */
+  op: 'set' | 'add' | 'remove' | 'create' | 'delete' | 'reconcile' | 'migrate' | 'observe' | 'adopt'
   value: string
   prior?: string
   at: string

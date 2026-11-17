@@ -458,6 +458,14 @@ describe("a ticket's history", () => {
     expect(changeWords(row({ op: 'reconcile', field: 'parent_id', value: '' }))).toBe("cleared the parent (a merge's repair)")
     expect(changeWords(row({ entity: 'comment', entityId: 'c1', op: 'create', value: '{}' }))).toBe('commented')
   })
+  it("says a linked GitHub item's rows by their own kind: from GitHub, and taken over from GitHub (IN1a)", () => {
+    expect(changeWords(row({ op: 'observe', field: 'title', value: 'The list crashes', prior: 'Old' }))).toBe('the title, from GitHub: "The list crashes"')
+    expect(changeWords(row({ op: 'observe', field: 'description', value: 'x' }))).toBe('the description, from GitHub')
+    expect(changeWords(row({ op: 'adopt', field: 'title', value: 'The list crashes', prior: 'github' }))).toBe('the title, taken over from GitHub')
+    expect(changeWords(row({ op: 'adopt', field: 'description', value: 'x', prior: 'github' }))).toBe('the description, taken over from GitHub')
+    // Never the words of a person's own edit.
+    expect(changeWords(row({ op: 'observe', field: 'title', value: 'T' }))).not.toMatch(/^set the title/)
+  })
   it('makes one entry per operation, oldest first, leaving out the rows that say nothing more than their operation', () => {
     const changes = [
       row({ op: 'create', value: '{}', opId: 'a', n: 0 }),

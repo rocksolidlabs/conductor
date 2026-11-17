@@ -74,6 +74,22 @@ export function runRowLook(block: RunBlock, r: RunInfo | undefined): { detail: s
  * A plan's or a task's row in the palette's Needs you (the UX review's P3): "Plan: <title>", "Task: <title>" (its kind's word, kindLook),
  * its question or brief below, opening the item on the Needs you page. `go` navigates (and closes the palette).
  */
+/**
+ * The Tickets group's rows with the tickets a pasted GitHub item's address names (IN1a, `hits`, read for that address) first, each matched
+ * by the address as typed and named by it exactly, so Enter opens it; one row per ticket, an open one already listed moved to the front.
+ * Rows read for another address, or none, leave the group as it is.
+ */
+export function withExternalHits<R extends PaletteItem>(rows: readonly R[], hits: { url: string; tickets: readonly TicketSummary[] }, query: string, make: (t: TicketSummary) => R): R[] {
+  const pasted = query.trim()
+  if (!pasted || hits.url !== pasted || !hits.tickets.length) return [...rows]
+  const found = hits.tickets.map((t) => {
+    const row = make(t)
+    return { ...row, detail: `Linked to ${pasted}${row.detail ? ` · ${row.detail}` : ''}`, words: [...(row.words ?? []), pasted], exact: [...(row.exact ?? []), pasted] }
+  })
+  const keys = new Set(found.map((r) => r.key))
+  return [...found, ...rows.filter((r) => !keys.has(r.key))]
+}
+
 export function needsItemRow(it: Pick<NeedsItem, 'kind' | 'ref' | 'summary'>, go: (to: string) => void): PaletteItem {
   const to = `/decisions?item=${encodeURIComponent(it.ref)}`
   const look = kindLook(it.kind)
@@ -533,6 +549,8 @@ export function usePaletteRows(ctx: PaletteContext) {
   function ticketItems(query: string): PaletteItem[] {
     if (!admin.hasToken.value) return []
     const rows = [...ticketRows.value]
+    // A GitHub item's address pasted (IN1a): the tickets it names, each matched by that address, first.
+    rows.splice(0, rows.length, ...withExternalHits(rows, palette.externalHits.value, query, ticketItem))
     const typed = parseTicketKey(query.trim().toUpperCase())
     if (typed && !palette.tickets.value.some((t) => t.key === typed.key)) {
       rows.unshift({ key: `ticket:${typed.key}`, label: `Open ${typed.key}`, detail: 'Not among the open tickets read: its page says what it is', words: [typed.key], exact: [typed.key], icon: 'i-lucide-ticket', run: () => go(ticketPath(typed.key)), href: ticketPath(typed.key) })
@@ -548,6 +566,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     // New ticket in each project not archived (docs/plans/dispatch.md: `>` gains them), the dialog opened by the palette.
     for (const p of palette.projects.value) {
       out.push({ key: `action:new-ticket:${p.key}`, label: `New ticket in ${p.key}`, detail: p.name, icon: 'i-lucide-ticket-plus', run: () => palette.askNewTicket(p.key) })
+      out.push({ key: `action:import:${p.key}`, label: `Import from GitHub into ${p.key}`, detail: `${p.name}: an issue or a pull request, by its address`, icon: 'i-lucide-github', run: () => palette.askImport(p.key) })
     }
     const done = attention.sessions.value.filter((s) => sessionLive(s.status) && sessionStatus(s).key === 'finished')
     out.push({
@@ -936,7 +955,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     groups.push({ id: 'runs', label: 'Runs', rows: blocks.map((b) => runItem(b, attention.runOf(b.runId))) })
     // A ticket's key typed whole puts the Tickets group first after Needs you and the page's, so Enter opens that ticket.
     const tickets: PaletteGroup<PaletteItem> = { id: 'tickets', label: 'Tickets', rows: ticketItems(query) }
-    if (parseTicketKey(query.trim().toUpperCase())) groups.splice(page ? 2 : 1, 0, tickets)
+    if (parseTicketKey(query.trim().toUpperCase()) || (query.trim() && palette.externalHits.value.url === query.trim() && palette.externalHits.value.tickets.length)) groups.splice(page ? 2 : 1, 0, tickets)
     else groups.push(tickets)
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })

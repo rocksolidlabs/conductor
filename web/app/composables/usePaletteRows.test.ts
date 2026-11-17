@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { NeedsItem } from '~/utils/needsYou'
 import { sidebarModel, type RunBlock } from '~/utils/sidebar'
-import { needsItemRow, runRowLook, waitingRows } from './usePaletteRows'
+import type { TicketSummary } from '~/composables/useDispatch'
+import { rank } from '~/utils/palette'
+import { needsItemRow, runRowLook, waitingRows, withExternalHits } from './usePaletteRows'
 
 // The palette's store keeps module state in Nuxt's auto-imported refs: not needed by the rows' builder.
 vi.mock('~/composables/usePalette', () => ({ usePalette: () => ({}) }))
@@ -73,5 +75,27 @@ describe("the palette's run row", () => {
     expect(waits.state).toBe('needs')
     expect(runRowLook(waits, run).status.key).toBe('needs')
     expect(runRowLook(waits, run).detail).toMatch(/ · 2 working$/)
+  })
+})
+
+// A GitHub item's address pasted into the search (IN1a): the tickets linked to it, matched by it and named by it, first.
+describe("the Tickets group for a pasted GitHub address", () => {
+  const url = 'https://github.com/octo-example/widgets/issues/12'
+  const t = (key: string, title: string) => ({ key, title }) as TicketSummary
+  const make = (x: TicketSummary) => ({ key: `ticket:${x.key}`, label: `${x.key} ${x.title}`, detail: 'Backlog', words: [x.key, x.title], exact: [x.key], run: () => {} })
+  const listed = [make(t('CND-1', 'One')), make(t('CND-2', 'Two'))]
+
+  it('puts the tickets the address names first, one row each, matched and named by the address', () => {
+    const rows = withExternalHits(listed, { url, tickets: [t('CND-2', 'Two'), t('API-7', 'Seven')] }, `  ${url} `, make)
+    expect(rows.map((r) => r.key)).toEqual(['ticket:CND-2', 'ticket:API-7', 'ticket:CND-1'])
+    expect(rows[0]!.detail).toBe(`Linked to ${url} · Backlog`)
+    const ranked = rank([{ id: 'tickets', label: 'Tickets', rows }], url, {})
+    expect(ranked[0]!.rows.map((r) => r.key)).toEqual(['ticket:CND-2', 'ticket:API-7'])
+  })
+
+  it('leaves the group as it is for hits read for another address, or none', () => {
+    expect(withExternalHits(listed, { url: `${url}0`, tickets: [t('CND-9', 'Nine')] }, url, make)).toEqual(listed)
+    expect(withExternalHits(listed, { url, tickets: [] }, url, make)).toEqual(listed)
+    expect(withExternalHits(listed, { url: '', tickets: [] }, '', make)).toEqual(listed)
   })
 })
