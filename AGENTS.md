@@ -636,6 +636,12 @@ add its rule here.
   seconds after the last answer came, past the expect's bound on a loaded
   box (`dispatch.spec.ts`, #281). Count the page's requests before
   doubting the bound; the page bounds its own (`DISPATCH_READS_IN_FLIGHT`).
+- Judge a thing by when it was made, never by when a queue hands it on.
+  The host told an entry late only when it was already kept as the link
+  came back: one recorded while away and still in the forwarder's queue
+  went out live and paged a webhook (`latepage_test.go`, #281). Stamp what
+  decides where the thing is made (`madeOn`), and hold the queue in the
+  test (`holdForwarding`) so the old code fails every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
