@@ -159,23 +159,23 @@ func TestABurstOfKeptEntriesPagesNobody(t *testing.T) {
 }
 
 // An entry is sent live only when it was made on the connection that
-// carries it: handed to the sender on this registration and stamped no
-// earlier than it began. One handed over on an earlier registration, one
-// stamped before the registration began (recorded just before it, handed
-// over just after), and one with no stamp go late.
+// carries it. One handed over on an earlier registration goes late; so do
+// one stamped before the registration began and handed over within
+// handOverBound of its start (recorded just before it, handed over just
+// after), and one with no stamp, within it.
 func TestAnEntryMadeBeforeTheConnectionBeganIsLate(t *testing.T) {
 	a, got := sentKept(t)
 	entry := func(words string, at time.Time) session.ActivityEntry {
 		return session.ActivityEntry{At: at, Type: session.ActivityProgress, Message: words}
 	}
-	earlier := a.madeOn()
+	earlier := a.madeOn(time.Now().UTC())
+	a.actSince = func() time.Duration { return handOverBound - time.Nanosecond }
 	a.registeredActivity(true, true)
+	began := a.registrationBegan()
 	a.sendActivity(entry("handed over late", time.Now().UTC()), "", earlier)
-	a.actMu.Lock()
-	began := a.actBegan
-	a.actMu.Unlock()
-	a.sendActivity(entry("stamped before", began.Add(-time.Nanosecond).UTC()), "", a.madeOn())
-	a.sendActivity(entry("no stamp", time.Time{}), "", a.madeOn())
+	stamped := entry("stamped before", began.Add(-time.Nanosecond).UTC())
+	a.sendActivity(stamped, "", a.madeOn(stamped.At))
+	a.sendActivity(entry("no stamp", time.Time{}), "", a.madeOn(time.Time{}))
 	a.sendNow(entry("made now", time.Time{}))
 	want := map[string]bool{"handed over late": true, "stamped before": true, "no stamp": true, "made now": false}
 	for range want {
@@ -183,6 +183,31 @@ func TestAnEntryMadeBeforeTheConnectionBeganIsLate(t *testing.T) {
 		if late, ok := want[m.Entry.Message]; !ok || m.Late != late {
 			t.Fatalf("sent %+v", m)
 		}
+	}
+}
+
+// A wall clock set back after a registration makes none of the
+// connection's entries late: past handOverBound of the registration's
+// start (the monotonic clock's), an entry the session hands over on it is
+// live whatever its stamp, a question's among them.
+func TestAWallClockSetBackSendsTheConnectionsEntriesLive(t *testing.T) {
+	a, got := sentKept(t)
+	since := handOverBound
+	a.actSince = func() time.Duration { return since }
+	a.registeredActivity(true, true)
+	// The wall clock went back an hour after the registration began.
+	stamp := a.registrationBegan().Add(-time.Hour).UTC()
+	ask := session.ActivityEntry{At: stamp, Type: session.ActivityAttention, Message: "Ship it?"}
+	a.sendActivity(ask, session.AttentionNeedsInput, a.madeOn(ask.At))
+	if m := <-got; m.Late || m.Entry.Message != "Ship it?" {
+		t.Fatalf("an entry made on the connection, its stamp set back, sent %+v", m)
+	}
+	// Within the bound, the same stamp is an entry of the registration
+	// before.
+	since = handOverBound - time.Nanosecond
+	a.sendActivity(ask, session.AttentionNeedsInput, a.madeOn(ask.At))
+	if m := <-got; !m.Late {
+		t.Fatalf("an entry stamped before the registration, handed over at its start, sent %+v", m)
 	}
 }
 
