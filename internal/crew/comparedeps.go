@@ -99,10 +99,10 @@ func depsOf(ctx context.Context, git gitFunc, dir, base, commit string, stats []
 		if len(dc.Files) < maxDepFiles {
 			dc.Files = append(dc.Files, cutEncoded(st.Path, maxComparePath))
 		}
-		var parse func(string) map[string]string
+		var parse func(string) (map[string]string, bool)
 		switch path.Base(st.Path) {
 		case "go.mod":
-			parse = goModRequires
+			parse = func(text string) (map[string]string, bool) { return goModRequires(text), true }
 		case "package.json":
 			parse = packageDeps
 		default:
@@ -119,7 +119,11 @@ func depsOf(ctx context.Context, git gitFunc, dir, base, commit string, stats []
 		if !wok || !nok {
 			continue // past its bound: listed without modules
 		}
-		before, after := parse(was), parse(now)
+		before, bok := parse(was)
+		after, aok := parse(now)
+		if !bok || !aok {
+			continue // not parsed: listed without modules
+		}
 		names := slices.Sorted(maps.Keys(before))
 		for name := range after {
 			if _, ok := before[name]; !ok {
@@ -194,17 +198,25 @@ func goModRequires(text string) map[string]string {
 var packageMaps = []string{"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
 
 // packageDeps is a package.json's four maps of modules, name to version
-// (the first map naming it wins); none for a file that is not JSON.
-func packageDeps(text string) map[string]string {
-	var p map[string]json.RawMessage
+// (the first map naming it wins): none for no file (""), ok false for a
+// file that is not a JSON object or whose maps are not maps of strings.
+func packageDeps(text string) (map[string]string, bool) {
 	out := map[string]string{}
-	if json.Unmarshal([]byte(text), &p) != nil {
-		return out
+	if text == "" {
+		return out, true
+	}
+	var p map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &p) != nil || p == nil {
+		return nil, false
 	}
 	for _, key := range packageMaps {
-		var deps map[string]string
-		if json.Unmarshal(p[key], &deps) != nil {
+		raw, ok := p[key]
+		if !ok || string(raw) == "null" {
 			continue
+		}
+		var deps map[string]string
+		if json.Unmarshal(raw, &deps) != nil {
+			return nil, false
 		}
 		for name, v := range deps {
 			if _, ok := out[name]; !ok {
@@ -212,7 +224,7 @@ func packageDeps(text string) map[string]string {
 			}
 		}
 	}
-	return out
+	return out, true
 }
 
 // packageScripts is a package.json's scripts map; ok false for a file that

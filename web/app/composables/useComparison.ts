@@ -68,6 +68,7 @@ export function useComparison(o: { run: () => string; ticket?: () => string }) {
         retry.ask()
         return
       }
+      changing.value = false
       error.value = (e as Error).message || 'The comparison could not be read.'
     }
   }
@@ -88,7 +89,9 @@ export function useComparison(o: { run: () => string; ticket?: () => string }) {
   function ask(): void {
     dispatchLive().ask(watch_, read)
   }
-  const retry = gather(() => serial.run(), RUN_CHANGING_RETRY_MS)
+  // A read refused while the chain moved is asked again after the second through the live store, so a failure of that read is asked
+  // again as any other's is (after the window, doubled).
+  const retry = gather(async () => ask(), RUN_CHANGING_RETRY_MS)
 
   // Another run named: what was shown was the other's.
   watch(

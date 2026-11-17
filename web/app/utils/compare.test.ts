@@ -5,13 +5,17 @@ import {
   SAME_PATCHES,
   candidateCommitWords,
   candidateMark,
+  cellOpens,
   cellReceipt,
+  cellsInColumns,
   cellWords,
   comparisonLink,
   comparisonRuns,
   depsWords,
   independenceWords,
   lanesOf,
+  notMeasured,
+  notMeasuredLine,
   notObservedWords,
   notRunWords,
   parseCheckRef,
@@ -103,6 +107,7 @@ describe('a cell', () => {
     expect(cellWords(cell({ state: 'not_run', notRun: 'earlier_failed', receipt: '' }))).toMatchObject({ word: 'not run: an earlier check failed', detail: '', state: 'not_run', mark: { key: 'waiting' } })
     expect(notRunWords('no_such_step')).toBe('not run: its manifest has no such step')
     expect(notRunWords('pending')).toBe('not run yet: its checks are under way')
+    expect(notRunWords('ended')).toBe('not run: its attempt ended before this check')
     expect(notRunWords(undefined)).toBe('not run')
     expect(cellWords(cell({ state: 'cancelled', exit: null }))).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
   })
@@ -111,6 +116,15 @@ describe('a cell', () => {
     expect(markLook(cellWords(cell()).mark.key).tone).toBe('neutral')
     expect(markLook(cellWords(cell({ exit: 2 })).mark.key).tone).toBe('error')
     expect(markLook(cellWords(cell({ state: 'not_run' })).mark.key).tone).toBe('neutral')
+  })
+
+  it('keeps each cell under its column: a candidate with no cell draws one with no result', () => {
+    const cells = cellsInColumns({ cells: [cell({ task: 'approach-b' })] }, [candidate({ task: 'approach-a', commit: '' }), candidate({ task: 'approach-b' })])
+    expect(cells.map((c) => c.task)).toEqual(['approach-a', 'approach-b'])
+    expect(cellWords(cells[0]!)).toMatchObject({ word: 'no result to check', state: 'none', mark: { key: 'waiting' } })
+    expect(cellOpens(cells[0]!)).toBe(false)
+    expect(cellOpens(cells[1]!)).toBe(true)
+    expect(cellReceipt({ phase: 'check', id: 'unit' }, cells[0]!, candidate())).toBeNull()
   })
 
   it("opens the receipt its ref names, and none for a cell that did not run", () => {
@@ -133,6 +147,27 @@ describe('a candidate', () => {
     expect(candidateCommitWords(candidate({ state: 'failed', selectable: false }))).toBe('last submitted commit · failed: not selectable')
     expect(candidateCommitWords(candidate({ commit: '', state: 'running' }))).toBe('no result yet')
     expect(candidateCommitWords(candidate({ acceptedAnyway: true }))).toBe('standing result · accepted anyway')
+    // A lane still worked whose last submitted commit is shown (its checks under way, or a further attempt): not failed.
+    expect(candidateCommitWords(candidate({ state: 'running', selectable: false }))).toBe('last submitted commit · not a result yet: its checks or a further attempt are under way')
+    expect(candidateCommitWords(candidate({ state: 'cancelled', selectable: false }))).toBe('last submitted commit · cancelled: not selectable')
+  })
+
+  it('says what was not measured of a candidate, never a change it did not see', () => {
+    const size = { files: 1, added: 1, removed: 0, filesAdded: 0, filesDeleted: 0, list: [], total: 1 }
+    // Measured whole: every row holds what was measured, no dependency or test file changed among it.
+    expect(notMeasured(candidate({ size }))).toEqual({ size: '', deps: '', verify: '', independence: '' })
+    // Git could not be read for it: nothing of it is said, its independence neither.
+    const late = 'not measured: the measure passed its 20 s budget'
+    expect(notMeasured(candidate({ unavailable: late }))).toEqual({ size: late, deps: late, verify: late, independence: late })
+    // A size read before a later git call failed stands; the parts not read are said so.
+    expect(notMeasured(candidate({ size, unavailable: 'git cat-file: exit status 128' }))).toEqual({ size: '', deps: 'git cat-file: exit status 128', verify: 'git cat-file: exit status 128', independence: 'git cat-file: exit status 128' })
+    // A diff past its bound: no dependency or test file read, its commits still compared.
+    const big = { ...size, notMeasured: 'the diff passes 4 MiB: not measured' }
+    expect(notMeasured(candidate({ size: big }))).toEqual({ size: big.notMeasured, deps: big.notMeasured, verify: big.notMeasured, independence: '' })
+    expect(notMeasured(candidate({ commit: '' })).deps).toBe('it has no commit')
+    expect(notMeasuredLine('it has no commit')).toBe('Not measured: it has no commit.')
+    expect(notMeasuredLine(late)).toBe('Not measured: the measure passed its 20 s budget.')
+    expect(notMeasuredLine('the diff passes 4 MiB: not measured')).toBe('The diff passes 4 MiB: not measured.')
   })
 })
 
