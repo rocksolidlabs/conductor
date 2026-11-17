@@ -139,12 +139,13 @@ test('Request a change sends the capture as a review requesting changes, and Yar
 })
 
 test("a capture of an attempt's worktree is offered neither, and says why", async ({ page, api }) => {
-  // The repair attempt holds at its check (the gate removed), its worktree's preview open.
-  await expect.poll(async () => task(await api.run(runId), 'build').attempt?.state, { timeout: 120_000, message: 'the repair attempt runs' }).toBe('running')
+  // The repair attempt holds at its check (the gate removed), its worktree's preview open: its label is answered.
+  const label = `/api/runs/${encodeURIComponent(runId)}/tasks/build/attempts/2/preview`
+  await expect.poll(async () => (await api.call('GET', label)).status, { timeout: 120_000, message: "the repair attempt's preview" }).toBe(200)
   await previewSeam(page)
   await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=2`)
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: 120_000 })
-  const l = await api.ok<{ url: string; tree: string }>('GET', `/api/runs/${encodeURIComponent(runId)}/tasks/build/attempts/2/preview`)
+  const l = await api.ok<{ url: string; tree: string }>('GET', label)
   expect(l.tree).toBe('worktree')
   const frame = await previewFrame(page, new URL(l.url).origin)
   await page.locator('[data-preview-capture]').click()
