@@ -4329,6 +4329,16 @@ after a lane runs again or its result changes, never by a pause, an
 unpause or a stop's own change, and not by a continuation whose lanes
 stand as the chain's newest `compare.settled` has them. It is in the run's
 history and its export like every run event.
+A check row's cell with no receipt of it is `not_run` with why in
+`notRun`: `pending` (the attempt's checks are under way), `no_such_step`
+(the manifest its tree ran has no such verify step), `earlier_failed` (a
+check before it failed or timed out, and the tree's checks stop at the
+first), `ended` (its attempt ended before this check: stopped,
+interrupted, cancelled, or failed before its checks ran), or none when no
+reason is known. A check whose argv names a file at the base (a path
+inside the crew's folder; a folder, `.` or `tests/`, names none) is not
+comparable when a candidate changed that file, and `unknown` when the
+files it names could not be looked up.
 The crew's own text is never cut: a crew is refused as it is saved when a
 task's goal, role and instructions take more than 40 KiB as `task.json`
 keeps them, or a task needs the same task twice, so a task file always
