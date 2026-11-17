@@ -486,6 +486,52 @@ continued, reviewed, repaired and delivered; the others keep their
 branches, worktrees and receipts, labelled not selected, and refuse their
 commands with `409 not_selected`.
 
+## Previews and captures
+
+A preview is served on the server's loopback by the tree's own services
+and framed by the workbench, which reads the page through one script, the
+preview bridge (`docs/protocol.md`, Preview bridge): `GET
+/preview-bridge.js` serves it with the server's own workbench origins
+written in, and it answers a parent window at those origins alone. A page
+in a browser has the bridge only when it loads it itself (a tree names its
+URL as `CONDUCTOR_PREVIEW_BRIDGE`); in the desktop app the shell puts the
+same script into the preview frame, whatever page it shows
+(`desktop/src/preview.ts`: `WebFrameMain.executeJavaScript` in the main
+frame's own children at the preview's origin, a page on the loopback that
+is not the workbench under any of its names, the script fetched from the
+server's origin alone; a frame that has a bridge already keeps it, the
+second idle). The screenshot has two paths, chosen in that order: in the
+desktop app the shell takes the pixels of the frame's box in the
+workbench's own window with no prompt (`webContents.capturePage`, the box
+in whole CSS pixels inside the content, at most 2,048 pixels on the long
+side as taken, a PNG of at most 4 MiB (one past it taken again at half
+its size, once, as the workbench's own encoding does, then dropped with
+words), one at a time per window,
+`web/app/utils/screenshotDesktop.ts`); in a browser that can, the tab
+cropped to the frame, with the person's permission; else none, which the
+capture says. The shell's two channels for these, `conductor:previewBridge`
+and `conductor:capturePreview`, answer the workbench's main frame alone
+(its top frame, at the server's origin over http(s)): a frame inside the
+workbench, the app's own file pages and any other origin are refused, and
+each acts on the asking window only. The preload is never put into a
+frame, and the shell adds no permission and no webview.
+
+Conductor's own app is previewed the same way, from the repository's
+`conductor.manifest.json`: a tree's services are a Conductor server of the
+tree's own (`serve --dev --token-env CONDUCTOR_TREE_SECRET` on the
+loopback, its data under the tree's state directory, publishing nothing)
+and the web app's dev server, which proxies to it (`CONDUCTOR_DEV_API`) and,
+in the dev build alone, loads the bridge the tree is told of
+(`CONDUCTOR_PREVIEW_BRIDGE`, `web/app/plugins/previewBridge.client.ts`).
+The inner server's token is the tree's secret, minted for that tree and
+given only in its environment, so no argv and no file of the repository
+holds it; the preview names it as `${CONDUCTOR_TREE_SECRET}`, which the
+label puts in for the admin alone, and another page on the loopback, which
+`--dev`'s CORS lets reach the inner server, cannot know it. A capture's
+record (the revision the server read at the save, the sources checked in
+the tree) is the server's, never the client's (`docs/protocol.md`,
+Captures).
+
 ## Dispatch
 
 Dispatch is a component, Conductor's own work tracking: projects, tickets
@@ -1621,6 +1667,14 @@ still resolved. A switchyard routes and answers none.
   `workbench-token.lock` beside it, so a second server started on the same
   data directory leaves it alone, and one of those that generates its own
   token stops unless it has `--print-listen`.
+  `serve --token-env NAME` makes the variable `NAME`'s value the token, in
+  the place of a configured one: refused at start when the flag's value is
+  not a variable's name (the empty one included) or the variable is unset
+  or empty (never falling back to a configured or generated one), taken
+  out of the server's environment, so nothing it starts inherits it, and
+  printed, logged and kept nowhere: no handshake field, no token file, no
+  error or log line that repeats what the flag was given (a token given
+  by mistake as the name included).
 
 ## Persistence
 

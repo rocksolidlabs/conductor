@@ -379,14 +379,26 @@ type Engine struct {
 	// before the end's change; previewFinished as a preview's end has let
 	// go of it (finishPreview). life ends with Drain (endLife): an owed
 	// write of a preview's end is not tried after it.
-	previews        map[previewKey]*preview
+	previews map[previewKey]*preview
+	// previewRuns are the preview-only contexts of runs the engine does
+	// not hold (preview_context.go), by run id, under mu: never in runs,
+	// kept while a preview of theirs is, dropped with its last.
+	previewRuns     map[string]*run
 	idleTimer       func(time.Duration) <-chan time.Time
 	checkoutBound   func() (context.Context, context.CancelFunc)
 	checkoutMade    func(dir string)
 	beforeIdleEnd   func()
 	previewFinished func()
-	life            context.Context
-	endLife         context.CancelFunc
+	// drained says the shutdown's Drain has begun, under mu: no preview is
+	// reserved from then on (reservePreview). opens counts the previews
+	// reserved whose open is under way (preview.go), which Drain waits
+	// for. afterReserve, when a test sets it, runs once an open has
+	// reserved its preview, before anything of it is read or made.
+	drained      bool
+	opens        flight
+	afterReserve func()
+	life         context.Context
+	endLife      context.CancelFunc
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string
@@ -465,6 +477,9 @@ type Engine struct {
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
+	// openEvidenceFile reads a change request's evidence file by its
+	// capture send and SHA-256 (UseEvidenceFiles): Dispatch's store.
+	openEvidenceFile func(ctx context.Context, send, sha256 string) (io.ReadCloser, error)
 	// newRunID, when set, mints a new run's id in place of a random one
 	// (mintRunID): a test makes a launch mint an id the ledger has.
 	newRunID func(crewID string) string
@@ -712,7 +727,13 @@ type run struct {
 	// previews counts the preview checkouts of the run's candidates the
 	// engine holds (preview.go), from their reservation until their end's
 	// last commit: the run is not idle meanwhile. Under e.mu.
-	previews        int
+	previews int
+	// previewOnly says the run is a preview-only context built from the
+	// ledger for a run the engine does not hold (preview_context.go): in
+	// e.previewRuns, never in e.runs, so nothing schedules it, and its
+	// transactions write the previews' rows, events and receipts alone,
+	// never a row of its run, tasks or attempts. Set as it is made.
+	previewOnly     bool
 	pendingTrees    []treeEnd
 	pendingReleases []*tree
 	// messages are the members' messages to one another (messages.go), in

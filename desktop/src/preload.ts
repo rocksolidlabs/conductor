@@ -28,6 +28,17 @@ const bridge = {
   allowIceFirewall: (): Promise<string> => ipcRenderer.invoke('conductor:allowIceFirewall'),
   versions: () => ipcRenderer.invoke('conductor:versions'),
   /**
+   * Puts the server's preview bridge into the workbench's preview frames at origin (a page on this machine's loopback, not the
+   * workbench's own): how many took it, or why the app refused.
+   */
+  previewBridge: (origin: string): Promise<{ injected: number } | { refused: string }> => ipcRenderer.invoke('conductor:previewBridge', origin),
+  /**
+   * The pixels of rect (the workbench's CSS pixels, whole numbers, inside the window) of this window, as PNG at most 2,048 pixels on
+   * its long side, with the image's pixels to one of the rect's; or why the app refused (one at a time, at most 4 MiB).
+   */
+  capturePreview: (rect: { x: number; y: number; width: number; height: number }): Promise<{ png: Uint8Array; width: number; height: number; scale: number } | { refused: string }> =>
+    ipcRenderer.invoke('conductor:capturePreview', rect),
+  /**
    * The update downloaded ('' for none), whether to say so (the first page to ask, once per version), the version the tray's
    * Restart to update asked for, to ask in the dialog (once), and one whose install did not take, said once (#290).
    */

@@ -528,10 +528,14 @@ const (
 	MaxCaptureSends     = 50   // a capture's
 	MaxCaptures         = 5000 // live in the store
 	MaxAnnotationSets   = 50   // a capture's
-	MaxSendRequest      = 8 << 10
-	MaxSendTarget       = 100
-	MaxSendWhy          = 2000 // characters
-	MaxSendCancels      = 10   // a send's
+	// MaxSendRequest bounds a send's request as kept, and the send
+	// route's body: 4,000 characters of a question or a summary in any
+	// script (4 bytes each in UTF-8, 6 where JSON escapes one) with the
+	// rest of a body or a request.
+	MaxSendRequest = 32 << 10
+	MaxSendTarget  = 100
+	MaxSendWhy     = 2000 // characters
+	MaxSendCancels = 10   // a send's
 	// MaxRectCoord bounds a box's or a rectangle's numbers either way, in
 	// pixels.
 	MaxRectCoord = 1 << 20

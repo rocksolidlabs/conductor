@@ -61,6 +61,10 @@
 #                   conductor brakeman act, or the act tool;
 #                   what the server answered, taken or refused, is written to
 #                   <file>.out and the brief is submitted either way
+#                   A request that cites a capture's send (a person's Ask
+#                   Brakeman, capture:<id>/<send>) has the document that
+#                   send froze read (observe capture_send) and cited by the
+#                   brief's fact, its read written to the transcript.
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -966,6 +970,43 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # commit and submit as a worker does, so a check of theirs can be cited.
 # STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
 # two the type asks with (the first stays the recommended one).
+# STUB_CAPTURE_FIX=1 repairs from a capture (PV1): a work task reads the
+# first capture document its package holds (.conductor/attachments/
+# NN-capture-*.json, the package numbering each file before its name;
+# conductor.capture/1), takes the first source its
+# annotations name (the app's tracked file; a library's under node_modules
+# is listed after it, and left), and removes from that file every line
+# that holds stub-capture-broken, committed with stub-<member>.txt. A path
+# that is absolute, climbs out with .., or is not a file of the tree is
+# left alone. What it read and what it edited go into the transcript.
+
+# capture_fix does STUB_CAPTURE_FIX's repair for attempt $1.
+capture_fix() {
+	local doc='' f text path re
+	for f in .conductor/attachments/*capture-*.json; do
+		[[ -f $f ]] && { doc=$f; break; }
+	done
+	if [[ -z $doc ]]; then
+		printf 'capture fix: attempt %s: no capture in the package\n' "$1" >>"$transcript"
+		return
+	fi
+	text=$(<"$doc")
+	re='"sources"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{[[:space:]]*"path"[[:space:]]*:[[:space:]]*"([^"\\]*)"'
+	if [[ ! $text =~ $re ]]; then
+		printf 'capture fix: attempt %s: %s names no source\n' "$1" "$doc" >>"$transcript"
+		return
+	fi
+	path=${BASH_REMATCH[1]}
+	if [[ $path == /* || $path == ..* || $path == */../* || $path == */.. || ! -f $path || -L $path ]]; then
+		printf 'capture fix: attempt %s: %s names %s, not a file of the tree\n' "$1" "$doc" "$path" >>"$transcript"
+		return
+	fi
+	grep -v -F 'stub-capture-broken' -- "$path" >"$path.stub-new" || true
+	mv -- "$path.stub-new" "$path"
+	git add -- "$path" >/dev/null 2>&1 || true
+	printf 'capture fix: attempt %s: read %s, fixed %s\n' "$1" "$doc" "$path" >>"$transcript"
+}
+
 # STUB_ATTEMPT_HOLD names a file: an attempt that starts while it exists
 # waits until it is gone (120 s at most), so a spec checks a state the
 # attempt's end would replace before it lets the attempt go on.
@@ -1082,6 +1123,9 @@ task_attempt() {
 			printf 'ticket: %s\n' "$(head -n 1 .conductor/ticket.md)" >>"stub-$member.txt"
 		fi
 		git add -- "stub-$member.txt" >/dev/null 2>&1 || true
+		if [[ -n ${STUB_CAPTURE_FIX:-} ]]; then
+			capture_fix "$n"
+		fi
 		if [[ -n $decided ]]; then
 			git add -- stub-decision.txt stub-answer.txt >/dev/null 2>&1 || true
 		fi
@@ -1295,6 +1339,23 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	local capre='capture:([0-9a-f]{16})/([0-9a-f]{16})' captured=
+	if [[ $got =~ $capre ]]; then
+		# A request that cites a capture's send (a person's Ask Brakeman):
+		# the document that send froze, read as the turn's observe_capture_send,
+		# and cited by the brief's fact.
+		local cid=${BASH_REMATCH[1]} csend=${BASH_REMATCH[2]} cread
+		case ${STUB_WORKER:-} in
+		mcp) cread=$(mcp_call observe "{\"what\":\"capture_send\",\"id\":\"$cid\",\"send\":\"$csend\"}") ;;
+		*) cread=$("$conductor" brakeman observe capture_send --id "$cid" --send "$csend" 2>&1) ;;
+		esac
+		if [[ $cread == *'"schema":"conductor.capture/1"'* ]]; then
+			captured="capture:$cid/$csend"
+			printf 'brakeman: %s: read the capture send %s: %s bytes\n' "$req" "$captured" "${#cread}" >>"$transcript"
+		else
+			printf 'brakeman: %s: the capture send %s could not be read: %s\n' "$req" "capture:$cid/$csend" "${cread:0:200}" >>"$transcript"
+		fi
+	fi
 	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT.run ]]; then
 		# The run a spec's act changes (a decision's route), read before the
 		# act as the turn's read of what it proposes: its decisions, each
@@ -1314,6 +1375,7 @@ brakeman_turn() {
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
+	[[ -n $captured ]] && evidence+=",$(json_str "$captured")"
 	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
 		brief=$(<"$STUB_BRAKEMAN_BRIEF")
 		[[ -n $actrev ]] && brief=${brief//@REV/$actrev}

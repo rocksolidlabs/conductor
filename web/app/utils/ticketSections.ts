@@ -26,7 +26,7 @@ export function ticketWaits<T extends WaitItem>(items: readonly T[], ticket: { k
 
 /** A section the strip names: its id on the page (`ticket-<id>`), its name, its state in words ('' for a name alone), its tone. */
 export interface TicketSection {
-  id: 'github' | 'description' | 'acceptance' | 'plan' | 'runs' | 'decisions' | 'close' | 'people' | 'comments' | 'history'
+  id: 'github' | 'description' | 'acceptance' | 'plan' | 'runs' | 'captures' | 'decisions' | 'close' | 'people' | 'comments' | 'history'
   label: string
   words: string
   tone: 'neutral' | 'warning'
@@ -65,11 +65,11 @@ function needWords(n: number): string {
 
 /**
  * The sections the strip names, in the page's order: GitHub first, only for a ticket with a linked item (IN1a: its panel is under the
- * title), by GitHub's state in its own words ("open", "closed", "merged"), never the ticket's status nor a status's tone; then the nine:
+ * title), by GitHub's state in its own words ("open", "closed", "merged"), never the ticket's status nor a status's tone; then the ten:
  * Description and Acceptance by name; Plan by its featured revision's state
  * ("approved", "approval stale", "proposed", "none"), or "r2 waits for your approval" (warning) while the one list holds a plan item of
  * this ticket; Runs by the newest run's done part and the ticket's runs' items that wait ("2 of 6 done · 2 need you", warning while any
- * waits), its count the ticket's runs; Decisions by the open records ("2 open", warning, or "none open"); To close by the close card
+ * waits), its count the ticket's runs; Captures (PV1: the captures sent to the ticket) by name; Decisions by the open records ("2 open", warning, or "none open"); To close by the close card
  * ("closed", "ready", "1 of 2 met"); People by name; Comments by the live comments' count, "50+" when an earlier page exists (the first
  * comment held is not the ticket's first); History by name. Links, children and relations and attachments are not named.
  */
@@ -92,6 +92,7 @@ export function ticketSections(i: TicketSectionsInput): TicketSection[] {
     { id: 'acceptance', label: 'Acceptance', words: '', tone: 'neutral' },
     plan,
     { id: 'runs', label: 'Runs', words: runWords, tone: runWaits.length ? 'warning' : 'neutral', count: i.runs },
+    { id: 'captures', label: 'Captures', words: '', tone: 'neutral' },
     { id: 'decisions', label: 'Decisions', words: open ? `${open} open` : 'none open', tone: open ? 'warning' : 'neutral', count: open },
     { id: 'close', label: 'To close', words: closeWords, tone: 'neutral' },
     { id: 'people', label: 'People', words: '', tone: 'neutral' },

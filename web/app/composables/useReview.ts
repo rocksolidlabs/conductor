@@ -4,6 +4,7 @@ import type { DispatchReceipt, OpBody, RunCandidate } from './useDispatch'
 import { through, type DispatchOrder } from '~/utils/dispatchOrder'
 import { CommandRefused, mintCommandId, sendCommand } from '~/utils/tasks'
 import { allPages, candidateRef, parseCandidate, type CandidateRef } from '~/utils/dispatch'
+import type { ReviewSendAnswer, ReviewSendTo } from '~/utils/captureReview'
 import { latest, recheckWords, type CheckRef, type Located, type NewFinding, type PreparedRepair, type ReviewApplication, type ReviewBody, type Side } from '~/utils/review'
 
 /**
@@ -150,6 +151,11 @@ export function useReviewApi() {
     recheck: (run: string, task: string, body: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) =>
       request<{ receipt: DispatchReceipt; run: string; attempt: number }>(`/api/runs/${enc(run)}/tasks/${enc(task)}/recheck`, { method: 'POST', body }),
     submitReview: (key: string, body: OpBody & ReviewBody & Omit<ApplyOptions, 'opId'>) => request<ReviewReply>(`/api/dispatch/tickets/${enc(key)}/reviews`, { method: 'POST', body }),
+    /** A capture sent to a review (Request a change, Add to a review; PR-10): the send route's kind review. */
+    sendCaptureToReview: (capture: string, body: OpBody & { rev: number; to: ReviewSendTo }) =>
+      request<ReviewSendAnswer & { receipt: DispatchReceipt }>(`/api/captures/${enc(capture)}/send`, { method: 'POST', body }).catch((e: unknown) => {
+        throw continuation(e)
+      }),
     retryReview: (id: string, body: OpBody & Omit<ApplyOptions, 'opId'>) => request<ReviewReply>(`/api/dispatch/reviews/${enc(id)}/retry`, { method: 'POST', body }),
     ticketReviews: (key: string, before = '') => request<{ reviews: ReviewSummary[]; next?: string }>(`/api/dispatch/tickets/${enc(key)}/reviews` + (before ? `?before=${enc(before)}` : '')),
     review: (id: string) => request<{ review: Review }>(`/api/dispatch/reviews/${enc(id)}`).then((r) => r.review),

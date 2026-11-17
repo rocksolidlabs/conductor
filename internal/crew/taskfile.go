@@ -264,7 +264,7 @@ type TaskManifest struct {
 // the providers gave a (askContext), none without. When the attempt before
 // failed at a check, its log is read from the ledger after e.mu is let go
 // (previousLog), for the files beside the task files. It takes e.mu.
-func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blocks []TaskContext) (md, js, more []byte, log *checkLog, err error) {
+func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blocks []TaskContext) (md, js, more []byte, log *checkLog, evidence []EvidenceRef, err error) {
 	e.mu.Lock()
 	t := a.t
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
@@ -295,6 +295,9 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
 		f.Repair = rp.taskRepair()
+		if rp.request != nil {
+			evidence = slices.Clone(rp.request.Evidence)
+		}
 	}
 	if c := t.checkpoint; c != nil && (a.checkpoint == nil || a.checkpoint != c) && t.kept(c.n) {
 		f.Checkpoint = c.api()
@@ -305,14 +308,14 @@ func (e *Engine) taskFile(ctx context.Context, r *run, a *attempt, tr *tree, blo
 		// kept for the attempt after it.
 		c := *p.Check
 		if log, err = e.previousLog(ctx, &c); err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		prev := *p
 		prev.Check = &c
 		f.Previous = &prev
 	}
 	md, js, more, err = fitTaskFile(f)
-	return md, js, more, log, err
+	return md, js, more, log, evidence, err
 }
 
 // previousOf is the attempt before a as a's task file names it: the last
@@ -814,7 +817,7 @@ func taskMarkdown(f TaskFile) string {
 				}
 				b.WriteString(". It is not where you start: take from it what holds up.\n\n")
 			} else {
-				if launchStage(u.Stage) || u.Stage == receiptStage || u.Stage == decisionsStage {
+				if launchStage(u.Stage) || u.Stage == receiptStage || u.Stage == decisionsStage || u.Stage == evidenceStage {
 					fmt.Fprintf(&b, "Attempt %d could not start: it failed at %s", u.Attempt, u.Stage)
 				} else {
 					fmt.Fprintf(&b, "Attempt %d could not be made usable: it failed at %s", u.Attempt, u.Stage)
@@ -827,6 +830,8 @@ func taskMarkdown(f TaskFile) string {
 					b.WriteString(". Conductor could not read from the ledger the receipt and the log of the check that failed the attempt before it, or write the log beside its task files, before its agent could act: it was not counted, and you start where it started.\n\n")
 				case u.Stage == decisionsStage:
 					b.WriteString(". Conductor could not read from the ledger the task's decisions for its task files before its agent could act: it was not counted, and you start where it started.\n\n")
+				case u.Stage == evidenceStage:
+					b.WriteString(". Conductor could not hand it the evidence files of the changes asked for from the ticket's store before its agent could act: it was not counted, and you start where it started.\n\n")
 				case launchStage(u.Stage):
 					b.WriteString(". Conductor could not hand it the ticket's package, or start the agent the plan revision approved, before its agent could act: it was not counted, and you start where it started.\n\n")
 				default:
@@ -926,12 +931,20 @@ func longestBacktickRun(s string) int {
 // packageError; any file there already is refused, never written over.
 // With log (the attempt before failed at a check), its whole log goes in
 // previous/ through the same root, a write of it that fails a
-// receiptError (writePreviousLog).
-func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error), log *checkLog) error {
+// receiptError (writePreviousLog). With evidence (a person's request whose
+// capture findings stand on a send's files), each file goes in evidence/
+// through the same root, copied through openEvidence (writeEvidence): one
+// that cannot be read, or whose size or SHA-256 is not the request's, is
+// an evidenceError.
+func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more []byte, pkg *runPackage, open func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error), log *checkLog,
+	evidence []EvidenceRef, openEvidence func(ctx context.Context, send, sha256 string) (io.ReadCloser, error)) error {
 	if pkg != nil {
 		if err := checkPackageFiles(pkg.p); err != nil {
 			return err
 		}
+	}
+	if err := checkEvidenceFiles(evidence); err != nil {
+		return err
 	}
 	root, err := os.OpenRoot(filepath.Join(worktree, prefix))
 	if err != nil {
@@ -964,6 +977,9 @@ func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more [
 	if log != nil {
 		names = append(names, previousDir)
 	}
+	if len(evidence) > 0 {
+		names = append(names, evidenceDir)
+	}
 	for _, name := range names {
 		// A fresh worktree has none; one there (tracked, a link) is not
 		// written over.
@@ -991,9 +1007,11 @@ func writeTaskFiles(ctx context.Context, worktree, prefix string, md, js, more [
 		}
 	}
 	if pkg != nil {
-		return writeAttachments(ctx, root, pkg, open)
+		if err := writeAttachments(ctx, root, pkg, open); err != nil {
+			return err
+		}
 	}
-	return nil
+	return writeEvidence(ctx, root, evidence, openEvidence)
 }
 
 // writePreviousLog writes the log of the check that failed the attempt

@@ -127,7 +127,7 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 		return []string{"attempt:" + run + "/approach-a/1", "task:" + run + "/approach-a", "run:" + run, "commit:" + run + "/" + sha,
 			"command:" + run + "/retry-1", "event:" + run + "/3", "message:" + run + "/2", "candidate:" + run + "/approach-b/1", "check:" + run + "/approach-b/1/tests/1"}
 	}
-	for _, r := range append(refsOf(other), "brief:br-1/0", "decision:dr-1") {
+	for _, r := range append(refsOf(other), "brief:br-1/0", "decision:dr-1", "capture:0a1b2c3d4e5f6071", "capture:0a1b2c3d4e5f6071/8192a3b4c5d6e7f8") {
 		v = good()
 		itemOf(v, 1)["evidence"] = append(itemOf(v, 1)["evidence"].([]any), r)
 		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[1].evidence[4]")
@@ -154,7 +154,7 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 	// name, never both and never neither; and a form that names a run is
 	// read with its run, which is what the rule holds to the comparison.
 	for _, f := range RefForms() {
-		byName := f.Kind == RefBrief || f.Kind == RefDecision
+		byName := f.Kind == RefBrief || f.Kind == RefDecision || f.Kind == RefCapture
 		if compareRefKinds[f.Kind] == byName {
 			t.Errorf("%s: in the rule's table %v, refused by name %v: a kind is one or the other", f.Kind, compareRefKinds[f.Kind], byName)
 		}

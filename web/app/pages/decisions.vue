@@ -405,7 +405,7 @@ const lastClosed = computed(() => lastClosedWords(state.value.closed, recent.val
               </UAlert>
               <p v-if="!record.decision.value && !record.error.value" class="text-sm text-muted">Reading {{ decisionIdOf(item.ref) }}…</p>
               <template v-if="record.decision.value && record.decision.value.id === decisionIdOf(item.ref)">
-                <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" />
+                <DecisionCard :decision="record.decision.value" :refs="record.refs.value" :now="now" :controls="controls" captures />
                 <DecisionRespond :decision="record.decision.value" :begin="record.begin" @read="record.read()" @controls="controls = $event" />
               </template>
             </template>

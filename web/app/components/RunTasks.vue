@@ -10,6 +10,7 @@ import { attemptSession, taskStatus } from '~/utils/status'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
+import { previewPath, TREE_SECRET_NAME } from '~/utils/capture'
 import { lanesOf, tasksByLane, type RunLane } from '~/utils/compare'
 import { SELECTION_WORDS, laneSelection } from '~/utils/compareSelect'
 
@@ -21,8 +22,9 @@ import { SELECTION_WORDS, laneSelection } from '~/utils/compareSelect'
  * the owner only when the task names one: the crew's acceptance owner is
  * said in the header's people and the task's detail), what it does in
  * words with its result commit, and what can be done with it: Answer,
- * Retry, Accept anyway, Open and Open preview in the row, Cancel, Copy
- * branch and Ask Brakeman why behind its menu (taskRow). The
+ * Retry, Accept anyway, Open and Open preview in the row, Open in Conductor
+ * (the preview page), Cancel, Copy branch and Ask Brakeman why behind its
+ * menu (taskRow). The
  * selected task (`?task=`) opens its result and its attempts under the rows,
  * each attempt with what it submitted and its receipts (RunAttemptSteps).
  * A run with a project manifest shows its prerequisites' receipts above the
@@ -100,9 +102,35 @@ function hasActs(t: RunTask): boolean {
 const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
 const askWhy = (t: RunTask) => `/brakeman?kind=explain&subject=${encodeURIComponent(`task:${props.run.id}/${t.id}`)}`
-/** The row's menu: Cancel… (red inside the menu alone), Copy branch, Ask Brakeman why, each with its hook on its element. */
+/** The attempt's preview page (Open in Conductor): it frames the preview and captures it. */
+const inConductor = (t: RunTask) => previewPath({ run: props.run.id, task: t.id, attempt: t.attempt!.n })
+/** A preview that names its tree's secret opens at the label's admin URL, read as it is clicked; any other is a plain link. */
+const opener = usePreviewOpen()
+const secretPreview = (t: RunTask) => acts(t).preview.includes(TREE_SECRET_NAME)
+/**
+ * A candidate's preview (PV1 PR-8): Preview this candidate makes its checkout and opens the preview page at its `seq`; while it is open
+ * the menu offers Open and Close. A refusal is said under the table.
+ */
+const candidates = useCandidatePreview(() => props.run.id)
+const router = useRouter()
+const candidatePath = (t: RunTask) => previewPath({ run: props.run.id, task: t.id, attempt: t.attempt!.n, seq: acts(t).previewing?.seq })
+async function previewCandidate(t: RunTask) {
+  const n = t.attempt!.n
+  const opened = await candidates.open(t.id, n)
+  if (opened) await router.push(previewPath({ run: props.run.id, task: t.id, attempt: n, seq: opened.seq }))
+}
+async function closeCandidate(t: RunTask) {
+  const p = acts(t).previewing
+  if (p) await candidates.close(t.id, t.attempt!.n, p.seq)
+}
+const candidateRefusals = computed(() => Object.entries(candidates.refused.value).filter(([, w]) => w))
+/** The row's menu: Open in Conductor, Cancel… (red inside the menu alone), Copy branch, Ask Brakeman why, each with its hook on its element. */
 function menuOf(t: RunTask) {
   return rowOf(t).menu.map((k) => {
+    if (k === 'inConductor') return { label: 'Open in Conductor', icon: 'i-lucide-scan', to: inConductor(t), 'data-task-preview-open': t.id }
+    if (k === 'previewCandidate') return { label: 'Preview this candidate', icon: 'i-lucide-git-commit-horizontal', 'data-task-candidate-preview': t.id, onSelect: () => void previewCandidate(t) }
+    if (k === 'candidateOpen') return { label: "Open the candidate's preview", icon: 'i-lucide-scan', to: candidatePath(t), 'data-task-candidate-open': t.id }
+    if (k === 'candidateClose') return { label: "Close the candidate's preview", icon: 'i-lucide-circle-stop', 'data-task-candidate-close': t.id, onSelect: () => void closeCandidate(t) }
     if (k === 'cancel') return { label: 'Cancel…', icon: 'i-lucide-x', color: 'error' as const, 'data-task-cancel': t.id, onSelect: () => (asking.value = { task: t, command: 'cancel' }) }
     if (k === 'copyBranch') return { label: 'Copy branch', icon: 'i-lucide-git-branch', 'data-task-copy-branch': t.id, onSelect: () => copy(t.attempt!.branch!, 'Branch copied') }
     return { label: 'Ask Brakeman why', icon: 'i-lucide-message-circle-question', to: askWhy(t), 'data-task-ask-brakeman': t.id }
@@ -308,7 +336,8 @@ async function confirm() {
               <UButton v-if="acts(t).retry" label="Retry" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="outline" :loading="commands.busy.value === `${t.id}:retry`" :data-task-retry="t.id" @click="commands.send(t, 'retry')" />
               <UButton v-if="acts(t).accept" label="Accept anyway…" icon="i-lucide-check" size="xs" color="warning" variant="outline" :data-task-accept="t.id" @click="asking = { task: t, command: 'accept' }" />
               <UButton v-if="acts(t).open" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" :data-task-open="t.id" @click="emit('open', t.attempt!.sessionId!)" />
-              <UButton v-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" external :title="acts(t).preview" :data-task-preview="t.id" />
+              <UButton v-if="acts(t).preview && secretPreview(t)" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :title="acts(t).preview" :data-task-preview="t.id" @pointerenter="opener.prime({ run: run.id, task: t.id, attempt: t.attempt!.n }, acts(t).preview)" @focus="opener.prime({ run: run.id, task: t.id, attempt: t.attempt!.n }, acts(t).preview)" @click="opener.newTab({ run: run.id, task: t.id, attempt: t.attempt!.n }, acts(t).preview)" />
+              <UButton v-else-if="acts(t).preview" label="Open preview" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="acts(t).preview" target="_blank" rel="noopener noreferrer" external :title="acts(t).preview" :data-task-preview="t.id" />
               <UDropdownMenu v-if="rowOf(t).menu.length" :items="menuOf(t)" :content="{ align: 'end' }">
                 <IconButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :label="`More for ${t.id}`" :data-task-menu="t.id" />
               </UDropdownMenu>
@@ -319,6 +348,8 @@ async function confirm() {
         </template>
       </ol>
     </div>
+
+    <UAlert v-for="[key, w] in candidateRefusals" :key="key" color="neutral" variant="subtle" icon="i-lucide-circle-alert" :title="`${key.replace(':', ' attempt ')}: ${w}`" :data-task-candidate-refused="key" />
 
     <!-- The selected task: its result, then its attempts with what each submitted. -->
     <section v-if="selectedTask" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" data-task-detail :data-task-detail-id="selectedTask.id">

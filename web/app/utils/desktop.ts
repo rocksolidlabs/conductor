@@ -199,6 +199,71 @@ export interface DesktopBridge {
   zoom?(): Promise<DesktopZoom & { announce: boolean }>
   /** Each zoom move by key or menu, one at a bound that changed nothing included: the zoom after it, to show. Older apps lack it. */
   onZoom?(cb: (zoom: DesktopZoom) => void): () => void
+  /**
+   * Puts the server's preview bridge into this window's preview frames at origin (a page on this machine's loopback, never the
+   * workbench's own), whatever page they show: how many took it, or why the app refused. Answered for the workbench's main frame
+   * alone. Older apps lack it.
+   */
+  previewBridge?(origin: string): Promise<{ injected: number } | { refused: string }>
+  /**
+   * The pixels of rect (this window's CSS pixels, whole numbers, inside it) as PNG at most 2,048 pixels on its long side, with the
+   * image's pixels to one of the rect's (scale); or why the app refused: one at a time, at most 4 MiB. Answered for the workbench's
+   * main frame alone. Older apps lack it.
+   */
+  capturePreview?(rect: PreviewRect): Promise<DesktopCapture | { refused: string }>
+}
+
+/** A part of the workbench's window in its CSS pixels, whole numbers: what the desktop app takes the pixels of. */
+export interface PreviewRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** A screenshot the desktop app took: its PNG, its size in pixels, and its pixels to one CSS pixel of the rect asked for. */
+export interface DesktopCapture {
+  png: Uint8Array
+  width: number
+  height: number
+  scale: number
+}
+
+/**
+ * previewRect is a box of the page (getBoundingClientRect's) as the desktop app takes it: whole CSS pixels, its edges moved out to
+ * the pixels it touches (a box partly outside the window is the app's to refuse); null for a box of no pixel, or one not of finite
+ * numbers.
+ */
+export function previewRect(box: { left: number; top: number; right: number; bottom: number }): PreviewRect | null {
+  if (![box.left, box.top, box.right, box.bottom].every(Number.isFinite)) return null
+  const x = Math.floor(box.left)
+  const y = Math.floor(box.top)
+  const width = Math.ceil(box.right) - x
+  const height = Math.ceil(box.bottom) - y
+  return width >= 1 && height >= 1 ? { x, y, width, height } : null
+}
+
+/** asDesktopCapture is what the app answered a screenshot with, read: the capture, or why there is none. */
+export function asDesktopCapture(v: unknown): DesktopCapture | { refused: string } {
+  if (v && typeof v === 'object') {
+    const { png, width, height, scale, refused } = v as Record<string, unknown>
+    if (typeof refused === 'string') return { refused }
+    const whole = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0
+    if (png instanceof Uint8Array && png.byteLength > 0 && whole(width) && whole(height) && typeof scale === 'number' && Number.isFinite(scale) && scale > 0) {
+      return { png, width, height, scale }
+    }
+  }
+  return { refused: 'the desktop app gave no screenshot' }
+}
+
+/** frameOrigin is the origin of a preview frame's page (its src, read against the workbench's location); '' when it has none. */
+export function frameOrigin(src: string, base: string): string {
+  try {
+    const u = new URL(src, base)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== 'null' ? u.origin : ''
+  } catch {
+    return ''
+  }
 }
 
 /** What the workbench says of an update the desktop app downloaded, once per version (#290). */

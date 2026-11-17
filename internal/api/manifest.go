@@ -224,7 +224,34 @@ func (s *Server) taskFromLedger(ctx context.Context, runID, taskID string) (crew
 	if !ok {
 		return crew.TaskState{}, nil, crew.ErrTaskNotFound
 	}
+	if s.runs != nil {
+		// A preview the engine holds of an attempt of the run, opened from
+		// the ledger (crew.Engine.PreviewsOf), as a held run's reports it.
+		if pv := s.runs.PreviewsOf(runID)[taskID]; pv != nil {
+			for i := range attempts {
+				attempts[i].Previewing = pv[attempts[i].N]
+			}
+			if st.Attempt != nil {
+				st.Attempt.Previewing = pv[st.Attempt.N]
+			}
+		}
+	}
 	return st, attempts, nil
+}
+
+// withPreviewing gives the latest attempt of each task of run, a run the
+// engine does not hold read from its record, the preview the engine holds
+// of it now (crew.Engine.PreviewsOf), as a held run's reports it.
+func (s *Server) withPreviewing(run *crew.Run) {
+	if s.runs == nil {
+		return
+	}
+	previews := s.runs.PreviewsOf(run.ID)
+	for i := range run.Tasks {
+		if a := run.Tasks[i].Attempt; a != nil {
+			a.Previewing = previews[run.Tasks[i].ID][a.N]
+		}
+	}
 }
 
 // withSteps gives each attempt its receipts from the ledger (the task's

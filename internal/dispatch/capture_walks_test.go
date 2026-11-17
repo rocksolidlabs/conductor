@@ -392,6 +392,25 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 			}
 			return out, nil
 		},
+		// A capture finding's projection and a send's evidence read the
+		// document a send froze, never the deleted capture: a send to a
+		// ticket is no review's (refused), and the ticket send's files are
+		// what it sent.
+		"CaptureFinding": func() ([]byte, error) {
+			p, err := s.CaptureFinding(ctx, candidateOf(f.Run, f.Attempt, capCommit), CaptureRef{Capture: sent, Send: toTicket, K: 1})
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				return enc(p), fmt.Errorf("a ticket's send bound as a review's: %v", err)
+			}
+			return enc(p), nil
+		},
+		"SendEvidence": func() ([]byte, error) {
+			files, err := s.SendEvidence(ctx, toTicket)
+			if err == nil && (len(files) != 2 || files[0].SHA256 != sentDigest) {
+				err = fmt.Errorf("the ticket send's files: %+v", files)
+			}
+			return enc(files), err
+		},
 		"OpenAttachment": func() ([]byte, error) {
 			a, fh, err := s.OpenAttachment(ctx, id)
 			b := append(enc(a), file(fh)...)
@@ -417,6 +436,18 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 				return nil, err
 			}
 			return enc(v, w), nil
+		},
+		// What a capture is of, for a turn's admission: a deleted one's
+		// origin alone, its scope hidden with the tombstone.
+		"CaptureOf": func() ([]byte, error) {
+			v, err := s.CaptureOf(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if !v.Deleted || v.Scope != (CaptureScope{}) {
+				return enc(v), errors.New("the deleted capture's scope is read")
+			}
+			return enc(v), nil
 		},
 		"LaunchActor": func() ([]byte, error) {
 			a, err := s.LaunchActor(ctx, id)

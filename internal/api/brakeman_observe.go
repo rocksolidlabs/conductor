@@ -2874,6 +2874,11 @@ var brakemanReads = []sharedRead{
 	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers
 	// a turn each view as brakeman.CapacityOf makes it (capacityReply).
 	{"GET /api/capacity", readSpec{class: brakeman.ClassCapacity, filter: filterCapacity}, maxCapacityPage},
+	// PV1's captures (capture_sends.go): a capture as it is now, and what a
+	// send of it froze, each admitted as what the capture is of; neither
+	// carries the screenshot's bytes.
+	{"GET /api/captures/{id}", readSpec{class: brakeman.ClassDispatch, admit: admitCapturePath, filter: filterCapture}, 0},
+	{captureSendRead, readSpec{class: brakeman.ClassDispatch, admit: admitCapturePath, filter: filterCaptureSend}, 0},
 }
 
 // filterCapacity notes a turn's read of the capacity view: each view that

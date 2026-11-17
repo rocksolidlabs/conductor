@@ -80,6 +80,7 @@ function where(f: ReviewFinding): string {
         :data-finding-kind="f.kind"
         :data-finding-intent="f.intent"
         :data-finding-located="f.locatedOn === candidate ? (f.located?.state ?? '') : ''"
+        :data-finding-capture="f.capture?.capture ?? ''"
       >
         <div class="flex min-w-0 flex-wrap items-center gap-1.5">
           <UBadge :label="findingStateWords(f.state).label" :color="findingStateWords(f.state).color" variant="subtle" size="sm" data-finding-state-badge />
@@ -90,6 +91,9 @@ function where(f: ReviewFinding): string {
         </div>
         <p class="whitespace-pre-wrap break-words" data-finding-message>{{ f.message }}</p>
         <p v-if="f.resolution" class="text-muted">Asked: {{ f.resolution }}</p>
+        <p v-if="f.capture" class="text-dimmed" data-finding-capture-ref>
+          Annotation {{ f.capture.k }} of capture <span data-mono="id">{{ f.capture.capture }}</span>, as sent (<span data-mono="id">{{ f.capture.send }}</span>): its document and screenshot go to the repair attempt.
+        </p>
         <p v-if="f.locatedOn === candidate && f.located" class="text-muted" data-finding-located-words>On this candidate: {{ locatedWords(f.located) }}</p>
         <p v-else-if="f.kind === 'line'" class="text-dimmed">Located on {{ f.locatedOn ? candidateName(f.locatedOn) : 'no candidate yet' }}<template v-if="f.located">: {{ locatedWords(f.located) }}</template></p>
         <ul v-if="f.addressed?.length" class="flex flex-col gap-0.5" data-finding-addressed>

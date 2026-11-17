@@ -886,7 +886,11 @@ func checkCapture(n NewCapture, f CaptureFacts, image bool) (Capture, []Annotati
 		if f.Origin == OriginAttempt {
 			c.must(f.Tree == TreeWorktree && f.Mutable && f.Candidate == "", RefusalInvalid, "an attempt's capture is of its worktree, mutable, and names no candidate")
 		} else {
-			c.must(f.Tree == TreePreview && f.Candidate != "", RefusalInvalid, "a candidate's capture is of its preview checkout and names its candidate")
+			// A preview checkout's capture names its candidate only when the
+			// server found the checkout at the commit with no tracked change
+			// at the save (crew.CandidateIntact): one it did not is kept with
+			// none.
+			c.must(f.Tree == TreePreview, RefusalInvalid, "a candidate's capture is of its preview checkout")
 		}
 		if f.Candidate != "" {
 			cand, err := ParseCandidate(f.Candidate)

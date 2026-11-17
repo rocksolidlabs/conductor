@@ -24,7 +24,7 @@ export type LabelColor = 'gray' | 'brown' | 'red' | 'orange' | 'amber' | 'yellow
 /** What a list is sorted by: its updated or created time, its priority, its status, its title, its key, its milestone. */
 export type DispatchSort = 'updated' | 'created' | 'priority' | 'status' | 'title' | 'key' | 'milestone'
 /** What a dispatch event says changed. */
-export type DispatchEntity = 'project' | 'ticket' | 'comment' | 'label' | 'milestone' | 'view' | 'person' | 'plan' | 'launch'
+export type DispatchEntity = 'project' | 'ticket' | 'comment' | 'label' | 'milestone' | 'view' | 'person' | 'plan' | 'launch' | 'capture' | 'capture_send'
 
 /** A project as its read carries it (GET /api/dispatch/projects/{key}). Times are RFC 3339; a zero one is absent. */
 export interface DispatchProject {

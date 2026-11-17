@@ -3419,7 +3419,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
-| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?, preview?, where?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`), `steps` its receipts as the steps route below answers them, `preview` its worktree's preview while the tree answers behind it (Project manifests, under Managed runs) and `where` where it ran (Where an attempt ran, under Managed runs), absent only from a run record saved before the ledger kept it; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?, preview?, where?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`), `steps` its receipts as the steps route below answers them, `preview` its worktree's preview while the tree answers behind it (Project manifests, under Managed runs), `previewing` a preview checkout of its result while one is open (A candidate's preview) and `where` where it ran (Where an attempt ran, under Managed runs), absent only from a run record saved before the ledger kept it; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no `preview` and with the `previewing` the server holds, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` | admin | an attempt's receipts from the ledger (Project manifests below): `{steps}`, by when each started, each `{phase, id, k, state, argv?, url?, dir?, subject?, manifest?, exit?, timedOut?, duration?, error?, ports?, tries, startedAt, finishedAt?, logBytes, logDropped?, logSha256?, where}`, the row whole but for its log, `where` where its command ran (its attempt's; Where an attempt ran, under Managed runs) (`duration` in milliseconds; `exit` once it finished); a run the server let go answers the same; `404 not_found` for a run or attempt the ledger has not; `503 ledger_unavailable`; `400 invalid_request` for an id or number that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script; a log kept empty answers `200`, empty, with its hash); `404 not_found` for a row the ledger has not, one still running, or one that ended with no log (a check its attempt closed under, a step or prerequisite the recovery concluded); `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair` | admin | the prepared failed-check request of one receipt (Program item RV1, docs/plans/review-repair.md): `{finding, criteria, plan?, ticket?, recheck}`; `finding` a draft note `{kind: "check", intent: "change", message, check}`, `message` a first draft of its words (at most 1,000 characters), `check` the receipt as the ledger keeps it `{source: "ledger", receipt, run, task, attempt, phase, id, k, subject, argv, exit?, signal?, timedOut, killed, stable, state, error?, where, logSha256?, logBytes, tail, class, chosen, quote, previous?}`, `receipt` its identity `<run>/<task>/<n>/<phase>/<id>/<k>`, `argv` whole, `error` cut to 500 bytes, `tail` the log's last 2 KiB, `class` the server's (`code`, `infrastructure`, `flaky`, `unavailable`, `cancelled`, worked out from the receipt's row, its attempt and the same check's receipts on the same commit in the run's chain), `chosen` and `quote` the person's to change (set to the class and the tail), `previous` the attempt before `{attempt, state, stage?, commit?}`; `criteria` `{source: "ticket", acceptance}` from the package of a run a ticket launched, else `{source: "checks", checks}` the task's checks as the crew names them; `plan` `{id, n}` and `ticket` `{id, key}` the launch's; `recheck` `{allowed, run, revision, attempt, commit, why?}`: whether Check again would be taken now, by the engine's own rule, on the newest run of the receipt's chain (`run`, at `revision`), `attempt` and `commit` the candidate as the receipt names it, `why` the words when not ("continue run X first", "attempt 4 failed since, …"); `404 not_found` for a run, attempt or receipt the ledger has not; `409 task_state` for a receipt that did not fail (running, passed) or a cleanup step's; `503 run_changing` while a continuation of the chain is made; whole, under 512 KiB (`MaxRepairReply`) |
@@ -3466,7 +3466,7 @@ its run, and on no other.
 | `POST /api/dispatch/plans/{id}/withdraw` | admin | withdraw a plan revision (`plan.withdraw`): `{opId, expectedRev?, byName?}`, `expectedRev` the revision's; reply `{receipt, plan}`; `409 invalid` for one withdrawn already; `404 not_found` |
 | `POST /api/dispatch/tickets/{key}/launch` | admin | launch a managed run from a ticket's approved plan revision (`ticket.launch`; see Launches below): `{opId, plan, expectedRev?, label?, byName?, candidates?}`, at most 4 KiB, `plan` the revision's id, `expectedRev` the ticket's, `label` the run's own name (at most 60 characters; the ticket's key and title, cut at a word, when absent, or the key alone when its title is quoted, as the package says below); reply `201 {receipt, launch, run}` once the run's first ledger transaction is committed and the launch recorded started, `launch` its summary `{id, ticketId, ticketKey, planId, planN, runId, label, ticketRev, intent, criteria, packageSha256, state, why?, agents, createdAt, createdBy, fingerprint, startedAt?, rev}` (never the package), `run` as `GET /api/runs/{run}` answers it; the same `opId` again answers the same launch, `200` with the receipt's `repeat`, never a second run; `409 launch_failed {error, receipt, launch}` when the run could not be started (an agent not installed or not the one it claims, a working directory outside the allowed roots, the engine's refusal), the launch kept, `failed`, with why; `409 stale_plan` when an agent of the revision resolves otherwise in the catalog now, naming the agent and the part ("…: revise it"), no receipt kept, or when the store finds the approval stale (the ticket's intent changed: "approve it again or revise it"; a handed-over comment or attachment edited or gone, the pinned steps to reproduce changed, an evidence link removed: "revise it"), its receipt kept; `409 invalid` for a ticket closed or a revision not approved; `409 managed_off`; `503 ledger_unavailable` without a ledger, with one another server owns, and while the server takes the ledger over ("the server is taking over the ledger"), no launch kept; a pending launch replayed on a server that may not advance it is answered `503 ledger_unavailable {error, receipt, launch}`, still pending, never recorded failed; once the server's shutdown begins stopping its runs, a launch not yet given to the engine starts no run (`409 launch_failed`, "the server is shutting down: the run was not started"), and the run of one the engine was still starting past the shutdown's wait is stopped as it starts; `candidates` is required for a comparison's revision and must be its count (the plan read's `compare.candidates`, the person confirming what its statement said): absent or another, `409 confirm_candidates` "this revision starts 3 candidates: send candidates 3 to launch them", nothing kept, so the same `opId` may be sent with the count; for any other revision it is refused `400 invalid`, and below 0 `400 invalid_request`; it is the operation's content with the key, the revision and the label (omitted when 0, so an operation sent before it is unchanged), so the same body again answers the same launch and the same `opId` with another count is `409 op_conflict`; the store holds the launch to the count too, its refusal's receipt kept. A comparison is launched by this route alone: `ext.Host`'s `LaunchApproved` (any provider's, Brakeman's granted launch act among them) refuses a comparison's revision `409 refused`, "a comparison is launched by a person, who reads what it starts: open the ticket's revision", before anything is kept, and the act's body takes no `candidates` |
 | `GET /api/dispatch/launches/{id}` | admin | a launch whole: `{launch}`, its summary as the launch answers it and `package`, the bytes it is kept as (Launches, below), under 1 MiB (`MaxLaunchReply`); `404 not_found` |
-| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?}` (`kind` `line`, `file`, `general` or `check`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source, receipt, chosen?, quote?}` for a check, `source` `ledger` with `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, or `external` with `receipt` `github:<host>/<owner>/<repo>/check-runs/<n>` (a CI job on GitHub, below), any other member an unknown field; a finding of `kind` `capture`, which Dispatch keeps since its schema version 7, is `400 invalid_request` before anything is read or recorded, here and in a Brakeman turn's `request_repair`, until a later release binds a capture to a finding), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body, and recorded by the server for a Brakeman turn's `request_repair`, What a turn may do), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: a `request_changes` of a comparison's candidate `409 not_selected` until its selection is applied ("select a candidate first: a repair before the selection would make the candidates unlike"), for a lane not selected (the engine's "approach-a was not selected in dr-9: launch a new comparison to try it again") and after None of these ("no candidate was selected: launch a new comparison"), as its retry (`POST /api/dispatch/reviews/{id}/retry`) and a Brakeman turn's `request_repair` are, a comment and an approval taken; `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed; an external one that no live delivery link of the ticket delivering the candidate's commit as a pull request of the receipt's repository names, or whose job tested another commit, has not finished or did not fail), GitHub's refusals of an external one's fresh read as A ticket's GitHub item says (`412 no_token`, `422 token_refused`, `429 rate_limited`, `502 tracker_unavailable`), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
+| `POST /api/dispatch/tickets/{key}/reviews` | admin | send a review of one candidate (`review.submit`; see Reviews below): `{opId, candidate, base, verdict, summary?, findings, via?, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 192 KiB; `candidate` `<run>/<task>/<n>@<commit>` of a run whose chain the ticket holds alone, `base` a full commit the run names (its base, the attempt's start, or a result of the task in the chain), `verdict` `request_changes`, `comment` or `approve`, `summary` at most 4,000 characters, `findings` at most 50, each `{kind, intent, severity?, path?, side?, from?, to?, lines?, message?, resolution?, check?, capture?}` (`kind` `line`, `file`, `general`, `check` or `capture`; `intent` `change`, `question` or `note`; `severity` `blocker`, `major`, `minor` or `nit` for a change alone; `path` at most 1,024 bytes and `side` `candidate` or `base` for a line or a file; `from` and `to` 1 to 10,000,000 and `lines` 1 to 12 of at most 200 bytes, as the person saw them, for a line; `message` and `resolution` at most 1,000 characters; `check` `{source, receipt, chosen?, quote?}` for a check, `source` `ledger` with `receipt` `<run>/<task>/<n>/<phase>/<id>/<k>`, or `external` with `receipt` `github:<host>/<owner>/<repo>/check-runs/<n>` (a CI job on GitHub, below), any other member an unknown field; `capture` `{capture, send, k}` for a capture finding alone, which names no `path`, `side`, `lines`, `check` or `message`: the capture, a send of it to a review (Add to a review or Request a change, Captures below) and its annotation 1 to 20; the server binds it (the send that capture's and to a review, its frozen document a capture of this candidate's preview checkout, at its run, task, attempt and commit, holding annotation `k`) and makes the finding's `message`, `path` and `from`/`to` from that annotation, within 1,000 characters: the note's first 600 characters cut on a word with `…`, the element's tag, name and selector (or the region's place), what a click at its centre reaches when it is another element, and its first tracked source, found in the tree, as the path and line; a Brakeman turn's `request_repair` takes no capture finding, nor a finding naming a capture (`400 invalid_request` as its body is read), and its guide entry names no `capture` field), `via` `web` or `cli` (the client's label; `brakeman` is `400 invalid_request` from every body, and recorded by the server for a Brakeman turn's `request_repair`, What a turn may do), `expectedRev` the ticket's, `expectedRevision` the run's for the request's command, `continueRun` the word to continue a run the server does not run; neither of the last two is recorded; reply `201 {receipt, review}` (`200` with `receipt.repeat` for the same `opId` again, answered before any evidence is read), `review` as `GET /api/dispatch/reviews/{id}` reads it, its `application` `{state, try?, run?, command?, revision?, attempt?, why?, at?}` `none` for a comment or an approval, else `applied` (the run the repair was made in, the command `rv.<id>.<try>`, the run's revision after it and the repair attempt's number; a request with capture findings names each send's document and screenshot as evidence files, by name, SHA-256, size and send, at most 8 and 16 MiB in all, which the repair attempt finds in `.conductor/evidence/capture-<id>-r<rev>.json` and `.png`, copied from the store and checked by size and hash as they are copied, its `task.md` naming them under each finding; a file that cannot be handed over fails the attempt at stage `evidence`, not counted, and pauses the run), `refused` (why, in words) or `pending` (Yardmaster took the request and its change is not recorded yet: settled when it is); before anything is recorded: a `request_changes` of a comparison's candidate `409 not_selected` until its selection is applied ("select a candidate first: a repair before the selection would make the candidates unlike"), for a lane not selected (the engine's "approach-a was not selected in dr-9: launch a new comparison to try it again") and after None of these ("no candidate was selected: launch a new comparison"), as its retry (`POST /api/dispatch/reviews/{id}/retry`) and a Brakeman turn's `request_repair` are, a comment and an approval taken; `409 not_ticket_run` (the ticket does not hold the run's chain: none, another ticket's, `key` naming it, or contested), `409 invalid` (a candidate whose commit is not the attempt's result, a base the run does not name, a check finding's receipt not of the candidate's attempt, not in the ledger, or not failed; an external one that no live delivery link of the ticket delivering the candidate's commit as a pull request of the receipt's repository names, or whose job tested another commit, has not finished or did not fail; a capture finding the server cannot bind as above), GitHub's refusals of an external one's fresh read as A ticket's GitHub item says (`412 no_token`, `422 token_refused`, `429 rate_limited`, `502 tracker_unavailable`), `413 too_large` (a request the run could not keep, or whose repair attempt's task file could not hold it), `409 continuation_needed {error, run, words}` (a request of a run the server does not run, sent without `continueRun`: `run` the newest of the candidate's chain, `words` what continuing it starts), `409 managed_off` and `503 ledger_unavailable` for a request this server cannot apply; the store's refusals with their receipts (`invalid`, `bound`, `archived`, `not_found`); a review kept whose read after its commit failed is answered by its receipt, `{receipt, review: null}`, its request left pending for the server's worker, which settles it (not sent: `refused`) |
 | `POST /api/dispatch/reviews/{id}/retry` | admin | Request again (`review.retry`): `{opId, byName?, expectedRev?, expectedRevision?, continueRun?}`, at most 4 KiB, `expectedRev` the review's; a refused request applied again as its next try, at most 5; reply `{receipt, review}`; `409 managed_off`, `503 ledger_unavailable`, `409 not_ticket_run` (the candidate's run no longer its ticket's alone: its link moved, or its chain contested, checked again in the try's transaction) and `409 continuation_needed {error, run, words}` (its run not run by the server, sent without `continueRun`) with the try unchanged and nothing applied; `409 invalid` for a review not refused or not a request, `409 bound` past its fifth try; `503 unavailable` while another holds the store's claim on the review (a request or the server's worker settling its try; only the claim's holder settles a try) past the run's timeout, nothing applied; a try kept whose read after its commit failed is answered `{receipt, review: null}`, left pending for the server's worker, which settles it |
 | `GET /api/dispatch/tickets/{key}/reviews` | admin | a ticket's reviews, deleted or not: `{reviews, next?}`, twenty a page, newest first (`before` a page's `next`), each without its findings, counted by state (`counts {open, resolved, withdrawn}`), and its application; under 1 MiB |
 | `GET /api/dispatch/reviews/{id}` | admin | a review whole: `{review}`, `{id, ticketId, ticketKey, candidate, base, verdict, summary, createdAt, createdBy, actor, via, application, rev, counts, findings}`, each finding `{id, reviewId, ticketId, k, kind, intent, severity?, path?, side?, from?, to?, anchorCommit?, lines, message, resolution?, check?, capture?, createdAt, candidate, state, marks, latest?}`, `anchorCommit` the server's (the candidate's commit on its side, the base on its side), `check` the receipt as the ledger kept it (the prepared request's shape), `capture` a `capture` finding's `{capture, send, k}` (the capture, the send whose frozen document it stands on, the annotation's place), `state` its latest mark's verdict, `open` with none, `latest` that mark without `located`; under 1 MiB |
@@ -5426,6 +5426,61 @@ commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
 
+#### A candidate's preview
+
+A person opens a candidate (an attempt that submitted a result whose
+commit is known, closed or not) in a preview checkout of its own
+(`docs/plans/browser-evidence.md`, "A candidate's preview"): the commit
+checked out detached at `<worktree>.preview` and served by the run's
+project manifest as a tree is, for a run the server holds and for one it
+no longer holds (evicted, or finished under an earlier server of this
+ledger), whose preview it opens from the ledger and schedules nothing of.
+Both routes are the admin's (a share link, a session's token, a host
+token and a Brakeman turn answer `401`) and a switchyard's `403
+switchyard`; each takes no parameter (`400 invalid_request`) and the body
+`{commandId}` and nothing else, at most 1 KiB, `commandId` 1 to 32 of
+letters, digits, `.`, `_`, `~` and `-` (`400 invalid_request` otherwise).
+Each is a command with its receipt in the run's ledger, as the task
+commands keep theirs: taken (`command.accepted`) before anything of the
+preview is begun, settled with what came of it (`command.preview.open`,
+`command.preview.close`), the same `commandId` again with the same
+content answered by its receipt (`receipt.repeat`) and never a second
+open or close, other content `409 command_conflict`; the receipt names
+the preview (`receipt.preview {run, task, attempt, seq}`) and is read
+back by `GET /api/runs/{run}/commands/{command}` like any other.
+
+| Route | Body → reply |
+|---|---|
+| `POST /api/runs/{run}/tasks/{task}/attempts/{n}/preview` | `{commandId}` → `202 {receipt, seq, state}` (`state` `resolved`: the checkout made, its readiness to come), `200` the same for a repeat (the preview's `state` now, `ended` once it is let go; a repeat of an open still under way, before its preview has a `seq`, is `409 preview_opening {error, receipt}` with the receipt `accepted`: ask again with the same `commandId`); with its receipt, `{error, receipt}`: `409 not_candidate` (no result to preview: a review's attempt, or one that submitted none), `409 no_manifest`, `409 run_continued`, `409 run_stopped` (also once the server's shutdown has begun: no preview opens after it, and one opening as it begins is ended and waited for), `409 preview_open` (one preview of a candidate at a time), `409 preview_limit` (20 opens of a candidate), `409 preview_dirty` (a folder at the checkout's path that is not the commit's checkout, its path and what is wrong named; nothing of it is removed), `409 preview_failed` (the open began and failed: the checkout could not be made, the manifest could not be read or recorded), `404 not_found` (no such task or attempt), `429 previews_busy {error, receipt, open: [{run, task, attempt, seq}]}` (two previews open on the server, those with a `seq` named: one still opening is counted and not named); with none, `404 not_found` (a run neither the server nor its ledger has), `409 run_unreadable` (a run not held whose records make no preview now: its folder no longer a git work tree, its crew as launched not readable; the words name the folder, never git's), `409 run_continued` and `409 run_stopped` (as the ledger has the run: stopped before it finished; one a server's shutdown stopped once it had finished is previewed), `409 command_conflict`, `409 too_many_commands`, `503 ledger_unavailable` |
+| `POST /api/runs/{run}/tasks/{task}/attempts/{n}/preview/{seq}/close` | `{commandId}` → `200 {receipt, state}` (`ending`, or `ended` once it is let go; a repeat the same, the state now); with its receipt, `409 preview_opening` (its open is under way: nothing of it changes, close it once it is open) and `404 no_preview` (that preview is not open); with none, `404 no_preview` for a run the server neither holds nor holds a preview of |
+
+A preview is ended by its Close, after 30 minutes with no read of its
+label, by a service of it that exits after it is ready, by an open that
+failed, by its run's stop and by the server's shutdown, each once; its
+URL is cleared in the ledger before any of its services is signalled. At
+most two previews are open on a server, held runs' and others' together.
+While one is open the attempt carries `previewing: {seq, state,
+preview?}` (`state` `resolved`, `ready` or `ending`, `preview` its URL
+while `ready`, naming `${CONDUCTOR_TREE_SECRET}` by name) in the run's
+reads, in the task's read (`GET /api/runs/{run}/tasks/{task}`) of a run
+the server does not hold, and in a run record's read. The ledger's
+events, each with `{task, attempt, seq, preview, why}`: `preview.opened`
+(`by` who opened it; the row `resolved`), `preview.ready` (`preview` its
+URL) and `preview.ended` (`why` `closed`, `idle`, `service_exited`,
+`run_stopped`, `shutdown`, or where an open failed in words; one the
+next start's recovery ends is `interrupted: true, recovered: true`),
+with its steps' `step.*` and `service.ended` events beside them, its
+receipts the attempt's (`tree: "preview"`), numbered after the attempt's
+own.
+
+A capture of a preview checkout (`from.seq`, Captures below) is of
+origin `candidate` and tree `preview`; it names its `candidate` only
+when, at the save, the checkout's HEAD is the candidate's commit and no
+tracked path differs from it as a fresh index of the server's own reads
+it (no `assume-unchanged` or `skip-worktree` flag hides a change), and
+none otherwise. Its scope's crew and repository are the run's, whether
+or not the server holds the run.
+
 #### The preview label
 
 The label of an attempt's preview (`docs/plans/browser-evidence.md`) is
@@ -5433,10 +5488,21 @@ the admin's (a share link, a session's token, a host token and a
 Brakeman turn answer `401`) and a switchyard's `403 switchyard`.
 
 `GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
-(no parameter) answers the attempt's worktree preview while it is
+answers the attempt's worktree preview while it is
 offered: `{url, tree: "worktree", commit, content, changed,
 changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
-unread?}`; `404 no_preview` when it is not open. `url` is the preview
+unread?}`; `404 no_preview` when it is not open. With `?seq=N` it
+answers the candidate's preview checkout `N` (A candidate's preview)
+while it is ready: `{url, tree: "preview", seq, candidate, commit,
+content, changed, changedPaths, changedCut, mutable, state: "ready",
+where, readAt, unread?}`, `candidate` `<run>/<task>/<n>@<commit>`,
+`mutable` true when the checkout holds anything git sees other than its
+commit (a tracked file changed, a file not ignored added, HEAD moved) or
+was not read; a read of it puts its idle end 30 minutes after it; `404
+no_preview` when that checkout is not open, is still opening or is
+ending. `seq` is the only parameter: another, `seq` twice or empty, or
+one that is not a number from 1 in at most four decimal digits with no
+leading zero, is `400 invalid_request`. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
 place its value leaves the server: the changed paths, the only names the
 label carries beside git's ids and its own words, kept by the read
@@ -5624,17 +5690,23 @@ A person's captures of a preview (`docs/plans/browser-evidence.md`) are
 Dispatch's records, kept in its store with their screenshots as content
 files beside the attachments. Every route below is the admin's: everyone
 else (a share link, a session's token, a host token, a Brakeman turn) is
-answered `401`, and a switchyard `403 switchyard`. Each route is
-registered alone, the admin's check outermost.
+answered `401`, and a switchyard `403 switchyard`, but for two reads a
+Brakeman turn shares (`GET /api/captures/{id}` and a send's frozen
+document, Brakeman below). Each route is registered alone, the admin's
+check outermost.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels as 8-bit RGBA, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
+| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt, seq?} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels as 8-bit RGBA, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now, or the candidate's preview checkout `from.seq` of that attempt is not ready now); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
 | `GET /api/captures` | `?run=&task=&attempt=` (an attempt from 1), `?ticket=` (the captures a send was sent to), `?after=` (a page's `next`), `?limit=` (1 to 100, 100 when absent); each at most once, `attempt` and `limit` in decimal digits alone | `{captures, next?}`, newest first, each with its first annotation alone, its note cut to 200 characters; `400 invalid_request` for a parameter given twice, an `attempt` or a `limit` given empty or with anything but digits (a sign among it), a limit of 0 or past 100, an attempt of 0, a task without its run or an attempt without its task |
 | `GET /api/captures/{id}` | none | the capture with its annotations and its sends (their requests aside); a deleted capture is its tombstone `{id, rev, createdAt, deletedAt}` |
 | `GET /api/captures/{id}/image` | none | the kept PNG, whole, `200` whatever range the request names (never a part): `Content-Type: image/png`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `Content-Disposition: inline`, `X-Conductor-SHA256` (the kept file's); `404 not_found` without one, and for a deleted capture |
 | `POST /api/captures/{id}/edit` | `{opId, byName?, expectedRev, annotations: [{k, kind, note, rect}]}`, at most 2 MiB: an annotation the capture holds named by its place `k`, a new region `k` 0 | `200 {receipt, capture}`, `200` for a repeat; `400 invalid` (a new element report, a kind or a note the store refuses, a region outside the screenshot); `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 stale_revision`; `409 op_conflict`; `413 bound` (the body past 2 MiB, more than 20 annotations, the 51st annotation set) |
 | `POST /api/captures/{id}/delete` | `{opId, byName?}`, at most 64 KiB | `200 {receipt}`, `200` for a repeat; `400 invalid_request` (the gate's refusals, a path's id holding a part of a tree's secret among them); `404 not_found` (a deleted or unknown capture); `409 op_conflict`; `413 bound` (the body past 64 KiB) |
+| `POST /api/captures/{id}/send` | `{opId, byName?, rev, to: {kind: "ticket", project, title} \| {kind: "ticket", key} \| {kind: "brakeman", question} \| {kind: "decision", decision} \| {kind: "review", candidate, ks?, draft?, verdict?, severity?, summary?, continueRun?}}` (a send to a review: Request a change and Add to a review, A send to a review below), at most 32 KiB, which holds 4,000 characters in any script as the body encodes them; `rev` the capture's revision the person sees, `question` 1 to 4,000 characters (a send to Brakeman alone takes one) | `201 {receipt, send}` for a send to a ticket (sent in its one step: a new ticket, its description made from the capture, or the live one with the key; the document attached as `capture-<id>-r<rev>.json` and the screenshot as `.png`, the document alone without one; a comment in the store's words) and for a send to Brakeman the desk admitted (sent, `target` its request `br-<n>`), and for a send to a decision whose comment DR1 kept (sent, `target` the decision's `dr-<n>`; one whose comment DR1 refuses is refused with DR1's code and words: `404 not_found`, `429 decision_limit` past its 32 operations, `409` for another; a decision of another run than the capture's, or any decision for a link's capture, is refused `409 decision_elsewhere`, the send refused with those words: a capture is attached to a decision of its own run, the one the decision was opened in or the one holding it now); `202 {receipt, send}` for one left `pending`, `send.waiting` the desk's words (`brakeman_stuck`, not yet the owner of its records, `pins_full`, the server stopping): the settlement asks again (Sends, below); `200` for a repeat (a pending send to Brakeman tried again); the desk's refusal of the first try with `{error, receipt, send}`, the send `refused` with the desk's words: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`; the store's refusals with `{error, receipt}`: `409 stale_revision` (another revision, a capture changed meanwhile), `404 not_found` (a deleted or unknown capture, a ticket's key the store holds no live ticket of), `400 invalid` (a project or a title the store refuses), `413 bound` (50 sends of a capture, 50 attachments of a ticket, a request past 32 KiB); `400 invalid_request` (the gate's refusals: the body's form, no question to Brakeman or one past 4,000 characters, a question to a ticket, `rev` below 1); `413 bound` (the body past 32 KiB) |
+| `POST /api/captures/{id}/sends/{send}/cancel` | `{opId, byName?}`, at most 64 KiB | `200 {receipt, send, cancel: {asked, done, words?}}`, `200` for a repeat (answered by its receipt, its steps finished again); `done` once the send is cancelled or refused, or its request is closed or pruned at the desk; `words` `the request had finished before the cancel reached it` when the request had closed before; `409 stale_revision` with `{error, receipt, send}` for a send to a ticket (made in its one step) and a refused or cancelled one, its state named; `404 not_found` for a send that is not the capture's; `409 op_conflict` for an `opId` another cancel of the send took; `413 bound` past 20 cancels of a send |
+| `GET /api/decisions/{did}/captures` | `?after=` (a page's `next`), `?limit=` (1 to 100) | `{sends, next?}`: the sends of captures sent to the decision, newest first, their requests aside; `400 invalid_request` for a decision's id that is not one |
+| `GET /api/captures/{id}/sends/{send}` | none | `{send, document}`: the send (its request among it, `waiting?` as above) and the document it froze (`conductor.capture/1`), read from the content file its `digest` names and checked against it, the same after the capture's edit or its delete; `404 not_found` for a send that is not the capture's, and for a document no longer kept (a send that ended unsent after its capture was deleted) |
 
 **The bounds.** A capture holds at most 20 annotations, each note at most
 4,000 characters; its page's address at most 2 KiB and its title at most
@@ -5818,9 +5890,119 @@ attribute's name is not of an element's or an attribute's form keeps no
 all of the form. The store's field rules hold every other text (no
 control character but a line feed and a tab in the long ones).
 
+**Sends.** A send freezes the capture at `rev`: its document, a content
+file named by its SHA-256 (the send's `digest`), and its screenshot, held
+by the send (nothing removes a send). A sent send keeps both for as long
+as the store keeps it, its capture deleted or not; one that ended
+refused or cancelled after its capture's delete lets them go. A send to
+Brakeman is two steps. Its input is committed `pending` first, with the
+request the desk is to be asked: `{kind: "ask", subjects, note, by?}`,
+the note the person's question scrubbed of every tree's secret held now,
+the subjects the attempt's `attempt:<run>/<task>/<n>` when the capture
+is of one (the desk is asked them after the send's own frozen document,
+`capture:<id>/<send>`, which names the send's id and so is not known
+before the input is kept), `by` the display name when it is at most 60
+bytes on one line. The desk is then asked under the send's id as its
+`opId`, the request pinned (below), and the send is recorded `sent` to
+the request's `br-<n>`, then the pin let go. Every step that can reach
+the desk for a send (the route's first try, a settlement's, a cancel's)
+runs under a lock of that send's in the server and reads the send's
+state and its cancels again under it: a try that finds the send no longer
+pending, or a cancel asked, asks nothing. The desk's own record is looked
+at first: a request it holds under the send's id makes the send `sent`
+to it, one it pruned `sent` to its number, and only an id it never saw is
+asked, always from the stored request, never from the capture as it is
+now. Brakeman off refuses the send (`refused` with the desk's words); the
+queue full and the day's budget spent refuse a first try and leave a
+settlement's pending; every other answer leaves it pending with the
+desk's words (`waiting`, kept in the server's memory beside the send,
+never a row). **The settlement** runs as the server starts, once
+Brakeman's desk holds its records, and every minute: it tries every
+pending send to Brakeman, finishes every cancel not done, and lets go
+every pin of a send no longer pending or gone. It is ended first as the
+server stops: no try and no cancel's step reaches the desk after it.
+**A send to a decision** is a comment on a DR1 decision record (kind
+`comment`, under the person's actor), made by the server with the send's
+id as its operation's id: the send's input is committed `pending` first
+with its request, `{decision, comment}`, the comment's words the store's
+own ("Capture <id> is attached at revision <rev>: what was sent is"), to
+which the send's own ref, `capture:<id>/<send>`, is put as the comment
+is made; no text of the page's is in it. The decision's rev is read and
+the comment made at it; a rev that moved meanwhile (an answer, another
+comment) is read again and the same comment made, so a send that races
+an answer lands as a comment on the answered decision. DR1's receipt for
+the send's id (its history keeps an operation's row for as long as it
+keeps the decision: its operations are bounded by refusal, never
+trimmed) answers a try made again after a stop, so the settlement, which
+tries every pending send to a decision whatever Brakeman's desk holds,
+never makes a second comment. A send to a decision takes no cancel
+(`409 stale_revision`): DR1 keeps or refuses the comment at once. The
+decision's card lists the captures sent to it.
+**A cancel** commits the person's intent first (its row and receipt),
+outside the send's lock, then acts under it: a pending send whose id the
+desk never saw is `cancelled`; one the desk admitted (a try that stopped
+before its `sent` was kept) is `sent` to that request and goes on as a
+sent one; a sent one has its request cancelled at the desk, which closes
+an open request and leaves a closed one as it is, and the close is
+recorded in the store's open sends (`CloseCancel`). What a stop left is
+finished by the next start's settlement. **A pinned request**: the desk
+keeps the op ids of its newest 1,000 requests to answer a repeat, and a
+send can wait past a thousand others, so a send's request is pinned: its
+op id is kept past those 1,000 until the send is no longer pending, at
+most 1,000 pinned (`pins_full` past it, which leaves the send pending);
+a pinned op id whose request was pruned answers its number. The pin is
+a field of Brakeman's `state.json` (`pinned`) under its schema 1: a build
+before it reads a `state.json` holding one as damaged, so a roll-back to
+such a build while a send to Brakeman waits pinned finds Brakeman's
+records damaged until this build settles that send. No log line
+carries a question, a request or a document.
+
+**A send to a review** (`POST /api/captures/{id}/send` with `to: {kind:
+"review", candidate, ks?, draft?, verdict?, severity?, summary?,
+continueRun?}`): Request a change and Add to a review, offered only on a
+capture of a candidate's preview checkout (`origin.kind` `candidate`); a
+capture of an attempt's worktree goes to a ticket. `candidate` is the
+capture's own candidate, `ks` its annotations made findings (each 1 to
+20, once; all when absent). Add to a review (`draft: true`, none of the
+others) is sent at once, `send.target` `draft`, and answers `key`, the
+ticket that holds the run, whose review draft then names the send in one
+capture finding per annotation. Request a change (`verdict:
+"request_changes"`, `severity` `blocker`, `major` (when absent), `minor`
+or `nit`, `summary` at most 4,000 characters) is RV1's Request changes:
+before anything is kept, the reviews' gate, the candidate read from the
+ledger and the run held by this server (`409 continuation_needed {error,
+run, words}` without `continueRun`), and `409 not_ticket_run` when no one
+ticket holds the run; then the send, pending, its request the review it
+asks for (the ticket and the review: the base the attempt's start, one
+`capture` finding per annotation); then that review made under the send's
+op (`cs.<send>`) as the reviews route makes it, applied by Yardmaster;
+then the send `sent`, its target the review's id, or `refused` with the
+review's refusal in words. Reply `201 {receipt, send, key, review}`
+(`202` while the send waits for its review, `200` for a repeat, the
+review's refusal with its status and `{error, receipt, send, key}`). A
+send left pending by a server that stopped between its steps is finished
+by the same send sent again and by the reviews' worker, from the store
+alone: one review whatever the tries. A send to a review takes no cancel
+(`409 stale_revision`).
+
 **Brakeman.** A turn's read of Dispatch's changes passes over a
-capture's and a send's rows, whatever its grant, until a turn has a read
-of captures (the plan's PR-6).
+capture's and a send's rows, whatever its grant. A turn reads a capture
+through two shared reads, each under Dispatch's class (`403 not_visible`
+without it) and its grant (`403 outside_scope`), read again at each read:
+`GET /api/captures/{id}` (the guide's `observe_capture`) and `GET
+/api/captures/{id}/sends/{send}` (`observe_capture_send`). A capture is
+admitted as what it is of, as its save recorded it, never as its sends'
+targets: an attempt's capture as its run with the crew, repository and
+project it recorded, and, while the run is still held or in the ledger,
+as the run is now too; a send's frozen document as its capture; a link's
+capture as nothing, so only a grant that scopes no run, crew, repository
+or project admits it. A turn's capture carries its `ref`,
+`capture:<id>`, noted `live` at its revision (a tombstone `deleted`), and
+its sends cut to `{id, capture, rev, kind, digest, createdAt, state,
+ref}`; a frozen send's read is `{send, document, ref}`, the send cut the
+same, noted at its state with the revision and the digest it froze.
+Neither carries the screenshot's bytes (the image route is the admin's
+alone): the capture names their size and SHA-256.
 
 Where this differs from the plan: a page's origin is quoted in a refusal
 only in the form above; the scrub takes the secret of every tree the
@@ -5829,7 +6011,11 @@ least 8 characters long, and an edit is scrubbed without looking its
 capture up; what is kept of a screenshot is the server's own encoding of
 its pixels as 8-bit RGBA; a source
 may be `unknown`; a tag and an attribute's name are any name with no
-control character; Brakeman's reads pass over captures until PR-6.
+control character; a send's request keeps the subjects after the send's
+own frozen ref, which the desk is asked first; a send's `bound` is `413`,
+as every capture route's; the plan's `capture_read` and
+`capture_send_read` are the guide's `observe_capture` and
+`observe_capture_send`, as every turn's read is an `observe_<what>`.
 
 #### GitHub tokens
 
@@ -6493,8 +6679,8 @@ citing at least one `candidate:` ref and in its `candidate:` and
 `check:` refs naming only its columns' tasks; every ref of every item
 of the brief that names a run (`run:`, `task:`, `attempt:`, `check:`,
 `candidate:`, `command:`, `event:`, `message:`, `commit:`) naming a run
-of the request's comparison's chain, and none a `brief:` or
-`decision:` ref (whose run is read only from the record it names) or a
+of the request's comparison's chain, and none a `brief:`, `decision:` or
+`capture:` ref (whose run is read only from the record it names) or a
 ref of a kind the rule does not name (a kind added later is cited in no
 compare brief until the rule judges it); no `decision/1`, and no
 `proposal/1` of an operation that commands a task, a review or a
@@ -6924,7 +7110,12 @@ revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
 attempt's state, at the commit it submitted), and DR1's
 `decision:<dr-n>` (a decision record: its state and `rev`, as its run's
-read lists it), and AC1's `capacity:<agent>/<account>@<readAt>` (a
+read lists it), PV1's `capture:<id>` (a capture as it is now: `live` at
+its revision and its document's SHA-256, `deleted` for a tombstone) and
+`capture:<id>/<send>` (what that send froze: the send's state, the
+revision and the digest it froze, the same after an edit or a delete),
+each 16 hex digits and admitted as the capture is (Captures, Brakeman),
+and AC1's `capacity:<agent>/<account>@<readAt>` (a
 reading of an agent's usage on an account, `readAt` in UTC as RFC 3339
 with its nanoseconds, as the view gives it: the reading's own state;
 the readings the server holds are asked first and at once: one they no

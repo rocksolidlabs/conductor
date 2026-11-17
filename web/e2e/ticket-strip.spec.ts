@@ -133,6 +133,7 @@ test('each name brings its section up under the strip, with the focus', async ({
   for (const [id, section] of [
     ['comments', '[data-ticket-comments]'],
     ['decisions', '[data-ticket-decisions]'],
+    ['captures', '[data-ticket-captures]'],
   ] as const) {
     await scroller(page).evaluate((el) => (el.scrollTop = 0))
     await expect.poll(() => scroller(page).evaluate((el) => el.scrollTop)).toBe(0)

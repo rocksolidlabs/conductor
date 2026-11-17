@@ -391,6 +391,10 @@ type Server struct {
 	bgMu   sync.Mutex
 	bgDone bool
 
+	// sends is a capture's sends' gates and their settlement
+	// (capture_sends.go), ended at the start of Shutdown.
+	sends captureSends
+
 	// firstCtx bounds the launches' first messages waiting to be typed
 	// (typeFirstMessage, on track): firstStop ends it at the start of
 	// Shutdown and WaitBackground, so that both wait for none. firstWait is
@@ -865,6 +869,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// The reviews' worker, ended before the stores close (stopReviews).
 	s.startReviews()
+	// The capture sends' settlement, ended before the desk quiesces.
+	s.startCaptureSends()
 	return s, nil
 }
 
@@ -979,6 +985,8 @@ func (s *Server) track(f func()) {
 // probes as Shutdown does. Shutdown does the same at its end; tests call it
 // before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// No capture's send is tried or cancel finished from now on.
+	s.stopCaptureSends()
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, waited for with the usage reads below (#961).
 	s.probes.stop()
@@ -1132,8 +1140,9 @@ func (s *Server) Handler() http.Handler {
 	s.routeDispatch(mux)
 	// An attempt's preview label (preview_label.go), the admin's alone.
 	s.routePreviewLabel(mux)
-	s.routeCaptures(mux) // a preview's captures (captures.go), the admin's alone
-	s.routeTrackers(mux) // the GitHub token (trackers.go)
+	s.routeCaptures(mux)     // a preview's captures (captures.go), the admin's alone
+	s.routeCaptureSends(mux) // a capture's sends (capture_sends.go)
+	s.routeTrackers(mux)     // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.readable("GET /api/sessions", s.handleListSessions))
@@ -1450,6 +1459,10 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// The capture sends' settlement first: its pass in progress ends, and
+	// no send is tried at the desk, or cancel finished, from now on (the
+	// next start's settlement finishes them).
+	s.stopCaptureSends()
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, before any wait (#961); they are waited for below.
 	s.probes.stop()

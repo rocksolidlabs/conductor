@@ -2,7 +2,8 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewPerson, CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { commentAuthor, linkLabel } from '~/utils/dispatch'
+import { commentAuthor, linkLabel, sizeWords } from '~/utils/dispatch'
+import { captureAttachments } from '~/utils/captureSend'
 import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDecisionId, parseReference, planDecisionsOut, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -111,7 +112,10 @@ function fill() {
   base.value = f ? f.revision.base : ''
   refs.value = (b?.references ?? []).map((r) => referenceText(r))
   const live = new Set(liveAttachments.value.map((a) => a.id))
-  attachments.value = (b?.attachments ?? []).filter((id) => live.has(id))
+  // A revision based on none hands over the ticket's captures (PV1: the screenshot and the document a send attached), ticked at first.
+  const picked = captureAttachments(liveAttachments.value, PLAN_BOUNDS.attachments, PLAN_BOUNDS.attachmentBytes)
+  attachments.value = f ? (b?.attachments ?? []).filter((id) => live.has(id)) : picked.ids
+  capturesLeft.value = f ? 0 : picked.left
   comments.value = keptComments((b?.comments ?? []).map((c) => c.id), props.ticket.comments ?? [])
   const offered = new Set(recentComments.value.map((c) => c.id))
   earlierComments.value = comments.value.filter((id) => !offered.has(id))
@@ -195,11 +199,17 @@ function setFor(d: PlanDecision, v: string) {
   else d.for = v
 }
 
+/** How many of the ticket's capture files a new revision left unticked for the bytes (captureAttachments). */
+const capturesLeft = ref(0)
+/** The ticked attachments' bytes in all. */
+const attachmentBytes = computed(() => liveAttachments.value.filter((a) => attachments.value.includes(a.id)).reduce((n, a) => n + (a.size ?? 0), 0))
+
 const blocked = computed(() => {
   if (waiting.value) return `Revision ${props.from!.revision.n} is not read yet`
   if (!crew.value) return 'Pick a crew with tasks'
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
+  if (attachmentBytes.value > PLAN_BOUNDS.attachmentBytes) return `The attachments ticked are ${sizeWords(attachmentBytes.value)}, at most ${sizeWords(PLAN_BOUNDS.attachmentBytes)}`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
   if (evidence.value.length > MAX_EVIDENCE) return `At most ${MAX_EVIDENCE} evidence links`
   return decisionsProblem(decisions.value, crewPeople.value, crew.value)
@@ -269,6 +279,9 @@ async function submit() {
         <div v-if="liveAttachments.length" class="flex flex-col gap-1.5">
           <span class="text-xs font-medium text-muted">Attachments to hand over <span class="text-dimmed">(at most {{ PLAN_BOUNDS.attachments }})</span></span>
           <UCheckbox v-for="a in liveAttachments" :key="a.id" :model-value="attachments.includes(a.id)" :label="a.name" :data-plan-propose-attachment="a.name" @update:model-value="(v) => toggle('attachments', a.id, v)" />
+          <p v-if="capturesLeft" class="text-xs text-muted" data-plan-propose-captures-left>
+            {{ capturesLeft }} older capture {{ capturesLeft === 1 ? 'file is' : 'files are' }} left unticked: ticked, the attachments would pass {{ sizeWords(PLAN_BOUNDS.attachmentBytes) }} in all.
+          </p>
         </div>
         <div v-if="recentComments.length" class="flex flex-col gap-1.5">
           <span class="text-xs font-medium text-muted">Comments to hand over <span class="text-dimmed">(their words now; an edit after makes the approval stale)</span></span>

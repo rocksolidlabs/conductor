@@ -3,7 +3,7 @@ import { trusted } from '../src/ipc'
 import { join } from 'node:path'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { external, firstBounds, followOrigin, logWindowOptions, permissionAllowed, readBounds, sameOrigin, workbenchWindows, writeBounds } from '../src/window'
+import { external, firstBounds, followOrigin, logWindowOptions, permissionAllowed, readBounds, sameOrigin, workbenchPreferences, workbenchWindows, writeBounds } from '../src/window'
 
 describe('window guards', () => {
   it('keeps navigation on the server\'s origin and opens only http(s) outside', () => {
@@ -41,6 +41,14 @@ describe('the server log window', () => {
     expect(o.webPreferences?.contextIsolation).toBe(true)
     expect(o.webPreferences?.nodeIntegration).toBe(false)
     expect(o.webPreferences?.sandbox).toBe(true)
+  })
+})
+
+describe("the workbench window's preferences", () => {
+  it('put the preload in the main frame alone, so a frame the workbench shows has no bridge to the app', () => {
+    const p = workbenchPreferences('/app/dist/preload.js')
+    expect(p).toEqual({ preload: '/app/dist/preload.js', contextIsolation: true, nodeIntegration: false, sandbox: true })
+    expect(p.nodeIntegrationInSubFrames).toBeUndefined()
   })
 })
 

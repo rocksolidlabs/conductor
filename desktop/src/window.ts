@@ -141,6 +141,14 @@ export function logWindowOptions(dir: string): BrowserWindowConstructorOptions {
 }
 
 /**
+ * workbenchPreferences are every workbench window's: isolated, sandboxed, with no node, and the preload in the main frame alone (no
+ * nodeIntegrationInSubFrames), so a frame the workbench shows (a preview) has no window.conductorDesktop to call.
+ */
+export function workbenchPreferences(preload: string): Electron.WebPreferences {
+  return { preload, contextIsolation: true, nodeIntegration: false, sandbox: true }
+}
+
+/**
  * createWindow makes the workbench window: context isolation on, no node integration, navigation kept to the server's origin,
  * window.open on that origin as a window of the app and anything else in the system browser, and no permissions beyond the clipboard.
  */
@@ -160,7 +168,7 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     icon: o.icon,
     backgroundColor: '#263D35',
     show: false,
-    webPreferences: { preload: o.preload, contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+    webPreferences: { ...workbenchPreferences(o.preload), spellcheck: false },
   })
   w.webContents.on('will-navigate', (e, url) => {
     if (!sameOrigin(url, o.origin())) {
@@ -169,7 +177,7 @@ export function createWindow(o: WindowOptions): BrowserWindow {
     }
   })
   w.webContents.setWindowOpenHandler(({ url }) => {
-    if (sameOrigin(url, o.origin())) return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: { preload: o.preload, contextIsolation: true, nodeIntegration: false, sandbox: true } } }
+    if (sameOrigin(url, o.origin())) return { action: 'allow', overrideBrowserWindowOptions: { webPreferences: workbenchPreferences(o.preload) } }
     if (external(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
