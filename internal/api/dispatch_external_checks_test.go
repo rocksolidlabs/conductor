@@ -397,8 +397,9 @@ const externalJobWordsForTest = "the `name`, `app`, `tail` and `quote` of a chec
 // log is never fetched: the pull request's head moved on (every job read
 // at it tested another commit), and a job whose own read says it tested
 // another commit; a review naming the job then is refused, nothing kept;
-// and a review of a candidate no live delivery link delivers names no job
-// of it.
+// a review naming the job as another repository's or another host's, and
+// one of a candidate no live delivery link delivers, name no job of it,
+// GitHub asked nothing.
 func TestExternalJobNotTheCandidates(t *testing.T) {
 	l, j, run, c1, link := jobLaunch(t)
 	failed := "job:" + strconv.Itoa(jobFailed)
@@ -424,9 +425,19 @@ func TestExternalJobNotTheCandidates(t *testing.T) {
 		t.Fatalf("the log of a job of another commit was asked %d times", n)
 	}
 
-	// The candidate's own job again, its delivery link removed: no link
-	// delivers it, so no job of it is read.
+	// The candidate's own job again, named as another repository's or
+	// another host's: no delivery of the candidate is that pull request's,
+	// so GitHub is asked nothing.
 	j.setJobHead(jobFailed, "")
+	for _, other := range []string{"github:github.com/octo/app/check-runs/2000001", "github:ghe.example.com/octo/jobs/check-runs/2000001"} {
+		before := len(j.f.Requests())
+		out = sendReview(t, l.testEnv, "CND-1", reviewOf(candidate, l.head, "comment", externalFinding(other, "", "")), http.StatusConflict, "invalid")
+		if !strings.Contains(apiMessage(out), "no live delivery link") || len(j.f.Requests()) != before {
+			t.Fatalf("a job of %s: %v", other, out)
+		}
+	}
+	// Its delivery link removed: no link delivers it, so no job of it is
+	// read.
 	l.expect(t, "POST", "/api/dispatch/tickets/CND-1/links/"+link+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
 	before := len(j.f.Requests())
 	out = sendReview(t, l.testEnv, "CND-1", reviewOf(candidate, l.head, "comment", externalFinding(receipt, "", "")), http.StatusConflict, "invalid")
