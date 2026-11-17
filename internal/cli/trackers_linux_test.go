@@ -190,6 +190,37 @@ func echoOff(t *testing.T, tty *os.File) {
 	}
 }
 
+// A Ctrl-C that landed before the prompt (the command's context already
+// ended as the token would be asked) asks nothing and leaves the terminal
+// as it was: no prompt, the interrupted words, the echo on. The reader
+// that turns the echo off is never started; started, it could turn the
+// echo off after the state was put back and leave the person's shell
+// without it.
+func TestTrackersSetAskedAfterACtrlCLeavesTheTerminal(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no terminal: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 20 {
+		var errb syncBuffer
+		tok, err := readTrackerToken(ctx, tty, &errb)
+		if tok != "" || !errors.Is(err, errInterrupted) {
+			t.Fatalf("asked after the context ended: %q %v", tok, err)
+		}
+		if said := errb.String(); said != "" {
+			t.Fatalf("a prompt was written after the context ended: %q", said)
+		}
+		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+		if err != nil || tio.Lflag&unix.ECHO == 0 {
+			t.Fatalf("the terminal's echo is left off: %v", err)
+		}
+	}
+}
+
 // A Ctrl-C at the token's prompt (the command's context ending, as the
 // process's signal handling makes it) ends the read at once, with no
 // Enter: the terminal's echo is on again, the words say interrupted, and

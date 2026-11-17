@@ -160,10 +160,16 @@ var errInterrupted = errors.New("interrupted: no token was read, and nothing was
 // read ends when ctx does (the process catches Ctrl-C, which only ends
 // ctx, while the read would wait for Enter): the terminal's state is put
 // back and errInterrupted answered, and a line typed after ctx ended is
-// never the token.
+// never the token. A ctx that has ended before the prompt (a Ctrl-C while
+// the command started) asks nothing and touches nothing of the terminal:
+// the reader, which turns the echo off, is never started, so nothing is
+// left to turn it off after the state was put back.
 func readTrackerToken(ctx context.Context, stdin io.Reader, stderr io.Writer) (string, error) {
 	var b []byte
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		if ctx.Err() != nil {
+			return "", errInterrupted
+		}
 		fd := int(f.Fd())
 		state, err := term.GetState(fd)
 		if err != nil {
