@@ -4182,6 +4182,22 @@ saying it is one of `of` candidates, each starting at the run's base and
 working alone, that another candidate's branch or worktree is no input of
 its own, its approach and the criteria. Neither names another lane's
 task, member, branch, path or approach.
+A comparison's lanes settle: a lane has ended when its candidate task has
+succeeded, failed or been cancelled and its review has too, or waits
+behind a candidate that failed or was cancelled (it never starts); a
+review's `needs_changes`, reopening its candidate, is no end. In the
+change that ends the last lane (whatever made it: a result, a check, a
+cancel, a retry's attempt failing again, a change made while the run is
+being stopped), or in the first change of a continuation that finds every
+lane ended with no settling of them recorded, the run records the event
+`compare.settled`, `{candidates: [{task, run, attempt, commit}]}`: each
+lane's standing result in the block's order (`run` the run that made it,
+an imported result's source), at most 4 entries and about 500 bytes, none
+for a lane with no result. It is written once for each settling: again
+after a lane runs again or its result changes, never by a pause, an
+unpause or a stop's own change, and not by a continuation whose lanes
+stand as the chain's newest `compare.settled` has them. It is in the run's
+history and its export like every run event.
 The crew's own text is never cut: a crew is refused as it is saved when a
 task's goal, role and instructions take more than 40 KiB as `task.json`
 keeps them, or a task needs the same task twice, so a task file always
