@@ -286,6 +286,14 @@ test('a saved capture is listed again after the editor was closed and after a re
   await editorOf(page).locator('[data-capture-delete]').click()
   await expect(tab).toHaveCount(0)
   await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
+  // A capture made with saved ones shown: the note typed after the pick is the new draft's, never a saved one's.
+  const before = (await page.locator('[data-capture-saved-tab]').all()).length
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, await previewFrame(page, origin), '#second', 'button#second.second', { downs: 1 })
+  await editorOf(page).locator('[data-annotation="1"] textarea').fill('the new one')
+  await editorOf(page).locator('[data-capture-save]').click()
+  await expect(editorOf(page).locator('[data-capture-saved-tab]')).toHaveCount(before + 1)
+  expect((await savedNow(page, api)).annotations.map((a) => a.note)).toEqual(['the new one'])
 })
 
 test("Capture again loads the capture's page again though the frame went elsewhere inside itself", async ({ page, api }) => {

@@ -81,6 +81,15 @@ watch(
   { immediate: true },
 )
 
+// A capture starting (Capture, Select another element, by selector, Capture again) takes the editor from a saved capture, so what is
+// typed next goes to the draft it makes, never into the saved one shown before it.
+watch(
+  () => props.session.state.busy,
+  (b) => {
+    if (b && kept.value) selected.value = ''
+  },
+)
+
 // ---- The screenshot and its boxes ----
 
 const canvas = ref<HTMLCanvasElement | null>(null)
@@ -235,7 +244,8 @@ async function listSaved() {
       const s = await load(id)
       if (!s.capture.deletedAt && !saved.value.some((x) => x.capture.id === id)) saved.value.push(s)
     }
-    if (!selected.value && saved.value.length) selected.value = `s:${saved.value[saved.value.length - 1]!.capture.id}`
+    // A capture under way (or its draft) keeps the editor: a saved one is shown only when nothing else is.
+    if (!selected.value && saved.value.length && !props.session.state.busy && !drafts.value.length) selected.value = `s:${saved.value[saved.value.length - 1]!.capture.id}`
   } catch (e) {
     listError.value = failure(e)
   } finally {
