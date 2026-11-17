@@ -2,18 +2,21 @@ import { randomBytes } from 'node:crypto'
 import type { Page, Request } from '@playwright/test'
 import { expect, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
-import { createComparison } from './compare-helpers'
+import { createComparison, makeComparison } from './compare-helpers'
 import { noOverlap, noSideways } from './layout'
 
 // A comparison's launch from a ticket's approved plan revision (CP1, docs/plans/compare-crew.md, "The launch says what it costs"): the
 // dialog says what it starts from the revision's own `compare` part, above the members' lines, and its button says the count; the
 // count goes with the launch, the same on every resend of one operation; a comparison whose part is not given is not launched from the
-// dialog; an ordinary revision sends none. The launch route is watched at this spec's own route, which answers the server's refusal
-// where the spec only needs to see what was sent, so no run starts here.
+// dialog; an ordinary revision sends none (the launch route watched at this spec's own route, which answers the server's refusal where
+// the spec only needs to see what was sent). New comparison on Crews makes the crew through the server's template route, the editor
+// shows its block, and makeComparison launches it for real from its ticket, the server taking the count; the crews page's own Launch
+// of it is refused in the server's words.
 
 /** What one test made, ended after it. */
-const made = { crews: [] as string[] }
+const made = { crews: [] as string[], runs: [] as string[] }
 test.afterEach(async ({ api }) => {
+  for (const id of made.runs.splice(0)) await api.stopRun(id)
   for (const id of made.crews.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
 })
 
@@ -122,8 +125,6 @@ test("a comparison's launch says what it starts, its button says the count, and 
   const crew = await comparisonCrew(api, { reviews: true })
   const { key, ticketKey } = await approvedTicket(api, crew.id)
   // Two network losses (the page asks once more by itself, then says so), then the server's refusal of the count.
-  // Until the server's plan reads state it (CP1 PR-3), the part a revision of this crew is read with.
-  await editPlanReads(page, (p) => void (p.compare ??= { candidates: 2, reviews: 2, checksAtBase: 1, brakemanTurn: true }))
   const sent = await watchLaunches(page, ticketKey, (n) => (n <= 2 ? 'abort' : confirmRefusal))
   const dialog = await openLaunch(page, key)
 
@@ -189,46 +190,13 @@ test("a comparison whose statement the server did not give is not launched from 
   expect(plainSent[0]).not.toHaveProperty('candidates')
 })
 
-/**
- * Until the template route is on the server (CP1 PR-3): POST /api/crews/templates/compare answered as the server's CompareTemplate makes
- * the crew (internal/crew compare.go), saved through POST /api/crews, its reply handed back as the route's.
- */
-async function templateStub(page: Page, api: Api, seen: Array<Record<string, unknown>>) {
-  await page.route(
-    (u) => u.pathname === '/api/crews/templates/compare',
-    async (route) => {
-      const spec = route.request().postDataJSON() as { name: string; cwd: string; goal: string; instructions: string; criteria: unknown[]; checks?: unknown[]; manifest?: unknown; candidates: Array<{ agentId: string; args?: string[]; approach?: string }>; reviews?: boolean; reviewAgent?: string; brakeman?: boolean }
-      seen.push(spec as unknown as Record<string, unknown>)
-      const l = spec.candidates.map((_, i) => String.fromCharCode(97 + i))
-      const crew = {
-        name: spec.name,
-        goal: spec.goal,
-        cwd: spec.cwd,
-        where: 'server',
-        isolation: 'worktree',
-        openAfterLaunch: false,
-        ...(spec.manifest ? { manifest: spec.manifest } : {}),
-        members: [
-          ...spec.candidates.map((c, i) => ({ name: `cand-${l[i]}`, agentId: c.agentId, ...(c.args ? { args: c.args } : {}), prompt: `candidate ${i + 1}`, start: { when: 'task' } })),
-          ...(spec.reviews ? l.map((x) => ({ name: `rev-${x}`, agentId: spec.reviewAgent, prompt: 'review', start: { when: 'task' } })) : []),
-        ],
-        tasks: [
-          ...l.map((x) => ({ id: `approach-${x}`, member: `cand-${x}`, kind: 'work', instructions: spec.instructions, ...(spec.checks ? { checks: spec.checks } : {}) })),
-          ...(spec.reviews ? l.map((x) => ({ id: `review-${x}`, member: `rev-${x}`, kind: 'review', instructions: 'Review it.', needs: [`approach-${x}`] })) : []),
-        ],
-        compare: { criteria: spec.criteria, candidates: spec.candidates.map((c, i) => ({ task: `approach-${l[i]}`, ...(c.approach ? { approach: c.approach } : {}) })), ...(spec.brakeman ? { brakeman: true } : {}) },
-      }
-      const r = await api.call<{ crew: { id: string } }>('POST', '/api/crews', crew)
-      if (r.status < 300) made.crews.push(r.body.crew.id)
-      return route.fulfill({ status: r.status === 200 ? 201 : r.status, contentType: 'application/json', body: JSON.stringify(r.body) })
-    },
-  )
-}
-
 test("New comparison on Crews makes a comparison's crew, and the crew editor shows its block read only, on a phone too", async ({ page, api, state }) => {
   test.setTimeout(120_000)
+  // What New comparison posts, seen on its way to the server's template route.
   const seen: Array<Record<string, unknown>> = []
-  await templateStub(page, api, seen)
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/crews/templates/compare') seen.push(r.postDataJSON() as Record<string, unknown>)
+  })
   for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(size)
     await page.goto('/crews')
@@ -260,6 +228,7 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
     reviewAgent: 'worker',
     brakeman: true,
   })
+  made.crews.push(crewId)
   expect(seen).toHaveLength(1)
   expect(seen[0]).toEqual({
     name: expect.stringMatching(/^e2e compare /),
@@ -291,4 +260,31 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
   await expect(block.locator('input, textarea, [role="combobox"]')).toHaveCount(0)
   const box = async (sel: string) => (await page.locator(sel).first().boundingBox())!
   expect((await box('[data-crew-compare-block]')).y).toBeLessThan((await box('[data-crew-tasks-section]')).y)
+})
+
+test("a comparison made on Crews launches from its ticket with the count its statement said, and the crews page's Launch of it is refused", async ({ page, api, state }) => {
+  test.setTimeout(240_000)
+  const sent: Array<Record<string, unknown>> = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /^\/api\/dispatch\/tickets\/[^/]+\/launch$/.test(new URL(r.url()).pathname)) sent.push(r.postDataJSON() as Record<string, unknown>)
+  })
+  const made1 = await makeComparison(page, api, { cwd: state.repo, checks: [{ id: 'unit', argv: ['true'] }], candidates: [{ agentId: 'worker' }, { agentId: 'worker-cli' }] })
+  made.crews.push(made1.crewId)
+  made.runs.push(made1.runId)
+  expect(sent.map((b) => b.candidates)).toEqual([2])
+  const run = await api.run(made1.runId)
+  expect(run.tasks?.map((t) => t.id).sort()).toEqual(['approach-a', 'approach-b'])
+
+  // The crews page's Launch of the same crew: the server refuses it, and the page says its words.
+  await page.goto(`/crews/${encodeURIComponent(made1.crewId)}`)
+  await expect(page.locator('[data-crew-compare-block]')).toBeVisible({ timeout: 30_000 })
+  await page.locator('[data-launch]').first().click()
+  const confirm = page.locator('[data-crew-launch-confirm]')
+  await expect(confirm).toBeEnabled({ timeout: 30_000 })
+  const refused = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${encodeURIComponent(made1.crewId)}/launch`)
+  await confirm.click()
+  const r = await refused
+  expect(r.status()).toBe(400)
+  expect(((await r.json()) as { error: { code: string } }).error.code).toBe('invalid_crew')
+  await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible({ timeout: 30_000 })
 })
