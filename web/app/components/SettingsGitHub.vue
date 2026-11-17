@@ -8,8 +8,9 @@ import { relativeTime } from '~/utils/sessions'
  * Enterprise Server, so Dispatch can read GitHub's issues and pull requests and publish what the person chooses. Check and save is this
  * card's own action, never part of the page's one Save: the token goes to the server in that one request, GitHub is asked whose it is,
  * and it is kept only then. The field is a password field the browser does not fill, emptied as the request goes whatever its answer;
- * the token is never shown again, nor held by the page, a toast, the address or a password manager (a masked text field, marked for none
- * to save). Each saved host shows its account, when it was saved,
+ * the token is never shown again, nor held by the page, a toast or the address. The card is no form: nothing is submitted and the field
+ * stays in place, so a password manager sees no sign-in to save, and the field is marked for none to fill or save (a manager that offers
+ * all the same saves only at the person's own yes). Each saved host shows its account, when it was saved,
  * its fingerprint (this server's mark, never a character of the token, different after a restart), its state and Remove, which stops
  * Conductor's use of it only. A token given in the server's environment is shown as such and cannot be removed here.
  */
@@ -23,8 +24,6 @@ const failure = ref('')
 const asking = ref('')
 const removing = ref('')
 const now = ref(Date.now())
-/** The field is drawn masked by the browser's text security: a text field no password manager takes for a password. */
-const masked = typeof CSS !== 'undefined' && CSS.supports('-webkit-text-security', 'disc')
 
 onMounted(() => {
   void store.load()
@@ -50,6 +49,13 @@ async function save() {
     saving.value = false
     now.value = Date.now()
   }
+}
+
+/** Enter in the host's or the token's field saves, as a form's submit would: the card is no form (see the template). */
+function onEnter(e: KeyboardEvent) {
+  if (!(e.target instanceof HTMLInputElement) || e.isComposing) return
+  e.preventDefault()
+  void save()
 }
 
 async function remove(e: TrackerEntry) {
@@ -111,7 +117,11 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
       <p v-else-if="store.available.value === null && store.loading.value" class="text-sm text-muted">Reading the tokens…</p>
       <p v-else class="text-sm text-dimmed" data-github-none>No GitHub token is kept yet.</p>
 
-      <form class="flex flex-col gap-3" autocomplete="off" data-github-form @submit.prevent="save">
+      <!--
+        No form element and no submit: a browser's password manager offers to save what a submitted password form held, and the token is
+        kept by the server alone. The fields stay in place, the token's only emptied; Enter in either saves, as the button does.
+      -->
+      <div class="flex flex-col gap-3" data-github-form @keydown.enter="onEnter">
         <UFormField label="Host" description="github.com, or your GitHub Enterprise Server's name." size="sm">
           <UInput v-model="host" class="w-full" autocomplete="off" spellcheck="false" aria-label="The GitHub host" data-github-host />
         </UFormField>
@@ -122,16 +132,15 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
             request's checks are its commit statuses and its GitHub Actions jobs, and other apps' check runs need a classic token.
           </template>
           <!--
-            Not a password field: a browser's password manager offers to save a password field's value as this origin's password, and
-            the token is kept by the server alone. A text field drawn masked where the browser can (every Chromium, the desktop app's
-            among them, and Safari), a password field elsewhere, each marked for no manager to fill or save it.
+            A password field in every browser: what is typed in one is a secret to the browser, the operating system and assistive tools
+            (not read aloud, not given to the accessibility tree, not copied out, not learned by a keyboard), which a text field drawn
+            masked is not. Marked for no password manager to fill or save it.
           -->
           <UInput
             v-model="token"
-            :type="masked ? 'text' : 'password'"
+            type="password"
             class="w-full"
-            :ui="{ base: masked ? '[-webkit-text-security:disc]' : '' }"
-            autocomplete="off"
+            autocomplete="new-password"
             autocapitalize="off"
             autocorrect="off"
             spellcheck="false"
@@ -144,10 +153,10 @@ const revokeHref = (h: string) => githubHref(`https://${h}/settings/tokens`, h)
           />
         </UFormField>
         <div class="flex flex-wrap items-center gap-2">
-          <UButton type="submit" label="Check and save" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="saving" :disabled="!token || !host.trim()" data-github-save />
+          <UButton type="button" label="Check and save" icon="i-lucide-shield-check" size="sm" color="neutral" variant="outline" :loading="saving" :disabled="!token || !host.trim()" data-github-save @click="save" />
           <span class="text-xs text-muted">Saved by its own Check and save, which asks GitHub whose it is first; not by the page's Save. The token is never shown again.</span>
         </div>
-      </form>
+      </div>
     </div>
   </UCard>
 </template>

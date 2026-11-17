@@ -54,15 +54,23 @@ test('a GitHub token is saved in Settings by its own Check and save, and never s
   await expect(card).toBeVisible()
   await expect(card.locator('[data-github-none]')).toBeVisible()
   const field = card.locator('input[data-github-token]')
-  // No password manager offers to save or fill it: a text field drawn masked, marked for each manager to leave alone.
-  await expect(field).toHaveAttribute('type', 'text')
-  await expect(field).toHaveAttribute('autocomplete', 'off')
+  // A password field in every browser, so that nothing outside the page is given what is typed (a text field drawn masked gives it to
+  // the accessibility tree and lets it be copied out); in no form, so that nothing is submitted for a password manager to take for a
+  // sign-in; and marked for each manager to leave alone.
+  await expect(field).toHaveAttribute('type', 'password')
+  await expect(field).toHaveAttribute('autocomplete', 'new-password')
   await expect(field).toHaveAttribute('data-1p-ignore', '')
   await expect(field).toHaveAttribute('data-lpignore', 'true')
   await expect(field).toHaveAttribute('data-bwignore', '')
   await expect(field).toHaveAttribute('data-form-type', 'other')
-  expect(await card.locator('input[type="password"]').count()).toBe(0)
-  expect(await field.evaluate((e) => getComputedStyle(e).getPropertyValue('-webkit-text-security'))).toBe('disc')
+  expect(await card.locator('form').count()).toBe(0)
+  expect(await field.evaluate((e) => e.closest('form') === null)).toBe(true)
+  // What an assistive tool is given of the field is its bullets, never what was typed.
+  await field.fill(TOKEN)
+  const told = await page.accessibility.snapshot({ root: (await field.elementHandle())!, interestingOnly: false })
+  expect(told, 'the field is in the accessibility tree').toBeTruthy()
+  expect(JSON.stringify(told)).not.toContain(TOKEN)
+  await field.fill('')
   await card.locator('input[data-github-host]').fill(gh.host)
   await field.fill(TOKEN)
   // The card is out of the page's one Save: a token typed makes nothing for the save bar to save.
