@@ -3,6 +3,7 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +49,12 @@ import (
 // anything acts on it and never an outcome: a pending send is cancelled
 // (CancelSend) only once a cancel was asked, and one the desk admitted
 // first is settled sent with its cancel still asked (AskedCancels), for the
-// settlement to close its request at the desk. A capture's delete leaves
+// settlement to close its request at the desk and say so (CloseCancel).
+// The sends still open, pending or with a cancel not closed, are kept in a
+// table of this database's own (capture_sends_open, version 6), written
+// again from the send's rows by every write that opens or closes one, so
+// the settlement's reads walk the open sends and never the settled ones.
+// A capture's delete leaves
 // its sends whole, each readable as a row: what was sent stays. Locally a
 // send that ended is ended: a sent outcome a replica brings later for one
 // whose files went makes it sent, and this store holds no file of it.
@@ -341,8 +347,20 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			}
 		}
 		t.created(in.ID, key)
-		return nil
+		return t.reopenSend(in.ID)
 	})
+}
+
+// reopenSend writes the open row of the send with the id again from its
+// rows (openSendsFill), in the caller's transaction: what every write that
+// opens or closes a send does after its rows. A cancel CloseCancel closed
+// is opened again only by a cancel asked after it.
+func (t *tx) reopenSend(id string) error {
+	if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM capture_sends_open WHERE send_id = ?", id); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(t.ctx, openSendsFill("s.id = ?"), id)
+	return err
 }
 
 // sendToTicket makes a ticket send's rows on its ticket: the ticket (new,
@@ -507,7 +525,10 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			}
 		}
 		t.created(args.ID, "")
-		if err := t.outcome(args.ID, kind, args.Target, nil, why); err != nil || kind == SendSent {
+		if err := t.outcome(args.ID, kind, args.Target, nil, why); err != nil {
+			return err
+		}
+		if err := t.reopenSend(args.ID); err != nil || kind == SendSent {
 			return err
 		}
 		var gone bool
@@ -628,7 +649,39 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 		if err != nil {
 			return err
 		}
-		return t.record(ChangeRow{Entity: EntityCaptureSend, EntityID: id, Field: "cancels", Op: OpAdd, Value: value})
+		if err := t.record(ChangeRow{Entity: EntityCaptureSend, EntityID: id, Field: "cancels", Op: OpAdd, Value: value}); err != nil {
+			return err
+		}
+		return t.reopenSend(id)
+	})
+}
+
+// CloseCancel records that the cancel asked of the send with the id is
+// closed at its target (its request closed, or pruned, at the desk): the
+// send is no longer listed by AskedCancels. It is the open sends' table's
+// write alone, in a transaction of its own outside Apply (no changes row,
+// no receipt), derived and local as that table is, and idempotent: a
+// cancel closed already, or one of a send refused or cancelled (nothing of
+// it is under way), is closed. Refused (a *Refusal): not_found for no
+// such send, invalid for one with no cancel asked, and stale_revision for
+// a pending send, whose cancel ends with its outcome (CancelSend; or
+// MarkSent, then its request closed and this). A cancel asked after the
+// close opens it again (reopenSend).
+func (s *Store) CloseCancel(ctx context.Context, id string) error {
+	return s.derived(ctx, func(dbtx *sql.Tx, _ time.Time) error {
+		sv, err := readSend(ctx, dbtx, id, false)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return refuse(RefusalNotFound, "no send %s", id)
+		case err != nil:
+			return err
+		case len(sv.Cancels) == 0:
+			return refuse(RefusalInvalid, "no cancel was asked of the send %s", id)
+		case sv.State == SendPending:
+			return refuse(RefusalStaleRevision, "the send is pending: its cancel ends with its outcome")
+		}
+		_, err = dbtx.ExecContext(ctx, "DELETE FROM capture_sends_open WHERE send_id = ?", id)
+		return err
 	})
 }
 
@@ -639,11 +692,17 @@ const sendColumns = "s.id, s.capture_id, s.rev, s.kind, s.asked, s.digest, s.cre
 // capture_sends s) with their outcomes, cancels and state, without their
 // requests: none on a database older than captureSchema.
 func readSends(ctx context.Context, q queryer, clause string, args ...any) ([]CaptureSend, error) {
+	return readSendsFrom(ctx, q, "capture_sends s", clause, args...)
+}
+
+// readSendsFrom is readSends of the sends from (a FROM clause naming
+// capture_sends s) and the clause pick.
+func readSendsFrom(ctx context.Context, q queryer, from, clause string, args ...any) ([]CaptureSend, error) {
 	if schemaOf(q) < captureSchema {
 		return []CaptureSend{}, nil
 	}
 	out, err := func() ([]CaptureSend, error) {
-		rows, err := q.QueryContext(ctx, "SELECT "+sendColumns+" FROM capture_sends s "+clause, args...)
+		rows, err := q.QueryContext(ctx, "SELECT "+sendColumns+" FROM "+from+" "+clause, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -764,8 +823,12 @@ func (s *Store) CaptureSend(ctx context.Context, id string) (CaptureSend, error)
 // sendsPage is a page of the sends where picks (a condition on
 // capture_sends s), oldest first or newest, after the send with the id
 // after (a page's Next), at most limit, 1 to MaxCapturePage: ErrBadQuery
-// for a limit out of range or an after that names no send.
-func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest bool, after string, limit int) (SendsPage, error) {
+// for a limit out of range or an after that names no send. open, when not
+// "", is a column of the open sends' table (pending, cancel) that picks
+// the same sends as where: on a database that has the table the page is
+// read through its index on that column, oldest first, and reads the open
+// sends it gives and no other; where picks them on an older one.
+func (s *Store) sendsPage(ctx context.Context, where string, args []any, open string, newest bool, after string, limit int) (SendsPage, error) {
 	if limit < 1 || limit > MaxCapturePage {
 		return SendsPage{}, badQuery("a page of sends is 1 to %d, not %d", MaxCapturePage, limit)
 	}
@@ -775,8 +838,13 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 	}
 	page := SendsPage{Sends: []CaptureSend{}}
 	err := s.read(ctx, func(q queryer) error {
-		clause := "WHERE " + where
-		all := append([]any{}, args...)
+		from, clause, all, key := "capture_sends s", "WHERE "+where, append([]any{}, args...), [2]string{"s.created_at", "s.id"}
+		if open != "" && schemaOf(q) >= openSendsSchema {
+			// The open sends' table first, by its index (CROSS JOIN keeps
+			// the order of the tables), each send then read by its id.
+			from, clause, all, key = "capture_sends_open o CROSS JOIN capture_sends s", "WHERE o."+open+" = 1 AND s.id = o.send_id", nil,
+				[2]string{"o.created_at", "o.send_id"}
+		}
 		if after != "" {
 			var there bool
 			if schemaOf(q) >= captureSchema {
@@ -787,10 +855,10 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 			if !there {
 				return badQuery("the page's cursor names no send")
 			}
-			clause += " AND (s.created_at, s.id) " + cmp + " (SELECT created_at, id FROM capture_sends WHERE id = ?)"
+			clause += " AND (" + key[0] + ", " + key[1] + ") " + cmp + " (SELECT created_at, id FROM capture_sends WHERE id = ?)"
 			all = append(all, after)
 		}
-		sends, err := readSends(ctx, q, clause+" ORDER BY s.created_at "+order+", s.id "+order+" LIMIT ?", append(all, limit+1)...)
+		sends, err := readSendsFrom(ctx, q, from, clause+" ORDER BY "+key[0]+" "+order+", "+key[1]+" "+order+" LIMIT ?", append(all, limit+1)...)
 		if err != nil {
 			return err
 		}
@@ -814,28 +882,30 @@ func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, li
 		return SendsPage{}, badQuery("the sends named are a ticket's, by its key, or Brakeman's, by br-<n>")
 	}
 	return s.sendsPage(ctx, `s.kind = ? AND s.id IN (SELECT send_id FROM capture_send_outcomes WHERE kind = 'sent' AND target = ?) AND `+sentTo("s.id", "?"),
-		[]any{kind, target, target}, true, after, limit)
+		[]any{kind, target, target}, "", true, after, limit)
 }
 
 // PendingSends lists every pending send by sendState, oldest first, by
 // pages (sendsPage), without their requests (CaptureSend reads one whole):
-// what a settlement asks its target for again. Its answer is a page; the
-// work of a page is not bounded by it, since version 5 keeps nothing a read
-// finds a send by its state with: it reads the sends the store keeps. The
-// row that first calls it (issue #794) brings what bounds that.
+// what a settlement asks its target for again. A page reads the open
+// sends' table by its index (version 6): its work is the open sends it
+// gives, whatever number of sends were settled; a read-only store on an
+// older database picks them by sendState, reading every send.
 func (s *Store) PendingSends(ctx context.Context, after string, limit int) (SendsPage, error) {
-	return s.sendsPage(ctx, sendStateSQL("s.id")+" = 'pending'", nil, false, after, limit)
+	return s.sendsPage(ctx, sendStateSQL("s.id")+" = 'pending'", nil, "pending", false, after, limit)
 }
 
-// AskedCancels lists every send with a cancel asked whose state is not
-// cancelled, oldest first, by pages (sendsPage): what a settlement
-// finishes (a pending one cancelled, a sent one's request closed at the
-// desk), whether a cancel is done at the desk being the desk's to say. A
-// send sent and a send refused with its cancel asked stay listed, since
-// nothing records its cancel closed; its answer is a page and its work, as
-// PendingSends', is not bounded by it. Issue #794 brings both.
+// AskedCancels lists every send whose cancel is open, oldest first, by
+// pages (sendsPage): a cancel asked of a pending send, or of a sent one
+// and not yet closed at the desk (CloseCancel); what a settlement finishes
+// (a pending one cancelled, a sent one's request closed at the desk). A
+// send refused or cancelled has nothing under way, and is not listed. A
+// page's work is the open sends it gives, as PendingSends'; a read-only
+// store on an older database, which recorded no close, lists every
+// pending or sent send with a cancel asked.
 func (s *Store) AskedCancels(ctx context.Context, after string, limit int) (SendsPage, error) {
-	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" != 'cancelled'", nil, false, after, limit)
+	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" IN ('pending', 'sent')", nil, "cancel", false,
+		after, limit)
 }
 
 // OpenSendFile opens the content with the hash that the send with the id

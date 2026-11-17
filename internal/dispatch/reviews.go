@@ -66,16 +66,21 @@ const (
 )
 
 // The kinds of a finding: on lines of a file, on a file, on the candidate
-// as a whole, or on a failed check's receipt.
+// as a whole, on a failed check's receipt, or on an annotation of a
+// person's capture of the candidate's preview (schema version 7, #798).
 const (
 	FindingKindLine    = "line"
 	FindingKindFile    = "file"
 	FindingKindGeneral = "general"
 	FindingKindCheck   = "check"
+	FindingKindCapture = "capture"
 )
 
-// FindingKinds is a finding's kinds.
-var FindingKinds = []string{FindingKindLine, FindingKindFile, FindingKindGeneral, FindingKindCheck}
+// FindingKinds is a finding's kinds: the store's, every one of them. The
+// API takes a finding of kind capture from no route and no act yet
+// (internal/api's captureFindingRefused): the row that fills its evidence
+// lifts that (the plan's PR-10, #798).
+var FindingKinds = []string{FindingKindLine, FindingKindFile, FindingKindGeneral, FindingKindCheck, FindingKindCapture}
 
 // The intents of a finding: a change asked for, a question, a note.
 const (
@@ -195,12 +200,26 @@ type ReviewEvidence struct {
 
 // FindingEvidence is a finding's evidence: the commit its lines are
 // anchored on (the candidate's for a candidate-side line or file finding,
-// the base for a base-side one, none otherwise), and a check finding's
-// receipt as the server read it from the ledger.
+// the base for a base-side one, none otherwise), a check finding's
+// receipt as the server read it from the ledger, and a capture finding's
+// capture as the server bound it.
 type FindingEvidence struct {
-	K            int       `json:"k"`
-	AnchorCommit string    `json:"anchorCommit,omitempty"`
-	Check        *CheckRef `json:"check,omitempty"`
+	K            int         `json:"k"`
+	AnchorCommit string      `json:"anchorCommit,omitempty"`
+	Check        *CheckRef   `json:"check,omitempty"`
+	Capture      *CaptureRef `json:"capture,omitempty"`
+}
+
+// CaptureRef is what a finding of kind capture names: the capture, the
+// send of it whose frozen document and screenshot the finding stands on
+// (a send is never removed, and holds its files while the store keeps
+// it), and the annotation's place k in that document (1 to
+// MaxCaptureAnnotations). It is the server's (FindingEvidence), kept with
+// the finding in its capture_ref, and never part of the fingerprint.
+type CaptureRef struct {
+	Capture string `json:"capture"`
+	Send    string `json:"send"`
+	K       int    `json:"k"`
 }
 
 // CheckRef is a check finding's receipt as the server read it from the
@@ -391,27 +410,28 @@ type Review struct {
 // how many marks it has, and the latest of them (without where it located
 // the lines, which Marks reads).
 type Finding struct {
-	ID           string    `json:"id"`
-	ReviewID     string    `json:"reviewId"`
-	TicketID     string    `json:"ticketId"`
-	K            int       `json:"k"`
-	Kind         string    `json:"kind"`
-	Intent       string    `json:"intent"`
-	Severity     string    `json:"severity,omitempty"`
-	Path         string    `json:"path,omitempty"`
-	Side         string    `json:"side,omitempty"`
-	From         int       `json:"from,omitempty"`
-	To           int       `json:"to,omitempty"`
-	AnchorCommit string    `json:"anchorCommit,omitempty"`
-	Lines        []string  `json:"lines"`
-	Message      string    `json:"message"`
-	Resolution   string    `json:"resolution,omitempty"`
-	Check        *CheckRef `json:"check,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Candidate    string    `json:"candidate"`
-	State        string    `json:"state"`
-	Marks        int       `json:"marks"`
-	Latest       *Mark     `json:"latest,omitempty"`
+	ID           string      `json:"id"`
+	ReviewID     string      `json:"reviewId"`
+	TicketID     string      `json:"ticketId"`
+	K            int         `json:"k"`
+	Kind         string      `json:"kind"`
+	Intent       string      `json:"intent"`
+	Severity     string      `json:"severity,omitempty"`
+	Path         string      `json:"path,omitempty"`
+	Side         string      `json:"side,omitempty"`
+	From         int         `json:"from,omitempty"`
+	To           int         `json:"to,omitempty"`
+	AnchorCommit string      `json:"anchorCommit,omitempty"`
+	Lines        []string    `json:"lines"`
+	Message      string      `json:"message"`
+	Resolution   string      `json:"resolution,omitempty"`
+	Check        *CheckRef   `json:"check,omitempty"`
+	Capture      *CaptureRef `json:"capture,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	Candidate    string      `json:"candidate"`
+	State        string      `json:"state"`
+	Marks        int         `json:"marks"`
+	Latest       *Mark       `json:"latest,omitempty"`
 }
 
 // Mark is a mark's row: the candidate the finding was marked against, the
@@ -483,23 +503,24 @@ type reviewCreated struct {
 // findingCreated is a finding's create row's value: the finding whole,
 // every field immutable.
 type findingCreated struct {
-	ID           string    `json:"id"`
-	ReviewID     string    `json:"reviewId"`
-	TicketID     string    `json:"ticketId"`
-	K            int       `json:"k"`
-	Kind         string    `json:"kind"`
-	Intent       string    `json:"intent"`
-	Severity     string    `json:"severity,omitempty"`
-	Path         string    `json:"path,omitempty"`
-	Side         string    `json:"side,omitempty"`
-	From         int       `json:"from,omitempty"`
-	To           int       `json:"to,omitempty"`
-	AnchorCommit string    `json:"anchorCommit,omitempty"`
-	Lines        []string  `json:"lines"`
-	Message      string    `json:"message"`
-	Resolution   string    `json:"resolution,omitempty"`
-	Check        *CheckRef `json:"check,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID           string      `json:"id"`
+	ReviewID     string      `json:"reviewId"`
+	TicketID     string      `json:"ticketId"`
+	K            int         `json:"k"`
+	Kind         string      `json:"kind"`
+	Intent       string      `json:"intent"`
+	Severity     string      `json:"severity,omitempty"`
+	Path         string      `json:"path,omitempty"`
+	Side         string      `json:"side,omitempty"`
+	From         int         `json:"from,omitempty"`
+	To           int         `json:"to,omitempty"`
+	AnchorCommit string      `json:"anchorCommit,omitempty"`
+	Lines        []string    `json:"lines"`
+	Message      string      `json:"message"`
+	Resolution   string      `json:"resolution,omitempty"`
+	Check        *CheckRef   `json:"check,omitempty"`
+	Capture      *CaptureRef `json:"capture,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
 }
 
 // markAdded is a mark's add row's value, a row of its finding's marks log:
@@ -700,6 +721,13 @@ func (t *tx) submitReview(key string, r NewReview, ev ReviewEvidence) error {
 	if err != nil {
 		return err
 	}
+	for _, f := range rows {
+		if f.Capture != nil {
+			if err := t.captureSent(f.K, f.Capture); err != nil {
+				return err
+			}
+		}
+	}
 	if err := t.holdsCandidate(tk, c.Run); err != nil {
 		return err
 	}
@@ -761,9 +789,10 @@ func (t *tx) submitReview(key string, r NewReview, ev ReviewEvidence) error {
 // and none otherwise, and the fields its kind takes and no others: a line
 // finding a path, a side, a range of 1 to MaxFindingLine and its lines
 // (1 to MaxAnchorLines of at most MaxAnchorLine bytes, no newline); a
-// file finding a path and a side; a general finding none of them; a check
-// finding its receipt alone, of the ledger and of the candidate's attempt.
-// Every finding but a check's has words. An error is a Refusal.
+// file finding a path and a side; a general finding none of them, nor a
+// capture finding (its capture is the server's evidence); a check finding
+// its receipt alone, of the ledger and of the candidate's attempt. Every
+// finding but a check's has words. An error is a Refusal.
 func checkFinding(k int, c Candidate, f NewFinding) error {
 	what := fmt.Sprintf("finding %d", k)
 	if !slices.Contains(FindingKinds, f.Kind) {
@@ -866,11 +895,12 @@ func checkCheckRequest(what string, c Candidate, r CheckRequest) error {
 // checkFinding has checked, and gives each finding's row but its ids and
 // time: one entry per finding with its place, an anchor only on a line or
 // a file finding and the side's commit (the candidate's or the base),
-// and a check finding's receipt, of the identity the request named and of
+// a check finding's receipt, of the identity the request named and of
 // the server's filling (its shapes and bounds), its source, identity,
-// chosen and quote the request's. Evidence that does not answer the
-// request is errEvidence; a receipt that tested another commit than the
-// candidate's, or did not finish and fail, is refused invalid.
+// chosen and quote the request's, and a capture finding's capture, of its
+// shape (bindCapture), on that kind alone. Evidence that does not answer
+// the request is errEvidence; a receipt that tested another commit than
+// the candidate's, or did not finish and fail, is refused invalid.
 func bindEvidence(c Candidate, r NewReview, ev ReviewEvidence) ([]findingCreated, error) {
 	if len(ev.Findings) != len(r.Findings) {
 		return nil, errEvidence("%d entries for %d findings", len(ev.Findings), len(r.Findings))
@@ -907,9 +937,50 @@ func bindEvidence(c Candidate, r NewReview, ev ReviewEvidence) ([]findingCreated
 			}
 			row.Check = ref
 		}
+		switch {
+		case f.Kind != FindingKindCapture && e.Capture != nil:
+			return nil, errEvidence("finding %d is no capture's, and names a capture", k)
+		case f.Kind == FindingKindCapture:
+			ref, err := bindCapture(k, e.Capture)
+			if err != nil {
+				return nil, err
+			}
+			row.Capture = ref
+		}
 		out[i] = row
 	}
 	return out, nil
+}
+
+// bindCapture is a capture finding's capture as it is kept: the server's
+// (got), its capture and its send ids of the store's form and its
+// annotation's place 1 to MaxCaptureAnnotations; that the send is the
+// capture's is the transaction's to say (captureSent).
+func bindCapture(k int, got *CaptureRef) (*CaptureRef, error) {
+	switch {
+	case got == nil:
+		return nil, errEvidence("finding %d is a capture's, and names none", k)
+	case !ValidID(got.Capture) || !ValidID(got.Send):
+		return nil, errEvidence("finding %d's capture %q and send %q are not ids of the store's", k, got.Capture, got.Send)
+	case got.K < 1 || got.K > MaxCaptureAnnotations:
+		return nil, errEvidence("finding %d names annotation %d, not 1 to %d", k, got.K, MaxCaptureAnnotations)
+	}
+	kept := *got
+	return &kept, nil
+}
+
+// captureSent refuses a capture finding whose send is not a send of its
+// capture, inside the operation's transaction: invalid, the send named
+// being none of the store's or another capture's.
+func (t *tx) captureSent(k int, ref *CaptureRef) error {
+	var there bool
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT EXISTS (SELECT 1 FROM capture_sends WHERE id = ? AND capture_id = ?)", ref.Send, ref.Capture).Scan(&there); err != nil {
+		return err
+	}
+	if !there {
+		return refuse(RefusalInvalid, "finding %d: the send %s is no send of the capture %s", k, ref.Send, ref.Capture)
+	}
+	return nil
 }
 
 // bindCheck is a check finding's receipt as it is kept: the server's
@@ -1115,16 +1186,21 @@ func (t *tx) insertFinding(f findingCreated, projectID string) error {
 	if err != nil {
 		return err
 	}
-	check := ""
+	check, capture := "", ""
 	if f.Check != nil {
 		if check, err = encodeValue(f.Check); err != nil {
 			return err
 		}
 	}
+	if f.Capture != nil {
+		if capture, err = encodeValue(f.Capture); err != nil {
+			return err
+		}
+	}
 	if _, err := t.tx.ExecContext(t.ctx, `INSERT INTO review_findings (id, review_id, ticket_id, k, kind, intent, severity, path, side, from_line,
-		to_line, anchor_commit, lines, message, resolution, check_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		to_line, anchor_commit, lines, message, resolution, check_ref, capture_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.ID, f.ReviewID, f.TicketID, f.K, f.Kind, f.Intent, f.Severity, f.Path, f.Side, f.From, f.To, f.AnchorCommit, lines, f.Message,
-		f.Resolution, check, stamp(f.CreatedAt)); err != nil {
+		f.Resolution, check, capture, stamp(f.CreatedAt)); err != nil {
 		return err
 	}
 	value, err := encodeValue(f)
@@ -1608,8 +1684,17 @@ func scanReviews(ctx context.Context, q queryer, query string, args ...any) ([]R
 // review_findings f joined to its review r: its review's candidate, its
 // state and its marks' count beside it.
 const findingColumns = `f.id, f.review_id, f.ticket_id, f.k, f.kind, f.intent, f.severity, f.path, f.side, f.from_line, f.to_line,
-	f.anchor_commit, f.lines, f.message, f.resolution, f.check_ref, f.created_at, r.candidate, ` + findingState + `,
+	f.anchor_commit, f.lines, f.message, f.resolution, f.check_ref, f.capture_ref, f.created_at, r.candidate, ` + findingState + `,
 	(SELECT COUNT(*) FROM finding_marks m WHERE m.finding_id = f.id)`
+
+// findingColumnsOf is findingColumns of the schema q reads (schemaOf): a
+// database before findingCaptureSchema has no capture_ref, read as none.
+func findingColumnsOf(q queryer) string {
+	if schemaOf(q) < findingCaptureSchema {
+		return strings.Replace(findingColumns, "f.capture_ref", "''", 1)
+	}
+	return findingColumns
+}
 
 // findingFrom is the findings joined to their reviews, as findingColumns
 // reads them.
@@ -1618,9 +1703,9 @@ const findingFrom = " FROM review_findings f JOIN reviews r ON r.id = f.review_i
 // scanFinding reads a finding's row (findingColumns), its latest mark not.
 func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
 	var f Finding
-	var lines, check, created string
+	var lines, check, capture, created string
 	if err := row.Scan(&f.ID, &f.ReviewID, &f.TicketID, &f.K, &f.Kind, &f.Intent, &f.Severity, &f.Path, &f.Side, &f.From, &f.To, &f.AnchorCommit,
-		&lines, &f.Message, &f.Resolution, &check, &created, &f.Candidate, &f.State, &f.Marks); err != nil {
+		&lines, &f.Message, &f.Resolution, &check, &capture, &created, &f.Candidate, &f.State, &f.Marks); err != nil {
 		return Finding{}, err
 	}
 	if err := json.Unmarshal([]byte(lines), &f.Lines); err != nil {
@@ -1633,6 +1718,12 @@ func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
 		f.Check = &CheckRef{}
 		if err := json.Unmarshal([]byte(check), f.Check); err != nil {
 			return Finding{}, fmt.Errorf("dispatch: the receipt of finding %s: %w", f.ID, err)
+		}
+	}
+	if capture != "" {
+		f.Capture = &CaptureRef{}
+		if err := json.Unmarshal([]byte(capture), f.Capture); err != nil {
+			return Finding{}, fmt.Errorf("dispatch: the capture of finding %s: %w", f.ID, err)
 		}
 	}
 	f.CreatedAt = unstamp(created)
@@ -1711,7 +1802,7 @@ func readReview(ctx context.Context, q queryer, id string) (Review, error) {
 	if r.Counts, err = countFindings(ctx, q, id); err != nil {
 		return Review{}, err
 	}
-	fs, err := scanFindings(ctx, q, "SELECT "+findingColumns+findingFrom+" WHERE f.review_id = ? ORDER BY f.k, f.id", id)
+	fs, err := scanFindings(ctx, q, "SELECT "+findingColumnsOf(q)+findingFrom+" WHERE f.review_id = ? ORDER BY f.k, f.id", id)
 	if err != nil {
 		return Review{}, err
 	}
@@ -1758,7 +1849,7 @@ func (s *Store) Finding(ctx context.Context, id string) (Finding, string, error)
 		if schemaOf(q) < 3 || !ValidID(id) {
 			return ErrNotFound
 		}
-		fs, err := scanFindings(ctx, q, "SELECT "+findingColumns+findingFrom+" WHERE f.id = ?", id)
+		fs, err := scanFindings(ctx, q, "SELECT "+findingColumnsOf(q)+findingFrom+" WHERE f.id = ?", id)
 		if err != nil {
 			return err
 		}
@@ -1975,7 +2066,7 @@ func (s *Store) Findings(ctx context.Context, key string, filter FindingFilter, 
 			where += " AND (f.created_at, f.review_id, f.k, f.id) > (?, ?, ?, ?)"
 			args = append(args, at, review, k, after)
 		}
-		fs, err := scanFindings(ctx, q, "SELECT "+findingColumns+findingFrom+where+" ORDER BY f.created_at, f.review_id, f.k, f.id LIMIT ?",
+		fs, err := scanFindings(ctx, q, "SELECT "+findingColumnsOf(q)+findingFrom+where+" ORDER BY f.created_at, f.review_id, f.k, f.id LIMIT ?",
 			append(args, FindingsPerPage+1)...)
 		if err != nil {
 			return err
