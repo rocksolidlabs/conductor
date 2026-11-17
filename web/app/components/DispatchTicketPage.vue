@@ -20,6 +20,7 @@ import { summaryStatusLine } from '~/utils/status'
 import { GITHUB_OWNED_WORDS, parseGitHubRef, readIsStale, snapshotOf, trackerRefusalWords } from '~/utils/tracker'
 import type { RefreshReply } from '~/composables/useDispatch'
 import { publicationsStripWords } from '~/utils/publication'
+import { askChips } from '~/utils/brakemanAsk'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -1016,14 +1017,10 @@ function moreHistory() {
 const MAX_DESCRIPTION = 64 << 10
 const MAX_ACCEPTANCE = 16 << 10
 
-// The menu's Brakeman entries (docs/plans/brakeman.md, PR-7): the Brakeman page's composer, asking about this ticket.
-const brakeman = useBrakeman()
-const askBrakeman = computed(() =>
-  [
-    { label: 'Draft tickets', kind: 'draft_tickets', icon: 'i-lucide-ticket-plus' },
-    { label: 'Propose a crew', kind: 'propose_crew', icon: 'i-lucide-users' },
-  ].map((x) => ({ label: x.label, icon: x.icon, to: `/brakeman?kind=${x.kind}&subject=${encodeURIComponent(`ticket:${props.ticketKey}`)}` })),
-)
+// Brakeman on this ticket (issue 993, F8): its latest brief about the ticket, what it reads about it now, and the ask bar with the
+// ticket's chips (Explain, Prepare a decision, Draft tickets, Propose a crew), each sent at once: the answer comes back here. It
+// stands under the properties, in the sections view alone, as the strip does.
+const brakemanChips = computed(() => askChips({ ticket: props.ticketKey }))
 </script>
 
 <template>
@@ -1041,11 +1038,6 @@ const askBrakeman = computed(() =>
             <span class="text-dimmed">/</span>
             <span class="flex-none font-mono" data-ticket-key>{{ ticketKey }}</span>
           </span>
-        </template>
-        <template v-if="brakeman.available.value" #right>
-          <UDropdownMenu :items="askBrakeman" :content="{ align: 'end' }">
-            <UButton label="Ask Brakeman" icon="i-lucide-notebook-pen" color="neutral" variant="ghost" size="sm" data-ticket-ask-brakeman />
-          </UDropdownMenu>
         </template>
       </UDashboardNavbar>
     </template>
@@ -1193,7 +1185,9 @@ const askBrakeman = computed(() =>
             <DispatchHistory id="ticket-history" tabindex="-1" class="scroll-mt-14 outline-none" :entries="entries" :now="now" :more="!!historyNext" :loading="historyLoading" @more="moreHistory" />
           </div>
 
-          <aside class="order-first grid grid-cols-2 gap-x-3 gap-y-4 rounded-lg p-4 ring ring-default lg:sticky lg:top-14 lg:order-none lg:flex lg:w-80 lg:flex-none lg:flex-col" data-ticket-properties>
+          <!-- The properties, then Brakeman on this ticket, one column: first on a phone, beside the text on a wide screen. -->
+          <div class="order-first flex flex-col gap-4 lg:sticky lg:top-14 lg:order-none lg:w-80 lg:flex-none" data-ticket-side>
+          <aside class="grid grid-cols-2 gap-x-3 gap-y-4 rounded-lg p-4 ring ring-default lg:flex lg:flex-col" data-ticket-properties>
             <UFormField label="Status" size="sm">
               <USelect :model-value="ticket.status" :items="statusItems" :disabled="locked" size="sm" class="w-full" :icon="statusWord(ticket.status).icon" data-ticket-status @update:model-value="setStatus" />
             </UFormField>
@@ -1235,6 +1229,8 @@ const askBrakeman = computed(() =>
               <UButton label="Delete the ticket" icon="i-lucide-trash-2" color="neutral" variant="ghost" size="sm" class="col-span-2 w-fit" data-ticket-delete @click="deleteOpen = true" />
             </template>
           </aside>
+          <BrakemanSubjectPanel :subject="`ticket:${ticket.key}`" :label="ticket.key" :chips="brakemanChips" />
+          </div>
         </div>
       </div>
 
