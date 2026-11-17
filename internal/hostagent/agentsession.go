@@ -43,6 +43,13 @@ type agentSessionReport struct {
 // it. Past maxAgentSessionLog entries the oldest goes.
 func (a *agent) noteAgentSession(id string, turn bool) {
 	a.mu.Lock()
+	if a.asDropped {
+		// The socket was dropped: the agent's reports go to the server's
+		// route, which keeps their ids; one a report still under way on
+		// the socket names is kept by no one, never sent after them.
+		a.mu.Unlock()
+		return
+	}
 	a.asSeq++
 	if n := len(a.asLog); n > 0 && a.asLog[n-1].id == id {
 		if !a.asLog[n-1].turn && turn {
@@ -65,16 +72,6 @@ func (a *agent) replayAgentSessions() {
 	a.asSent = a.asTaken
 	a.mu.Unlock()
 	a.flushAgentSessions()
-}
-
-// clearAgentSessions forgets the log: nothing of it is sent again (the
-// socket dropped, the agent's reports going to the server's route, which
-// may record a newer id than any of it).
-func (a *agent) clearAgentSessions() {
-	a.mu.Lock()
-	a.asLog = nil
-	a.asSent, a.asTaken = a.asSeq, a.asSeq
-	a.mu.Unlock()
 }
 
 // flushAgentSessions sends, in order, the entries not yet sent on the
@@ -178,13 +175,22 @@ func (a *agent) confirmAgentSessions(w *controlWriter) bool {
 // dropReports stops listening on the host's socket, for a server that
 // does not take agent_session: the agent's sender finds it gone and
 // reports to the server's route, as under a host of an earlier release.
+//
+// In the one step that takes the socket, the host forgets the log and
+// takes no id after it (asDropped): nothing logged before, and nothing a
+// report still under way on the socket names, is sent after the agent's
+// reports went to the server's route, which may record a newer id.
 func (a *agent) dropReports() {
 	a.mu.Lock()
 	l := a.reports
-	a.reports = nil
+	if l != nil {
+		a.reports = nil
+		a.asDropped = true
+		a.asLog = nil
+		a.asSent, a.asTaken = a.asSeq, a.asSeq
+	}
 	a.mu.Unlock()
 	if l != nil {
-		a.clearAgentSessions()
 		a.log.Info("the server keeps no agent session a host carries: the agent's reports go to the server")
 		l.Close()
 	}

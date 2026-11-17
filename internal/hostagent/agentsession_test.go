@@ -464,3 +464,31 @@ func olderServerKeeping(t *testing.T, id, secret string) string {
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+// A report still under way on the socket as the socket is dropped (it was
+// past the session's wait before the drop) logs nothing: when a server
+// that takes ids is connected next, nothing is sent and the log is empty.
+func TestAReportUnderWayAsTheSocketIsDroppedLogsNothing(t *testing.T) {
+	a, sent, _ := agentSessionSender(t, true)
+	a.agentSessions.Store(false)
+	tok, _ := share.NewToken()
+	l, err := listenReports([]string{socketBase(t)}, tok, discardLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(l.Close)
+	a.mu.Lock()
+	a.reports = l
+	a.mu.Unlock()
+	a.dropReports()
+	// The report the handler was applying as the socket went.
+	a.noteAgentSession("old", true)
+	a.agentSessions.Store(true)
+	a.replayAgentSessions()
+	if got := drained(t, a, sent); len(got) != 0 {
+		t.Fatalf("sent %q after the socket was dropped", got)
+	}
+	if log := logOf(a); len(log) != 0 {
+		t.Fatalf("the log holds %+v", log)
+	}
+}

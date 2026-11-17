@@ -514,9 +514,12 @@ type agent struct {
 	asLog                  []agentSessionReport
 	asSeq, asSent, asTaken uint64
 	asFlushing             bool
-	agentSessions          atomic.Bool
-	asSend                 func(proto.HostAgentSessionMsg) error
-	asConfirm              func() bool
+	// asDropped says the socket was dropped for a server that takes no
+	// ids (dropReports): no id is logged after it. Guarded by mu.
+	asDropped     bool
+	agentSessions atomic.Bool
+	asSend        func(proto.HostAgentSessionMsg) error
+	asConfirm     func() bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
