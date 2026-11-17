@@ -18,6 +18,7 @@ import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
 import { previewPath } from '~/utils/capture'
+import type { BrakemanRequest } from '~/utils/brakeman'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -273,6 +274,13 @@ function openTask(id: string) {
   else selectTask(id, true)
 }
 const taskCommands = useTaskCommands(() => runId.value)
+
+// Brakeman on this run (issue 993, F8): what it said about the run and its tasks, read once per run and again as its records move,
+// under the selected task's row (its answer). An ask from a row's menu is shown there, where it was asked.
+const brakemanAbout = useBrakemanAbout(() => `run:${runId.value}`)
+function brakemanAsked(r: BrakemanRequest) {
+  brakemanAbout.add(r)
+}
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
 // The members' and the tasks' states in the status language (utils/status.ts): the graph, its legend and the palette's rows draw these.
 const memberMarks = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatusOf(run.value!, m, live.sessions.value, now.value).mark])))
@@ -585,8 +593,9 @@ palette.registerPage(() => {
             @show-task="selectTask($event, true)"
           />
         </div>
-        <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
-          <RunTasks :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+        <!-- The tasks, with Brakeman's answer under the selected task's row. -->
+        <div v-else-if="shownView === 'tasks' && run" class="flex min-h-0 flex-1 flex-wrap content-start items-start gap-3 overflow-y-auto p-3" data-run-tasks-view>
+          <RunTasks class="min-w-0 [flex:3_1_40rem]" :run="run" :ticket="reviewTicket" :selected="selectedTask" :attempt="wantedAttempt" :step="wantedStep" :now="now" :answers="brakemanAbout.byTask.value" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" @asked="brakemanAsked" />
         </div>
         <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />

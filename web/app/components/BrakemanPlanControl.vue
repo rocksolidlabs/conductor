@@ -16,6 +16,8 @@ import { revisionTag } from '~/utils/dispatchPlans'
  * live store. So an approval, a withdrawal or a ticket edit made elsewhere while the brief is open is what the card shows.
  */
 const props = defineProps<{ ticketKey: string; n: number }>()
+/** Whether DS2's Approve is offered now, as the revision is read: a brief's Needs you marks itself by it. */
+const emit = defineEmits<{ offered: [offered: boolean] }>()
 
 const ds = useDispatch()
 const ticket = ref<DispatchTicket | null>(null)
@@ -57,6 +59,7 @@ const live = useDispatchLive(
 const revision = computed(() => plans.plans.value.find((p) => p.n === props.n) ?? null)
 const control = computed(() => (read.value ? planCardControl(revision.value, props.ticketKey, props.n) : null))
 const body = computed(() => (revision.value ? (plans.bodies.get(revision.value.id) ?? null) : null))
+watch(() => !!(control.value?.approve && ticket.value), (v) => emit('offered', v), { immediate: true })
 const approving = ref(false)
 watch(approving, (open, was) => {
   // Closed after an approval or not: what Dispatch holds now is what the card shows.

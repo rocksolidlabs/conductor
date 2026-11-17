@@ -886,6 +886,102 @@ export function briefRegions(items: readonly BriefItem[], keep: readonly BriefRe
   return BRIEF_REGIONS.map((r) => ({ region: r.region, items: r.kinds.flatMap(placed) })).filter((r) => r.items.length > 0 || keep.includes(r.region))
 }
 
+/** A region's heading as the brief draws it: "Needs you · 1", "Proposed · 2", "What changed · 3 facts". */
+export function regionHeading(region: BriefRegionName, items: readonly GroupedItem[]): string {
+  switch (region) {
+    case 'needs':
+      return `Needs you · ${items.length}`
+    case 'proposed':
+      return `Proposed · ${items.length}`
+    case 'acts':
+      return 'What Brakeman did'
+    case 'changed': {
+      const n = items.filter((x) => x.item.kind === 'fact/1').length
+      return n ? `What changed · ${n} ${n === 1 ? 'fact' : 'facts'}` : 'What changed'
+    }
+    case 'compared':
+      return 'Compared'
+    case 'fold':
+      return 'Evidence'
+  }
+}
+
+/** The refs a brief's items cite, each once, first cited first: every evidence chip of the brief in one list. */
+export function briefEvidence(items: readonly BriefItem[]): string[] {
+  const out = new Set<string>()
+  const add = (refs: readonly string[] | undefined) => refs?.forEach((r) => out.add(r))
+  for (const it of items) {
+    switch (it.kind) {
+      case 'fact/1':
+      case 'decision/1':
+        add(it.evidence)
+        if (it.kind === 'decision/1') add(it.blocked)
+        break
+      case 'outcome/1':
+        add([it.receipt])
+        break
+      case 'evidence/1':
+        add(it.refs)
+        break
+      case 'overlap/1':
+        add(it.between)
+        add(it.evidence)
+        break
+      case 'comparison/1':
+      case 'handoff/1':
+        add(it.evidence)
+        break
+    }
+  }
+  return [...out]
+}
+
+/** The runs a brief cites, first cited first, by id: what a wake brief is about when the server sends no digest (an older server). */
+export function citedRuns(items: readonly BriefItem[]): string[] {
+  const out = new Set<string>()
+  for (const ref of briefEvidence(items)) {
+    const r = parseRef(ref)
+    if (r?.run) out.add(r.run)
+  }
+  return [...out]
+}
+
+/** The tickets a brief names, each once, first named first: its request's subjects, then every ref its items cite or act on. */
+export function briefTickets(b: Pick<BrakemanBrief, 'items'>, r: Pick<BrakemanRequest, 'subjects'>): string[] {
+  const acted = (b.items ?? []).flatMap((it) => (it.kind === 'proposal/1' ? [it.target] : it.kind === 'decision/1' ? [it.about] : it.kind === 'draft_plan/1' ? [it.ticket] : []))
+  const out = new Set<string>()
+  for (const ref of [...(r.subjects ?? []), ...acted, ...briefEvidence(b.items ?? [])]) {
+    const k = refTicket(ref)
+    if (k) out.add(k)
+  }
+  return [...out]
+}
+
+/** The most names a brief's head gives for what it is about, before "+N". */
+export const HEAD_ABOUT_MAX = 3
+
+/**
+ * What a brief is about, by name, for its head: an asked request's subjects as their chips say them; a wake request's runs the brief
+ * cites (the digest's, else those its items cite), at most HEAD_ABOUT_MAX by name and then "+N".
+ */
+export function briefAbout(
+  r: Pick<BrakemanRequest, 'kind' | 'subjects'>,
+  cites: { digest?: Pick<BrakemanDigest, 'about'>; items?: readonly BriefItem[] },
+  names: { session?: (id: string) => string | undefined; run?: (id: string) => string | undefined } = {},
+): string[] {
+  const shown = (xs: string[]) => (xs.length > HEAD_ABOUT_MAX ? [...xs.slice(0, HEAD_ABOUT_MAX), `+${xs.length - HEAD_ABOUT_MAX}`] : xs)
+  if (r.kind !== 'wake') return shown((r.subjects ?? []).map((s) => refLabel(s, names)))
+  const runs = cites.digest?.about.runs ?? citedRuns(cites.items ?? [])
+  return shown(runs.map((id) => names.run?.(id) || id))
+}
+
+/** The fold's line: "Provenance and all evidence: <agent>, <model>, request br-n, N reads" (a closed turn's length is not kept). */
+export function foldWords(r: Pick<BrakemanRequest, 'id' | 'agent' | 'reads'>): string {
+  const a = r.agent ?? {}
+  const reads = r.reads ?? 0
+  return `Provenance and all evidence: ${a.agentId || 'an agent'}, ${a.model || 'its default model'}, request ${r.id}, ${reads} ${reads === 1 ? 'read' : 'reads'}`
+}
+
 /** Each fact's number among the brief's facts, by its index in the brief. */
 export function factNumbers(items: readonly BriefItem[]): Map<number, number> {
   const out = new Map<number, number>()
