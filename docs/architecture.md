@@ -453,6 +453,22 @@ workbench, the app's own file pages and any other origin are refused, and
 each acts on the asking window only. The preload is never put into a
 frame, and the shell adds no permission and no webview.
 
+Conductor's own app is previewed the same way, from the repository's
+`conductor.manifest.json`: a tree's services are a Conductor server of the
+tree's own (`serve --dev --token-env CONDUCTOR_TREE_SECRET` on the
+loopback, its data under the tree's state directory, publishing nothing)
+and the web app's dev server, which proxies to it (`CONDUCTOR_DEV_API`) and,
+in the dev build alone, loads the bridge the tree is told of
+(`CONDUCTOR_PREVIEW_BRIDGE`, `web/app/plugins/previewBridge.client.ts`).
+The inner server's token is the tree's secret, minted for that tree and
+given only in its environment, so no argv and no file of the repository
+holds it; the preview names it as `${CONDUCTOR_TREE_SECRET}`, which the
+label puts in for the admin alone, and another page on the loopback, which
+`--dev`'s CORS lets reach the inner server, cannot know it. A capture's
+record (the revision the server read at the save, the sources checked in
+the tree) is the server's, never the client's (`docs/protocol.md`,
+Captures).
+
 ## Dispatch
 
 Dispatch is a component, Conductor's own work tracking: projects, tickets
@@ -1523,6 +1539,11 @@ still resolved. A switchyard routes and answers none.
   `workbench-token.lock` beside it, so a second server started on the same
   data directory leaves it alone, and one of those that generates its own
   token stops unless it has `--print-listen`.
+  `serve --token-env NAME` makes the variable `NAME` the token: refused
+  at start when it is unset or empty (never falling back to a configured
+  or generated one), taken out of the server's environment, so nothing it
+  starts inherits it, and printed, logged and kept nowhere: no handshake
+  field, no token file, no error that repeats it.
 
 ## Persistence
 
