@@ -134,7 +134,10 @@ func runTrackers(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 	switch verb {
 	case "set":
-		tok, err := readTrackerToken(stdin, stderr)
+		tok, err := readTrackerToken(ctx, stdin, stderr)
+		if errors.Is(err, errInterrupted) {
+			return 1, err
+		}
 		if err != nil {
 			return 2, err
 		}
@@ -145,21 +148,54 @@ func runTrackers(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	return trackersList(ctx, c, stdout)
 }
 
+// errInterrupted is a token's read ended by the command's context (a
+// Ctrl-C at the prompt): nothing was read, and nothing is sent.
+var errInterrupted = errors.New("interrupted: no token was read, and nothing was sent")
+
 // readTrackerToken reads the token from stdin: from a terminal with its
 // echo off, the prompt on stderr; from anything else, one line, its
 // line's end ("\n" or "\r\n") not the token's. Empty, more than one line
 // or out of a token's form (config.TrackerTokenForm) is refused before
-// anything is sent, in words that never hold what was read.
-func readTrackerToken(stdin io.Reader, stderr io.Writer) (string, error) {
+// anything is sent, in words that never hold what was read. A terminal's
+// read ends when ctx does (the process catches Ctrl-C, which only ends
+// ctx, while the read would wait for Enter): the terminal's state is put
+// back and errInterrupted answered, and a line typed after ctx ended is
+// never the token.
+func readTrackerToken(ctx context.Context, stdin io.Reader, stderr io.Writer) (string, error) {
 	var b []byte
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		fmt.Fprint(stderr, "GitHub token (not shown as you type): ")
-		read, err := term.ReadPassword(int(f.Fd()))
-		fmt.Fprintln(stderr)
+		fd := int(f.Fd())
+		state, err := term.GetState(fd)
 		if err != nil {
 			return "", errors.New("could not read the token from the terminal")
 		}
-		b = read
+		fmt.Fprint(stderr, "GitHub token (not shown as you type): ")
+		type result struct {
+			b   []byte
+			err error
+		}
+		got := make(chan result, 1)
+		go func() {
+			read, err := term.ReadPassword(fd)
+			got <- result{read, err}
+		}()
+		var r result
+		select {
+		case <-ctx.Done():
+			_ = term.Restore(fd, state)
+			fmt.Fprintln(stderr)
+			return "", errInterrupted
+		case r = <-got:
+		}
+		fmt.Fprintln(stderr)
+		if ctx.Err() != nil {
+			clear(r.b)
+			return "", errInterrupted
+		}
+		if r.err != nil {
+			return "", errors.New("could not read the token from the terminal")
+		}
+		b = r.b
 	} else {
 		read, err := io.ReadAll(io.LimitReader(stdin, maxTrackerInput+1))
 		if err != nil {
