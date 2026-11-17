@@ -102,6 +102,11 @@ onBeforeUnmount(() => stopDecisions?.())
 /** The destinations offered: Attach to a decision while the run has an open one. */
 /** A review's kinds are offered on a capture of a candidate's preview alone (Decision 9, CaptureSendReview). */
 const reviewable = computed(() => reviewOffered(props.capture).offered)
+/** Why Request a change and Add to a review are not offered, in words (a worktree's capture: a ticket instead). */
+const reviewAbsent = computed(() => {
+  const o = reviewOffered(props.capture)
+  return o.offered ? '' : `Request a change and Add to a review are not offered: ${o.why[0]!.toLowerCase()}${o.why.slice(1)}`
+})
 const reviewKind = computed(() => kind.value === 'review' || kind.value === 'review-draft')
 const kinds = computed(() => SEND_KINDS.filter((k) => (k.kind !== 'decision' || decisions.value.length) && ((k.kind !== 'review' && k.kind !== 'review-draft') || reviewable.value)))
 const decisionItems = computed(() => decisions.value.map((d) => ({ label: `${d.id} · ${d.request.question}`, value: d.id })))
@@ -230,6 +235,7 @@ async function cancel(s: CaptureSendView) {
         @click="kind = k.kind"
       />
     </div>
+    <p v-if="!reviewable" class="text-xs text-muted" data-send-review-absent>{{ reviewAbsent }}</p>
 
     <div v-if="kind === 'ticket-new'" class="flex flex-col gap-2">
       <UFormField label="Project">

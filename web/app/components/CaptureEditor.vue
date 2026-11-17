@@ -13,7 +13,9 @@ import { CommandRefused, mintCommandId } from '~/utils/tasks'
  * numbered, never burnt in) and the captures saved from them, one shown at a time. A draft takes Select another element, Select by
  * selector, Draw a region, the notes, the order, removal and Save; a saved capture takes the notes, the order, removal and Draw a
  * region, saved as a new revision (Save changes), and offers its sends (the Send slot, CaptureSend.vue once it is there) and Capture
- * again; a selection after a save starts a new capture, never joining a saved one.
+ * again; a selection after a save starts a new capture, never joining a saved one. At every opening it lists the attempt's captures
+ * saved before (GET /api/captures?run=&task=&attempt=), so a capture closed, left or reloaded away from is edited, sent and deleted
+ * here again; a link's are kept for as long as the pane is.
  */
 const props = defineProps<{
   session: PreviewSession
@@ -27,6 +29,8 @@ const props = defineProps<{
   canSelect: boolean
   /** Capture again is offered on a saved capture of an attempt (a candidate's checkout to retake it in). */
   again?: boolean
+  /** Counts the editor's openings: each lists the attempt's saved captures again. */
+  opens?: number
 }>()
 const emit = defineEmits<{ close: []; again: [capture: CaptureAnswer] }>()
 
@@ -51,6 +55,8 @@ interface Saved {
   dirty: boolean
   error: string
   saving: boolean
+  /** Whether its screenshot was asked for (it is read when the capture is first shown). */
+  asked: boolean
 }
 const saved = ref<Saved[]>([])
 const selected = ref('')
@@ -73,6 +79,15 @@ watch(
     else if (!draft.value && !kept.value) selected.value = ids.length ? `d:${ids[ids.length - 1]}` : saved.value.length ? `s:${saved.value[saved.value.length - 1]!.capture.id}` : ''
   },
   { immediate: true },
+)
+
+// A capture starting (Capture, Select another element, by selector, Capture again) takes the editor from a saved capture, so what is
+// typed next goes to the draft it makes, never into the saved one shown before it.
+watch(
+  () => props.session.state.busy,
+  (b) => {
+    if (b && kept.value) selected.value = ''
+  },
 )
 
 // ---- The screenshot and its boxes ----
@@ -126,6 +141,10 @@ function down(e: PointerEvent) {
 function move(e: PointerEvent) {
   if (dragFrom.value) dragAt.value = pointOf(e)
 }
+/** A drag the browser took back (a touch it read as a scroll): nothing is drawn. */
+function cancelDrag() {
+  dragFrom.value = dragAt.value = null
+}
 function up() {
   const r = dragRect.value
   dragFrom.value = dragAt.value = null
@@ -169,23 +188,95 @@ function failure(e: unknown): string {
   return (e as Error).message || 'the capture could not be saved'
 }
 
+/** A capture as the editor holds it, read whole (a list's entry holds its first annotation alone); its screenshot read when shown. */
 async function load(id: string): Promise<Saved> {
   const capture = await captures.read(id)
-  let image = ''
-  if (capture.image?.sha256) {
-    try {
-      image = URL.createObjectURL(await captures.image(id))
-    } catch {
-      image = ''
-    }
-  }
   return {
     capture,
-    image,
+    image: '',
     edits: (capture.annotations ?? []).map((a) => ({ key: ++keys, k: a.k, kind: a.kind, note: a.note, rect: a.rect, element: a.element, sources: a.sources, observed: a.observed })),
     dirty: false,
     error: '',
     saving: false,
+    asked: false,
+  }
+}
+
+// The screenshot of the capture shown, read once, with the bearer header, through an object URL.
+watch(
+  kept,
+  async (s) => {
+    if (!s || s.asked || !s.capture.image?.sha256) return
+    s.asked = true
+    try {
+      s.image = URL.createObjectURL(await captures.image(s.capture.id))
+    } catch {
+      s.image = ''
+    }
+  },
+  { immediate: true },
+)
+
+/** The most of an attempt's captures the editor lists: pages of 100, as the route gives them. */
+const LIST_PAGES = 5
+const listing = ref(false)
+const listError = ref('')
+/**
+ * The attempt's captures saved before, listed at every opening (a link has no such list: its captures are kept while the pane is),
+ * oldest first after any already held; deleted ones are left out. A draft arrived meanwhile stays the one shown.
+ */
+async function listSaved() {
+  const f = props.from
+  if (!f || !('run' in f) || listing.value) return
+  listing.value = true
+  listError.value = ''
+  try {
+    const ids: string[] = []
+    let after: string | undefined
+    for (let page = 0; page < LIST_PAGES; page++) {
+      const r = await captures.ofAttempt(f.run, f.task, f.attempt, after)
+      for (const c of r.captures ?? []) if (!c.deletedAt) ids.push(c.id)
+      if (!r.next) break
+      after = r.next
+    }
+    for (const id of ids.reverse()) {
+      if (saved.value.some((x) => x.capture.id === id)) continue
+      const s = await load(id)
+      if (!s.capture.deletedAt && !saved.value.some((x) => x.capture.id === id)) saved.value.push(s)
+    }
+    // A capture under way (or its draft) keeps the editor: a saved one is shown only when nothing else is.
+    if (!selected.value && saved.value.length && !props.session.state.busy && !drafts.value.length) selected.value = `s:${saved.value[saved.value.length - 1]!.capture.id}`
+  } catch (e) {
+    listError.value = failure(e)
+  } finally {
+    listing.value = false
+  }
+}
+watch(
+  () => props.opens,
+  () => void listSaved(),
+  { immediate: true },
+)
+
+// Delete: asked once more in place, then the capture's delete; its sends and what they made stay.
+const deleting = ref('')
+async function remove(s: Saved) {
+  if (deleting.value !== s.capture.id) {
+    deleting.value = s.capture.id
+    return
+  }
+  s.saving = true
+  s.error = ''
+  try {
+    await captures.remove(s.capture.id)
+    if (s.image) URL.revokeObjectURL(s.image)
+    saved.value = saved.value.filter((x) => x.capture.id !== s.capture.id)
+    selected.value = saved.value.length ? `s:${saved.value[saved.value.length - 1]!.capture.id}` : drafts.value.length ? `d:${drafts.value[drafts.value.length - 1]!.id}` : ''
+  } catch (e) {
+    s.error = failure(e)
+  } finally {
+    s.saving = false
+    deleting.value = ''
   }
 }
 
@@ -217,8 +308,8 @@ async function saveChanges(s: Saved) {
   try {
     await captures.edit(s.capture.id, s.capture.rev, editOf(s.edits))
     const fresh = await load(s.capture.id)
-    if (s.image) URL.revokeObjectURL(s.image)
-    Object.assign(s, fresh)
+    // The screenshot is the capture's still: an edit changes its annotations alone.
+    Object.assign(s, { ...fresh, image: s.image, asked: s.asked })
   } catch (e) {
     s.error = failure(e)
   } finally {
@@ -226,11 +317,11 @@ async function saveChanges(s: Saved) {
   }
 }
 
+
 async function reload(s: Saved) {
   try {
     const fresh = await load(s.capture.id)
-    if (s.image) URL.revokeObjectURL(s.image)
-    Object.assign(s, { ...fresh, edits: s.dirty ? s.edits : fresh.edits, dirty: s.dirty })
+    Object.assign(s, { ...fresh, image: s.image, asked: s.asked, edits: s.dirty ? s.edits : fresh.edits, dirty: s.dirty })
   } catch (e) {
     s.error = failure(e)
   }
@@ -277,6 +368,7 @@ const refusal = computed(() => props.session.state.refusal)
         @click="selected = `s:${s.capture.id}`"
       />
     </div>
+    <UAlert v-if="listError" color="neutral" variant="subtle" icon="i-lucide-circle-alert" :title="`The saved captures could not be listed: ${listError}`" data-capture-list-error />
     <UAlert v-if="refusal" color="neutral" variant="subtle" icon="i-lucide-circle-alert" :title="refusal" :data-capture-refusal="refusal === RESTLESS_WORDS ? 'restless' : ''" />
     <p v-if="!draft && !kept" class="text-sm text-muted">Select an element in the page, or Capture again, to start a capture.</p>
 
@@ -285,7 +377,7 @@ const refusal = computed(() => props.session.state.refusal)
       <div class="flex min-w-0 flex-col gap-1" :data-capture-draft="draft ? draft.id : undefined" :data-capture-saved="kept ? kept.capture.id : undefined" :data-capture-url="draft ? draft.moment.url : kept!.capture.url">
         <p v-for="w in draft?.words ?? []" :key="w" class="text-xs text-default" data-capture-changed>{{ w }}</p>
         <code class="min-w-0 break-all text-xs text-muted">{{ draft ? draft.moment.url : kept!.capture.url }}</code>
-        <div v-if="size" class="relative w-full select-none overflow-hidden rounded-md border border-default" :class="drawing && 'cursor-crosshair'" data-capture-shot @pointerdown="down" @pointermove="move" @pointerup="up">
+        <div v-if="size" class="relative w-full select-none overflow-hidden rounded-md border border-default" :class="drawing && 'cursor-crosshair touch-none'" :data-capture-drawing="drawing ? '' : undefined" data-capture-shot @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="cancelDrag">
           <canvas v-if="draft" ref="canvas" class="block h-auto w-full" />
           <img v-else-if="kept?.image" :src="kept.image" alt="The capture's screenshot" class="block h-auto w-full" />
           <div v-for="(r, i) in boxes" :key="i" class="pointer-events-none absolute border-2 border-primary bg-primary/10" :style="boxStyle(r)" :data-capture-box="i + 1">
@@ -356,6 +448,8 @@ const refusal = computed(() => props.session.state.refusal)
       <div class="flex flex-wrap items-center justify-end gap-2">
         <UButton v-if="draft" label="Discard" size="sm" color="neutral" variant="ghost" data-capture-discard @click="session.drop(draft)" />
         <UButton v-if="draft" label="Save" icon="i-lucide-save" size="sm" :loading="saving" :disabled="!from" data-capture-save @click="save(draft)" />
+        <UButton v-if="kept" :label="deleting === kept.capture.id ? 'Delete it' : 'Delete…'" icon="i-lucide-trash-2" size="sm" color="error" variant="ghost" :loading="kept.saving && deleting === kept.capture.id" data-capture-delete @click="remove(kept)" />
+        <UButton v-if="kept && deleting === kept.capture.id" label="Keep it" size="sm" color="neutral" variant="ghost" data-capture-delete-keep @click="deleting = ''" />
         <UButton v-else-if="kept" label="Save changes" icon="i-lucide-save" size="sm" :loading="kept.saving" :disabled="!kept.dirty" data-capture-save-changes @click="saveChanges(kept)" />
       </div>
       <p v-if="kept" class="text-xs text-muted" data-capture-rev>

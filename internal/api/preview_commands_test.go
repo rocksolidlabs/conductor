@@ -217,7 +217,8 @@ func TestAPreviewCommandsBodyIsItsIDAlone(t *testing.T) {
 		"attempt 0":          {c.path(0, ""), map[string]any{"commandId": "x"}},
 		"seq 0":              {c.path(1, "/0/close"), map[string]any{"commandId": "x"}},
 		"a seq not a number": {c.path(1, "/one/close"), map[string]any{"commandId": "x"}},
-		"a body past 1 KiB":  {c.path(1, ""), map[string]any{"commandId": "x", "pad": strings.Repeat("a", 2<<10)}},
+		// Valid but for its size: refused by the bound alone.
+		"a body past 1 KiB": {c.path(1, ""), []byte(`{"commandId": "x"` + strings.Repeat(" ", 2<<10) + `}`)},
 	} {
 		if status, data, out := c.e.callAs(t, adminToken, "POST", tc.path, tc.body); status != http.StatusBadRequest || codeOf(out) != "invalid_request" {
 			t.Errorf("%s: %d %s", name, status, data)
@@ -374,6 +375,21 @@ func TestAPreviewOfARunOfAnEarlierServerOverHTTP(t *testing.T) {
 	var status int
 	var data []byte
 	var out map[string]any
+	// Its folder no longer a work tree: refused in words, no receipt, and
+	// opened once it is one again.
+	gitDir := filepath.Join(c.e.root, ".git")
+	if err := os.Rename(gitDir, gitDir+".away"); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(30*time.Second, func() bool {
+		status, data, out = next.command(t, next.path(1, ""), "open-unreadable")
+		return codeOf(out) != "ledger_unavailable"
+	}) || status != http.StatusConflict || codeOf(out) != crew.RefusalRunUnreadable || answerReceipt(out) != nil || strings.Contains(string(data), "fatal") {
+		t.Fatalf("an open of a run whose folder moved: %d %s", status, data)
+	}
+	if err := os.Rename(gitDir+".away", gitDir); err != nil {
+		t.Fatal(err)
+	}
 	if !waitFor(30*time.Second, func() bool {
 		status, data, out = next.command(t, next.path(1, ""), "open-earlier")
 		return codeOf(out) != "ledger_unavailable"

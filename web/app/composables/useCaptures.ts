@@ -90,8 +90,8 @@ export function useCaptures() {
   }
 
   /** The captures of an attempt, newest first (their first annotation alone). */
-  async function ofAttempt(run: string, task: string, attempt: number): Promise<{ captures: CaptureAnswer[]; next?: string }> {
-    return request('/api/captures', { query: { run, task, attempt: String(attempt) } })
+  async function ofAttempt(run: string, task: string, attempt: number, after?: string): Promise<{ captures: CaptureAnswer[]; next?: string }> {
+    return request('/api/captures', { query: { run, task, attempt: String(attempt), ...(after ? { after } : {}) } })
   }
 
   /** The kept screenshot, as a Blob to show through an object URL. */

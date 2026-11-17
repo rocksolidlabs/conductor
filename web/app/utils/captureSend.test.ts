@@ -63,6 +63,8 @@ describe('sendState', () => {
     expect(sendState({ ...base, state: 'sent' })).toMatchObject({ word: 'sent as r2 to CND-14', tone: 'neutral', mark: { key: 'done' } })
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7' }).word).toBe('sent as r1 to Brakeman (br-7)')
     expect(sendState({ rev: 1, kind: 'decision', state: 'sent', target: 'dr-3' }).word).toBe('sent as r1 to decision dr-3')
+    expect(sendState({ rev: 1, kind: 'review', state: 'sent', target: 'draft' }).word).toBe('sent as r1 to your review draft')
+    expect(sendState({ rev: 2, kind: 'review', state: 'sent', target: '0123456789abcdef' }).word).toBe('sent as r2 to a review requesting changes')
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending', waiting: '8 requests wait already' })).toMatchObject({
       word: 'waiting for Brakeman: 8 requests wait already',
       mark: { key: 'waiting' },

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
@@ -416,6 +417,19 @@ func TestTheSendRouteTakesASendToAReview(t *testing.T) {
 	if n := reviewsOn(t, l.srv, "CND-1"); n != 1 {
 		t.Fatalf("%d reviews", n)
 	}
+	// The same send again takes what is left of its steps on the review's
+	// own bound, as the first did, never the route's shorter one.
+	lefts := make(chan time.Duration, 1)
+	l.srv.reviews.setSeams(func(g *reviewGate) {
+		g.sendSteps = func(ctx context.Context) {
+			d, _ := ctx.Deadline()
+			lefts <- time.Until(d)
+		}
+	})
+	l.expect(t, "POST", path, body, http.StatusOK, "")
+	if left := <-lefts; left <= dispatchWriteTimeout {
+		t.Fatalf("a send sent again takes its steps with %v left, not the review's bound %v", left, ReviewTimeout)
+	}
 	for _, to := range []map[string]any{
 		{"kind": "ticket", "key": "CND-1", "candidate": cand},
 		{"kind": "brakeman", "question": "Why?", "draft": true},
@@ -424,4 +438,74 @@ func TestTheSendRouteTakesASendToAReview(t *testing.T) {
 		l.expect(t, "POST", path, map[string]any{"opId": opID(), "rev": 1, "to": to}, http.StatusBadRequest, "invalid_request")
 	}
 	l.expect(t, "POST", path, map[string]any{"opId": opID(), "rev": 2, "to": map[string]any{"kind": "review", "candidate": cand, "draft": true}}, http.StatusConflict, dispatch.RefusalStaleRevision)
+}
+
+// Two sends of one capture at one revision (Add to a review twice) freeze
+// the same files: a review requesting changes on findings of both is kept
+// and applied, the request hands each file over once, held by the first
+// send, and both findings name it, so the repair attempt's task.md points
+// both at the same document and its tree holds it once.
+func TestTwoSendsOfOneRevisionHandTheirFilesOverOnce(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	shot := testPNG(t)
+	n, f := capturedOf(run, c1, "Save is covered.", shot, false)
+	id := seedCapture(t, l.srv, n, f, shot)
+	cand := candName(run, "build", 1, c1)
+	var sends []string
+	for _, op := range []string{"draft-a", "draft-b"} {
+		out, aerr := sendToReview(t, l.srv, op, id, 1, reviewSendTo{Candidate: cand, Draft: true})
+		if aerr != nil || out.status != http.StatusCreated {
+			t.Fatalf("%s: %d %v %v", op, out.status, out.reply, aerr)
+		}
+		sends = append(sends, out.reply["send"].(dispatch.CaptureSend).ID)
+	}
+	finding := func(send string) map[string]any {
+		return map[string]any{"kind": "capture", "intent": "change", "severity": "major", "capture": map[string]any{"capture": id, "send": send, "k": 1}}
+	}
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(cand, l.head, "request_changes", finding(sends[0]), finding(sends[1])), http.StatusCreated, "")
+	if app := applicationOf(t, out); app["state"] != dispatch.ApplicationApplied || app["attempt"] != 2.0 {
+		t.Fatalf("the application: %v", app)
+	}
+	runningAttempt(t, l.testEnv, run, "build", 2)
+	sv, err := l.srv.dispatch.CaptureSend(t.Context(), sends[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := evidenceIn(t, l, run, 2, id, "json"); hexSum(got) != sv.Digest {
+		t.Fatal("the document in the repair attempt's tree is not the sends'")
+	}
+	md := string(l.treeFile(t, run, "build", 2, "task.md"))
+	doc := fmt.Sprintf("The capture: `.conductor/evidence/capture-%s-r1.json`", id)
+	if strings.Count(md, doc) != 2 {
+		t.Fatalf("task.md names the document %d times, not under both findings:\n%s", strings.Count(md, doc), md)
+	}
+	js := string(l.treeFile(t, run, "build", 2, "task.json"))
+	if strings.Count(js, fmt.Sprintf(`"name": "capture-%s-r1.json"`, id)) != 1 || strings.Count(js, `"send": "`+sends[0]+`"`) < 3 || strings.Contains(js, sends[1]) {
+		t.Fatalf("task.json's request names the files once, held by the first send:\n%s", js)
+	}
+}
+
+// The guide names a finding's capture member in the admin's review_submit,
+// whose route takes it, and not in Brakeman's request_repair, whose act
+// refuses it.
+func TestTheGuideNamesACaptureFindingForTheAdminAlone(t *testing.T) {
+	capture := func(name string) bool {
+		for _, op := range Operations() {
+			if op.Name != name {
+				continue
+			}
+			items := op.Input["properties"].(map[string]any)["findings"].(map[string]any)["items"].(map[string]any)
+			_, ok := items["properties"].(map[string]any)["capture"]
+			return ok
+		}
+		t.Fatalf("no operation %s", name)
+		return false
+	}
+	if !capture("review_submit") {
+		t.Error("review_submit's findings name no capture")
+	}
+	if capture(brakeman.ActRequestRepair) {
+		t.Error("request_repair's findings name a capture")
+	}
 }

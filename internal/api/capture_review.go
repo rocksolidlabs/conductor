@@ -84,17 +84,45 @@ func capturesOf(fs []dispatch.NewFinding) []dispatch.CaptureRef {
 	return out
 }
 
-// captureEvidence is the evidence files of the sends refs name, once per
-// send in their order (dispatch.Store.SendEvidence): the frozen document,
-// then the screenshot when the send carried one.
-func (s *Server) captureEvidence(ctx context.Context, ds *dispatch.Store, refs []dispatch.CaptureRef) ([]crew.EvidenceRef, error) {
+// captureFiles is the evidence files the capture findings of a request
+// stand on, each handed over once (refs), and the send that holds the
+// files each send of theirs names (holder): two sends of one capture at
+// one revision freeze the same document and screenshot, so the second's
+// findings stand on the first's files.
+type captureFiles struct {
+	refs   []crew.EvidenceRef
+	holder map[string]string
+}
+
+// holderOf is the send whose files the findings of the send stand on.
+func (f captureFiles) holderOf(send string) string {
+	if h, ok := f.holder[send]; ok {
+		return h
+	}
+	return send
+}
+
+// captureEvidence is the evidence files of the sends refs name, in their
+// order (dispatch.Store.SendEvidence): each send's frozen document, then
+// its screenshot when it carried one. A send whose every file is already
+// listed, by its name, SHA-256 and size, under an earlier send (another
+// send of the same capture at the same revision) lists none of its own:
+// its findings name the earlier send, which holds the same files. A file
+// of the same name with other content is listed again, for the engine to
+// refuse as a name given twice.
+func (s *Server) captureEvidence(ctx context.Context, ds *dispatch.Store, refs []dispatch.CaptureRef) (captureFiles, error) {
+	out := captureFiles{holder: map[string]string{}}
 	if len(refs) == 0 {
-		return nil, nil
+		return out, nil
 	}
 	if ds == nil {
-		return nil, errors.New("no Dispatch store is open")
+		return out, errors.New("no Dispatch store is open")
 	}
-	var out []crew.EvidenceRef
+	type same struct {
+		name, sum string
+		bytes     int64
+	}
+	listed := map[same]string{}
 	var seen []string
 	for _, ref := range refs {
 		if slices.Contains(seen, ref.Send) {
@@ -103,10 +131,26 @@ func (s *Server) captureEvidence(ctx context.Context, ds *dispatch.Store, refs [
 		seen = append(seen, ref.Send)
 		files, err := ds.SendEvidence(ctx, ref.Send)
 		if err != nil {
-			return nil, fmt.Errorf("the send %s's files: %w", ref.Send, err)
+			return out, fmt.Errorf("the send %s's files: %w", ref.Send, err)
+		}
+		holder := ""
+		for i, f := range files {
+			h, ok := listed[same{f.Name, f.SHA256, f.Bytes}]
+			if !ok || i > 0 && h != holder {
+				holder = ""
+				break
+			}
+			holder = h
+		}
+		if holder != "" && len(files) > 0 {
+			out.holder[ref.Send] = holder
+			continue
 		}
 		for _, f := range files {
-			out = append(out, crew.EvidenceRef{Name: f.Name, SHA256: f.SHA256, Bytes: f.Bytes, Send: f.Send})
+			out.refs = append(out.refs, crew.EvidenceRef{Name: f.Name, SHA256: f.SHA256, Bytes: f.Bytes, Send: f.Send})
+			if _, ok := listed[same{f.Name, f.SHA256, f.Bytes}]; !ok {
+				listed[same{f.Name, f.SHA256, f.Bytes}] = f.Send
+			}
 		}
 	}
 	return out, nil
@@ -157,16 +201,18 @@ func (s *Server) captureSendToReview(w http.ResponseWriter, ctx context.Context,
 	var out reviewSendReply
 	var aerr *apiError
 	var err error
+	// A review's steps, made now or taken again for the same send, run on
+	// the review's own bound (ReviewTimeout, as RV1's route gives them), to
+	// their end whether or not the client stays.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReviewTimeout)
+	defer cancel()
 	switch {
 	case found && rc.Status == dispatch.StatusDone:
-		out, aerr, err = s.continueReviewSend(ctx, ds, op, rc, to.ContinueRun)
+		out, aerr, err = s.continueReviewSend(rctx, ds, op, rc, to.ContinueRun)
 	case found:
 		out.stored = &rc
 	default:
-		// Answered by the route's own words, in the hold the send's steps take.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReviewTimeout)
-		defer cancel()
-		out, aerr, err = s.sendCaptureToReview(ctx, ds, op, digest, id, body.Rev, to)
+		out, aerr, err = s.sendCaptureToReview(rctx, ds, op, digest, id, body.Rev, to)
 	}
 	switch {
 	case out.stored != nil:
@@ -292,6 +338,12 @@ func (s *Server) continueReviewSend(ctx context.Context, ds *dispatch.Store, op 
 // stepsOfReviewSend takes the steps left of the send rc names, under its
 // hold, and answers it.
 func (s *Server) stepsOfReviewSend(ctx context.Context, ds *dispatch.Store, rc dispatch.Receipt, continueRun bool) (reviewSendReply, *apiError, error) {
+	s.reviews.mu.Lock()
+	seam := s.reviews.sendSteps
+	s.reviews.mu.Unlock()
+	if seam != nil {
+		seam(ctx)
+	}
 	v, refusal, err := s.finishReviewSend(ctx, ds, rc.ID, continueRun)
 	if err != nil {
 		s.log.Warn("a capture's send to a review is kept pending: the reviews' worker finishes it", "send", rc.ID, "err", err)

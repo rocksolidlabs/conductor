@@ -105,22 +105,62 @@ export function usePreviewLabel(target: () => LabelTarget | null, revision: () =
   return { label, error, missing, read, moment, stop }
 }
 
+/** The admin URLs read ahead for New tab, by label route: the tree's secret does not change while its tree lives. */
+const readAhead = new Map<string, string>()
+const reading = new Map<string, Promise<string>>()
+
 /**
- * New tab for an attempt's preview: a preview that names its tree's secret opens at the label's admin URL, the secret put in (read
- * now: the run's read keeps the name); any other at its own address. Opened with no opener and no referrer.
+ * New tab for an attempt's preview: a preview that names its tree's secret opens at the label's admin URL, the secret put in (the
+ * run's read keeps the name); any other at its own address. Opened with no opener and no referrer. The label is read ahead when the
+ * pointer or the focus comes to the button (`prime`), so the click opens the tab at once, within the browser's leave for a click to
+ * open one; a click before that read answers waits for it, and a tab the browser then held back, or a label it could not read, is
+ * said, never silent.
  */
 export function usePreviewOpen() {
   const { request } = useApi()
-  async function newTab(t: LabelTarget, preview: string) {
-    let url = preview
-    if (preview.includes(TREE_SECRET_NAME)) {
-      try {
-        url = (await request<PreviewLabel>(labelPath(t))).url
-      } catch {
-        return
-      }
+  const toast = useToast()
+  function read(t: LabelTarget): Promise<string> {
+    const k = labelPath(t)
+    let r = reading.get(k)
+    if (!r) {
+      r = request<PreviewLabel>(k).then(
+        (l) => {
+          readAhead.set(k, l.url)
+          return l.url
+        },
+        (e) => {
+          reading.delete(k)
+          throw e
+        },
+      )
+      reading.set(k, r)
     }
-    window.open(url, '_blank', 'noopener,noreferrer')
+    return r
   }
-  return { newTab }
+  /** Reads the label ahead of a click on New tab, for a preview that names its tree's secret. */
+  function prime(t: LabelTarget, preview: string) {
+    if (preview.includes(TREE_SECRET_NAME)) void read(t).catch(() => {})
+  }
+  async function newTab(t: LabelTarget, preview: string) {
+    if (!preview.includes(TREE_SECRET_NAME)) {
+      window.open(preview, '_blank', 'noopener,noreferrer')
+      return
+    }
+    const ready = readAhead.get(labelPath(t))
+    if (ready) {
+      window.open(ready, '_blank', 'noopener,noreferrer')
+      return
+    }
+    let url: string
+    try {
+      url = await read(t)
+    } catch (e) {
+      toast.add({ title: 'The preview did not open', description: `Its address could not be read: ${(e as Error).message}`, color: 'neutral', icon: 'i-lucide-circle-alert' })
+      return
+    }
+    // window.open with noopener answers null whether or not it opened: a tab held back is not told apart, so the words say both.
+    window.open(url, '_blank', 'noopener,noreferrer')
+    toast.add({ title: 'Opening the preview', description: 'If no tab opened, the browser held it back: click Open preview again.', color: 'neutral', icon: 'i-lucide-external-link' })
+  }
+  return { newTab, prime }
 }

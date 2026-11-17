@@ -30,6 +30,14 @@ const REPAIR_PAGE = fileURLToPath(new URL('./fixtures/repair/page.html', import.
 const BOOT_MS = 60_000
 const REPAIR_MS = 240_000
 const CHECKOUT_MS = 120_000
+/**
+ * The setup's waits, each its helper's own cap: stopStrays waits 15 s for each stray session to end, stepIn 120 s for the first
+ * attempt's check to run (preview-fixtures.ts); the git and API calls beside them get 60 s. The hook's timeout is their sum, set
+ * before the first wait, since a hook takes the config's 120 s otherwise.
+ */
+const STRAY_MS = 15_000
+const STEP_MS = 120_000
+const SETUP_MS = 60_000
 
 const m = made()
 let repo = ''
@@ -57,6 +65,9 @@ interface Capture {
 }
 
 test.beforeAll(async ({ api, state }) => {
+  const r = await api.ok<{ sessions?: Array<{ status: string }> } | Array<{ status: string }>>('GET', '/api/sessions')
+  const strays = (Array.isArray(r) ? r : (r.sessions ?? [])).filter((s) => ['running', 'starting', 'pending'].includes(s.status)).length
+  test.setTimeout(SETUP_MS + strays * STRAY_MS + STEP_MS)
   await stopStrays(api, [])
   // A repository of the spec's own, under the server's allowed root: the broken page, and node_modules left out as a project does.
   repo = join(state.root, `capture-repair-${Date.now().toString(36)}`)
@@ -227,8 +238,14 @@ test('a capture of a broken control, a ticket, a plan with its attachments, the 
   await expect(page).toHaveURL(new RegExp(`/preview\\?run=${repairRun}&task=build&attempt=1&seq=\\d+$`))
   await expect(page.locator('[data-preview-label]')).toHaveText(`candidate ${commit.slice(0, 7)} of build · attempt 1 · as committed`, { timeout: CHECKOUT_MS })
 
-  // Capture again of the first capture there: its element described again, now reached by its own click, kept as a retake.
-  await page.goto(`${page.url()}&retake=${first}`)
+  // Capture again of the first capture there, from the ticket's Captures: the candidate's checkout (open already) with the first named;
+  // its element described again, now reached by its own click, kept as a retake.
+  await ticketPage(page, key)
+  const again = page.locator(`[data-ticket-captures] [data-ticket-capture-again="${first}"]`)
+  await expect(again).toHaveText('Capture again on build#1', { timeout: BOOT_MS })
+  await again.click()
+  await expect(page).toHaveURL(new RegExp(`/preview\\?run=${repairRun}&task=build&attempt=1&seq=\\d+&retake=${first}$`))
+  await expect(page.locator('[data-preview-retake-of]')).toContainText(first)
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   await page.locator('[data-preview-retake]').click()
   await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#save')

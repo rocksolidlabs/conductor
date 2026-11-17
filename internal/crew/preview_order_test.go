@@ -425,9 +425,10 @@ func gateCheckoutGit(t *testing.T) (arrived, gate string) {
 
 // An end that comes while the preview's checkout is being added (held
 // between the add's two git commands) waits for the add: the add
-// finishes, the preview ends once, and the checkout is whole, a second
-// open of the candidate reusing it. A run's stop and a Drain (a Close is
-// answered busy meanwhile: TestAClosedPreviewWhileItOpensIsBusy).
+// finishes, the preview ends once, and the checkout is whole, as an open
+// would judge it; no open follows a run's stop or a Drain. A run's stop
+// and a Drain (a Close is answered busy meanwhile:
+// TestAClosedPreviewWhileItOpensIsBusy).
 func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 	for _, end := range []string{"stop", "drain"} {
 		t.Run(end, func(t *testing.T) {
@@ -468,20 +469,14 @@ func TestAnEndDuringThePreviewsCheckoutWaitsForIt(t *testing.T) {
 			}
 			waitFake(t, "the preview dropped", func() bool { return !previewHeld(e, run.ID, "build", 1) })
 			checkout := ts.Attempt.Worktree + ".preview"
-			if end == "stop" {
-				// A stopped run opens no preview: the checkout is judged as
-				// an open would judge it.
-				if reused, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result); err != nil || !reused {
-					t.Fatalf("the checkout after the stop: %v, %v", reused, err)
-				}
-				return
+			// A stopped run, and a drained engine, open no preview: the
+			// checkout is judged as an open would judge it.
+			if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); !errors.Is(err, ErrRunStopped) {
+				t.Fatalf("an open after the %s: %v", end, err)
 			}
-			openPreview(t, e, run.ID)
-			l.previewWhen(t, run.ID, "build", 1, 2, "ready", previewReadyRow)
-			if err := e.ClosePreview(run.ID, "build", 1, 2); err != nil {
-				t.Fatal(err)
+			if reused, err := previewReusable(t.Context(), dir, checkout, ts.Attempt.Result); err != nil || !reused {
+				t.Fatalf("the checkout after the %s: %v, %v", end, reused, err)
 			}
-			l.previewWhen(t, run.ID, "build", 1, 2, "ended", previewEndedRow)
 		})
 	}
 }

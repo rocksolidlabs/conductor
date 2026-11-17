@@ -1,4 +1,4 @@
-import { getCurrentInstance, markRaw, onBeforeUnmount, reactive } from 'vue'
+import { getCurrentInstance, markRaw, onBeforeUnmount, reactive, watch } from 'vue'
 import {
   CHANGED_WORDS,
   MOVING_WORDS,
@@ -88,6 +88,13 @@ export interface BridgeDeps {
   view(): { mode: ViewportMode; scale: number }
   /** What a draft without the bridge records of the page: the frame's address and its size. */
   fallback(): { url: string; width: number; height: number }
+  /**
+   * Called before every frame is read, and awaited: the pane draws nothing of its own over the frame's box while pixels are taken
+   * (the editor over a phone's frame goes, a size a device mode changed is laid out) and waits until that is painted.
+   */
+  beforeFrame?(): Promise<void>
+  /** The frame element now: a source made for another (Refresh and Capture again replace it) is ended and made again. */
+  frameElement?(): unknown
   now?(): Date
   nonce?(): string
   setTimer?(fn: () => void, ms: number): unknown
@@ -96,6 +103,8 @@ export interface BridgeDeps {
 
 /** How long a hello waits for its ready, and a look or a describe for its answer. */
 export const HELLO_MS = 3000
+/** The hello is said again at these times within its 3 s, for a bridge whose script starts after the frame's load. */
+export const HELLO_AGAIN_MS = [1000, 2000] as const
 export const ANSWER_MS = 3000
 /** How many annotations a draft holds (dispatch.MaxCaptureAnnotations). */
 export const MAX_ANNOTATIONS = 20
@@ -201,6 +210,8 @@ export function createPreviewSession(deps: BridgeDeps) {
   let nonce = ''
   let waiting: Waiting | null = null
   let helloTimer: unknown = null
+  let helloAgain: unknown[] = []
+  let sourceFor: unknown = undefined
   let source: Promise<ScreenshotSource> | null = null
   let ids = 0
   let keys = 0
@@ -250,10 +261,20 @@ export function createPreviewSession(deps: BridgeDeps) {
     })
   }
 
-  /** The frame (re)loaded: a hello with a new nonce; whatever was asked of the page before is dropped, and no draft is joined again. */
+  function stopHello() {
+    if (helloTimer !== null) clearTimer(helloTimer)
+    helloTimer = null
+    for (const t of helloAgain) clearTimer(t)
+    helloAgain = []
+  }
+
+  /**
+   * The frame (re)loaded: a hello with a new nonce, said again twice within its 3 s (a bridge whose script starts after the frame's
+   * load hears a later one); whatever was asked of the page before is dropped, and no draft is joined again.
+   */
   function hello() {
     finish(null)
-    if (helloTimer !== null) clearTimer(helloTimer)
+    stopHello()
     nonce = deps.nonce ? deps.nonce() : mintNonce()
     for (const d of state.drafts) d.open = false
     state.bridge = 'hello'
@@ -263,6 +284,7 @@ export function createPreviewSession(deps: BridgeDeps) {
       state.words = NO_BRIDGE_WORDS
       return
     }
+    helloAgain = HELLO_AGAIN_MS.map((ms) => setTimer(() => state.bridge === 'hello' && post({ t: 'hello' }), ms))
     helloTimer = setTimer(() => {
       helloTimer = null
       if (state.bridge === 'hello') {
@@ -272,15 +294,33 @@ export function createPreviewSession(deps: BridgeDeps) {
     }, HELLO_MS)
   }
 
+  /** The screenshot source, made for the frame element there now: one made for an element since replaced is ended first. */
   function screenshots(): Promise<ScreenshotSource> {
-    source ??= deps.source()
+    const el = deps.frameElement?.()
+    if (source && el !== sourceFor) void release()
+    if (!source) {
+      sourceFor = el
+      source = deps.source()
+    }
     return source
+  }
+
+  /**
+   * The frame's pixels now, once the pane has cleared and painted what it draws over the frame's box. A source that gives none is
+   * ended, so the next capture asks for one again rather than waiting on it.
+   */
+  async function shoot(src: ScreenshotSource) {
+    await deps.beforeFrame?.()
+    const px = await src.frame(deps.rect())
+    if (!px && src.how !== 'none' && source && (await source) === src) void release()
+    return px
   }
 
   /** Ends the screenshot source (Save, Escape, the pane's close): the next capture asks for one again. */
   async function release() {
     const s = source
     source = null
+    sourceFor = undefined
     if (s) (await s).stop()
   }
 
@@ -325,7 +365,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     let shot = first
     if (src.how !== 'none') {
       for (let tries = 0; ; tries++) {
-        shot ??= await src.frame(deps.rect())
+        shot ??= await shoot(src)
         if (!shot) break
         const looked = await ask('look')
         if (!looked || looked.t !== 'looked' || looked.epoch === page.epoch) break
@@ -349,7 +389,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     const d: Draft = reactive({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio, annotations: [], words, open: true, retakeOf: state.retakeOf }) as Draft
     let stable: boolean | undefined
     if (shot) {
-      const next = await src.frame(deps.rect())
+      const next = await shoot(src)
       stable = next ? sameIn(shot, next, boxIn(page.element, ratio)) : undefined
     }
     state.drafts.push(d)
@@ -367,7 +407,7 @@ export function createPreviewSession(deps: BridgeDeps) {
       if (d && sameMoment(d.moment, moment)) {
         if (!d.shot) return join(d, m.element, m, at, undefined)
         const src = await screenshots()
-        const frame = await src.frame(deps.rect())
+        const frame = await shoot(src)
         if (!frame) return join(d, m.element, m, at, undefined)
         const boxes = [...d.annotations.map((a) => a.rect), boxIn(m.element, d.ratio)]
         if (boxes.every((b) => sameIn(d.shot!, frame, b))) return join(d, m.element, m, at, true)
@@ -449,7 +489,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     try {
       const label = await deps.label()
       const src = await screenshots()
-      const shot = await src.frame(deps.rect())
+      const shot = await shoot(src)
       const f = deps.fallback()
       const view = deps.view()
       const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.slice(0, MAX_PREVIEW_USER_AGENT)
@@ -483,13 +523,36 @@ export function createPreviewSession(deps: BridgeDeps) {
 
   function close() {
     finish(null)
-    if (helloTimer !== null) clearTimer(helloTimer)
-    helloTimer = null
+    stopHello()
     off()
     void release()
   }
 
-  return { state, hello, select, describe, cancel, retake, snap, addRegion, drop, release, close }
+  /** Waits for the hello under way to be answered or given up, at most its 3 s and a little. */
+  function settled(): Promise<void> {
+    if (state.bridge !== 'hello') return Promise.resolve()
+    // The hello's own timer ends it (absent) at its 3 s, so this waits no longer than that.
+    return new Promise((resolve) => {
+      const stop = watch(
+        () => state.bridge,
+        (b) => {
+          if (b === 'hello') return
+          stop()
+          resolve()
+        },
+        { flush: 'sync' },
+      )
+    })
+  }
+
+  /** Capture: selection mode where the page answers the bridge (once its hello is answered or given up), the screenshot alone where it does not. */
+  async function start() {
+    await settled()
+    if (state.bridge === 'ready') await select()
+    else await snap()
+  }
+
+  return { state, hello, select, describe, cancel, retake, snap, start, addRegion, drop, release, close }
 }
 
 export type PreviewSession = ReturnType<typeof createPreviewSession>

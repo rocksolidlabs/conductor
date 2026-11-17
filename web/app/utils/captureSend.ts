@@ -97,6 +97,8 @@ export function titleFrom(note: string): string {
 export function sendTarget(s: Pick<CaptureSendView, 'kind' | 'target'>): string {
   if (s.kind === 'brakeman') return s.target ? `Brakeman (${s.target})` : 'Brakeman'
   if (s.kind === 'decision') return s.target ? `decision ${s.target}` : 'a decision'
+  // A send to a review: Add to a review's goes to the person's draft, Request a change's to the review it made.
+  if (s.kind === 'review') return s.target === 'draft' ? 'your review draft' : 'a review requesting changes'
   return s.target ?? 'a ticket'
 }
 

@@ -1,4 +1,5 @@
 import type { CaptureRect } from './capture'
+import { desktopBridge, type DesktopBridge } from './desktop'
 import { desktopSource, type DesktopSource } from './screenshotDesktop'
 
 /**
@@ -176,6 +177,9 @@ export function fromBase64(s: string): Uint8Array {
 
 /** The words of a tab capture the person declined or the browser refused. */
 export const DECLINED_WORDS = 'the screen was not shared, so the capture has no screenshot'
+/** How long the tab's capture is given to present a frame of the preview, and what is said when it presents none. */
+export const TAB_FRAME_MS = 1000
+export const TAB_ENDED_WORDS = 'the shared tab gave no picture of the preview within a second, so this capture has no screenshot: capture again to share the tab anew'
 /** The words of a browser that cannot capture its tab cropped to the frame. */
 export const NO_TAB_WORDS = 'this browser cannot capture its tab cropped to the frame (the desktop app and Chromium can), so the capture has no screenshot'
 
@@ -214,25 +218,52 @@ export async function tabSource(el: Element): Promise<ScreenshotSource> {
   video.muted = true
   video.srcObject = stream
   await video.play().catch(() => {})
-  return {
+  // The waits for a frame now: each ends with null at its bound, at the track's end, or at stop.
+  const waits = new Set<() => void>()
+  const ended = () => waits.forEach((end) => end())
+  track.addEventListener?.('ended', ended)
+  const src: ScreenshotSource = {
     how: 'tab',
     async frame() {
-      if (track.readyState !== 'live' || !video.videoWidth) return null
-      // The next frame the video presents, so the pixels are of a moment after the ask.
-      await new Promise<void>((resolve) => {
+      if (track.readyState !== 'live' || !video.videoWidth) {
+        src.why = TAB_ENDED_WORDS
+        return null
+      }
+      // The next frame the video presents, so the pixels are of a moment after the ask; none within the bound (a track cropped to a
+      // frame element no longer on the page sends none) is no screenshot, said, never a wait without end.
+      const presented = await new Promise<boolean>((resolve) => {
+        let done = false
+        const end = (ok: boolean) => {
+          if (done) return
+          done = true
+          clearTimeout(bound)
+          waits.delete(miss)
+          resolve(ok)
+        }
+        const miss = () => end(false)
+        const bound = setTimeout(miss, TAB_FRAME_MS)
+        waits.add(miss)
         const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => void }
-        if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => resolve())
-        else requestAnimationFrame(() => resolve())
+        if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => end(true))
+        else requestAnimationFrame(() => end(true))
       })
+      if (!presented || track.readyState !== 'live') {
+        src.why = TAB_ENDED_WORDS
+        return null
+      }
+      src.why = ''
       const c = canvas(video.videoWidth, video.videoHeight)
       c.ctx.drawImage(video, 0, 0)
       return { width: video.videoWidth, height: video.videoHeight, data: c.ctx.getImageData(0, 0, video.videoWidth, video.videoHeight).data }
     },
     stop() {
+      ended()
+      track.removeEventListener?.('ended', ended)
       stop()
       video.srcObject = null
     },
   }
+  return src
 }
 
 // ---- Choosing a source ----
@@ -251,12 +282,19 @@ export function fromDesktop(d: DesktopSource): ScreenshotSource {
   return src
 }
 
+/** The words of a desktop app older than its screenshots: its window offers no tab capture either. */
+export const OLD_DESKTOP_WORDS = 'this desktop app is too old to take a screenshot (update it), so the capture has no screenshot'
+
 /**
  * The source for the frame el, chosen in this order: the test seam's (a spec's own screenshots), the desktop shell's, the tab's, none.
+ * A desktop app too old to take one gives none with words: its window answers no tab capture, and the tab's words would say the person
+ * declined a prompt never shown.
  */
-export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null; desktop?: DesktopSource | null } = {}): Promise<ScreenshotSource> {
+export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null; desktop?: DesktopSource | null; app?: DesktopBridge | null } = {}): Promise<ScreenshotSource> {
   if (o.seam) return o.seam
-  const d = o.desktop === undefined ? desktopSource() : o.desktop
+  const app = o.app === undefined ? desktopBridge() : o.app
+  const d = o.desktop === undefined ? desktopSource(app) : o.desktop
   if (d) return fromDesktop(d)
+  if (app) return noneSource(OLD_DESKTOP_WORDS)
   return tabSource(el)
 }
