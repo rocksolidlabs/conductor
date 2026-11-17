@@ -1891,12 +1891,27 @@ func TestDiscardedDraftsKeepTheBound(t *testing.T) {
 	if err != nil || len(page) != MaxPublicationPage || page[1].State != PublicationDiscarded {
 		t.Fatalf("the listing keeps the discarded as history: %d %v", len(page), err)
 	}
-	// The rows in every state are bounded: one past MaxPublicationRows is refused.
+	// The rows in every state are bounded: one past MaxPublicationRows is
+	// refused. The rows up to it are copies of a discarded draft, written on
+	// a connection of the test's (as many prepares would take minutes).
+	raw := rawConnAt(t, filepath.Join(f.dir, File))
+	tx, err := raw.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("CREATE TEMP TABLE pubcopy AS SELECT * FROM publications WHERE id = ?", page[1].ID); err != nil {
+		t.Fatal(err)
+	}
 	for i := MaxPublications + 7; i < MaxPublicationRows; i++ {
-		rc, err := f.s.PreparePublication(ctx, testOp(fmt.Sprint("fill", i)), PublicationArgs{Key: f.key, Target: TargetLinked, Body: "Fixed in v2."}, issueTarget, markOf)
-		want(t, rc, err, StatusDone, "")
-		rc, err = f.s.DiscardPublication(ctx, testOp(fmt.Sprint("fdrop", i)), rc.ID)
-		want(t, rc, err, StatusDone, "")
+		if _, err := tx.Exec("UPDATE pubcopy SET id = ?", fmt.Sprintf("f%015x", i)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO publications SELECT * FROM pubcopy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	rc, err := f.s.PreparePublication(ctx, testOp("past"), PublicationArgs{Key: f.key, Target: TargetLinked, Body: "Fixed in v2."}, issueTarget, markOf)
 	want(t, rc, err, StatusFailed, RefusalBound)
