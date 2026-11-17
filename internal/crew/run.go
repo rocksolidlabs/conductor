@@ -610,6 +610,9 @@ type run struct {
 	// (compareLanes): set as the run is made and never changed.
 	compare *Compare
 	lanes   map[string]string
+	// cmp is what a compare run keeps of its lanes' settling
+	// (compare_step.go), under e.mu.
+	cmp compareState
 	// rechecks are the attempts Check again recorded whose verification
 	// has not started: the pump starts them once their change is
 	// committed and the prerequisites have passed (startRechecks).

@@ -1185,6 +1185,9 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 		}
 		made = true
 		t := mutate()
+		if r.compare != nil {
+			e.compareStep(r)
+		}
 		// What the change left with no work under it ends with it (I11), and
 		// the decisions it changed write with it (decisions_wait.go).
 		e.endedWork(r)
