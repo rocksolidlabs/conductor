@@ -193,6 +193,17 @@
         "adapter": "claude",
         "signal": { "kind": "hook" },
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
+        "id": "worker-capture",
+        "name": "Worker, capture fix (e2e stub)",
+        "description": "The CLI worker under STUB_CAPTURE_FIX=1 (PV1): it reads the capture in its package, removes the lines marked stub-capture-broken from the file the capture's first source names, commits and submits.",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_WORKER": "cli", "STUB_CAPTURE_FIX": "1" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       }
     ]
   }

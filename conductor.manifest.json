@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "prerequisites": [
+    { "id": "go", "argv": ["go", "version"] },
+    { "id": "node", "argv": ["node", "--version"] }
+  ],
+  "ports": ["api", "web"],
+  "setup": [
+    { "id": "web-deps", "argv": ["npm", "--prefix", "web", "ci"] }
+  ],
+  "services": [
+    {
+      "id": "api",
+      "argv": [
+        "env",
+        "CONDUCTOR_DATA_DIR=${CONDUCTOR_STATE_DIR}/data",
+        "CONDUCTOR_RENDEZVOUS=0",
+        "go", "run", "./cmd/conductor", "serve",
+        "--dev",
+        "--token-env", "CONDUCTOR_TREE_SECRET",
+        "--listen", "127.0.0.1:${CONDUCTOR_PORT_API}"
+      ]
+    },
+    {
+      "id": "web",
+      "argv": [
+        "env",
+        "CONDUCTOR_DEV_API=127.0.0.1:${CONDUCTOR_PORT_API}",
+        "npm", "--prefix", "web", "run", "dev", "--",
+        "--port", "${CONDUCTOR_PORT_WEB}",
+        "--host", "127.0.0.1"
+      ]
+    }
+  ],
+  "ready": [
+    { "id": "api-up", "url": "http://127.0.0.1:${CONDUCTOR_PORT_API}/api/health", "timeoutSeconds": 900, "intervalSeconds": 5 },
+    { "id": "web-up", "url": "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", "timeoutSeconds": 900, "intervalSeconds": 5 }
+  ],
+  "preview": "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/#token=${CONDUCTOR_TREE_SECRET}"
+}
