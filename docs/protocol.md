@@ -6283,11 +6283,14 @@ candidates' task ids in its block's order and whose rows include
 `Behaviour`, `Complexity`, `Dependency changes`, `Checks` and
 `Unresolved tradeoffs` (matched without regard to case), its evidence
 citing at least one `candidate:` ref and in its `candidate:` and
-`check:` refs naming only its columns' tasks; no `decision/1`, and no
+`check:` refs naming only its columns' tasks in the runs of the
+request's comparison's chain; no `decision/1`, and no
 `proposal/1` of an operation that commands a task, a review or a
 decision; else `400 invalid_brief` naming the field. The turn reads the
 comparison with `observe_comparison` (`GET /api/runs/{run}/comparison`,
-runs class, the route's bound): each candidate with a shown attempt
+runs class, the route's bound), admitted only when every run of the
+comparison's chain is in its scope (else `403 outside_scope` through any
+of them, nothing noted): each candidate with a shown attempt
 carries its `candidate:` ref and each check cell with a receipt its
 `check:` ref as `ref`, each noted at the state its ref resolves to now
 (a candidate of a run outside the grant carries none), and the reply
