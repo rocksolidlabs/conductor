@@ -2,7 +2,7 @@ import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { expect } from '@playwright/test'
-import { budget, DAY_PROBES_MS, DAY_RUNS_END_MS, DAY_SESSIONS_END_MS, type Api, type Run, type RunTask, type Session } from './fixtures'
+import { budget, DAY_RUNS_END_MS, DAY_SESSIONS_END_MS, type Api, type Run, type RunTask, type Session } from './fixtures'
 import { ownServer, type AgentCopy, type OwnServer } from './own-server'
 
 // The seeded day (UX1's PR-1, docs/plans/ux-review.md, the chapter Tests): a day of work on a server of its own, built in named parts
@@ -370,8 +370,8 @@ export class Day {
 
   /**
    * Ends the day in the order AGENTS.md asks (end what a test started before its directories go): the runs stopped and waited
-   * ended, the sessions stopped and waited ended, the server's agent probes waited ended, `stop` written into every hold file, then
-   * the server stopped, its log copied to test-results/<name>-server.log (startDay's name) and its root removed. What could not be
+   * ended, the sessions stopped and waited ended, `stop` written into every hold file, then the server stopped (which ends its agent
+   * probes and waits for them), its log copied to test-results/<name>-server.log (startDay's name) and its root removed. What could not be
    * waited for is said after the server is gone.
    */
   async end(): Promise<void> {
@@ -400,12 +400,7 @@ export class Day {
     } catch (e) {
       problems.push(String(e))
     } finally {
-      // Nor is anything else the server started still at work in its root: its agents' identity probes have ended (a probe outlives
-      // the server's stop and writes into the root as it is removed, #961). GET /api/catalog starts any not yet run and says one under
-      // way `checking`; each is killed past 3 s, two run at once.
-      type Entry = { id: string; checking?: boolean; identity?: { pending?: boolean } }
-      const probing = async () => (await this.api.ok<{ agents: Entry[] }>('GET', '/api/catalog?wait=0')).agents.filter((a) => a.checking || a.identity?.pending).map((a) => a.id)
-      await expect.poll(probing, { timeout: DAY_PROBES_MS, message: "the day's server's agent probes end" }).toEqual([]).catch((e: Error) => problems.push(e.message.split('\n')[0]!))
+      // The server's agent probes are not waited for here: its stop ends them before any of its waits and waits for them (#961).
       const holds = join(this.server.home, '.stub-sessions')
       if (existsSync(holds)) for (const f of readdirSync(holds)) if (f.endsWith('.hold')) writeFileSync(join(holds, f), 'stop\n')
       await this.server.stop()
