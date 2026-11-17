@@ -100,7 +100,9 @@ type comparisonIndependence struct {
 // crew.MaxComparison bytes; 404 not_found for a run the ledger has not, and
 // for a run of no comparison ("this run is not a comparison"); 503
 // run_changing with Retry-After: 1 when the chain moved through every read
-// of it (crew.ErrRunChanging); 503 ledger_unavailable; 400 invalid_request
+// of it (crew.ErrRunChanging); 409 chain_too_long for a chain longer than
+// a comparison's (which no continuation makes); 503 ledger_unavailable;
+// 400 invalid_request
 // for an id that is not one and for any parameter. Nothing of the touched
 // index is read.
 func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +139,9 @@ func (s *Server) handleRunComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, crew.ErrRunNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "no such run")
+		return
+	case errors.Is(err, crew.ErrChainTooLong):
+		writeError(w, http.StatusConflict, "chain_too_long", err.Error())
 		return
 	case errors.Is(err, ledger.ErrUnavailable), errors.Is(err, ledger.ErrClosed), errors.Is(err, crew.ErrNoLedger):
 		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
