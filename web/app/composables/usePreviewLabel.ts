@@ -105,9 +105,18 @@ export function usePreviewLabel(target: () => LabelTarget | null, revision: () =
   return { label, error, missing, read, moment, stop }
 }
 
-/** The admin URLs read ahead for New tab, by label route: the tree's secret does not change while its tree lives. */
+/** How long a label that could not be read is not asked for again by a read ahead (a list that primes at every redraw would ask at each). */
+export const LABEL_RETRY_MS = 5000
+
+/**
+ * The admin URLs read ahead for New tab, by label route: the tree's secret does not change while its tree lives. They are the
+ * workbench token's to read, so they are held only for the token they were read under: a token forgotten or changed in the page
+ * (`changes`) drops them all, and a read still under way then is kept by nobody.
+ */
 const readAhead = new Map<string, string>()
 const reading = new Map<string, Promise<string>>()
+const failed = new Set<string>()
+let heldFor = -1
 
 /**
  * New tab for an attempt's preview: a preview that names its tree's secret opens at the label's admin URL, the secret put in (the
@@ -119,21 +128,48 @@ const reading = new Map<string, Promise<string>>()
 export function usePreviewOpen() {
   const { request } = useApi()
   const toast = useToast()
-  function read(t: LabelTarget): Promise<string> {
+  const admin = useWorkbenchToken()
+  /** Drops what was read under another token; answers the count the reads are now held for. */
+  function held(): number {
+    const now = admin.changes.value
+    if (now !== heldFor) {
+      readAhead.clear()
+      reading.clear()
+      failed.clear()
+      heldFor = now
+    }
+    return now
+  }
+  /** The label's admin URL. `asked` is a person's own click: a read that failed a moment ago is then made again, not answered from that failure. */
+  function read(t: LabelTarget, asked = false): Promise<string> {
+    const under = held()
     const k = labelPath(t)
+    if (asked && failed.has(k)) {
+      failed.delete(k)
+      reading.delete(k)
+    }
     let r = reading.get(k)
     if (!r) {
-      r = request<PreviewLabel>(k).then(
+      const made: Promise<string> = request<PreviewLabel>(k).then(
         (l) => {
-          readAhead.set(k, l.url)
+          if (heldFor === under && reading.get(k) === made) readAhead.set(k, l.url)
           return l.url
         },
         (e) => {
-          reading.delete(k)
+          if (heldFor === under && reading.get(k) === made) {
+            failed.add(k)
+            setTimeout(() => {
+              if (reading.get(k) === made) {
+                reading.delete(k)
+                failed.delete(k)
+              }
+            }, LABEL_RETRY_MS)
+          }
           throw e
         },
       )
-      reading.set(k, r)
+      r = made
+      reading.set(k, made)
     }
     return r
   }
@@ -146,6 +182,7 @@ export function usePreviewOpen() {
       window.open(preview, '_blank', 'noopener,noreferrer')
       return
     }
+    held()
     const ready = readAhead.get(labelPath(t))
     if (ready) {
       window.open(ready, '_blank', 'noopener,noreferrer')
@@ -153,7 +190,7 @@ export function usePreviewOpen() {
     }
     let url: string
     try {
-      url = await read(t)
+      url = await read(t, true)
     } catch (e) {
       toast.add({ title: 'The preview did not open', description: `Its address could not be read: ${(e as Error).message}`, color: 'neutral', icon: 'i-lucide-circle-alert' })
       return
