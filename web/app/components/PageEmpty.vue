@@ -20,6 +20,8 @@ export interface PageEmptyAction {
   loading?: boolean
   /** Offered beside Read again when the first read failed (the home's Set token), and not with the empty shape. */
   failed?: boolean
+  /** What pressing it does, where its label alone does not say: its tooltip (TipButton). */
+  tip?: string
 }
 
 const props = withDefaults(
@@ -69,9 +71,10 @@ const shown = computed(() => {
     </template>
     <template v-if="shown.length || state === 'failed'" #actions>
       <UButton v-if="state === 'failed'" label="Read again" icon="i-lucide-refresh-cw" color="neutral" variant="outline" class="pointer-coarse:min-h-11" data-page-again @click="emit('again')" />
-      <UButton
+      <TipButton
         v-for="(a, i) in shown"
         :key="a.label"
+        :tip="a.tip ?? ''"
         :label="a.label"
         :icon="a.icon"
         :to="a.to"
@@ -84,7 +87,7 @@ const shown = computed(() => {
         @click="a.onClick?.()"
       >
         <template v-if="a.kbd" #trailing><UKbd :value="a.kbd" size="sm" class="opacity-70" data-page-kbd /></template>
-      </UButton>
+      </TipButton>
     </template>
     <!-- What a page shows besides, under its shape (the page of what needs you: what shows up there, what was decided). -->
     <template v-if="$slots.default" #footer><slot /></template>
