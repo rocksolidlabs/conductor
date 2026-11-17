@@ -458,6 +458,18 @@ const (
 	// holds the bound within 4 KiB of the measure). The room the API's
 	// MaxTicketReply keeps for it.
 	MaxTicketExternalParts = 212 << 10
+	// MaxAgentExternalParts bounds the same parts of a ticket's read as an
+	// agent reads it (ForAgent: the snapshot without what was written on
+	// the item but its steps to reproduce, quoted, and the linked issue's
+	// read without its validators), measured as MaxTicketExternalParts is,
+	// at the admin's worst and at the agent's own (the steps at the
+	// quote's worst, every account a login at its longest), and
+	// rounded up to a KiB or two (TestTicketReplyBound holds it within 4
+	// KiB of the measure): the room the API's MaxTicketReply keeps for
+	// them beside an agent's copy of the rest, whose description a quote
+	// can make three times its size as JSON (internal/api's
+	// TestTheLargestTicketForAnAgentIsUnderItsBound).
+	MaxAgentExternalParts = 206 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute
@@ -937,10 +949,13 @@ const (
 // base as given (a branch, HEAD, a commit, or empty for HEAD), the
 // revision it is based on (an id of the ticket's, or empty), the source
 // references as given, the attachments and comments to hand over (ids of
-// the ticket's), the constraints, the decisions and a note. Its JSON is
-// the operation's content (its fingerprint), so a resend is checked
-// against what was sent and never against the body built from it, which
-// the saved crew or HEAD moving since would change.
+// the ticket's), the constraints, the decisions, a note, and what it
+// hands over of the ticket's source (the steps to reproduce by their pin
+// and the evidence links, PlanSource; omitted when nothing, so an older
+// request's fingerprint is unchanged). Its JSON is the operation's
+// content (its fingerprint), so a resend is checked against what was
+// sent and never against the body built from it, which the saved crew or
+// HEAD moving since would change.
 type PlanRequest struct {
 	Crew        string                 `json:"crew"`
 	Base        string                 `json:"base,omitempty"`
@@ -951,6 +966,7 @@ type PlanRequest struct {
 	Constraints string                 `json:"constraints,omitempty"`
 	Decisions   []PlanDecision         `json:"decisions,omitempty"`
 	Note        string                 `json:"note,omitempty"`
+	Source      *PlanSource            `json:"source,omitempty"`
 }
 
 // PlanSource is a revision's choice of the ticket's source, in its body:
