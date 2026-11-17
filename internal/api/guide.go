@@ -422,7 +422,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			"Launch a managed run from a ticket's plan revision the operator approved and whose approval still holds (plan: its id; expectedRev: the ticket's revision you read); the same launch for the same opId."),
 		actEntry(brakeman.ActRequestRepair, reviewSubmitBody{},
 			"Request changes of a candidate (<run>/<task>/<n>@<commit>: its task's newest result, in a run this server runs; verdict request_changes; expectedRev: the ticket's revision you read): Yardmaster repairs the task. Never a comment or an approval; via and continueRun are not yours."),
-		actEntry(brakeman.ActPrepareFollowup, planProposeBody{},
+		actEntry(brakeman.ActPrepareFollowup, followupActBody{},
 			"Propose a revision of a ticket's plan basedOn the approved one (its id), which the operator then approves or not: never approved by you."),
 		routeActEntry(),
 		// The guide itself.
@@ -864,6 +864,13 @@ func schemaFields(t reflect.Type, d int, props map[string]any, required map[stri
 		name, opts, _ := strings.Cut(tag, ",")
 		if f.Tag.Get("guide") == "-" {
 			// The server's alone (crew.Member.Bound): no body may send it.
+			// A field of that name it shadows is not offered either (a
+			// turn's follow-up takes no source, followupActBody).
+			if have, ok := depth[name]; name != "" && (!ok || have > d) {
+				depth[name] = d
+				delete(props, name)
+				delete(required, name)
+			}
 			continue
 		}
 		ft := f.Type
