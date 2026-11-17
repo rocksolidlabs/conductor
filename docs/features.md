@@ -228,9 +228,11 @@ the item, newest row first.
   (`CONDUCTOR_DEV_API`), ready probes of 900 s; the preview names the
   tree's secret as `${CONDUCTOR_TREE_SECRET}`, which the label puts in for
   the admin alone. `serve --token-env NAME` takes the workbench token from
-  the variable, refuses one unset or empty (never falling back to another
-  token), takes it out of the server's environment and prints, logs and
-  keeps it nowhere. The dev build alone loads the bridge the tree is told
+  the variable, in the place of a configured one; it refuses a value that
+  is no variable's name (the empty one included) and a variable unset or
+  empty (never falling back to another token), takes it out of the
+  server's environment, and prints, logs and keeps it nowhere: no error
+  repeats what the flag was given. The dev build alone loads the bridge the tree is told
   of (`plugins/previewBridge.client.ts`); the built app never does.
   `TestTheRepositorysManifestIsValid` holds the file to the manifest's
   rules; `capture-repair.spec.ts` walks the loop on stubs: a covered Save

@@ -47,6 +47,7 @@ func TestServeTakesItsTokenFromTheNamedVariable(t *testing.T) {
 			{"empty", name, name, new(string), "--token-env: the variable it names is empty"},
 			{"the token given as the name", tokenAsName, tokenAsName, nil, "--token-env: the variable it names is not set"},
 			{"the token given as the name, set empty", tokenAsName, tokenAsName, new(string), "--token-env: the variable it names is empty"},
+			{"an empty name", "", name, &secret, "what it was given is not one"},
 			{"not a name", name + "=" + secret, name, &secret, "what it was given is not one"},
 			{"a name with a dash", "TREE-SECRET", name, &secret, "what it was given is not one"},
 			{"a name that starts with a digit", "1SECRET", name, &secret, "what it was given is not one"},

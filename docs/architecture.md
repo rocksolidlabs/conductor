@@ -1556,11 +1556,14 @@ still resolved. A switchyard routes and answers none.
   `workbench-token.lock` beside it, so a second server started on the same
   data directory leaves it alone, and one of those that generates its own
   token stops unless it has `--print-listen`.
-  `serve --token-env NAME` makes the variable `NAME` the token: refused
-  at start when it is unset or empty (never falling back to a configured
-  or generated one), taken out of the server's environment, so nothing it
-  starts inherits it, and printed, logged and kept nowhere: no handshake
-  field, no token file, no error that repeats it.
+  `serve --token-env NAME` makes the variable `NAME`'s value the token, in
+  the place of a configured one: refused at start when the flag's value is
+  not a variable's name (the empty one included) or the variable is unset
+  or empty (never falling back to a configured or generated one), taken
+  out of the server's environment, so nothing it starts inherits it, and
+  printed, logged and kept nowhere: no handshake field, no token file, no
+  error or log line that repeats what the flag was given (a token given
+  by mistake as the name included).
 
 ## Persistence
 

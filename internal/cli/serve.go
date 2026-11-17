@@ -148,7 +148,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err != nil {
 		return 1, err
 	}
-	if *tokenEnv != "" {
+	// A --token-env given, whatever its value (the empty one included), is the token's one source: never the flag's absence.
+	tokenEnvGiven := false
+	fs.Visit(func(f *flag.Flag) { tokenEnvGiven = tokenEnvGiven || f.Name == "token-env" })
+	if tokenEnvGiven {
 		tok, err := tokenFromEnv(*tokenEnv)
 		if err != nil {
 			return 2, err
