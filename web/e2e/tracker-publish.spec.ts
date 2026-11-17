@@ -55,9 +55,9 @@ async function ticketPage(browser: Parameters<typeof dayPage>[0]): Promise<Page>
   return page
 }
 
-/** The composer opened from the Publications, its offer read. */
-async function openComposer(page: Page) {
-  await page.locator('[data-publish-open]').click()
+/** The composer opened from the Publications (or the GitHub panel), its offer read. */
+async function openComposer(page: Page, from = '[data-publish-open]') {
+  await page.locator(from).click()
   const dialog = page.locator('[data-dispatch-publish]')
   await expect(dialog.locator('[data-publish-target]')).toBeVisible({ timeout: 30_000 })
   return dialog
@@ -71,7 +71,8 @@ async function publicationOf(id: string) {
 test('composes with every part off, previews the exact bytes with the marker said, and posts once however often Publish is pressed', async ({ browser }) => {
   test.setTimeout(test.info().timeout + PUBLISH_MS)
   const page = await ticketPage(browser)
-  const dialog = await openComposer(page)
+  const dialog = await openComposer(page, '[data-ticket-github] [data-github-publish]')
+  await expect(dialog.locator('[data-publish-target]')).toContainText(`The linked item, ${gh.owner}/${gh.repo}#${ISSUE}`)
 
   // Every part and the close start off; only the offered parts are drawn; the key part's title, written on GitHub, is drawn as text.
   const parts = dialog.locator('[data-publish-part]')

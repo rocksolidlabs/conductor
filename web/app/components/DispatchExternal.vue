@@ -27,6 +27,8 @@ const props = defineProps<{
   authority: (field: 'title' | 'description', owner: 'dispatch' | 'github') => Promise<string>
   link: (url: string) => Promise<string>
   unlink: () => Promise<string>
+  /** Opens Publish to GitHub (IN1a PR-9) with the linked item as its target; absent, the panel offers none. */
+  publish?: () => void
 }>()
 
 const snap = computed(() => snapshotOf(props.ticket.externalSnapshot))
@@ -182,6 +184,7 @@ watch(
       </template>
       <div class="flex-1" />
       <template v-if="linked && !locked">
+        <UButton v-if="publish" label="Publish to GitHub" icon="i-lucide-send" size="xs" color="neutral" variant="ghost" data-github-publish @click="publish()" />
         <UButton label="Refresh" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="refreshing" data-github-refresh @click="doRefresh" />
         <UButton v-if="!unlinkAsk" label="Unlink" icon="i-lucide-unlink" size="xs" color="neutral" variant="ghost" data-github-unlink @click="unlinkAsk = true" />
       </template>

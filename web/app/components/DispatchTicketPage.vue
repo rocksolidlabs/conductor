@@ -1109,6 +1109,7 @@ const askBrakeman = computed(() =>
               :authority="authorityGitHub"
               :link="linkGitHub"
               :unlink="unlinkGitHub"
+              :publish="() => openPublish(null, 'linked')"
             />
             <TicketMarkdown
               id="ticket-description"
