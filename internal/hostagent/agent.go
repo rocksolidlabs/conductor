@@ -514,6 +514,23 @@ type agent struct {
 	asLog                  []agentSessionReport
 	asSeq, asSent, asTaken uint64
 	asFlushing             bool
+	// activitySeq is what the server's last registered said of activity's
+	// Seq (proto.Registered.ActivitySeq). actKept are the entries kept for
+	// the server until it took them, actSeq the last entry's number,
+	// actLeftOut how many went untold, actConfirming that a confirmation
+	// runs, up to actConfirmTo; guarded by actMu. actSendMu makes one
+	// sender of them at a time (activitykeep.go). actBound and actConfirm
+	// replace the bound and the confirmation in tests.
+	activitySeq   atomic.Bool
+	actMu         sync.Mutex
+	actSendMu     sync.Mutex
+	actSeq        uint64
+	actKept       []keptActivity
+	actLeftOut    uint32
+	actConfirming bool
+	actConfirmTo  uint64
+	actBound      int
+	actConfirm    func() bool
 	// asDropped says the socket was dropped for a server that takes no
 	// ids (dropReports): no id is logged after it. Guarded by mu.
 	asDropped     bool
@@ -851,6 +868,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.decisions.Store(registered.Decisions)
 	a.sessionInfo.Store(registered.SessionInfo)
 	a.agentSessions.Store(registered.AgentSessions)
+	a.registeredActivity(registered.ActivitySeq, registered.Resumed)
 	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
@@ -1191,6 +1209,12 @@ func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionSta
 	}
 	m := hostActivityMsg(a.sessionID(), e)
 	m.State = string(state)
+	if a.activitySeq.Load() {
+		// Kept until the server took it (activitykeep.go).
+		a.keepActivity(m)
+		a.sendKeptActivity()
+		return
+	}
 	a.send(m)
 }
 
@@ -1369,6 +1393,10 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 		// And the agent session ids its reports to the host's socket named,
 		// to a server that takes them (agentsession.go).
 		a.replayAgentSessions()
+		// And the activity entries kept for it (activitykeep.go).
+		if a.activitySeq.Load() {
+			go a.sendKeptActivity()
+		}
 		// Report the current status in case the process ended while disconnected.
 		go a.watchStatus(ctx, w)
 	}
