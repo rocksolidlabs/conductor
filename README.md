@@ -2212,6 +2212,7 @@ file must run `compinit` before that line.
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
+| — | `conductor serve --token-env NAME` | off | the workbench token is the value of the environment variable `NAME`, over `workbenchToken` and `CONDUCTOR_WORKBENCH_TOKEN`: refused at start when the variable is unset or empty, taken out of the server's own environment, and printed, logged and kept nowhere (not in the `--print-listen` line, not in a token file). For a server started by a program that holds a token an argument should not carry, such as a tree of this repository's own manifest |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
@@ -2560,6 +2561,17 @@ runs only with `CONDUCTOR_E2E_LIVE=1` and both on the `PATH`.
 
 If the Nuxt dev proxy does not upgrade WebSockets in your setup, run the dev
 server with `NUXT_PUBLIC_API_BASE=http://localhost:8080`.
+`make web-dev` proxies to `CONDUCTOR_DEV_API` (a loopback host and port)
+when it is set, and the dev build loads the preview bridge named in
+`CONDUCTOR_PREVIEW_BRIDGE`; the built app never does.
+
+The repository's own `conductor.manifest.json` serves Conductor in a tree of
+a managed run whose crew reads its manifest from the file: a server of the
+tree's own on the loopback (`go run ./cmd/conductor serve --dev --token-env
+CONDUCTOR_TREE_SECRET`, its data under the tree's state directory,
+publishing nothing) and the web app's dev server proxying to it, so Open in
+Conductor previews the app as the agent changes it, and a capture of it
+names the Vue component's file.
 
 The wire protocol is documented in [docs/protocol.md](docs/protocol.md), the
 architecture in [docs/architecture.md](docs/architecture.md), and the brand in
