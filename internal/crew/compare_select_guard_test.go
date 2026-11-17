@@ -380,3 +380,32 @@ func TestTheSelectionCrossesTheChain(t *testing.T) {
 		t.Fatalf("records along the chain: %+v", rows)
 	}
 }
+
+// The PR-6a case of TestAComparisonsContinuationRepairsOnlyTheSelected:
+// after an applied selection, RV1's repair continuation of the selected
+// candidate is taken, its repair starting at the selected commit, and one
+// of a lane not selected is still refused with PR-3's words, no run made.
+func TestAContinuationRepairsTheSelectedLane(t *testing.T) {
+	se := launchSelect(t, 2)
+	a := se.pass(t, se.run.ID, "approach-a", 1)
+	b := se.pass(t, se.run.ID, "approach-b", 1)
+	row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+	selectAs(t, se.e, row.ID(), 0, row.Rev)
+	waitOutcome(t, se.e, se.run.ID, ledger.OutcomeSucceeded)
+	se.e.ForgetForTest(se.run.ID)
+	_, err := continueWithRepair(se.e, se.run.ID, "q1", "approach-b", 1, b.Result.Commit, "", personsRequest("rv-0001"))
+	if !errors.Is(err, ErrNotSelected) || err.Error() != "a comparison's candidate is repaired once it is selected" {
+		t.Fatalf("a repair of the lane not selected: %v", err)
+	}
+	next, err := continueWithRepair(se.e, se.run.ID, "q2", "approach-a", 1, a.Result.Commit, "", personsRequest("rv-0002"))
+	if err != nil {
+		t.Fatalf("a repair of the selected lane: %v", err)
+	}
+	defer stopRun(t, se.e, next.ID)
+	a2 := waitTaskWhere(t, se.e, next.ID, "approach-a", "at attempt 2, running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if a2.Attempt.Start != a.Result.Commit {
+		t.Fatalf("the repair starts at %s, not the selected %s", a2.Attempt.Start, a.Result.Commit)
+	}
+}
