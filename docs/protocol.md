@@ -467,7 +467,7 @@ agent's id or else the program's name, never an argument; `cwd` the folder's las
 no `branch` and none of what the host reports, below),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?,turns?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?,kept?,turns?,retold?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
@@ -503,9 +503,9 @@ so the message's bound does not change, and a `turns` that is not one
 fails the message's decode as any malformed field does; a host's `done`
 keeps the `since` and words of the `done` the copy shows only when it
 carries that one's `id`, and with another `id` replaces it),
-`activity{sessionId,entry,state?,seq?,leftOut?}` (`seq` and `leftOut` only
-to a server whose `registered` said `activitySeq`: see Attention, The
-host's activity while away),
+`activity{sessionId,entry,state?,seq?,leftOut?,late?}` (`seq`, `leftOut`
+and `late` only to a server whose `registered` said `activitySeq`: see
+Attention, The host's activity while away),
 `session_info{sessionId?,endCommit?}` (what the host reports, below),
 `agent_session{sessionId?,agentSession,turn?}` (the agent's own session
 id an attention report to the host's socket named, and whether the report
@@ -1705,8 +1705,21 @@ them) reach the server, in order and each once:
   "N activity entries of the host's may be missing here: recorded while its
   connection to this server was down, and not sent".
 
-An entry keeps the time it was recorded at. Entries kept when the host
-ends before its connection comes back are lost. A server that does not
+An entry keeps the time it was recorded at. Every entry kept as a
+connection begins (recorded before it, or sent again) goes with `late:
+true`: the server records it and shows it in its order (`GET /api/events`
+sends it as `activity` with `late: true`, and the app's feed shows it
+without changing a badge or telling a browser notification, the wall or
+a jump), and offers it to no notification or webhook sink, nor the run
+engine or Brakeman: nobody is paged for what the session has moved past,
+the left-out notice among it. A question asked while the host was away
+and still open as it comes back pages once, from the session's state: the
+host's retell of its attention as the connection begins carries `retold:
+true` when the question it shows was asked before that connection began,
+and the server, when its copy did not hold that question (its `id`)
+before, offers it to the sinks and the stream once as a live
+`needs_input` (not recorded: its own entry is, late). Entries kept when
+the host ends before its connection comes back are lost. A server that does not
 say `activitySeq` (an earlier release, a switchyard) is sent no `seq` or
 `leftOut`, and nothing is kept for it: an entry recorded while the
 connection is down is lost, as before, and so are the ones kept when a
@@ -3499,7 +3512,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention; on a hosted session still registering, the id waits for the session's recorder, and when that wait (10 s) runs out the answer is `503 registering`: the attention applied, the id not kept, the report to be sent again. On a hosted session whose host has no connection to the server, the report does not reach the host's session: the server's copy takes it, and when the host returns, the listing shows what the host's session shows, until the agent's next report. A client whose own wait is shorter ends first and sees no answer: `conductor notify` gives each report 5 s and sends it once (only a `429` again), and the hooks that carry the agent's session id carry it again in a later report (Claude Code's in each attention report; Codex's, Copilot's, Cursor's and Antigravity's at a turn's end, Copilot's and Cursor's at its start too) |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one, and `late: true` for a hosted session's entry that reached the server late, which is shown and pages no one, see Attention, The host's activity while away), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, but one with `id` and `ticket` `""` for more than 64 of a kind in a project, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), and of Brakeman's requests (`brakeman`: `{id, state}`, at most 200 bytes, `id` `role` for a change of the background role, see Brakeman), and of durable decisions (`decision`: `{id, run, task?, state, rev}`, at most 256 bytes, after each committed change of one, dropped with the client as a `run` event is, see Decisions), and of the links agents open (`open`: `{id, sessionId, url, browser?, state}`, at most 15,200 bytes, as droppable as `activity`, see Opening a link), and of usage readings kept (`capacity`: `{agent, account, state, readAt}`, at most 512 bytes, dropped with the client as a `run` event is, see Capacity); a desktop app's workbench that opens links sends `X-Conductor-Desktop: 1` with it, see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link, `session` carrying `turns: true` when its agent reports its turns (see Attention), absent otherwise; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data

@@ -39,11 +39,14 @@ const maxActivityKept = 256
 
 // keptActivity is an entry kept for the server: whether it was sent
 // (written, or perhaps written) and on which connection (on, the
-// registration's number, actEpoch).
+// registration's number, actEpoch), and whether it is late: recorded
+// before the connection that carries it began, or sent again, which the
+// server records and shows but offers no one as a live event.
 type keptActivity struct {
 	m    proto.HostActivityMsg
 	sent bool
 	on   uint64
+	late bool
 }
 
 // keepActivity numbers m and keeps it, the oldest going past the bound.
@@ -91,6 +94,7 @@ func (a *agent) sendKeptActivity() {
 		k, extra, epoch := a.actKept[i], a.actLeftOut, a.actEpoch
 		m := k.m
 		m.LeftOut = min(m.LeftOut+extra, proto.MaxActivityLeftOut)
+		m.Late = k.late
 		a.actMu.Unlock()
 		// The writer of this registration's connection: a connection ends
 		// (its writer let go) before the next registration begins.
@@ -113,7 +117,8 @@ func (a *agent) sendKeptActivity() {
 				a.actKept[j].sent, a.actKept[j].on = true, epoch
 			case a.actResumed:
 				// Written on a connection that ended as it went: sent
-				// again on the resumed session's.
+				// again, late, on the resumed session's.
+				a.actKept[j].late = true
 			default:
 				// Perhaps taken by a server that did not resume the
 				// session: not sent again, counted left out.
@@ -221,7 +226,8 @@ func (a *agent) confirmOn(w *controlWriter) bool {
 // actEpoch, one more): a server that does not say ActivitySeq is sent none
 // of them, nor kept any for; one that resumed the session is sent every
 // one again, in order (it drops those it took); one that did not is sent
-// those never written, and the others are counted left out.
+// those never written, and the others are counted left out. Every entry
+// kept now was recorded before this connection, or is sent again: late.
 func (a *agent) registeredActivity(takes, resumed bool) {
 	a.activitySeq.Store(takes)
 	a.actMu.Lock()
@@ -234,6 +240,7 @@ func (a *agent) registeredActivity(takes, resumed bool) {
 	}
 	kept := a.actKept[:0]
 	for _, k := range a.actKept {
+		k.late = true
 		switch {
 		case !k.sent:
 			kept = append(kept, k)

@@ -54,6 +54,7 @@ import {
   type HostRegisteredAgentSessions,
   type HostActivitySeq,
   type HostRegisteredActivitySeq,
+  type HostAttentionRetold,
   type HostTokenMsg,
   type Welcome,
 } from './protocol'
@@ -554,8 +555,10 @@ describe('a host report', () => {
     ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
   })
   it('bounds the count of entries an activity message says were left out', () => {
-    const m: HostActivitySeq = { seq: 3, leftOut: HOST_MAX_ACTIVITY_LEFT_OUT }
+    const m: HostActivitySeq = { seq: 3, leftOut: HOST_MAX_ACTIVITY_LEFT_OUT, late: true }
     expect(m.leftOut).toBe(1048576)
+    const retold: HostAttentionRetold = { retold: true }
+    expect(JSON.stringify(retold)).toBe('{"retold":true}')
     const r: HostRegisteredActivitySeq = { activitySeq: true }
     expect(r.activitySeq).toBe(true)
   })

@@ -287,6 +287,11 @@ function withoutMark(marks: Readonly<Record<string, EventMark>>, sessionId: stri
  * `needs_input` whatever theirs say. Returns the next state (the same objects
  * where nothing changed) and the type, null for an entry that is not an event.
  */
+/** Whether an entry is a live event, one the listeners (browser notifications, the wall, the follow jump) hear: not one that reached the server late. */
+export function liveEvent(entry: ActivityEntry): boolean {
+  return !entry.late
+}
+
 export function routeEntry(
   state: EventState,
   sessionId: string,
@@ -304,6 +309,8 @@ export function routeEntry(
     const line: FeedEntry = { ...entry, sessionId, event: type, sessionName: session?.name || sessionId, seq, time: feedTime(entry.at), detail: eventDetail(entry), link: linkableUrl(entry.url) }
     feed = appendRing(feed, line, max)
   }
+  // An entry that reached the server late is shown in the feed alone: what its session has moved past changes no badge.
+  if (!liveEvent(entry)) return { state: { feed, marks }, type }
   if (type === 'working' || type === 'needs_input') marks = withoutMark(marks, sessionId)
   else if (route.badge) marks = { ...marks, [sessionId]: { type, at: entry.at, ...markOf(type, entry) } }
   return { state: { feed, marks }, type }

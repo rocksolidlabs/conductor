@@ -10,7 +10,7 @@ import (
 
 // An entry written on a connection that ends as it goes, before the
 // sender marks it sent, is taken as the registration that began meanwhile
-// takes the entries sent before it: sent again to a session the
+// takes the entries sent before it: sent again, late, to a session the
 // server resumed; counted left out by one it did not. Never marked sent
 // for a connection that did not carry it.
 func TestAnEntryWrittenAsTheConnectionEndsIsNotLost(t *testing.T) {
@@ -37,13 +37,13 @@ func TestAnEntryWrittenAsTheConnectionEndsIsNotLost(t *testing.T) {
 			// Sent again, late, on the new connection, and held as sent there.
 			select {
 			case again := <-got:
-				if again.Seq != first.Seq {
+				if again.Seq != first.Seq || !again.Late || first.Late {
 					t.Fatalf("resumed: sent %+v, then %+v", first, again)
 				}
 			default:
 				t.Fatal("resumed: not sent again")
 			}
-			if len(kept) != 1 || !kept[0].sent || kept[0].on != epoch {
+			if len(kept) != 1 || !kept[0].sent || kept[0].on != epoch || !kept[0].late {
 				t.Fatalf("resumed: kept %+v", kept)
 			}
 		} else if len(kept) != 0 || left != 1 || len(got) != 0 {

@@ -130,6 +130,10 @@ type activityEvent struct {
 	// or from a host whose state was not one of the three, which the server
 	// drops.
 	State session.AttentionState `json:"state,omitempty"`
+	// Late says the entry reached the server late (a host's, recorded
+	// while its connection was down, or sent again): shown in its order,
+	// never a live event to page anyone for. Absent otherwise.
+	Late bool `json:"late,omitempty"`
 }
 
 // eventState is what an activity event says an entry records: state, for an
@@ -159,7 +163,17 @@ func (h *eventHub) addSink(f activitySink) {
 // and it never waits: a client whose queue is past activityQueueLimit misses
 // the entry and keeps its stream.
 func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state session.AttentionState) {
-	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state)})
+	h.activityAs(sessionID, e, state, false)
+}
+
+// activityLate is activity for an entry that reached the server late: its
+// clients are sent it marked late, and no sink is offered it.
+func (h *eventHub) activityLate(sessionID string, e session.ActivityEntry, state session.AttentionState) {
+	h.activityAs(sessionID, e, state, true)
+}
+
+func (h *eventHub) activityAs(sessionID string, e session.ActivityEntry, state session.AttentionState, late bool) {
+	b, err := json.Marshal(activityEvent{SessionID: sessionID, ActivityEntry: e, State: eventState(e, state), Late: late})
 	h.mu.Lock()
 	if err == nil {
 		msg := []byte("event: activity\ndata: " + string(b) + "\n\n")
@@ -175,6 +189,9 @@ func (h *eventHub) activity(sessionID string, e session.ActivityEntry, state ses
 	}
 	sinks := h.sinks
 	h.mu.Unlock()
+	if late {
+		return
+	}
 	for _, f := range sinks {
 		f(sessionID, e, state)
 	}

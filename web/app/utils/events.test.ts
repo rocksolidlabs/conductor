@@ -16,6 +16,7 @@ import {
   feedTime,
   followJump,
   linkableUrl,
+  liveEvent,
   markOf,
   parseRoutes,
   pruneMarks,
@@ -362,6 +363,22 @@ describe('routeEntry', () => {
     expect(working.marks).toEqual({})
     const again = routeEntry(marked, 's1', entry('attention', { message: 'needs_input' }), undefined, routes(), 3).state
     expect(again.marks).toEqual({})
+  })
+
+  it('hears no late entry as a live event', () => {
+    expect(liveEvent(entry('attention', { message: 'needs_input', state: 'needs_input', late: true }))).toBe(false)
+    expect(liveEvent(entry('attention', { message: 'needs_input', state: 'needs_input' }))).toBe(true)
+  })
+
+  it('shows a late entry in the feed alone: it sets and clears no badge', () => {
+    const marked = routeEntry(empty, 's1', entry('error', { message: 'boom' }), undefined, routes(), 1).state
+    const late = routeEntry(marked, 's1', entry('attention', { message: 'needs_input', late: true }), undefined, routes(), 2)
+    expect(late.type).toBe('needs_input')
+    expect(late.state.feed.map((e) => e.event)).toEqual(['error', 'needs_input'])
+    expect(late.state.marks).toBe(marked.marks)
+    const denied = routeEntry(empty, 's1', entry('tool_denied', { tool: 'Bash', late: true }), undefined, routes(), 3).state
+    expect(denied.marks).toEqual({})
+    expect(denied.feed).toHaveLength(1)
   })
 
   it('does nothing for an entry that is not an event', () => {

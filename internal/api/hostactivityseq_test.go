@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A host's numbered entries are taken once each: one sent again (a
@@ -97,4 +99,53 @@ func registeredOf(t *testing.T, e *testEnv) proto.Registered {
 		t.Fatalf("registered %s: %v", data, err)
 	}
 	return registered
+}
+
+// A host's late entry is recorded and offered to no sink; the retell of a
+// question asked while the host was away (Retold) pages once, from the
+// session's state, when its copy does not hold that question already: not
+// again for the same question, not for a retell that is not one, nor for
+// another state.
+func TestALateEntryPagesNoOneAndARetoldQuestionPagesOnce(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	var paged []string
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, st session.AttentionState) {
+		mu.Lock()
+		paged = append(paged, string(st)+":"+en.Message)
+		mu.Unlock()
+	})
+	pagedNow := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(paged)
+	}
+	hs := registerReporting(t, e, "1", "sh", "", proto.HostReport{})
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	host := func(t string, v any) {
+		b, _ := json.Marshal(v)
+		if !e.srv.handleHostMessage(hs, &hostConnState{}, t, b) {
+			panic("closed the connection")
+		}
+	}
+	host(proto.HostActivity, proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{Type: "attention", Message: "Deploy?", At: at}, State: "needs_input", Seq: 1, Late: true})
+	host(proto.HostActivity, proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{Type: "tool_denied", Tool: "Bash", Message: "late", At: at}, Seq: 2, Late: true})
+	host(proto.HostActivity, proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{Type: "progress", Message: "live", At: at}, Seq: 3})
+	if got := pagedNow(); !slices.Equal(got, []string{":live"}) {
+		t.Fatalf("offered %q", got)
+	}
+	r, _, err := e.srv.sessionRecords.Get(hs.Info().ID)
+	if err != nil || !slices.Contains(messagesOf(r), "late") {
+		t.Fatalf("the late entry was not recorded: %q %v", messagesOf(r), err)
+	}
+	ask := func(id string, retold bool, state string) {
+		host(proto.HostAttention, proto.HostAttentionMsg{T: proto.HostAttention, SessionID: hs.Info().ID, State: state, Message: "Ship it?", Source: session.SourceAPI, ID: id, Retold: retold})
+	}
+	ask("q1", true, "needs_input")
+	ask("q1", true, "needs_input")
+	ask("q2", false, "needs_input")
+	ask("q3", true, "working")
+	if got := pagedNow(); !slices.Equal(got, []string{":live", "needs_input:Ship it?"}) {
+		t.Fatalf("offered %q", got)
+	}
 }

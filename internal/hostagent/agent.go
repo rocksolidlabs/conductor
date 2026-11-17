@@ -459,6 +459,14 @@ type agent struct {
 	attentionUntold bool
 	attentionRetry  bool
 	attentionOf     string
+	// retellPending says the next attention told is a connection's retell
+	// (retellAttention), connStart when that connection began; lastRetold
+	// says the attention last told was the retell of a question asked
+	// before it (proto.HostAttentionMsg.Retold), sent again with a retry.
+	// Guarded by mu.
+	retellPending bool
+	connStart     time.Time
+	lastRetold    bool
 	// changeNext is the session's latest change not yet handed to
 	// onLocalChange, nil for none; forwarding says forwardChanges runs;
 	// retell says a connection started since (retellAttention): the next
@@ -1039,13 +1047,26 @@ func (a *agent) onLocalChange(info session.Info) {
 	// change tell, at worst the same attention once more.
 	a.attentionUntold = false
 	a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf = att, kept, info.Turns, info.ID
+	// The connection's retell of a question asked before the connection
+	// began, to a server that takes activity's Late: it pages the question
+	// once if it is not one its copy holds (its entry comes late, paging no
+	// one). A retry sends the same.
+	if a.retellPending {
+		a.retellPending = false
+		a.lastRetold = a.activitySeq.Load() && att.State == session.AttentionNeedsInput && att.Since != nil && att.Since.Before(a.connStart)
+	} else if changed {
+		a.lastRetold = false
+	}
+	retold := a.lastRetold
 	retrying := a.attentionRetry
 	a.mu.Unlock()
 	if !changed || retrying {
 		// A retry under way sends the latest when its turn comes.
 		return
 	}
-	err := a.send(hostAttentionMsg(info.ID, att, kept, info.Turns))
+	m := hostAttentionMsg(info.ID, att, kept, info.Turns)
+	m.Retold = retold
+	err := a.send(m)
 	switch {
 	case err == nil:
 	case errors.Is(err, errConnDown):
@@ -1073,6 +1094,7 @@ func (a *agent) retellAttention() {
 	a.mu.Lock()
 	a.attentionUntold = true
 	a.retell = true
+	a.retellPending, a.connStart = true, time.Now()
 	running := a.forwarding
 	a.forwarding = true
 	a.mu.Unlock()
@@ -1101,9 +1123,11 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, kept, turns, id, on := a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf, a.out
+			att, kept, turns, id, on, retold := a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf, a.out, a.lastRetold
 			a.mu.Unlock()
-			err := a.tell(hostAttentionMsg(id, att, kept, turns), nil)
+			m := hostAttentionMsg(id, att, kept, turns)
+			m.Retold = retold
+			err := a.tell(m, nil)
 			a.mu.Lock()
 			if a.out != on {
 				// The connection the attention went on is not the host's

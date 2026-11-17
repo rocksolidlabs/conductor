@@ -1940,6 +1940,13 @@ func (h *HostedSession) ForwardActivity(e session.ActivityEntry) error {
 // whatever session the host named. HostActivity does not send the entry back
 // to the host.
 func (h *HostedSession) HostActivity(a proto.Activity, state string) {
+	h.HostActivityOf(a, state, false)
+}
+
+// HostActivityOf is HostActivity for an entry the host sent late or not
+// (proto.HostActivityMsg.Late): a late one goes to the hub's
+// OnLateActivity, when it has one.
+func (h *HostedSession) HostActivityOf(a proto.Activity, state string, late bool) {
 	if !session.ValidEventType(a.Type) {
 		return
 	}
@@ -1963,8 +1970,18 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 		h.touched.Note(HostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
 	}
 	h.mu.Unlock()
-	if h.hub != nil && h.hub.OnActivity != nil {
-		h.hub.OnActivity(id, e, recorded)
+	h.offerActivity(id, e, recorded, late)
+}
+
+// offerActivity hands e to the hub's OnActivity, or, late, to its
+// OnLateActivity when it has one.
+func (h *HostedSession) offerActivity(id string, e session.ActivityEntry, state session.AttentionState, late bool) {
+	switch {
+	case h.hub == nil:
+	case late && h.hub.OnLateActivity != nil:
+		h.hub.OnLateActivity(id, e, state)
+	case h.hub.OnActivity != nil:
+		h.hub.OnActivity(id, e, state)
 	}
 }
 
@@ -2002,9 +2019,7 @@ func (h *HostedSession) HostActivityLeftOut(n uint32, at time.Time) {
 	h.mu.Lock()
 	id := h.info.ID
 	h.mu.Unlock()
-	if h.hub != nil && h.hub.OnActivity != nil {
-		h.hub.OnActivity(id, e, "")
-	}
+	h.offerActivity(id, e, "", true)
 }
 
 // HostChat takes a chat message the host's session kept and hands it to the
