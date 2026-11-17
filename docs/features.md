@@ -3934,6 +3934,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Whether the text's two lines meet the clause, or the clause is
   reworded, is the maintainers' call.
 
+  **The clause reworded (2026-11-17, #984).** The maintainers' call was to
+  reword it to what Conductor hands over: the guide's reply to an agent
+  told nothing but to call it carries what the agent may do there and the
+  limits it must keep (`docs/plans/brakeman.md`, BK0's boundary). The
+  observations above meet it: since #721 the tool's text has carried both
+  in every session read, and
+  `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits` holds the overview
+  to them. What an agent says of the reply unasked is the model's own and
+  is not measured. Of BK0's second part one half stays pending, as said
+  above: an official app's build listing the providers it registers,
+  which waits for the first build that registers one.
+
   **BK1's live check, 2026-11-05: every clause but one, then fixed
   (#602).** Against `main` at 9723fdc6, on a `conductor serve` of its own
   with a real Claude Code 2.1.318 as Brakeman's agent (configured in

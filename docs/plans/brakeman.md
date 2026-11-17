@@ -2215,8 +2215,12 @@ not ticked:
 **BK0's boundary**, in this plan's words: an agent told nothing but to ask
 the running server learns from it what this build can do and which
 providers it has registered. Observed after PR-2 for the
-first part: a Codex session with nothing but "call the guide tool" lists
-what it may do there and the limits it must keep, and a plain session's
+first part: the guide's reply to a Codex session told nothing but "call
+the guide tool" carries what it may do there and the limits it must keep
+(reworded by the maintainers on 2026-11-17, #984, from "lists what it may
+do there and the limits it must keep": what the server hands the agent is
+this plan's to hold, and what the agent then says of it unasked is the
+model's own; the record is in `docs/features.md`), and a plain session's
 guide differs from an attempt's; after PR-9 for the second: the official
 app's build lists its providers, and a plain build says there are none.
 BK0 is Done then.
