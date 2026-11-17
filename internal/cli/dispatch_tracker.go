@@ -361,9 +361,10 @@ func ticketOf(ctx context.Context, c *apiClient, key string) (dispatch.TicketVie
 
 // linkIDOf is the id of the ticket's live delivery or external link that
 // ref names: its id itself, else its URL exactly. A URL two links share
-// is refused rather than guessed between.
+// is refused rather than guessed between, naming each one's id, kind and
+// ref (dispatch show prints each link's id too).
 func linkIDOf(key string, tk dispatch.TicketView, ref string) (string, error) {
-	var found []string
+	var found []dispatch.Link
 	for _, l := range tk.Links {
 		if !l.DeletedAt.IsZero() || (l.Kind != dispatch.LinkDelivery && l.Kind != dispatch.LinkExternal) {
 			continue
@@ -372,16 +373,24 @@ func linkIDOf(key string, tk dispatch.TicketView, ref string) (string, error) {
 			return l.ID, nil
 		}
 		if l.URL == ref {
-			found = append(found, l.ID)
+			found = append(found, l)
 		}
 	}
 	switch len(found) {
 	case 0:
 		return "", fmt.Errorf("%s has no delivery or external link %s: name it by its id or its URL", key, oneLine(ref))
 	case 1:
-		return found[0], nil
+		return found[0].ID, nil
 	}
-	return "", fmt.Errorf("%s has %d links to %s: name one by its id", key, len(found), oneLine(ref))
+	ids := make([]string, len(found))
+	for i, l := range found {
+		ids[i] = l.ID + " (" + oneLine(l.Kind)
+		if l.Ref != "" && l.Ref != l.URL {
+			ids[i] += ", " + oneLine(l.Ref)
+		}
+		ids[i] += ")"
+	}
+	return "", fmt.Errorf("%s has %d links to %s: name one by its id, %s", key, len(found), oneLine(ref), strings.Join(ids, ", "))
 }
 
 // dispatchLinkRead reads what GitHub says of the ticket's link now, and
