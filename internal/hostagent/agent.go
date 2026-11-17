@@ -529,8 +529,16 @@ type agent struct {
 	actLeftOut    uint32
 	actConfirming bool
 	actConfirmTo  uint64
-	actBound      int
-	actConfirm    func() bool
+	// actEpoch numbers the registrations (registeredActivity), the last
+	// one's resumed in actResumed; actConfirmOn and actConfirmW are the
+	// registration and the writer the confirmation asked last is of.
+	// Guarded by actMu.
+	actEpoch     uint64
+	actResumed   bool
+	actConfirmOn uint64
+	actConfirmW  *controlWriter
+	actBound     int
+	actConfirm   func() bool
 	// asDropped says the socket was dropped for a server that takes no
 	// ids (dropReports): no id is logged after it. Guarded by mu.
 	asDropped     bool

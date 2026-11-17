@@ -88,11 +88,21 @@ func newReportingHost(t *testing.T) *reportingHost {
 // keeps the session's record.
 func newReportingHostOf(t *testing.T, cat catalog.Catalog, agentID string, records bool) *reportingHost {
 	t.Helper()
+	return newReportingHostWith(t, cat, agentID, records, nil)
+}
+
+// newReportingHostWith is newReportingHostOf with the server's
+// configuration changed by mutate (nil: none).
+func newReportingHostWith(t *testing.T, cat catalog.Catalog, agentID string, records bool, mutate func(*config.Config)) *reportingHost {
+	t.Helper()
 	cfg := config.Defaults()
 	cfg.WorkbenchToken = adminToken
 	cfg.HostTokens = []string{hostToken}
 	cfg.AllowedRoots = []string{t.TempDir()}
 	cfg.Dev = true
+	if mutate != nil {
+		mutate(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +175,8 @@ func newReportingHostOf(t *testing.T, cat catalog.Catalog, agentID string, recor
 			t.Fatalf("resume: %v %+v", err, again)
 		}
 		t.Cleanup(func() { conn2.CloseNow() })
-		serve(conn2)
+		// The next away ends this connection.
+		h.conn, h.served = conn2, serve(conn2)
 	}
 	return h
 }

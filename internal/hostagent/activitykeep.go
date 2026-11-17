@@ -37,11 +37,13 @@ import (
 // maxActivityKept bounds the entries a host keeps for its server.
 const maxActivityKept = 256
 
-// keptActivity is an entry kept for the server, and whether it was sent
-// (written, or perhaps written) on the current connection.
+// keptActivity is an entry kept for the server: whether it was sent
+// (written, or perhaps written) and on which connection (on, the
+// registration's number, actEpoch).
 type keptActivity struct {
 	m    proto.HostActivityMsg
 	sent bool
+	on   uint64
 }
 
 // keepActivity numbers m and keeps it, the oldest going past the bound.
@@ -68,14 +70,15 @@ func (a *agent) keptBound() int {
 // connection, in order, one sender at a time, the count of those left out
 // with the first; then has the server's taking of them confirmed. It stops
 // at an entry that was certainly not written, which the next entry or the
-// next connection sends.
+// next connection sends. An entry whose send returns after a registration
+// began (the connection it went on ended meanwhile) is taken as that
+// registration takes the entries sent before it: sent again to a session
+// the server resumed, counted left out by one it did not.
 func (a *agent) sendKeptActivity() {
 	a.actSendMu.Lock()
 	defer a.actSendMu.Unlock()
-	var last uint64
-	a.mu.Lock()
-	w := a.out
-	a.mu.Unlock()
+	var last, lastOn uint64
+	var lastW *controlWriter
 	for {
 		a.actMu.Lock()
 		i := slicesIndexUnsent(a.actKept)
@@ -85,29 +88,50 @@ func (a *agent) sendKeptActivity() {
 		}
 		// The count of those left out goes with the first entry sent, and
 		// stays with it should it be sent again.
-		m, extra := a.actKept[i].m, a.actLeftOut
+		k, extra, epoch := a.actKept[i], a.actLeftOut, a.actEpoch
+		m := k.m
 		m.LeftOut = min(m.LeftOut+extra, proto.MaxActivityLeftOut)
 		a.actMu.Unlock()
+		// The writer of this registration's connection: a connection ends
+		// (its writer let go) before the next registration begins.
+		a.mu.Lock()
+		w := a.out
+		a.mu.Unlock()
 		err := a.send(m)
 		if errors.Is(err, errConnDown) || errors.Is(err, session.ErrSlowConsumer) {
 			// Not written: sent in its turn later.
 			break
 		}
 		a.actMu.Lock()
-		// Written, or perhaps (a write that failed): sent, kept until taken.
-		if j := keptIndex(a.actKept, m.Seq); j >= 0 {
-			a.actKept[j].sent = true
-			a.actKept[j].m.LeftOut = m.LeftOut
-		}
 		a.actLeftOut -= min(a.actLeftOut, extra)
+		if j := keptIndex(a.actKept, m.Seq); j >= 0 {
+			a.actKept[j].m.LeftOut = m.LeftOut
+			switch {
+			case a.actEpoch == epoch:
+				// Written, or perhaps (a write that failed): sent, kept
+				// until taken.
+				a.actKept[j].sent, a.actKept[j].on = true, epoch
+			case a.actResumed:
+				// Written on a connection that ended as it went: sent
+				// again on the resumed session's.
+			default:
+				// Perhaps taken by a server that did not resume the
+				// session: not sent again, counted left out.
+				a.actLeftOut = min(a.actLeftOut+1+m.LeftOut, proto.MaxActivityLeftOut)
+				a.actKept = append(a.actKept[:j], a.actKept[j+1:]...)
+			}
+		}
+		current := a.actEpoch == epoch
 		a.actMu.Unlock()
-		last = m.Seq
+		if current {
+			last, lastOn, lastW = m.Seq, epoch, w
+		}
 		if err != nil {
 			break
 		}
 	}
 	if last > 0 {
-		a.confirmActivity(w, last)
+		a.confirmActivity(lastW, lastOn, last)
 	}
 }
 
@@ -132,12 +156,16 @@ func keptIndex(kept []keptActivity, seq uint64) int {
 	return -1
 }
 
-// confirmActivity has the server's taking of the entries sent on w up to
-// upTo confirmed by a ping on w, one confirmation at a time (a later one
-// asked meanwhile is made after it): answered while w is still the
-// host's, they go.
-func (a *agent) confirmActivity(w *controlWriter, upTo uint64) {
+// confirmActivity has the server's taking of the entries sent on w (the
+// connection of registration on) up to upTo confirmed by a ping on w, one
+// confirmation at a time: one asked meanwhile, on the same connection or a
+// later one, is made after it, on its own connection. Answered while that
+// connection is still the host's, the entries sent on it up to upTo go.
+func (a *agent) confirmActivity(w *controlWriter, on, upTo uint64) {
 	a.actMu.Lock()
+	if on != a.actConfirmOn {
+		a.actConfirmOn, a.actConfirmW, a.actConfirmTo = on, w, 0
+	}
 	a.actConfirmTo = max(a.actConfirmTo, upTo)
 	if a.actConfirming {
 		a.actMu.Unlock()
@@ -148,23 +176,23 @@ func (a *agent) confirmActivity(w *controlWriter, upTo uint64) {
 	go func() {
 		for {
 			a.actMu.Lock()
-			to := a.actConfirmTo
+			to, on, w := a.actConfirmTo, a.actConfirmOn, a.actConfirmW
 			a.actMu.Unlock()
 			taken := a.confirmOn(w)
 			a.mu.Lock()
 			same := a.out == w
 			a.mu.Unlock()
 			a.actMu.Lock()
-			if taken && same {
+			if taken && same && a.actEpoch == on {
 				kept := a.actKept[:0]
 				for _, k := range a.actKept {
-					if !k.sent || k.m.Seq > to {
+					if !k.sent || k.on != on || k.m.Seq > to {
 						kept = append(kept, k)
 					}
 				}
 				a.actKept = kept
 			}
-			if !taken || !same || a.actConfirmTo == to {
+			if a.actConfirmTo == to && a.actConfirmOn == on {
 				a.actConfirming = false
 				a.actMu.Unlock()
 				return
@@ -188,15 +216,18 @@ func (a *agent) confirmOn(w *controlWriter) bool {
 	return w.c.Ping(ctx) == nil
 }
 
-// registeredActivity takes what a registration says of the kept entries:
-// a server that does not say ActivitySeq is sent none of them, nor kept
-// any for; one that resumed the session is sent every one again, in order
-// (it drops those it took); one that did not is sent those never written,
-// and the others are counted left out.
+// registeredActivity takes what a registration says of the kept entries,
+// as the registration's connection is about to begin (its number,
+// actEpoch, one more): a server that does not say ActivitySeq is sent none
+// of them, nor kept any for; one that resumed the session is sent every
+// one again, in order (it drops those it took); one that did not is sent
+// those never written, and the others are counted left out.
 func (a *agent) registeredActivity(takes, resumed bool) {
 	a.activitySeq.Store(takes)
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
+	a.actEpoch++
+	a.actResumed = resumed
 	if !takes {
 		a.actKept, a.actLeftOut = nil, 0
 		return
