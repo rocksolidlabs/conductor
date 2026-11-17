@@ -58,11 +58,9 @@ func (s *Server) handleBrakemanMarkOpened(w http.ResponseWriter, r *http.Request
 	}
 	var body brakemanOpenedBody
 	if err := decodeJSONLimit(w, r, &body, maxOpenedBody); err != nil {
-		msg := "the body is {ids}: 1 to 100 request ids"
-		if errors.Is(err, errBodyTooLarge) {
-			msg = "the body is at most 4 KiB"
-		}
-		writeError(w, http.StatusBadRequest, "invalid_request", msg)
+		// The decoder's words: a body past 4 KiB says so, a field other
+		// than ids is named. They never hold the body's values.
+		writeError(w, http.StatusBadRequest, "invalid_request", "the body is {ids}, 1 to 100 request ids, at most 4 KiB: "+err.Error())
 		return
 	}
 	u, changed, err := d.st.MarkOpened(actorOf(r), body.IDs)
