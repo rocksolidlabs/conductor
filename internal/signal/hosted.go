@@ -844,7 +844,11 @@ type HostedSession struct {
 	// connected, from the `file` entries it reports (HostActivity): what
 	// GET /api/touched lists for the session (#304). The host keeps the
 	// session's own index; this one begins with the connection.
-	touched        session.TouchedIndex
+	touched session.TouchedIndex
+	// actSeq is the last numbered entry of the host's this session took
+	// (TakeActivitySeq), kept while the session is, its host's
+	// reconnections among them.
+	actSeq         uint64
 	relayOnly      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -1961,6 +1965,45 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
 		h.hub.OnActivity(id, e, recorded)
+	}
+}
+
+// TakeActivitySeq says whether the host's entry numbered seq is one the
+// session has not taken (proto.HostActivityMsg.Seq): a number above the
+// last it took, which it takes. An entry the host sends again, as a
+// connection that resumes the session starts, is taken once.
+func (h *HostedSession) TakeActivitySeq(seq uint64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if seq <= h.actSeq {
+		return false
+	}
+	h.actSeq = seq
+	return true
+}
+
+// HostActivityLeftOut records that the host left n of its entries out
+// before the one stamped at (proto.HostActivityMsg.LeftOut), as a status
+// entry of the session's: what a person reads in its activity where the
+// entries would be.
+func (h *HostedSession) HostActivityLeftOut(n uint32, at time.Time) {
+	if n == 0 {
+		return
+	}
+	n = min(n, proto.MaxActivityLeftOut)
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	word := "entries"
+	if n == 1 {
+		word = "entry"
+	}
+	e := session.ActivityEntry{At: at, Type: session.ActivityStatus, Message: fmt.Sprintf("%d activity %s of the host's may be missing here: recorded while its connection to this server was down, and not sent", n, word)}
+	h.mu.Lock()
+	id := h.info.ID
+	h.mu.Unlock()
+	if h.hub != nil && h.hub.OnActivity != nil {
+		h.hub.OnActivity(id, e, "")
 	}
 }
 

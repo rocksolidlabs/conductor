@@ -12,6 +12,7 @@ import {
   HOST_MAX_REPORT_WHERE,
   HOST_MAX_SESSION_INFO,
   HOST_MAX_AGENT_SESSION,
+  HOST_MAX_ACTIVITY_LEFT_OUT,
   HOST_MAX_AGENT_SESSION_MESSAGE,
   HOST_MAX_RUN_ID,
   HOST_MAX_TOKEN,
@@ -51,6 +52,8 @@ import {
   type HostSessionInfoMessage,
   type HostAgentSessionMessage,
   type HostRegisteredAgentSessions,
+  type HostActivitySeq,
+  type HostRegisteredActivitySeq,
   type HostTokenMsg,
   type Welcome,
 } from './protocol'
@@ -549,6 +552,12 @@ describe('a host report', () => {
       { repo: '/Users/李/项目', repoCommon: 'C:\\Users\\Zoë\\app\\.git' },
       { repo: '/Users/ade\u0301/app' },
     ]) expect(hostReportValid(ok), JSON.stringify(ok)).toBe(true)
+  })
+  it('bounds the count of entries an activity message says were left out', () => {
+    const m: HostActivitySeq = { seq: 3, leftOut: HOST_MAX_ACTIVITY_LEFT_OUT }
+    expect(m.leftOut).toBe(1048576)
+    const r: HostRegisteredActivitySeq = { activitySeq: true }
+    expect(r.activitySeq).toBe(true)
   })
   it('bounds an agent_session by its bytes, its id within them', () => {
     const m: HostAgentSessionMessage = { t: 'agent_session', sessionId: 's'.repeat(64), agentSession: 'a'.repeat(HOST_MAX_AGENT_SESSION), turn: true }

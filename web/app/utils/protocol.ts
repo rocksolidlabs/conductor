@@ -993,6 +993,24 @@ export interface HostRegisteredAgentSessions {
   agentSessions?: boolean
 }
 
+/** activity's leftOut (below) is at most this; a larger one is taken as this. */
+export const HOST_MAX_ACTIVITY_LEFT_OUT = 1 << 20
+
+/**
+ * The part of a host's activity message that only a server whose registered said activitySeq is sent: seq numbers the host's
+ * entries from 1 for the life of its process (one sent again keeps its number, and the server takes a number once), leftOut how
+ * many entries before this one the host did not send (at most HOST_MAX_ACTIVITY_LEFT_OUT). The web never sends it.
+ */
+export interface HostActivitySeq {
+  seq?: number
+  leftOut?: number
+}
+
+/** The part of registered that says the server takes activity's seq and leftOut; absent from an older server, a switchyard and a desk's. */
+export interface HostRegisteredActivitySeq {
+  activitySeq?: boolean
+}
+
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
 export interface HostRegisteredLinks {
   links?: string[]
