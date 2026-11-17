@@ -62,6 +62,8 @@ function isNote(n: unknown): n is DraftNote {
     ['line', 'file', 'general', 'check', 'capture'].includes(x.kind) &&
     (x.kind !== 'check' || (!!x.check && x.check.source === 'ledger' && typeof x.check.receipt === 'string')) &&
     (x.kind !== 'capture' || isCaptureChoice(x.capture)) &&
+    (x.captureRev === undefined || (Number.isInteger(x.captureRev) && x.captureRev >= 1)) &&
+    (x.captureFiles === undefined || x.captureFiles === 1 || x.captureFiles === 2) &&
     (x.measured === undefined || (!!x.measured && typeof x.measured === 'object' && typeof x.measured.receipt === 'string' && typeof x.measured.stable === 'boolean')) &&
     INTENTS.includes(x.intent) &&
     typeof x.message === 'string' &&
@@ -159,7 +161,10 @@ export function addCaptureNotes(ticket: string, candidate: string, notes: Omit<D
   const key = draftKey(ticket, candidate)
   const page = pageDrafts(storage)
   const d = page.drafts.get(key) ?? (page.refused.has(key) ? null : readDraft(storage, key)) ?? emptyDraft()
-  const has = (n: Omit<DraftNote, 'key'>) => d.notes.some((x) => x.kind === 'capture' && x.capture?.send === n.capture?.send && x.capture?.k === n.capture?.k)
+  // The same annotation of the same capture revision, whichever send carried it, is one note.
+  const same = (x: Omit<DraftNote, 'key'>, n: Omit<DraftNote, 'key'>) =>
+    x.capture?.capture === n.capture?.capture && x.capture?.k === n.capture?.k && (x.captureRev !== undefined && n.captureRev !== undefined ? x.captureRev === n.captureRev : x.capture?.send === n.capture?.send)
+  const has = (n: Omit<DraftNote, 'key'>) => d.notes.some((x) => x.kind === 'capture' && same(x, n))
   const fresh = notes.filter((n) => n.kind === 'capture' && n.capture && !has(n)).map((n) => ({ ...n, key: noteKey() }))
   const next = { ...d, notes: [...d.notes, ...fresh] }
   page.drafts.set(key, next)

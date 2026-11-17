@@ -326,8 +326,14 @@ describe('Add to a review', () => {
     d.add(candidateLine)
     expect(addCaptureNotes('CND-12', C1, [note(1), note(2)], storage)).toEqual({ added: 2, kept: true })
     expect(addCaptureNotes('CND-12', C1, [note(1)], storage)).toEqual({ added: 0, kept: true })
-    expect(d.draft.value.notes.map((n) => n.kind)).toEqual(['line', 'capture', 'capture'])
-    expect(readDraft(storage, draftKey('CND-12', C1))!.notes).toHaveLength(3)
+    // Another send of the same revision carries the same annotation: one note, whichever send.
+    const again = { ...note(1), capture: { ...note(1).capture!, send: '0000000000000abc' }, captureRev: 1 }
+    expect(addCaptureNotes('CND-12', C1, [{ ...note(2), captureRev: 1 }], storage)).toEqual({ added: 0, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...note(3), captureRev: 1 }], storage)).toEqual({ added: 1, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...again, capture: { ...again.capture, k: 3 } }], storage)).toEqual({ added: 0, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...again, capture: { ...again.capture, k: 3 }, captureRev: 2 }], storage)).toEqual({ added: 1, kept: true })
+    expect(d.draft.value.notes.map((n) => n.kind)).toEqual(['line', 'capture', 'capture', 'capture', 'capture'])
+    expect(readDraft(storage, draftKey('CND-12', C1))!.notes).toHaveLength(5)
   })
 
   it('keeps them in the page where the storage refuses, and reads none of a shape it does not know', () => {

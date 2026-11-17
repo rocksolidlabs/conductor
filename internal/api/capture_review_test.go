@@ -425,3 +425,49 @@ func TestTheSendRouteTakesASendToAReview(t *testing.T) {
 	}
 	l.expect(t, "POST", path, map[string]any{"opId": opID(), "rev": 2, "to": map[string]any{"kind": "review", "candidate": cand, "draft": true}}, http.StatusConflict, dispatch.RefusalStaleRevision)
 }
+
+// Two sends of one capture at one revision (Add to a review twice) freeze
+// the same files: a review requesting changes on findings of both is kept
+// and applied, the request hands each file over once, held by the first
+// send, and both findings name it, so the repair attempt's task.md points
+// both at the same document and its tree holds it once.
+func TestTwoSendsOfOneRevisionHandTheirFilesOverOnce(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	shot := testPNG(t)
+	n, f := capturedOf(run, c1, "Save is covered.", shot, false)
+	id := seedCapture(t, l.srv, n, f, shot)
+	cand := candName(run, "build", 1, c1)
+	var sends []string
+	for _, op := range []string{"draft-a", "draft-b"} {
+		out, aerr := sendToReview(t, l.srv, op, id, 1, reviewSendTo{Candidate: cand, Draft: true})
+		if aerr != nil || out.status != http.StatusCreated {
+			t.Fatalf("%s: %d %v %v", op, out.status, out.reply, aerr)
+		}
+		sends = append(sends, out.reply["send"].(dispatch.CaptureSend).ID)
+	}
+	finding := func(send string) map[string]any {
+		return map[string]any{"kind": "capture", "intent": "change", "severity": "major", "capture": map[string]any{"capture": id, "send": send, "k": 1}}
+	}
+	out := sendReview(t, l.testEnv, "CND-1", reviewOf(cand, l.head, "request_changes", finding(sends[0]), finding(sends[1])), http.StatusCreated, "")
+	if app := applicationOf(t, out); app["state"] != dispatch.ApplicationApplied || app["attempt"] != 2.0 {
+		t.Fatalf("the application: %v", app)
+	}
+	runningAttempt(t, l.testEnv, run, "build", 2)
+	sv, err := l.srv.dispatch.CaptureSend(t.Context(), sends[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := evidenceIn(t, l, run, 2, id, "json"); hexSum(got) != sv.Digest {
+		t.Fatal("the document in the repair attempt's tree is not the sends'")
+	}
+	md := string(l.treeFile(t, run, "build", 2, "task.md"))
+	doc := fmt.Sprintf("The capture: `.conductor/evidence/capture-%s-r1.json`", id)
+	if strings.Count(md, doc) != 2 {
+		t.Fatalf("task.md names the document %d times, not under both findings:\n%s", strings.Count(md, doc), md)
+	}
+	js := string(l.treeFile(t, run, "build", 2, "task.json"))
+	if strings.Count(js, fmt.Sprintf(`"name": "capture-%s-r1.json"`, id)) != 1 || strings.Count(js, `"send": "`+sends[0]+`"`) < 3 || strings.Contains(js, sends[1]) {
+		t.Fatalf("task.json's request names the files once, held by the first send:\n%s", js)
+	}
+}

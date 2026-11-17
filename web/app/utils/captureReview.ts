@@ -14,6 +14,7 @@ export interface CaptureForReview {
   id: string
   rev: number
   origin: { kind: string; candidate?: string }
+  image?: { sha256?: string }
   annotations: Array<{ k?: number; kind: string; note: string; element?: { tag?: string; name?: string; selector?: string } | null }>
 }
 
@@ -93,6 +94,8 @@ export function captureNotes(c: CaptureForReview, send: string, ks: readonly num
       message: a.note,
       capture: { capture: c.id, send, k },
       captureName: `capture ${c.id.slice(0, 8)} r${c.rev}, annotation ${k}${a.element?.tag ? ` (${a.element.tag}${a.element.name ? ` “${a.element.name}”` : ''})` : ''}`,
+      captureRev: c.rev,
+      captureFiles: c.image?.sha256 ? 2 : 1,
     }))
 }
 
