@@ -1949,6 +1949,11 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		if !ok {
 			return ResponseReceipt{}, refuse(CodeNotFound, "no decision %s", id)
 		}
+		if prior.Origin == ledger.OriginCompare && strings.TrimSpace(resp.Rationale) == "" {
+			// A selection's rationale is its record (I7): every path meets
+			// this, the route, the CLI and the card, before any row.
+			return ResponseReceipt{}, refuse(CodeInvalid, "%s", selectRationaleSay)
+		}
 		// A response sent before is answered from its saved row whatever
 		// holds the decision now, a run not held after a restart included
 		// (replayed).

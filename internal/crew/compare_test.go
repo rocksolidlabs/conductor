@@ -469,9 +469,10 @@ func TestTheComparisonIsTheLaunchedOne(t *testing.T) {
 }
 
 // I9, door 15: through act, a compare run takes pause, unpause, cancel,
-// retry and accept, and refuses any other intent (request_changes and
-// recheck among them) before anything is written: no command row, no
-// receipt, no event. An ordinary run takes the same intents.
+// retry, accept and Check again (recheck, with the selection's rule:
+// TestCheckAgainSupersedesTheSelection), and refuses any other intent
+// (request_changes among them) before anything is written: no command
+// row, no receipt, no event. An ordinary run takes the same intents.
 func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 	ctx := context.Background()
 	refusedOn := func(t *testing.T, e *Engine, l *fakeLedger, runID string, compare bool) {
@@ -485,21 +486,19 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 			if lerr != nil {
 				t.Fatal(lerr)
 			}
-			if compare {
-				if !errors.Is(err, ErrNotSelected) || !errors.Is(err, ErrTaskState) || found {
+			if compare && id == "rq1" {
+				if !errors.Is(err, ErrNotListed) || !errors.Is(err, ErrTaskState) || found {
 					t.Fatalf("%s on a comparison: %v, receipt %v", id, err, found)
 				}
-			} else if !found || errors.Is(err, ErrNotSelected) {
+			} else if !found || errors.Is(err, ErrNotListed) {
 				t.Fatalf("%s on an ordinary run: %v, receipt %v", id, err, found)
 			}
 		}
-		if n := l.count(runID, "command.accepted"); compare && n != accepted || !compare && n != accepted+2 {
+		if n := l.count(runID, "command.accepted"); compare && n != accepted+1 || !compare && n != accepted+2 {
 			t.Fatalf("command.accepted %d, was %d", n, accepted)
 		}
-		for _, kind := range []string{"command.request_changes", "command.recheck"} {
-			if n := l.count(runID, kind); compare && n != 0 {
-				t.Fatalf("%s written for a refused command", kind)
-			}
+		if n := l.count(runID, "command.request_changes"); compare && n != 0 {
+			t.Fatalf("command.request_changes written for a refused command")
 		}
 	}
 	listed := func(t *testing.T, e *Engine, l *fakeLedger, runID string) {
@@ -519,7 +518,7 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 			t.Fatalf("retry: %+v %v", rc, err)
 		}
 		// Accept of a task that has not failed: taken, its receipt the refusal.
-		if rc, err := e.Accept(ctx, runID, "admin", cmd("a1"), "approach-a"); !errors.Is(err, ErrTaskState) || errors.Is(err, ErrNotSelected) || rc.Status != ledger.CommandFailed {
+		if rc, err := e.Accept(ctx, runID, "admin", cmd("a1"), "approach-a"); !errors.Is(err, ErrTaskState) || errors.Is(err, ErrNotListed) || errors.Is(err, ErrNotSelected) || rc.Status != ledger.CommandFailed {
 			t.Fatalf("accept: %+v %v", rc, err)
 		}
 		for _, id := range []string{"p1", "p2", "c1", "r1", "a1"} {
@@ -547,7 +546,7 @@ func TestACompareRunTakesOnlyItsListedCommands(t *testing.T) {
 		refusedOn(t, e, l, run.ID, false)
 		listed(t, e, l, run.ID)
 	})
-	if !slices.Equal(compareIntents, []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}) {
+	if !slices.Equal(compareIntents, []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck}) {
 		t.Fatalf("compareIntents: %v", compareIntents)
 	}
 }

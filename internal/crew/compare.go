@@ -71,16 +71,19 @@ const (
 // nothing is written. The API answers it 409 lane.
 var ErrLane = errors.New("another lane of this comparison")
 
-// ErrNotSelected refuses a command a compare run does not take
+// ErrNotListed refuses a command a compare run does not take
 // (compareIntents) before anything is written: no command row, no
-// receipt. It is a task_state refusal to the API.
-var ErrNotSelected = fmt.Errorf("%w: this command is not open to a comparison's candidates yet", ErrTaskState)
+// receipt. It is a task_state refusal to the API. (A lane the applied
+// selection did not select is ErrNotSelected's, compare_select.go.)
+var ErrNotListed = fmt.Errorf("%w: this command is not open to a comparison's candidates yet", ErrTaskState)
 
 // compareIntents are the commands a compare run takes, through act, the
 // one path of every task and run command. Any other, whatever row or plan
-// adds it, is refused (ErrNotSelected) until its rule for a comparison is
-// written here.
-var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}
+// adds it, is refused (ErrNotListed) until its rule for a comparison is
+// written here. Every task command listed takes the selection's rule
+// (laneSelected): after an applied selection, refused on a lane not
+// selected.
+var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck}
 
 // errComparisonLaunch refuses the launch of a compare crew, every launch
 // and continuation alike, until the launch's statement exists (the plan's
