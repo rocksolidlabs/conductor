@@ -3,7 +3,7 @@ import { CHANGED_WORDS, MOVING_WORDS, NO_BRIDGE_WORDS, RESTLESS_WORDS, type Hear
 import { PREVIEW_MARK, type ElementReport, type PreviewPage } from '~/utils/protocol'
 import type { Pixels, ScreenshotSource } from '~/utils/screenshot'
 import { testElement, testPage } from '~/utils/testdata/preview'
-import { HELLO_MS, createPreviewSession } from './usePreviewBridge'
+import { HELLO_AGAIN_MS, HELLO_MS, createPreviewSession, type BridgeDeps } from './usePreviewBridge'
 
 // The workbench's side of the bridge (docs/plans/browser-evidence.md, "The messages" and "One capture is one moment"), against a
 // fake page that answers as the bridge does, through the same gate the pane uses: the 3 s hello, one request in flight, and a
@@ -41,7 +41,7 @@ interface Harness {
   frameWindow: object
 }
 
-function harness(o: { noSource?: boolean } = {}): Harness {
+function harness(o: { noSource?: boolean; deps?: Partial<BridgeDeps> } = {}): Harness {
   let heard: ((e: HeardMessage) => void) | null = null
   let pendingSelect = false
   const h = {} as Harness
@@ -121,6 +121,7 @@ function harness(o: { noSource?: boolean } = {}): Harness {
     view: () => ({ ...h.view }),
     fallback: () => ({ url: `${ORIGIN}/`, width: 400, height: 300 }),
     nonce: () => NONCE,
+    ...o.deps,
     setTimer(fn, ms) {
       h.timers.push({ fn, ms })
       return h.timers.length - 1
@@ -158,18 +159,18 @@ describe('the hello', () => {
     const h = harness()
     // The page answers nothing: its window takes no message.
     h.s.hello()
-    expect(h.timers.map((t) => t.ms)).toEqual([HELLO_MS])
+    expect(h.timers.map((t) => t.ms)).toEqual([...HELLO_AGAIN_MS, HELLO_MS])
     expect(HELLO_MS).toBe(3000)
     await h.settle()
     expect(h.s.state.bridge).toBe('ready')
-    h.timers[0]!.fn()
+    for (const t of h.timers) t.fn()
     expect(h.s.state.bridge).toBe('ready')
 
     const quiet = harness()
     ;(quiet.frameWindow as { postMessage: unknown }).postMessage = () => {}
     quiet.s.hello()
     expect(quiet.s.state.bridge).toBe('hello')
-    quiet.timers[0]!.fn()
+    for (const t of quiet.timers) t.fn()
     expect([quiet.s.state.bridge, quiet.s.state.words]).toEqual(['absent', NO_BRIDGE_WORDS])
   })
 
@@ -370,5 +371,108 @@ describe('Capture again', () => {
     ])
     expect(h.s.state.refusal).toBe('not on this page now, so not retaken: #none')
     expect(h.s.state.drafts.map((d) => [d.retakeOf, d.annotations.length])).toEqual([['0123456789abcdef', 1]])
+  })
+})
+
+describe('the hello said again, and Capture during it', () => {
+  it('is said again within its 3 s, so a bridge that starts after the frame loaded answers', async () => {
+    const h = harness()
+    const post = (h.frameWindow as { postMessage(m: Record<string, unknown>, o: string): void }).postMessage
+    let hellos = 0
+    // The bridge's script is not running at the first hello: only a later one is answered.
+    ;(h.frameWindow as { postMessage: unknown }).postMessage = (m: Record<string, unknown>, origin: string) => {
+      if (m.t === 'hello' && ++hellos === 1) return
+      post(m, origin)
+    }
+    h.s.hello()
+    expect(h.timers.map((t) => t.ms)).toEqual([...HELLO_AGAIN_MS, HELLO_MS])
+    expect(h.s.state.bridge).toBe('hello')
+    h.timers[0]!.fn()
+    await h.settle()
+    expect([hellos, h.s.state.bridge]).toEqual([2, 'ready'])
+  })
+
+  it('waits for the hello: selection mode once the page answers, the screenshot alone once it is given up', async () => {
+    const h = harness()
+    ;(h.frameWindow as { postMessage: unknown }).postMessage = () => {}
+    h.s.hello()
+    const capture = h.s.start()
+    await h.settle()
+    expect(h.s.state.drafts).toEqual([])
+    // Given up at its 3 s: the screenshot alone.
+    h.timers.find((t) => t.ms === HELLO_MS)!.fn()
+    await capture
+    expect(h.s.state.drafts.map((d) => d.annotations.length)).toEqual([0])
+
+    const ok = harness()
+    ok.s.hello()
+    const started = ok.s.start()
+    await ok.settle()
+    expect(ok.s.state.busy).toBe('select')
+    await ok.pick(first)
+    await started
+    expect(ok.s.state.drafts.map((d) => d.annotations.length)).toEqual([1])
+  })
+})
+
+describe('the frame is read with nothing of the workbench over it', () => {
+  it('waits for the pane to clear and paint what it draws over the frame before every frame it reads', async () => {
+    const order: string[] = []
+    const h = harness({ deps: { beforeFrame: async () => void order.push('cleared') } })
+    const frame0 = h.frames[0]!
+    h.frames = [frame0]
+    h.s.hello()
+    await h.settle()
+    const read = h.framesTaken
+    void read
+    await selectOf(h, first)
+    await selectOf(h, second)
+    // Each frame read (the screenshot, its stability frame, the joining frame) after its own clearing.
+    expect(order).toEqual(['cleared', 'cleared', 'cleared'])
+    expect(h.framesTaken).toBe(3)
+  })
+})
+
+describe('the screenshot source and the frame element', () => {
+  function counted(frames: Array<Pixels | null>) {
+    const made: Array<{ stopped: boolean }> = []
+    let i = 0
+    const source = async (): Promise<ScreenshotSource> => {
+      const mine = { stopped: false }
+      made.push(mine)
+      return { how: 'tab', frame: async () => frames[Math.min(i++, frames.length - 1)] ?? null, stop: () => void (mine.stopped = true) }
+    }
+    return { made, source }
+  }
+
+  it('ends a source made for a frame element since replaced, and makes one for the element there now', async () => {
+    let el: object = { frame: 1 }
+    const c = counted([screen()])
+    const h = harness({ deps: { source: c.source, frameElement: () => el } })
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, first)
+    expect(c.made.map((m) => m.stopped)).toEqual([false])
+    // Refresh: a new frame element.
+    el = { frame: 2 }
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, second)
+    expect(c.made.map((m) => m.stopped)).toEqual([true, false])
+  })
+
+  it('ends a source that gives no frame, so the next capture asks for one again rather than waiting on it', async () => {
+    const c = counted([null])
+    const h = harness({ deps: { source: c.source } })
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, first)
+    expect(h.s.state.busy).toBe('')
+    expect(h.s.state.drafts[0]!.shot).toBeNull()
+    expect(c.made.map((m) => m.stopped)).toEqual([true])
+    h.s.hello()
+    await h.settle()
+    await selectOf(h, second)
+    expect(c.made.length).toBe(2)
   })
 })
