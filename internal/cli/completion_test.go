@@ -171,6 +171,20 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "trackers", ""); !slices.Equal(got, []string{"set", "remove"}) {
 				t.Fatalf("trackers words: %v", got)
 			}
+			// Each verb's own flags: set takes no --token, the list no
+			// --host.
+			for _, c := range []struct {
+				words []string
+				want  []string
+			}{
+				{[]string{"trackers", "--"}, []string{"--server", "--token", "--insecure"}},
+				{[]string{"trackers", "set", "--"}, []string{"--server", "--insecure", "--host"}},
+				{[]string{"trackers", "remove", "--"}, []string{"--server", "--token", "--insecure", "--host"}},
+			} {
+				if got := complete(t, sh, script, dir, append([]string{bin}, c.words...)...); !slices.Equal(got, c.want) {
+					t.Fatalf("%q: %v", c.words, got)
+				}
+			}
 			// The reviews' (RV1 PR-5): review's and finding's verbs, the
 			// verdicts of a review and of a mark, a finding's states, the
 			// notes' file; crew's recheck and its server's flags.

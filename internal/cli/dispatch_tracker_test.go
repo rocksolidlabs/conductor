@@ -333,3 +333,50 @@ func TestTheTrackerOperationsCLIFormsAreCommands(t *testing.T) {
 		t.Fatalf("not in the table: %q", names)
 	}
 }
+
+// Two live links to one URL (a delivery and an external link to the same
+// pull request): naming the URL is refused, and the refusal names each
+// link's id, kind and ref, so the person can name one; nothing is read or
+// prepared. Named by an id, the link is read.
+func TestTwoLinksToOneURLAreNamedByTheirIDs(t *testing.T) {
+	clearConductorEnv(t)
+	const pr = "https://github.com/octo/app/pull/5"
+	var mu sync.Mutex
+	var posts []string
+	srv := handlerServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost {
+			posts = append(posts, r.URL.Path)
+			_, _ = w.Write([]byte(`{"read":null}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ticket": map[string]any{"key": "CND-1", "links": []any{
+			map[string]any{"id": "aaaaaaaaaaaaaaaa", "kind": "delivery", "ref": "release-1", "url": pr},
+			map[string]any{"id": "bbbbbbbbbbbbbbbb", "kind": "external", "ref": pr, "url": pr},
+		}}})
+	})
+	run := func(args ...string) (int, error) {
+		t.Helper()
+		return Run(t.Context(), append(append([]string{"dispatch"}, args...), "--server", srv, "--token", dispatchToken), strings.NewReader("text"), io.Discard, io.Discard)
+	}
+	for _, args := range [][]string{{"read", "CND-1", pr}, {"publish", "CND-1", "--target", pr, "--body-file", "-"}} {
+		code, err := run(args...)
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "name one by its id, aaaaaaaaaaaaaaaa (delivery, release-1), bbbbbbbbbbbbbbbb (external)") {
+			t.Fatalf("%q: %d %v", args, code, err)
+		}
+	}
+	mu.Lock()
+	if len(posts) != 0 {
+		t.Fatalf("an ambiguous link was acted on: %q", posts)
+	}
+	mu.Unlock()
+	if code, err := run("read", "CND-1", "bbbbbbbbbbbbbbbb"); code != 0 || err != nil {
+		t.Fatalf("by its id: %d %v", code, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(posts) != 1 || posts[0] != "/api/dispatch/tickets/CND-1/links/bbbbbbbbbbbbbbbb/read" {
+		t.Fatalf("the reads: %q", posts)
+	}
+}
