@@ -737,7 +737,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		{Name: "brakeman_since", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman/since", needs: needLauncher,
 			Summary: "Conductor's own counts since the last briefing kept (or the last day, or ?since=): runs ended, tasks failed, tickets made ready, questions open.",
 			Input:   map[string]any{"type": "object", "description": "no body; ?since= an RFC 3339 time, not after now"},
-			Bounds:  map[string]int{"reply": 8 << 10}}, // the since route's reply bound (brakeman_since.go)
+			Bounds:  map[string]int{"reply": maxBrakemanSince}},
 		{Name: "brakeman_opened", Scope: "admin", Method: http.MethodGet, Path: "/api/brakeman/opened", needs: needLauncher,
 			Summary: "The briefs your credential has not yet opened, newest first, and when its count began (its first read).",
 			Input:   map[string]any{"type": "object", "description": "no body"},
