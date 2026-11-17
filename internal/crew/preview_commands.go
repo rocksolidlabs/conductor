@@ -46,6 +46,7 @@ const (
 	RefusalPreviewOpening = "preview_opening"
 	RefusalNoPreview      = "no_preview"
 	RefusalPreviewFailed  = "preview_failed"
+	RefusalRunUnreadable  = "run_unreadable"
 )
 
 // previewRefusal names the refusal a preview command's err is.
@@ -67,6 +68,8 @@ func previewRefusal(err error) string {
 		return RefusalPreviewOpening
 	case errors.Is(err, ErrPreviewNotFound):
 		return RefusalNoPreview
+	case errors.Is(err, ErrRunUnreadable):
+		return RefusalRunUnreadable
 	case errors.Is(err, ErrRunStopped), errors.Is(err, ErrRunContinued), errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrRunNotFound):
 		return refusalOf(err)
 	}

@@ -366,12 +366,16 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		}
 		break
 	}
+	if e.afterReserve != nil {
+		e.afterReserve()
+	}
 	a := p.a
 	unreserve := func(err error) (PreviewState, error) {
 		e.mu.Lock()
 		if p.handoff != nil {
 			r.trees.done() // counted by an end begun as its first transaction was refused
 		}
+		e.opened(p)
 		e.dropPreview(p)
 		e.mu.Unlock()
 		p.cancel()
@@ -420,7 +424,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 	} else {
 		tr.unmade = false
 	}
-	p.opening = false
+	e.opened(p)
 	if p.handoff != nil {
 		go e.finishPreview(p, p.handoff) // an end that came during the open
 	}
@@ -447,6 +451,11 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 // and counts it on its run (r.previews), which holds the run against
 // eviction until the preview is dropped. The caller holds r.txMu and e.mu.
 func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*preview, error) {
+	if e.drained {
+		// The shutdown's Drain has begun: nothing is opened after it, of a
+		// run the engine holds or of one it does not.
+		return nil, errShuttingDown
+	}
 	if err := e.previewHeld(r); err != nil {
 		return nil, err
 	}
@@ -494,8 +503,22 @@ func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*previ
 	e.previews[key] = p
 	r.previews++
 	a.previewing = p
+	e.opens.add()
 	r.touch()
 	return p, nil
+}
+
+// errShuttingDown refuses a preview once the shutdown's Drain has begun,
+// as a stopped run's preview is refused (run_stopped).
+var errShuttingDown = fmt.Errorf("%w: the server is shutting down", ErrRunStopped)
+
+// opened ends p's open: no longer opening, and no longer counted in
+// e.opens, which Drain waits for. Once only. The caller holds e.mu.
+func (e *Engine) opened(p *preview) {
+	if p.opening {
+		p.opening = false
+		e.opens.done()
+	}
 }
 
 // dropPreview lets go of p: out of the engine's previews and its run's
