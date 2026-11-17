@@ -175,7 +175,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		recipe = s.hostRecipe(reg.Session.AgentID)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled})
+		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}
@@ -647,6 +647,28 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 			break
 		}
 		hs.HostSessionInfo(m)
+	case proto.HostAgentSession:
+		// The agent's own session id an attention report to the host's
+		// socket named: kept as the attention route keeps one
+		// (captureHostedAgentSession), by the catalog's recipe for the
+		// agent, in the record alone. One out of its bounds is dropped, the
+		// connection kept. The session is added before its registered is
+		// written, so the capture never waits on this loop.
+		m, err := proto.ParseAgentSession(data)
+		if err != nil {
+			s.log.Warn("a host's agent_session was dropped", "session", hs.Info().ID, "err", err)
+			break
+		}
+		select {
+		case <-hs.Added():
+			ctx := hc.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			s.captureHostedAgentSession(ctx, hs, m.AgentSession, m.Turn)
+		default:
+			s.log.Warn("a host's agent_session came before its session was added; dropped", "session", hs.Info().ID)
+		}
 	case proto.HostRegister:
 		return false
 	default:

@@ -198,3 +198,34 @@ func TestASessionInfoIsHeldToItsBounds(t *testing.T) {
 		}
 	}
 }
+
+// An agent_session is one object of its type and fields alone, its id 1
+// to MaxAgentSession bytes, the whole at most MaxAgentSessionMsg bytes:
+// anything else is refused.
+func TestParseAgentSession(t *testing.T) {
+	m, err := ParseAgentSession([]byte(`{"t":"agent_session","sessionId":"s1","agentSession":"0000aaaa-0001","turn":true}`))
+	if err != nil || m.AgentSession != "0000aaaa-0001" || !m.Turn {
+		t.Fatalf("%+v %v", m, err)
+	}
+	long := strings.Repeat("a", MaxAgentSession)
+	if _, err := ParseAgentSession([]byte(`{"t":"agent_session","agentSession":"` + long + `"}`)); err != nil {
+		t.Fatalf("an id at its bound: %v", err)
+	}
+	for name, body := range map[string]string{
+		"an id past its bound":   `{"t":"agent_session","agentSession":"` + long + `a"}`,
+		"no id":                  `{"t":"agent_session","turn":true}`,
+		"another type":           `{"t":"attention","agentSession":"a"}`,
+		"an unknown field":       `{"t":"agent_session","agentSession":"a","plan":"/p"}`,
+		"trailing data":          `{"t":"agent_session","agentSession":"a"}{}`,
+		"a turn that is a word":  `{"t":"agent_session","agentSession":"a","turn":"yes"}`,
+		"past the message bound": `{"t":"agent_session","agentSession":"a"}` + strings.Repeat(" ", MaxAgentSessionMsg),
+		"no object":              `[]`,
+	} {
+		if _, err := ParseAgentSession([]byte(body)); err == nil {
+			t.Errorf("%s: taken", name)
+		}
+	}
+	if b, _ := json.Marshal(HostAgentSessionMsg{T: HostAgentSession, SessionID: strings.Repeat("s", 64), AgentSession: long, Turn: true}); len(b) > MaxAgentSessionMsg {
+		t.Fatalf("the largest message a host sends is %d bytes", len(b))
+	}
+}
