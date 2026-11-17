@@ -2236,9 +2236,21 @@ func TestCloseFromTwoServersOneDirectory(t *testing.T) {
 // a revision expected that is not the ticket's (linked, and a link); a
 // close of an item held as a pull request (a link by its address, and one
 // by its last read); a linked target of a ticket with no linked item.
+//
+// Each link the test adds starts a read of its own in the background
+// (readAddedLink), which asks GitHub and records the link's read whenever
+// it comes to run: between a case's look at the links' reads and its check,
+// on a loaded machine. The test holds the ticket's "added:" lock, which
+// those reads wait for, until it has looked, so the only read made is the
+// prepare's own.
 func TestPrepareRefusedFromWhatIsHeld(t *testing.T) {
 	e, p := pubEnv(t)
 	ctx := t.Context()
+	added, ok := e.srv.external.lock(ctx, "added:PUB-1", testWait)
+	if !ok {
+		t.Fatal("the ticket's added lock")
+	}
+	defer added()
 	p.g.set(13, ghItem{Node: "PR_kwDOitem13", Title: "A pull request", Body: "b", Updated: t0, Pull: true, Labels: []string{}})
 	p.node("PR_kwDOitem13", "PullRequest", "octo/app", 13, 4000001)
 	link := func(url string) string {
