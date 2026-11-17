@@ -99,7 +99,7 @@ const labels = computed<Record<string, SelectionMark>>(() => {
       </section>
 
       <!-- Supporting information, not evidence: its own panel, below the measured part, never colouring it. -->
-      <CompareSupporting :supporting="comparison.supporting" :run="comparison.run" />
+      <CompareSupporting :supporting="comparison.supporting" :run="comparison.run" @asked="c.read()" />
     </template>
   </section>
 </template>

@@ -1,4 +1,4 @@
-import type { Comparison, ComparisonSelection, ComparisonSupporting } from './compare'
+import { runCompare, type Comparison, type ComparisonSelection, type ComparisonSupporting } from './compare'
 import type { Decision } from './decisions'
 import { candidateRef } from './dispatch'
 import { forWords } from './decisions'
@@ -70,7 +70,7 @@ export function selectionFor(sel: Pick<ComparisonSelection, 'for'> | null | unde
   return w ? `for ${w}` : ''
 }
 
-/** Whether the selection's record may be answered on the panel: open, or answered and its run not yet continued, never once closed. */
+/** Whether the selection's record may be answered on the panel: only while both the comparison and the record say open. */
 export function selectionAnswerable(sel: Pick<ComparisonSelection, 'state'> | null | undefined, record: Pick<Decision, 'state'> | null): boolean {
   return !!sel && !!record && sel.state !== 'superseded' && record.state === 'open'
 }
@@ -122,4 +122,17 @@ export function selectedReview(r: Pick<Decision, 'origin' | 'state' | 'applied'>
 export function selectionReview(sel: ComparisonSelection | null | undefined): { query: { view: 'review'; candidate: string } } | null {
   const a = appliedSelection(sel)
   return a && a !== 'none' ? { query: { view: 'review', candidate: candidateRef(a) } } : null
+}
+
+/**
+ * The run of a comparison among a ticket's runs (`ids`), for the Review view: the named candidate's run when it is one, else the first
+ * such run; '' for none. `info` gives a run as the live store holds it or as its own read answered (a record the store leaves out),
+ * undefined while neither has: `known` is false then, and the view waits rather than open on a candidate of a lane not selected.
+ */
+export function compareRunOf(ids: readonly string[], named: string | undefined, info: (id: string) => unknown): { run: string; known: boolean } {
+  const all = named && !ids.includes(named) ? [named, ...ids] : ids
+  const known = all.every((id) => info(id) !== undefined)
+  const isCompare = (id: string) => !!runCompare(info(id))
+  if (named && isCompare(named)) return { run: named, known: true }
+  return { run: all.find(isCompare) ?? '', known }
 }

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateSelection, selectedReview, selectionReview } from './compareSelect'
+import { candidateSelection, compareRunOf, selectedReview, selectionReview } from './compareSelect'
 import type { Comparison } from './compare'
 import { firstReviewCandidate, pickerLabel, reviewDefault } from './review'
 
@@ -78,6 +78,37 @@ describe("Review the selected candidate on the ticket's Decisions", () => {
     const picker = readFileSync(new URL('../components/ReviewCandidate.vue', import.meta.url), 'utf8')
     expect(picker).toContain('label: pickerLabel(o)')
     const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
-    expect(view).toContain('reviewDefault(props.candidates.runs.value, !!compareRun.value, selected.value)')
+    expect(view).toContain('reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value)')
+  })
+})
+
+describe("the comparison's run, the live store's or a record's", () => {
+  const compare = { candidates: [{ task: 'approach-a' }, { task: 'approach-b' }] }
+  const PLAIN = 'crew-0000bbbb-33334444'
+  it('is found from a record the live store leaves out, as from a run it holds', () => {
+    // A record after a restart: only its own read gives it, with its compare part.
+    const info = (id: string) => (id === RUN ? { id, record: true, compare } : id === PLAIN ? { id } : undefined)
+    expect(compareRunOf([PLAIN, RUN], undefined, info)).toEqual({ run: RUN, known: true })
+    expect(compareRunOf([PLAIN], undefined, info)).toEqual({ run: '', known: true })
+    // The route's candidate's run first, even when it is no run the ticket's candidates list.
+    expect(compareRunOf([PLAIN], RUN, info)).toEqual({ run: RUN, known: true })
+  })
+
+  it('is not known while a run has neither a place in the live store nor a read that answered, and the view then waits', () => {
+    const info = (id: string) => (id === PLAIN ? { id } : undefined)
+    expect(compareRunOf([PLAIN, RUN], undefined, info)).toEqual({ run: '', known: false })
+    expect(reviewDefault(runs, undefined, null)).toBe('')
+    // Known and no comparison: the view's own first, as RV1 made it.
+    expect(reviewDefault(runs, false, null)).toBe(firstReviewCandidate(runs))
+  })
+
+  it("is the view's and the run card's: the card tells the candidates list, the view reads a run the store does not hold", () => {
+    const card = readFileSync(new URL('../components/DispatchRunCard.vue', import.meta.url), 'utf8')
+    expect(card).toContain(':compare="!!(runCompare(run) || runCompare(summary))"')
+    const list = readFileSync(new URL('../components/DispatchCandidates.vue', import.meta.url), 'utf8')
+    expect(list).toContain('props.compare || runCompare(attention.runOf(props.runId))')
+    const view = readFileSync(new URL('../components/DispatchReview.vue', import.meta.url), 'utf8')
+    expect(view).toContain('attention.refreshRun(id)')
+    expect(view).toContain('compareOf.value.known ? false : undefined')
   })
 })

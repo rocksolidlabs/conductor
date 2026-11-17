@@ -36,7 +36,7 @@ const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error
     </header>
 
     <p v-if="panel" class="break-words text-sm text-default" data-compare-select-words>{{ panel }}</p>
-    <UAlert v-if="record.error.value && sel" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="record.error.value" data-compare-select-error>
+    <UAlert v-if="record.error.value && sel" color="neutral" variant="subtle" icon="i-lucide-cloud-alert" :title="record.error.value" data-compare-select-error>
       <template #actions><UButton label="Read again" size="xs" color="neutral" variant="outline" @click="record.read()" /></template>
     </UAlert>
     <p v-else-if="sel && !d" class="text-sm text-muted">Reading {{ sel.decision }}…</p>

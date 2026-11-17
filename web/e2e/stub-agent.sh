@@ -966,6 +966,9 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # commit and submit as a worker does, so a check of theirs can be cited.
 # STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
 # two the type asks with (the first stays the recommended one).
+# STUB_ATTEMPT_HOLD names a file: an attempt that starts while it exists
+# waits until it is gone (120 s at most), so a spec checks a state the
+# attempt's end would replace before it lets the attempt go on.
 # STUB_COMPARE_EDIT makes a work task's commit carry one edit a
 # comparison's checks read (CP1): `manifest` a blank line appended to
 # conductor.manifest.json (the file-form manifest, when the tree has
@@ -1028,6 +1031,21 @@ task_attempt() {
 			printf 'hold: attempt 1 went on when the gate opened\n' >>"$transcript"
 		else
 			printf 'hold: attempt 1 went on when its cap of %s s ran out\n' "$hold_cap" >>"$transcript"
+		fi
+	fi
+	# A spec's hold on whichever attempt starts while it holds one (STUB_ATTEMPT_HOLD, set on an agent copy): while the file it names
+	# exists, the attempt waits, at most 120 s, before it does anything; the spec makes the file before the command that starts the
+	# attempt and removes it once it has checked what the attempt must not change yet. The transcript says which ended the wait.
+	if [[ -n ${STUB_ATTEMPT_HOLD:-} && -e $STUB_ATTEMPT_HOLD ]]; then
+		local j
+		for ((j = 0; j < 1200; j++)); do
+			[[ -e $STUB_ATTEMPT_HOLD ]] || break
+			sleep 0.1
+		done
+		if [[ -e $STUB_ATTEMPT_HOLD ]]; then
+			printf 'hold: attempt %s went on when its cap of 120 s ran out\n' "$n" >>"$transcript"
+		else
+			printf 'hold: attempt %s went on when its hold was taken away\n' "$n" >>"$transcript"
 		fi
 	fi
 	if [[ $kind == task && -n ${STUB_DECISION:-} && -z $decided && $n -ge ${STUB_DECISION_FROM:-1} ]]; then

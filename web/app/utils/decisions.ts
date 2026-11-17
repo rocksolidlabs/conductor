@@ -268,8 +268,9 @@ export function comparisonPath(ticketKey: string | undefined, run: string | unde
 }
 
 /**
- * The subject in words, and the page it links to when it has one: a candidate's task on its run page, or, given the key of the ticket
- * its run was launched from (`o.ticket`), a candidate and a comparison on the ticket's comparison.
+ * The subject in words, and the page it links to when it has one: a candidate's task on its run page; a comparison (a selection's own
+ * subject) on its ticket's comparison when the key of the ticket its run was launched from is given (`o.ticket`), else its run page.
+ * A selection's options link their candidates to the comparison through optionSubject.
  */
 export function subjectWords(s: DecisionSubject | null | undefined, o: { ticket?: string } = {}): { text: string; to?: string } {
   if (!s) return { text: '' }
@@ -279,7 +280,7 @@ export function subjectWords(s: DecisionSubject | null | undefined, o: { ticket?
     case 'candidate':
       return {
         text: `the result of ${s.task}, attempt ${s.n}${s.commit ? ` (${short(s.commit)})` : ''}`,
-        to: comparisonPath(o.ticket, s.run) || (s.run && s.task ? `/runs/${encodeURIComponent(s.run)}?view=tasks&task=${encodeURIComponent(s.task)}` : undefined),
+        to: s.run && s.task ? `/runs/${encodeURIComponent(s.run)}?view=tasks&task=${encodeURIComponent(s.task)}` : undefined,
       }
     case 'comparison':
       return {
@@ -369,8 +370,10 @@ export function answerAsk(d: Pick<Decision, 'origin' | 'type' | 'request'>, choi
 /** An option's subject in words with its link (a selection's candidate, on its comparison when the ticket's key is known); null for none. */
 export function optionSubject(o: DecisionOption | undefined, ticket?: string): { text: string; to?: string } | null {
   if (!o?.subject) return null
-  const w = subjectWords(o.subject, { ticket })
-  return w.text ? w : null
+  const w = subjectWords(o.subject)
+  if (!w.text) return null
+  // A selection's option is a candidate of the comparison: it links to the comparison; any other subject as subjectWords says.
+  return o.subject.kind === 'candidate' ? { ...w, to: comparisonPath(ticket, o.subject.run) || w.to } : w
 }
 
 /**
