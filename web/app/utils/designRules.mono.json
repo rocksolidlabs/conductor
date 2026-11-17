@@ -1,7 +1,6 @@
 {
   "components/AboutCard.vue": 1,
   "components/ArgvInput.vue": 1,
-  "components/BrakemanBrief.vue": 1,
   "components/BrakemanDraftCrew.vue": 1,
   "components/BrakemanDraftPlan.vue": 3,
   "components/BrakemanDraftTicket.vue": 1,

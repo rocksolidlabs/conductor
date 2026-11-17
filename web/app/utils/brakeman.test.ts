@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanAct, BrakemanConfig, BriefItem, CapacitySnapshot } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BrakemanDigest, BrakemanDigestAbout, BrakemanDigestCounts, BriefItem, CapacitySnapshot } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefRegions, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, MAX_READING, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -24,6 +24,22 @@ function config(over: Partial<BrakemanConfig> = {}): BrakemanConfig {
     ...over,
   }
 }
+
+describe("a brief's digest, as the server keeps it", () => {
+  const src = readFileSync(new URL('../../../internal/brakeman/digest.go', import.meta.url), 'utf8')
+  /** The JSON names of a Go struct's fields, in order. */
+  const fields = (struct: string) => [...src.matchAll(/type ([A-Za-z]+) struct \{([^}]*)\}/g)].find((m) => m[1] === struct)![2]!.match(/json:"([a-zA-Z]+)/g)!.map((x) => x.slice(6))
+
+  it("cuts its reading where the server does, and names its fields as the server's", () => {
+    expect(MAX_READING).toBe(Number(/\bMaxReading\s*=\s*(\d+)/.exec(src)![1]))
+    const digest: Record<keyof BrakemanDigest, true> = { schema: true, title: true, reading: true, readingCut: true, counts: true, about: true }
+    const counts: Record<keyof BrakemanDigestCounts, true> = { decisions: true, proposals: true, drafts: true, handoffs: true, facts: true, interpretations: true, outcomes: true, overlaps: true, comparisons: true, evidence: true }
+    const about: Record<keyof BrakemanDigestAbout, true> = { runs: true, tasks: true, sessions: true, tickets: true }
+    expect(fields('Digest')).toEqual(Object.keys(digest))
+    expect(fields('DigestCounts')).toEqual(Object.keys(counts))
+    expect(fields('DigestAbout')).toEqual(Object.keys(about))
+  })
+})
 
 describe('the kinds and the states, in words', () => {
   it('names every kind the server takes, and only those', () => {
@@ -264,6 +280,43 @@ describe("a brief's items", () => {
   it('keep a region with no item when asked to: the acts the request ran are drawn there', () => {
     expect(briefRegions([], ['acts'])).toEqual([{ region: 'acts', items: [] }])
     expect(briefRegions([{ kind: 'fact/1', text: 'f', evidence: [] }], ['acts']).map((r) => r.region)).toEqual(['acts', 'changed'])
+  })
+
+  it("say each region's heading with its count, the facts counted apart from their readings", () => {
+    const regions = briefRegions(items)
+    const heading = (r: string) => regionHeading(r as never, regions.find((x) => x.region === r)!.items)
+    expect(heading('needs')).toBe('Needs you · 1')
+    expect(heading('proposed')).toBe('Proposed · 4')
+    expect(heading('changed')).toBe('What changed · 2 facts')
+    expect(regionHeading('changed', briefRegions([{ kind: 'fact/1', text: 'f', evidence: [] }])[0]!.items)).toBe('What changed · 1 fact')
+    expect(regionHeading('changed', briefRegions([{ kind: 'overlap/1', paths: ['a'], between: [] }])[0]!.items)).toBe('What changed')
+    expect(heading('acts')).toBe('What Brakeman did')
+    expect(heading('compared')).toBe('Compared')
+  })
+
+  it('cite every evidence ref of the brief once, first cited first, and the runs among them', () => {
+    expect(briefEvidence(items)).toEqual([`run:${RUN}`, `attempt:${RUN}/a/1`, `attempt:${RUN}/b/1`, `session:${SESSION}`, `check:${RUN}/build/1/unit/1`])
+    const cites: BriefItem[] = [
+      { kind: 'fact/1', text: 'a', evidence: ['task:fix-login-1a2b3c4d/build', 'ticket:CND-4'] },
+      { kind: 'overlap/1', paths: ['a.go'], between: ['attempt:checkout-0c1d2e3f/a/1'], evidence: ['run:other-9a8b7c6d'] },
+      { kind: 'fact/1', text: 'b', evidence: ['attempt:fix-login-1a2b3c4d/build/2'] },
+    ]
+    expect(citedRuns(cites)).toEqual(['fix-login-1a2b3c4d', 'checkout-0c1d2e3f', 'other-9a8b7c6d'])
+  })
+
+  it("say what a brief is about by name: an asked request's subjects, a wake request's cited runs, three and then +N", () => {
+    const names = { run: (id: string) => ({ 'fix-login-1a2b3c4d': 'fix-login' })[id] }
+    expect(briefAbout({ kind: 'explain', subjects: ['task:fix-login-1a2b3c4d/build'] }, {}, names)).toEqual(['task build'])
+    expect(briefAbout({ kind: 'wake', subjects: [] }, { digest: { about: { runs: ['fix-login-1a2b3c4d', 'checkout-0c1d2e3f'] } } }, names)).toEqual(['fix-login', 'checkout-0c1d2e3f'])
+    expect(briefAbout({ kind: 'wake' }, { digest: { about: { runs: ['a', 'b', 'c', 'd', 'e'] } } })).toEqual(['a', 'b', 'c', '+2'])
+    // An older server sends no digest: the runs the brief's items cite stand in for it.
+    expect(briefAbout({ kind: 'wake' }, { items: [{ kind: 'fact/1', text: 'f', evidence: ['task:fix-login-1a2b3c4d/build'] }] }, names)).toEqual(['fix-login'])
+    expect(briefAbout({ kind: 'briefing' }, {})).toEqual([])
+  })
+
+  it("fold the provenance under one line: the agent, its model, the request and its reads, with no turn's length", () => {
+    expect(foldWords({ id: 'br-14', agent: { agentId: 'claude', model: 'opus' }, reads: 41 })).toBe('Provenance and all evidence: claude, opus, request br-14, 41 reads')
+    expect(foldWords({ id: 'br-2', agent: {}, reads: 1 })).toBe('Provenance and all evidence: an agent, its default model, request br-2, 1 read')
   })
 
   it('of a brief kept with its summary alone are none, though the server writes them null', () => {
