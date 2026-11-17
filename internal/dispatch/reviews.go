@@ -621,8 +621,24 @@ var checkWordPattern = regexp.MustCompile(`^[a-z_]{1,40}$`)
 // JobText is a CI job's name or app, written outside Conductor, as an
 // external receipt keeps it: one line of text (Storable), without an
 // address (addressFree), at most MaxCheckName bytes.
+//
+// The cut can land inside an address addressFree wrote (it may lengthen
+// one, escaping its path), which addressFree would change again: the
+// last word is then dropped and the text made address-free once more,
+// until it is what the receipt's rule reads back (bindExternal: no
+// address, at most MaxCheckName bytes). Each pass shortens the text, so it
+// ends; "" when nothing is left.
 func JobText(s string) string {
-	return cutBytes(addressFree(Storable(s, MaxCheckName, false)), MaxCheckName)
+	s = cutBytes(addressFree(Storable(s, MaxCheckName, false)), MaxCheckName)
+	for s != "" && (holdsAddress(s) || checkText("a job's text", s, MaxCheckName) != nil) {
+		if i := strings.LastIndexByte(s, ' '); i >= 0 {
+			s = s[:i]
+		} else {
+			s = ""
+		}
+		s = cutBytes(addressFree(s), MaxCheckName)
+	}
+	return s
 }
 
 // JobPage is a CI job's page as an external receipt keeps it: the address

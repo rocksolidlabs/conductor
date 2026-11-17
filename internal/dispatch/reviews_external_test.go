@@ -140,3 +140,40 @@ func TestExternalCheckRef(t *testing.T) {
 		t.Fatalf("%d reviews kept, the two accepted ones only expected", n)
 	}
 }
+
+// A job's name or app made storable (JobText) is always what an external
+// receipt's rule reads back, at its bound and either side of it, with
+// multi-byte characters an address's escaping lengthens: no address that
+// addressFree would change again, at most MaxCheckName bytes; and a
+// receipt holding such a name is bound.
+func TestAJobsTextIsWhatItsRuleReadsBack(t *testing.T) {
+	var names []string
+	for n := MaxCheckName - 60; n <= MaxCheckName+1; n++ {
+		names = append(names,
+			strings.Repeat("a", n)+" https://github.com/äääää/ööö",
+			strings.Repeat("a", n)+" https://",
+			strings.Repeat("ä", n/2)+" https://github.com/äääää",
+			strings.Repeat("a", n-1)+"é https://x.example/é?q=1",
+		)
+	}
+	for _, edge := range []int{MaxCheckName - 1, MaxCheckName, MaxCheckName + 1} {
+		names = append(names, strings.Repeat("ü", edge/2)+strings.Repeat("b", edge%2))
+	}
+	for _, name := range names {
+		got := JobText(name)
+		if holdsAddress(got) || len(got) > MaxCheckName || checkText("a job's name", got, MaxCheckName) != nil {
+			t.Fatalf("JobText of %d bytes gave %q (%d bytes), which its rule refuses", len(name), got, len(got))
+		}
+		if JobText(got) != got {
+			t.Fatalf("JobText is not stable on %q", got)
+		}
+	}
+	s, key, run := reviewTicket(t)
+	candidate := candidateOf(run, 2, commitA)
+	ref := jobRef(jobReceipt, commitA)
+	ref.Name = JobText(strings.Repeat("a", 170) + " https://github.com/äääää")
+	ref.App = JobText(strings.Repeat("a", 180) + " https://github.com/ööööö")
+	r := request(candidate, externalNote(jobReceipt))
+	rc, _, err := s.SubmitReview(context.Background(), testOp("long-name"), key, r, ReviewEvidence{Findings: []FindingEvidence{{K: 1, Check: ref}}})
+	want(t, rc, err, StatusDone, "")
+}
