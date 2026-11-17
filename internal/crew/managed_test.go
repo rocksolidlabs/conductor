@@ -580,6 +580,21 @@ func (l *fakeLedger) attemptRow(t *testing.T, runID, taskID string, n int) ledge
 	return row
 }
 
+// attemptRowIn waits for the attempt's row to be committed in state and
+// returns it: the engine's view changes inside the change, the ledger's
+// rows are committed after it (AGENTS.md: a run's log is not its ledger).
+func (l *fakeLedger) attemptRowIn(t *testing.T, runID, taskID string, n int, state string) ledger.AttemptRow {
+	t.Helper()
+	key := fmt.Sprintf("%s/%s/%d", runID, taskID, n)
+	waitTrue(t, "the ledger's row of "+key+" "+state, func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		row, ok := l.attempts[key]
+		return ok && row.State == state
+	})
+	return l.attemptRow(t, runID, taskID, n)
+}
+
 // managedEngine is an engine with a fake ledger over a fake launcher
 // whose sessions print a prompt once, so they are ready for their line.
 func managedEngine(t *testing.T) (*Engine, *fakeLauncher, *fakeLedger) {
@@ -799,13 +814,17 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 	if n := len(fl.launched()); n != 3 {
 		t.Fatalf("launched %d", n)
 	}
-	if !slices.Contains(l.kinds(run.ID), "session.released") {
-		t.Fatalf("events: %v", l.kinds(run.ID))
-	}
+	waitTrue(t, "the ledger's session.released", func() bool { return slices.Contains(l.kinds(run.ID), "session.released") })
 
 	// The review's verdict and test's commit end the run: every task
 	// terminal, the outcome succeeded, the state finished while sessions
-	// still run.
+	// still run. The engine shows the end inside the change and commits
+	// its rows and events after it, so the end's commit is held (blockOn)
+	// until the run reads as finished, and the events are read once the
+	// ledger holds the end, never on the view's word (#281).
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "run.finished", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
 	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictApproved, Summary: "fine"})
 	if got := waitTask(t, e, run.ID, "review", ledger.TaskSucceeded, 1); got.Result.Verdict != VerdictApproved {
 		t.Fatalf("review: %+v", got.Result)
@@ -818,6 +837,13 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded
 	})
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run's end did not reach its commit")
+	}
+	close(l.release)
+	waitFake(t, "the run's end committed", func() bool { return slices.Contains(l.kinds(run.ID), "run.finished") })
 	kinds := l.kinds(run.ID)
 	for _, k := range []string{"run.created", "attempt.reserved", "attempt.workspace", "attempt.launched", "attempt.prompted", "result.submitted", "task.succeeded", "run.finished"} {
 		if !slices.Contains(kinds, k) {
@@ -930,6 +956,7 @@ func TestChecksDecideAWorkTask(t *testing.T) {
 	if _, err := os.Stat(a1.Attempt.Worktree + ".check"); err != nil {
 		t.Fatalf("no detached checkout for the check: %v", err)
 	}
+	waitTrue(t, "the ledger's check.finished", func() bool { return l.count(run.ID, "check.finished") > 0 })
 	if n := l.count(run.ID, "check.finished"); n != 1 {
 		t.Fatalf("check.finished events: %d", n)
 	}
@@ -1109,7 +1136,10 @@ func TestStopEndsTheAttemptsAndTheirChecks(t *testing.T) {
 			t.Fatalf("%s after the stop: %+v %+v", ts.ID, ts, ts.Attempt)
 		}
 	}
-	if l.count(run.ID, "check.finished") != 1 || !slices.Contains(l.kinds(run.ID), "run.stopped") {
+	waitTrue(t, "the ledger's run.stopped and check.finished", func() bool {
+		return slices.Contains(l.kinds(run.ID), "run.stopped") && l.count(run.ID, "check.finished") > 0
+	})
+	if l.count(run.ID, "check.finished") != 1 {
 		t.Fatalf("events: %v", l.kinds(run.ID))
 	}
 	_, p := fl.attemptSession(t, docs)
@@ -1187,9 +1217,7 @@ func TestPauseCancelAndRetry(t *testing.T) {
 		t.Fatalf("retrying a running task: %v", err)
 	}
 	for _, k := range []string{"run.paused", "task.cancelled", "task.retried"} {
-		if !slices.Contains(l.kinds(run.ID), k) {
-			t.Fatalf("no %s: %v", k, l.kinds(run.ID))
-		}
+		waitTrue(t, "the ledger's "+k, func() bool { return slices.Contains(l.kinds(run.ID), k) })
 	}
 	stopRun(t, e, run.ID)
 }
@@ -1304,11 +1332,11 @@ func TestAChecksChangesAreSeenWhateverItDoesToTheIndexOrHEAD(t *testing.T) {
 	// Each check exits 0 and hides what it did: the comparison sees it,
 	// and the attempt fails at the check, recorded so.
 	waitTaskWhere(t, e, run.ID, "hide", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
-	if row := l.attemptRow(t, run.ID, "hide", 1); row.State != ledger.AttemptFailed || row.Stage != "check hide" || row.Error != "changed tracked files: README" {
+	if row := l.attemptRowIn(t, run.ID, "hide", 1, ledger.AttemptFailed); row.Stage != "check hide" || row.Error != "changed tracked files: README" {
 		t.Fatalf("hide's attempt 1: %+v", row)
 	}
 	waitTaskWhere(t, e, run.ID, "move", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
-	if row := l.attemptRow(t, run.ID, "move", 1); row.State != ledger.AttemptFailed || row.Stage != "check move" || row.Error != "moved the checkout to another commit" {
+	if row := l.attemptRowIn(t, run.ID, "move", 1, ledger.AttemptFailed); row.Stage != "check move" || row.Error != "moved the checkout to another commit" {
 		t.Fatalf("move's attempt 1: %+v", row)
 	}
 	stopRun(t, e, run.ID)
@@ -1582,7 +1610,7 @@ func TestASessionEndedDuringASubmissionFailsTheRefusedAttempt(t *testing.T) {
 		t.Fatalf("a dirty worktree: %v", err)
 	}
 	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
-	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != ledger.AttemptRunning || row.Error != "the session ended before a result was submitted" {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed); row.Stage != ledger.AttemptRunning || row.Error != "the session ended before a result was submitted" {
 		t.Fatalf("after the refusal: %+v", row)
 	}
 	stopRun(t, e, run.ID)
@@ -1648,7 +1676,7 @@ func TestACheckWhoseOutcomeIsNotRecordedFailsTheAttempt(t *testing.T) {
 	if a2.Attempts != 2 {
 		t.Fatalf("attempt 2: %+v", a2)
 	}
-	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "check ok" || !strings.Contains(row.Error, "could not record the check's outcome") {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed); row.Stage != "check ok" || !strings.Contains(row.Error, "could not record the check's outcome") {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	l.mu.Lock()
@@ -1688,7 +1716,7 @@ func TestAResultThatLinksTheCrewsDirectoryAwayFailsItsChecks(t *testing.T) {
 	a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
 		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
 	})
-	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed); row.Stage != "checkout" {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	if a2.Attempt.Start != a.Attempt.Start {
@@ -1787,7 +1815,7 @@ func TestAnExecutableBitChangeIsSeenWhateverCoreFileMode(t *testing.T) {
 	commitAll(t, a.Attempt.Worktree, "built")
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
 	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
-	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Error != "changed tracked files: README" {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed); row.Error != "changed tracked files: README" {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	stopRun(t, e, run.ID)
@@ -1811,12 +1839,12 @@ func TestAReviewsFindingsAreKeptInTheLedger(t *testing.T) {
 	if rv := taskOf(t, e, run.ID, "review"); rv.State != ledger.TaskBlocked || rv.Result != nil || rv.Attempt == nil || rv.Attempt.State != ledger.AttemptSucceeded {
 		t.Fatalf("the review after its verdict: %+v", rv)
 	}
-	row := l.attemptRow(t, run.ID, "review", 1)
+	row := l.attemptRowIn(t, run.ID, "review", 1, ledger.AttemptSucceeded)
 	var kept Result
 	if err := json.Unmarshal([]byte(row.Result), &kept); err != nil || kept.Verdict != VerdictNeedsChanges || len(kept.Findings) != 1 || kept.Findings[0].Path != "built.txt" {
 		t.Fatalf("the ledger's result: %q %v", row.Result, err)
 	}
-	if row := l.attemptRow(t, run.ID, "build", 1); !strings.Contains(row.Result, "no tests yet") {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptSucceeded); !strings.Contains(row.Result, "no tests yet") {
 		t.Fatalf("build's result in the ledger: %q", row.Result)
 	}
 	stopRun(t, e, run.ID)
@@ -1956,7 +1984,7 @@ func TestASecondSubmitWaitsForTheFirstsCommit(t *testing.T) {
 		t.Fatalf("the second submit, after the first's failure: %v", err)
 	}
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
-	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptSucceeded || row.Result == "" {
+	if row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptSucceeded); row.Result == "" {
 		t.Fatalf("the attempt's row: %+v", row)
 	}
 	stopRun(t, e, run.ID)
@@ -1975,8 +2003,8 @@ func TestALaunchNotRecordedEndsItsSession(t *testing.T) {
 	if a2.Attempts != 2 {
 		t.Fatalf("attempt 2: %+v", a2)
 	}
-	row := l.attemptRow(t, run.ID, "build", 1)
-	if row.State != ledger.AttemptFailed || row.Stage != "launch" || !strings.Contains(row.Error, "could not record the launch") || row.SessionID == "" {
+	row := l.attemptRowIn(t, run.ID, "build", 1, ledger.AttemptFailed)
+	if row.Stage != "launch" || !strings.Contains(row.Error, "could not record the launch") || row.SessionID == "" {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	fl.mu.Lock()

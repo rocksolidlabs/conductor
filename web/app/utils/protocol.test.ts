@@ -564,3 +564,25 @@ describe('a host report', () => {
     expect(validCommit('HEAD')).toBe(false)
   })
 })
+
+// A crew's launch names the revision it was read from (docs/protocol.md, POST /api/crews/{id}/launch; internal/api,
+// TestCrewLaunchNamesTheRevisionItRead): a revision is 64 lower-case hex digits, the bound the route holds it to, and the body
+// carries it with the run's name only when there is one.
+import { CREW_CHANGED, CREW_REVISION, MAX_CREW_REVISION, crewLaunchBody } from './protocol'
+describe("a crew launch's revision", () => {
+  it('is bounded as the route bounds it', () => {
+    const rev = 'a1'.repeat(32)
+    expect(rev).toHaveLength(MAX_CREW_REVISION)
+    expect(CREW_REVISION.test(rev)).toBe(true)
+    for (const bad of [rev + 'a', rev.slice(1), rev.toUpperCase(), '']) expect(CREW_REVISION.test(bad)).toBe(false)
+    expect(CREW_CHANGED).toBe('crew_changed')
+  })
+  it('goes in the body as it was read, beside the name when one was typed; without one the sheet sends no launch', () => {
+    const rev = 'b'.repeat(64)
+    expect(crewLaunchBody('  fix login ', rev)).toEqual({ label: 'fix login', revision: rev })
+    expect(crewLaunchBody('', rev)).toEqual({ revision: rev })
+    expect(crewLaunchBody(' ', undefined)).toBeNull()
+    expect(crewLaunchBody('named', undefined)).toBeNull()
+    expect(crewLaunchBody('named', '')).toBeNull()
+  })
+})

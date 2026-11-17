@@ -184,7 +184,7 @@ func Class(entity, field string) FieldClass {
 		// stored but read from them, so a merge has no state to reconcile.
 		switch field {
 		case "id", "review_id", "ticket_id", "k", "kind", "intent", "severity", "path", "side", "from_line", "to_line", "anchor_commit",
-			"lines", "message", "resolution", "check_ref", "created_at":
+			"lines", "message", "resolution", "check_ref", "capture_ref", "created_at":
 			return ClassImmutable
 		case "marks", "finding_marks":
 			return ClassLog
@@ -251,9 +251,11 @@ func Class(entity, field string) FieldClass {
 			"close_error", "error", "sending_at", "sent_at", "sent_by":
 			return ClassScalar
 		}
-	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance":
-		// The reads of GitHub and the store's instance (schema version 4):
-		// each replica's own, every column.
+	case "link_read", "link_reads", "ticket_read", "ticket_reads", "store_instance", "capture_send_open", "capture_sends_open":
+		// The reads of GitHub and the store's instance (schema version 4),
+		// and the sends still open (version 6, derived from the sends'
+		// rows and the closes this replica's desk recorded): each
+		// replica's own, every column.
 		if field != "" {
 			return ClassDerived
 		}
