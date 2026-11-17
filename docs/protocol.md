@@ -6097,12 +6097,38 @@ last complete briefing), `explain` (one `run:`, `task:`, `attempt:`,
 `task:` or `ticket:`), `draft_tickets` (a `ticket:` or `comment:`, or the
 note as the discussion), `propose_crew` (one `ticket:`), `handoff` (one
 `task:`, `attempt:` or `session:`), `locate` (the note), `overlaps`
-(none) and `ask` (the note, up to 10 subjects). A note is Markdown of at
+(none), `ask` (the note, up to 10 subjects) and `compare` (one `run:`
+ref, a run of a comparison's chain: another run, a run the ledger does
+not hold, another ref kind or two subjects `400 invalid_request`, field
+`subjects[0]` or `subjects`). A note is Markdown of at
 most 16 KiB. The background role's requests are of kind `wake`, no
 subjects, naming their `batch` (`wb-<n>`), kept under the op id
 `wake-<batch>` (see The background role), a prefix a person's request
 may not take; a wake turn's brief holds a
-`fact/1` as a briefing's does.
+`fact/1` as a briefing's does. A comparison's own request, queued once
+its lanes settle when its block's `brakeman` is set, is of kind
+`compare` about the run whose `compare.settled` event settled it, under
+the op id `cmp-` and the first 24 hex digits of the SHA-256 of the run's
+id, a NUL and the event's sequence in decimal (a prefix a person's
+request may not take either), `by` the name its launch was made by; it
+is queued after the event commits, once for the event, never for an
+event committed before the server started, and none with Brakeman off
+or not seeing runs; past the day's turns it is queued all the same and
+its start closes it `over_budget`. A compare request's brief holds
+exactly one `comparison/1` whose `columns` are the comparison's
+candidates' task ids in its block's order and whose rows include
+`Behaviour`, `Complexity`, `Dependency changes`, `Checks` and
+`Unresolved tradeoffs` (matched without regard to case), its evidence
+citing at least one `candidate:` ref and in its `candidate:` and
+`check:` refs naming only its columns' tasks; no `decision/1`, and no
+`proposal/1` of an operation that commands a task, a review or a
+decision; else `400 invalid_brief` naming the field. The turn reads the
+comparison with `observe_comparison` (`GET /api/runs/{run}/comparison`,
+runs class, the route's bound): each candidate with a shown attempt
+carries its `candidate:` ref and each check cell with a receipt its
+`check:` ref as `ref`, each noted at the state its ref resolves to now
+(a candidate of a run outside the grant carries none), and the reply
+leaves out `selection`.
 
 **The turn's routes**, its session's own token (`agentTokenOK`), for
 the request its launch marked it with, while that request is `starting`

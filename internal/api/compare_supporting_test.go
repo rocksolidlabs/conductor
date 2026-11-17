@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -296,10 +297,11 @@ func TestTheSupportingPartKeepsItsBound(t *testing.T) {
 		for _, l := range []string{"a", "b", "c", "d"} {
 			rows := []ledger.AttemptRow{
 				{TaskID: "approach-" + l, N: 1, Member: "cand-" + l, State: ledger.AttemptSucceeded, StartCommit: "base0", ResultCommit: "c0mmit" + l, Result: result(crew.Result{Summary: long})},
-				// A review of an earlier commit, and two of the candidate's: the newest is read.
-				{TaskID: "review-" + l, N: 1, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "earlier", Result: result(crew.Result{Verdict: crew.VerdictApproved})},
-				{TaskID: "review-" + l, N: 2, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "c0mmit" + l, Result: result(crew.Result{Verdict: crew.VerdictApproved})},
-				{TaskID: "review-" + l, N: 3, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "c0mmit" + l, Result: result(crew.Result{Verdict: crew.VerdictNeedsChanges, Findings: findings})},
+				// Two reviews of the candidate's commit and a newer one of another: the
+				// newest of its commit is read.
+				{TaskID: "review-" + l, N: 1, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "c0mmit" + l, Result: result(crew.Result{Verdict: crew.VerdictApproved})},
+				{TaskID: "review-" + l, N: 2, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "c0mmit" + l, Result: result(crew.Result{Verdict: crew.VerdictNeedsChanges, Findings: findings})},
+				{TaskID: "review-" + l, N: 3, Member: "rev-" + l, State: ledger.AttemptSucceeded, StartCommit: "another", Result: result(crew.Result{Verdict: crew.VerdictApproved})},
 			}
 			if l == "d" {
 				rows[0].Result, rows[0].State = "", ledger.AttemptFailed
@@ -332,7 +334,7 @@ func TestTheSupportingPartKeepsItsBound(t *testing.T) {
 		}
 	}
 	for _, r := range sup.Reviews {
-		if r.Attempt != 3 || r.Verdict != crew.VerdictNeedsChanges || len(r.Findings) != maxReviewFindings {
+		if r.Attempt != 2 || r.Verdict != crew.VerdictNeedsChanges || len(r.Findings) != maxReviewFindings {
 			t.Errorf("review %s/%d %s with %d findings", r.Task, r.Attempt, r.Verdict, len(r.Findings))
 		}
 		for _, f := range r.Findings {
@@ -514,5 +516,227 @@ func TestSettledComparisonQueuesOneBrakemanRequest(t *testing.T) {
 	de.wake(t, de.run)
 	if got := de.compareRequests(t); len(got) != 1 {
 		t.Fatalf("requests %v", got)
+	}
+}
+
+// readComparison reads the comparison through the run with tok (and the
+// session sid named, a turn's) or the workbench token: the status, the
+// bytes and the reply.
+func (de *cmpDraftEnv) readComparison(t *testing.T, tok, sid, run string) (int, []byte, map[string]any) {
+	t.Helper()
+	if sid == "" {
+		return de.callAs(t, tok, "GET", "/api/runs/"+run+"/comparison", nil)
+	}
+	return de.callAsTurn(t, tok, sid, "GET", "/api/runs/"+run+"/comparison", nil)
+}
+
+// A Brakeman turn reads the comparison as a shared read of the runs
+// class, within the route's bound: what the workbench reads, each
+// candidate and receipt carrying its ref, noted at the state its ref
+// resolves to, with no selection; a turn that does not see the touched
+// index reads all of it; a brief citing those refs after this read alone
+// cites what it observed; and a turn whose grant loses the runs class is
+// refused its next read.
+func TestBrakemanReadsTheComparison(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.bk.enable(t, "bk", func(c map[string]any) {
+		v := c["visibility"].(map[string]any)
+		v["runs"], v["touched"] = true, false
+	})
+	de.settleLanes(t)
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	id := req["id"].(string)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	_, adminRaw, admin := de.readComparison(t, adminToken, "", de.run)
+	status, raw, out := de.readComparison(t, tok, sid, de.run)
+	if status != http.StatusOK || len(raw) > crew.MaxComparison {
+		t.Fatalf("the turn's read: %d, %d bytes: %s", status, len(raw), raw)
+	}
+	if _, ok := out["selection"]; ok {
+		t.Fatalf("the turn reads a selection: %s", raw)
+	}
+	cands, _ := out["candidates"].([]any)
+	if len(cands) != 2 || len(cands) != len(admin["candidates"].([]any)) {
+		t.Fatalf("the turn's candidates %v, the workbench's %s", cands, adminRaw)
+	}
+	var refs []string
+	for _, c := range cands {
+		c := c.(map[string]any)
+		want := fmt.Sprintf("candidate:%s/%s/%v", c["run"], c["task"], c["attempt"])
+		if c["ref"] != want {
+			t.Fatalf("a candidate's ref %v, want %s", c["ref"], want)
+		}
+		refs = append(refs, want)
+		rd, ok := de.bk.readLogOf(t, id, want)
+		if !ok || rd.State != "standing" || rd.Rev != c["commit"] || rd.Class != brakeman.ClassRuns {
+			t.Fatalf("%s's read: %+v %v", want, rd, ok)
+		}
+	}
+	cells := 0
+	for _, ch := range out["checks"].([]any) {
+		for _, cell := range ch.(map[string]any)["cells"].([]any) {
+			cell := cell.(map[string]any)
+			if r, _ := cell["receipt"].(string); r != "" {
+				cells++
+				if cell["ref"] != r {
+					t.Fatalf("a cell's ref %v beside its receipt %s", cell["ref"], r)
+				}
+				rd, ok := de.bk.readLogOf(t, id, r)
+				if !ok || rd.SHA256 == "" || rd.State != "exit:0" {
+					t.Fatalf("%s's read: %+v %v", r, rd, ok)
+				}
+				refs = append(refs, r)
+			}
+		}
+	}
+	if cells == 0 {
+		t.Fatalf("no receipt in %s", raw)
+	}
+	brief := de.compareBrief("seen")
+	items := brief["items"].([]any)
+	items[1].(map[string]any)["evidence"] = append([]any{}, func() []any {
+		var out []any
+		for _, r := range refs {
+			out = append(out, r)
+		}
+		return out
+	}()...)
+	if status, out := de.bk.submit(t, sid, tok, "b-1", brief); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	_, res, err := de.bk.desk.st.Brief(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range refs {
+		got := byRef(res)[r]
+		if got.Seen.State == "" || got.Seen.State != got.Now.State || got.Seen.Rev != got.Now.Rev || got.Seen.SHA256 != got.Now.SHA256 {
+			t.Errorf("%s: seen %+v now %+v", r, got.Seen, got.Now)
+		}
+	}
+
+	// Another turn, whose grant loses the runs class while it reads.
+	status, req = de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	sid, tok, _ = de.bk.turnSession(t, req["id"].(string))
+	if status, _, _ := de.readComparison(t, tok, sid, de.run); status != http.StatusOK {
+		t.Fatalf("the second turn's read: %d", status)
+	}
+	de.bk.configure(t, func(c map[string]any) { c["visibility"].(map[string]any)["runs"] = false })
+	status, raw, out = de.readComparison(t, tok, sid, de.run)
+	if status != http.StatusForbidden || errorCode(out) != "not_visible" {
+		t.Fatalf("a read past the narrowed grant: %d %s", status, raw)
+	}
+}
+
+// readLogOf is the newest read of ref in the request's read log.
+func (b *bkEnv) readLogOf(t *testing.T, id, ref string) (brakeman.Read, bool) {
+	t.Helper()
+	log, err := b.desk.st.Reads(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(log.Reads) - 1; i >= 0; i-- {
+		if log.Reads[i].Ref.String() == ref {
+			return log.Reads[i], true
+		}
+	}
+	return brakeman.Read{}, false
+}
+
+// I6, the part PR-5 shows: what was said (each candidate's summary, its
+// review, Brakeman's brief) is in supporting alone, its words nowhere in
+// the measured part, and the measured part reads the same whatever was
+// said; Brakeman's draft is named by its request, its brief's id beside
+// it once kept; nothing counts agreement.
+func TestTheBriefIsSupportingOnly(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.bk.enable(t, "bk", nil)
+	de.settleLanes(t)
+	_, before, _ := de.readComparison(t, adminToken, "", de.run)
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	id := req["id"].(string)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	const mark = "SUPPORTONLY4410"
+	if status, out := de.bk.submit(t, sid, tok, "b-1", de.compareBrief(mark)); status != http.StatusCreated {
+		t.Fatalf("the brief: %d %v", status, out)
+	}
+	_, after, out := de.readComparison(t, adminToken, "", de.run)
+	measured := func(raw []byte) string {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		return string(m["candidates"]) + string(m["checks"])
+	}
+	if measured(before) != measured(after) {
+		t.Fatalf("the measured part moved with the brief:\n%s\n%s", before, after)
+	}
+	for _, said := range []string{mark, "done by review-a", "done by review-b"} {
+		if strings.Contains(measured(after), said) {
+			t.Errorf("the measured part holds %q", said)
+		}
+	}
+	sup, _ := out["supporting"].(map[string]any)
+	bk, _ := sup["brakeman"].(map[string]any)
+	if bk["request"] != id || bk["brief"] != id || bk["state"] != brakeman.StateBriefed {
+		t.Fatalf("Brakeman's part: %v", sup)
+	}
+	if claims, _ := sup["claims"].([]any); len(claims) != 2 || claims[0].(map[string]any)["summary"] != "done by review-a" {
+		t.Fatalf("the claims: %v", sup["claims"])
+	}
+	if reviews, _ := sup["reviews"].([]any); len(reviews) != 2 || reviews[0].(map[string]any)["verdict"] != crew.VerdictApproved || reviews[0].(map[string]any)["task"] != "review-a" {
+		t.Fatalf("the reviews: %v", sup["reviews"])
+	}
+	enc, _ := json.Marshal(out)
+	keys := strings.ToLower(strings.Join(jsonKeysOf(t, enc), " "))
+	for _, word := range []string{"agree", "score", "vote"} {
+		if strings.Contains(keys, word) {
+			t.Errorf("the reply has a field of %s", word)
+		}
+	}
+}
+
+// brief_submit holds a compare request's brief to its comparison's
+// table, read from the crew as launched: columns out of the block's
+// order, a decision card and a proposal to retry a lane's task are
+// refused 400 invalid_brief with nothing kept, and the table is taken.
+func TestTheCompareBriefIsHeldAtSubmit(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.bk.enable(t, "bk", nil)
+	de.expectAs(t, de.aTok, "POST", "/api/sessions/"+de.a+"/task/result", map[string]any{"summary": "cached"}, http.StatusCreated, "")
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	id := req["id"].(string)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	swapped := de.compareBrief("x")
+	swapped["items"].([]any)[1].(map[string]any)["columns"] = []any{"approach-b", "approach-a"}
+	decided := de.compareBrief("x")
+	decided["items"] = append(decided["items"].([]any), map[string]any{"kind": brakeman.ItemDecision, "about": "task:" + de.run + "/approach-a",
+		"happened": "both ran", "whyHuman": "a person selects", "question": "Which?", "alternatives": []any{map[string]any{"label": "a", "tradeoffs": "x"}, map[string]any{"label": "b", "tradeoffs": "y"}},
+		"recommendation": 0, "authorizes": "the selection", "evidence": []any{"candidate:" + de.run + "/approach-a/1"}})
+	retry := de.compareBrief("x")
+	retry["items"] = append(retry["items"].([]any), map[string]any{"kind": brakeman.ItemProposal, "text": "Retry b.", "op": "task_retry", "target": "task:" + de.run + "/approach-b", "expectedRevision": "1", "facts": []any{0}})
+	for name, b := range map[string]map[string]any{"columns": swapped, "decision": decided, "retry": retry} {
+		status, out := de.bk.submit(t, sid, tok, "b-"+name, b)
+		if status != http.StatusBadRequest || errorCode(out) != brakeman.CodeInvalidBrief {
+			t.Errorf("%s: %d %v", name, status, out)
+		}
+	}
+	if r := de.bk.request(t, id); r["hasBrief"] == true {
+		t.Fatalf("a refused brief was kept: %v", r)
+	}
+	if status, out := de.bk.submit(t, sid, tok, "b-good", de.compareBrief("x")); status != http.StatusCreated {
+		t.Fatalf("the table: %d %v", status, out)
 	}
 }
