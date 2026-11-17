@@ -452,6 +452,9 @@ type Engine struct {
 	// openPackageFile reads a launch package's attachment by its SHA-256
 	// (UsePackageFiles): Dispatch's store, which the API gives the engine.
 	openPackageFile func(ctx context.Context, launch, sha256 string) (io.ReadCloser, error)
+	// openEvidenceFile reads a change request's evidence file by its
+	// capture send and SHA-256 (UseEvidenceFiles): Dispatch's store.
+	openEvidenceFile func(ctx context.Context, send, sha256 string) (io.ReadCloser, error)
 	// newRunID, when set, mints a new run's id in place of a random one
 	// (mintRunID): a test makes a launch mint an id the ledger has.
 	newRunID func(crewID string) string

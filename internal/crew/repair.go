@@ -55,7 +55,7 @@ const (
 // The kinds and intents of a requested change, as Dispatch's findings have
 // them.
 var (
-	changeKinds   = []string{"line", "file", "general", "check"}
+	changeKinds   = []string{"line", "file", "general", "check", "capture"}
 	changeIntents = []string{"change", "question", "note"}
 	severities    = []string{"blocker", "major", "minor", "nit"}
 )
@@ -63,15 +63,18 @@ var (
 // ChangeRequest is a person's Request changes, as the repair keeps it: the
 // Dispatch review's id, who asked (a display name, else the actor) and
 // through what (web, cli), the base the candidate was read against, the
-// review's summary, and its findings. The repair keeps the summary as its
-// own (TaskRepair.Summary), the request without it.
+// review's summary, its findings, and the evidence files its capture
+// findings stand on, by reference (EvidenceRef, evidence.go). The repair
+// keeps the summary as its own (TaskRepair.Summary), the request without
+// it.
 type ChangeRequest struct {
-	Review  string            `json:"review"`
-	By      string            `json:"by"`
-	Via     string            `json:"via,omitempty"`
-	Base    string            `json:"base,omitempty"`
-	Summary string            `json:"summary,omitempty"`
-	Changes []RequestedChange `json:"changes"`
+	Review   string            `json:"review"`
+	By       string            `json:"by"`
+	Via      string            `json:"via,omitempty"`
+	Base     string            `json:"base,omitempty"`
+	Summary  string            `json:"summary,omitempty"`
+	Changes  []RequestedChange `json:"changes"`
+	Evidence []EvidenceRef     `json:"evidence,omitempty"`
 }
 
 // RequestedChange is one finding of a person's request: its id (a result's
@@ -79,7 +82,8 @@ type ChangeRequest struct {
 // change asked for, a question, a note), a change's severity, the path and
 // the side it is on (candidate, base), the lines from and to and as the
 // person saw them, the words, the resolution asked for, and a check
-// finding's receipt.
+// finding's receipt, and a capture finding's capture (its path and line,
+// when it has them, the first source the capture traced).
 type RequestedChange struct {
 	ID         string          `json:"id"`
 	Kind       string          `json:"kind"`
@@ -93,6 +97,8 @@ type RequestedChange struct {
 	Message    string          `json:"message,omitempty"`
 	Resolution string          `json:"resolution,omitempty"`
 	Check      *RequestedCheck `json:"check,omitempty"`
+	// Capture is a capture finding's capture (RequestedCapture).
+	Capture *RequestedCapture `json:"capture,omitempty"`
 	// What fitTaskFile cut of it (cutChanges), for task.md's words.
 	linesCut, resolutionCut, messageCut bool
 }
@@ -155,9 +161,14 @@ func (cr *ChangeRequest) clone() *ChangeRequest {
 	}
 	out := *cr
 	out.Changes = slices.Clone(cr.Changes)
+	out.Evidence = slices.Clone(cr.Evidence)
 	for i := range out.Changes {
 		c := &out.Changes[i]
 		c.Lines = slices.Clone(c.Lines)
+		if c.Capture != nil {
+			x := *c.Capture
+			c.Capture = &x
+		}
 		if c.Check != nil {
 			ch := *c.Check
 			if ch.Exit != nil {
@@ -173,7 +184,8 @@ func (cr *ChangeRequest) clone() *ChangeRequest {
 // validate holds cr to the shape a review's batch has: who asked, the
 // review, at least one change asked for among at most maxFindings, each
 // with an id of its own, a kind and an intent, a change's severity, and
-// its parts within their bounds and agreeing with its kind.
+// its parts within their bounds and agreeing with its kind (a capture's,
+// validCapture); and its evidence files (validEvidence).
 func (cr ChangeRequest) validate() error {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("%w: "+format, append([]any{ErrBadChangeRequest}, args...)...)
@@ -210,6 +222,9 @@ func (cr ChangeRequest) validate() error {
 		if len(c.Path) > maxFindingPath || c.From < 0 || c.To < c.From || len(c.Lines) > maxAnchorLines || slices.ContainsFunc(c.Lines, func(l string) bool { return len(l) > maxAnchorLine }) {
 			return bad("change %s: a path of at most %d bytes, lines from 1 to at or after it, at most %d lines of %d bytes", c.ID, maxFindingPath, maxAnchorLines, maxAnchorLine)
 		}
+		if err := validCapture(c); err != nil {
+			return err
+		}
 		if c.Side != "" && c.Side != "candidate" && c.Side != "base" {
 			return bad("change %s: its side is candidate or base", c.ID)
 		}
@@ -239,7 +254,7 @@ func (cr ChangeRequest) validate() error {
 	if !asked {
 		return bad("a request asks for at least one change: questions and notes alone repair nothing")
 	}
-	return nil
+	return validEvidence(cr)
 }
 
 // oneLineName says each of names is valid UTF-8 with no control character
@@ -853,6 +868,9 @@ func writeChange(b *strings.Builder, f TaskFile, c RequestedChange) {
 	if ch := c.Check; ch != nil {
 		writeRequestedCheck(b, f, ch)
 	}
+	if c.Capture != nil {
+		writeRequestedCapture(b, f, c.Capture)
+	}
 	if c.linesCut {
 		b.WriteString("\n  Its lines are in the file named under \"Cut to fit\".\n")
 	}
@@ -891,8 +909,39 @@ func changeLocation(c RequestedChange) string {
 			return "the check " + inlineCode(c.Check.ID)
 		}
 		return "a check"
+	case "capture":
+		if c.Path != "" && c.From > 0 {
+			return "the page the person captured, drawn by " + inlineCode(c.Path+":"+strconv.Itoa(c.From))
+		}
+		if c.Path != "" {
+			return "the page the person captured, drawn by " + inlineCode(c.Path)
+		}
+		return "the page the person captured"
 	}
 	return "the candidate as a whole"
+}
+
+// writeRequestedCapture names a capture finding's evidence files under its
+// item: the document the person sent and its annotation, and the
+// screenshot when the send carried one. Every name is of the one form
+// (evidenceName), checked before the request was kept.
+func writeRequestedCapture(b *strings.Builder, f TaskFile, rc *RequestedCapture) {
+	var doc, shot string
+	for _, ev := range evidenceFor(f.Repair.Request, rc.Send) {
+		switch {
+		case strings.HasSuffix(ev.Name, ".json"):
+			doc = evidencePath(ev.Name)
+		case strings.HasSuffix(ev.Name, ".png"):
+			shot = evidencePath(ev.Name)
+		}
+	}
+	if doc != "" {
+		fmt.Fprintf(b, "\n  The capture: %s, annotation %d of its `annotations` (the element's report, the moment it was selected at and the sources Conductor traced)", inlineCode(doc), rc.K)
+		if shot != "" {
+			fmt.Fprintf(b, "; its screenshot: %s", inlineCode(shot))
+		}
+		b.WriteString(".\n")
+	}
 }
 
 // writeRequestedCheck says a check finding's receipt: its identity, the

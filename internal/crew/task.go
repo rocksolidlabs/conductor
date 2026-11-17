@@ -2211,17 +2211,22 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// uncounted, and pauses the run, since every attempt would fail the
 	// same way until a person looks. The receipt of a check that failed
 	// the attempt before is read the same way (at "receipt").
-	md, js, more, log, err := e.taskFile(ctx, r, a, tr, blocks)
+	md, js, more, log, evidence, err := e.taskFile(ctx, r, a, tr, blocks)
 	if err == nil {
-		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile, log)
+		err = writeTaskFiles(ctx, a.worktree, r.prefix, md, js, more, r.pkg, e.openPackageFile, log, evidence, e.openEvidenceFile)
 	}
 	if err != nil {
 		release()
 		var pe *packageError
 		var re *receiptError
+		var ee *evidenceError
 		switch {
 		case errors.As(err, &pe):
 			fail("package", err, false, true)
+		case errors.As(err, &ee):
+			// A change request's evidence file could not be handed over:
+			// not counted, and the run paused, as a package's file.
+			fail(evidenceStage, err, false, true)
 		case errors.As(err, &re):
 			// The receipt of the check that failed the attempt before,
 			// or its log, could not be read: not counted, and the run

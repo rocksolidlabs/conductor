@@ -1980,6 +1980,8 @@ func (e *Engine) failUnusable(r *run, a *attempt, stage, errText string) []event
 		why = fmt.Sprintf("attempt %d could not be handed the receipt of the check that failed the attempt before: %s", a.n, errText)
 	case decisionsStage:
 		why = fmt.Sprintf("attempt %d could not be handed its task's decisions: %s", a.n, errText)
+	case evidenceStage:
+		why = fmt.Sprintf("attempt %d could not be handed the evidence files of the changes asked for: %s", a.n, errText)
 	}
 	if atCheckpoint {
 		u.checkpoint, u.branch, u.checkpointN, u.next = cp.commit, cp.branch, cp.n, cp.start
