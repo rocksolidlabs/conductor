@@ -205,12 +205,14 @@ func TestBrakemanReadsNoSelection(t *testing.T) {
 	de := newCmpDraftEnv(t, compareOpts{})
 	de.bk.enable(t, "bk", nil)
 	did := de.selecting(t)
-	de.selectB(t, did)
+	// Asked while selecting (a draft is asked before the selection alone),
+	// read once it is answered.
 	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
 	if status != 201 {
 		t.Fatalf("ask: %d %v", status, req)
 	}
 	sid, tok, _ := de.bk.turnSession(t, req["id"].(string))
+	de.selectB(t, did)
 	status, raw, out := de.readComparison(t, tok, sid, de.run)
 	if _, sel := out["selection"]; status != http.StatusOK || sel || out["state"] != nil || strings.Contains(string(raw), did) || strings.Contains(string(raw), "b reads simpler") {
 		t.Fatalf("Brakeman's read: %d %s", status, raw)
