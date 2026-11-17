@@ -108,9 +108,29 @@ func (s *Server) tryDecision(ctx context.Context, id string, first bool) (*apiEr
 		s.sends.wait(id, "no engine holds the decisions here")
 		return nil, nil
 	}
+	of, err := s.dispatch.CaptureOf(ctx, sv.Capture)
+	if err != nil {
+		return nil, err
+	}
 	for try := 1; ; try++ {
 		d, err := s.runs.Decision(ctx, did)
 		var de *crew.DecisionError
+		if err == nil && (of.Run == "" || (d.Run != of.Run && d.OpenedIn != of.Run)) {
+			// A capture is attached to a decision of its own run (the one
+			// it was opened in, or the one holding it now), as the Send
+			// offers it.
+			words := fmt.Sprintf("%s is a decision of another run than the capture's", did)
+			if of.Run == "" {
+				words = fmt.Sprintf("a link's capture is of no run, and %s is a run's decision", did)
+			}
+			if err := s.sendRefused(ctx, sv, words); err != nil {
+				return nil, err
+			}
+			if !first {
+				return nil, nil
+			}
+			return newAPIError(http.StatusConflict, "decision_elsewhere", words), nil
+		}
 		if err == nil {
 			if err := s.sends.at("decision_read", id); err != nil {
 				return nil, err

@@ -95,6 +95,13 @@ func TestADecisionSendIsACommentAndARow(t *testing.T) {
 	if status, _, out := d.callAs(t, adminToken, "POST", "/api/captures/"+d.capture+"/sends/"+id+"/cancel", map[string]any{"opId": "c-1"}); status != http.StatusConflict || codeOf(out) != "stale_revision" {
 		t.Fatalf("a cancel: %d %v", status, out)
 	}
+	// A decision of another run than the capture's is refused with words.
+	other := storedCapture(t, d.testEnv, "other-0000bbbb", dispatch.CaptureScope{Crew: "other"})
+	body := map[string]any{"opId": "dsend-elsewhere", "rev": 1, "to": map[string]any{"kind": "decision", "decision": "dr-1"}}
+	status, _, out = d.callAs(t, adminToken, "POST", "/api/captures/"+other+"/send", body)
+	if status != http.StatusConflict || codeOf(out) != "decision_elsewhere" || sendOf(out)["state"] != "refused" || len(d.comments(t)) != 1 {
+		t.Fatalf("a decision of another run: %d %v", status, out)
+	}
 	status, out = d.post(t, "dr-9")
 	if status != http.StatusNotFound || codeOf(out) != crew.CodeNotFound || sendOf(out)["state"] != "refused" {
 		t.Fatalf("a decision that is not there: %d %v", status, out)
