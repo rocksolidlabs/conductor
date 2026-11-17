@@ -490,7 +490,7 @@ var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Che
 var requestRules = []RequestRule{
 	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
 		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
-		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief: or decision: ref and no ref of a kind this rule does not name. " +
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). Every ref of every item that names a run names a run of this comparison's chain, and it cites no brief:, decision: or capture: ref and no ref of a kind this rule does not name. " +
 		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
 }
 
@@ -568,9 +568,9 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 		return invalidBrief(field+".evidence", "cite the candidates the table compares: a candidate: ref of a column's task at least")
 	}
 	// Every ref of every item names this comparison's runs alone: one that
-	// names a run names one of cmp.Runs, and a brief: or decision: ref,
-	// whose run is known only by reading the record it names, is cited in
-	// no compare brief.
+	// names a run names one of cmp.Runs, and a brief:, decision: or
+	// capture: ref, whose run is known only by reading the record it names,
+	// is cited in no compare brief.
 	for i, it := range b.Items {
 		fields := itemRefFields(it)
 		// Both walk the item's fields; one that names a ref the other does
@@ -582,7 +582,7 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 		for _, fr := range fields {
 			at := fmt.Sprintf("items[%d].%s", i, fr.field)
 			switch {
-			case fr.ref.Kind == RefBrief || fr.ref.Kind == RefDecision:
+			case fr.ref.Kind == RefBrief || fr.ref.Kind == RefDecision || fr.ref.Kind == RefCapture:
 				return invalidBrief(at, "a compare brief cites no %s: ref: the run it is of is read from the record it names, so this comparison cannot be told from another's", fr.ref.Kind)
 			case !compareRefKinds[fr.ref.Kind]:
 				return invalidBrief(at, "a compare brief cites no %s: ref: the rule that holds a compare brief to its own comparison has not judged that kind", fr.ref.Kind)
@@ -596,8 +596,8 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 
 // compareRefKinds is every kind of ref a compare brief may cite: the kinds
 // that name a run, each held to the comparison's runs (cmp.Runs), and the
-// kinds that name none of a run's records. brief: and decision: are in
-// neither set and have a refusal of their own. A kind this table does not
+// kinds that name none of a run's records. brief:, decision: and capture:
+// are in neither set and have a refusal of their own. A kind this table does not
 // name is cited in no compare brief: one added later is refused until it
 // is judged here.
 var compareRefKinds = map[string]bool{
