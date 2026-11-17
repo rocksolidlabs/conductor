@@ -145,10 +145,13 @@ func (e *Engine) previewHeld(r *run) error {
 // loadForPreview builds the preview-only context of runID from the
 // ledger: refused with nothing kept for a run the ledger has no row of
 // (ErrRunNotFound), one it still has running (no other server's run is
-// this one's to preview: ErrRunNotFound), one stopped (ErrRunStopped, as
-// a stopped run the engine holds refuses), one continued (ErrRunContinued),
-// a legacy crew (ErrRunNotFound), and a crew whose JSON or repository
-// cannot be read.
+// this one's to preview: ErrRunNotFound), one stopped before it finished
+// (ErrRunStopped, as a stopped run the engine holds refuses), one
+// continued (ErrRunContinued), a legacy crew (ErrRunNotFound), and a crew
+// whose JSON or repository cannot be read. A run stopped once it had
+// finished (its outcome kept) is previewed: a server's shutdown stops
+// every run it holds, finished ones among them, so every run an earlier
+// server finished is so.
 func (e *Engine) loadForPreview(ctx context.Context, runID string) (*run, error) {
 	if e.ledger == nil {
 		return nil, ErrRunNotFound
@@ -169,7 +172,7 @@ func (e *Engine) loadForPreview(ctx context.Context, runID string) (*run, error)
 		return nil, ErrRunContinued
 	case row.State == ledger.RunRunning:
 		return nil, ErrRunNotFound
-	case row.State == ledger.RunStopped:
+	case row.State == ledger.RunStopped && row.Outcome == "":
 		return nil, ErrRunStopped
 	}
 	var c Crew

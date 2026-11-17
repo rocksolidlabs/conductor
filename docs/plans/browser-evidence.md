@@ -786,9 +786,13 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   preview is reserved, so no earlier preview of it is still writing; the
   run's row is judged again in the preview's first transaction, so a run
   continued since it was read is refused (`409 run_continued`). A run
-  the ledger still has running, or one stopped, is refused as a held one
-  is. The context writes its previews' rows, events and receipts alone,
-  never a row of the run, its tasks or attempts.
+  the ledger still has running, or one stopped before it finished, is
+  refused as a held one is (a run stopped once it had finished is
+  previewed: a server's shutdown stops every run it holds). The context
+  writes its previews' rows, events and receipts alone, never a row of
+  the run, its tasks or attempts. It reads `ledger.Load` alone: a result
+  a continuation imported is previewed in the run that made its attempt,
+  as in a run the engine holds.
   It schedules nothing: it is never put in `e.runs`, so `Get`, `TaskOf`,
   the scheduler, `evict`, `forget` and `ContinueRun` never see it, and
   no attempt, check or session starts in it; it is kept with its

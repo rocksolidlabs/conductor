@@ -188,8 +188,8 @@ func TestAPreviewOpensForAnEvictedRun(t *testing.T) {
 // A run the engine does not hold is refused as a run it holds is: one the
 // ledger has no row of (not found), one continued (run_continued: judged
 // at the load, and again in the open's first transaction for a
-// continuation made since) and an attempt that does not exist. A refused
-// open keeps no context.
+// continuation made since), one stopped before it finished, and an
+// attempt that does not exist. A refused open keeps no context.
 func TestAPreviewOfARunNotHeldIsRefusedAsAHeldOne(t *testing.T) {
 	dir := newRepo(t)
 	e, fl, l := managedEngine(t)
@@ -223,6 +223,16 @@ func TestAPreviewOfARunNotHeldIsRefusedAsAHeldOne(t *testing.T) {
 	// Continued before: refused at the load.
 	if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); !errors.Is(err, ErrRunContinued) {
 		t.Fatalf("a continued run: %v", err)
+	}
+	// Stopped before it finished: refused as a stopped run the engine
+	// holds is.
+	l.mu.Lock()
+	row := l.runs[run.ID]
+	row.ContinuedBy, row.State, row.Outcome = "", ledger.RunStopped, ""
+	l.runs[run.ID] = row
+	l.mu.Unlock()
+	if _, err := e.OpenPreview(t.Context(), run.ID, "build", 1, "admin"); !errors.Is(err, ErrRunStopped) || previewContext(e, run.ID) != nil {
+		t.Fatalf("a run stopped before it finished: %v", err)
 	}
 }
 
@@ -304,6 +314,9 @@ func TestAPreviewOpensForARunOfAnEarlierServer(t *testing.T) {
 	waitOutcome(t, first, run.ID, ledger.OutcomeSucceeded)
 	waitTreesEnded(t, first, run.ID)
 	ts := taskOf(t, first, run.ID, "build")
+	// The first server ends as a server does: its runs stopped, finished
+	// ones among them, then drained.
+	stopRun(t, first, run.ID)
 	first.Drain(ctx)
 	if err := ld.Close(); err != nil {
 		t.Fatal(err)
