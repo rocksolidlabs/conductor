@@ -4048,6 +4048,17 @@ func (s *Local) resolve(id string, token uint64, by, byName, reqID string, keys 
 			now := time.Now().UTC()
 			s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
 			s.statusReconciled = true
+		} else if heldSource(q.Source) && s.statusSeen && s.lastStatus == StatusError && !s.turnEnded && !s.info.Status.Ended() {
+			// A dialog answered while the program's status says its turn
+			// ended in an error: read while the dialog showed, the error was
+			// kept out by its words and is not written again (readStatus),
+			// so the failed turn's wait shows at the answer, recorded below
+			// (statusReconciled), as when the screen leaves the dialog
+			// (withdrawShownLocked). Not a blocked status's: Codex says
+			// blocked for the dialog answered itself.
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusErrorWords, Source: SourceStatus, Since: &now, ID: NewID()}
+			s.statusReconciled = true
 		}
 		s.settleLocked(s.info.Attention)
 		s.signalAttention()

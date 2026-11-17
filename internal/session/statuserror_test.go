@@ -199,3 +199,36 @@ func TestADoneAndTheEndWithdrawTheErrorsWait(t *testing.T) {
 		}
 	})
 }
+
+// An error read while a question held on the screen shows, and the question
+// then answered through Conductor (a row's choice): the failed turn's wait
+// shows at the answer, with its entry, and the dialog leaving the screen
+// after it changes nothing.
+func TestAnErrorReadUnderADialogShowsOnceTheDialogIsAnswered(t *testing.T) {
+	const settle = 200 * time.Millisecond
+	s, p := newLocalWith(t, titled(settle, Options{}))
+	go func() {
+		for range p.input {
+		}
+	}()
+	out(p, codexTurnBegins, codexStatus(StatusWorking, ""))
+	p.outW.Write([]byte(approvalDialog("ls -la")))
+	att := waitAttention(t, s, screenAsks)
+	out(p, codexStatus(StatusError, ""))
+	stays(t, s, 100*time.Millisecond, "the approval under the error", func(a Attention) bool { return screenAsks(a) && a.ID == att.ID })
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	a := waitAttention(t, s, errorWaits)
+	if a.ID == "" || a.ID == att.ID || a.Since == nil {
+		t.Fatalf("the error's wait at the answer: %+v", a)
+	}
+	lastEntryIs(t, s, statusErrorWords)
+	n := len(entries(s))
+	p.outW.Write([]byte(approvalGone("Error: stream disconnected\r\n")))
+	stays(t, s, settle+100*time.Millisecond, "the error's wait once the dialog left", func(b Attention) bool { return errorWaits(b) && b.ID == a.ID })
+	if got := entries(s); len(got) != n {
+		t.Fatalf("the dialog leaving recorded %q", got[n:])
+	}
+}
