@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanBrief, BrakemanRequest, BriefItem, RefResolution } from '~/utils/brakeman'
-import { actsApart, groupItems, provenance, readingBlocks, readsWords } from '~/utils/brakeman'
+import { actsApart, briefRegions, provenance, readingBlocks, readsWords } from '~/utils/brakeman'
 
 /**
  * A brief as Conductor renders it (docs/plans/brakeman.md, PR-6): the provenance line (the agent, its model and version, the
@@ -41,7 +41,8 @@ onMounted(async () => {
 
 const when = (iso: string) => new Date(iso).toLocaleString()
 const line = computed(() => provenance(props.request, props.request.agent?.agentId ? `${props.request.agent.agentId}${props.request.agent.adapter ? ` (${props.request.agent.adapter})` : ''}` : undefined, when))
-const groups = computed(() => groupItems(brief.value?.items ?? []))
+const groups = computed(() => briefRegions(brief.value?.items ?? []))
+const TITLES: Record<string, string> = { needs: 'Needs you', proposed: 'Proposed', acts: 'Verified outcomes', changed: 'What changed', compared: 'Compared', fold: 'Evidence' }
 const items = computed<BriefItem[]>(() => brief.value?.items ?? [])
 /** The request as the page holds it now (its events fold the acts' outcomes in), and its acts no proposal of the brief shows. */
 const live = computed(() => bk.requests.value.find((r) => r.id === props.request.id) ?? props.request)
@@ -85,8 +86,8 @@ async function keep(index: number) {
         <p class="text-xs text-muted">Each act this request ran under a grant you gave, with its receipt, whether or not the brief names it.</p>
         <BrakemanActCard v-for="a in apart" :key="a.opId" :act="a" />
       </section>
-      <section v-for="g in groups" :key="g.group" class="flex flex-col gap-2" :data-brief-group="g.group">
-        <h4 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ g.title }}</h4>
+      <section v-for="g in groups" :key="g.region" class="flex flex-col gap-2" :data-brief-region="g.region">
+        <h4 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ TITLES[g.region] }}</h4>
         <div v-for="x in g.items" :id="`item-${x.index}`" :key="x.index" class="flex flex-col gap-1.5" :data-brief-item="x.index">
           <BrakemanFact v-if="x.item.kind === 'fact/1'" :number="x.fact!" :text="x.item.text" :evidence="x.item.evidence" :refs="refs" />
           <div v-else-if="x.item.kind === 'interpretation/1'" class="flex flex-col gap-0.5" data-brief-interpretation>
