@@ -215,9 +215,19 @@ test('a decision card offers what the run page allows, with the revision Brakema
   await expect(buildCard.locator('[data-card-command="cancel"]')).toHaveCount(0)
   await expect(buildCard.locator('[data-decision-answerer]')).toHaveText('you, the operator')
   await expect(buildCard.locator('[data-decision-authorizes]')).toHaveText('One more attempt of build.')
+  // Brakeman's pick is words under the controls, never a control's label; the card's whole text is under Details.
+  await expect(buildCard.locator('[data-brief-recommends]')).toHaveText('Brakeman recommends: Retry')
+  await expect(buildCard.locator('[data-card-command="retry"]')).toHaveText('Retry')
+  await expect(buildCard.locator('[data-alternative="0"] [data-recommended]')).toBeHidden()
+  await buildCard.locator('[data-brief-decision-details]').click()
   await expect(buildCard.locator('[data-alternative="0"] [data-recommended]')).toBeVisible()
-  // docs is blocked: Cancel, no Retry.
+  await expect(buildCard.locator('[data-decision-footnote]')).toHaveText(`You answer, as the operator. One more attempt of build. Read at revision ${seen}: refused if the run has moved.`)
+  // docs is blocked: Cancel, no Retry; Brakeman recommends none, and no line says one.
   const docsCard = b.locator(`[data-decision-about="task:${runId}/docs"]`)
+  await expect(docsCard.locator('[data-brief-recommends]')).toHaveCount(0)
+  // Both cards still offer a command: Needs you carries its mark, from the live controls.
+  await expect(b.locator('[data-brief-heading="needs"] [data-status-mark="needs"]')).toBeVisible()
+  await expect(b.locator('[data-brief-heading="needs"]')).toHaveText('Needs you · 2')
   await expect(docsCard.locator('[data-card-command="cancel"]')).toBeVisible()
   await expect(docsCard.locator('[data-card-command="retry"]')).toHaveCount(0)
   // A stop and a resume check no revision: text with the run page's link, no button.
