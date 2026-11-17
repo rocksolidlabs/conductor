@@ -3,6 +3,7 @@ import type { RunInfo, RunTask, SessionInfo } from '~/composables/useSessions'
 import type { BriefItem } from './brakeman'
 import {
   blocksWords,
+  briefMarkdown,
   COMMENT_MAX,
   compareAt,
   draftName,
@@ -511,5 +512,61 @@ describe("a plan revision's card, DS2's Approve from its live record (PR-11)", (
 
   it('says a proposed draft plan is the operator\'s to approve', () => {
     expect(madeWords({ state: 'made', key: 'CND-4', plan: '0123456789abcdef' })).toBe("Proposed as a revision of CND-4's plan, under your name: the operator approves it or not.")
+  })
+})
+
+describe('a brief as Markdown (Copy as Markdown, Comment on a ticket)', () => {
+  const RUN = 'fix-login-1a2b3c4d'
+  const brief = {
+    schema: 'brakeman.brief/1',
+    title: 'Build is out of attempts',
+    summary: 'Three failures on one test.',
+    uncertainty: 'check logs are off',
+    items: [
+      { kind: 'fact/1', text: 'build failed its tests check.', evidence: [`task:${RUN}/build`] },
+      { kind: 'interpretation/1', text: 'A flaky cache test.', facts: [0, 3] },
+      { kind: 'proposal/1', text: 'Retry it.', op: 'task_retry', target: `task:${RUN}/build`, expectedRevision: '30' },
+      { kind: 'fact/1', text: 'It passed at the base.', evidence: ['ticket:CND-4', 'comment:CND-4/2'] },
+      { kind: 'outcome/1', text: 'docs passed', receipt: `check:${RUN}/docs/1/unit/1` },
+      { kind: 'decision/1', about: `task:${RUN}/build`, happened: 'Out of attempts.', whyHuman: 'w', question: 'Retry build?', alternatives: [{ label: 'Retry', tradeoffs: 'one more' }, { label: 'Accept', tradeoffs: '' }], recommendation: 0, authorizes: 'A fourth attempt.', evidence: [`run:${RUN}`], blocked: [`task:${RUN}/deploy`] },
+    ] as BriefItem[],
+  }
+  const r = { id: 'br-14', agent: { agentId: 'claude', model: 'opus' }, briefAt: '2026-11-17T05:00:00Z' }
+
+  it("keeps the reading marked as Brakeman's and each kind under its own heading", () => {
+    const md = briefMarkdown(brief, r)
+    expect(md.startsWith('# Build is out of attempts\n')).toBe(true)
+    expect(md).toContain("**Brakeman's reading, not a fact.**\n\nThree failures on one test.\n\nUncertain: check logs are off")
+    const at = (h: string) => md.indexOf(`\n${h}\n`)
+    const order = ['## Needs you', '## Proposed', '## Verified outcomes', '## Facts', "## Brakeman's readings (interpretations, not facts)"].map(at)
+    expect(order.every((n) => n > 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(md).toContain('1. build failed its tests check. Evidence: [task build](/runs/fix-login-1a2b3c4d?task=build)'.split('?')[0])
+    expect(md).toContain('2. It passed at the base.')
+    expect(md).toContain('- It reads facts 1 and 2: A flaky cache test.')
+    expect(md).toContain("- Retry (Brakeman's recommendation): one more")
+    expect(md).toContain('Waiting on it: [task deploy]')
+    expect(md).toContain('- Retry it. (operation `task_retry` on [task build]')
+    expect(md).toContain(', at revision 30)')
+    // The facts' text is never inside the readings' list, nor a reading among the facts.
+    const facts = md.slice(at('## Facts'), at("## Brakeman's readings (interpretations, not facts)"))
+    expect(facts).not.toContain('A flaky cache test.')
+    expect(md.trimEnd().endsWith('From Brakeman: claude · model opus · request br-14 · as of 2026-11-17T05:00:00Z')).toBe(true)
+  })
+
+  it('links by the pages own paths, with no query string', () => {
+    const md = briefMarkdown(brief, r)
+    const links = [...md.matchAll(/\]\(([^)]*)\)/g)].map((m) => m[1]!)
+    expect(links.length).toBeGreaterThan(3)
+    for (const l of links) {
+      expect(l.startsWith('/')).toBe(true)
+      expect(l).not.toContain('?')
+      expect(l).not.toMatch(/token/i)
+    }
+  })
+
+  it('is empty for a brief with no prose to copy', () => {
+    expect(briefMarkdown({ schema: 'brakeman.brief/1', title: ' ', summary: '', items: [] }, r)).toBe('')
+    expect(briefMarkdown({ schema: 'brakeman.brief/1', title: 'Quiet', summary: '', items: [] }, r)).toContain('# Quiet')
   })
 })

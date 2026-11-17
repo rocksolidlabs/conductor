@@ -38,7 +38,7 @@ func aboutTable(t *testing.T) []aboutRow {
 // or a part of it matches as subject, and wins over a citation; the
 // digest's about matches as cited; nothing else matches. Each about kind
 // has rows of all three answers.
-func TestAboutMatchesTheTable(t *testing.T) {
+func TestAboutMatchesSubjectsAndCitations(t *testing.T) {
 	seen := map[string]map[string]bool{}
 	for i, row := range aboutTable(t) {
 		about, err := ParseAbout(row.About)

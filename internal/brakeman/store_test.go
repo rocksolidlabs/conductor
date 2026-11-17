@@ -891,7 +891,7 @@ func TestOrphanSiblingsAreRemovedAtOpen(t *testing.T) {
 		t.Fatal("the request's write failed and KeepBrief said nothing")
 	}
 	beforeWrite = nil
-	if !exists(t, f.reqPath(briefDoc(crashed.ID))) || !exists(t, f.reqPath(refsDoc(crashed.ID))) {
+	if !exists(t, f.reqPath(briefDoc(crashed.ID))) || !exists(t, f.reqPath(refsDoc(crashed.ID))) || !exists(t, f.reqPath(digestDoc(crashed.ID))) {
 		t.Fatal("the crash seam wrote no sibling")
 	}
 	kept := f.start("op-2")
@@ -917,7 +917,7 @@ func TestOrphanSiblingsAreRemovedAtOpen(t *testing.T) {
 	}
 	// Siblings of a request that is not there at all (pruned between its
 	// document and its siblings).
-	for _, name := range []string{"br-90-brief.json", "br-90-refs.json", "br-90-reads.json", "br-90-make-2.json"} {
+	for _, name := range []string{"br-90-brief.json", "br-90-refs.json", "br-90-reads.json", "br-90-digest.json", "br-90-make-2.json"} {
 		if err := os.WriteFile(f.reqPath(name), []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -926,6 +926,9 @@ func TestOrphanSiblingsAreRemovedAtOpen(t *testing.T) {
 	for name, want := range map[string]bool{
 		briefDoc(crashed.ID):   false,
 		refsDoc(crashed.ID):    false,
+		digestDoc(crashed.ID):  false,
+		digestDoc(kept.ID):     true,
+		"br-90-digest.json":    false,
 		readsDoc(crashed.ID):   false,
 		briefDoc(kept.ID):      true,
 		refsDoc(kept.ID):       true,
@@ -953,7 +956,7 @@ func TestDocumentNamesAreTheStoresOwn(t *testing.T) {
 	storeName := regexp.MustCompile(`^[a-z0-9-]+\.json$`)
 	listed := regexp.MustCompile(`^br-[0-9]+\.json$`)
 	for _, id := range []string{"br-1", "br-42", "br-999999999999999999"} {
-		names := []string{requestDoc(id), briefDoc(id), refsDoc(id), readsDoc(id), makeDoc(id, 0), makeDoc(id, MaxItems-1)}
+		names := []string{requestDoc(id), briefDoc(id), refsDoc(id), readsDoc(id), digestDoc(id), makeDoc(id, 0), makeDoc(id, MaxItems-1)}
 		for i, name := range names {
 			if !storeName.MatchString(name) {
 				t.Errorf("%s is not a name the store takes", name)
