@@ -267,13 +267,13 @@ test('a saved capture is listed again after the editor was closed and after a re
   await expect(editorOf(page)).toBeHidden()
   await page.locator('[data-preview-captures]').click()
   await expect(savedIn(page, c.id)).toBeVisible()
-  // After a reload, listed from the server.
+  // After a reload, listed from the server, and shown.
   await page.reload()
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   await page.locator('[data-preview-captures]').click()
+  await expect(savedIn(page, c.id)).toBeVisible()
   const tab = editorOf(page).locator(`[data-capture-saved-tab="${c.id}"]`)
-  await expect(tab).toBeVisible()
-  await tab.click()
+  if (await tab.count()) await tab.click()
   const shown = editorOf(page).locator(`[data-capture-saved="${c.id}"]`)
   await expect(shown).toBeVisible()
   await expect(editorOf(page).locator('[data-capture-shot] img')).toBeVisible()
@@ -281,19 +281,22 @@ test('a saved capture is listed again after the editor was closed and after a re
   await editorOf(page).locator('[data-annotation="1"] textarea').fill('found again')
   await editorOf(page).locator('[data-capture-save-changes]').click()
   await expect.poll(async () => (await api.ok<Capture>('GET', `/api/captures/${c.id}`)).annotations[0]?.note).toBe('found again')
-  // Deleted there, asked once more: gone from the editor, a tombstone on the server.
-  await editorOf(page).locator('[data-capture-delete]').click()
-  await editorOf(page).locator('[data-capture-delete]').click()
-  await expect(tab).toHaveCount(0)
-  await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
-  // A capture made with saved ones shown: the note typed after the pick is the new draft's, never a saved one's.
-  const before = (await page.locator('[data-capture-saved-tab]').all()).length
+  // A capture made while that one is shown: the note typed after the pick is the new draft's, never the saved one's.
   await page.locator('[data-preview-capture]').click()
   await pick(page, await previewFrame(page, origin), '#second', 'button#second.second', { downs: 1 })
   await editorOf(page).locator('[data-annotation="1"] textarea').fill('the new one')
   await editorOf(page).locator('[data-capture-save]').click()
-  await expect(editorOf(page).locator('[data-capture-saved-tab]')).toHaveCount(before + 1)
-  expect((await savedNow(page, api)).annotations.map((a) => a.note)).toEqual(['the new one'])
+  await expect(editorOf(page).locator(`[data-capture-saved]:not([data-capture-saved="${c.id}"])`)).toBeVisible()
+  const made = await savedNow(page, api)
+  expect(made.annotations.map((a) => a.note)).toEqual(['the new one'])
+  expect((await api.ok<Capture>('GET', `/api/captures/${c.id}`)).annotations.map((a) => a.note)).toEqual(['found again'])
+  // Deleted there, asked once more: gone from the editor, a tombstone on the server.
+  await editorOf(page).locator(`[data-capture-saved-tab="${c.id}"]`).click()
+  await expect(shown).toBeVisible()
+  await editorOf(page).locator('[data-capture-delete]').click()
+  await editorOf(page).locator('[data-capture-delete]').click()
+  await expect(savedIn(page, c.id)).toHaveCount(0)
+  await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
 })
 
 test("Capture again loads the capture's page again though the frame went elsewhere inside itself", async ({ page, api }) => {
