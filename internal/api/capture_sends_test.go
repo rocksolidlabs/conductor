@@ -86,6 +86,25 @@ func storedCapture(t *testing.T, e *testEnv, run string, scope dispatch.CaptureS
 	return doneOf(t)(e.srv.dispatch.CreateCapture(t.Context(), adminOp("Ann"), strings.Repeat("a", 64), n, f, nil)).ID
 }
 
+// storedCandidate keeps a capture of run's candidate build.1 (its preview
+// checkout) through the store, with the scope given.
+func storedCandidate(t *testing.T, e *testEnv, run string, scope dispatch.CaptureScope) string {
+	t.Helper()
+	vp := dispatch.Viewport{Mode: "desktop", Width: 1280, Height: 800, Scale: 1, DPR: 1, ColorScheme: "light", UserAgent: "test"}
+	n := dispatch.NewCapture{Via: "web", URL: "http://127.0.0.1:5173/app", Title: "App", Viewport: vp, Epoch: 3, SelectedAt: sendAt, ImageHow: "none", ImageWhy: "the test takes none",
+		Label: dispatch.TreeRead{Commit: sendCommit, ReadAt: sendAt},
+		Annotations: []dispatch.NewAnnotation{{Kind: "element", Note: "The candidate's button", Rect: dispatch.Rect{X: 10, Y: 10, Width: 80, Height: 20},
+			Element: &dispatch.ElementReport{Tag: "button", Name: "Save", Selector: "button.save", Box: dispatch.Rect{X: 10, Y: 10, Width: 80, Height: 20},
+				Hit: dispatch.ElementHit{Self: true, Selector: "button.save", Tag: "button"}},
+			Observed: &dispatch.Observed{At: sendAt, URL: n0URL, Title: "App", Viewport: vp, Epoch: 3, Label: dispatch.RevisionLabel{Commit: sendCommit}}}}}
+	f := dispatch.CaptureFacts{Origin: dispatch.OriginCandidate, Run: run, Task: "build", Attempt: 1, Tree: dispatch.TreePreview, Commit: sendCommit,
+		Candidate: candName(run, "build", 1, sendCommit), Where: "native", Scope: scope}
+	return doneOf(t)(e.srv.dispatch.CreateCapture(t.Context(), adminOp("Ann"), strings.Repeat("c", 64), n, f, nil)).ID
+}
+
+// n0URL is the page every stored capture is of.
+const n0URL = "http://127.0.0.1:5173/app"
+
 // rev is the capture's revision now.
 func (st *sendTest) rev(t *testing.T) int64 {
 	t.Helper()
@@ -876,6 +895,26 @@ func TestCaptureAdmissionFollowsTheScope(t *testing.T) {
 	f.expectRead(t, "/api/captures/"+link, http.StatusOK, "")
 	f.expectRead(t, "/api/captures/"+other, http.StatusOK, "")
 	f.expectRead(t, "/api/captures/"+gone+"/sends/"+goneSend, http.StatusOK, "")
+}
+
+// A candidate's capture (its preview checkout) is admitted by its run as
+// an attempt's is, never as a link's: under a grant of project CND, a
+// candidate capture of team's run (CND) and its frozen send are read, and
+// one of other's run (OTH) is refused; a send of it to Brakeman asks with
+// the attempt's ref.
+func TestACandidatesCaptureIsAdmittedByItsRun(t *testing.T) {
+	f := newObsFixture(t)
+	cand := storedCandidate(t, f.testEnv, f.run, dispatch.CaptureScope{Crew: crewOfRun(f.run), Project: "CND"})
+	elsewhere := storedCandidate(t, f.testEnv, f.other, dispatch.CaptureScope{Crew: crewOfRun(f.other), Project: "OTH"})
+	send := doneOf(t)(f.srv.dispatch.SendCapture(t.Context(), adminOp("Ann"), strings.Repeat("e", 64), cand, 1, dispatch.Destination{Kind: "ticket", Key: f.ticket}, dispatch.SendFacts{})).ID
+	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []string{"CND"}} })
+	f.expectRead(t, "/api/captures/"+cand, http.StatusOK, "")
+	f.expectRead(t, "/api/captures/"+cand+"/sends/"+send, http.StatusOK, "")
+	f.expectRead(t, "/api/captures/"+elsewhere, http.StatusForbidden, "outside_scope")
+	req, err := f.srv.sendRequestOf(t.Context(), f.srv.dispatch, cand, "Why?", "")
+	if err != nil || !strings.Contains(string(req), `"attempt:`+f.run+`/build/1"`) {
+		t.Fatalf("the request of a candidate's capture: %s %v", req, err)
+	}
 }
 
 // The guide carries the two reads of a capture, observe_capture and

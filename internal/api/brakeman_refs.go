@@ -614,9 +614,17 @@ func (rr *refResolver) lookupCapture(ctx context.Context, ref brakeman.Ref) (ref
 // captureLive is a live capture's state as a ref of it reads.
 const captureLive = "live"
 
+// ofRun reports a capture's origin that records its run: an attempt's
+// worktree and a candidate's checkout, admitted alike (captureItem) and
+// asked of Brakeman with the attempt's ref (sendRequestOf). Any other
+// origin (a link's, or one this build does not know) records none.
+func ofRun(kind string) bool {
+	return kind == dispatch.OriginAttempt || kind == dispatch.OriginCandidate
+}
+
 // captureItem is the scope item a capture is admitted as, read from what
-// it recorded at its save (dispatch.CaptureOf): an attempt's capture as
-// its run, with the crew, repository and project the capture recorded; a
+// it recorded at its save (dispatch.CaptureOf): an attempt's capture, and
+// a candidate's, as its run, with the crew, repository and project the capture recorded; a
 // link's (url) as nothing, so only a grant that scopes no run, crew,
 // repository or project admits it. While the run is still held or in the
 // ledger, the run as it is now must be admitted too: the item given is
@@ -635,7 +643,7 @@ func (rr *refResolver) captureItem(ctx context.Context, ds *dispatch.Store, id s
 		return brakeman.ScopeItem{}, false, fmt.Errorf("the capture %s: %w", id, err)
 	}
 	item := brakeman.ScopeItem{Kind: brakeman.ItemRun}
-	if of.Kind != dispatch.OriginAttempt {
+	if !ofRun(of.Kind) {
 		return item, true, nil
 	}
 	item.Run, item.Crew, item.Repo, item.Project = of.Run, cmpOr(of.Scope.Crew, crewOfRun(of.Run)), of.Scope.Repo, of.Scope.Project

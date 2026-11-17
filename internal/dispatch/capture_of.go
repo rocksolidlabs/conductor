@@ -3,8 +3,9 @@ package dispatch
 import "context"
 
 // CaptureOf is what a capture was taken of, as its row recorded it at
-// the save: its origin's kind (OriginAttempt or OriginURL), the run, task
-// and attempt of an attempt's, and, while it is live, its scope (the
+// the save: its origin's kind (OriginAttempt, OriginCandidate or
+// OriginURL), the run, task and attempt of an attempt's or a candidate's,
+// and, while it is live, its scope (the
 // run's crew, repository and project then). A deleted one gives its
 // origin alone, what every send of it froze in its document, and no
 // scope: what the tombstone hides stays hidden. A read that admits a

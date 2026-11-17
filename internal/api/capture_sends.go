@@ -387,7 +387,7 @@ func (s *Server) sendRequestOf(ctx context.Context, ds *dispatch.Store, id, ques
 	case errors.Is(err, dispatch.ErrNotFound):
 	case err != nil:
 		return nil, err
-	case of.Kind == dispatch.OriginAttempt:
+	case ofRun(of.Kind):
 		if a := (brakeman.Ref{Kind: brakeman.RefAttempt, Run: of.Run, Task: of.Task, N: of.Attempt}); a.Valid() == nil {
 			req.Subjects = append(req.Subjects, a)
 		}
