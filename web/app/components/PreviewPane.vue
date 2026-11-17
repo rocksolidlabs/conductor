@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CaptureAnswer, CaptureFrom, ViewportMode } from '~/utils/capture'
-import { DEVICE_SIZES, NO_BRIDGE_WORDS, SELF_WORDS, isWorkbench, labelWords, originOf } from '~/utils/capture'
+import { DEVICE_SIZES, NO_BRIDGE_WORDS, SELF_WORDS, isWorkbench, labelWords, originOf, retakeAddress } from '~/utils/capture'
 import { previewSeam, usePreviewBridge } from '~/composables/usePreviewBridge'
 import { type LabelTarget, usePreviewLabel } from '~/composables/usePreviewLabel'
 import { screenshotSource } from '~/utils/screenshot'
@@ -26,10 +26,12 @@ const props = defineProps<{
   revision?: unknown
   runTicket?: string
   attemptSession?: string
-  /** Capture again offered on a saved capture (a candidate's checkout to retake it in). */
-  again?: boolean
+  /** A capture to offer Capture again of on this preview (the preview page's `&retake=`). */
+  retake?: string
+  /** A candidate's checkout's state as the run reads it, for the words while its label is not offered yet. */
+  checkout?: 'resolved' | 'ready' | 'ending' | ''
 }>()
-const emit = defineEmits<{ again: [capture: CaptureAnswer]; label: [words: string] }>()
+const emit = defineEmits<{ label: [words: string] }>()
 
 const labels = usePreviewLabel(
   () => props.target ?? null,
@@ -37,16 +39,21 @@ const labels = usePreviewLabel(
 )
 const phone = useIsPhone()
 
-/** The frame's address: the label's admin URL once read (kept until the label names another), or the link. */
+/** The preview's address: the label's admin URL once read (kept until the label names another), or the link. */
 const src = ref('')
+/** Where the frame was sent on this preview's origin (Capture again), '' for the preview's own address. */
+const moved = ref('')
 watch(
   () => (props.target ? (labels.label.value?.url ?? '') : (props.link ?? '')),
   (u) => {
     if (u && u !== src.value) src.value = u
     if (!props.target) src.value = u
+    moved.value = ''
   },
   { immediate: true },
 )
+/** The frame's address: Capture again's on this preview's origin, else the preview's. */
+const address = computed(() => moved.value || src.value)
 const workbench = typeof location === 'undefined' ? '' : location.origin
 const self = computed(() => !!src.value && isWorkbench(src.value, workbench))
 const framed = computed(() => !!src.value && !self.value && !!originOf(src.value))
@@ -115,8 +122,12 @@ const session = usePreviewBridge({
 async function loaded() {
   const at = src.value
   if (framed.value) await desktopPreviewBridge(at)
-  if (at === src.value) session.hello()
+  if (at === src.value) {
+    hellos.value++
+    session.hello()
+  }
 }
+const hellos = ref(0)
 const frameKey = ref(0)
 function refresh() {
   frameKey.value++
@@ -137,6 +148,64 @@ async function capture() {
   else await session.snap()
 }
 
+/** Waits for the hello after the frame's next load to be answered or given up (a bound on a frame that never loads). */
+function nextHello(after: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      stop()
+      clearTimeout(bound)
+      resolve()
+    }
+    const stop = watch([hellos, () => session.state.bridge], ([n, b]) => n > after && (b === 'ready' || b === 'absent') && done(), { immediate: true })
+    const bound = setTimeout(done, 30_000)
+  })
+}
+
+/**
+ * Capture again (PV1 PR-8): the earlier capture's device mode and address (its path on this preview's own origin, never another), each
+ * of its elements described again by its selector into a new capture that names it as the one it retakes.
+ */
+const captures = useCaptures()
+const retakeError = ref('')
+async function again(c: CaptureAnswer) {
+  retakeError.value = ''
+  editorOpen.value = true
+  if (c.viewport.mode !== mode.value) mode.value = c.viewport.mode
+  await nextTick()
+  const want = retakeAddress(c.url, src.value)
+  if (!want) {
+    retakeError.value = 'the capture names no page this preview can open'
+    return
+  }
+  if (want !== address.value || session.state.bridge !== 'ready') {
+    const before = hellos.value
+    moved.value = want === src.value ? '' : want
+    frameKey.value++
+    await nextHello(before)
+  }
+  if (session.state.bridge !== 'ready') {
+    retakeError.value = "the page did not answer: Capture again needs the bridge to describe the capture's elements"
+    return
+  }
+  const elements = (c.annotations ?? []).filter((a) => a.kind === 'element' && a.element).map((a) => ({ selector: a.element!.selector, note: a.note }))
+  await session.retake(c.id, elements)
+}
+/** The capture `retake` names, read to offer Capture again of it. */
+const retaking = ref<CaptureAnswer | null>(null)
+watch(
+  () => props.retake,
+  async (id) => {
+    retaking.value = null
+    if (!id) return
+    try {
+      retaking.value = await captures.read(id)
+    } catch (e) {
+      retakeError.value = (e as Error).message
+    }
+  },
+  { immediate: true },
+)
+
 function onKey(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (session.state.busy === 'select') session.cancel()
@@ -147,7 +216,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const selecting = computed(() => session.state.busy === 'select')
 const canSelect = computed(() => session.state.bridge === 'ready' && framed.value)
-defineExpose({ capture, session })
+defineExpose({ capture, session, again })
 </script>
 
 <template>
@@ -187,6 +256,11 @@ defineExpose({ capture, session })
         <UButton label="Stop selecting" size="xs" color="neutral" variant="ghost" class="flex-none" data-preview-cancel @click="session.cancel()" />
       </template>
       <span v-else-if="session.state.bridge === 'absent'" class="min-w-0 flex-1 truncate text-muted" :title="`${NO_BRIDGE_WORDS}.`" data-preview-nobridge>{{ NO_BRIDGE_WORDS }}.</span>
+      <span v-else-if="retakeError" class="min-w-0 flex-1 truncate text-default" data-preview-retake-error>{{ retakeError }}</span>
+      <template v-else-if="retaking && !retaking.deletedAt">
+        <span class="min-w-0 flex-1 truncate text-default" :title="retaking.url" data-preview-retake-of>Capture again of <span class="font-mono" data-mono="id">{{ retaking.id }}</span>: its page and device mode here, each element described again.</span>
+        <UButton label="Capture again" icon="i-lucide-repeat" size="xs" color="neutral" variant="outline" class="flex-none" :disabled="!framed || !!session.state.busy" data-preview-retake @click="again(retaking)" />
+      </template>
       <span v-else-if="labels.error.value" class="min-w-0 flex-1 truncate text-muted" data-preview-label-error>The label could not be read: {{ labels.error.value }}</span>
     </div>
 
@@ -196,6 +270,8 @@ defineExpose({ capture, session })
           <span class="text-default">{{ SELF_WORDS }}.</span>
           <UButton label="New tab" icon="i-lucide-external-link" size="sm" color="neutral" variant="outline" :to="src" target="_blank" rel="noopener noreferrer" external />
         </div>
+        <p v-else-if="target?.seq && labels.missing.value && checkout === 'resolved'" class="p-6 text-sm text-muted" data-preview-opening>The candidate's checkout is being made: its setup runs and its services start, then its preview shows here.</p>
+        <p v-else-if="target?.seq && labels.missing.value" class="p-6 text-sm text-muted" data-preview-missing>No preview of this candidate's checkout is open now: it was closed, it ended, or it has not started.</p>
         <p v-else-if="target && labels.missing.value" class="p-6 text-sm text-muted" data-preview-missing>No preview of this attempt is open now: its tree has ended or its services are not ready.</p>
         <p v-else-if="!src" class="p-6 text-sm text-muted">Reading the preview…</p>
         <p v-else-if="!framed" class="p-6 text-sm text-muted">Only an http or https address is framed.</p>
@@ -203,7 +279,7 @@ defineExpose({ capture, session })
           <iframe
             ref="frame"
             :key="frameKey"
-            :src="src"
+            :src="address"
             :style="frameStyle"
             class="block border-0 bg-white"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -222,10 +298,10 @@ defineExpose({ capture, session })
         :run-ticket="runTicket"
         :attempt-session="attemptSession"
         :can-select="canSelect"
-        :again="again"
+        again
         :class="phone ? 'absolute inset-0 z-10 bg-default' : 'w-[26rem] max-w-[50%] flex-none border-l border-default'"
         @close="editorOpen = false"
-        @again="(c: CaptureAnswer) => emit('again', c)"
+        @again="again"
       />
     </div>
   </div>

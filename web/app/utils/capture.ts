@@ -451,3 +451,25 @@ export function previewPath(t: { run: string; task: string; attempt: number; seq
 
 /** How a preview names its tree's secret, which the label's admin URL puts in. */
 export const TREE_SECRET_NAME = '${CONDUCTOR_TREE_SECRET}'
+
+/**
+ * Where Capture again opens the frame: the earlier capture's path and query on this preview's own origin, with this preview's own
+ * fragment (where its tree's secret is put in); never another origin, whatever the capture's address names. '' when either does
+ * not parse or the preview is not http or https.
+ */
+export function retakeAddress(captureUrl: string, previewUrl: string): string {
+  try {
+    const p = new URL(previewUrl)
+    const c = new URL(captureUrl)
+    const web = (u: URL) => u.protocol === 'http:' || u.protocol === 'https:'
+    if (!web(p) || !web(c)) return ''
+    const at = new URL(`${c.pathname}${c.search}`, p.origin)
+    at.hash = p.hash
+    return at.origin === p.origin ? at.href : ''
+  } catch {
+    return ''
+  }
+}
+
+/** A capture's id (dispatch.ValidID): 16 lower-case hex digits. */
+export const CAPTURE_ID = /^[0-9a-f]{16}$/
