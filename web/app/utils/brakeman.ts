@@ -181,6 +181,90 @@ export interface BrakemanState {
   readOnly?: boolean
   why?: string
   stuck?: boolean
+  /** The running turn's reads as they stand (an older server sends none: the page reads `current` alone). */
+  progress?: BrakemanProgress
+  /** When the background role's next scheduled briefing is, an instant the page draws in the browser's time. */
+  nextBriefing?: string
+}
+
+/** The longest derived reading a digest keeps, in characters (internal/brakeman/digest.go, MaxReading). */
+export const MAX_READING = 280
+
+/** A digest's counts of its brief's items, each omitted when 0 (drafts: draft tickets, crews and plans together). */
+export interface BrakemanDigestCounts {
+  decisions?: number
+  proposals?: number
+  drafts?: number
+  handoffs?: number
+  facts?: number
+  interpretations?: number
+  outcomes?: number
+  overlaps?: number
+  comparisons?: number
+  evidence?: number
+}
+
+/** What a brief cites, first cited first: run ids, "<run>/<task>", session ids and ticket keys; each list omitted when empty. */
+export interface BrakemanDigestAbout {
+  runs?: string[]
+  tasks?: string[]
+  sessions?: string[]
+  tickets?: string[]
+}
+
+/** A brief's digest, the server's sibling of a kept brief: its title, a derived reading cut to MAX_READING, its counts and what it cites. */
+export interface BrakemanDigest {
+  schema: number
+  title: string
+  reading: string
+  readingCut?: boolean
+  counts: BrakemanDigestCounts
+  about: BrakemanDigestAbout
+}
+
+/** A request as the list route answers it: with its brief's digest when it has one, and how it matched an `about` filter. */
+export interface BrakemanRow extends BrakemanRequest {
+  digest?: BrakemanDigest
+  match?: 'subject' | 'cited'
+}
+
+/** The last read a running turn was admitted to, by what it read and, when it fits, the ref. */
+export interface BrakemanReadingNow {
+  what: string
+  ref?: string
+}
+
+/** A running turn's progress, from the `brakeman_progress` event or GET /api/brakeman's `progress`. */
+export interface BrakemanProgress {
+  id: string
+  reads: number
+  readsPerTurn: number
+  startedAt?: string
+  deadline?: string
+  reading?: BrakemanReadingNow
+}
+
+/** One count of GET /api/brakeman/since: how many, at most five refs, and the oldest's time where it has one. */
+export interface BrakemanSinceCount {
+  count: number
+  refs: string[]
+  oldest?: string
+}
+
+/** GET /api/brakeman/since's answer: what changed in Conductor since the last briefing, the last day, or a given time. */
+export interface BrakemanSince {
+  since: { from: 'briefing' | 'day' | 'given'; briefing?: string; at: string }
+  runsEnded: BrakemanSinceCount
+  tasksFailed: BrakemanSinceCount
+  ticketsReady: BrakemanSinceCount
+  questionsOpen: BrakemanSinceCount
+  truncated: boolean
+}
+
+/** GET and POST /api/brakeman/opened's answer: the caller's briefed requests not yet opened, newest first, and when its marks began. */
+export interface BrakemanOpened {
+  unread: string[]
+  begun: string
 }
 
 /** One item of a brief: its kind beside that kind's own fields (docs/protocol.md, "A brief"). */
