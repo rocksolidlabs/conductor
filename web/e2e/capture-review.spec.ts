@@ -45,6 +45,17 @@ test.afterAll(async ({ api }) => {
 
 const candidate = () => `${runId}/build/1@${commit}`
 
+/** The candidate's checkouts this spec opened, closed after each test: one is open per candidate at a time. */
+const opened: number[] = []
+
+test.afterEach(async ({ api }) => {
+  for (const seq of opened.splice(0)) {
+    const path = `/api/runs/${encodeURIComponent(runId)}/tasks/build/attempts/1/preview`
+    await api.call('POST', `${path}/${seq}/close`, { commandId: `close-${seq}-${Date.now().toString(36)}` })
+    await expect.poll(async () => (await api.call('GET', `${path}?seq=${seq}`)).status, { timeout: 60_000, message: `checkout ${seq} closed` }).toBe(404)
+  }
+})
+
 /** A capture of the candidate's preview with one element annotated with `note`, saved; its id. */
 async function captureCandidate(page: Page, api: Api, note: string): Promise<string> {
   await previewSeam(page)
@@ -54,6 +65,7 @@ async function captureCandidate(page: Page, api: Api, note: string): Promise<str
   await page.locator('[data-task-candidate-preview="build"]').click()
   await expect(page).toHaveURL(/&seq=\d+$/)
   const seq = Number(new URL(page.url()).searchParams.get('seq'))
+  opened.push(seq)
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: 120_000 })
   const l = await api.ok<{ url: string }>('GET', `/api/runs/${encodeURIComponent(runId)}/tasks/build/attempts/1/preview?seq=${seq}`)
   const frame = await previewFrame(page, new URL(l.url).origin)
