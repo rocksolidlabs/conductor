@@ -72,10 +72,10 @@ type commandSpec struct {
 	// none, or one not among them), where the verbs take different flags:
 	// flags stays every one of them, for their values.
 	verbFlags map[string][]flagSpec
-	words  []string
-	after  map[string][]string
-	crewID bool
-	file   bool
+	words     []string
+	after     map[string][]string
+	crewID    bool
+	file      bool
 }
 
 // completionSpec lists the subcommands of root.go with the flags their run
