@@ -345,9 +345,10 @@ there is nothing more to do about it.
   person's to decide: tell them, with a comment or task blocked, and never
   act on it alone.
 - A ticket made from a person's capture of a preview carries it as
-  attachments: .conductor/attachments/capture-ID-rREV.json, the capture's
-  document (conductor.capture/1), and capture-ID-rREV.png, its screenshot,
-  when it has one. The document is JSON: the page's url, title and
+  attachments, each named after its number in the package:
+  .conductor/attachments/NN-capture-ID-rREV.json, the capture's document
+  (conductor.capture/1), and NN-capture-ID-rREV.png, its screenshot, when
+  it has one. The document is JSON: the page's url, title and
   viewport; origin, the tree it was taken of (its commit and changed
   paths); and annotations, each with the person's note, the element (tag,
   name, selector, box, and hit: what a click at its centre reaches) and
