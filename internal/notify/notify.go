@@ -146,17 +146,28 @@ func (r Request) attentionWord() bool {
 	return false
 }
 
-// Send posts the request to url with the agent token. A request with Event
-// set goes to the session's events route (url with /attention replaced by
-// /events) as an event; any other goes to url as an attention update.
-// Redirects are refused so a token never follows a rewrite. An attention word
-// answered 429 is tried again after each of retryDelays, while the 5 s budget
-// lasts; anything else is tried once.
+// Send posts the request to url with the agent token: Target.Send with no
+// host's socket.
 func Send(ctx context.Context, url, token string, req Request) error {
-	events := eventsURL(url)
+	return Target{URL: url, Token: token}.Send(ctx, req)
+}
+
+// Send posts the request with the agent token. A request with Event set
+// goes to the session's events route (URL with /attention replaced by
+// /events) as an event; any other is an attention report, which goes to the
+// host's socket when the target names one, and to URL when it names none or
+// the socket cannot be reached (errHostUnreachable): a report the host
+// answered, whatever it answered, never goes to the server as well. The
+// files a tool call touched go to the events route. Redirects are refused so
+// a token never follows a rewrite. An attention word answered 429 is tried
+// again after each of retryDelays, while the 5 s budget lasts; anything
+// else is tried once.
+func (t Target) Send(ctx context.Context, req Request) error {
+	events := eventsURL(t.URL)
 	// A request of files alone (a file tool's hook with --files) has no event of its own.
 	if req.Event != "" || req.State != "" || len(req.Files) == 0 {
 		var payload any = req
+		url := t.URL
 		if req.Event != "" {
 			url = events
 			payload = eventBody{Type: req.Event, Message: req.Message, URL: req.URL, To: req.To, Tool: req.Tool, Kind: req.Kind, Options: req.Options, Op: req.Op, Path: req.Path}
@@ -165,7 +176,14 @@ func Send(ctx context.Context, url, token string, req Request) error {
 		if err != nil {
 			return err
 		}
-		if err := send(ctx, url, token, req, body); err != nil {
+		err = errHostUnreachable
+		if req.Event == "" && t.Socket != "" {
+			err = send(ctx, "the host", hostPoster(t.Socket, t.Token), req, body)
+		}
+		if errors.Is(err, errHostUnreachable) {
+			err = send(ctx, "server", serverPoster(url, t.Token), req, body)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -175,18 +193,29 @@ func Send(ctx context.Context, url, token string, req Request) error {
 		if err != nil {
 			return err
 		}
-		if err := send(ctx, events, token, Request{Event: "file"}, fb); err != nil {
+		if err := send(ctx, "server", serverPoster(events, t.Token), Request{Event: "file"}, fb); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func send(ctx context.Context, url, token string, req Request, body []byte) error {
+// poster makes one attempt with body: the status and, for a failure, the
+// start of the reply.
+type poster func(ctx context.Context, body []byte) (int, string, error)
+
+// serverPoster posts to url, a route of the server, with token.
+func serverPoster(url, token string) poster {
+	return func(ctx context.Context, body []byte) (int, string, error) { return post(ctx, url, token, body) }
+}
+
+// send makes the attempts of one report with p, who naming the side that
+// answers in an error ("server", "the host").
+func send(ctx context.Context, who string, p poster, req Request, body []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
-		status, msg, err := post(ctx, url, token, body)
+		status, msg, err := p(ctx, body)
 		if err != nil {
 			return err
 		}
@@ -212,7 +241,7 @@ func send(ctx context.Context, url, token string, req Request, body []byte) erro
 			}
 			continue
 		}
-		failed := fmt.Errorf("notify: server returned %d: %s", status, msg)
+		failed := fmt.Errorf("notify: %s returned %d: %s", who, status, msg)
 		if status != http.StatusTooManyRequests || !req.attentionWord() || attempt >= len(retryDelays) {
 			return failed
 		}

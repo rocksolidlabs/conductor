@@ -265,7 +265,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 	}
 	switch name {
 	case "report", "set_state", "ask":
-		url, token, err := notify.FromEnv(s.getenv)
+		target, err := notify.TargetFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
 		}
@@ -314,7 +314,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		}
 		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		if err := notify.Send(sctx, url, token, req); err != nil {
+		if err := target.Send(sctx, req); err != nil {
 			return "", err
 		}
 		return "reported", nil
