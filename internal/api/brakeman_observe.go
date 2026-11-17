@@ -482,6 +482,7 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 		}
 	}
 	atObserveSeam("admitted")
+	d.noteReading(req.ID, r)
 	if next != nil {
 		if err := o.takeRevs(r, spec.class); err != nil {
 			s.observeError(w, err)
@@ -515,6 +516,7 @@ func (s *Server) turnRead(w http.ResponseWriter, r *http.Request, tp *turnPrinci
 		s.brakemanError(w, err)
 		return
 	}
+	d.progressRead()
 	if rec.status == http.StatusOK && spec.class != "" {
 		// The answer used its class whether or not it held an item a
 		// ref names (a page of projects): the brief's footprint counts it.

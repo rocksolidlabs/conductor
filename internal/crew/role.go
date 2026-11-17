@@ -1120,6 +1120,19 @@ func briefingTimes(s RoleSettings, last, now time.Time) (due time.Time, next tim
 	return due, next
 }
 
+// NextBriefing is the first of s's briefing times after now, in s's
+// zone (the server's when none is set), as the role's own step waits for
+// it; zero when the role is off or no time is set. A page shows it as
+// "Next briefing at"; a paused role's caller leaves it out, since a pause
+// fires none.
+func NextBriefing(s RoleSettings, now time.Time) time.Time {
+	if !s.On {
+		return time.Time{}
+	}
+	_, next := briefingTimes(s, now, now)
+	return next
+}
+
 // parseHM reads "HH:MM".
 func parseHM(s string) (h, m int, ok bool) {
 	hs, ms, found := strings.Cut(s, ":")
