@@ -232,7 +232,7 @@ func TestRequestAChangeIsRefusedBeforeItIsKept(t *testing.T) {
 // Add to a review: the send is sent in its one step, to the draft; the
 // person's draft then sends a capture finding naming it through RV1's
 // route, whose words, path and line the server makes. The route refuses
-// 409, keeping nothing, a capture finding whose send went to Brakeman, a
+// 409, keeping nothing (no receipt), a capture finding whose send went to Brakeman, a
 // send of another capture, one of another candidate's capture and an
 // annotation the document has not; and the store refuses, its receipt
 // kept, a capture finding with the client's words.
@@ -268,9 +268,14 @@ func TestAddToAReviewPutsTheCaptureInTheDraft(t *testing.T) {
 		{"another capture's send", finding(other, sv.ID, 1), "is no send of the capture"},
 		{"an annotation it has not", finding(id, sv.ID, 2), "not an annotation 2"},
 	} {
-		got := sendReview(t, l.testEnv, "CND-1", reviewOf(cand, l.head, "request_changes", c.finding), http.StatusConflict, dispatch.RefusalInvalid)
+		body := reviewOf(cand, l.head, "request_changes", c.finding)
+		got := sendReview(t, l.testEnv, "CND-1", body, http.StatusConflict, dispatch.RefusalInvalid)
 		if msg := got["error"].(map[string]any)["message"].(string); !strings.Contains(msg, c.words) {
 			t.Errorf("%s: %v", c.name, got)
+		}
+		// Refused by the route as it binds the finding: before the store, no receipt kept.
+		if _, found, err := l.srv.dispatch.Receipt(t.Context(), adminActor, body["opId"].(string)); err != nil || found {
+			t.Errorf("%s: a receipt kept: %v %v", c.name, found, err)
 		}
 	}
 	if n := reviewsOn(t, l.srv, "CND-1"); n != 0 {
@@ -359,6 +364,8 @@ func TestALostReviewSendIsFinishedByTheWorker(t *testing.T) {
 	cand := candName(run, "build", 1, c1)
 	n, f := capturedOf(run, c1, "Covered.", nil, false)
 	id := seedCapture(t, l.srv, n, f, nil)
+	// The worker's own passes stopped: this test runs its pass itself.
+	l.srv.stopReviews()
 	// The send as the route keeps it, its steps never taken.
 	request := []byte(`{"key":"CND-1","review":{"candidate":"` + cand + `","base":"` + l.head + `","verdict":"request_changes","via":"web","findings":[{"kind":"capture","intent":"change","severity":"major","capture":{"capture":"` + id + `","send":"","k":1}}]}}`)
 	rc, err := l.srv.dispatch.SendCapture(t.Context(), dispatch.Op{Actor: adminActor, ID: "lost-1", By: "Nate"}, strings.Repeat("0", 64), id, 1,

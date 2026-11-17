@@ -147,11 +147,11 @@ func TestTheProjectionKeepsWithinItsBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	note, _, _ := strings.Cut(p.Message, "\n\n")
-	if n := utf8.RuneCountInString(p.Message); n > MaxFindingMessage || !strings.HasSuffix(note, "covered…") || utf8.RuneCountInString(note) > projectedNote {
+	if n := utf8.RuneCountInString(p.Message); n > MaxFindingMessage || !strings.HasSuffix(note, "covered…") || utf8.RuneCountInString(note) > 600 {
 		t.Fatalf("the projection is %d characters, its note %q", n, note)
 	}
 	for _, line := range strings.Split(p.Message, "\n")[2:] {
-		if utf8.RuneCountInString(line) > projectedSelector*2+64 {
+		if utf8.RuneCountInString(line) > 2*160+64 {
 			t.Fatalf("a line of page text is %d characters", utf8.RuneCountInString(line))
 		}
 	}
@@ -164,7 +164,14 @@ func TestTheProjectionKeepsWithinItsBounds(t *testing.T) {
 	if p, err := ProjectAnnotation(doc, 3); err != nil || p.Path != "" || !strings.HasPrefix(p.Message, "## Done\n```\nok\n\nElement a at “a”.") {
 		t.Fatalf("a note of Markdown, its source outside the tree: %+v %v", p, err)
 	}
-	for _, k := range []int{0, 4} {
+	// A short element leaves the note its whole 600 characters, cut on a word.
+	doc.Annotations = append(doc.Annotations, Annotation{Kind: AnnotationElement, Note: long, Element: &ElementReport{Tag: "a", Selector: "a", Hit: ElementHit{Self: true}}})
+	if p, err := ProjectAnnotation(doc, 4); err != nil {
+		t.Fatal(err)
+	} else if note, _, _ := strings.Cut(p.Message, "\n\n"); utf8.RuneCountInString(note) > 600 || utf8.RuneCountInString(note) < 590 || !strings.HasSuffix(note, "covered…") {
+		t.Fatalf("a note beside a short element: %d characters", utf8.RuneCountInString(note))
+	}
+	for _, k := range []int{0, 5} {
 		if _, err := ProjectAnnotation(doc, k); err == nil {
 			t.Fatalf("annotation %d projected", k)
 		}
