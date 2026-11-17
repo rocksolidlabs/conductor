@@ -1,0 +1,188 @@
+import { randomBytes } from 'node:crypto'
+import type { Page, Request } from '@playwright/test'
+import { expect, test, type Api } from './fixtures'
+import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
+
+// A comparison's launch from a ticket's approved plan revision (CP1, docs/plans/compare-crew.md, "The launch says what it costs"): the
+// dialog says what it starts from the revision's own `compare` part, above the members' lines, and its button says the count; the
+// count goes with the launch, the same on every resend of one operation; a comparison whose part is not given is not launched from the
+// dialog; an ordinary revision sends none. The launch route is watched at this spec's own route, which answers the server's refusal
+// where the spec only needs to see what was sent, so no run starts here.
+
+/** What one test made, ended after it. */
+const made = { crews: [] as string[] }
+test.afterEach(async ({ api }) => {
+  for (const id of made.crews.splice(0)) await api.call('DELETE', `/api/crews/${encodeURIComponent(id)}`)
+})
+
+const tag = () => randomBytes(3).toString('hex')
+
+/** A comparison's crew as New comparison saves it: two candidates (the stub workers) with a check, a review after each, Brakeman's draft. */
+async function comparisonCrew(api: Api, o: { reviews?: boolean } = {}) {
+  const lanes = ['a', 'b']
+  const agents = ['worker', 'worker-cli']
+  const { crew } = await api.ok<{ crew: { id: string; name: string } }>('POST', '/api/crews', {
+    name: `e2e comparison ${tag()}`,
+    goal: 'Make the cache read fast',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    members: [
+      ...lanes.map((l, i) => ({ name: `cand-${l}`, agentId: agents[i], prompt: '', start: { when: 'task' } })),
+      ...(o.reviews ? lanes.map((l) => ({ name: `rev-${l}`, agentId: 'worker', prompt: '', start: { when: 'task' } })) : []),
+    ],
+    tasks: [
+      ...lanes.map((l) => ({ id: `approach-${l}`, member: `cand-${l}`, kind: 'work', instructions: 'Keep the API.', checks: [{ id: 'unit', argv: ['true'] }] })),
+      ...(o.reviews ? lanes.map((l) => ({ id: `review-${l}`, member: `rev-${l}`, kind: 'review', instructions: 'Review it.', needs: [`approach-${l}`] })) : []),
+    ],
+    compare: { criteria: [{ id: 'no-new-dependency', text: 'no new dependency' }], candidates: [{ task: 'approach-a', approach: 'key the cache by locale' }, { task: 'approach-b' }], brakeman: true },
+  })
+  made.crews.push(crew.id)
+  return crew
+}
+
+/** An ordinary managed crew of one stub worker. */
+async function ordinaryCrew(api: Api) {
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: `e2e ordinary ${tag()}`,
+    goal: '',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    members: [{ name: 'builder', agentId: 'worker', prompt: '', start: { when: 'task' } }],
+    tasks: [{ id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.' }],
+  })
+  made.crews.push(crew.id)
+  return crew
+}
+
+/** A ticket of a project of its own, with `crew` proposed and approved as its revision 1. */
+async function approvedTicket(api: Api, crew: string) {
+  const key = await freeProjectKey(api, 'CMP')
+  await makeProject(api, key)
+  const ticketKey = await makeTicket(api, key, '1', { title: 'Compare the cache' })
+  const { plan } = await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r1'), crew })
+  const ticket = await storedTicket(api, ticketKey)
+  await api.ok('POST', `/api/dispatch/plans/${plan.id}/approve`, { opId: opOf(key, 'ap1'), expectedRev: plan.rev, ticketRev: ticket.rev })
+  return { key, ticketKey, plan }
+}
+
+/**
+ * The plan reads as `edit` makes them: the ticket's list and a revision's read, each answered by the server and handed to `edit` (the
+ * server's `compare` part is what the page draws; a test that needs it missing takes it away here).
+ */
+async function editPlanReads(page: Page, edit: (p: Record<string, unknown>) => void) {
+  await page.route(
+    (u) => /^\/api\/dispatch\/(tickets\/[^/]+\/plans|plans\/[^/]+)$/.test(u.pathname),
+    async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      const res = await route.fetch()
+      const body = (await res.json()) as { plan?: Record<string, unknown>; plans?: Array<Record<string, unknown>> }
+      if (body.plan) edit(body.plan)
+      for (const p of body.plans ?? []) edit(p)
+      return route.fulfill({ response: res, json: body })
+    },
+  )
+}
+
+/** Every launch the page sends, its body; each answered by `answer` (a request let through when it answers nothing). */
+async function watchLaunches(page: Page, ticketKey: string, answer: (n: number, r: Request) => 'abort' | { status: number; json: unknown } | null) {
+  const sent: Array<Record<string, unknown>> = []
+  await page.route(
+    (u) => u.pathname === `/api/dispatch/tickets/${ticketKey}/launch`,
+    async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      sent.push(route.request().postDataJSON() as Record<string, unknown>)
+      const a = answer(sent.length, route.request())
+      if (a === 'abort') return route.abort('connectionreset')
+      if (a) return route.fulfill({ status: a.status, contentType: 'application/json', body: JSON.stringify(a.json) })
+      return route.fallback()
+    },
+  )
+  return sent
+}
+
+async function openLaunch(page: Page, key: string) {
+  await page.goto(`/dispatch/${key}/1`)
+  const featured = page.locator('[data-plan-section] [data-plan-featured]')
+  await expect(featured).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
+  await featured.locator('[data-plan-launch]').click()
+  return page.locator('[data-launch-dialog]')
+}
+
+/** The refusal the server answers a comparison launched with another count (internal/api, confirm_candidates). */
+const confirmRefusal = { status: 409, json: { error: { code: 'confirm_candidates', message: 'this revision starts 2 candidates: send candidates 2 to launch them' } } }
+
+test("a comparison's launch says what it starts, its button says the count, and every send of the launch carries that count", async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const crew = await comparisonCrew(api, { reviews: true })
+  const { key, ticketKey } = await approvedTicket(api, crew.id)
+  // Two network losses (the page asks once more by itself, then says so), then the server's refusal of the count.
+  // Until the server's plan reads state it (CP1 PR-3), the part a revision of this crew is read with.
+  await editPlanReads(page, (p) => void (p.compare ??= { candidates: 2, reviews: 2, checksAtBase: 1, brakemanTurn: true }))
+  const sent = await watchLaunches(page, ticketKey, (n) => (n <= 2 ? 'abort' : confirmRefusal))
+  const dialog = await openLaunch(page, key)
+
+  const statement = dialog.locator('[data-launch-compare]')
+  await expect(statement).toHaveAttribute('data-launch-candidates', '2', { timeout: 30_000 })
+  await expect(statement.locator('[data-launch-compare-part="candidates"]')).toHaveText(
+    "This comparison starts 2 candidates (Worker (e2e stub), Worker, CLI (e2e stub)): 2 agent sessions, once the plan's decisions and the project's prerequisites let the work start",
+  )
+  await expect(statement.locator('[data-launch-compare-part="reviews"]')).toHaveText('then an agent review of each candidate that succeeds: up to 2 more sessions, none for a candidate that fails or is cancelled')
+  await expect(statement.locator('[data-launch-compare-part="multiplier"]')).toContainText("a review's request for changes, an attempt that could not start and each Retry you give add more")
+  await expect(statement.locator('[data-launch-compare-part="checks"]')).toHaveText(
+    "1 check on each submitted candidate attempt (the task's checks and conductor.manifest.json's verify steps at the base; a candidate that changes the manifest runs its own)",
+  )
+  await expect(statement.locator('[data-launch-compare-part="brakeman"]')).toHaveText('1 Brakeman turn on your Brakeman account, when all candidates are done')
+  await expect(statement.locator('[data-launch-compare-part="usage"]')).toHaveText('Usage per account: shown below')
+  // Above the members' lines, and no total of sessions or checks anywhere in it.
+  const box = async (sel: string) => (await dialog.locator(sel).first().boundingBox())!
+  expect((await box('[data-launch-compare]')).y).toBeLessThan((await box('[data-launch-members]')).y)
+  expect(await statement.textContent()).not.toMatch(/\b(total|in all|altogether)\b/i)
+
+  const confirm = dialog.locator('[data-launch-confirm]')
+  await expect(confirm).toHaveText('Launch 2 candidates')
+  await confirm.click()
+  await expect(dialog.locator('[data-launch-error]')).toContainText('send it again; it is the same launch', { timeout: 30_000 })
+  await expect(confirm).toHaveText('Send again')
+  await confirm.click()
+  await expect(dialog.locator('[data-launch-refused]')).toContainText('this revision starts 2 candidates: send candidates 2 to launch them', { timeout: 30_000 })
+  // One operation, sent three times, each with the count the statement said.
+  expect(sent).toHaveLength(3)
+  expect(new Set(sent.map((b) => b.opId)).size).toBe(1)
+  expect(sent.map((b) => b.candidates)).toEqual([2, 2, 2])
+})
+
+test("a comparison whose statement the server did not give is not launched from the dialog, and an ordinary revision sends no count", async ({ page, api }) => {
+  test.setTimeout(120_000)
+  const crew = await comparisonCrew(api)
+  const { key, ticketKey } = await approvedTicket(api, crew.id)
+  await editPlanReads(page, (p) => delete p.compare)
+  const sent = await watchLaunches(page, ticketKey, () => confirmRefusal)
+  const dialog = await openLaunch(page, key)
+  await expect(dialog.locator('[data-launch-compare-unstated]')).toContainText('Revision 1 is a comparison, and the server did not say what it starts', { timeout: 30_000 })
+  await expect(dialog.locator('[data-launch-compare]')).toHaveCount(0)
+  const confirm = dialog.locator('[data-launch-confirm]')
+  await expect(confirm).toBeDisabled()
+  await expect(confirm).toHaveText('Launch')
+  await confirm.click({ force: true })
+  // The body is read (its members are drawn), and the press sent nothing.
+  await expect(dialog.locator('[data-launch-member="cand-a"]')).toBeVisible()
+  expect(sent).toEqual([])
+  await page.keyboard.press('Escape')
+
+  // An ordinary revision: its launch carries no count.
+  const plain = await ordinaryCrew(api)
+  const other = await approvedTicket(api, plain.id)
+  const plainSent = await watchLaunches(page, other.ticketKey, () => ({ status: 409, json: { error: { code: 'managed_off', message: 'e2e: managed runs are off here' } } }))
+  const d2 = await openLaunch(page, other.key)
+  await expect(d2.locator('[data-launch-member="builder"]')).toBeVisible({ timeout: 30_000 })
+  await expect(d2.locator('[data-launch-compare], [data-launch-compare-unstated]')).toHaveCount(0)
+  await expect(d2.locator('[data-launch-confirm]')).toHaveText('Launch')
+  await d2.locator('[data-launch-confirm]').click()
+  await expect(d2.locator('[data-launch-refused]')).toContainText('e2e: managed runs are off here', { timeout: 30_000 })
+  expect(plainSent).toHaveLength(1)
+  expect(plainSent[0]).not.toHaveProperty('candidates')
+})
