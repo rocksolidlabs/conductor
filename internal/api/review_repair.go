@@ -313,7 +313,7 @@ func (s *Server) failedReceipt(ctx context.Context, ld *ledger.Ledger, runID, ta
 // criteriaOf is what the run row's candidate of the task was to meet:
 // the acceptance criteria of the package a ticket launched it with (and
 // the launch's plan revision and ticket), else the task's checks as the
-// run's crew names them.
+// run's crew names them, read from the crew's tasks alone (no member).
 func criteriaOf(row ledger.RunRow, taskID string) (repairCriteria, *repairPlan, *repairTicket) {
 	var plan *repairPlan
 	var ticket *repairTicket
@@ -328,7 +328,11 @@ func criteriaOf(row ledger.RunRow, taskID string) (repairCriteria, *repairPlan, 
 		}
 	}
 	out := repairCriteria{Source: "checks", Checks: []crew.Check{}}
-	var c crew.Crew
+	// The crew's tasks alone: the criteria need no member, so none is
+	// decoded here (TestAgentMembersDecodedInOnePlace), whoever asks.
+	var c struct {
+		Tasks []crew.Task `json:"tasks"`
+	}
 	if json.Unmarshal([]byte(row.Crew), &c) == nil {
 		if i := slices.IndexFunc(c.Tasks, func(t crew.Task) bool { return t.ID == taskID }); i >= 0 && c.Tasks[i].Checks != nil {
 			out.Checks = c.Tasks[i].Checks
