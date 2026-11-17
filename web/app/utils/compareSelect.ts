@@ -117,3 +117,9 @@ export function selectedReview(r: Pick<Decision, 'origin' | 'state' | 'applied'>
   const s = r.origin === 'compare' && r.state === 'applied' && r.applied?.how === 'selected' ? r.applied.selected : undefined
   return s ? { query: { view: 'review', candidate: candidateRef({ run: s.run, task: s.task, attempt: s.attempt, commit: s.commit }) } } : null
 }
+
+/** Review the selected candidate from the comparison's own selection: the same target, null while none is applied or for None of these. */
+export function selectionReview(sel: ComparisonSelection | null | undefined): { query: { view: 'review'; candidate: string } } | null {
+  const a = appliedSelection(sel)
+  return a && a !== 'none' ? { query: { view: 'review', candidate: candidateRef(a) } } : null
+}

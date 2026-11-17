@@ -1,9 +1,14 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Browser, Page } from '@playwright/test'
 import { budget, dayPage, expect, test, useTheme } from './fixtures'
 import { compareRun, comparisonOf } from './compare-stub'
 import { decisionRecord, inboxItem, stubInbox, SELECTION_AUTHORIZES, type StubItem } from './inbox-stub'
 import { noSideways, tapTarget } from './layout'
 import { serveComparison } from './compare-stub'
+import { SETTLE_MS, checkScript, comparison, launchComparison } from './compare-select-helpers'
+import { ownServer } from './own-server'
 import { runInfo, serveRun, type StubRun } from './run-fixtures'
 
 // A comparison's selection (Program item CP1, docs/plans/compare-crew.md, PR-7), answered on DR1's card. The card is the same act
@@ -324,4 +329,59 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await expect(select.locator('[data-compare-select-words]')).toHaveText('The selection opens when every lane has ended. Nothing is selected by default.')
     await expect(select.locator('[data-decision-choice]')).toHaveCount(0)
   })
+})
+
+// Brakeman's draft on the real server (PR-5): the template asks for it, the comparison's settling queues one request, and the stub's
+// turn waits at a gate the spec opens once it has written the brief (web/e2e/fixtures/compare-brief.json, its refs the run's own).
+// The draft arrives in the supporting panel while the run sits idle: the page follows the request, not the run.
+
+test('Brakeman’s stub draft arrives in the supporting panel while the run is idle', async ({ browser }) => {
+  budget(6 * LOAD_MS + 60_000)
+  const fixture = join(process.cwd(), 'e2e', 'fixtures', 'compare-brief.json')
+  // The gate and the brief in a folder of the test's own, named in the stub's copy before its server starts.
+  const files = mkdtempSync(join(tmpdir(), 'conductor-e2e-compare-brief-'))
+  const gate = join(files, 'gate')
+  const brief = join(files, 'brief.json')
+  const s = await ownServer('compare-brakeman', { agents: [{ id: 'bm-compare', from: 'brakeman-stub', env: { STUB_BRAKEMAN_WAIT: gate, STUB_BRAKEMAN_BRIEF: brief } }] })
+  try {
+    const { config } = await s.api.ok<{ config: Record<string, unknown> & { rev: number } }>('GET', '/api/brakeman')
+    await s.api.ok('PUT', '/api/brakeman/config', { rev: config.rev, config: { ...config, enabled: true, agentId: 'bm-compare' } })
+    checkScript(s.repo)
+    const c = await launchComparison(s.api, s.repo, 'CBRK', [{ agentId: 'worker-cli' }, { agentId: 'worker-cli' }], { brakeman: true })
+    budget(SETTLE_MS)
+    let request = ''
+    await expect
+      .poll(async () => (request = ((await s.api.ok<{ supporting?: { brakeman?: { request?: string } } }>('GET', `/api/runs/${c.run}/comparison`)).supporting?.brakeman?.request ?? '')), { timeout: SETTLE_MS, intervals: [1000], message: 'the settling queued a Brakeman request' })
+      .not.toBe('')
+    const page = await dayPage(browser, { server: s.started, path: '/agents' })
+    await page.goto(`${c.path}?view=compare&run=${c.run}`)
+    const panel = page.locator('[data-compare-supporting]')
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(new RegExp(`^(Brakeman's draft is queued|Brakeman is drafting) \\(${request}\\)$`))
+    await expect(panel.locator('[data-compare-ask-brakeman]')).toBeDisabled()
+    const revision = (await s.api.run(c.run)).managed?.revision
+
+    // The brief, its refs the run's own candidates and checks, then the gate: the turn submits it.
+    const read = await comparison(s.api, c.run)
+    const [a, b] = read.candidates
+    const text = readFileSync(fixture, 'utf8')
+      .replace('@CANDIDATE_A', `candidate:${a!.run}/${a!.task}/${a!.attempt}`)
+      .replace('@CANDIDATE_B', `candidate:${b!.run}/${b!.task}/${b!.attempt}`)
+      .replace('@CHECK_A', `check:${a!.run}/${a!.task}/${a!.attempt}/unit/1`)
+      .replace('@CHECK_B', `check:${b!.run}/${b!.task}/${b!.attempt}/unit/1`)
+    writeFileSync(brief, text)
+    writeFileSync(gate, '')
+
+    // Briefed: the draft in the panel, its table in its own card, the page never reloaded; the run did not move.
+    const table = panel.locator('[data-compare-brief] [data-brief-comparison]')
+    await expect(table).toBeVisible({ timeout: SETTLE_MS })
+    await expect(table.locator('tbody th')).toHaveText(['Behaviour', 'Complexity', 'Dependency changes', 'Checks', 'Unresolved tradeoffs'])
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText(`Brakeman's draft (${request})`)
+    expect((await s.api.run(c.run)).managed?.revision).toBe(revision)
+    // Nothing of it reached the measured part.
+    await expect(page.locator('[data-compare-measured] [data-brief-comparison]')).toHaveCount(0)
+    await page.context().close()
+  } finally {
+    await s.stop()
+    rmSync(files, { recursive: true, force: true })
+  }
 })

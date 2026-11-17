@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import type { Comparison } from '~/utils/compare'
 import { acceptedAnswer, decisionWords } from '~/utils/decisions'
-import { selectionAnswerable, selectionFor, selectionPanelWords } from '~/utils/compareSelect'
+import { selectionAnswerable, selectionFor, selectionPanelWords, selectionReview } from '~/utils/compareSelect'
 
 /**
  * The selection of a comparison (Program item CP1, docs/plans/compare-crew.md, PR-7): DR1's record of origin `compare` that the
  * comparison names (`selection.decision`), read whole and answered through DR1's own DecisionRespond, so the panel, the card, the
  * ticket's Decisions, Needs you and a phone are one act: the candidates and None of these, nothing preselected, the rationale
  * required, the confirm saying final and naming the candidate. Its state is DR1's words ("Open: waits for …", "Recorded: …",
- * "Applied: approach-b selected at 4b825dc, by Nate"); a record closed because a lane changed says so, and is never answered here: a
- * new one opens when every lane has ended. Before there is a record the panel says when one opens.
+ * "Applied: approach-b selected at 4b825dc"); a record closed because a lane changed says so, and is never answered here: a
+ * new one opens when every lane has ended. Before there is a record the panel says when one opens. Once applied with a candidate, Review
+ * the selected candidate opens the ticket's Review view on it (PR-8b).
  */
 const props = defineProps<{ comparison: Comparison | null }>()
 
@@ -22,6 +23,7 @@ const panel = computed(() => selectionPanelWords(props.comparison, d.value))
 const answerable = computed(() => selectionAnswerable(sel.value, d.value))
 const answer = computed(() => (d.value ? acceptedAnswer(d.value) : null))
 const forWho = computed(() => selectionFor(sel.value))
+const review = computed(() => selectionReview(sel.value))
 const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error', default: 'text-default' }
 </script>
 
@@ -56,6 +58,7 @@ const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error
         </template>
       </dl>
       <DecisionRespond v-if="answerable" :decision="d" :begin="record.begin" @read="record.read()" />
+      <UButton v-if="review" label="Review the selected candidate" icon="i-lucide-scan-eye" size="sm" color="neutral" variant="outline" class="self-start max-lg:min-h-11" :to="review" data-compare-review-selected />
     </template>
   </section>
 </template>

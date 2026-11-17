@@ -125,7 +125,13 @@ func dispatchComparison(ctx context.Context, c *apiClient, key, run string, asJS
 		return 1, err
 	}
 	if asJSON {
-		_, err := stdout.Write(append(raw, '\n'))
+		// Through jsonText, as every reply the CLI prints as JSON: no
+		// control character of the server's reaches the terminal.
+		text, err := jsonText(raw, false)
+		if err != nil {
+			return 1, err
+		}
+		_, err = fmt.Fprintln(stdout, text)
 		return 0, err
 	}
 	var v comparisonView

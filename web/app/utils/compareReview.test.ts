@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { candidateSelection, selectedReview } from './compareSelect'
+import { candidateSelection, selectedReview, selectionReview } from './compareSelect'
 import type { Comparison } from './compare'
 import { firstReviewCandidate, pickerLabel, reviewDefault } from './review'
 
@@ -63,6 +63,13 @@ describe("Review the selected candidate on the ticket's Decisions", () => {
     expect(selectedReview({ ...record, applied: { ...record.applied, selected: undefined, none: true } })).toBeNull()
     expect(selectedReview({ ...record, state: 'answered' as never })).toBeNull()
     expect(selectedReview({ ...record, origin: 'agent' })).toBeNull()
+  })
+
+  it("is offered on the comparison's own selection once applied with a candidate, and not before or after None of these", () => {
+    expect(selectionReview(applied.selection)).toEqual({ query: { view: 'review', candidate: `${RUN}/approach-b/2@${B}` } })
+    expect(selectionReview({ ...applied.selection!, state: 'answered' })).toBeNull()
+    expect(selectionReview({ ...applied.selection!, applied: { how: 'selected', none: true } })).toBeNull()
+    expect(selectionReview(null)).toBeNull()
   })
 
   it('is drawn on the record row and the picker reads its labels', () => {
