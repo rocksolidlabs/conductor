@@ -122,3 +122,31 @@ export function reviewSendWords(a: ReviewSendAnswer, draft: boolean): { title: s
       return { title: 'Recorded', detail: 'Yardmaster took the request; the review says when the repair is made.', tone: 'neutral' }
   }
 }
+
+/** A candidate as Capture again takes it: its run, task, attempt and commit. */
+export interface RetakeCandidate {
+  run: string
+  task: string
+  attempt: number
+  commit: string
+}
+
+/**
+ * The candidate an earlier capture is captured again on (Capture again on a later candidate, PR-8): among the ticket's runs, newest
+ * first, the first standing work candidate of the capture's own task that is not the capture's own attempt; null for a capture of no
+ * task, or with no such candidate.
+ */
+export function retakeCandidate(
+  origin: { run?: string; task?: string; attempt?: number },
+  runs: ReadonlyArray<{ run: string; candidates: ReadonlyArray<{ task: string; kind: string; candidates: ReadonlyArray<{ attempt: number; commit?: string; standing: boolean; kind: string }> }> }>,
+): RetakeCandidate | null {
+  if (!origin.task) return null
+  for (const r of runs) {
+    for (const t of r.candidates) {
+      if (t.task !== origin.task || t.kind !== 'work') continue
+      const c = t.candidates.find((x) => x.kind === 'work' && x.standing && x.commit && !(r.run === origin.run && x.attempt === origin.attempt))
+      if (c) return { run: r.run, task: t.task, attempt: c.attempt, commit: c.commit! }
+    }
+  }
+  return null
+}

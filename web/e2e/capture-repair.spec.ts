@@ -227,8 +227,14 @@ test('a capture of a broken control, a ticket, a plan with its attachments, the 
   await expect(page).toHaveURL(new RegExp(`/preview\\?run=${repairRun}&task=build&attempt=1&seq=\\d+$`))
   await expect(page.locator('[data-preview-label]')).toHaveText(`candidate ${commit.slice(0, 7)} of build · attempt 1 · as committed`, { timeout: CHECKOUT_MS })
 
-  // Capture again of the first capture there: its element described again, now reached by its own click, kept as a retake.
-  await page.goto(`${page.url()}&retake=${first}`)
+  // Capture again of the first capture there, from the ticket's Captures: the candidate's checkout (open already) with the first named;
+  // its element described again, now reached by its own click, kept as a retake.
+  await ticketPage(page, key)
+  const again = page.locator(`[data-ticket-captures] [data-ticket-capture-again="${first}"]`)
+  await expect(again).toHaveText('Capture again on build#1', { timeout: BOOT_MS })
+  await again.click()
+  await expect(page).toHaveURL(new RegExp(`/preview\\?run=${repairRun}&task=build&attempt=1&seq=\\d+&retake=${first}$`))
+  await expect(page.locator('[data-preview-retake-of]')).toContainText(first)
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   await page.locator('[data-preview-retake]').click()
   await expect(editor.locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#save')

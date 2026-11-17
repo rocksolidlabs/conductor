@@ -4,6 +4,11 @@ import type { TicketAttachment } from '~/composables/useDispatch'
 import { diffSinceSent } from '~/utils/capture'
 import { type CaptureSendView, sendState } from '~/utils/captureSend'
 import { relativeTime } from '~/utils/sessions'
+import { retakeCandidate, type RetakeCandidate } from '~/utils/captureReview'
+import { entryRunId } from '~/utils/dispatchEvidence'
+import { previewPath } from '~/utils/capture'
+import { checkoutOfAttempt, previewRefusal } from '~/composables/useCandidatePreview'
+import { mintCommandId } from '~/utils/tasks'
 
 /**
  * A ticket's Captures (Program item PV1, "On the ticket"): the captures sent to the ticket, and only those (a capture, a retake too,
@@ -20,6 +25,10 @@ const props = defineProps<{
 }>()
 
 const api = useCaptureSends()
+const dispatch = useDispatchApi()
+const sessions = useSessions()
+const { request } = useApi()
+const router = useRouter()
 
 /** A send of a capture to this ticket, with what it froze. */
 interface SentHere {
@@ -57,6 +66,7 @@ async function read() {
     }
     captures.value = out
     error.value = ''
+    await readCandidates()
   } catch (e) {
     error.value = (e as Error).message || 'The captures could not be read'
   } finally {
@@ -71,6 +81,55 @@ watch(
   () => props.ticketKey,
   () => void read(),
 )
+
+// Capture again on a later candidate (PR-8): the ticket's runs' candidates, newest run first, read with the captures; each capture of a
+// task is offered the newest standing candidate of that task that is not its own attempt, its checkout opened (or the one open) and
+// the preview page asked to capture it again (`&retake=`).
+const runCandidates = ref<Array<{ run: string; candidates: Awaited<ReturnType<typeof dispatch.runCandidates>>['candidates'] }>>([])
+async function readCandidates() {
+  try {
+    const page = await dispatch.ticketRuns(props.ticketKey)
+    const runs = [...new Set(page.entries.map(entryRunId).filter((r) => !!r))]
+    const out: typeof runCandidates.value = []
+    for (const run of runs) {
+      const c = await dispatch.runCandidates(run).catch(() => null)
+      if (c?.managed) out.push({ run, candidates: c.candidates })
+    }
+    runCandidates.value = out
+  } catch {
+    runCandidates.value = []
+  }
+}
+function retakeOn(c: CaptureHere): RetakeCandidate | null {
+  const o = c.sends[0]?.document.origin
+  return o ? retakeCandidate(o, runCandidates.value) : null
+}
+const retaking = ref('')
+const retakeRefused = reactive(new Map<string, string>())
+async function captureAgain(c: CaptureHere) {
+  const on = retakeOn(c)
+  if (!on) return
+  retaking.value = c.id
+  retakeRefused.delete(c.id)
+  const base = `/api/runs/${encodeURIComponent(on.run)}/tasks/${encodeURIComponent(on.task)}/attempts/${on.attempt}/preview`
+  try {
+    let seq = 0
+    try {
+      seq = (await request<{ seq: number }>(base, { method: 'POST', body: { commandId: mintCommandId() } })).seq
+    } catch (e) {
+      // Open already: the one open, as the task's read names it.
+      if ((e as { code?: string }).code !== 'preview_open') throw e
+      const read = await sessions.runTask(on.run, on.task)
+      seq = checkoutOfAttempt(on.attempt, undefined, read.attempts)?.seq ?? 0
+      if (!seq) throw e
+    }
+    await router.push(`${previewPath({ run: on.run, task: on.task, attempt: on.attempt, seq })}&retake=${encodeURIComponent(c.id)}`)
+  } catch (e) {
+    retakeRefused.set(c.id, previewRefusal(e))
+  } finally {
+    retaking.value = ''
+  }
+}
 
 async function open(id: string) {
   if (opened.has(id)) {
@@ -148,6 +207,19 @@ function changes(id: string, sent: CaptureDocumentView): string[] {
       </div>
       <div class="flex flex-col gap-1">
         <UButton :label="opened.has(c.id) ? 'Close' : 'Open'" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="ghost" class="w-fit" data-ticket-capture-open @click="open(c.id)" />
+        <UButton
+          v-if="retakeOn(c)"
+          :label="`Capture again on ${retakeOn(c)!.task}#${retakeOn(c)!.attempt}`"
+          icon="i-lucide-camera"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          class="w-fit"
+          :loading="retaking === c.id"
+          :data-ticket-capture-again="c.id"
+          @click="captureAgain(c)"
+        />
+        <p v-if="retakeRefused.get(c.id)" class="text-xs text-muted" data-ticket-capture-again-refused>{{ retakeRefused.get(c.id) }}</p>
         <p v-if="opened.has(c.id)" class="text-xs text-muted" data-ticket-capture-now>
           Now r{{ opened.get(c.id)!.rev }}: {{ changes(c.id, c.sends[0]!.document).join(', ') }}
         </p>
