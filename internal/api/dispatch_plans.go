@@ -601,7 +601,9 @@ var proposeSeam atomic.Pointer[func(key string)]
 // agent its members name as the catalog resolves it (agentSelection).
 // Every git command is an argv through internal/gitcli, in the C locale.
 // The attachments and comments are handed to the store as named, which
-// checks them and sets each comment's digest from its row. A guard's
+// checks them and sets each comment's digest from its row, and so is the
+// source (the steps to reproduce by their pin, the evidence links), which
+// the store checks against the ticket's snapshot and links. A guard's
 // admit is asked of the crew and its working directory once that is
 // resolved, before git runs there. When it reports false it has answered.
 func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, key string, req dispatch.PlanRequest, guard *planGuard) (dispatch.PlanBody, bool) {
@@ -729,6 +731,7 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 	return dispatch.PlanBody{
 		Base: base, Crew: encodeRaw(c), Agents: agents, ManifestFile: manifest, References: refs,
 		Attachments: req.Attachments, Comments: comments, Constraints: req.Constraints, Decisions: req.Decisions, Note: req.Note,
+		Source: req.Source,
 	}, true
 }
 

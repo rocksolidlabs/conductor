@@ -142,6 +142,22 @@ type actBody struct {
 	Candidate dispatch.Candidate
 }
 
+// followupActBody is a turn's prepare_followup body: the propose route's
+// (planProposeBody's fields), less the revision's source. Its Source, shallower than the request's,
+// takes any "source" member sent (so the request's is never decoded and
+// stays nil) and is refused unless null: only a person's own proposal
+// chooses what of a linked item's text (its steps to reproduce) and
+// which evidence links a run is handed. guide:"-" keeps it out of the
+// act's schema in the guide.
+type followupActBody struct {
+	dispatchOp
+	dispatch.PlanRequest
+	Source json.RawMessage `json:"source,omitempty" guide:"-"`
+}
+
+// followupSourceWords answer a turn's follow-up that names a source.
+const followupSourceWords = "a follow-up Brakeman proposes hands over no source: the steps to reproduce and the evidence links are chosen in a person's own proposal"
+
 // turnAct answers a Brakeman turn's act on the operation ar
 // (docs/plans/brakeman.md, "BK2 (PR-12)"). The grant (the snapshot the
 // turn began under and the configuration now; 403 not_granted) is checked
@@ -477,13 +493,16 @@ func actArgs(ar actRoute, key string, raw []byte) (actBody, string, *apiError) {
 			return actBody{}, "", aerr
 		}
 	case brakeman.ActPrepareFollowup:
-		var b planProposeBody
+		var b followupActBody
 		if err := store.DecodeStrict(raw, &b); err != nil {
 			return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", err.Error())
 		}
+		if len(b.Source) > 0 && string(b.Source) != "null" {
+			return actBody{}, "", newAPIError(http.StatusBadRequest, "invalid_request", followupSourceWords)
+		}
 		body = actBody{OpID: b.OpID, ExpectedRev: b.ExpectedRev, Propose: b.PlanRequest}
 		b.OpID, b.ByName = "", ""
-		canon = b
+		canon = planProposeBody{dispatchOp: b.dispatchOp, PlanRequest: b.PlanRequest}
 	default:
 		var b ticketLaunchBody
 		if err := store.DecodeStrict(raw, &b); err != nil {

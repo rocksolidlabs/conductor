@@ -287,7 +287,9 @@ describe("the close card's words (PR-11)", () => {
 describe("the close policy's editor", () => {
   it('keeps the policy in its order, each requirement once, nothing it does not know', () => {
     expect(closeRequiresOf(['delivery', 'acceptance', 'delivery'])).toEqual(['acceptance', 'delivery'])
-    expect(closeRequiresOf(['verified', 'delivery', 'merged'])).toEqual(['delivery', 'verified'])
+    expect(closeRequiresOf(['verified', 'delivery', 'reviewed'])).toEqual(['delivery', 'verified'])
+    // IN1a's merged comes last, as the server keeps it (dispatch.CloseRequirements).
+    expect(closeRequiresOf(['merged', 'verified', 'acceptance'])).toEqual(['acceptance', 'verified', 'merged'])
     expect(closeRequiresOf([])).toEqual([])
   })
   it('tells two policies apart whatever their order', () => {
