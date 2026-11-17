@@ -139,11 +139,14 @@ type Options struct {
 	// agent reports to its own server, never to the switchyard, so only the
 	// switchyard could send one, and an attention's choices are keys the
 	// owner types with one click. Nor is it told the host takes routed
-	// answers (answer_as) or what the session keeps, and an answer_as it
-	// sends is dropped unread. The Uplink sets it; `conductor host`
+	// answers (answer_as), reads forms or what the session keeps, and an
+	// answer_as it sends is dropped unread. The Uplink sets it; `conductor host`
 	// publishes to the owner's own server, which shows the session in its
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
+	// formsUnsaid leaves proto.HostInfo.Forms out of the register, as a
+	// host of an earlier release does (tests).
+	formsUnsaid bool
 
 	// Runtime starts the hosted command (docs/plans/runtime.md): nil is the
 	// native one (local.Native), as a nil Log is slog.Default. conductor
@@ -855,6 +858,9 @@ func (a *agent) registration(cols, rows uint16) proto.Register {
 		// The owner's own server may route the session's questions: it is
 		// told what the session keeps, and its answers are taken.
 		reg.Host.AnswerAs = true
+		// It reads a recipe's forms by the form's rules (#970): its
+		// session asks them as the server's own sessions do.
+		reg.Host.Forms = !a.opts.formsUnsaid
 		reg.Session.HostReport = a.report
 		return reg
 	}

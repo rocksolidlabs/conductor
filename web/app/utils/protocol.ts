@@ -871,6 +871,16 @@ export interface HostAnswerAsInfo {
   answerAs?: boolean
 }
 
+/**
+ * Forms (docs/protocol.md, Host control connection, #970): what a host's register says when it reads a
+ * recipe's forms by the form's rules (Codex's MCP tool approval), so that the owner's own server puts
+ * them in `registered.recipe`. A bool. `conductor host` says it; a server publishing to a switchyard
+ * never does; an older host leaves it out and an older server ignores it.
+ */
+export interface HostFormsInfo {
+  forms?: boolean
+}
+
 /** host → server, on `attention`, from a host that said answerAs: the questions its session keeps without showing them. */
 export interface HostAttentionKept {
   /** At most HOST_MAX_KEPT question ids (1–32 bytes of printable ASCII each); a message past that is dropped whole. */

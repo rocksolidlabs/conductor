@@ -103,6 +103,35 @@ sidebar, the phone's first tab, the palette and the tab's title. The
 sidebar's Needs you section lists every one of them with its kind's mark,
 a run that waits with its item under its header. The Needs you row leaves
 the nav when nothing waits and nothing was decided in the last day.
+
+**Needs you** is also a page (`/decisions`, **G N**), built for a phone
+first: the open items oldest first, each read whole before anything is done
+to it, with its brief, the question, each choice with what it authorizes,
+what waits on it and its evidence one tap away. An answer, a Retry or an
+Approve goes through that thing's own route at the revision the item was
+read at, so a choice made stale elsewhere is refused with words and nothing
+is done. After an action the item shows its four steps, **Asked**, **Your
+answer**, **Checked by its owner** and **Work resumed**, each done, waiting,
+refused, not applicable or unknown, never guessed. A run's decision answered
+and not yet applied stays under **Answered, not yet applied**, and **Decided
+in the last day** lists what closed, with the way to every decision in
+History. On a phone the list gives way to the open item, and a tab's first
+visit lands on Needs you when something waits. **Open on your phone** (on
+the page in a wide window, and in your menu) shows the page's address as a
+QR code, never the token, which the phone asks for as any workbench does; on
+a workbench opened at a loopback address it offers a **decision link**
+instead: a control link for a run or a session, for two hours, that answers
+only what it covers. Share's **Answer decisions from this link** makes one
+too. A session's decision link opens on the join page's **Needs you** tab,
+the terminal one tap away; a run's shows Needs you above its members and
+answers their questions and the run's failed tasks, the tasks even with no
+member alive, over the run's **desk** (a
+connection that carries the run's decisions and no terminal), at the server
+and through a switchyard it publishes to. A run's durable decision, such as
+a gate, is answered on the LAN or the desktop: a link cannot answer one yet.
+A switchyard's own workbench answers no decisions: they are answered where
+the work runs.
+
 Launch's **What should it do?** takes a first message for the agent: it is
 typed once the agent is ready (after any startup question, such as trusting
 the folder, is answered; line breaks go in as spaces), the session is named
@@ -1260,7 +1289,8 @@ server's own among them; they are not asked again, and their calls keep
 waiting, as when you press Esc in the terminal. The four choices are
 offered in a terminal at least 53 columns wide (Allow and Cancel alone at
 40 too). Narrower, as a phone's 40 columns, on a screen that does not
-plainly show the one form, and on a hosted session (`conductor host`),
+plainly show the one form, and on a session hosted by an earlier
+release's `conductor host` (or published to a switchyard),
 Conductor offers no choices: you answer the form in the terminal (Codex
 0.167 and later say they wait on a permission, and the session needs you
 with no choices; with 0.163 it reads as working). The same form shown
