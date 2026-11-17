@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffSinceSent, isWorkbench, labelWords, parseBridgeMessage, previewPath, sourceLink } from './capture'
+import { diffSinceSent, isWorkbench, labelWords, parseBridgeMessage, previewPath, retakeAddress, sourceLink } from './capture'
 import { MAX_ELEMENT_REPORT, MAX_PREVIEW_TO_WORKBENCH, PREVIEW_MARK } from './protocol'
 import { testElement, testPage } from './testdata/preview'
 
@@ -132,5 +132,19 @@ describe('previewPath', () => {
   it('is the preview page with the attempt, and its seq for a checkout', () => {
     expect(previewPath({ run: 'r-12345678', task: 'build', attempt: 2 })).toBe('/preview?run=r-12345678&task=build&attempt=2')
     expect(previewPath({ run: 'r-12345678', task: 'build', attempt: 2, seq: 3 })).toBe('/preview?run=r-12345678&task=build&attempt=2&seq=3')
+  })
+})
+
+describe('retakeAddress: Capture again opens the same page on this preview, never elsewhere', () => {
+  it("keeps the capture's path and query on the preview's origin, with the preview's own fragment", () => {
+    expect(retakeAddress('http://127.0.0.1:41000/settings?tab=2#token=${CONDUCTOR_TREE_SECRET}', 'http://127.0.0.1:42000/#token=abc')).toBe('http://127.0.0.1:42000/settings?tab=2#token=abc')
+  })
+  it("never takes the capture's origin, and frames nothing for an address that does not parse", () => {
+    expect(retakeAddress('https://elsewhere.example:443/x', 'http://127.0.0.1:42000/')).toBe('http://127.0.0.1:42000/x')
+    expect(retakeAddress('javascript:alert(1)', 'http://127.0.0.1:42000/')).toBe('')
+    // A path that reads as another host is refused, not followed there.
+    expect(retakeAddress('http://127.0.0.1:41000//elsewhere.example/x', 'http://127.0.0.1:42000/')).toBe('')
+    expect(retakeAddress('not a url', 'http://127.0.0.1:42000/')).toBe('')
+    expect(retakeAddress('http://127.0.0.1:41000/', 'file:///etc/passwd')).toBe('')
   })
 })

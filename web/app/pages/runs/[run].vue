@@ -36,6 +36,7 @@ const events = useEvents()
 const toast = useToast()
 const { create } = useTerminalTransport()
 const previewOpen = usePreviewOpen()
+const candidatePreview = useCandidatePreview(() => String(route.params.run))
 
 const runId = computed(() => String(route.params.run))
 /** The record of a run the server no longer holds, as the page read it (`record`): shown read-only, never among the live runs. */
@@ -433,6 +434,23 @@ palette.registerPage(() => {
     const n = t.attempt?.n ?? 0
     if (preview) actions.push({ id: 'open-preview', kind: 'page', target: t.id, label: 'Open preview', icon: 'i-lucide-external-link', run: () => void previewOpen.newTab({ run: r.id, task: t.id, attempt: n }, preview) })
     if (a.inConductor) actions.push({ id: 'open-in-conductor', kind: 'page', target: t.id, label: 'Open in Conductor', icon: 'i-lucide-scan', run: () => void router.push(previewPath({ run: r.id, task: t.id, attempt: n })) })
+    // A candidate's preview (PV1 PR-8): its checkout made and the preview page opened at its seq; while one is open, Open it.
+    if (a.previewing) {
+      const seq = a.previewing.seq
+      actions.push({ id: 'open-candidate-preview', kind: 'page', target: t.id, label: "Open the candidate's preview", icon: 'i-lucide-scan', run: () => void router.push(previewPath({ run: r.id, task: t.id, attempt: n, seq })) })
+    } else if (a.candidate)
+      actions.push({
+        id: 'preview-candidate',
+        kind: 'page',
+        target: t.id,
+        label: 'Preview this candidate',
+        icon: 'i-lucide-git-commit-horizontal',
+        run: async () => {
+          const opened = await candidatePreview.open(t.id, n)
+          if (opened) await router.push(previewPath({ run: r.id, task: t.id, attempt: n, seq: opened.seq }))
+          else toast.add({ title: 'Not previewed', description: candidatePreview.refused.value[`${t.id}:${n}`], color: 'neutral' })
+        },
+      })
     if (a.retry) actions.push({ id: 'retry', kind: 'page', target: t.id, label: 'Retry', icon: 'i-lucide-rotate-ccw', run: () => void taskCommands.send(t, 'retry') })
     if (a.accept) actions.push({ id: 'accept', kind: 'page', target: t.id, label: 'Accept anyway…', icon: 'i-lucide-check', ask: taskCommands.question(t, 'accept'), run: () => void taskCommands.send(t, 'accept') })
     if (a.cancel) actions.push({ id: 'cancel', kind: 'page', target: t.id, label: 'Cancel…', icon: 'i-lucide-x', color: 'error', ask: taskCommands.question(t, 'cancel'), run: () => void taskCommands.send(t, 'cancel') })

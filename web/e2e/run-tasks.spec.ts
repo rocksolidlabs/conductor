@@ -107,12 +107,12 @@ test("the row's menu holds Cancel, Copy branch and Ask Brakeman why; the keyboar
   await modal.getByRole('button', { name: 'Keep it' }).click()
   await expect(modal).toHaveCount(0)
   expect(commands, 'Keep it sends no command').toEqual([])
-  // migrate, out of its attempts: Copy branch and Ask Brakeman why (the day's server has Brakeman), and no Cancel (the engine names
-  // none on a failed task). Retry and Accept anyway stay in the row.
+  // migrate, out of its attempts: Preview this candidate (its last attempt submitted a commit), Copy branch and Ask Brakeman why (the
+  // day's server has Brakeman), and no Cancel (the engine names none on a failed task). Retry and Accept anyway stay in the row.
   await expect(page.locator('[data-task-row="migrate"] [data-task-retry="migrate"]')).toBeVisible()
   await expect(page.locator('[data-task-row="migrate"] [data-task-accept="migrate"]')).toBeVisible()
   await page.locator('[data-task-menu="migrate"]').click()
-  await expect(menu.getByRole('menuitem')).toHaveText(['Copy branch', 'Ask Brakeman why'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['Preview this candidate', 'Copy branch', 'Ask Brakeman why'])
   await expect(page.locator('[data-task-ask-brakeman="migrate"]')).toHaveAttribute('href', /\/brakeman\?kind=explain&subject=/)
   await expect(page.locator('[data-task-cancel="migrate"]')).toHaveCount(0)
   await page.keyboard.press('Escape')
