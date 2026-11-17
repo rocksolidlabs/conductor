@@ -14,7 +14,8 @@ import (
 // The message route answers the engine's lane refusal 409 lane, with its
 // words; the engine writes nothing for it (internal/crew,
 // TestMessagesStayInTheirLane). A command a comparison does not take is a
-// task_state refusal.
+// task_state refusal; a lane the applied selection did not select is
+// not_selected, with the engine's words.
 func TestALaneRefusalIsAnswered409Lane(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
@@ -23,6 +24,7 @@ func TestALaneRefusalIsAnswered409Lane(t *testing.T) {
 	}{
 		{fmt.Errorf("%w: cand-b is in another lane of this comparison: a message stays in its lane", crew.ErrLane), http.StatusConflict, "lane"},
 		{crew.ErrNotListed, http.StatusConflict, "task_state"},
+		{&crew.NotSelectedError{Words: "approach-a was not selected in dr-9: launch a new comparison to try it again"}, http.StatusConflict, "not_selected"},
 	} {
 		w := httptest.NewRecorder()
 		(&Server{}).taskError(w, "message", "s-1", tc.err)
@@ -62,8 +64,12 @@ func TestACompareCrewSavesAndIsNotLaunchedFromTheCrewsPage(t *testing.T) {
 			"members": c.Members, "tasks": c.Tasks, "compare": cmp}
 	}
 	if resp, out := e.do("POST", "/api/crews", adminToken, body(func(cmp *crew.Compare) { cmp.Selector = "person:ana" })); resp.StatusCode != http.StatusBadRequest ||
-		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "selector is not taken yet") {
-		t.Fatalf("a selector: %d %v", resp.StatusCode, out)
+		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "compare: selector: no person of crew") {
+		t.Fatalf("a selector naming no person of the crew: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/crews", adminToken, body(func(cmp *crew.Compare) { cmp.Selector = crew.GrantDecideLabel })); resp.StatusCode != http.StatusBadRequest ||
+		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "must be role:<responsibility> or person:<name>") {
+		t.Fatalf("a selector of the decide grant: %d %v", resp.StatusCode, out)
 	}
 	saved := e.sendCrew("POST", "/api/crews", body(nil), http.StatusCreated)
 	id := saved["id"].(string)

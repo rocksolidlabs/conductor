@@ -1459,6 +1459,13 @@ func (e *Engine) settleRun(r *run) {
 	if r.outcome != "" {
 		return
 	}
+	if r.selectionHolds() {
+		// A comparison with no applied selection settles in its compare
+		// step alone, and not while its selection is open or answered
+		// (compare_select.go): no outcome, run.finished or end before the
+		// record that the change ending the last lane opens.
+		return
+	}
 	r.settle()
 	if r.outcome != "" {
 		r.markRun()

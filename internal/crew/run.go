@@ -550,6 +550,10 @@ type Engine struct {
 	// transaction: a test lands a change there.
 	beforeMirror  func(n int64)
 	beforeRespond func(n int64)
+	// beforeApply, when set, runs as applyDecisions takes an answered
+	// decision n up, before its application's transaction: a test holds
+	// the application there.
+	beforeApply func(n int64)
 	// beforeOperate, when set, runs in an operator's operation once it has
 	// looked for a repeat of its id and before its transaction: a test
 	// commits an answer there, which the operation's rev read must meet.
@@ -626,6 +630,9 @@ type run struct {
 	// cmp is what a compare run keeps of its lanes' settling
 	// (compare_step.go), under e.mu.
 	cmp compareState
+	// sel is what a compare run keeps of its selection (compare_select.go),
+	// under e.mu.
+	sel selectState
 	// rechecks are the attempts Check again recorded whose verification
 	// has not started: the pump starts them once their change is
 	// committed and the prerequisites have passed (startRechecks).
