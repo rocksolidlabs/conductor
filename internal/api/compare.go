@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // A comparison over HTTP (docs/plans/compare-crew.md, Program item CP1,
@@ -33,7 +35,11 @@ const (
 	// lanes share and the patches they have in common, never what an
 	// agent's hooks say it touched (the touched index, which the reply
 	// does not read).
-	notObservedWords = "A read of another candidate's folder or of an agent's own stored state is not observed, and a change rewritten by hand is not detected; what the agents report of their own file activity is not used as a measure."
+	// personLaunchesWords refuses a comparison's launch to every caller
+	// but a person's route (ext.Host's LaunchApproved, Brakeman's granted
+	// launch act among them).
+	personLaunchesWords = "a comparison is launched by a person, who reads what it starts: open the ticket's revision"
+	notObservedWords    = "A read of another candidate's folder or of an agent's own stored state is not observed, and a change rewritten by hand is not detected; what the agents report of their own file activity is not used as a measure."
 )
 
 // handleCompareTemplate makes a comparison's crew from a CompareSpec
@@ -163,4 +169,34 @@ func rowIsComparison(row ledger.RunRow) bool {
 		Compare json.RawMessage `json:"compare"`
 	}
 	return json.Unmarshal([]byte(row.Crew), &c) == nil && len(c.Compare) > 0 && string(c.Compare) != "null"
+}
+
+// comparisonRevisionRefused answers w, and reports true, for a launch of
+// the plan revision plan by any caller but a person's launch route when
+// the revision's crew is a comparison (409 refused, personLaunchesWords),
+// or when the revision cannot be read to tell (its read's error): such a
+// launch writes nothing. A revision the store has not is left to the
+// launch, which refuses it not_found.
+func (s *Server) comparisonRevisionRefused(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, plan string) bool {
+	if !dispatch.ValidID(plan) {
+		return false
+	}
+	v, err := ds.Plan(ctx, plan)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return false
+	case err != nil:
+		s.dispatchError(w, "plan revision", err)
+		return true
+	}
+	f, err := s.planFacts.get(v.Digest, func() (json.RawMessage, error) { return v.Body, nil })
+	if err != nil {
+		s.dispatchError(w, "plan revision", err)
+		return true
+	}
+	if f.Compare == nil {
+		return false
+	}
+	writeError(w, http.StatusConflict, "refused", personLaunchesWords)
+	return true
 }

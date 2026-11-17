@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
@@ -260,4 +263,61 @@ func TestComparisonGuideRows(t *testing.T) {
 			t.Fatalf("the comparison's bound: %v", o.Bounds)
 		}
 	}
+}
+
+// I7: a comparison is launched by a person, who reads what it starts. A
+// provider's launch through ext.Host's LaunchApproved, and Brakeman's
+// granted launch act (the desk's Host), of a comparison's revision are
+// refused before anything is written, in words, with no launch, no
+// receipt and no run; the act's entry keeps the words. The act's body
+// takes no count at all. An ordinary revision is launched by both.
+func TestAComparisonIsLaunchedByAPerson(t *testing.T) {
+	f := newActFixture(t, everyGrant, nil)
+	cloud := testHost(f.srv, t.Context(), "cloud")
+	if ref, err := cloud.LaunchApproved(t.Context(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: f.plan, OpID: "p-plain", By: ada}); err != nil || ref.ID == "" {
+		t.Fatalf("a provider's launch of an ordinary revision: %+v %v", ref, err)
+	}
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-plain", "expectedRev": f.ticketRev(t)}); status != http.StatusCreated {
+		t.Fatalf("the act's launch of an ordinary revision: %d %v", status, out)
+	}
+	launched := len(f.launches(t))
+	runs := len(f.srv.runs.List())
+
+	plan := compareRevision(t, f.planTest, compareSpecBody("Compared", f.repo, 2, false, nil))
+	refused := func(what string, err error) {
+		t.Helper()
+		var ae *apiError
+		if !errors.Is(err, ext.ErrRefused) || !errors.As(err, &ae) || ae.Code != "refused" || ae.Message != personLaunchesWords {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	_, err := cloud.LaunchApproved(t.Context(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: plan, OpID: "p-cmp", By: ada})
+	refused("a provider's launch", err)
+	_, err = f.srv.BrakemanHost().LaunchApproved(t.Context(), ext.ApprovedLaunch{Ticket: "CND-1", Plan: plan, OpID: "p-desk", By: ada})
+	refused("the desk's launch", err)
+	status, out := f.launchAct(t, map[string]any{"opId": "a-cmp", "plan": plan, "expectedRev": f.ticketRev(t)})
+	if status != http.StatusConflict || codeOf(out) != "refused" || apiMessage(out) != personLaunchesWords {
+		t.Fatalf("the act's launch: %d %v", status, out)
+	}
+	i := slices.IndexFunc(f.acts(t), func(a brakeman.Act) bool { return a.OpID == "a-cmp" })
+	if i < 0 || f.acts(t)[i].State != brakeman.ActRefused || f.acts(t)[i].Why != personLaunchesWords {
+		t.Fatalf("the act's entry: %+v", f.acts(t))
+	}
+	// The act takes no count: the person's alone.
+	if status, out := f.launchAct(t, map[string]any{"opId": "a-count", "plan": plan, "candidates": 2}); status != http.StatusBadRequest || codeOf(out) != "invalid_request" {
+		t.Fatalf("the act with a count: %d %v", status, out)
+	}
+	for actor, id := range map[string]string{ext.SubjectActor + ada.Subject: "p-cmp", brakemanActor: "p-desk"} {
+		if _, found, err := f.srv.dispatch.Receipt(t.Context(), actor, id); err != nil || found {
+			t.Fatalf("a receipt of %s kept: %v %v", id, found, err)
+		}
+	}
+	if n := len(f.launches(t)); n != launched {
+		t.Fatalf("%d launches, %d before", n, launched)
+	}
+	if n := len(f.srv.runs.List()); n != runs {
+		t.Fatalf("%d runs, %d before", n, runs)
+	}
+	// The person's launch of it, with the count, is taken.
+	f.launch(t, f.testEnv, map[string]any{"plan": plan, "candidates": 2}, http.StatusCreated, "")
 }
