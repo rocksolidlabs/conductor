@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
-import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
+import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionSubject, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -11,6 +11,9 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
  * server judges it, and its refusal says what happened. A write's reply goes to what `begin` answered when the write started
  * (useDecisionRecord's), so a reply from before the stream came back is dropped (Codex's round 3 on #719).
+ *
+ * A comparison's selection (origin `compare`, Program item CP1) says each candidate's commit on its line under the buttons, linked
+ * to its comparison.
  */
 const props = defineProps<{ decision: Decision; begin: () => (decision: Decision) => void }>()
 const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
@@ -24,6 +27,7 @@ const options = computed(() => optionsOf(d.value))
 const best = computed(() => recommended(d.value))
 const confirms = computed(() => d.value.type === 'approval' || d.value.type === 'assignment')
 const more = computed(() => askForMore(d.value))
+const ticket = useDecisionRunInfo(() => d.value.run).ticket
 
 /** The choice picked and the rev the card showed then, waiting for Confirm. */
 const pending = ref<{ choice: number; rev: number } | null>(null)
@@ -44,8 +48,11 @@ const moved = computed(() => !!pending.value && (d.value.state !== 'open' || d.v
 // Whether the buttons are drawn, said to the card above (UX1 PR-20): while they are, they are the one list of choices.
 watch(answering, (shown) => emit('controls', shown), { immediate: true })
 onBeforeUnmount(() => emit('controls', false))
-/** The options that say what they cost, in order: one muted line each under the buttons. */
-const tradeoffs = computed(() => options.value.flatMap((o, i) => (o.tradeoffs ? [{ i, label: o.label, tradeoffs: o.tradeoffs }] : [])))
+/** The options that say what they cost or what they continue (a selection's candidate), in order: one muted line each under the buttons. */
+const tradeoffs = computed(() => options.value.flatMap((o, i) => {
+  const subject = optionSubject(o, ticket.value)
+  return o.tradeoffs || subject ? [{ i, label: o.label, tradeoffs: o.tradeoffs ?? '', subject }] : []
+}))
 
 function pick(i: number) {
   refusal.value = ''
@@ -146,7 +153,9 @@ watch(
       </div>
       <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
       <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
-        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i"><span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}</li>
+        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i">
+          <span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}<template v-if="t.subject"><template v-if="t.tradeoffs"> · </template><span :data-decision-option-subject="t.i"><NuxtLink v-if="t.subject.to" :to="t.subject.to" class="hover:underline">{{ t.subject.text }}</NuxtLink><template v-else>{{ t.subject.text }}</template></span></template>
+        </li>
       </ul>
       <UTextarea v-if="decision.type === 'clarification'" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy" data-decision-text />
       <UTextarea v-model="rationale" :rows="1" autoresize placeholder="Why (optional, kept with the answer)…" :maxlength="2000" :disabled="busy" data-decision-rationale />
