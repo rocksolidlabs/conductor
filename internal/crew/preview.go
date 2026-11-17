@@ -138,12 +138,13 @@ type Previewing struct {
 // PreviewState is a preview as the engine gives it to the server's
 // routes: its name, its state and URL as Previewing says them, its
 // checkout (Dir, under the run's working directory Root), its commit, who
-// opened it, where it runs, and its tree's secret, which only the label
-// route puts into the admin's URL.
+// opened it, where it runs, its run's crew, and its tree's secret, which
+// only the label route puts into the admin's URL.
 type PreviewState struct {
 	PreviewRef
 	State, Preview               string
 	Root, Dir, Commit, By, Where string
+	Crew                         string
 	Secret                       string
 }
 
@@ -295,7 +296,7 @@ func (p *preview) previewing() *Previewing {
 
 // stateOf is p as the routes read it. The caller holds e.mu.
 func (p *preview) stateOf() PreviewState {
-	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.commit, By: p.by, Where: string(p.r.rt.Where())}
+	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.commit, By: p.by, Where: string(p.r.rt.Where()), Crew: p.r.crewID}
 	if pv := p.previewing(); pv != nil {
 		ps.State, ps.Preview = pv.State, pv.Preview
 	}
