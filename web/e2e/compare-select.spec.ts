@@ -224,6 +224,8 @@ test.describe('the selection and the supporting panel on the comparison', () => 
         const body = route.request().postDataJSON() as Record<string, unknown>
         asked.push(body)
         const request = { id: 'br-7', opId: body.opId, kind: 'compare', subjects: body.subjects, createdAt: new Date().toISOString(), state: 'queued', agent: { id: 'brakeman-stub' }, config: { visibility: {}, scope: {}, permissions: {}, budget: {}, rev: 1 }, reads: 0 }
+        // As the server does: the comparison names the request asked from then on.
+        supporting = { ...SAID, brakeman: { request: 'br-7', state: 'queued' } }
         await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ request }) })
       },
     )
@@ -256,6 +258,9 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     // Ask Brakeman to compare: one request of kind compare on the comparison's launched run.
     await panel.locator('[data-compare-ask-brakeman]').click()
     await expect(panel.locator('[data-compare-ask-words]')).toHaveText('Asked: br-7 is queued.')
+    // The page reads the comparison again by itself: the request asked is the panel's, and no second one can be asked meanwhile.
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText("Brakeman's draft is queued (br-7)")
+    await expect(panel.locator('[data-compare-ask-brakeman]')).toBeDisabled()
     expect(asked).toHaveLength(1)
     expect(asked[0]).toMatchObject({ kind: 'compare', subjects: [`run:${run.id}`] })
     // The person's op id is the page's own: one beginning `cmp-` is the server's, for the draft the settling asks.
@@ -468,9 +473,9 @@ test.describe('the selection on the real server', () => {
       await useTheme(page, 'light')
       await labelled()
 
-      // Needs you no longer lists it.
+      // Needs you no longer lists it: its list read (its empty words drawn, nothing else needing anyone on this server), then no row.
       await page.goto('/decisions')
-      await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+      await expect(page.locator('[data-decisions-list] [data-decisions-empty]').first()).toBeVisible()
       await expect(page.locator(`[data-inbox-row="decision:${sel.decision}"]`)).toHaveCount(0)
 
       // A Retry of approach-a, a lane not selected, is refused in the server's words and changes nothing.
@@ -487,8 +492,11 @@ test.describe('the selection on the real server', () => {
 
   test('a Retry of a failed lane closes the selection and a new one opens; a Stop keeps it, its answer applied on Continue', async ({ browser }) => {
     budget(8 * LOAD_MS + 60_000)
-    // approach-b's stub edits the check's script, which then fails: its lane ends failed, and only approach-a is an option.
-    const s = await ownServer('compare-select-retry', { agents: [{ id: 'cand-fail', from: 'worker-cli', env: { STUB_COMPARE_EDIT: 'script' } }] })
+    // approach-b's stub edits the check's script, which then fails: its lane ends failed, and only approach-a is an option. Its retried
+    // attempt waits while the spec holds it (STUB_ATTEMPT_HOLD), so the closed selection is checked before a new one can open.
+    const files = mkdtempSync(join(tmpdir(), 'conductor-e2e-compare-hold-'))
+    const hold = join(files, 'hold')
+    const s = await ownServer('compare-select-retry', { agents: [{ id: 'cand-fail', from: 'worker-cli', env: { STUB_COMPARE_EDIT: 'script', STUB_ATTEMPT_HOLD: hold } }] })
     try {
       checkScript(s.repo)
       const c = await launchComparison(s.api, s.repo, 'CSRT', [{ agentId: 'worker-cli' }, { agentId: 'cand-fail' }])
@@ -501,11 +509,15 @@ test.describe('the selection on the real server', () => {
 
       // A Retry of the failed lane while selecting: the selection is closed, the panel says so and offers no answer.
       const rev = (await s.api.run(c.run)).managed?.revision ?? 0
+      writeFileSync(hold, '')
       await s.api.ok('POST', `/api/runs/${c.run}/tasks/approach-b/retry`, { commandId: 'csrt-retry-b', expectedRevision: rev })
       await decisionUntil(s.api, first.decision, 'superseded')
       await expect(select.locator('[data-compare-select-words]')).toContainText(`${first.decision} is closed`)
       await expect(select.locator('[data-decision-choice]')).toHaveCount(0)
-      // The lane ends again (failed again): a new selection opens, the one to answer.
+      // Still held: the comparison names the closed record, and no other opened.
+      expect((await comparison(s.api, c.run)).selection?.decision).toBe(first.decision)
+      // The lane goes on and ends again (failed again): a new selection opens, the one to answer.
+      rmSync(hold, { force: true })
       const second = await selectionUntil(s.api, c.run, 'open', { not: first.decision })
       await expect(select).toHaveAttribute('data-compare-selection', second.decision)
       await expect(select.locator('[data-decision-choice]')).toHaveCount(second.options.length)
@@ -527,7 +539,9 @@ test.describe('the selection on the real server', () => {
       await expect(select.locator('[data-compare-select-state]')).toHaveText(/^Applied: approach-a selected at [0-9a-f]{7}$/)
       await page.context().close()
     } finally {
+      rmSync(hold, { force: true })
       await s.stop()
+      rmSync(files, { recursive: true, force: true })
     }
   })
 })

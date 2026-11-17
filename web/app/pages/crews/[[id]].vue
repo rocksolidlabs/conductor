@@ -9,6 +9,7 @@ import { modelProblem } from '~/utils/capacity'
 import { pageState } from '~/utils/pageState'
 import { SheetConfirmation, afterRefusal, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 import { CREW_CHANGED, crewLaunchBody } from '~/utils/protocol'
+import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
 
 // Two things, told apart: a crew is a saved plan, a run is one launch of it.
 // /crews is the home: the runs going now, then the saved crews. /crews/<id>
@@ -218,6 +219,7 @@ const launchBlocked = computed(() => {
   if (!d) return 'Loading'
   if (serverHost.switchyard.value) return 'A switchyard launches nothing'
   if (!d.members.length) return 'Add a member first'
+  if (d.compare) return COMPARISON_LAUNCHES_FROM_A_TICKET
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
   // A launch saves the draft first only when it changed or is new: an unchanged crew saved before the save-only rules launches.
   if (ruleProblem.value || ((dirty.value || !d.id) && saveOnlyProblem.value)) return 'Fix the fields marked in red first'
@@ -647,8 +649,8 @@ usePalette().registerPage(() => ({
       label: `Launch ${c.name}`,
       detail: c.goal || `${c.members.length} ${c.members.length === 1 ? 'member' : 'members'}`,
       icon: 'i-lucide-play',
-      note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : undefined,
-      disabled: c.where === 'host',
+      note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : full.value[c.id]?.compare ? COMPARISON_LAUNCHES_FROM_A_TICKET : undefined,
+      disabled: c.where === 'host' || !!full.value[c.id]?.compare,
       run: () => crewLaunch.ask(c.id),
       field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => crewLaunch.ask(c.id, label.trim()) },
       actions: c.where === 'host' ? undefined : [{ id: 'field', kind: 'page' as const, target: c.id, label: 'Launch named…', icon: 'i-lucide-tag', kbds: ['L'], run: () => {} }],

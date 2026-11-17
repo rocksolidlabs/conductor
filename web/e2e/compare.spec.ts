@@ -135,6 +135,26 @@ test('the compare view draws the comparison as the server measured it, in place 
   await expect(v.locator('[data-compare-candidate="approach-d"] [data-compare-candidate-unavailable]')).toHaveText('Git could not be read for it: git diff: exit status 128: fatal: bad object')
   // The rest of the reply stands for it: its cells are drawn.
   await expect(unit.locator('[data-compare-cell="approach-d"]')).toHaveAttribute('data-cell-state', 'passed')
+  // Nothing git could not read of it is said as a fact: each measured row says it was not measured, in the server's words.
+  const gitWords = 'Not measured: git diff: exit status 128: fatal: bad object.'
+  for (const row of ['size', 'deps', 'verify', 'independence']) await expect(m.locator(`[data-compare-${row}="approach-d"] [data-compare-not-measured]`), row).toHaveText(gitWords)
+  await expect(m.locator('[data-compare-independence="approach-d"] [data-compare-independence-words]')).toHaveCount(0)
+  await expect(m.locator('[data-compare-independence="approach-a"] [data-compare-not-compared]')).toHaveText('not compared with approach-d: not measured')
+  await expect(unit.locator('[data-compare-check-files-of="approach-d"]')).toHaveText(`approach-d: ${gitWords}`)
+
+  // A lane with no result yet has a cell in each row, under its column, saying so; a lane still worked with its last submitted
+  // commit shown says it is not a result yet, never failed.
+  shape = { run: run.id, candidates: 4, running: true, checking: true }
+  await view(page, run.id)
+  await expect(unit.locator('[data-compare-cell]')).toHaveCount(4)
+  expect(await unit.locator('[data-compare-cell]').evaluateAll((els) => els.map((e) => e.getAttribute('data-compare-cell')))).toEqual(['approach-a', 'approach-b', 'approach-c', 'approach-d'])
+  await expect(unit.locator('[data-compare-cell="approach-a"]')).toHaveAttribute('data-cell-state', 'none')
+  await expect(unit.locator('[data-compare-cell="approach-a"] [data-compare-cell-words]')).toHaveText('no result to check')
+  await expect(m.locator('[data-compare-size="approach-a"] [data-compare-not-measured]')).toHaveText('Not measured: it has no commit.')
+  const c = v.locator('[data-compare-candidate="approach-c"]')
+  await expect(c).toHaveAttribute('data-state', 'running')
+  await expect(c.locator('[data-compare-candidate-commit]')).toContainText('not a result yet: its checks or a further attempt are under way')
+  await expect(c.locator('[data-compare-candidate-commit]')).not.toContainText('failed')
 
   // Back to the ticket: its sections again.
   await v.locator('[data-compare-back]').click()

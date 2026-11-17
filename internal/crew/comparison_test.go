@@ -471,7 +471,7 @@ func TestComparableNeedsTheSameCheckManifestAndWhere(t *testing.T) {
 		}, []string{"approach-b: its run did not finish (running)"}},
 		{"no receipt", ledger.PhaseCheck, func(cr *chainRead, rows []ledger.CheckRow) []ledger.CheckRow {
 			return rows[1:]
-		}, []string{"approach-b: " + notRunEarlierText}},
+		}, []string{"approach-b: " + notRunNoReceiptText}},
 		{"another commit checked", ledger.PhaseCheck, func(cr *chainRead, rows []ledger.CheckRow) []ledger.CheckRow {
 			rows[0].Subject = base
 			return rows

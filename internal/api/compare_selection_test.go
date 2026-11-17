@@ -513,3 +513,23 @@ func TestAgreementIsNeverEvidence(t *testing.T) {
 		t.Fatalf("the record: %s", words)
 	}
 }
+
+// A delivery or a repair before the selection names the record only while
+// it takes an answer (open, or answered and not applied): once a lane's
+// change has superseded it and the lanes run again, the words say the
+// comparison has not settled.
+func TestSelectFirstNamesOnlyAStandingRecord(t *testing.T) {
+	for _, tc := range []struct {
+		st   crew.ComparisonState
+		want string
+	}{
+		{crew.ComparisonState{State: crew.CompareRunning}, "select a candidate first: the comparison has not settled"},
+		{crew.ComparisonState{State: crew.CompareRunning, Decision: "dr-9"}, "select a candidate first: the comparison has not settled"},
+		{crew.ComparisonState{State: crew.CompareSelecting, Decision: "dr-9"}, "select a candidate first: dr-9 is open"},
+		{crew.ComparisonState{State: crew.CompareAnswered, Decision: "dr-9"}, "select a candidate first: dr-9 is open"},
+	} {
+		if got := selectFirstWords(tc.st); got != tc.want {
+			t.Errorf("%+v: %q, want %q", tc.st, got, tc.want)
+		}
+	}
+}

@@ -262,7 +262,7 @@ test("New comparison on Crews makes a comparison's crew, and the crew editor sho
   expect((await box('[data-crew-compare-block]')).y).toBeLessThan((await box('[data-crew-tasks-section]')).y)
 })
 
-test("a comparison made on Crews launches from its ticket with the count its statement said, and the crews page's Launch of it is refused", async ({ page, api, state }) => {
+test("a comparison made on Crews launches from its ticket with the count its statement said, and the crews page offers no Launch of it", async ({ page, api, state }) => {
   test.setTimeout(240_000)
   const sent: Array<Record<string, unknown>> = []
   page.on('request', (r) => {
@@ -275,16 +275,77 @@ test("a comparison made on Crews launches from its ticket with the count its sta
   const run = await api.run(made1.runId)
   expect(run.tasks?.map((t) => t.id).sort()).toEqual(['approach-a', 'approach-b'])
 
-  // The crews page's Launch of the same crew: the server refuses it, and the page says its words.
+  // The crews page offers no Launch of it: the page, its palette row and the crew's launch sheet say where a comparison is launched.
   await page.goto(`/crews/${encodeURIComponent(made1.crewId)}`)
   await expect(page.locator('[data-crew-compare-block]')).toBeVisible({ timeout: 30_000 })
-  await page.locator('[data-launch]').first().click()
-  const confirm = page.locator('[data-crew-launch-confirm]')
-  await expect(confirm).toBeEnabled({ timeout: 30_000 })
-  const refused = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/crews/${encodeURIComponent(made1.crewId)}/launch`)
-  await confirm.click()
-  const r = await refused
-  expect(r.status()).toBe(400)
-  expect(((await r.json()) as { error: { code: string } }).error.code).toBe('invalid_crew')
-  await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('[data-launch]')).toBeDisabled()
+  await page.locator('[data-launch]').hover({ force: true })
+  await expect(page.getByText(WHERE).first()).toBeVisible({ timeout: 15_000 })
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('[data-palette]')
+  const row = palette.locator(`[data-palette-row="page:launch:${made1.crewId}"]`)
+  await expect(row).toHaveAttribute('aria-disabled', 'true', { timeout: 15_000 })
+  await expect(row).toContainText(WHERE)
+  await page.keyboard.press('Escape')
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  await page.keyboard.press('Control+k')
+  const { crew: saved } = await api.ok<{ crew: { name: string } }>('GET', `/api/crews/${encodeURIComponent(made1.crewId)}`)
+  await palette.locator('input[data-palette-input]').fill(`# ${saved.name}`)
+  const crewRow = palette.locator(`[data-palette-row="crew:${made1.crewId}"]`)
+  await expect(crewRow).toBeVisible({ timeout: 15_000 })
+  await crewRow.click()
+  await expect(page.locator('[data-crew-launch-comparison]')).toHaveText(`${WHERE}.`, { timeout: 30_000 })
+  await expect(page.locator('[data-crew-launch-confirm]')).toBeDisabled()
+  await page.locator('[data-crew-launch-cancel]').click()
+  // The server refuses it all the same.
+  const refused = await api.launchCrewRaw(made1.crewId)
+  expect([refused.status, refused.body.error.code]).toEqual([400, 'invalid_crew'])
+})
+
+/** Where a comparison is launched, as the crews page and the crew's launch sheet say it. */
+const WHERE = "A comparison is launched from a ticket's approved plan revision: propose this crew as a ticket's plan, approve it, and launch it there"
+
+test('New comparison keeps its draft across a close until Cancel, and a candidate moved to an agent that takes no arguments drops them', async ({ page, api, state }) => {
+  test.setTimeout(120_000)
+  const catalog = (await api.ok<{ agents: Array<{ id: string; name: string; allowArgs: boolean }> }>('GET', '/api/catalog')).agents
+  const bare = catalog.find((a) => !a.allowArgs)
+  expect(bare, 'an agent of the catalog takes no arguments').toBeTruthy()
+  await page.goto('/crews')
+  await page.locator('[data-new-comparison]').click()
+  const form = page.locator('[data-compare-template]')
+  await form.locator('[data-compare-name]').fill('kept across a close')
+  await form.locator('[data-compare-cwd]').getByRole('combobox').fill(state.repo)
+  await form.locator('[data-compare-goal]').fill('Make it fast')
+  await form.locator('[data-compare-criterion="0"]').fill('no new dependency\t')
+  await form.locator('[data-compare-checks] [data-crew-check]').first().getByLabel('Command of check 1').locator('input').fill('true')
+  await form.locator('[data-compare-checks] [data-crew-check]').first().getByLabel('Command of check 1').locator('input').press('Enter')
+  const a = form.locator('[data-compare-candidate-row="0"]')
+  const argsInput = a.locator('[data-compare-candidate-args] input')
+  await argsInput.fill('--model')
+  await argsInput.press('Enter')
+  await argsInput.fill('"half')
+  await expect(form.locator('[data-compare-template-problem]')).toContainText('an argument is still being typed')
+  // To an agent that takes none: its arguments go with the field that showed them, and Create is free.
+  await a.locator('[data-compare-candidate-agent]').click()
+  await page.getByRole('option', { name: bare!.name, exact: true }).click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(a).toContainText('This agent takes no arguments.')
+  await expect(form.locator('[data-compare-template-problem]')).toHaveCount(0)
+  await expect(form.locator('[data-compare-create]')).toBeEnabled()
+
+  // Escape closes it; opened again, the draft is as it was.
+  await page.keyboard.press('Escape')
+  await expect(form).toHaveCount(0)
+  await page.locator('[data-new-comparison]').click()
+  await expect(form.locator('[data-compare-name]')).toHaveValue('kept across a close')
+  await expect(form.locator('[data-compare-criterion="0"]')).toHaveValue('no new dependency\t')
+  await expect(form.locator('[data-compare-candidate-row="0"]')).toContainText('This agent takes no arguments.')
+  await expect(form.locator('[data-compare-create]')).toBeEnabled()
+  // Cancel ends it: the next opening is a new draft.
+  await form.locator('[data-compare-cancel]').click()
+  await expect(form).toHaveCount(0)
+  await page.locator('[data-new-comparison]').click()
+  await expect(form.locator('[data-compare-name]')).toHaveValue('')
+  await expect(form.locator('[data-compare-template-problem]')).toHaveText('Name the comparison')
 })

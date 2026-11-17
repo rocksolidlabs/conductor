@@ -62,6 +62,9 @@ func (e *Engine) settleLanes(r *run) {
 		return
 	}
 	r.cmp.settled = set
+	// A new set is looked at again by the selection (compare_select.go):
+	// an Accept anyway after a settling with no candidate opens one.
+	r.sel.tried = false
 	r.cmp.events = append(r.cmp.events, event{eventCompareSettled, map[string]any{"candidates": slices.Clone(set)}})
 }
 

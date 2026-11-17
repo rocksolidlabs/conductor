@@ -7,6 +7,9 @@ import type { PlanBody, PlanCompare, PlanSummary } from '~/composables/useDispat
  * attempt that could not start, a Retry raises a task's bound, and a candidate that changes the manifest runs its own checks.
  */
 
+/** What the crews page and a crew's launch sheet say of a comparison's crew, in place of its Launch: the server launches it from a ticket alone. */
+export const COMPARISON_LAUNCHES_FROM_A_TICKET = "A comparison is launched from a ticket's approved plan revision: propose this crew as a ticket's plan, approve it, and launch it there"
+
 /** The attempts a task's runs count before it fails (internal/crew, maxAttemptsPerTask): each one a session of its own. */
 export const COUNTED_ATTEMPTS = 3
 
