@@ -44,10 +44,12 @@ const (
 	treeSecretPart = "[secret]"
 )
 
-// routePreviewLabel adds the label's route, the admin's and a
+// routePreviewLabel adds the label's route and a candidate's preview's
+// command routes (preview_commands.go), each the admin's and a
 // switchyard's 403.
 func (s *Server) routePreviewLabel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview", s.requireAdmin(s.launchingAny(s.handlePreviewLabel)))
+	s.routePreviewCommands(mux)
 }
 
 // storedPaths is the changed paths a label keeps: those the store's rule

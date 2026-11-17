@@ -2,8 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/rocksolidlabs/conductor/ext"
+	"github.com/rocksolidlabs/conductor/ext/exttest"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -139,6 +145,145 @@ func TestTheLabelTakesSeqAlone(t *testing.T) {
 	for _, q := range []string{"?seq=1", "?seq=9999", ""} {
 		if status, data, out := c.e.callAs(t, adminToken, "GET", c.path(1, q), nil); status != http.StatusNotFound || codeOf(out) != "no_preview" {
 			t.Errorf("%s with no preview open: %d %s", q, status, data)
+		}
+	}
+}
+
+// Each command is taken with its receipt in the run's ledger, before the
+// preview is begun, and settled with what came of it: the open 202 with
+// its seq and state, its repeat 200 by the same receipt (no second open),
+// the same id with other content a conflict, a second open of the
+// candidate failed with its receipt (preview_open), the close 200 and
+// its repeat by its receipt; a close of a preview no longer open failed
+// with its receipt (no_preview). The ledger keeps each, read back by the
+// command route. An open of a run neither the server nor the ledger has
+// leaves no receipt.
+func TestPreviewCommandsHaveReceipts(t *testing.T) {
+	c := candidateEnv(t)
+	status, data, out := c.command(t, c.path(1, ""), "open-1")
+	if status != http.StatusAccepted || out["seq"] != float64(1) || out["state"] != ledger.PreviewResolved {
+		t.Fatalf("the open: %d %s", status, data)
+	}
+	rc := answerReceipt(out)
+	if rc["intent"] != crew.IntentPreviewOpen || rc["status"] != ledger.CommandDone || rc["repeat"] != nil {
+		t.Fatalf("the open's receipt: %v", rc)
+	}
+	if p, _ := rc["preview"].(map[string]any); p["seq"] != float64(1) || p["task"] != "build" || p["attempt"] != float64(1) || p["run"] != c.run {
+		t.Fatalf("the receipt's preview: %v", rc)
+	}
+	label := c.ready(t, 1)
+	if label["tree"] != "preview" || label["seq"] != float64(1) || label["candidate"] != fmt.Sprintf("%s/build/1@%s", c.run, c.commit) || label["mutable"] != false {
+		t.Fatalf("the checkout's label: %v", label)
+	}
+	status, data, out = c.command(t, c.path(1, ""), "open-1")
+	if status != http.StatusOK || out["seq"] != float64(1) || out["state"] != ledger.PreviewReady || answerReceipt(out)["repeat"] != true {
+		t.Fatalf("the open again: %d %s", status, data)
+	}
+	if status, data, out := c.command(t, c.path(2, ""), "open-1"); status != http.StatusConflict || codeOf(out) != "command_conflict" {
+		t.Fatalf("the id again for another attempt: %d %s", status, data)
+	}
+	status, data, out = c.command(t, c.path(1, ""), "open-2")
+	if status != http.StatusConflict || codeOf(out) != crew.RefusalPreviewOpen || answerReceipt(out)["status"] != ledger.CommandFailed || answerReceipt(out)["refusal"] != crew.RefusalPreviewOpen {
+		t.Fatalf("a second open of the candidate: %d %s", status, data)
+	}
+	status, data, out = c.command(t, c.path(1, "/1/close"), "close-1")
+	if status != http.StatusOK || (out["state"] != "ending" && out["state"] != ledger.PreviewEnded) || answerReceipt(out)["intent"] != crew.IntentPreviewClose {
+		t.Fatalf("the close: %d %s", status, data)
+	}
+	if status, data, out := c.command(t, c.path(1, "/1/close"), "close-1"); status != http.StatusOK || answerReceipt(out)["repeat"] != true {
+		t.Fatalf("the close again: %d %s", status, data)
+	}
+	if !waitFor(30*time.Second, func() bool {
+		return c.e.srv.runs.PreviewNow(crew.PreviewRef{Run: c.run, Task: "build", N: 1, Seq: 1}).State == ledger.PreviewEnded
+	}) {
+		t.Fatal("the preview did not end")
+	}
+	status, data, out = c.command(t, c.path(1, "/1/close"), "close-2")
+	if status != http.StatusNotFound || codeOf(out) != crew.RefusalNoPreview || answerReceipt(out)["status"] != ledger.CommandFailed {
+		t.Fatalf("a close of an ended preview: %d %s", status, data)
+	}
+	for id, want := range map[string]string{"open-1": ledger.CommandDone, "open-2": ledger.CommandFailed, "close-1": ledger.CommandDone, "close-2": ledger.CommandFailed} {
+		status, data, out := c.e.callAs(t, adminToken, "GET", "/api/runs/"+c.run+"/commands/"+id, nil)
+		cmd, _ := out["command"].(map[string]any)
+		if status != http.StatusOK || cmd["status"] != want {
+			t.Fatalf("the command %s: %d %s", id, status, data)
+		}
+	}
+	if status, data, out := c.e.callAs(t, adminToken, "POST", "/api/runs/previewed-ffffffff/tasks/build/attempts/1/preview", map[string]any{"commandId": "open-3"}); status != http.StatusNotFound || answerReceipt(out) != nil {
+		t.Fatalf("an open of no run: %d %s", status, data)
+	}
+}
+
+// A preview command's body is {commandId} and nothing else, and it takes
+// no parameter; its path a run id, a task id and numbers from 1.
+func TestAPreviewCommandsBodyIsItsIDAlone(t *testing.T) {
+	c := candidateEnv(t)
+	for name, tc := range map[string]struct {
+		path string
+		body any
+	}{
+		"no body":            {c.path(1, ""), nil},
+		"another member":     {c.path(1, ""), map[string]any{"commandId": "x", "expectedRevision": 1}},
+		"an id not of form":  {c.path(1, ""), map[string]any{"commandId": "a b"}},
+		"an id too long":     {c.path(1, ""), map[string]any{"commandId": strings.Repeat("a", 33)}},
+		"a parameter":        {c.path(1, "?seq=1"), map[string]any{"commandId": "x"}},
+		"attempt 0":          {c.path(0, ""), map[string]any{"commandId": "x"}},
+		"seq 0":              {c.path(1, "/0/close"), map[string]any{"commandId": "x"}},
+		"a seq not a number": {c.path(1, "/one/close"), map[string]any{"commandId": "x"}},
+		"a body past 1 KiB":  {c.path(1, ""), map[string]any{"commandId": "x", "pad": strings.Repeat("a", 2<<10)}},
+	} {
+		if status, data, out := c.e.callAs(t, adminToken, "POST", tc.path, tc.body); status != http.StatusBadRequest || codeOf(out) != "invalid_request" {
+			t.Errorf("%s: %d %s", name, status, data)
+		}
+	}
+}
+
+// The two command routes and the checkout's label are the admin's: a share
+// link, a session's token, a host token, no token, a Brakeman turn and a
+// provider's principal with a grant are 401; a switchyard 403.
+func TestPreviewCommandRoutesAreAdminOnly(t *testing.T) {
+	fake := exttest.NewFakeIdentity("cloud")
+	fake.Add(passAna, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantDecide}})
+	fake.Add(passHostOnly, ext.Principal{Subject: "ana", Name: "Ana", Grants: []ext.Grant{ext.GrantHost}})
+	provided := newTestEnvAgents(t, nil, slog.New(slog.DiscardHandler), nil, withIdentity(fake))
+	b := brakemanEnv(t, nil)
+	sid := b.createSession("cat")
+	tokens := map[string]string{"none": "", "session": b.agentToken(sid), "host": "test-host-token"}
+	for _, role := range []string{"view", "control"} {
+		status, data, out := b.callAs(t, adminToken, "POST", "/api/sessions/"+sid+"/links", map[string]any{"role": role})
+		if status != http.StatusCreated {
+			t.Fatalf("a %s link: %d %s", role, status, data)
+		}
+		tokens["link "+role] = out["token"].(string)
+	}
+	b.enable(t, "bk", nil)
+	bsid, btok, _ := b.turnSession(t, b.briefing(t))
+	base := "/api/runs/previewed-0123abcd/tasks/build/attempts/1/preview"
+	routes := [][2]string{{"POST", base}, {"POST", base + "/1/close"}, {"GET", base + "?seq=1"}}
+	for _, r := range routes {
+		var body any
+		if r[0] == "POST" {
+			body = map[string]any{"commandId": "x"}
+		}
+		for who, tok := range tokens {
+			if status, data, _ := b.callAs(t, tok, r[0], r[1], body); status != http.StatusUnauthorized {
+				t.Errorf("%s %s with %s: %d %s", r[0], r[1], who, status, data)
+			}
+		}
+		raw, _ := json.Marshal(body)
+		if status, data, _ := b.callAsTurn(t, btok, bsid, r[0], r[1], raw); status != http.StatusUnauthorized {
+			t.Errorf("%s %s as a Brakeman turn: %d %s", r[0], r[1], status, data)
+		}
+		for who, pass := range map[string]string{"the decide grant alone": passAna, "the host grant alone": passHostOnly} {
+			if status, data, _ := provided.callAs(t, pass, r[0], r[1], body); status != http.StatusUnauthorized {
+				t.Errorf("%s %s as a provider's principal with %s: %d %s", r[0], r[1], who, status, data)
+			}
+		}
+	}
+	yard := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
+	for _, r := range routes {
+		if status, data, out := yard.callAs(t, adminToken, r[0], r[1], map[string]any{"commandId": "x"}); status != http.StatusForbidden || codeOf(out) != "switchyard" {
+			t.Errorf("%s %s on a switchyard: %d %s", r[0], r[1], status, data)
 		}
 	}
 }
