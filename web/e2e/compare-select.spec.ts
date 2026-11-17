@@ -188,6 +188,19 @@ const SAID = {
   brakeman: { why: 'Brakeman is not set up' },
 }
 
+/**
+ * The compare view of `run`, waited for by what draws it: the comparison's reply (the route's own, from compare-stub), then the view
+ * drawn from it. A loaded machine takes seconds over the page's other reads before the comparison is asked: the wait is on the reply,
+ * bounded by a hang's bound, and the test's timeout is raised by it.
+ */
+async function openCompare(page: Page, run: string): Promise<void> {
+  budget(LOAD_MS * 4)
+  const replied = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/runs/${run}/comparison`, { timeout: LOAD_MS * 4 })
+  await page.goto(`${COMPARE_PATH}?view=compare&run=${run}`)
+  await replied
+  await expect(page.locator('[data-compare-view][data-compare-state="content"]')).toBeVisible()
+}
+
 test.describe('the selection and the supporting panel on the comparison', () => {
   test('keeps the two panels apart, answers the selection, then labels the columns and the lanes, again after a redraw', async ({ day, browser }) => {
     await day.part('dispatch')
@@ -214,10 +227,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
         await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ request }) })
       },
     )
-    const open = async () => {
-      await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
-      await expect(page.locator('[data-compare-view][data-compare-state="content"]')).toBeVisible()
-    }
+    const open = () => openCompare(page, run.id)
 
     // The measured part, first with nothing said.
     await open()
@@ -297,7 +307,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await stubInbox(page, [sel])
     await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, failed: true }), selection: selectionOf(sel, 'open'), supporting: SAID }))
     for (const theme of ['dark', 'light'] as const) {
-      await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+      await openCompare(page, run.id)
       await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
       const v = page.locator('[data-compare-view]')
       const top = async (sel: string) => (await v.locator(sel).first().boundingBox())!.y
@@ -320,7 +330,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     await serveRun(page, run)
     await stubInbox(page, [sel])
     await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, running }), ...(selection ? { selection } : {}) }))
-    await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+    await openCompare(page, run.id)
     const select = page.locator('[data-compare-select]')
     await expect(select.locator('[data-compare-select-words]')).toHaveText(`${sel.ref.slice('decision:'.length)} is closed: approach-b was retried: dr-closed no longer lists what is compared. A new selection opens when every lane has ended; answer that one.`)
     await expect(select.locator('[data-decision-respond], [data-decision-choice]')).toHaveCount(0)
@@ -328,7 +338,7 @@ test.describe('the selection and the supporting panel on the comparison', () => 
     // While a lane runs and no record is open: said, and nothing to answer.
     selection = undefined
     running = true
-    await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+    await openCompare(page, run.id)
     await expect(select.locator('[data-compare-select-words]')).toHaveText('The selection opens when every lane has ended. Nothing is selected by default.')
     await expect(select.locator('[data-decision-choice]')).toHaveCount(0)
   })
