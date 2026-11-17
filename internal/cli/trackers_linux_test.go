@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -163,5 +164,91 @@ func TestTrackersSetHoldsNoTokenInItsCommandLine(t *testing.T) {
 	}
 	if strings.Contains(seen, ghToken) || strings.Contains(out.String(), ghToken) {
 		t.Fatal("the token is in the child's command line, its environment or its output")
+	}
+}
+
+// echoOff waits until the terminal's echo is off (the token's read has
+// begun), failing a tenth of the test's time before its deadline.
+func echoOff(t *testing.T, tty *os.File) {
+	t.Helper()
+	giveUp := time.Now().Add(time.Hour)
+	if d, ok := t.Deadline(); ok {
+		giveUp = d.Add(-time.Until(d) / 10)
+	}
+	for {
+		tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tio.Lflag&unix.ECHO == 0 {
+			return
+		}
+		if time.Now().After(giveUp) {
+			t.Fatal("the echo was never turned off")
+		}
+		runtime.Gosched()
+	}
+}
+
+// A Ctrl-C at the token's prompt (the command's context ending, as the
+// process's signal handling makes it) ends the read at once, with no
+// Enter: the terminal's echo is on again, the words say interrupted, and
+// a token typed after it is never sent: the command ends before it.
+func TestTrackersSetEndsAtACtrlC(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", dispatchToken)
+	var mu sync.Mutex
+	sent := 0
+	hs := handlerServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent++
+		mu.Unlock()
+		w.WriteHeader(http.StatusTeapot)
+	})
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no terminal: %v", err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	go func() { _, _ = io.Copy(io.Discard, ptmx) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	var errb syncBuffer
+	go func() {
+		code, err := Run(ctx, []string{"trackers", "set", "--server", hs}, tty, io.Discard, &errb)
+		done <- result{code, err}
+	}()
+	echoOff(t, tty)
+	cancel()
+	giveUp := time.Hour
+	if d, ok := t.Deadline(); ok {
+		giveUp = time.Until(d) * 9 / 10
+	}
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(giveUp):
+		t.Fatal("the read did not end at the Ctrl-C: it waits for Enter")
+	}
+	if r.code != 1 || !errors.Is(r.err, errInterrupted) || !strings.HasPrefix(r.err.Error(), "interrupted") {
+		t.Fatalf("a Ctrl-C at the prompt: %d %v\n%s", r.code, r.err, errb.String())
+	}
+	tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+	if err != nil || tio.Lflag&unix.ECHO == 0 {
+		t.Fatalf("the terminal's echo is left off: %v", err)
+	}
+	if _, err := ptmx.Write([]byte(ghToken + "\r")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("the server was sent %d requests", sent)
 	}
 }
