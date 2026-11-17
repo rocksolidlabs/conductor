@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { NewLink, TicketLink } from '~/composables/useDispatch'
+import type { LinkRead, LinkReadSummary, NewLink, TicketLink } from '~/composables/useDispatch'
 import { candidateName, linkLabel, parseCandidate, verificationWords, type CandidateOption } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
+import { checksWords, githubHref, linkStateWords, readAge } from '~/utils/tracker'
 
 /**
  * A ticket's links outward (docs/plans/dispatch.md, PR-11): where it was delivered, the merged pull request's or the release's URL that a
@@ -12,6 +13,10 @@ import { relativeTime } from '~/utils/sessions'
  * receipts in short; the server reads the candidate's receipts from the ledger and the link keeps them, so the row says whether it was
  * verified ("Verified: build#2 passed 2 checks", "Not verified: build#3 failed the check never (exit 1)") from what was recorded, and
  * that the result was withdrawn since when the runs' candidates say so. A decision record (reserved, DR1) is the Decisions section's.
+ * A link to a GitHub issue or pull request (IN1a) shows what GitHub says of it, from its last read: open, closed or merged (with when and
+ * the merge commit), a pull request's checks at its head commit as a row of chips with their counts, and, when the read could not hold
+ * every check, "incomplete: N checks not read, see them on GitHub" in place of any word that they all passed; the read's age, Read again,
+ * and a failure's words. GitHub's text is drawn as text, a link only where githubHref admits it.
  */
 const props = defineProps<{
   links: readonly TicketLink[]
@@ -28,6 +33,14 @@ const props = defineProps<{
   candidatesError?: string
   /** Whether a delivered candidate's result was withdrawn since, as its run's candidates read now say. */
   withdrawn?: (candidate: string) => boolean
+  /** The links' last reads of their GitHub items, by link id (the ticket's `linkReads`). */
+  reads?: Record<string, LinkReadSummary>
+  /** Whether a link's URL names a GitHub item a token is kept for: it can be read. */
+  readable?: (url: string) => boolean
+  /** A link's item read again from GitHub: '' once read, else why not. */
+  readAgain?: (link: TicketLink) => Promise<string>
+  /** A link's last read whole, its checks among it, or null. */
+  readWhole?: (link: TicketLink) => Promise<LinkRead | null>
 }>()
 
 type FormKind = Exclude<NewLink['kind'], 'run'>
@@ -110,6 +123,46 @@ async function drop(l: TicketLink) {
 /** The note's bound, the store's, in characters. */
 const MAX_NOTE = 1000
 
+// A GitHub link's read (IN1a): its summary from the ticket's read, and its checks from its whole read, asked once per read recorded.
+const summaryOf = (l: TicketLink) => props.reads?.[l.id]
+const isGitHub = (l: TicketLink) => !!summaryOf(l) || !!props.readable?.(l.url)
+/** The item's host, for the one rule of what is a link: the link's own URL's host. */
+const hostOf = (url: string) => /^https:\/\/([^/?#]+)\//.exec(url)?.[1] ?? ''
+const whole = ref(new Map<string, LinkRead | null>())
+const wholeAsked = new Map<string, string>()
+watch(
+  () => shown.value.map((l) => `${l.id}@${summaryOf(l)?.readAt ?? ''}`).join(' '),
+  () => {
+    for (const l of shown.value) {
+      const s = summaryOf(l)
+      if (!s?.readAt || !props.readWhole) continue
+      const mark = s.readAt
+      if (wholeAsked.get(l.id) === mark) continue
+      wholeAsked.set(l.id, mark)
+      void props
+        .readWhole(l)
+        .then((r) => {
+          if (wholeAsked.get(l.id) === mark) whole.value = new Map(whole.value).set(l.id, r)
+        })
+        .catch(() => wholeAsked.delete(l.id))
+    }
+  },
+  { immediate: true },
+)
+const readingNow = ref('')
+const readFailed = ref(new Map<string, string>())
+async function readIt(l: TicketLink) {
+  if (!props.readAgain || readingNow.value) return
+  readingNow.value = l.id
+  try {
+    const words = await props.readAgain(l)
+    readFailed.value = new Map(readFailed.value).set(l.id, words)
+  } finally {
+    readingNow.value = ''
+  }
+}
+const checkWords = (c: { conclusion?: string; status: string }) => (c.conclusion ? (c.conclusion === 'success' ? 'passed' : c.conclusion === 'failure' ? 'failed' : c.conclusion.replace(/_/g, ' ')) : c.status === 'completed' ? 'done' : 'pending')
+
 /** A delivery row's verification, from the receipt it recorded. */
 const verification = (l: TicketLink) => verificationWords(l, !!l.candidate && !!props.withdrawn?.(l.candidate))
 const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted', default: 'text-default', success: 'text-success' }
@@ -140,6 +193,33 @@ const tones = { warning: 'text-warning', error: 'text-error', muted: 'text-muted
             </span>
             <span v-if="l.verified" class="text-dimmed">recorded {{ relativeTime(l.verified.at, now, { suffix: true }) }}<template v-if="l.verified.receipts.length">, where it ran: {{ [...new Set(l.verified.receipts.map((r) => r.where))].join(', ') }}</template></span>
             <span v-if="verification(l).withdrawn" class="text-warning" data-link-withdrawn>{{ verification(l).withdrawn }}</span>
+          </div>
+          <div v-if="isGitHub(l)" class="flex min-w-0 flex-col gap-1 text-xs" :data-link-read="l.id" :data-link-state="summaryOf(l) ? linkStateWords(summaryOf(l)!).key : 'unknown'">
+            <template v-if="summaryOf(l)?.readAt">
+              <span class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                <UBadge :label="linkStateWords(summaryOf(l)!).label" color="neutral" variant="outline" size="sm" class="flex-none" data-link-state-chip />
+                <span v-if="summaryOf(l)!.merged && summaryOf(l)!.mergedAt" class="text-muted">merged {{ relativeTime(summaryOf(l)!.mergedAt!, now, { suffix: true }) }}</span>
+                <span v-if="summaryOf(l)!.merged && summaryOf(l)!.mergeSha" class="font-mono text-dimmed" data-mono="commit" :title="summaryOf(l)!.mergeSha" data-link-merge-sha>{{ summaryOf(l)!.mergeSha!.slice(0, 7) }}</span>
+                <span v-if="summaryOf(l)!.headSha" class="text-muted" data-link-check-counts>
+                  · checks: {{ checksWords(summaryOf(l)!.checks).allPassed ? `all ${summaryOf(l)!.checks.passed} passed` : checksWords(summaryOf(l)!.checks).counts }}
+                </span>
+              </span>
+              <span v-if="summaryOf(l)!.checks.incomplete" class="text-muted" data-link-incomplete>{{ checksWords(summaryOf(l)!.checks).incomplete }}</span>
+              <ul v-if="whole.get(l.id)?.checks.length" class="flex flex-wrap gap-1" data-link-checks>
+                <li v-for="c in whole.get(l.id)!.checks" :key="c.id" :data-link-check="c.id">
+                  <a v-if="githubHref(c.url, hostOf(l.url))" :href="githubHref(c.url, hostOf(l.url))!" target="_blank" rel="noopener noreferrer" class="hover:underline">
+                    <UBadge :label="`${c.name}: ${checkWords(c)}`" color="neutral" variant="subtle" size="sm" />
+                  </a>
+                  <UBadge v-else :label="`${c.name}: ${checkWords(c)}`" color="neutral" variant="subtle" size="sm" />
+                </li>
+              </ul>
+            </template>
+            <span class="flex flex-wrap items-center gap-x-1.5 text-dimmed">
+              <span>{{ readingNow === l.id ? 'reading GitHub…' : `GitHub: ${readAge(summaryOf(l)?.readAt, now)}` }}</span>
+              <UButton v-if="!locked && readAgain" label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="link" class="px-0" :loading="readingNow === l.id" data-link-read-again @click="readIt(l)" />
+            </span>
+            <span v-if="readFailed.get(l.id)" class="text-warning" data-link-read-error>{{ readFailed.get(l.id) }}</span>
+            <span v-else-if="summaryOf(l)?.error" class="text-warning" data-link-read-error>The last read failed: {{ summaryOf(l)!.error }}</span>
           </div>
           <p class="text-xs text-dimmed">added by {{ l.createdBy || 'admin' }} {{ relativeTime(l.createdAt, now, { suffix: true }) }}</p>
         </div>
