@@ -58,6 +58,37 @@ export function checkoutOfAttempt(n: number, live: { n: number; previewing?: Pre
   return p && p.state !== 'ending' ? p : null
 }
 
+/** How often, and how far apart, a command is asked again while the server says its open is still under way. */
+export const OPENING_TRIES = 30
+export const OPENING_WAIT_MS = 1000
+
+/**
+ * Sends one command and asks it again, the same body with its command id, while asking again is the same question: once when the
+ * reply was lost to the network (status 0), and while the server answers `409 preview_opening` (the open that command id asked for is
+ * taken and not yet settled: a repeat is answered with the preview's `seq` once it has one), a moment apart and at most `tries`
+ * times. Any other refusal, and a `preview_opening` past the tries, is thrown as the server said it: no page is opened without a seq.
+ */
+export async function sendCommand<R>(send: () => Promise<R>, wait: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)), tries = OPENING_TRIES): Promise<R> {
+  let lost = false
+  for (let opening = 0; ; ) {
+    try {
+      return await send()
+    } catch (e) {
+      const err = e as { status?: number; code?: string }
+      if (err.status === 0 && !lost) {
+        lost = true
+        continue
+      }
+      if (err.status === 409 && err.code === 'preview_opening' && opening < tries) {
+        opening++
+        await wait(OPENING_WAIT_MS)
+        continue
+      }
+      throw e
+    }
+  }
+}
+
 export function useCandidatePreview(runId: () => string) {
   const { request } = useApi()
   /** The command under way, `<task>:<n>:open` or `<task>:<n>:close`; '' for none. */
@@ -71,17 +102,8 @@ export function useCandidatePreview(runId: () => string) {
     refusedCode.value = { ...refusedCode.value, [key]: e === null ? '' : ((e as { code?: string }).code ?? '') }
     busyOpen.value = { ...busyOpen.value, [key]: e === null ? [] : openCheckouts(e) }
   }
-  /** POSTs body, once more with the same body (its command id) when the reply was lost to the network; a refusal throws the server's error. */
-  async function post<R>(path: string, body: { commandId: string }): Promise<R> {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await request<R>(path, { method: 'POST', body })
-      } catch (e) {
-        if ((e as { status?: number }).status === 0 && attempt === 1) continue
-        throw e
-      }
-    }
-  }
+  /** POSTs body as one command (`sendCommand`): asked again with the same body, its command id, while that is the same question. */
+  const post = <R>(path: string, body: { commandId: string }): Promise<R> => sendCommand(() => request<R>(path, { method: 'POST', body }))
   const base = (task: string, n: number, run = runId()) => `/api/runs/${encodeURIComponent(run)}/tasks/${encodeURIComponent(task)}/attempts/${n}/preview`
 
   /** Preview this candidate: its checkout's `seq`, or null when the server refused (its words in `refused`). */
