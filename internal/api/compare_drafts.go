@@ -199,6 +199,10 @@ func (d *compareDrafts) queue(ctx context.Context, s *Server, runID string, seq 
 		s.log.Info("a comparison's Brakeman draft is not asked: Brakeman does not see runs", "run", runID)
 		return
 	}
+	if err := s.selectionMadeRefusal(ctx, runID); err != nil {
+		s.log.Info("a comparison's Brakeman draft is not asked", "run", runID, "why", err)
+		return
+	}
 	in := brakeman.Request{OpID: compareOpID(runID, seq), Kind: brakeman.KindCompare,
 		Subjects: []brakeman.Ref{{Kind: brakeman.RefRun, Run: runID}}, By: s.launchBy(ctx, runID)}
 	a := s.admitAsk(desk, in, true)
@@ -340,6 +344,29 @@ func (s *Server) compareAskRefusal(ctx context.Context, in brakeman.Request) err
 	}
 	if !ok || !rowIsComparison(row) {
 		return refuse
+	}
+	return s.selectionMadeRefusal(ctx, run)
+}
+
+// selectionMadeWords is why a compare request, or its brief, is refused
+// once the comparison's selection is answered.
+const selectionMadeWords = "the comparison's selection is answered: Brakeman drafts a comparison before the selection, never with the person's answer as its input"
+
+// selectionMadeRefusal is 409 selection_made once the comparison of the
+// run's chain is answered, selected or ended with None of these (the
+// person's answer is in the run's log and events from then on), nil
+// before; an error when its state cannot be read, which refuses too.
+func (s *Server) selectionMadeRefusal(ctx context.Context, run string) error {
+	if s.runs == nil {
+		return nil
+	}
+	st, err := s.runs.ComparisonStateOf(ctx, run)
+	if err != nil {
+		return fmt.Errorf("the comparison of %s: %w", run, err)
+	}
+	switch st.State {
+	case crew.CompareAnswered, crew.CompareSelected, crew.CompareNone:
+		return &apiError{Code: "selection_made", Message: selectionMadeWords, status: http.StatusConflict}
 	}
 	return nil
 }

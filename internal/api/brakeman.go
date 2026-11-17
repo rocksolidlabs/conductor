@@ -2157,6 +2157,11 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.compareAskRefusal(r.Context(), in); err != nil {
+		var refused *apiError
+		if errors.As(err, &refused) {
+			writeAPIError(w, refused)
+			return
+		}
 		s.brakemanError(w, err)
 		return
 	}

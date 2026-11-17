@@ -513,3 +513,35 @@ func TestAgreementIsNeverEvidence(t *testing.T) {
 		t.Fatalf("the record: %s", words)
 	}
 }
+
+// Brakeman drafts a comparison before its selection, never with the
+// person's answer as its input: a turn asked while the comparison was
+// selecting keeps no brief once the answer is applied, and a compare
+// request asked after it is refused 409 selection_made, nothing kept.
+func TestADraftIsMadeBeforeTheSelectionAlone(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.bk.enable(t, "bk", nil)
+	did := de.selecting(t)
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask while selecting: %d %v", status, req)
+	}
+	id := req["id"].(string)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	de.selectB(t, did)
+	status, out := de.bk.submit(t, sid, tok, "b-late", de.compareBrief("late"))
+	if status != http.StatusConflict || errorCode(out) != "selection_made" {
+		t.Fatalf("a brief after the answer: %d %v", status, out)
+	}
+	if r := de.bk.request(t, id); r["hasBrief"] == true {
+		t.Fatalf("a brief was kept: %v", r)
+	}
+	before := len(de.compareRequests(t))
+	status, _, out = de.call(t, "POST", "/api/brakeman/requests", map[string]any{"opId": opID(), "kind": "compare", "subjects": []string{"run:" + de.run}})
+	if status != http.StatusConflict || errorCode(out) != "selection_made" {
+		t.Fatalf("an ask after the answer: %d %v", status, out)
+	}
+	if n := len(de.compareRequests(t)); n != before {
+		t.Fatalf("%d compare requests, %d before", n, before)
+	}
+}
