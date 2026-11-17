@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import type { ComparisonSupporting } from '~/utils/compare'
 import { askClosedWords, brakemanWords, claimCutWords, claimSource, moreFindingsWords, reviewSource, verdictWord } from '~/utils/compareSelect'
+import { closed } from '~/utils/brakeman'
 
 /**
  * Supporting information, not evidence (Program item CP1, docs/plans/compare-crew.md, PR-7): what the candidates' agents said of their
  * own work, what their reviews found, and Brakeman's draft through BrakemanBrief, each marked with who said it, in its own panel
- * below the measured part. Nothing here colours, counts or reorders the measured part, and nothing is drawn as Markdown or HTML: an
- * agent's words are text. Brakeman's state is said (queued, drafting, briefed, or why there is none), and Ask Brakeman to compare
- * queues one request by hand (`POST /api/brakeman/requests`, kind `compare`, the comparison's launched run): the template asks once,
- * when every lane is done, and one lost in a crash is asked again here.
+ * below the measured part. Nothing here colours, counts or reorders the measured part. The agents' summaries and the reviews'
+ * findings are drawn as text; Brakeman's draft is drawn by BrakemanBrief, as a brief is everywhere. Brakeman's state is said (queued,
+ * drafting, briefed, or why there is none), and Ask Brakeman to compare queues one request by hand (`POST /api/brakeman/requests`, kind
+ * `compare`, the comparison's launched run): the template asks once, when every lane is done, and one lost in a crash is asked again
+ * here. Once asked, the panel says `asked` (the page reads the comparison again, which then names the new request) and the button
+ * stays off while the request it asked is open, whatever the comparison last read named.
  */
 const props = defineProps<{ supporting: ComparisonSupporting | null | undefined; run: string; state?: string }>()
+const emit = defineEmits<{ asked: [] }>()
 /** Why a draft is asked no more: the selection is answered (askClosedWords). */
 const askClosed = computed(() => askClosedWords(props.state))
 
@@ -26,6 +30,12 @@ watch(
   { immediate: true },
 )
 const brakeman = computed(() => brakemanWords(b.value, req.value))
+/** The request this panel asked, as the live store of requests holds it: open while it is queued or under way. */
+const askedId = ref('')
+const askedOpen = computed(() => {
+  const r = askedId.value ? bk.requests.value.find((x) => x.id === askedId.value) : undefined
+  return !!r && !closed(r.state)
+})
 const claims = computed(() => props.supporting?.claims ?? [])
 const reviews = computed(() => props.supporting?.reviews ?? [])
 
@@ -37,7 +47,9 @@ async function ask() {
   askWords.value = ''
   try {
     const r = await bk.ask({ kind: 'compare', subjects: [`run:${props.run}`] })
+    askedId.value = r.id
     askWords.value = `Asked: ${r.id} is ${r.state}.`
+    emit('asked')
   } catch (e) {
     askWords.value = `Not asked: ${(e as Error).message}`
   } finally {
@@ -82,7 +94,7 @@ async function ask() {
       <div class="flex min-w-0 flex-wrap items-center gap-2">
         <h4 class="text-xs font-medium text-muted">Brakeman's draft</h4>
         <span class="min-w-0 break-words text-xs text-default" data-compare-brakeman-words>{{ brakeman.words }}</span>
-        <UButton label="Ask Brakeman to compare" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || !run || !!askClosed" data-compare-ask-brakeman @click="ask" />
+        <UButton label="Ask Brakeman to compare" icon="i-lucide-sparkles" size="xs" color="neutral" variant="outline" class="ms-auto max-lg:min-h-11" :loading="asking" :disabled="asking || brakeman.open || askedOpen || !run || !!askClosed" data-compare-ask-brakeman @click="ask" />
       </div>
       <p v-if="askClosed" class="break-words text-xs text-muted" data-compare-ask-closed>{{ askClosed }}</p>
       <p v-if="askWords" class="break-words text-xs text-muted" data-compare-ask-words>{{ askWords }}</p>

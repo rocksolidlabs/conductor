@@ -30,9 +30,10 @@ func TestAComparisonsContinuationRepairsOnlyTheSelected(t *testing.T) {
 	stopRun(t, e, runID)
 	commit := done.Result.Commit
 
-	refused := func(what string, err error) {
+	const repaired = "a comparison's candidate is repaired once it is selected"
+	refused := func(what string, err error, words string) {
 		t.Helper()
-		if !errors.Is(err, ErrNotSelected) || errors.Is(err, ErrTaskState) || err.Error() != "a comparison's candidate is repaired once it is selected" {
+		if !errors.Is(err, ErrNotSelected) || errors.Is(err, ErrTaskState) || err.Error() != words {
 			t.Fatalf("%s: %v", what, err)
 		}
 		if got := l.continuing(runID); len(got) != 0 {
@@ -45,13 +46,13 @@ func TestAComparisonsContinuationRepairsOnlyTheSelected(t *testing.T) {
 	ctx := context.Background()
 	e.beforeCompareRule = func(r *run) { r.task("approach-a").imported = "" }
 	_, err := e.ContinueRun(ctx, runID, "")
-	refused("a succeeded candidate left unimported", err)
+	refused("a succeeded candidate left unimported", err, "approach-a's result, attempt 1, is not in the ledger: a comparison's candidate goes on only with its result; launch a new comparison")
 	e.beforeCompareRule = func(r *run) { r.task("approach-b").repair = &repair{summary: "make it faster", commit: commit} }
 	_, err = e.ContinueRun(ctx, runID, "")
-	refused("a candidate given a repair", err)
+	refused("a candidate given a repair", err, repaired)
 	e.beforeCompareRule = nil
 	_, err = continueWithRepair(e, runID, "rq1", "approach-a", 1, commit, "", personsRequest("rv-0001"))
-	refused("RV1's repair continuation", err)
+	refused("RV1's repair continuation", err, repaired)
 	if got := l.commandRuns("admin", "rq1"); len(got) != 0 {
 		t.Fatalf("the repair's command is kept in %v", got)
 	}
@@ -65,8 +66,47 @@ func TestAComparisonsContinuationRepairsOnlyTheSelected(t *testing.T) {
 		t.Fatalf("approach-a in the continuation: %+v", ts)
 	}
 	// A run of no comparison is not judged by the rule.
-	if err := (&run{}).compareContinued(nil, ""); err != nil {
+	if err := (&run{}).compareContinued(nil, "", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A review's request for changes reopens its candidate in the run, and
+// the repair it gives is the run's own: stopped while the candidate's next
+// attempt runs, or once that candidate has failed with its attempts spent
+// still holding the repair, the comparison is continued, the repair
+// carried as its row keeps it. A repair the continuation itself adds is
+// still refused.
+func TestAComparisonsReviewedRepairIsContinued(t *testing.T) {
+	for _, spent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "repairing", true: "failed with the repair"}[spent], func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := compareEngine(t)
+			launched := launchManaged(t, e, failingCompareCrew(t, dir, 2, true))
+			submitEdits(t, e, attemptRunning(t, e, launched.ID, "approach-a", 1), "a", put("a.txt", "a\n"))
+			rv := attemptRunning(t, e, launched.ID, "review-a", 1)
+			submit(t, e, rv.Attempt.SessionID, Result{Verdict: VerdictNeedsChanges, Summary: "say why", Findings: []Finding{{Severity: "major", Path: "a.txt", Line: 1, Message: "why"}}})
+			attemptRunning(t, e, launched.ID, "approach-a", 2)
+			if spent {
+				failAttempts(t, e, launched.ID, "approach-a", 2, maxAttemptsPerTask)
+				l.taskWhen(t, launched.ID, "approach-a", "failed keeping its repair", func(r ledger.TaskRow) bool { return r.State == ledger.TaskFailed && r.Repair != "" })
+			} else {
+				l.taskWhen(t, launched.ID, "approach-a", "with its repair", func(r ledger.TaskRow) bool { return r.Repair != "" })
+			}
+			stopRun(t, e, launched.ID)
+			// A repair the continuation adds, beside the carried one, is refused.
+			e.beforeCompareRule = func(r *run) { r.task("approach-b").repair = &repair{summary: "make it faster"} }
+			if _, err := e.ContinueRun(context.Background(), launched.ID, ""); !errors.Is(err, ErrNotSelected) {
+				t.Fatalf("a repair the continuation adds: %v", err)
+			}
+			e.beforeCompareRule = nil
+			next, err := e.ContinueRun(context.Background(), launched.ID, "")
+			if err != nil {
+				t.Fatalf("the continuation: %v", err)
+			}
+			defer stopRun(t, e, next.ID)
+			l.taskWhen(t, next.ID, "approach-a", "its repair carried", func(r ledger.TaskRow) bool { return r.Repair != "" })
+		})
 	}
 }
 

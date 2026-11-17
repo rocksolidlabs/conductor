@@ -63,6 +63,9 @@ type decisionHistory struct {
 	// selection is the chain's applied selection of a comparison, nil for
 	// none (compare_select.go).
 	selection *AppliedSelection
+	// lastSelection is the chain's newest selection when it was
+	// superseded: the one a selection the continuation opens follows.
+	lastSelection string
 }
 
 // allDecisions reads every decision run holds, newest first.
@@ -155,6 +158,7 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 		}
 		return rec, err
 	}
+	var newestSelection ledger.DecisionRow
 	for _, runID := range dh.chain {
 		rows, err := allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: runID})
 		if err != nil {
@@ -162,6 +166,9 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 		}
 		// Newest first: a gate's last decision is the first seen.
 		for _, row := range rows {
+			if row.Origin == ledger.OriginCompare && row.N > newestSelection.N {
+				newestSelection = row
+			}
 			switch {
 			case runID == from.Run.ID && (row.State == ledger.DecisionOpen || row.State == ledger.DecisionAnswered):
 				rec, err := record(row.N)
@@ -211,6 +218,9 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 				}
 			}
 		}
+	}
+	if newestSelection.State == ledger.DecisionSuperseded {
+		dh.lastSelection = newestSelection.ID()
 	}
 	slices.SortFunc(dh.moving, func(a, b ledger.DecisionRecord) int { return cmp.Compare(a.N, b.N) })
 	holds, err := dl.Holds(ctx, from.Run.ID)
@@ -281,6 +291,7 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 	// The chain's applied selection, before anything is scheduled (O8):
 	// its lanes not selected take no command in the continuation either.
 	r.sel.applied = dh.selection
+	r.sel.last = dh.lastSelection
 	if r.pkg != nil && len(r.pkg.p.Decisions) > 0 {
 		r.dec.gates = map[string]bool{}
 		for _, pd := range r.pkg.p.Decisions {

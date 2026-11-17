@@ -656,6 +656,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			}
 			r.messages = append(r.messages, m)
 		}
+		// The repairs carried from the source's rows, as they were: a
+		// comparison's rule judges only the ones this continuation adds.
+		carried := map[string]*repair{}
 		for _, t := range r.tasks {
 			row, ok := rows[t.def.ID]
 			if !ok {
@@ -665,6 +668,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			t.prior, t.extra, t.withdrawn = row.Attempts, row.Extra, row.Withdrawn
 			if rp := decodeRepair(row.Repair); rp != nil {
 				t.repair = rp
+				carried[t.def.ID] = rp
 			}
 			la, hasLast := last[t.def.ID]
 			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork && !h.refusedCP[t.def.ID] {
@@ -793,7 +797,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 		if e.beforeCompareRule != nil {
 			e.beforeCompareRule(r)
 		}
-		cmpErr := r.compareContinued(rows, h.compareSelected())
+		cmpErr := r.compareContinued(rows, h.compareSelected(), carried)
 		r.ready()
 		e.settleRun(r)
 		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))

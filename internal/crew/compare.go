@@ -370,6 +370,15 @@ func runCompareOf(cmp *Compare, tasks []Task) *RunCompare {
 	return out
 }
 
+// CompareAtBase is compareChecked for a caller that has read the file-form
+// manifest rec at base itself (a plan revision's proposal, which fixes the
+// base the launch prepares at): a comparison with nothing to compare there
+// is refused in the launch's words, before it is proposed. prefix is cwd's
+// place in its repository, as rev-parse --show-prefix gives it.
+func CompareAtBase(c Crew, rec Manifest, prefix, base string) error {
+	return compareChecked(c, rec, prefix, base)
+}
+
 // compareChecked holds a comparison whose project manifest is the file
 // form to what validate leaves to its launch: something to compare at the
 // base. A comparison whose candidates have no check and whose manifest at

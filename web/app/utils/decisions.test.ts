@@ -197,6 +197,8 @@ describe("a decision's words", () => {
     expect(optionsOf(decision({ type: 'assignment', request: { question: 'Run the migration' } })).map((o) => o.label)).toEqual(['Done', 'Not done'])
     expect(subjectWords({ kind: 'commit', commit: '3c1f2d0aa' })).toEqual({ text: 'commit 3c1f2d0' })
     expect(subjectWords({ kind: 'candidate', run: RUN, task: 'build', n: 2, commit: '9f2c1abff' })).toEqual({ text: 'the result of build, attempt 2 (9f2c1ab)', to: `/runs/${RUN}?view=tasks&task=build` })
+    // An agent's candidate subject on a run launched from a ticket links its run's task, never the ticket's comparison.
+    expect(subjectWords({ kind: 'candidate', run: RUN, task: 'build', n: 2, commit: '9f2c1abff' }, { ticket: 'CND-12' })).toEqual({ text: 'the result of build, attempt 2 (9f2c1ab)', to: `/runs/${RUN}?view=tasks&task=build` })
     expect(subjectWords({ kind: 'artifact', path: 'README.md', commit: '3c1f2d0aa', sha256: 'a'.repeat(64) }).text).toBe(`README.md at 3c1f2d0, sha256 ${'a'.repeat(12)}`)
   })
 })

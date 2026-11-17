@@ -23,10 +23,14 @@ import (
 // are refused it.
 
 const (
-	// maxCompareSpecBody bounds the template's body: two to four
-	// candidates, twelve criteria of 500 characters, instructions of 8,000
-	// and approaches of 2,000 each fit.
-	maxCompareSpecBody = 64 << 10
+	// maxCompareSpecBody bounds the template's body: the spec with each
+	// text at its own bound in characters (the name, goal, instructions,
+	// twelve criteria and four approaches, the candidates' arguments) as a
+	// client may write them, every character outside ASCII escaped as
+	// \uXXXX (six bytes for one of a three-byte script, twelve for one
+	// outside the Basic Multilingual Plane), within the task file's
+	// never-cut bound the crew is held to.
+	maxCompareSpecBody = 256 << 10
 	// comparisonPattern is the comparison's read, as the mux and the
 	// shared reads name it.
 	comparisonPattern = "GET /api/runs/{run}/comparison"

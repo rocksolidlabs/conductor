@@ -761,6 +761,12 @@ func (s *Server) planBody(ctx context.Context, w http.ResponseWriter, ds *dispat
 		case err != nil:
 			return s.gitFailed(w, "the project manifest at the base", err)
 		}
+		// A comparison needs something to compare at this base, where every
+		// launch of the revision prepares: refused now, as its launch would
+		// be.
+		if err := crew.CompareAtBase(c, m, prefix, base); err != nil {
+			return fail(http.StatusConflict, dispatch.RefusalInvalid, "the crew's comparison: %s", err.Error())
+		}
 		manifest = &dispatch.PlanManifestFile{Path: planManifestFile, Blob: blob, Manifest: encodeRaw(m)}
 	}
 	yolo := s.cfg.Yolo

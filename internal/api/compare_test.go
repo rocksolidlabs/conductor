@@ -107,7 +107,7 @@ func TestCompareTemplateRoute(t *testing.T) {
 		{"a field the spec has not", compareSpecBody("Extra", p.repo, 2, false, map[string]any{"selector": "role:architecture"}), "invalid_request", "unknown field"},
 		{"a crew's own field", compareSpecBody("Id", p.repo, 2, false, map[string]any{"id": "chosen"}), "invalid_request", "unknown field"},
 		{"two objects", []byte(`{"name":"a"}{"name":"b"}`), "invalid_request", "a single JSON object"},
-		{"past 64 KiB", compareSpecBody("Big", p.repo, 2, false, map[string]any{"goal": strings.Repeat("x", 64<<10)}), "invalid_request", ""},
+		{"past 256 KiB", compareSpecBody("Big", p.repo, 2, false, map[string]any{"goal": strings.Repeat("x", maxCompareSpecBody)}), "invalid_request", ""},
 	} {
 		status, raw, got := p.call(t, "POST", "/api/crews/templates/compare", tc.body)
 		if status != http.StatusBadRequest || errorCode(got) != tc.code || !strings.Contains(apiMessage(got), tc.words) {
@@ -382,4 +382,55 @@ func TestACompareCandidateIsNotDeliveredYet(t *testing.T) {
 		t.Fatalf("%d links, %d before", n, before)
 	}
 	e.deliver(t, "CND-1", opID(), "https://example.com/pull/ordinary", "synth-0000abcd/build/2@"+deliveryCommit(2), http.StatusCreated, "")
+}
+
+// A comparison's plan revision is proposed only with something to compare
+// at its base: candidates with no check, and a file-form manifest whose
+// steps at the base include no verify step, are refused 409 invalid in the
+// launch's words, no revision kept, since every launch of it would be
+// refused at that base; with a verify step there it is proposed.
+func TestAComparisonsProposalNeedsSomethingToCompare(t *testing.T) {
+	p := newCompareTicket(t)
+	commitFile(t, p.repo, "conductor.manifest.json", `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`)
+	c := entityOf(t, p.expect(t, "POST", "/api/crews/templates/compare", compareSpecBody("Nothing", p.repo, 2, false, map[string]any{"checks": nil, "manifest": map[string]any{"file": true}}), http.StatusCreated, ""), "crew")
+	out := p.propose(t, "CND-1", map[string]any{"crew": c["id"]}, http.StatusConflict, dispatch.RefusalInvalid)
+	if !strings.Contains(apiMessage(out), "nothing to compare: the candidates have no checks and conductor.manifest.json at ") || !strings.Contains(apiMessage(out), "has no verify step") {
+		t.Fatalf("the proposal: %v", out)
+	}
+	if plans := p.expect(t, "GET", "/api/dispatch/tickets/CND-1/plans", nil, http.StatusOK, "")["plans"].([]any); len(plans) != 0 {
+		t.Fatalf("%d revisions kept", len(plans))
+	}
+	commitFile(t, p.repo, "conductor.manifest.json", `{"schema": 1, "verify": [{"id": "lint", "argv": ["true"]}]}`)
+	plan := p.proposed(t, c["id"].(string), nil)
+	if got := entityOf(t, p.expect(t, "GET", "/api/dispatch/plans/"+plan, nil, http.StatusOK, ""), "plan"); got["compare"].(map[string]any)["checksAtBase"] != 1.0 {
+		t.Fatalf("the revision: %v", got["compare"])
+	}
+}
+
+// A spec whose texts are each within their bounds in characters, written
+// in a three-byte script and escaped to ASCII as many clients write JSON
+// (\uXXXX for each character), is past 64 KiB of body and is taken.
+func TestCompareTemplateTakesEscapedText(t *testing.T) {
+	p := newCompareTicket(t)
+	han := func(n int) string { return strings.Repeat(`\u6f22`, n) }
+	var criteria []string
+	for i := range 12 {
+		criteria = append(criteria, fmt.Sprintf(`{"id":"c%d","text":"%s"}`, i, han(500)))
+	}
+	var cands []string
+	for range 4 {
+		cands = append(cands, fmt.Sprintf(`{"agentId":"ready-cat","approach":"%s"}`, han(2000)))
+	}
+	body := fmt.Sprintf(`{"name":"Escaped","cwd":%q,"goal":"%s","instructions":%q,"criteria":[%s],"checks":[{"id":"ok","argv":["true"]}],"candidates":[%s]}`,
+		p.repo, han(2000), strings.Repeat("x", 8000), strings.Join(criteria, ","), strings.Join(cands, ","))
+	if len(body) <= 64<<10 || len(body) > maxCompareSpecBody {
+		t.Fatalf("the body is %d bytes", len(body))
+	}
+	status, raw, out := p.call(t, "POST", "/api/crews/templates/compare", []byte(body))
+	if status != http.StatusCreated {
+		t.Fatalf("the escaped spec: %d %.300s", status, raw)
+	}
+	if c := entityOf(t, out, "crew"); len(c["compare"].(map[string]any)["criteria"].([]any)) != 12 {
+		t.Fatalf("the crew: %v", c["compare"])
+	}
 }

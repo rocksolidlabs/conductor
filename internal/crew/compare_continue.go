@@ -68,26 +68,34 @@ func (h history) compareSelected() string {
 
 // compareContinued judges a comparison's continuation r once each task's
 // import and repair are decided, inside its first change, before anything
-// is readied: a task of a lane other than selected (the lane an applied
-// selection selects, "" for none) that succeeded in the source (its row in
-// rows) and is not imported, or that starts with a repair, refuses the
-// continuation (ErrNotSelected, in words). A plain continuation imports
-// every result it can find and carries no repair. Nothing for a run of no
-// comparison. The caller holds e.mu or knows r is not shared yet.
-func (r *run) compareContinued(rows map[string]ledger.TaskRow, selected string) error {
+// is readied. A task of a lane other than selected (the lane an applied
+// selection selects, "" for none) is refused a repair this continuation
+// gives it (its repair is not the one carried from the source's row, in
+// carried: a review's request for changes, made in the run, is carried as
+// the run had it), and refused when it succeeded in the source (its row in
+// rows) and its result is not imported (ErrNotSelected, each in its own
+// words). A plain continuation imports every result it can find and adds
+// no repair. Nothing for a run of no comparison. The caller holds e.mu or
+// knows r is not shared yet.
+func (r *run) compareContinued(rows map[string]ledger.TaskRow, selected string, carried map[string]*repair) error {
 	if r.compare == nil {
 		return nil
 	}
-	for _, t := range r.tasks {
+	judged := func(t *task) bool {
 		lane := r.lanes[t.def.ID]
-		if lane == "" || lane == selected {
-			continue
-		}
-		row, ok := rows[t.def.ID]
-		succeeded := ok && row.State == ledger.TaskSucceeded && row.ResultAttempt > 0 && row.ResultAttempt > row.Withdrawn
-		if (succeeded && t.imported == "") || t.repair != nil {
+		return lane != "" && lane != selected
+	}
+	for _, t := range r.tasks {
+		if judged(t) && t.repair != nil && t.repair != carried[t.def.ID] {
 			return &compareRefusal{is: ErrNotSelected, words: "a comparison's candidate is repaired once it is selected"}
 		}
+	}
+	for _, t := range r.tasks {
+		row, ok := rows[t.def.ID]
+		if !judged(t) || !ok || row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 || row.ResultAttempt <= row.Withdrawn || t.imported != "" {
+			continue
+		}
+		return &compareRefusal{is: ErrNotSelected, words: fmt.Sprintf("%s's result, attempt %d, is not in the ledger: a comparison's candidate goes on only with its result; launch a new comparison", t.def.ID, row.ResultAttempt)}
 	}
 	return nil
 }

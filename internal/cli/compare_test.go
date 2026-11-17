@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // A comparison from the shell (PR-3): conductor crews compare, conductor
@@ -43,7 +46,7 @@ var compareCrewLine = regexp.MustCompile(`^crew ([a-z0-9-]+) "Compare the cache"
 
 // conductor crews compare saves a comparison's crew from a spec file or
 // stdin and prints its id and tasks; the server's refusal is exit 1 in its
-// words; a spec that is not JSON, one past 64 KiB and no spec at all are
+// words; a spec that is not JSON, one past 256 KiB and no spec at all are
 // exit 2, nothing sent.
 func TestCrewsCompare(t *testing.T) {
 	a := newPlannedAPI(t)
@@ -70,7 +73,7 @@ func TestCrewsCompare(t *testing.T) {
 	for name, tc := range map[string]struct {
 		stdin string
 		args  []string
-	}{"not JSON": {"{", []string{"-"}}, "past 64 KiB": {strings.Repeat(" ", maxCompareSpec) + "{}", []string{"-"}}, "no spec": {"", nil}, "two specs": {"", []string{spec, spec}}} {
+	}{"not JSON": {"{", []string{"-"}}, "past 256 KiB": {strings.Repeat(" ", maxCompareSpec) + "{}", []string{"-"}}, "no spec": {"", nil}, "two specs": {"", []string{spec, spec}}} {
 		if code, _, err := a.crewsCompare(t, tc.stdin, tc.args...); code != 2 || err == nil {
 			t.Fatalf("%s: %d %v", name, code, err)
 		}
@@ -164,5 +167,38 @@ func TestDispatchComparison(t *testing.T) {
 	}
 	if code, _, _, err := a.dispatchCmd(t, "", "comparison", "CND-1", "--run", "not a run"); code != 2 || err == nil {
 		t.Fatalf("a bad run: %d %v", code, err)
+	}
+}
+
+// Without --run, conductor dispatch comparison reads the ticket's newest
+// comparison launch that started: a newer one that failed (its run id
+// minted, no run made) is passed over.
+func TestDispatchComparisonPicksAStartedLaunch(t *testing.T) {
+	clearConductorEnv(t)
+	plan := strings.Repeat("ab", 8)
+	plans, _ := encodeJSON(map[string]any{"plans": []any{map[string]any{"id": plan, "n": 1, "state": dispatch.PlanApproved, "compare": map[string]any{"candidates": 2}}}})
+	launch := func(run, state string) map[string]any {
+		return map[string]any{"kind": "launch", "launch": dispatch.LaunchSummary{ID: run + "-l", PlanID: plan, PlanN: 1, RunID: run, State: state}}
+	}
+	runs, _ := encodeJSON(map[string]any{"entries": []any{launch("cmp-0000000b", dispatch.LaunchFailed), launch("cmp-0000000a", dispatch.LaunchStarted)}})
+	var asked []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/dispatch/tickets/CND-1/plans", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(plans) })
+	mux.HandleFunc("GET /api/dispatch/tickets/CND-1/runs", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(runs) })
+	mux.HandleFunc("GET /api/runs/{run}/comparison", func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.PathValue("run"))
+		if r.PathValue("run") != "cmp-0000000a" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no such run"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"run":"cmp-0000000a","base":"` + strings.Repeat("1", 40) + `","objective":"o","criteria":[],"candidates":[],"checks":[],"settled":false,"independence":{"notObserved":"n"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	var out bytes.Buffer
+	code, err := runDispatch(t.Context(), []string{"comparison", "CND-1", "--server", srv.URL, "--token", "t"}, strings.NewReader(""), &out, &bytes.Buffer{})
+	if code != 0 || err != nil || !strings.HasPrefix(out.String(), "CND-1: comparison of cmp-0000000a at ") || len(asked) != 1 {
+		t.Fatalf("comparison: %d %v %q, asked %v", code, err, out.String(), asked)
 	}
 }
