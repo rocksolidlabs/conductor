@@ -1642,6 +1642,115 @@ func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error)
 	return refreshed(body, "candidates", tasks)
 }
 
+// filterComparison is GET /api/runs/{run}/comparison for a turn: each
+// column's candidate with its candidate: ref, noted at the state and
+// commit its ref resolves to now, and each check cell's receipt with its
+// check: ref, noted at its state, the commit it checked and its log's
+// SHA-256, so a brief citing them after this read alone cites what it
+// observed. A candidate of a run outside the grant (an imported one's
+// source) is shown without a ref and not noted. The selection is left
+// out: the person's answer is never Brakeman's input.
+func filterComparison(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "selection")
+	// noted resolves ref as a brief's would and notes it when it is found
+	// in the grant: its state, its revision and its SHA-256.
+	noted := func(ref string) (bool, error) {
+		parsed, err := brakeman.ParseRef(ref)
+		if err != nil {
+			return false, nil
+		}
+		f, err := o.rr.lookup(r.Context(), parsed)
+		if err != nil {
+			return false, err
+		}
+		if !f.found || !o.grant.admits(f.item) {
+			return false, nil
+		}
+		o.noteRead(brakeman.Read{Ref: parsed, Class: brakeman.ClassRuns, State: f.now.State, Rev: f.now.Rev, SHA256: f.now.SHA256})
+		return true, nil
+	}
+	var cands []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["candidates"]), &cands); err != nil {
+		return nil, fmt.Errorf("the comparison's candidates: %w", err)
+	}
+	for _, c := range cands {
+		var head struct {
+			Task    string
+			Run     string
+			Attempt int
+		}
+		for k, v := range map[string]any{"task": &head.Task, "run": &head.Run, "attempt": &head.Attempt} {
+			if raw, ok := c[k]; ok {
+				if err := json.Unmarshal(raw, v); err != nil {
+					return nil, fmt.Errorf("the comparison's candidate's %s: %w", k, err)
+				}
+			}
+		}
+		if head.Attempt == 0 || head.Run == "" {
+			continue
+		}
+		ref := fmt.Sprintf("candidate:%s/%s/%d", head.Run, head.Task, head.Attempt)
+		ok, err := noted(ref)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c["ref"], _ = json.Marshal(ref)
+		}
+	}
+	var checks []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["checks"]), &checks); err != nil {
+		return nil, fmt.Errorf("the comparison's checks: %w", err)
+	}
+	for _, ch := range checks {
+		var cells []map[string]json.RawMessage
+		if err := json.Unmarshal(orNull(ch["cells"]), &cells); err != nil {
+			return nil, err
+		}
+		for _, cell := range cells {
+			var receipt string
+			if raw, ok := cell["receipt"]; !ok || json.Unmarshal(raw, &receipt) != nil || receipt == "" {
+				continue
+			}
+			ok, err := noted(receipt)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				cell["ref"], _ = json.Marshal(receipt)
+			}
+		}
+		var err error
+		if ch["cells"], err = marshalNoEscape(cells); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	if m["candidates"], err = marshalNoEscape(cands); err != nil {
+		return nil, err
+	}
+	if m["checks"], err = marshalNoEscape(checks); err != nil {
+		return nil, err
+	}
+	out, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// orNull is raw, or JSON's null for none.
+func orNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
+}
+
 // withheldTicket is a related ticket outside the grant as a ticket's read
 // shows it: its id and key, no title and no status.
 type withheldTicket struct {
@@ -2615,6 +2724,10 @@ var brakemanReads = []sharedRead{
 	// the refs a turn's answer gains is under the turn's (maxTurnReply).
 	{"GET /api/dispatch/tickets/{key}/plans", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterPlans}, 0},
 	{"GET /api/runs/{run}/candidates", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCandidates}, 0},
+	// A comparison as the page measures it (docs/plans/compare-crew.md,
+	// PR-5): runs data alone (the crew as launched, the ledger's rows, git
+	// of the run's repository), nothing of the touched index.
+	{"GET /api/runs/{run}/comparison", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterComparison}, crew.MaxComparison},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
 	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers

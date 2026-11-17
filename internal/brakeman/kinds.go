@@ -459,13 +459,108 @@ func fieldSchema(f Field) map[string]any {
 	return s
 }
 
-// rulesWords are the rules every brief keeps, in words.
+// rulesWords are the rules every brief keeps, in words, then each request
+// kind's own (requestRules).
 func rulesWords() []string {
-	return []string{
+	out := []string{
 		"A fact names its evidence, an interpretation names facts of the brief, a proposal names an operation, an outcome names a receipt.",
 		"Every ref must resolve inside your scope and visibility; a revision you name must be the one you read.",
 		fmt.Sprintf("At most %d items, %d distinct refs and %d bytes as kept; a field past its bound is refused, never cut.", MaxItems, MaxBriefRefs, MaxBrief),
 	}
+	for _, r := range requestRules {
+		out = append(out, r.Rule)
+	}
+	return out
+}
+
+// RequestRule is what the brief answering a request of Kind holds beyond
+// the item kinds' own rules, in words; the check that holds it is named
+// beside it here (CheckCompareBrief for a compare request).
+type RequestRule struct {
+	Kind string `json:"kind"`
+	Rule string `json:"rule"`
+}
+
+// The rows a compare brief's comparison/1 must hold, by these labels.
+var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Checks", "Unresolved tradeoffs"}
+
+// requestRules is each request kind's rule for its brief, in Kinds' order.
+var requestRules = []RequestRule{
+	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
+		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). " +
+		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
+}
+
+// RequestRules is each request kind's rule for its brief. The caller must
+// not change what it holds.
+func RequestRules() []RequestRule { return slices.Clone(requestRules) }
+
+// CompareShape is what a compare request's brief is held to: Columns, the
+// comparison's candidates' task ids in its block's order, and Commands,
+// the operations a proposal may not name in it (every command of a task,
+// a review or a decision, as the API's guide lists them).
+type CompareShape struct {
+	Columns  []string
+	Commands []string
+}
+
+// CheckCompareBrief holds b, a compare request's brief, to its rule
+// (requestRules): exactly one comparison/1, its columns cmp.Columns in
+// order, its rows holding the five labels (compareRows, matched without
+// regard to case), its evidence citing at least one candidate: ref and
+// naming in its candidate: and check: refs only its columns' tasks; no
+// decision/1; no proposal/1 naming one of cmp.Commands. With no columns
+// given every brief is refused: a comparison the API could not read is
+// no table to hold one to. The error is an *Invalid (invalid_brief).
+func CheckCompareBrief(b Brief, cmp CompareShape) error {
+	if len(cmp.Columns) == 0 {
+		return invalidBrief("items", "the comparison's candidates could not be read: ask again")
+	}
+	table := -1
+	for i, it := range b.Items {
+		field := fmt.Sprintf("items[%d]", i)
+		switch it.Kind {
+		case ItemDecision:
+			return invalidBrief(field, "a compare brief holds no decision/1: the selection is the person's, on the comparison")
+		case ItemProposal:
+			if it.Proposal != nil && slices.Contains(cmp.Commands, it.Proposal.Op) {
+				return invalidBrief(field+".op", "a compare brief proposes no %s: a lane is the person's to command, on the comparison", it.Proposal.Op)
+			}
+		case ItemComparison:
+			if table >= 0 {
+				return invalidBrief(field, "a compare brief holds exactly one comparison/1; items[%d] is one already", table)
+			}
+			table = i
+		}
+	}
+	if table < 0 {
+		return invalidBrief("items", "a compare brief holds exactly one comparison/1, its columns %s", strings.Join(cmp.Columns, ", "))
+	}
+	c := b.Items[table].Comparison
+	field := fmt.Sprintf("items[%d]", table)
+	if c == nil || !slices.Equal(c.Columns, cmp.Columns) {
+		return invalidBrief(field+".columns", "the candidates' task ids in the comparison's order: %s", strings.Join(cmp.Columns, ", "))
+	}
+	for _, label := range compareRows {
+		if !slices.ContainsFunc(c.Rows, func(r Row) bool { return strings.EqualFold(strings.TrimSpace(r.Label), label) }) {
+			return invalidBrief(field+".rows", "no row labelled %s: a compare brief's rows include %s", label, strings.Join(compareRows, ", "))
+		}
+	}
+	cited := false
+	for j, r := range c.Evidence {
+		if r.Kind != RefCandidate && r.Kind != RefCheck {
+			continue
+		}
+		if !slices.Contains(cmp.Columns, r.Task) {
+			return invalidBrief(fmt.Sprintf("%s.evidence[%d]", field, j), "%s names no candidate of the comparison (%s)", r, strings.Join(cmp.Columns, ", "))
+		}
+		cited = cited || r.Kind == RefCandidate
+	}
+	if !cited {
+		return invalidBrief(field+".evidence", "cite the candidates the table compares: a candidate: ref of a column's task at least")
+	}
+	return nil
 }
 
 // Words is the brief's shape in words, as the guide's briefs section

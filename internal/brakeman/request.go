@@ -261,6 +261,9 @@ const (
 	KindLocate       = "locate"
 	KindOverlaps     = "overlaps"
 	KindAsk          = "ask"
+	// KindCompare drafts a comparison's supporting table (CP1 PR-5): one
+	// run: subject, a run of a comparison's chain, which the API checks.
+	KindCompare = "compare"
 	// KindWake is BK3's role's request (PR-14): one batch of wakes, no
 	// subjects, made by the role alone, never asked by a person.
 	KindWake = "wake"
@@ -268,7 +271,7 @@ const (
 
 // Kinds is every kind a person may ask in this build; KindWake is the
 // role's alone.
-var Kinds = []string{KindBriefing, KindExplain, KindDecision, KindDraftTickets, KindProposeCrew, KindHandoff, KindLocate, KindOverlaps, KindAsk}
+var Kinds = []string{KindBriefing, KindExplain, KindDecision, KindDraftTickets, KindProposeCrew, KindHandoff, KindLocate, KindOverlaps, KindAsk, KindCompare}
 
 // batchPattern is a wake batch's id.
 var batchPattern = regexp.MustCompile(`^wb-[1-9][0-9]{0,17}$`)
@@ -367,6 +370,7 @@ var subjectKinds = map[string]struct {
 	KindLocate:       {nil, 0, 0, true},
 	KindOverlaps:     {nil, 0, 0, false},
 	KindAsk:          {nil, 0, MaxSubjects, true},
+	KindCompare:      {[]string{RefRun}, 1, 1, false},
 	KindWake:         {nil, 0, 0, false},
 }
 
