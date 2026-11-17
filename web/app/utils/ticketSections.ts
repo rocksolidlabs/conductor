@@ -1,6 +1,7 @@
 import type { PlanSummary, RunSummary } from '~/composables/useDispatch'
 import type { CloseCard } from './dispatch'
 import { planStateWord, revisionTag } from './dispatchPlans'
+import { githubStateWords } from './tracker'
 
 // A ticket's strip of sections (UX1 PR-16, docs/plans/ux-review.md): the sections the strip names, in the page's order, each with its state
 // where it has one, from what the page reads already. Pure: DispatchTicketStrip.vue draws it, vitest proves it (ticketSections.test.ts).
@@ -25,7 +26,7 @@ export function ticketWaits<T extends WaitItem>(items: readonly T[], ticket: { k
 
 /** A section the strip names: its id on the page (`ticket-<id>`), its name, its state in words ('' for a name alone), its tone. */
 export interface TicketSection {
-  id: 'description' | 'acceptance' | 'plan' | 'runs' | 'decisions' | 'close' | 'people' | 'comments' | 'history'
+  id: 'github' | 'description' | 'acceptance' | 'plan' | 'runs' | 'decisions' | 'close' | 'people' | 'comments' | 'history'
   label: string
   words: string
   tone: 'neutral' | 'warning'
@@ -34,6 +35,13 @@ export interface TicketSection {
 }
 
 export interface TicketSectionsInput {
+  /** The ticket's linked GitHub item, as its snapshot says it (IN1a): GitHub's state, apart from the ticket's status; none when unlinked. */
+  github?: { state: string; stateReason?: string; merged?: boolean } | null
+  /**
+   * The publications to GitHub a person can act on, in words ("1 publication needs you", '' for none: publicationsStripWords): said in
+   * the GitHub section after GitHub's state, in neutral ink, since they are not among the one list of what needs you (IN1a PR-9).
+   */
+  publications?: string
   /** The revision the Plan section features (the approved one, else the newest proposed), or none. */
   plan: Pick<PlanSummary, 'state' | 'stale'> | null
   /** The ticket's items of the one list (ticketWaits). */
@@ -56,7 +64,9 @@ function needWords(n: number): string {
 }
 
 /**
- * The nine sections the strip names, in the page's order: Description and Acceptance by name; Plan by its featured revision's state
+ * The sections the strip names, in the page's order: GitHub first, only for a ticket with a linked item (IN1a: its panel is under the
+ * title), by GitHub's state in its own words ("open", "closed", "merged"), never the ticket's status nor a status's tone; then the nine:
+ * Description and Acceptance by name; Plan by its featured revision's state
  * ("approved", "approval stale", "proposed", "none"), or "r2 waits for your approval" (warning) while the one list holds a plan item of
  * this ticket; Runs by the newest run's done part and the ticket's runs' items that wait ("2 of 6 done · 2 need you", warning while any
  * waits), its count the ticket's runs; Decisions by the open records ("2 open", warning, or "none open"); To close by the close card
@@ -75,7 +85,9 @@ export function ticketSections(i: TicketSectionsInput): TicketSection[] {
   const closeWords = i.close.closed ? 'closed' : i.close.ready ? 'ready' : `${met} of ${i.close.items.length} met`
   const live = i.comments.filter((c) => !c.deletedAt).length
   const earlier = (i.comments[0]?.n ?? 1) > 1
+  const github: TicketSection[] = i.github ? [{ id: 'github', label: 'GitHub', words: [githubStateWords(i.github).key, i.publications ?? ''].filter(Boolean).join(' · '), tone: 'neutral' }] : []
   return [
+    ...github,
     { id: 'description', label: 'Description', words: '', tone: 'neutral' },
     { id: 'acceptance', label: 'Acceptance', words: '', tone: 'neutral' },
     plan,

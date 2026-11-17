@@ -274,7 +274,7 @@ func TestTaskTicketAgainstTheServer(t *testing.T) {
 	a.mustDispatch(t, "create", "--project", "CND", "--title", "Ship the <thing>")
 	a.mustDispatch(t, "link", "CND-1", "--kind", "run", "--ref", run)
 	code, out, err := task(t, "", "ticket")
-	if code != 0 || err != nil || !strings.HasPrefix(out, "# CND-1: Ship the <thing>\n\n- status: backlog\n") || !strings.Contains(out, "## Links (1)\n\n- run "+run+"\n") {
+	if code != 0 || err != nil || !strings.HasPrefix(out, "# CND-1: Ship the <thing>\n\n- status: backlog\n") || !strings.Contains(out, "## Links (1)\n\n- run "+run+" (link "+a.ticket(t, "CND-1").Links[0].ID+")\n") {
 		t.Fatalf("task ticket: %d %v\n%s", code, err, out)
 	}
 	var st sessionTicket

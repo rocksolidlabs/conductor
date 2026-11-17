@@ -420,7 +420,12 @@ func applicationWords(c dispatch.Candidate, a dispatch.ReviewApplication) string
 func findingHead(f dispatch.Finding, c dispatch.Candidate) string {
 	head := cmp.Or(f.Severity, f.Intent)
 	words := f.Message
-	if words == "" && f.Check != nil {
+	switch {
+	case words != "" || f.Check == nil:
+	case f.Check.Source == dispatch.CheckSourceExternal:
+		// A CI job on GitHub: its name is GitHub's text, never a title's.
+		words = "a CI job on GitHub failed on " + c.Name()
+	default:
 		words = fmt.Sprintf("the check %s failed on %s", f.Check.ID, c.Name())
 	}
 	return strings.Join(hNonEmpty(head, words), ": ")

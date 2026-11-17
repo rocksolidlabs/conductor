@@ -14,8 +14,11 @@ export type TicketStatus = 'backlog' | 'ready' | 'in_progress' | 'in_review' | '
 export type Horizon = '' | 'now' | 'next' | 'later'
 /** A project's tracker: its own (native), or a pointer at another one by its URL (external). */
 export type Tracker = 'native' | 'external'
-/** What a project's close policy may require before a ticket is done: `verified` a delivery whose candidate passed its checks (DS2). */
-export type CloseRequirement = 'acceptance' | 'delivery' | 'verified'
+/**
+ * What a project's close policy may require before a ticket is done: `verified` a delivery whose candidate passed its checks (DS2),
+ * `merged` a live delivery link whose pull request GitHub says is merged, read a moment ago (IN1a).
+ */
+export type CloseRequirement = 'acceptance' | 'delivery' | 'verified' | 'merged'
 /** The twelve colours a label may have, by name; the UI maps each to one of the brand's scales (utils/dispatch.ts). */
 export type LabelColor = 'gray' | 'brown' | 'red' | 'orange' | 'amber' | 'yellow' | 'lime' | 'green' | 'teal' | 'cyan' | 'blue' | 'indigo'
 /** What a list is sorted by: its updated or created time, its priority, its status, its title, its key, its milestone. */
@@ -250,12 +253,133 @@ export interface TicketComment {
 /** A ticket's close policy as read: what its project requires, what it meets, what it lacks, and why an acceptance on record is unmet. */
 export interface CloseState {
   requires: CloseRequirement[]
-  /** `verified` is absent from a server before DS2's PR-9, read as unmet. */
-  met: { acceptance: boolean; delivery: boolean; verified?: boolean }
+  /** `verified` is absent from a server before DS2's PR-9, `merged` from one before IN1a's PR-4: each read as unmet. */
+  met: { acceptance: boolean; delivery: boolean; verified?: boolean; merged?: boolean }
   missing: CloseRequirement[]
   why?: string
   /** Why `verified` is unmet: "the delivered candidate build#2 failed the check test (exit 1)", "no delivery names a candidate". */
   verifiedWhy?: string
+  /** Why `merged` is unmet, in the server's words. */
+  mergedWhy?: string
+}
+
+// ---------------------------------------------------------------------------
+// A ticket's GitHub item (Program item IN1a, docs/plans/tracker-linking.md; docs/protocol.md, "A ticket's GitHub item"): the Go shapes of
+// internal/dispatch (ExternalSnapshot, TicketRead, Owners, LinkReadSummary, LinkRead) as the ticket's read carries them; PublicationSummary is with the publications, below.
+
+/** An image of an import's manifest: its id (its URL without its query), and once done the attachment made of it, or why it was skipped. */
+export interface SnapshotImage {
+  id: string
+  attachmentId?: string
+  sha256?: string
+  skipped?: 'type' | 'size'
+}
+
+/** What a read of the ticket's linked item kept (`externalSnapshot`): GitHub's fields as read, never mapped onto the ticket's own. */
+export interface ExternalSnapshot {
+  v: number
+  system: string
+  host: string
+  space: string
+  kind: 'issue' | 'change'
+  id: string
+  nodeId: string
+  databaseId?: string
+  url: string
+  title: string
+  bodySha256: string
+  bodyBytes: number
+  bodyTruncated?: boolean
+  state: string
+  stateReason?: string
+  merged?: boolean
+  mergedAt?: string
+  mergeSha?: string
+  headSha?: string
+  baseRef?: string
+  labels: string[]
+  labelsTotal: number
+  assignees: string[]
+  milestone?: string
+  author?: string
+  authorId?: string
+  createdAt?: string
+  updatedAt: string
+  closedAt?: string
+  repro?: string
+  reproSha256?: string
+  descriptionSha256: string
+  images: SnapshotImage[]
+}
+
+/** A ticket's field owners: `dispatch`, or the linked item's system (`github`). */
+export interface TicketOwners {
+  title: string
+  description: string
+}
+
+/** The ticket's last read of its linked item (its ticket_reads row): when, by whom, and a failure's words. */
+export interface TicketRead {
+  externalId: string
+  updatedAt?: string
+  readAt?: string
+  readBy?: string
+  error?: string
+  errorAt?: string
+}
+
+/** A link's checks counted: passed, failed, pending and other; `incomplete` when the set is not whole (never all passed then). */
+export interface ChecksSummary {
+  passed: number
+  failed: number
+  pending: number
+  other: number
+  incomplete: boolean
+  omitted: number
+}
+
+/** A link's last read as the ticket's read carries it (`linkReads`, by link id). */
+export interface LinkReadSummary {
+  state?: string
+  merged: boolean
+  mergedAt?: string
+  mergeSha?: string
+  headSha?: string
+  checks: ChecksSummary
+  updatedAt?: string
+  readAt?: string
+  error?: string
+}
+
+/** One check of a link's read, at the pull request's head commit: `job:`, `run:` or `status:` its id's prefix. */
+export interface LinkCheck {
+  id: string
+  name: string
+  status: string
+  conclusion?: string
+  url?: string
+  app?: string
+  hasLog?: boolean
+  completedAt?: string
+}
+
+/** A link's read whole (GET …/links/{id}/read): its checks among it, and why a cut list is cut. */
+export interface LinkRead {
+  system: string
+  host: string
+  kind: string
+  nodeId: string
+  state: string
+  merged: boolean
+  mergedAt?: string
+  mergeSha?: string
+  headSha?: string
+  checks: LinkCheck[]
+  incomplete?: { words: string[]; omitted?: number }
+  updatedAt: string
+  readAt?: string
+  error?: string
+  errorAt?: string
 }
 
 /** A ticket in full, as its page reads it (GET /api/dispatch/tickets/{key}), from one read transaction. */
@@ -278,15 +402,28 @@ export interface DispatchTicket {
   acceptedFor?: string
   acceptedCriteria?: string
   acceptedNote?: string
+  /** `dispatch`, or the system its linked item is of (`github`), its kind imported or linked (IN1a). */
   source: string
+  /** The linked item's identity, `<system>:<host>:<node id>`, and its URL. */
   externalId?: string
   externalUrl?: string
+  /** What the last read of the linked item kept. */
+  externalSnapshot?: ExternalSnapshot
   createdAt: string
   createdBy: string
   updatedAt: string
   closedAt?: string
   deletedAt?: string
   rev: number
+  /** The field owners, when the ticket has a linked item. */
+  owners?: TicketOwners
+  /** Its last read of the linked item, when one was made. */
+  externalRead?: TicketRead
+  /** Its live links' last reads, by link id (absent from a server before IN1a). */
+  linkReads?: Record<string, LinkReadSummary>
+  /** Its newest 10 publications to GitHub, and how many older ones a person can act on. */
+  publications?: PublicationSummary[]
+  publicationsNeedYou?: number
   assignees: string[]
   labels: string[]
   parent?: RelatedTicket
@@ -312,7 +449,8 @@ export interface DispatchChange {
   ticketId?: string
   projectId?: string
   field?: string
-  op: 'set' | 'add' | 'remove' | 'create' | 'delete' | 'reconcile' | 'migrate'
+  /** `observe` a field set from a read of the linked item, `adopt` one taken over from it (IN1a). */
+  op: 'set' | 'add' | 'remove' | 'create' | 'delete' | 'reconcile' | 'migrate' | 'observe' | 'adopt'
   value: string
   prior?: string
   at: string
@@ -482,6 +620,8 @@ export interface PlanBody {
   constraints: string
   decisions: PlanDecision[]
   note: string
+  /** What of the linked item it hands over: absent when it hands over neither the steps to reproduce nor an evidence link. */
+  source?: PlanSource
 }
 
 /** A plan revision read whole (GET /api/dispatch/plans/{id}): its summary and its body. */
@@ -506,6 +646,18 @@ export interface NewPlan {
   constraints?: string
   decisions?: PlanDecision[]
   note?: string
+  /** What of the ticket's linked item the revision hands over (IN1a): the steps to reproduce, pinned, and evidence links; absent for neither. */
+  source?: PlanSource
+}
+
+/**
+ * A revision's choice of the ticket's source (docs/protocol.md, Plan revisions; dispatch.PlanSource): `repro` pins the linked item's
+ * identity (the ticket's `externalId`) and the steps' SHA-256 (its snapshot's `reproSha256`) as the proposal showed them, so the approval
+ * covers the very text handed over; `evidence` the live delivery or external links' ids, at most 8, each once.
+ */
+export interface PlanSource {
+  repro?: { identity: string; sha256: string } | null
+  evidence?: string[]
 }
 
 export interface PlanReply {
@@ -834,6 +986,59 @@ export interface NewLink {
   candidate?: string
 }
 
+/** What an import of a GitHub item would make (POST /api/dispatch/external/preview): read, nothing written. */
+export interface ExternalPreview {
+  ref: { system: string; host: string; space: string; kind: 'issue' | 'change'; id: string }
+  url: string
+  title: string
+  /** The description's first 2 KiB, and its whole length in bytes. */
+  description: string
+  descriptionLength: number
+  /** The images an import would download, by their ids (their URLs without a query). */
+  images: string[]
+  repro?: string
+  state: string
+  stateReason?: string
+  labels: string[]
+  assignees: string[]
+  owners: TicketOwners
+  /** The key of the live ticket that has the item as its linked issue already. */
+  linked?: string
+}
+
+/** An import's own fields, beside the item's: what GitHub does not own. */
+export interface ExternalImport {
+  url: string
+  status?: TicketStatus
+  priority?: number
+  horizon?: Horizon
+  owner?: string
+  assignees?: string[]
+  labels?: string[]
+  milestone?: string
+}
+
+/** An import's or a refresh's images: each done (an attachment), skipped, or pending (left by the budget or a failed download). */
+export interface ExternalImageState {
+  id: string
+  attachmentId?: string
+  skipped?: string
+  pending?: boolean
+}
+
+export interface ImportReply {
+  receipt: DispatchReceipt
+  ticket?: DispatchTicket | null
+  images?: ExternalImageState[]
+}
+
+export interface RefreshReply {
+  changed: boolean
+  receipt?: DispatchReceipt
+  ticket?: DispatchTicket | null
+  images?: ExternalImageState[]
+}
+
 /** How far a file's upload has gone, in bytes. */
 export type UploadProgress = (sent: number, total: number) => void
 
@@ -881,6 +1086,90 @@ function useUpload() {
       xhr.send(form)
     })
   }
+}
+
+// ---------------------------------------------------------------------------
+// A ticket's publications to GitHub (Program item IN1a, docs/protocol.md, "A ticket's publications").
+
+/** A publication's state: `unconfirmed` is never sent again (GitHub may still show its comment). */
+export type PublicationState = 'draft' | 'sending' | 'sent' | 'failed' | 'unconfirmed' | 'discarded'
+
+/** A publication as a list carries it, without its body (dispatch.PublicationSummary). Times are RFC 3339; a zero one is absent. */
+export interface PublicationSummary {
+  id: string
+  ticket: string
+  /** `linked` (the ticket's linked item) or `link:<id>`. */
+  target: string
+  /** `issue` or `change`, GitHub's type of the item read at the prepare. */
+  targetKind: string
+  targetUrl: string
+  /** `owner/repo#n`. */
+  targetRef: string
+  targetNodeId: string
+  targetSpaceId: string
+  /** Of another store instance (a restored data directory): never sent and never closed here. */
+  restored?: boolean
+  /** GitHub's hidden marker, `<!-- conductor-publication:<id> -->`: the publication's random id, nothing of the ticket. */
+  marker: string
+  postSha256: string
+  parts: string[]
+  closeIssue?: 'completed' | 'not_planned'
+  state: PublicationState
+  tries: number
+  attempt: number
+  findSince?: string
+  sentAsId?: string
+  sentAsLogin?: string
+  remoteId?: string
+  remoteUrl?: string
+  closeState?: 'pending' | 'closing' | 'closed' | 'refused'
+  closeTries: number
+  closeError?: string
+  error?: string
+  sendingAt?: string
+  sentAt?: string
+  sentBy?: string
+  createdAt: string
+  createdBy: string
+  rev: number
+}
+
+/** A publication in its own read, its body among it. */
+export type Publication = PublicationSummary & { body: string }
+
+/** What the composer may offer (GET …/publish/offer): each part's exact Markdown, and where a publication may go. */
+export interface PublishOffer {
+  parts: Array<{ name: string; markdown: string }>
+  targets: Array<{ target: string; url: string }>
+}
+
+/** A publication prepared, or read: `preview` the exact bytes Send posts, `postSha256` their SHA-256, which Send names. */
+export interface PublicationPreview {
+  publication: Publication
+  preview: string
+  postSha256: string
+}
+
+/** A publication made (POST …/publications, 201). */
+export type PreparedPublication = PublicationPreview & { receipt: DispatchReceipt }
+
+/** What a publication's prepare carries beside the op's fields. */
+export interface NewPublication {
+  target: string
+  body: string
+  parts?: string[]
+  closeIssue?: 'completed' | 'not_planned'
+}
+
+export interface PublicationReply {
+  receipt: DispatchReceipt
+  publication: PublicationSummary | null
+}
+
+export interface PublicationsPage {
+  publications: PublicationSummary[]
+  /** The cursor of the next page, '' at the end. */
+  next: string
 }
 
 /** Dispatch's routes, over useApi: the workbench token in the header, errors as ApiError (a refused operation's `body` carries its receipt). */
@@ -963,6 +1252,40 @@ export function useDispatchApi() {
       request<RunCandidatesPage>(`/api/runs/${enc(run)}/candidates?task=${enc(task)}&before=${before}`),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
+    // A ticket's publications to GitHub (IN1a): no timeout of the page's own, the server's deadline bounds each.
+    publishOffer: (key: string) => request<PublishOffer>(`/api/dispatch/tickets/${enc(key)}/publish/offer`),
+    preparePublication: (key: string, body: OpBody & NewPublication) => request<PreparedPublication>(`/api/dispatch/tickets/${enc(key)}/publications`, { method: 'POST', body }),
+    /** A page of a ticket's publications, newest first, after `cursor`; `needYou` those a person can act on. */
+    publications: (key: string, cursor = '', needYou = false) => {
+      const q = [cursor ? `cursor=${enc(cursor)}` : '', needYou ? 'needYou=1' : ''].filter(Boolean).join('&')
+      return request<PublicationsPage>(`/api/dispatch/tickets/${enc(key)}/publications` + (q ? `?${q}` : ''))
+    },
+    publication: (id: string) => request<PublicationPreview>(`/api/dispatch/publications/${enc(id)}`),
+    sendPublication: (id: string, body: OpBody & { postSha256: string }) => request<PublicationReply>(`/api/dispatch/publications/${enc(id)}/send`, { method: 'POST', body }),
+    checkPublication: (id: string) => request<{ publication: PublicationSummary }>(`/api/dispatch/publications/${enc(id)}/check`, { method: 'POST', body: {} }),
+    closePublication: (id: string, body: OpBody) => request<{ publication: PublicationSummary }>(`/api/dispatch/publications/${enc(id)}/close`, { method: 'POST', body }),
+    discardPublication: (id: string, body: OpBody) => request<PublicationReply>(`/api/dispatch/publications/${enc(id)}/discard`, { method: 'POST', body }),
+    // A ticket's GitHub item (IN1a). These routes ask GitHub: they set no timeout of their own, so the server's deadline bounds them.
+    /** What importing a GitHub item would make, read with the token kept for its host; `project` gives a short form its repository. */
+    externalPreview: (url: string, project?: string) =>
+      request<{ preview: ExternalPreview }>('/api/dispatch/external/preview', { method: 'POST', body: { url, ...(project ? { project } : {}) } }).then((r) => r.preview),
+    /** A ticket made of a GitHub item, GitHub owning its title and description; its images downloaded as attachments. */
+    importExternal: (project: string, body: OpBody & ExternalImport) => request<ImportReply>(`/api/dispatch/projects/${enc(project)}/import`, { method: 'POST', body }),
+    /** The ticket's linked issue set, every field staying Dispatch's. */
+    linkExternal: (key: string, body: OpBody & { url: string }) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/external`, { method: 'POST', body }),
+    /** The linked issue taken off: each field GitHub owned becomes Dispatch's with its text. */
+    unlinkExternal: (key: string, body: OpBody) => request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/external/delete`, { method: 'POST', body }),
+    /** The linked item read again: the fields GitHub owns follow it; the ticket's status never moves. */
+    refreshExternal: (key: string, body: OpBody) => request<RefreshReply>(`/api/dispatch/tickets/${enc(key)}/external/refresh`, { method: 'POST', body }),
+    /** A field's owner moved: `dispatch` takes it over, `github` gives it back (read from GitHub first). */
+    externalAuthority: (key: string, body: OpBody & { field: 'title' | 'description'; owner: 'dispatch' | 'github' }) =>
+      request<TicketReply>(`/api/dispatch/tickets/${enc(key)}/external/authority`, { method: 'POST', body }),
+    /** A link's item read again from GitHub, its checks among it. */
+    readLink: (key: string, id: string) => request<{ read: LinkRead }>(`/api/dispatch/tickets/${enc(key)}/links/${enc(id)}/read`, { method: 'POST', body: {} }).then((r) => r.read),
+    /** A link's last read whole, or null when it was never read. */
+    linkRead: (key: string, id: string) => request<{ read: LinkRead | null }>(`/api/dispatch/tickets/${enc(key)}/links/${enc(id)}/read`).then((r) => r.read ?? null),
+    /** The tickets whose linked item, or one of whose live links, is the GitHub item at `url` (at most 2 KiB). */
+    ticketsOfExternal: (url: string) => request<TicketsPage>(`/api/dispatch/tickets?external=${enc(url)}`).then((r) => r.tickets ?? []),
   }
 }
 

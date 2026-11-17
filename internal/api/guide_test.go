@@ -820,14 +820,14 @@ func TestEachBodySchemaIsWhatItsRouteDecodes(t *testing.T) {
 		"brakeman_config": brakemanConfigBody{}, "brakeman_ask": brakemanAskBody{}, "brakeman_cancel": brakemanCancelBody{},
 		"accounts_add": addAccountBody{}, "accounts_rename": renameAccountBody{}, "accounts_retire": accountRevBody{}, "accounts_default": accountDefaultBody{}, "capacity_read": capacityReadBody{},
 		// A Brakeman turn's granted operations take their routes' own bodies.
-		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": planProposeBody{},
+		"launch_approved_plan": ticketLaunchBody{}, "prepare_followup": followupActBody{},
 		// The operator's operations on a decision.
 		"decision_respond": crew.Response{}, "decision_cancel": decisionCancelBody{}, "decision_comment": decisionCommentBody{}, "decision_route": decisionRouteBody{},
 		// A resume from a session's record.
 		"history_resume": historyResumeBody{},
 		// A person's reviews.
 		"review_submit": reviewSubmitBody{}, "review_retry": reviewRetryBody{}, "finding_mark": findingMarkBody{},
-		"tracker_set": trackerSaveBody{},
+		"tracker_set": trackerSaveBody{}, "tracker_remove": trackerRemoveBody{},
 		// A ticket's GitHub item.
 		"ticket_import_preview": externalPreviewBody{}, "ticket_import": externalImportBody{}, "ticket_link_issue": externalLinkBody{},
 		"ticket_unlink_issue": dispatchOp{}, "ticket_refresh": externalRefreshBody{}, "ticket_authority": externalAuthorityBody{}, "link_read": linkReadBody{},

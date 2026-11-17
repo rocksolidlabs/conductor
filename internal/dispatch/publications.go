@@ -57,8 +57,12 @@ var PublicationParts = []string{"deliveries", "checks", "key"}
 const (
 	// MaxPublicationBody bounds the body a person approves, in bytes.
 	MaxPublicationBody = 16 << 10
-	// MaxPublications bounds a ticket's publications.
-	MaxPublications = 100
+	// MaxPublications bounds a ticket's publications not discarded, and
+	// MaxPublicationRows its rows in every state: a preview discarded
+	// unsent counts only against the second, so rewording a comment never
+	// uses up the ticket's publications.
+	MaxPublications    = 100
+	MaxPublicationRows = 1000
 	// MaxPublicationTries bounds a publication's posts, and
 	// MaxPublicationCloseTries its closes begun.
 	MaxPublicationTries      = 5
@@ -598,7 +602,8 @@ func normalBody(s string) (string, error) {
 // linked item, or link:<id> naming a live delivery or external link of
 // this ticket (its read not needed here); a close asked only of an item
 // not held as a pull request (the linked item's kind, a link's last read
-// or its address); and at most MaxPublications a ticket (bound). It gives
+// or its address); and at most MaxPublications a ticket not discarded and
+// MaxPublicationRows in all (bound). It gives
 // the ticket, the body and the parts as a publication keeps them.
 func prepareJudged(ctx context.Context, q queryer, args PublicationArgs, expectedRev int64) (Ticket, string, []string, error) {
 	tk, err := liveTicket(ctx, q, args.Key, false)
@@ -650,12 +655,15 @@ func prepareJudged(ctx context.Context, q queryer, args PublicationArgs, expecte
 	case args.CloseIssue != "" && pull:
 		return Ticket{}, "", nil, refuse(RefusalInvalid, "only an issue is closed, and the target of %s is a pull request: closing one closes it unmerged", tk.Key)
 	}
-	var n int
-	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM publications WHERE ticket_id = ?", tk.ID).Scan(&n); err != nil {
+	var n, rows int
+	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FILTER (WHERE state != ?), COUNT(*) FROM publications WHERE ticket_id = ?", PublicationDiscarded, tk.ID).Scan(&n, &rows); err != nil {
 		return Ticket{}, "", nil, err
 	}
 	if n >= MaxPublications {
-		return Ticket{}, "", nil, refuse(RefusalBound, "a ticket has at most %d publications", MaxPublications)
+		return Ticket{}, "", nil, refuse(RefusalBound, "a ticket has at most %d publications not discarded", MaxPublications)
+	}
+	if rows >= MaxPublicationRows {
+		return Ticket{}, "", nil, refuse(RefusalBound, "a ticket keeps at most %d publications, discarded ones among them", MaxPublicationRows)
 	}
 	return tk, body, parts, nil
 }
@@ -687,7 +695,7 @@ func (s *Store) JudgePrepare(ctx context.Context, args PublicationArgs, expected
 // post_sha256 the SHA-256 of the bytes a send posts (Posted), and the
 // store's instance. These are never written again: a publication goes to
 // the item it was prepared for or nowhere. At most MaxPublications a
-// ticket. What needs no target is judged first, by prepareJudged, the
+// ticket not discarded, MaxPublicationRows in all. What needs no target is judged first, by prepareJudged, the
 // judgement JudgePrepare reads. The receipt's id is the publication's.
 func (s *Store) PreparePublication(ctx context.Context, op Op, args PublicationArgs, target PublicationTarget, mark func(id string) string) (Receipt, error) {
 	return s.Apply(ctx, op, IntentPublicationPrepare, args, func(t *tx) error {
@@ -954,7 +962,7 @@ func (s *Store) Publication(ctx context.Context, id string) (Publication, error)
 // publicationsOf reads the ticket's publications without their bodies,
 // newest first, at most n after the cursor (a publication's id, "" for
 // the start), those a person can act on alone when needYou.
-func publicationsOf(ctx context.Context, q queryer, ticketID, cursor string, needYou bool, n int) ([]PublicationSummary, error) {
+func publicationsOf(ctx context.Context, q queryer, ticketID, cursor string, needYou, live bool, n int) ([]PublicationSummary, error) {
 	out := []PublicationSummary{}
 	if schemaOf(q) < 4 {
 		return out, nil
@@ -979,7 +987,7 @@ func publicationsOf(ctx context.Context, q queryer, ticketID, cursor string, nee
 		if err != nil {
 			return nil, err
 		}
-		if needYou && !p.NeedsYou() {
+		if needYou && !p.NeedsYou() || live && p.State == PublicationDiscarded {
 			continue
 		}
 		out = append(out, p)
@@ -1001,7 +1009,7 @@ func (s *Store) Publications(ctx context.Context, key, cursor string, needYou bo
 		} else if err != nil {
 			return err
 		}
-		if page, err = publicationsOf(ctx, q, tk.ID, cursor, needYou, MaxPublicationPage+1); err != nil {
+		if page, err = publicationsOf(ctx, q, tk.ID, cursor, needYou, false, MaxPublicationPage+1); err != nil {
 			return err
 		}
 		if len(page) > MaxPublicationPage {
@@ -1013,14 +1021,15 @@ func (s *Store) Publications(ctx context.Context, key, cursor string, needYou bo
 }
 
 // ticketPublications is a ticket's read's part: its newest
-// MaxTicketPublications publications and how many older ones a person can
-// act on.
+// MaxTicketPublications publications not discarded (a preview a person
+// backed out of never pushes a sent one out of view; the paged listing
+// keeps them as history) and how many older ones a person can act on.
 func ticketPublications(ctx context.Context, q queryer, ticketID string) ([]PublicationSummary, int, error) {
-	newest, err := publicationsOf(ctx, q, ticketID, "", false, MaxTicketPublications)
+	newest, err := publicationsOf(ctx, q, ticketID, "", false, true, MaxTicketPublications)
 	if err != nil || len(newest) < MaxTicketPublications {
 		return newest, 0, err
 	}
-	older, err := publicationsOf(ctx, q, ticketID, newest[len(newest)-1].ID, true, MaxPublications)
+	older, err := publicationsOf(ctx, q, ticketID, newest[len(newest)-1].ID, true, false, MaxPublicationRows)
 	return newest, len(older), err
 }
 

@@ -7,6 +7,7 @@ import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/pale
 import type { TicketSummary } from '~/composables/useDispatch'
 import { PICK_WORDS, pickEdit, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import type { DispatchWatch } from '~/composables/useDispatchLive'
+import { externalSearchable } from '~/utils/tracker'
 
 /**
  * The command palette (#302): one keystroke from any page opens it over
@@ -103,6 +104,39 @@ watch(
     newTicketOpen.value = true
   },
 )
+// Import from GitHub into <project> (a `>` row, IN1a) opens its dialog here, as New ticket does; the ticket imported opens.
+const importOpen = ref(false)
+const importProject = ref('')
+watch(
+  () => palette.importFor.value,
+  async (key) => {
+    if (!key) return
+    palette.importFor.value = ''
+    palette.close()
+    await nextTick()
+    importProject.value = key
+    importOpen.value = true
+  },
+)
+function ticketImported(t: { key: string; title: string }) {
+  palette.staleTickets()
+  void router.push(ticketPath(t.key))
+}
+// A GitHub item's address pasted into the search (IN1a): the tickets it names are read, a moment after the typing stops, and listed.
+const tracker = useTracker()
+let externalTimer: number | undefined
+// The token list's answer counts too: an Enterprise Server's address pasted before it is read is searched once its host is known.
+watch(
+  () => [palette.query.value, palette.open.value, tracker.refOptions.value] as const,
+  ([q, isOpen, refs]) => {
+    window.clearTimeout(externalTimer)
+    const url = q.trim()
+    if (!isOpen || !externalSearchable(url, refs)) return
+    if (palette.externalHits.value.url === url) return
+    externalTimer = window.setTimeout(() => void palette.findExternal(url), 200)
+  },
+)
+onBeforeUnmount(() => window.clearTimeout(externalTimer))
 const toast = useToast()
 /** A ticket made from the palette's dialog, by its key and title (its reply's ticket's, else its receipt's key and the title sent). */
 function ticketMade(t: { key: string; title: string }) {
@@ -177,6 +211,8 @@ watch(
       input.value?.inputRef?.focus()
       void palette.loadLists()
       void palette.loadTouched()
+      // The hosts a pasted address may name (IN1a): the tokens kept.
+      if (tracker.available.value === null) void tracker.load()
       // Through the live store, so that a read that fails is asked again after the window, doubled, as a re-read is.
       dispatchLive().ask(ticketsWatch, () => palette.loadTickets())
       void rows.loadIntegrations()
@@ -201,6 +237,7 @@ watch(
   () => {
     palette.forgetTouched()
     palette.forgetTickets()
+    palette.forgetExternal()
   },
 )
 // The Tickets cache is read again on a dispatch event while the palette is open (gathered, DispatchLive's window), and is due again at
@@ -593,4 +630,5 @@ function pieces(text: string): [string, string, string] {
   <NameDialog v-model:open="nameOpen" />
   <DispatchPicker v-model:open="ticketPickOpen" :field="ticketPick.field" :tickets="ticketPick.tickets" :agents="palette.catalog.value" @pick="ticketPicked" />
   <DispatchNewTicket v-if="newTicketProject" v-model:open="newTicketOpen" :project="newTicketProject" :gate="ticketGate" @created="ticketMade" />
+  <DispatchImport v-if="importProject" v-model:open="importOpen" :project="importProject" :gate="ticketGate" @created="ticketImported" />
 </template>

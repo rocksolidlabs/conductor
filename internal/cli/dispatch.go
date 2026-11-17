@@ -46,7 +46,9 @@ const dispatchUsage = `Usage:
       a ticket or its comments; --json prints them as one JSON array
   conductor dispatch show KEY-n
       a ticket whole: its fields, description, acceptance criteria, close
-      policy, parent, children, relations, links, attachments and last comments
+      policy, parent, children, relations, links (each with its id, which
+      read, publish --target and plan propose --evidence take), attachments
+      and last comments
   conductor dispatch create --project KEY --title T [--description-file F] [--priority P]
                             [--owner NAME] [--label L]...
       make a ticket and print its key; F a file of Markdown, - for stdin
@@ -79,7 +81,7 @@ const dispatchUsage = `Usage:
                                   [--constraints-file F]
                                   [--decision ID:KIND:QUESTION[@TASK,...]]...
                                   [--decision-for ID=role:RESP|person:NAME]...
-                                  [--note TEXT]
+                                  [--note TEXT] [--repro] [--evidence LINK]...
       make the ticket's next plan revision from a saved crew with tasks, as it
       is now, at the commit REF names (HEAD when not given); the references,
       relative to the crew's folder, resolved at that commit; the attachments
@@ -89,7 +91,11 @@ const dispatchUsage = `Usage:
       that wait on it after the last @; --decision-for names whom decision
       ID is for, a responsibility of the crew (architecture, product,
       security, acceptance) or a person of it: the operator answers it for
-      them
+      them; --repro hands over the steps to reproduce from the ticket's
+      linked issue, pinned as they read now (a revision proposed after
+      they change on GitHub is refused, and approving one whose steps
+      changed since is too), and --evidence a delivery or external link
+      of the ticket, by its id or its URL
   conductor dispatch plan approve KEY-n N [--note TEXT]
       approve revision N, the operator's act: it supersedes the approved one
   conductor dispatch plan withdraw KEY-n N
@@ -143,6 +149,51 @@ const dispatchUsage = `Usage:
                                      --verdict resolved|open|withdrawn [--note TEXT]
       mark a finding against a later candidate of its task; where its lines
       are there is the server's, kept with the mark
+  conductor dispatch import URL --project KEY [--no-images] [--preview]
+      import a GitHub issue or pull request as a ticket of the project:
+      GitHub owns its title and description, its images are made
+      attachments (--no-images leaves them for a refresh); --preview prints
+      what an import would make and writes nothing; read with the token the
+      server keeps for the item's host (conductor trackers)
+  conductor dispatch link-issue KEY-n URL
+      link a ticket to a GitHub issue or pull request: every field stays
+      Dispatch's
+  conductor dispatch unlink-issue KEY-n
+      unlink the ticket's GitHub item: the fields GitHub owned become
+      Dispatch's, with their text
+  conductor dispatch refresh KEY-n [--no-images]
+      read the ticket's GitHub item again: what changed is written to the
+      fields GitHub owns; the ticket's status never moves
+  conductor dispatch authority KEY-n title|description github|dispatch
+      take the ticket's title or description over from GitHub (dispatch),
+      or give it back (github: read from GitHub again)
+  conductor dispatch read KEY-n LINK
+      read what GitHub says of the ticket's delivery or external link (its
+      id or its URL) now: open, closed or merged, and a pull request's
+      checks at its head commit
+  conductor dispatch publish KEY-n --target linked|LINK [--body-file F]
+                             [--with deliveries,checks,key]
+                             [--close completed|not_planned]
+      prepare a comment to the ticket's linked issue (linked) or to a
+      delivery or external link's GitHub item (its id or its URL): F a file
+      of Markdown, - for stdin, then each part the server offers, in the
+      order given; prints the exact text a send posts and its SHA-256, and
+      posts nothing; --close closes an issue once the comment is posted
+  conductor dispatch publish send ID --digest SHA256
+      post the prepared publication once, the digest the prepare printed
+      naming the exact text: nothing is posted without it, a resend posts
+      nothing, and one not confirmed is never sent again
+  conductor dispatch publish check ID
+      look on GitHub for the publication's comment and record what was
+      found; posts nothing
+  conductor dispatch publish close ID
+      close the issue a sent publication asked to close, when its close did
+      not finish
+
+GitHub's text (a title, a description, a check's name) is printed with every
+control character made U+FFFD: nothing it holds reaches the terminal as a
+control sequence. Publishing to GitHub is a person's act: publish send alone
+posts a comment, and it and publish close alone change anything on GitHub.
 
 Statuses: backlog, ready, in_progress, in_review, done, cancelled. Priorities:
 none, low, medium, high, urgent, or 0 to 4. Horizons: now, next, later. Labels
@@ -267,6 +318,9 @@ func runDispatch(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if dispatchReviewArgs[sub] {
 		return runDispatchReviews(ctx, sub, rest, stdin, stdout, stderr)
 	}
+	if dispatchTrackerArgs[sub] {
+		return runDispatchTracker(ctx, sub, rest, stdin, stdout, stderr)
+	}
 	takes, known := dispatchArgs[sub]
 	if !known {
 		fmt.Fprint(stderr, dispatchUsage)
@@ -381,6 +435,10 @@ type dispatchWrite struct {
 	milestone               string
 	milestoneSet            bool
 	print                   func(w io.Writer, out dispatchReply)
+	// timeout bounds the write's request, requestTimeout when zero: an
+	// edit to done waits mergedCloseRequestTimeout, the server reading
+	// GitHub for a close that requires merged.
+	timeout time.Duration
 }
 
 // dispatchReply is a write's reply: the receipt and what it acted on.
@@ -442,6 +500,9 @@ func (d dispatchFlags) write(sub, key string, pos []string, given map[string]boo
 				return nil, fmt.Errorf("a status is one of %s: %q", strings.Join(dispatch.Statuses, ", "), *d.status)
 			}
 			set["status"] = *d.status
+			if *d.status == dispatch.TicketDone {
+				w.timeout = mergedCloseRequestTimeout
+			}
 		}
 		if given["priority"] {
 			p, err := parsePriority(*d.priority)
@@ -614,7 +675,7 @@ func (w *dispatchWrite) send(ctx context.Context, c *apiClient, stdout io.Writer
 	w.body["opId"] = newOpID()
 	var out dispatchReply
 	if err := askTwice(ctx, func(ctx context.Context) error {
-		return c.doLimit(ctx, http.MethodPost, w.path, w.body, &out, maxDispatchReply)
+		return c.doWithin(ctx, cmp.Or(w.timeout, requestTimeout), http.MethodPost, w.path, w.body, &out, maxDispatchReply)
 	}); err != nil {
 		return 1, err
 	}
@@ -1019,7 +1080,11 @@ func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 			if l.URL != "" && l.URL != l.Ref {
 				fmt.Fprintf(&b, " %s", oneLine(l.URL))
 			}
-			b.WriteString(candidateWords(nil, l.Candidate) + verifiedWords(l.Verified) + "\n")
+			b.WriteString(candidateWords(nil, l.Candidate) + verifiedWords(l.Verified))
+			if l.ID != "" {
+				fmt.Fprintf(&b, " (link %s)", oneLine(l.ID))
+			}
+			b.WriteString("\n")
 			if l.Note != "" {
 				fmt.Fprintf(&b, "  %s\n", strings.ReplaceAll(textBlock(l.Note), "\n", "\n  "))
 			}

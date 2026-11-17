@@ -274,6 +274,8 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/external/authority": {"/api/dispatch/tickets/CND-1/external/authority", map[string]any{"opId": "e5", "field": "title", "owner": "dispatch"}},
 	"POST /api/dispatch/tickets/{key}/links/{id}/read":    {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", map[string]any{}},
 	"GET /api/dispatch/tickets/{key}/links/{id}/read":     {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/read", nil},
+	// A delivery's CI job (dispatch_external_checks.go).
+	"GET /api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair": {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/checks/job:1/repair", nil},
 	// A ticket's publications (dispatch_publish.go).
 	"GET /api/dispatch/tickets/{key}/publish/offer": {"/api/dispatch/tickets/CND-1/publish/offer", nil},
 	"POST /api/dispatch/tickets/{key}/publications": {"/api/dispatch/tickets/CND-1/publications", map[string]any{"opId": "f1", "target": "linked", "body": "x"}},
@@ -1532,7 +1534,14 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			if strings.HasPrefix(path, "/api/dispatch/publications/") {
 				path = publication
 			}
-			e.expect(t, method, path, nil, http.StatusOK, "")
+			if strings.HasSuffix(path, "/repair") {
+				// A delivery's CI job is read from GitHub
+				// (dispatch_external_checks_test.go): a link not the
+				// ticket's is not found.
+				e.expect(t, method, path, nil, http.StatusNotFound, "not_found")
+			} else {
+				e.expect(t, method, path, nil, http.StatusOK, "")
+			}
 		}
 		sep := "?"
 		if strings.Contains(path, "?") {
@@ -1546,7 +1555,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 23 {
+	if reads != 24 {
 		t.Fatalf("%d reads", reads)
 	}
 }

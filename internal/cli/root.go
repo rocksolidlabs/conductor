@@ -42,10 +42,15 @@ Usage:
   conductor crews compare SPEC.json|- [--server URL] [--token T]
                                save a comparison's crew from its template
   conductor dispatch projects|tickets|show|create|edit|comment|accept|link|plans|plan|launch|runs|comparison|
-                    review|reviews|findings|finding [--server URL] [--token T]
+                    review|reviews|findings|finding|import|link-issue|unlink-issue|refresh|
+                    authority|read|publish [--server URL] [--token T]
                                Dispatch's projects and tickets from the shell, their plan revisions,
-                               the runs launched from them, and a person's reviews of their
-                               candidates, findings and marks
+                               the runs launched from them, a person's reviews of their
+                               candidates, findings and marks, and their GitHub items: imported,
+                               linked, read, and published to by a person
+  conductor trackers [set|remove] [--host HOST] [--server URL]
+                               the GitHub tokens the server keeps; set reads one from standard
+                               input, never from the command line
   conductor decision list|show|respond|cancel [--server URL] [--token T]
                                the decisions managed runs wait for: read, answer and cancel them
   conductor history search|show|similar|sessions|session|forget|resume|reindex [--server URL] [--token T]
@@ -120,6 +125,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runCrews(ctx, args[1:], stdout, stderr)
 	case "dispatch":
 		return runDispatch(ctx, args[1:], stdin, stdout, stderr)
+	case "trackers":
+		return runTrackers(ctx, args[1:], stdin, stdout, stderr)
 	case "decision":
 		return runDecision(ctx, args[1:], stdout, stderr)
 	case "history":

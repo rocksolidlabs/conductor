@@ -769,9 +769,9 @@ func (s *Server) handleDispatchSubmitReview(w http.ResponseWriter, r *http.Reque
 	}
 	// A review runs to its end when the client goes away: its store
 	// operations and its application, each within its own bound.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ReviewTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewTimeoutOf(body.NewReview))
 	defer cancel()
-	s.submitReview(ctx, w, ds, body.op(r), key, body)
+	s.submitReview(ctx, w, ds, body.op(r), key, body, s.externalEvidence)
 }
 
 // answerReview answers an operation on a review that is done: {receipt,
@@ -786,8 +786,14 @@ func (s *Server) answerReview(w http.ResponseWriter, ctx context.Context, ds *di
 	})
 }
 
-// submitReview is the review's order (this file's comment).
-func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody) {
+// externalFill fills a review's external check finding k from a fresh read
+// of GitHub (Server.externalEvidence): the person's route gives it, and a
+// Brakeman turn's request_repair none, so no turn's review reads GitHub.
+type externalFill func(ctx context.Context, ds *dispatch.Store, key string, k int, c dispatch.Candidate, req dispatch.CheckRequest) (*dispatch.CheckRef, *apiError)
+
+// submitReview is the review's order (this file's comment), an external
+// check finding filled by external (nil: refused, nothing read).
+func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody, external externalFill) {
 	rv := body.NewReview
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentReviewSubmit, dispatch.ReviewSubmitArgs{Key: key, Review: rv})
 	switch {
@@ -853,7 +859,7 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeError(w, http.StatusConflict, dispatch.RefusalInvalid, "the base "+shortCommit(rv.Base)+" is none the run names: its base, the attempt's start, or a result of the task in the run's chain")
 		return
 	}
-	ev, aerr, err := s.reviewEvidence(ctx, c, rv)
+	ev, aerr, err := s.reviewEvidence(ctx, ds, key, c, rv, external)
 	switch {
 	case err != nil && errors.Is(err, errRunContinuing):
 		s.chainReadError(w, c.Run, err)
@@ -987,11 +993,17 @@ func receiptOfID(s string) (run, task string, n int, phase, id string, k int, ok
 // its side candidate, the review's base for its side base (never taken
 // from the body); a check finding's receipt read from the ledger
 // (failedReceipt), refused 409 invalid when it is not of the candidate's
-// attempt, when the ledger has no such receipt, or when it did not fail.
-// A finding whose shape is not one is given no evidence: the store
-// refuses its shape first, its receipt kept.
-func (s *Server) reviewEvidence(ctx context.Context, c dispatch.Candidate, rv dispatch.NewReview) (dispatch.ReviewEvidence, *apiError, error) {
+// attempt, when the ledger has no such receipt, or when it did not fail;
+// an external one (a CI job on GitHub) read fresh from the pull request of
+// the ticket's delivery link that delivers the candidate
+// (external, the person's route's externalEvidence; without it, 403
+// not_granted and nothing read). A finding whose shape is not one is
+// given no evidence: the store refuses its shape first, its receipt kept.
+func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, key string, c dispatch.Candidate, rv dispatch.NewReview, external externalFill) (dispatch.ReviewEvidence, *apiError, error) {
 	ev := dispatch.ReviewEvidence{Findings: make([]dispatch.FindingEvidence, len(rv.Findings))}
+	// One budget for every external job's fresh read (externalBudget),
+	// begun at the first: the review's own bound stays for its store steps.
+	var ectx context.Context
 	for i, f := range rv.Findings {
 		k := i + 1
 		e := dispatch.FindingEvidence{K: k}
@@ -1002,6 +1014,22 @@ func (s *Server) reviewEvidence(ctx context.Context, c dispatch.Candidate, rv di
 				e.AnchorCommit = rv.Base
 			}
 		case dispatch.FindingKindCheck:
+			if f.Check != nil && f.Check.Source == dispatch.CheckSourceExternal {
+				if external == nil {
+					return ev, newAPIError(http.StatusForbidden, "not_granted", "a CI job on GitHub is read with the person's token: only the person names one in a request for changes"), nil
+				}
+				if ectx == nil {
+					var cancel context.CancelFunc
+					ectx, cancel = context.WithTimeout(ctx, s.externalBudget())
+					defer cancel()
+				}
+				ref, aerr := external(ectx, ds, key, k, c, *f.Check)
+				if aerr != nil {
+					return ev, aerr, nil
+				}
+				e.Check = ref
+				break
+			}
 			if f.Check == nil || f.Check.Source != dispatch.CheckSourceLedger {
 				break
 			}
@@ -1071,6 +1099,11 @@ func requestedChange(id, kind, intent, severity, path, side string, from, to int
 		ch.Check = &crew.RequestedCheck{Receipt: ref.Receipt, Run: ref.Run, Task: ref.Task, Attempt: ref.Attempt, Phase: ref.Phase, ID: ref.ID, K: ref.K,
 			Subject: ref.Subject, Exit: ref.Exit, Signal: ref.Signal, TimedOut: ref.TimedOut, Stable: ref.Stable, Error: ref.Error, LogSHA256: ref.LogSHA256,
 			LogBytes: ref.LogBytes, Tail: ref.Tail, Class: ref.Class, Chosen: ref.Chosen, Quote: ref.Quote}
+		if ref.Source == dispatch.CheckSourceExternal {
+			// A CI job on GitHub: its name, conclusion, page and app, which
+			// task.md quotes (internal/crew).
+			ch.Check.Source, ch.Check.Name, ch.Check.Conclusion, ch.Check.URL, ch.Check.App = ref.Source, ref.Name, ref.Conclusion, ref.URL, ref.App
+		}
 	}
 	return ch
 }
