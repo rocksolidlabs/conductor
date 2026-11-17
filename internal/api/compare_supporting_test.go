@@ -46,14 +46,14 @@ func (de *cmpDraftEnv) compareRequests(t *testing.T) []brakeman.Request {
 
 // fakeComparison writes a run the engine does not hold into the ledger: a
 // comparison of the env's crew whose block asks Brakeman for a draft when
-// ask, made from the launch, with a compare.settled event; it answers the
+// ask, launched by by, with a compare.settled event; it answers the
 // event's sequence.
-func (de *cmpDraftEnv) fakeComparison(t *testing.T, id, launch string, ask bool) int64 {
+func (de *cmpDraftEnv) fakeComparison(t *testing.T, id, by string, ask bool) int64 {
 	t.Helper()
 	c := compareCrewIn(t, de.root)
 	c.ID, c.Compare.Brakeman = "fake", ask
 	crewJSON, _ := json.Marshal(c)
-	pkg, _ := json.Marshal(map[string]string{"launch": launch})
+	pkg, _ := json.Marshal(map[string]any{"launch": map[string]string{"id": "0123456789abcdef", "by": by}})
 	if _, err := de.srv.ledger.Transition(t.Context(), id, func(tx *ledger.Tx) error {
 		if err := tx.PutRun(ledger.RunRow{ID: id, CrewID: "fake", Crew: string(crewJSON), Base: "base0", State: ledger.RunRunning, CreatedAt: tx.Now(), Package: string(pkg)}); err != nil {
 			return err
@@ -163,9 +163,7 @@ func TestTheDraftsOpIDIsTheEvents(t *testing.T) {
 func TestTheDraftsQueueOnceAnEvent(t *testing.T) {
 	de := newCmpDraftEnv(t, compareOpts{})
 	de.bk.enable(t, "bk", nil)
-	done := doneOf(t)
-	launch := done(de.srv.dispatch.Launch(t.Context(), adminOp("Ann Example"), "CND-1", de.plan, "CND-1 Compare")).ID
-
+	launch := "Ann Example\nof the team"
 	run := "fake-0000aaa1"
 	seq := de.fakeComparison(t, run, launch, true)
 	if got := de.srv.draftOf([]string{run}); got != (supportBrakeman{}) {
@@ -177,7 +175,7 @@ func TestTheDraftsQueueOnceAnEvent(t *testing.T) {
 		t.Fatalf("requests %v", reqs)
 	}
 	r := reqs[0]
-	if r.OpID != compareOpID(run, seq) || len(r.Subjects) != 1 || r.Subjects[0].String() != "run:"+run || r.By != "Ann Example" {
+	if r.OpID != compareOpID(run, seq) || len(r.Subjects) != 1 || r.Subjects[0].String() != "run:"+run || r.By != "Ann Example of the team" {
 		t.Fatalf("the request %+v", r)
 	}
 	raw, _ := json.Marshal(r)
@@ -457,5 +455,64 @@ func TestTheDraftReachesNoLane(t *testing.T) {
 		if status != http.StatusOK || strings.Contains(string(raw), mark) || strings.Contains(string(raw), id) {
 			t.Errorf("%s: %d %s", path, status, raw)
 		}
+	}
+}
+
+// settleLanes has each candidate submit and its review approve it, and
+// waits for the comparison's compare.settled in the ledger: its sequence.
+func (de *cmpDraftEnv) settleLanes(t *testing.T) int64 {
+	t.Helper()
+	for _, l := range []struct{ sid, tok, review string }{{de.a, de.aTok, "review-a"}, {de.b, de.bTok, "review-b"}} {
+		de.expectAs(t, l.tok, "POST", "/api/sessions/"+l.sid+"/task/result", map[string]any{"summary": "done by " + l.review}, http.StatusCreated, "")
+		rev := runningAttempt(t, de.testEnv, de.run, l.review, 1)["sessionId"].(string)
+		de.expectAs(t, de.agentToken(rev), "POST", "/api/sessions/"+rev+"/task/result", map[string]any{"verdict": crew.VerdictApproved, "summary": "fine"}, http.StatusCreated, "")
+	}
+	var seq int64
+	waitUntil(t, "compare.settled", func() bool {
+		events, err := de.srv.ledger.Events(t.Context(), de.run, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range events {
+			if ev.Kind == eventCompareSettled {
+				seq = ev.Seq
+			}
+		}
+		return seq != 0
+	})
+	return seq
+}
+
+// A settled comparison whose block asks for a draft queues one Brakeman
+// request of kind compare about its run, once its compare.settled is
+// committed, under the event's op id, by its launch's maker; the
+// engine's later changes of the run queue no second.
+func TestSettledComparisonQueuesOneBrakemanRequest(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{draft: true})
+	de.bk.enable(t, "bk", nil)
+	seq := de.settleLanes(t)
+	var r brakeman.Request
+	waitUntil(t, "the comparison's request", func() bool {
+		var found bool
+		var err error
+		r, found, err = de.bk.desk.st.ByOp(compareOpID(de.run, seq))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	})
+	l, err := de.srv.dispatch.LaunchByID(t.Context(), de.launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Kind != brakeman.KindCompare || len(r.Subjects) != 1 || r.Subjects[0].String() != "run:"+de.run || r.By == "" || r.By != l.CreatedBy {
+		t.Fatalf("the request %+v", r)
+	}
+	// The run changes again (its review's session ends as the run is
+	// stopped): no second request.
+	de.expect(t, "POST", "/api/runs/"+de.run+"/stop", nil, http.StatusOK, "")
+	de.wake(t, de.run)
+	if got := de.compareRequests(t); len(got) != 1 {
+		t.Fatalf("requests %v", got)
 	}
 }

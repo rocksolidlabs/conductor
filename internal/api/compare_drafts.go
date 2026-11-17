@@ -217,27 +217,21 @@ func (d *compareDrafts) queue(ctx context.Context, s *Server, runID string, seq 
 	}
 }
 
-// launchBy is the display name the launch of the run's chain was made
-// by, cut to a request's bound; "" when it cannot be read.
+// launchBy is the display name the run's launch was made by, as its
+// package records it, cut to a request's bound; "" when it cannot be
+// read.
 func (s *Server) launchBy(ctx context.Context, runID string) string {
-	if s.dispatch == nil {
-		return ""
-	}
 	row, ok, err := s.ledger.Run(ctx, runID)
 	if err != nil || !ok || row.Package == "" {
 		return ""
 	}
 	var pkg struct {
-		Launch string `json:"launch"`
+		Launch crew.PackageLaunch `json:"launch"`
 	}
-	if json.Unmarshal([]byte(row.Package), &pkg) != nil || pkg.Launch == "" {
+	if json.Unmarshal([]byte(row.Package), &pkg) != nil {
 		return ""
 	}
-	l, err := s.dispatch.LaunchByID(ctx, pkg.Launch)
-	if err != nil {
-		return ""
-	}
-	return cutName(l.CreatedBy, brakeman.MaxBy)
+	return cutName(pkg.Launch.By, brakeman.MaxBy)
 }
 
 // cutName is a display name on one line, at most n bytes, cut where a
