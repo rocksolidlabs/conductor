@@ -11,6 +11,7 @@ import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
 import { lanesOf, tasksByLane, type RunLane } from '~/utils/compare'
+import { SELECTION_WORDS, laneSelection } from '~/utils/compareSelect'
 
 /**
  * The tasks of a managed run (#334, row 7), as a table (the UX review's
@@ -35,7 +36,8 @@ import { lanesOf, tasksByLane, type RunLane } from '~/utils/compare'
  * Review, the ticket's Review view at its candidate, and a failed receipt
  * Prepare a repair there; a run whose ticket the page did not find (no
  * launch, no run link to a run of its chain) says so and to link one. A comparison's tasks (Program item CP1) are grouped by lane: each
- * lane's row names its candidate and its approach, over its candidate's row and its review's, in the one grid.
+ * lane's row names its candidate and its approach, over its candidate's row and its review's, in the one grid, and once the
+ * comparison's selection is applied, "selected" or "not selected" (read from the comparison, PR-7).
  */
 const props = defineProps<{
   run: RunInfo
@@ -67,6 +69,9 @@ const rows = computed<Row[]>(() => {
   return [...groups.flatMap((g) => [{ key: `lane:${g.lane.task}`, lane: g.lane } as Row, ...g.tasks.map((t) => ({ key: `task:${t.id}`, task: t }))]), ...rest.map((t) => ({ key: `task:${t.id}`, task: t }))]
 })
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
+/** A comparison run's comparison, read only for one: its applied selection labels the lanes. */
+const comparison = useComparison({ run: () => (lanesOf(props.run).length ? props.run.id : '') }).comparison
+const laneLabel = (task: string) => laneSelection(comparison.value, task)
 /** The ticket's Review view at a candidate (RV1) of `run` (this run's, or the run a continuation's result came from), preparing a repair from a receipt when one is named. */
 function reviewAt(run: string, task: string, attempt: number, commit: string | undefined, repair?: string): RouteLocationRaw | undefined {
   if (!props.ticket || !commit) return undefined
@@ -266,10 +271,11 @@ async function confirm() {
       <ol class="flex flex-col gap-1.5" data-task-rows>
         <template v-for="row in rows" :key="row.key">
         <!-- A comparison's lane: its candidate's task and its approach, over the lane's rows. -->
-        <li v-if="row.lane" class="flex min-w-0 flex-wrap items-baseline gap-x-2 px-3 pt-1.5 text-xs" :data-task-lane="row.lane.task">
+        <li v-if="row.lane" class="flex min-w-0 flex-wrap items-baseline gap-x-2 px-3 pt-1.5 text-xs" :data-task-lane="row.lane.task" :data-lane-selection="laneLabel(row.lane.task)">
           <span class="flex-none font-medium text-muted">Lane</span>
           <span class="flex-none font-mono font-semibold text-highlighted" data-mono="id">{{ row.lane.task }}</span>
           <span class="min-w-0 break-words text-muted" data-task-lane-approach>{{ row.lane.approach || 'a candidate of the comparison' }}{{ row.lane.review ? `, reviewed by ${row.lane.review}` : '' }}</span>
+          <span v-if="laneLabel(row.lane.task)" class="flex-none font-medium" :class="laneLabel(row.lane.task) === 'selected' ? 'text-default' : 'text-muted'" data-task-lane-selection>{{ SELECTION_WORDS[laneLabel(row.lane.task)!] }}</span>
         </li>
         <template v-else>
         <li v-for="t in [row.task!]" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">

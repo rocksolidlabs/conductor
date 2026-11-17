@@ -1,5 +1,6 @@
 import type { Comparison, ComparisonSelection, ComparisonSupporting } from './compare'
 import type { Decision } from './decisions'
+import { candidateRef } from './dispatch'
 import { forWords } from './decisions'
 import { stateWords, type BrakemanRequest } from './brakeman'
 
@@ -106,4 +107,13 @@ export function brakemanWords(b: ComparisonSupporting['brakeman'], req?: Pick<Br
 /** A candidate's short commit, in the panel's words: "approach-b at 4b825dc". */
 export function candidateAt(task: string, commit: string): string {
   return commit ? `${task} at ${commit.slice(0, 7)}` : task
+}
+
+/**
+ * Review the selected candidate (PR-8b): the ticket page's Review view at a selection's applied candidate, from its record; null for any
+ * other record, a selection not applied, and one ended with None of these.
+ */
+export function selectedReview(r: Pick<Decision, 'origin' | 'state' | 'applied'>): { query: { view: 'review'; candidate: string } } | null {
+  const s = r.origin === 'compare' && r.state === 'applied' && r.applied?.how === 'selected' ? r.applied.selected : undefined
+  return s ? { query: { view: 'review', candidate: candidateRef({ run: s.run, task: s.task, attempt: s.attempt, commit: s.commit }) } } : null
 }

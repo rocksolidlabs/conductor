@@ -351,7 +351,7 @@ function compareRecord(it: StubItem, whole: boolean): Record<string, unknown> {
   const cands = it.candidates ?? CANDIDATES
   const options = [
     ...cands.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: 'checks 2/2 passed, comparable; 12 files, +340 −90; no dependency change; independent', subject: { kind: 'candidate', run: run.id, task: c.task, n: c.n, commit: c.commit } })),
-    { label: 'None of these' },
+    { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
   ]
   const request = { question: it.question, context: 'Two candidates from one base, checked alike.', options, recommendation: -1, authorizes: SELECTION_AUTHORIZES, subject: { kind: 'comparison', run: run.id, base: 'c'.repeat(40), digest: 'd'.repeat(64) } }
   const opened = { seq: 1, at: it.since, kind: 'opened', by: 'yardmaster' }
