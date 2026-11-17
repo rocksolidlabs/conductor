@@ -488,7 +488,8 @@ export interface DayPageOptions {
  * set in the context's storage before the first load (so that a later write of the page's, or useTheme's, survives a reload), the
  * window and touch as asked. It goes to `path` and returns once the layout's root is drawn (`#dashboard-sidebar-main`, or
  * `[data-bottom-bar]` below 1024 px wide; `ready` in their place), `html` carries the theme's class, and `document.fonts.ready` has
- * settled. The context is closed at the end of the test, before the day's guard.
+ * settled. The context lets every request through a route of its own from before that load, under any route the test adds. The context
+ * is closed at the end of the test, before the day's guard.
  */
 export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise<Page> {
   const server = o.server ?? today?.server.started
@@ -507,6 +508,9 @@ export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise
     storageState: { cookies: [], origins: [{ origin: new URL(server.baseURL).origin, localStorage: storage }] },
   })
   dayContexts.add(ctx)
+  // A route that lets every request through, set before the first load: a spec that routes the page dayPage drew puts its own on
+  // top, so interception is never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281).
+  await ctx.route('**/*', (route) => route.fallback())
   const page = await ctx.newPage()
   await page.goto(o.path ?? '/')
   await drawn(page, theme, o.ready ?? (width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main'))

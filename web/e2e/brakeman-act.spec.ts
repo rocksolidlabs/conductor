@@ -17,6 +17,13 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // read by their ids, every wait on what the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 // A test's waits fit in its timeout (AGENTS.md): each step raises the test's timeout by the caps of the waits it is about to make
 // (budget, as palette-rows.spec.ts does), so the timeout is their sum, with the config's 120 s above it for what happens between them
 // (the API's calls, a page's load). A wait without a bound of its own (an expect, an expect.poll, a click, a fill) has STEP_MS.

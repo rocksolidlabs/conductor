@@ -88,11 +88,16 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true })
 })
 
-/** A browser context on this spec's server, with its token where the workbench keeps it and a display name. */
+/**
+ * A browser context on this spec's server, with its token where the workbench keeps it and a display name, and a route that lets every
+ * request through, set before any page loads: the tests' own routes go on top, so interception is never switched on or off while a page
+ * has requests out (AGENTS.md, "Tests that do not flake"; #281).
+ */
 async function context(browser: Browser, phone: boolean): Promise<BrowserContext> {
   const ctx = await browser.newContext(
     phone ? { baseURL: server!.baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } : { baseURL: server!.baseURL, viewport: { width: 1440, height: 900 } },
   )
+  await ctx.route('**/*', (route) => route.fallback())
   await ctx.addInitScript((t) => {
     localStorage.setItem('conductor.workbenchToken', t)
     localStorage.setItem('conductor.displayName', 'Nate')

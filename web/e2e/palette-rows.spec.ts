@@ -17,6 +17,13 @@ import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './d
 // adds its handoff's caps: the test's timeout is their sum, and the config's 120 s above it, for the waits between the steps.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 /** The cap of every wait a palette step makes: the config's expect bound, and the actions' (a fill, a click, a read). */
 const STEP_MS = 15_000
 test.use({ actionTimeout: STEP_MS })

@@ -24,6 +24,13 @@ import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
 // waits for a file the spec writes. Rows are found by their ids.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 interface Step {
   phase: string
   id: string

@@ -10,6 +10,13 @@ import { expect, member, test, type Api, type Run } from './fixtures'
 // Each step raises the test's timeout by the caps of its own waits as it takes them (budget), the config's 120 s above their sum.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 /** The cap of one wait the page's steps make: the config's expect bound, and its actions' (a navigation, a click). */
 const STEP_MS = 15_000
 test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })

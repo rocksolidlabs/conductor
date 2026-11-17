@@ -10,6 +10,13 @@ import type { E2EState } from './state'
 // WSL distribution that is browsed.
 test.skip(process.platform === 'win32', 'POSIX paths')
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 /**
  * A folder of the test's own under the allowed root, holding the one folder it picks. A listing shows a folder's first 50 entries by
  * name, and the scratch root holds a folder for every spec that ran before this one: the repository at its root ("repo") fell past

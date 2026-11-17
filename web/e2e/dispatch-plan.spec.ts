@@ -12,6 +12,13 @@ import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, secondBrow
 // body is read. The ticket is found by its key and the runs by their ids; every wait is on the state the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 /**
  * Raises the running test's timeout by the cap of a long wait as the step is about to make it (AGENTS.md, Tests that do not flake): a
  * launch's waits are its own bound, two minutes each, and their sum is above any fixed timeout the test's other steps would leave them.

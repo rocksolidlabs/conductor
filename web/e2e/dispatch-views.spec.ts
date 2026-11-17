@@ -12,6 +12,13 @@ import { noSideways } from './layout'
 // ticket's page. Each test makes a project of its own (EV, EV1, EV2…) and counts only its rows.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 let other: BrowserContext | null = null
 
 /** The Views menu opened, its rows drawn (they draw in the popover's portal, outside the bar). */

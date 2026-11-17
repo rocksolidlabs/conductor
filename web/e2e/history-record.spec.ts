@@ -13,6 +13,13 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // receipt (a pause, its actor and time). A ticket's page at a comment the page's first read does not hold, shown marked.
 test.describe.configure({ mode: 'serial' })
 
+// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
+// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
+// test's page.unrouteAll leaves it, and it reaches every page of the context.
+test.beforeEach(async ({ page }) => {
+  await page.context().route('**/*', (route) => route.fallback())
+})
+
 interface RecordReply {
   record: { id: string; endedAt?: string; lostAt?: string; resumedFrom?: string; agent: { session?: { id: string; resumable: boolean } }; resumes?: Array<{ commandId: string; state: string; session?: string }> }
   live: boolean
