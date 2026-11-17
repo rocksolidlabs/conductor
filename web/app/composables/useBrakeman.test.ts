@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, ref, watch, type Ref } from 'vue'
-import type { BrakemanConfig, BrakemanRequest, BrakemanState } from '../utils/brakeman'
+import type { BrakemanConfig, BrakemanDigest, BrakemanRequest, BrakemanSince, BrakemanState } from '../utils/brakeman'
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
-import { BrakemanLive, asBrakemanEvent, brakemanLive, keepOpened, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
+import { BrakemanLive, MAX_OPENED_EVENT, MAX_PROGRESS_EVENT, SINCE_EVERY_MS, asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive, keepOpened, listParams, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
 import { DispatchLive } from './useDispatchLive'
 import { requestNumber, sameConfig } from '../utils/brakeman'
 import { StaleRefusal, configForm } from '../utils/settingsSave'
@@ -999,6 +999,267 @@ describe('the makes kept, across a new token', () => {
       expect(ctl.staleError.value).toBe('Not read: Cannot reach the server')
       expect(ctl.stale.value).toBe(true)
       expect(ctl.form.value).toMatchObject({ rev: 3, budget: { readsPerTurn: 500 } })
+    })
+  })
+})
+
+describe("a turn's progress", () => {
+  const p = (reads: number, over: Record<string, unknown> = {}) => ({ id: 'br-15', reads, readsPerTurn: 300, startedAt: '2026-11-17T05:08:00Z', deadline: '2026-11-17T05:23:00Z', reading: { what: 'task', ref: 'task:fix-login-1a2b3c4d/deploy' }, ...over })
+
+  it('is read off the stream only as it is, and refused whole past its bound', () => {
+    expect(asBrakemanProgress(p(41))).toEqual(p(41))
+    expect(asBrakemanProgress({ id: 'br-15', reads: 0, readsPerTurn: 300 })).toEqual({ id: 'br-15', reads: 0, readsPerTurn: 300 })
+    expect(asBrakemanProgress(p(41, { reading: { what: 'changes' } }))).toEqual(p(41, { reading: { what: 'changes' } }))
+    for (const bad of [null, [], 'br-15', p(41, { id: 'br-0' }), p(-1), p(1.5), p(41, { readsPerTurn: '300' }), p(41, { deadline: 7 }), p(41, { reading: { what: 'w'.repeat(17) } }), p(41, { reading: { ref: 'run:x' } }), p(41, { reading: null })]) {
+      expect(asBrakemanProgress(bad)).toBeNull()
+    }
+    // At the bound it is taken; one byte past it, refused (the server leaves the ref out before it would pass it).
+    const base = JSON.stringify(p(41, { reading: { what: 'log', ref: '' } })).length
+    const at = p(41, { reading: { what: 'log', ref: 'r'.repeat(MAX_PROGRESS_EVENT - base) } })
+    expect(JSON.stringify(at).length).toBe(MAX_PROGRESS_EVENT)
+    expect(asBrakemanProgress(at)).not.toBeNull()
+    expect(asBrakemanProgress(p(41, { reading: { what: 'log', ref: 'r'.repeat(MAX_PROGRESS_EVENT - base + 1) } }))).toBeNull()
+  })
+
+  it('keeps the read with the most reads, from the state or the events, whichever comes first', async () => {
+    const live = new BrakemanLive()
+    live.apply(req('br-15', 'running'))
+    live.progressEvent(asBrakemanProgress(p(41))!)
+    // A state read sent before the event, answered after it: its fewer reads are older.
+    live.takeState({ config: {} as never, current: req('br-15', 'running'), queue: [], turnsToday: 1, progress: p(40) })
+    expect(live.progress['br-15']!.reads).toBe(41)
+    live.takeState({ config: {} as never, current: req('br-15', 'running'), queue: [], turnsToday: 1, progress: p(42, { reading: undefined }) })
+    expect(live.progress['br-15']).toEqual(p(42, { reading: undefined }))
+    live.progressEvent(asBrakemanProgress(p(42, { reading: { what: 'runs' } }))!)
+    expect(live.progress['br-15']!.reading).toEqual({ what: 'runs' })
+  })
+
+  it('is dropped once its request closes, by its event or a read, and an event after it is not taken', async () => {
+    const live = new BrakemanLive()
+    live.apply(req('br-15', 'running'))
+    live.progressEvent(asBrakemanProgress(p(41))!)
+    live.event({ id: 'br-15', state: 'cancelled' })
+    expect(live.progress).toEqual({})
+    live.progressEvent(asBrakemanProgress(p(42))!)
+    expect(live.progress).toEqual({})
+    // Closed by a read (the brief's request read again).
+    live.apply(req('br-16', 'running'))
+    live.progressEvent(asBrakemanProgress(p(3, { id: 'br-16' }))!)
+    live.apply(req('br-16', 'briefed', { hasBrief: true }))
+    expect(live.progress).toEqual({})
+    // An event of a request closed before the page read it drops what it held.
+    live.progressEvent(asBrakemanProgress(p(5, { id: 'br-17' }))!)
+    live.event({ id: 'br-17', state: 'failed' })
+    expect(live.progress).toEqual({})
+  })
+
+  it('is dropped with the rest at a new token', () => {
+    const live = new BrakemanLive()
+    live.progressEvent(asBrakemanProgress(p(41))!)
+    live.reset()
+    expect(live.progress).toEqual({})
+  })
+})
+
+describe('the opened event', () => {
+  it('is `{}` within its bound, and counted', () => {
+    expect(asBrakemanOpened({})).toEqual({})
+    expect(asBrakemanOpened(null)).toBeNull()
+    expect(asBrakemanOpened([])).toBeNull()
+    expect(asBrakemanOpened({ who: 'x'.repeat(MAX_OPENED_EVENT) })).toBeNull()
+    const live = new BrakemanLive()
+    live.openedEvent()
+    expect(live.openedSeq).toBe(1)
+  })
+})
+
+describe("a brief's digest in the live store", () => {
+  const digest: BrakemanDigest = { schema: 1, title: 'Build is out of attempts', reading: 'Three failures on one test.', counts: { decisions: 1, facts: 3 }, about: { runs: ['fix-login-1a2b3c4d'] } }
+
+  it("is kept when the request is read again with none, as each brakeman event reads it, and a list's match is not kept", async () => {
+    const f = fakeServer()
+    const live = new BrakemanLive()
+    live.attach(f.reads)
+    f.server.set('br-14', req('br-14', 'briefed', { hasBrief: true }))
+    live.apply({ ...req('br-14', 'briefed', { hasBrief: true }), digest, match: 'cited' })
+    expect(live.requests.get('br-14')).not.toHaveProperty('match')
+    live.event({ id: 'br-14', state: 'briefed' })
+    await settle()
+    expect(live.requests.get('br-14')!.digest).toEqual(digest)
+    // A read that gives a digest gives the store its own.
+    const newer = { ...digest, title: 'Another title' }
+    f.reads.request = async (id) => ({ request: f.server.get(id)!, brief: null, digest: newer })
+    await live.readRequest('br-14')
+    expect(live.requests.get('br-14')!.digest).toEqual(newer)
+    // A request a link names, read by itself, comes with its digest too.
+    f.server.set('br-9', req('br-9', 'briefed', { hasBrief: true }))
+    expect(await live.readNamed('br-9')).toBe('')
+    expect(live.requests.get('br-9')!.digest).toEqual(newer)
+  })
+})
+
+describe('the brakeman events seen', () => {
+  it("move their sequence on each, the role's and a stream's start again too", () => {
+    const live = new BrakemanLive()
+    live.event({ id: 'br-1', state: 'queued' })
+    expect(live.lastEvent).toEqual({ id: 'br-1', state: 'queued', seq: 1 })
+    live.event({ id: 'br-1', state: 'queued' })
+    expect(live.lastEvent.seq).toBe(2)
+    live.event({ id: 'role', state: 'cooling' })
+    expect(live.lastEvent).toEqual({ id: 'role', state: 'cooling', seq: 3 })
+    live.snapshot()
+    expect(live.lastEvent).toEqual({ id: '', state: 'snapshot', seq: 4 })
+  })
+})
+
+describe('what changed since the last briefing', () => {
+  const answer: BrakemanSince = { since: { from: 'briefing', briefing: 'br-12', at: '2026-11-17T02:55:00Z' }, runsEnded: { count: 1, refs: ['run:a'] }, tasksFailed: { count: 0, refs: [] }, ticketsReady: { count: 0, refs: [] }, questionsOpen: { count: 0, refs: [] }, truncated: false }
+  afterEach(() => void vi.useRealTimers())
+
+  function sinceServer() {
+    let clock = 1_000_000
+    const sent: Array<(v: BrakemanSince | null) => void> = []
+    const live = new BrakemanLive()
+    live.now = () => clock
+    live.attach({ state: () => Promise.reject(new Error('none')), page: () => Promise.reject(new Error('none')), request: () => Promise.reject(new Error('none')), since: () => new Promise((done) => sent.push(done)) })
+    return { live, sent, tick: (ms: number) => ((clock += ms), vi.advanceTimersByTime(ms)) }
+  }
+
+  it('is read when a page follows it, and on events only while one does', async () => {
+    vi.useFakeTimers()
+    const { live, sent, tick } = sinceServer()
+    live.nudgeSince()
+    expect(sent).toHaveLength(0)
+    const unfollow = live.followSince()
+    expect(sent).toHaveLength(1)
+    sent[0]!(answer)
+    await Promise.resolve()
+    expect(live.sinceNow).toEqual(answer)
+    unfollow()
+    tick(SINCE_EVERY_MS)
+    live.event({ id: 'br-13', state: 'briefed' })
+    expect(sent).toHaveLength(1)
+  })
+
+  it('is read at most once every five seconds, one read at a time, and what was asked meanwhile is one read after', async () => {
+    vi.useFakeTimers()
+    const { live, sent, tick } = sinceServer()
+    live.followSince()
+    // Events while the first read is out: one read after it, not one each.
+    live.nudgeSince()
+    live.nudgeSince()
+    expect(sent).toHaveLength(1)
+    sent[0]!(answer)
+    await Promise.resolve()
+    await Promise.resolve()
+    // The read after waits out the five seconds from the first one's start.
+    expect(sent).toHaveLength(1)
+    tick(SINCE_EVERY_MS - 1)
+    expect(sent).toHaveLength(1)
+    tick(1)
+    expect(sent).toHaveLength(2)
+    sent[1]!(null)
+    await Promise.resolve()
+    expect(live.sinceNow).toBeNull()
+    // More events inside the five seconds: one read when they end.
+    live.nudgeSince()
+    live.nudgeSince()
+    tick(SINCE_EVERY_MS)
+    expect(sent).toHaveLength(3)
+  })
+
+  it("is dropped at a new token, and a read sent before it is not taken", async () => {
+    vi.useFakeTimers()
+    const { live, sent } = sinceServer()
+    live.followSince()
+    live.reset()
+    sent[0]!(answer)
+    await Promise.resolve()
+    expect(live.sinceNow).toBeNull()
+  })
+})
+
+describe('the list route', () => {
+  it('is asked each filter once, the kinds as one list', () => {
+    expect(listParams({})).toEqual({})
+    expect(listParams({ kind: ['briefing', 'wake', 'briefing'], has: 'decision', about: 'run:a', q: 'cache', after: 'br-9', limit: 20 })).toEqual({ after: 'br-9', limit: '20', kind: 'briefing,wake', has: 'decision', about: 'run:a', q: 'cache' })
+  })
+
+  describe('through the composable', () => {
+    let states: Map<string, Ref<unknown>>
+    let answers: Array<(path: string, query?: Record<string, string>) => Promise<unknown>>
+    let sent: Array<{ path: string; query?: Record<string, string> }>
+    beforeEach(() => {
+      states = new Map()
+      answers = []
+      sent = []
+      vi.stubGlobal('useState', <T>(key: string, init: () => T) => {
+        if (!states.has(key)) states.set(key, ref(init()))
+        return states.get(key) as Ref<T>
+      })
+      vi.stubGlobal('computed', computed)
+      vi.stubGlobal('watch', watch)
+      vi.stubGlobal('useApi', () => ({
+        request: (path: string, opts: { query?: Record<string, string> } = {}) => {
+          sent.push({ path, query: opts.query })
+          return answers.shift()!(path, opts.query)
+        },
+      }))
+      brakemanLive().reset()
+    })
+    afterEach(() => void vi.unstubAllGlobals())
+    const older = () => Promise.reject(new ApiError(400, 'invalid_request', 'this route takes no parameter "kind"'))
+    const digest: BrakemanDigest = { schema: 1, title: 'A title', reading: '', counts: {}, about: {} }
+
+    it("answers the server's filtered rows, each applied into the live store with its digest", async () => {
+      const bk = useBrakeman()
+      answers.push(() => Promise.resolve({ requests: [{ ...req('br-14', 'briefed', { hasBrief: true }), digest, match: 'subject' }], next: '' }))
+      const out = await bk.list({ about: 'run:a', has: 'brief' })
+      expect(out).toMatchObject({ filtered: true, next: '', requests: [{ id: 'br-14', match: 'subject' }] })
+      expect(sent).toEqual([{ path: '/api/brakeman/requests', query: { about: 'run:a', has: 'brief' } }])
+      expect(brakemanLive().requests.get('br-14')!.digest).toEqual(digest)
+    })
+
+    it('on an older server, answers no rows for a subject, and the plain page for another filter', async () => {
+      const bk = useBrakeman()
+      answers.push(older)
+      expect(await bk.list({ about: 'run:a' })).toEqual({ requests: [], next: '', filtered: false })
+      expect(sent).toHaveLength(1)
+      sent.length = 0
+      answers.push(older, () => Promise.resolve({ requests: [req('br-3', 'briefed', { hasBrief: true })], next: 'br-3' }))
+      const out = await bk.list({ kind: ['briefing'], q: 'cache', after: 'br-9', limit: 1 })
+      expect(out).toMatchObject({ filtered: false, next: 'br-3', requests: [{ id: 'br-3' }] })
+      expect(sent.map((x) => x.query)).toEqual([{ after: 'br-9', limit: '1', kind: 'briefing', q: 'cache' }, { after: 'br-9', limit: '1' }])
+    })
+
+    it("leaves a newer server's refusal, and any other, to the caller", async () => {
+      const bk = useBrakeman()
+      answers.push(() => Promise.reject(new ApiError(400, 'invalid_request', 'q: a line break')))
+      await expect(bk.list({ q: 'a' })).rejects.toThrow('q: a line break')
+      answers.push(older)
+      await expect(bk.list({})).rejects.toThrow('this route takes no parameter')
+    })
+
+    it("is not taken into the store when a new token came before its answer", async () => {
+      const bk = useBrakeman()
+      let answer!: (v: unknown) => void
+      answers.push(() => new Promise((done) => (answer = done)))
+      const out = bk.list({ has: 'brief' })
+      bk.reset()
+      answer({ requests: [req('br-14', 'briefed', { hasBrief: true })], next: '' })
+      await expect(out).rejects.toThrow('The token changed before the list was answered')
+      expect(brakemanLive().requests.size).toBe(0)
+    })
+
+    it('reads the changes since a briefing, or none where the server has no such route', async () => {
+      const bk = useBrakeman()
+      answers.push(() => Promise.resolve({ since: { from: 'day', at: '2026-11-16T09:00:00Z' } }))
+      expect(await bk.since()).toMatchObject({ since: { from: 'day' } })
+      answers.push(() => Promise.reject(new ApiError(404, 'not_found', 'no such route')))
+      expect(await bk.since('2026-11-17T00:00:00Z')).toBeNull()
+      expect(sent.map((x) => x.query)).toEqual([undefined, { since: '2026-11-17T00:00:00Z' }])
+      answers.push(() => Promise.reject(new ApiError(403, 'forbidden', 'not yours')))
+      await expect(bk.since()).rejects.toThrow('not yours')
     })
   })
 })
