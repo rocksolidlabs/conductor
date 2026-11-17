@@ -314,6 +314,11 @@ export class BrakemanLive {
     void this.readOpened()
   }
 
+  /** Whether the server keeps no marks here (an older server, a read-only store): the browser's count stands. */
+  private keepsNoMarks(): boolean {
+    return this.openedMode === 'local'
+  }
+
   /** Takes an opened read's or mark's answer (null: the server keeps no marks here, and the browser's count stands). */
   private takeOpened(out: BrakemanOpened | null) {
     if (out === null) {
@@ -352,7 +357,7 @@ export class BrakemanLive {
         } catch {
           /* the count shown stands; the next event reads again */
         }
-      } while (this.openedAgain && at === this.gen && this.openedMode !== 'local')
+      } while (this.openedAgain && at === this.gen && !this.keepsNoMarks())
     } finally {
       if (at === this.gen) this.openedBusy = false
     }
