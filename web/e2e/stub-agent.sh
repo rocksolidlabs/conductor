@@ -966,6 +966,12 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # commit and submit as a worker does, so a check of theirs can be cited.
 # STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
 # two the type asks with (the first stays the recommended one).
+# STUB_COMPARE_EDIT makes a work task's commit carry one edit a
+# comparison's checks read (CP1): `manifest` a blank line appended to
+# conductor.manifest.json (the file-form manifest, when the tree has
+# one), `script` a line appended to STUB_COMPARE_SCRIPT
+# (scripts/check.sh when not given), `test` the test file x_test.go.
+# Set on one agent copy (an ownServer AgentCopy's env), it is one lane's.
 
 # mcp_call runs one tool through conductor mcp and prints its reply line.
 mcp_call() {
@@ -1065,6 +1071,31 @@ task_attempt() {
 			# The fixed edits a person's review reads (STUB_REVIEW_EDITS=1, RV1): eight numbered lines to put notes on.
 			printf 'review line %s\n' 1 2 3 4 5 6 7 8 >stub-review.txt
 			git add -- stub-review.txt >/dev/null 2>&1 || true
+		fi
+		if [[ -n ${STUB_COMPARE_EDIT:-} ]]; then
+			# One lane's edit that a comparison's checks read (STUB_COMPARE_EDIT, CP1), committed with stub-<member>.txt.
+			case $STUB_COMPARE_EDIT in
+			manifest)
+				# The file-form manifest changed (a blank line at its end: still the same JSON), so its checkout ran another manifest.
+				if [[ -f conductor.manifest.json ]]; then
+					printf '\n' >>conductor.manifest.json
+					git add -- conductor.manifest.json >/dev/null 2>&1 || true
+				fi
+				;;
+			script)
+				# A line added to the check's script (STUB_COMPARE_SCRIPT, scripts/check.sh when not given), which the check's argv names.
+				local script=${STUB_COMPARE_SCRIPT:-scripts/check.sh}
+				mkdir -p "$(dirname -- "$script")"
+				printf '# %s edited this script in attempt %s\n' "$member" "$n" >>"$script"
+				git add -- "$script" >/dev/null 2>&1 || true
+				;;
+			test)
+				# A test file, which makes the rows of the checks "comparable only if their test changes are fair".
+				printf 'package x\n\n// %s wrote this test file in attempt %s.\n' "$member" "$n" >x_test.go
+				git add -- x_test.go >/dev/null 2>&1 || true
+				;;
+			esac
+			printf 'compare edit: %s by %s, attempt %s\n' "$STUB_COMPARE_EDIT" "$member" "$n" >>"$transcript"
 		fi
 		local addressed=() changes=() id
 		if [[ $ctx == *"asked for changes to the commit"* ]]; then
