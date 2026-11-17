@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { BrakemanBrief, BrakemanRequest, BrakemanRow, BriefItem, BriefRegionName, RefResolution } from '~/utils/brakeman'
-import { actsApart, briefEvidence, briefRegions, foldWords, provenance, readsWords, regionHeading } from '~/utils/brakeman'
+import { actsApart, briefEvidence, briefRegions, foldWords, provenance, readsWords, refLabel, regionHeading } from '~/utils/brakeman'
+import { briefMarkdown } from '~/utils/brakemanCards'
 import { statusOfKey } from '~/utils/status'
 
 /**
@@ -99,6 +100,22 @@ async function keep(index: number) {
     keeping.value = -1
   }
 }
+const copy = useCopy()
+const attention = useAttention()
+const label = (r: string) =>
+  refLabel(r, {
+    session: (id) => attention.sessions.value.find((s) => s.id === id)?.name,
+    run: (id) => attention.runNames.value[id],
+  })
+/** Copies the brief as Markdown: its reading marked as Brakeman's, each kind apart, links by the pages' own paths. */
+function copyMarkdown() {
+  const md = brief.value ? briefMarkdown(brief.value, props.request, label) : ''
+  if (!md) {
+    toast.add({ title: 'Nothing to copy', description: 'This brief holds no words to copy.', icon: 'i-lucide-clipboard-x', color: 'neutral' })
+    return
+  }
+  void copy(md, 'The brief is copied as Markdown')
+}
 const KEEP_WHY = 'given to every later turn, whatever it may see'
 const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a note: ${KEEP_WHY}` : `Keep this reading as a note: ${KEEP_WHY}`)
 </script>
@@ -108,7 +125,9 @@ const keepLabel = (fact: number | undefined) => (fact ? `Keep fact ${fact} as a 
     <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
     <p v-else-if="loading" class="text-sm text-muted">Reading the brief…</p>
     <template v-else-if="brief">
-      <BrakemanBriefHead v-if="head" :request="live" :brief="brief" :digest="live.digest" :fresh="fresh" />
+      <BrakemanBriefHead v-if="head" :request="live" :brief="brief" :digest="live.digest" :fresh="fresh">
+        <IconButton label="Copy as Markdown" icon="i-lucide-clipboard-copy" size="sm" color="neutral" variant="ghost" data-brief-copy @click="copyMarkdown" />
+      </BrakemanBriefHead>
       <h2 class="break-words text-lg font-semibold text-highlighted" data-brief-title>{{ brief.title }}</h2>
       <section class="flex flex-col gap-1.5" data-brief-reading>
         <MarkdownPreview :text="brief.summary" dir="" :relative-links="false" class="text-sm" />
