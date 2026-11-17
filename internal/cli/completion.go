@@ -142,9 +142,18 @@ func completionSpec() []commandSpec {
 			// The reviews' (dispatch_reviews.go): --verdict is a review's or
 			// a mark's, --state a finding's.
 			flagSpec{name: "--verdict", kind: flagEnum, values: append(slices.Clone(dispatch.ReviewVerdicts), dispatch.FindingStates...)}, flagSpec{name: "--summary", kind: flagValue}, flagSpec{name: "--continue"},
-			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"},
-			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs}},
+			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")},
+			// A ticket's GitHub item and its publications
+			// (dispatch_tracker.go), and a proposal's source.
+			flagSpec{name: "--no-images"}, flagSpec{name: "--preview"}, flagSpec{name: "--target", kind: flagValue}, flagSpec{name: "--body-file", kind: flagFile},
+			flagSpec{name: "--with", kind: flagValue}, flagSpec{name: "--close", kind: flagEnum, values: []string{"completed", "not_planned"}}, flagSpec{name: "--digest", kind: flagValue},
+			flagSpec{name: "--repro"}, flagSpec{name: "--evidence", kind: flagValue}),
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding",
+				"import", "link-issue", "unlink-issue", "refresh", "authority", "read", "publish"},
+			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs, "publish": publishVerbs}},
+		// The GitHub tokens (trackers.go): set takes no --token, the rest
+		// the server's flags.
+		{name: "trackers", flags: api(flagSpec{name: "--host", kind: flagValue}), words: []string{"set", "remove"}},
 		// Every flag of every decision command, the states as --state's values.
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
 			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),
