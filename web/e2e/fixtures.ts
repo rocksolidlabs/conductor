@@ -548,11 +548,9 @@ export async function useTheme(page: Page, theme: 'dark' | 'light', ready?: stri
  */
 export const DAY_RUNS_END_MS = 30_000
 export const DAY_SESSIONS_END_MS = 15_000
-/** The server's agent probes ended: a hang's bound (each probe is killed past 3 s, two at once, a few agents found on PATH). */
-export const DAY_PROBES_MS = 15_000
 export const DAY_SERVER_END_MS = 15_000
 /** The bound of a day's start and end together: the worker fixture's, and a guard test's day of its own. */
-export const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_PROBES_MS + DAY_SERVER_END_MS
+export const DAY_WORKER_MS = START_WAIT_MS + DAY_RUNS_END_MS + DAY_SESSIONS_END_MS + DAY_SERVER_END_MS
 
 export const test = base.extend<{ api: Api; day: Day; dayPagesClosed: void }, { state: E2EState; dayServer: Day }>({
   state: [

@@ -141,6 +141,7 @@ const test = base.extend<object, { server: Started & { root: string; untrusted: 
         allowedRoot: `${repo},${untrusted}`,
         defaultCwd: repo,
         log: join(root, 'server.log'),
+        realAgents: true,
         passEnv: ['USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'CODEX_HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
       })
       try {
