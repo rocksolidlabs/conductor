@@ -248,7 +248,13 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 		undo()
 		return nil, err
 	}
+	// A comparison's chain is bounded (compareChainRoom): refused here, no
+	// run made; its settling is read from the chain.
 	if c.Compare != nil {
+		if err := e.compareChainRoom(ctx, from, h); err != nil {
+			undo()
+			return nil, err
+		}
 		if h.settled, err = e.readCompareHistory(ctx, from); err != nil {
 			undo()
 			return nil, err
@@ -275,7 +281,7 @@ func (e *Engine) ContinueRunWith(ctx context.Context, runID, label string, o Con
 	}
 	// Prepared at its own base, never at the directory's HEAD: the
 	// commit its manifest and its prerequisites are read at.
-	p, err := e.prepare(ctx, c, from.Run.Base)
+	p, err := e.prepare(ctx, c, from.Run.Base, pkg)
 	if err != nil {
 		undo()
 		return nil, err
@@ -779,6 +785,15 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				}
 			}
 		}
+		// A comparison's lanes once each task's import and repair are
+		// decided, before anything is readied: a lane no applied selection
+		// selects is neither repaired nor left without its result
+		// (compareContinued); refused, nothing of the continuation is
+		// written.
+		if e.beforeCompareRule != nil {
+			e.beforeCompareRule(r)
+		}
+		cmpErr := r.compareContinued(rows, h.compareSelected())
 		r.ready()
 		e.settleRun(r)
 		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d uncertain launches waiting for a retry, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
@@ -790,6 +805,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 			if rc != nil && rc.err != nil {
 				// Refused: nothing of the continuation is written.
 				return rc.err
+			}
+			if cmpErr != nil {
+				return cmpErr
 			}
 			if err := ltx.Continued(from.Run.ID); err != nil {
 				return err
@@ -1068,6 +1086,7 @@ func Recovered(rec Run, from Loaded) Run {
 				rec.Tasks = append(rec.Tasks, TaskState{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs), State: ledger.TaskBlocked})
 			}
 			rec.Manifest = launchedManifest(c, from.Run.Manifest)
+			rec.Compare = runCompareOf(c.Compare, c.Tasks)
 		}
 		rec.Ticket = ticketOfRow(from.Run)
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {

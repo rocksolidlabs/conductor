@@ -3465,12 +3465,27 @@ tasks of one lane. `selector` is refused when set. Each rule is refused
 1 MiB. A task's comparison part of its task file (Managed runs) is never
 cut, so its goal, role, instructions, people and comparison together take
 at most 40 KiB as `task.json` keeps them. A crew's create and update take
-`compare` with the rest, so a crew read back saves again; in this build
-every launch and continuation of a crew with one, from the crews page or a
-ticket's plan revision, is
-refused as a crew that breaks a rule ("comparisons arrive with their
-launch statement"; `400 invalid_crew` from the crew launch route) before
-a run exists.
+`compare` with the rest, so a crew read back saves again. A comparison is
+launched from a ticket's approved plan revision alone (`POST
+/api/dispatch/tickets/{key}/launch` with `candidates`, Launches under
+Dispatch), and continued with its package; every other launch of a crew
+with one (the crews page, `conductor up`, an agent's crew) is refused as a
+crew that breaks a rule ("a comparison is launched from a ticket's
+approved plan revision"; `400 invalid_crew` from the crew launch route)
+before a run exists, and so is one whose candidates have no check and
+whose file-form manifest has no verify step at the base ("nothing to
+compare: the candidates have no checks and conductor.manifest.json at
+9f8e7d6a1b2c has no verify step"). A continuation of a comparison's
+chain is refused, with no run made, when the chain holds 256 runs
+already (`409 chain_too_long`, "this comparison has been continued 255
+times: launch a new comparison"), and when it would leave a candidate
+that succeeded without its result or give a candidate a repair before a
+selection selects it (`409 not_selected`, "a comparison's candidate is
+repaired once it is selected"). A run of a comparison reads (`GET
+/api/runs/{run}`, the run lists, its record) with `compare`,
+`{candidates: [{task, review?}]}`: each candidate task with the review task
+that reviews it, in the block's order, at most 4 (about 300 bytes);
+absent for a run of no comparison, whose JSON is unchanged.
 A session of a comparison's lane (a candidate's attempt or its review's)
 is one from its creation: the engine gives it its lane as it launches
 it. It calls with its agent token only these routes: its own session's
@@ -4606,10 +4621,12 @@ nothing changes), then acted on and settled in a second (`done` or
 `uncertain` after the recovery, and read as such. A run keeps 4,096
 commands (`409 too_many_commands`); `GET /api/runs/{run}/commands/{command}`
 reads a receipt without acting; a legacy run takes no command (`409
-task_state`), a comparison's run takes pause, unpause, cancel, retry and
-accept alone (any other, Check again and Request changes among them, is
+task_state`), a comparison's run takes pause, unpause, cancel, retry,
+accept and Check again alone (any other, Request changes among them, is
 `409 task_state`, "this command is not open to a comparison's candidates
-yet", with no row and no receipt), and a run continued, or being continued, takes none either
+yet", with no row and no receipt), and once its selection is applied a
+task command on a lane not selected is `409 not_selected` with no row and
+no receipt (Decisions, a comparison's selection), and a run continued, or being continued, takes none either
 (`409 run_continued`: its continuation owns its tasks, and a change here
 would fork their history). The engine's own `PauseRun`, `CancelTask` and `RetryTask` make
 the same changes without a receipt.
@@ -7138,7 +7155,7 @@ sent again whatever the view's age (`DECIDE_*` in
 | `GET /api/dispatch/tickets/{key}/decisions` | admin | `{decisions}`: the decisions of the ticket's runs, newest first, at most 100, each as `GET /api/decisions` gives it (at most 7,001,424 bytes) |
 
 The record (`decision`): `{id, run (the run that holds it now), openedIn,
-origin (agent or plan), type (clarification, approval or assignment),
+origin (agent, plan or compare), type (clarification, approval or assignment),
 gate?, asker? {task, attempt, live}, member?, ticket?, plan?, planDigest?,
 requestId?, request, evidence?, policy, state, rev, why?, supersededBy?,
 answer?, responses?, applied?, history?, createdAt, answeredAt?,
@@ -7165,8 +7182,65 @@ name, its `for`, `words` cut where a character ends to 3 KiB as
 encoded): a response whose fields are within their bounds is always
 kept, never refused for its receipt's size; `applied`
 is `{at, by: "yardmaster", run, task?, attempt?, response, validated,
-how: typed|task_file|released|cancelled|noted, tasks?, words}`. An
-operation's receipt is `{decision, op, seq, at, rev, words, repeat?}`.
+how: typed|task_file|released|cancelled|noted|selected, tasks?, words,
+selected?, none?}`. An operation's receipt is `{decision, op, seq, at,
+rev, words, repeat?}`.
+
+A comparison's selection is a record of origin `compare`
+(docs/plans/compare-crew.md): Yardmaster opens it, with no asking task,
+attempt, session or member, no gate and no hold, in the change of a
+compare run that finds every lane ended (its candidate task finished, its
+review finished or behind a failed need) and no selection of the run's
+chain open, answered or applied: the change that ends the last lane, or
+a continuation's first transaction. It is an approval: its `question`
+"Which approach does CND-12 continue with?"; its options one per lane
+whose candidate task has a standing result, in the compare block's order,
+labelled with the task and the commit's first seven characters
+("approach-b at 4b825dc"), each with its `subject` `{kind: "candidate",
+run, task, n, commit}` (`run` the run its attempt ran in, an imported
+one's source), then `None of these`, with no subject; its own `subject`
+`{kind: "comparison", run, base, digest}` (the chain's launched run, its
+base, and the SHA-256 of the options' subjects in order, as JSON); its
+`recommendation` -1, always; no evidence refs; `authorizes` "Continuing
+the selected candidate into review and repair, and delivering it. Final:
+the candidates not selected are kept and cannot be continued; a new
+comparison tries them again."; `context` the comparison in words, at most
+4,000 characters; `supersedes` the selection it follows, if any. Only a
+record of origin `compare` takes an option's `subject` (kind `candidate`
+alone) and the subject kind `comparison`: any other request with either
+is `400 invalid`. With no lane standing, or no room for it in the run's
+decisions (1,000), none opens and the comparison has ended with none
+("no candidate has a result: nothing to select"; "this run has recorded
+1,000 decisions: no room for a selection: continue the run to select in
+its continuation, or launch a new comparison"); the run settles in that
+change. While it is open or answered the run has no outcome and writes no
+`run.finished`: running and idle, or stopped. It stays so only while
+every lane has ended and shows the candidate its option names: a change
+to a lane (a Retry, an Accept anyway, a Check again, a reopen) supersedes
+it in that change ("approach-c runs again: dr-9 no longer lists what is
+compared"; an answered one keeps its response), and a new one opens when
+every lane has ended again. A stop, a shutdown and a restart leave it as
+it was, and an answer recorded on a run not held is applied when the run
+is continued. Only the operator answers it: a response needs a
+`rationale` (`400 invalid`, "say why: the rationale is the record of
+this selection", nothing kept), the decide grant and a router are refused
+(`403 not_approver`), it is never routed (`POST /api/decisions/{did}/route`
+of it, to any destination and by anyone, a Brakeman turn among them, is
+`400 invalid`, "dr-9 is a comparison's selection, the operator's to
+answer: it is not routed"), and a decide principal is admitted to none of
+it. The operator's cancel is refused (`POST /api/decisions/{did}/cancel`
+`400 invalid`, "dr-9: a selection is not cancelled: answer None of these,
+with a rationale, to end the comparison with no candidate"). The
+application is `how: selected`, with `selected: {task, run, attempt,
+commit}` or `none: true` for None of these, and writes the run event
+`compare.selected` (`{decision, task, run, attempt, commit}` or
+`{decision, none: true}`, at most 1 KiB) before the run settles in the
+same transaction. From then on every task command on a lane not selected
+(`retry`, `accept`, `recheck`, `cancel`; after None of these, every
+lane), in every run of the chain, is `409 not_selected` before anything
+is written ("approach-a was not selected in dr-9: launch a new
+comparison to try it again"; "no candidate was selected in dr-9 (None of
+these): launch a new comparison to try approach-a again").
 
 `refs` resolves each evidence ref against the baseline the record took
 when the request was made (the ref's record then): `{ref, seen, now,

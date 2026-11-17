@@ -1,5 +1,10 @@
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { budget, dayPage, expect, readAgain, test, useTheme } from './fixtures'
+import { makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
+import { ownServer } from './own-server'
+import { git } from './server'
 import { BASE, NOT_OBSERVED, compareRun, comparisonOf, serveComparison, type ComparisonShape } from './compare-stub'
 import { filledPrimaries, walk, worst } from './contrast'
 import { noSideways } from './layout'
@@ -246,3 +251,138 @@ for (const size of [
     }
   })
 }
+
+/** Every key of a value, as `path: kind` (an array's elements under `[]`), as stubs.spec.ts reads the run and inbox stubs. */
+function paths(v: unknown, at = '', out = new Set<string>()): Set<string> {
+  const kind = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v
+  if (at) out.add(`${at}: ${kind}`)
+  if (Array.isArray(v)) for (const x of v) paths(x, `${at}[]`, out)
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) paths(x, at ? `${at}.${k}` : k, out)
+  return out
+}
+/** Whether a path is under one of `drop`: what the real comparison has no case of (a lane git could not read), or the stub none. */
+const under = (p: string, drop: readonly string[]) => drop.some((d) => p.startsWith(`${d}: `) || p.startsWith(`${d}.`) || p.startsWith(`${d}[]`))
+function keyDiff(stub: unknown, real: unknown, drop: readonly string[]) {
+  const s = paths(stub)
+  const r = paths(real)
+  return { missing: [...r].filter((p) => !s.has(p) && !under(p, drop)).sort(), extra: [...s].filter((p) => !r.has(p) && !under(p, drop)).sort() }
+}
+
+/** A stub candidate's run and every check of it, on a loaded machine: the engine's own caps (an attempt, its checks, its review). */
+const SETTLE_MS = 240_000
+
+test('a comparison of two stub candidates on the real server: the view shows what the server measured, and the stub has its keys', async ({ browser }) => {
+  budget(SETTLE_MS + 4 * LOAD_MS + 60_000)
+  // One lane's agent edits the check's script (STUB_COMPARE_EDIT): that check's row is not comparable, in the server's words.
+  const s = await ownServer('compare', { agents: [{ id: 'cand-edit', from: 'worker-cli', env: { STUB_COMPARE_EDIT: 'script' } }] })
+  try {
+    mkdirSync(join(s.repo, 'scripts'), { recursive: true })
+    writeFileSync(join(s.repo, 'scripts', 'check.sh'), '#!/bin/sh\nexit 0\n')
+    git(s.repo, 'add', 'scripts/check.sh')
+    git(s.repo, 'commit', '-q', '-m', 'the check')
+    const base = git(s.repo, 'rev-parse', 'HEAD').trim()
+    const { crew } = await s.api.ok<{ crew: { id: string } }>('POST', '/api/crews/templates/compare', {
+      name: 'Compare the check',
+      cwd: s.repo,
+      goal: 'Make the check pass',
+      instructions: 'Keep the API as it is.',
+      criteria: [{ id: 'no-dep', text: 'no new dependency' }],
+      checks: [{ id: 'unit', argv: ['sh', 'scripts/check.sh'] }],
+      candidates: [{ agentId: 'worker-cli', approach: 'Change nothing of the check' }, { agentId: 'cand-edit' }],
+      reviews: true,
+      reviewAgent: 'worker-cli',
+    })
+    // Proposed as a ticket's revision and approved (DS2's routes), then launched with the count the revision states.
+    const project = 'CMPW'
+    await makeProject(s.api, project)
+    const ticket = await makeTicket(s.api, project, '1', { title: 'Compare approaches' })
+    const { plan } = await s.api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${ticket}/plans`, { opId: opOf(project, 'r1'), crew: crew.id })
+    await s.api.ok('POST', `/api/dispatch/plans/${plan.id}/approve`, { opId: opOf(project, 'ap1'), expectedRev: plan.rev, ticketRev: (await storedTicket(s.api, ticket)).rev })
+    const launched = await s.api.ok<{ launch: { runId: string } }>('POST', `/api/dispatch/tickets/${ticket}/launch`, { opId: opOf(project, 'l1'), plan: plan.id, candidates: 2 })
+    const run = launched.launch.runId
+    expect(run).toBeTruthy()
+    // Every lane ended: the ledger's word (settled), not a page's.
+    await expect
+      .poll(async () => (await s.api.ok<{ settled: boolean }>('GET', `/api/runs/${run}/comparison`)).settled, { timeout: SETTLE_MS, intervals: [1000] })
+      .toBe(true)
+    const real = await s.api.ok<Record<string, unknown>>('GET', `/api/runs/${run}/comparison`)
+
+    // The stub's keys are the server's: what the real comparison has no case of here is left out by name, never by its shape.
+    const stub = comparisonOf({ run, brakemanRequest: undefined })
+    expect(
+      keyDiff(stub, real, [
+        // No lane git could not read, no diff past its bound, no test or build file changed, no Brakeman.
+        'candidates[].unavailable',
+        'candidates[].size.notMeasured',
+        'candidates[].verifyFiles',
+        'supporting',
+        'selection',
+        // The stub's lanes share commits and same patches, a check not run, a failed cell; the real ones none of these.
+        'candidates[].shared[]',
+        'candidates[].equivalent[]',
+        'checks[].cells[].notRun',
+        'checks[].cells[].exit',
+        // No candidate here names an argument or changes a dependency file.
+        'candidates[].args[]',
+        'candidates[].deps',
+      ]),
+      "the comparison's keys the server sends that the stub lacks (missing), and the stub's that it never sends (extra)",
+    ).toEqual({ missing: [], extra: [] })
+    expect((real.independence as { notObserved: string }).notObserved, "the stub carries the server's words").toBe(NOT_OBSERVED)
+    // The run's compare part, as compareRun gives it.
+    const runRead = await s.api.ok<{ run: Record<string, unknown> }>('GET', `/api/runs/${run}`)
+    expect(runRead.run.compare).toEqual({ candidates: [{ task: 'approach-a', review: 'review-a' }, { task: 'approach-b', review: 'review-b' }] })
+    expect(keyDiff(compareRun({ ticket }).compare, runRead.run.compare, [])).toEqual({ missing: [], extra: [] })
+
+    const page = await dayPage(browser, { server: s.started, path: '/agents' })
+    try {
+      budget(LOAD_MS)
+      await page.goto(`/dispatch/${project}/1?view=compare&run=${run}`)
+      const v = page.locator('[data-compare-view][data-compare-state="content"]')
+      await expect(v).toBeVisible()
+      await expect(v).toHaveAttribute('data-compare-settled', 'true')
+      await expect(v.locator('[data-compare-base]')).toHaveAttribute('title', base)
+      await expect(v.locator('[data-compare-objective]')).toHaveText('Make the check pass')
+      await expect(v.locator('[data-compare-criterion]')).toHaveText(['no new dependency'])
+      for (const lane of ['approach-a', 'approach-b']) {
+        await expect(v.locator(`[data-compare-candidate="${lane}"]`)).toHaveAttribute('data-state', 'ready')
+        await expect(v.locator(`[data-compare-candidate="${lane}"]`)).toHaveAttribute('data-selectable', 'true')
+      }
+      await expect(v.locator('[data-compare-candidate="approach-a"] [data-compare-candidate-approach]')).toHaveText('Change nothing of the check')
+      // The check approach-b's agent edited: not comparable, the server's words naming the script.
+      const unit = v.locator('[data-compare-check="check/unit"]')
+      await expect(unit).toHaveAttribute('data-verdict', 'not_comparable')
+      await expect(unit.locator('[data-compare-why]')).toContainText(['approach-b changed scripts/check.sh, which the check runs'])
+      for (const lane of ['approach-a', 'approach-b']) await expect(unit.locator(`[data-compare-cell="${lane}"]`)).toHaveAttribute('data-cell-state', 'passed')
+      // The size rows say the server's counts; approach-b's change is approach-a's and the script.
+      const sizes = (real.candidates as Array<{ task: string; size: { files: number; added: number; removed: number; list: Array<{ path: string }> } }>).map((c) => c.size)
+      for (const [i, lane] of (['approach-a', 'approach-b'] as const).entries()) {
+        const z = sizes[i]!
+        await expect(v.locator(`[data-compare-size="${lane}"] [data-compare-size-lines]`)).toHaveText(`${z.files} ${z.files === 1 ? 'file' : 'files'} changed, +${z.added} −${z.removed}`)
+      }
+      expect(sizes[1]!.files).toBe(sizes[0]!.files + 1)
+      expect(sizes[1]!.list.map((f) => f.path)).toContain('scripts/check.sh')
+      expect(sizes[0]!.list.map((f) => f.path)).not.toContain('scripts/check.sh')
+      await expect(v.locator('[data-compare-deps="approach-a"] [data-compare-deps-summary]')).toHaveText('No dependency file changed')
+      await expect(v.locator('[data-compare-independence="approach-b"] [data-compare-independence-words]')).toHaveText(['no shared commit and no same patch'])
+
+      // The run page: its lanes, each candidate then its review.
+      budget(LOAD_MS)
+      await page.goto(`/runs/${run}?view=tasks`)
+      await expect(page.locator('[data-task-lane]')).toHaveCount(2)
+      expect(await page.locator('[data-task-rows] > li').evaluateAll((els) => els.map((e) => e.getAttribute('data-task-lane') ?? e.getAttribute('data-task-row')))).toEqual(['approach-a', 'approach-a', 'review-a', 'approach-b', 'approach-b', 'review-b'])
+      await expect(page.locator('[data-run-summary] [data-run-comparison]')).toHaveAttribute('href', `/dispatch/${project}/1?view=compare&run=${run}`)
+
+      // The crews page's Launch of the comparison's crew is refused, in its words.
+      budget(LOAD_MS)
+      await page.goto(`/crews/${crew.id}`)
+      await page.locator('[data-launch]').click()
+      await page.locator('[data-crew-launch-confirm]').click()
+      await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible()
+    } finally {
+      await page.context().close()
+    }
+  } finally {
+    await s.stop()
+  }
+})

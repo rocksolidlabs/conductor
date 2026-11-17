@@ -682,7 +682,7 @@ func TestALaunchRefusedAtAdmissionKeepsNothing(t *testing.T) {
 	ctx := context.Background()
 	plan := simplePlan(t, s, key)
 	gone := errors.New("the caller's authority ended")
-	if _, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { return gone }); !errors.Is(err, gone) {
+	if _, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", 0, func() error { return gone }); !errors.Is(err, gone) {
 		t.Fatalf("a launch refused at admission: %v", err)
 	}
 	if _, found, err := s.Receipt(ctx, testOp("l1").Actor, "l1"); err != nil || found {
@@ -692,9 +692,9 @@ func TestALaunchRefusedAtAdmissionKeepsNothing(t *testing.T) {
 		t.Fatalf("launches %+v %v", list, err)
 	}
 	asked := 0
-	rc, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { asked++; return nil })
+	rc, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", 0, func() error { asked++; return nil })
 	want(t, rc, err, StatusDone, "")
-	again, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", func() error { asked++; return gone })
+	again, err := s.LaunchAdmitted(ctx, testOp("l1"), key, plan, "", 0, func() error { asked++; return gone })
 	if err != nil || !again.Repeat || again.ID != rc.ID || asked != 1 {
 		t.Fatalf("the resend: %+v %v, admission asked %d times", again, err, asked)
 	}
