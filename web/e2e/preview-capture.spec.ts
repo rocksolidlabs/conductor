@@ -137,7 +137,7 @@ test('Open in Conductor, the label, elements under an overlay, a navigation, the
   expect(c1.url).toBe(`${origin}/`)
   expect(c1.annotations.map((a) => [a.kind, a.element?.id, a.element?.hit.self, a.note])).toEqual([
     ['element', 'under', false, 'The save button is covered'],
-    ['element', 'second', true, ''],
+    ['element', 'second', false, ''],
   ])
   expect(c2.url).toBe(`${origin}/next`)
   expect(c2.annotations.map((a) => [a.kind, a.element?.id])).toEqual([

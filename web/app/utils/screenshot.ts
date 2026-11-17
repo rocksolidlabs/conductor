@@ -1,8 +1,9 @@
 import type { CaptureRect } from './capture'
+import { desktopSource, type DesktopSource } from './screenshotDesktop'
 
 /**
  * The preview's pixels (docs/plans/browser-evidence.md, "The screenshot"): the desktop shell's capture of the frame's box when the
- * desktop app offers one (utils/screenshotDesktop.ts, the desktop lane's, loaded when it is there), else in a browser that has them
+ * desktop app offers one (utils/screenshotDesktop.ts), else in a browser that has them
  * the tab's own capture with the person's permission, cropped to the frame (getDisplayMedia with preferCurrentTab, Region Capture's
  * CropTarget and cropTo), the track kept for the draft and stopped at Save, Escape or the pane's close, else none, said in the
  * capture. A source's `frame` gives the raw pixels the moment's comparisons use; the screenshot is scaled and encoded from them
@@ -146,10 +147,8 @@ export function canvasEncoder(): Encoder {
   }
 }
 
-/** A PNG's pixels (the seam's and the desktop shell's screenshots come as PNG). */
-export async function decodePng(png: Blob | Uint8Array | ArrayBuffer): Promise<Pixels> {
-  const blob = png instanceof Blob ? png : new Blob([png as BlobPart], { type: 'image/png' })
-  const bmp = await createImageBitmap(blob)
+/** A bitmap's pixels, the bitmap closed once read. */
+export function pixelsOf(bmp: ImageBitmap): Pixels {
   try {
     const c = canvas(bmp.width, bmp.height)
     c.ctx.drawImage(bmp, 0, 0)
@@ -157,6 +156,12 @@ export async function decodePng(png: Blob | Uint8Array | ArrayBuffer): Promise<P
   } finally {
     bmp.close()
   }
+}
+
+/** A PNG's pixels (the seam's screenshots come as PNG). */
+export async function decodePng(png: Blob | Uint8Array | ArrayBuffer): Promise<Pixels> {
+  const blob = png instanceof Blob ? png : new Blob([png as BlobPart], { type: 'image/png' })
+  return pixelsOf(await createImageBitmap(blob))
 }
 
 /** A base64 text's bytes. */
@@ -232,21 +237,26 @@ export async function tabSource(el: Element): Promise<ScreenshotSource> {
 
 // ---- Choosing a source ----
 
-/** What the desktop lane's module gives: its source, or null outside the desktop app or without its capture. */
-interface DesktopModule {
-  desktopSource?: () => Promise<ScreenshotSource | null> | ScreenshotSource | null
+/** The desktop app's source as the pane reads one: the frame's box asked in the window's CSS pixels, its bitmap read as pixels. */
+export function fromDesktop(d: DesktopSource): ScreenshotSource {
+  const src: ScreenshotSource = {
+    how: 'desktop',
+    async frame(r) {
+      const bmp = await d.frame({ left: r.x, top: r.y, right: r.x + r.width, bottom: r.y + r.height })
+      src.why = d.why()
+      return bmp ? pixelsOf(bmp) : null
+    },
+    stop: () => d.stop(),
+  }
+  return src
 }
-const desktopModules = import.meta.glob<DesktopModule>('./screenshotDesktop.ts')
 
 /**
  * The source for the frame el, chosen in this order: the test seam's (a spec's own screenshots), the desktop shell's, the tab's, none.
  */
-export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null } = {}): Promise<ScreenshotSource> {
+export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null; desktop?: DesktopSource | null } = {}): Promise<ScreenshotSource> {
   if (o.seam) return o.seam
-  const load = desktopModules['./screenshotDesktop.ts']
-  if (load) {
-    const d = await (await load()).desktopSource?.()
-    if (d) return d
-  }
+  const d = o.desktop === undefined ? desktopSource() : o.desktop
+  if (d) return fromDesktop(d)
   return tabSource(el)
 }

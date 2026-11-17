@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_SHOT_BYTES, TOO_LARGE_WORDS, encodeShot, noneSource, sameIn, scaledSize, type Encoder, type Pixels } from './screenshot'
+import { MAX_SHOT_BYTES, TOO_LARGE_WORDS, encodeShot, fromDesktop, noneSource, sameIn, scaledSize, screenshotSource, type Encoder, type Pixels } from './screenshot'
 
 // The screenshot as it is saved (docs/plans/browser-evidence.md, "The screenshot"): at most 2,048 pixels on its long side, PNG, its
 // scale recorded; past 4 MiB scaled again by half, once, then dropped with words. And the pixels' check a moment rests on.
@@ -78,5 +78,22 @@ describe('noneSource', () => {
   it('gives no frame and says why', async () => {
     const s = noneSource('the screen was not shared')
     expect([s.how, s.why, await s.frame({ x: 0, y: 0, width: 1, height: 1 })]).toEqual(['none', 'the screen was not shared', null])
+  })
+})
+
+describe("the desktop app's source", () => {
+  it("asks the app for the frame's box in the window's CSS pixels and says why it gave none", async () => {
+    const asked: unknown[] = []
+    const d = { how: 'desktop' as const, frame: async (b: unknown) => (asked.push(b), null), stop() {}, why: () => 'the window is hidden' }
+    const s = fromDesktop(d)
+    expect(await s.frame({ x: 10, y: 20, width: 300, height: 200 })).toBeNull()
+    expect(asked).toEqual([{ left: 10, top: 20, right: 310, bottom: 220 }])
+    expect([s.how, s.why]).toEqual(['desktop', 'the window is hidden'])
+  })
+  it('is chosen over the tab when the app offers one, and the seam over both', async () => {
+    const d = { how: 'desktop' as const, frame: async () => null, stop() {}, why: () => '' }
+    expect((await screenshotSource({} as Element, { desktop: d })).how).toBe('desktop')
+    const seam = noneSource('seam')
+    expect(await screenshotSource({} as Element, { seam, desktop: d })).toBe(seam)
   })
 })

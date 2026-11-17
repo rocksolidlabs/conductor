@@ -4,6 +4,7 @@ import { DEVICE_SIZES, NO_BRIDGE_WORDS, SELF_WORDS, isWorkbench, labelWords, ori
 import { previewSeam, usePreviewBridge } from '~/composables/usePreviewBridge'
 import { type LabelTarget, usePreviewLabel } from '~/composables/usePreviewLabel'
 import { screenshotSource } from '~/utils/screenshot'
+import { desktopPreviewBridge } from '~/utils/screenshotDesktop'
 
 /**
  * A preview in Conductor (docs/plans/browser-evidence.md, "A preview in Conductor" and "The pane"): the frame of an attempt's
@@ -110,6 +111,12 @@ const session = usePreviewBridge({
     return { url: src.value, width: d ? d.width : room.value.width, height: d ? d.height : room.value.height }
   },
 })
+/** The frame loaded: in the desktop app the shell puts the bridge into it first (any page has it there), then the hello. */
+async function loaded() {
+  const at = src.value
+  if (framed.value) await desktopPreviewBridge(at)
+  if (at === src.value) session.hello()
+}
 const frameKey = ref(0)
 function refresh() {
   frameKey.value++
@@ -203,7 +210,7 @@ defineExpose({ capture, session })
             referrerpolicy="no-referrer"
             title="Preview"
             data-preview-frame
-            @load="session.hello()"
+            @load="loaded"
           />
         </div>
       </div>
