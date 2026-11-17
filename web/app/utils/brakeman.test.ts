@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { BrakemanAct, BrakemanConfig, BriefItem, CapacitySnapshot } from './brakeman'
+import type { BrakemanAct, BrakemanConfig, BrakemanDigest, BrakemanDigestAbout, BrakemanDigestCounts, BriefItem, CapacitySnapshot } from './brakeman'
 import { renderMarkdown } from './markdown'
-import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
+import { BOUNDS, BRIEFING_TIME, GRANTS, KINDS, MAX_READING, KIND_SUBJECTS, MAX_BY, NO_AGENT, actDecision, actFor, refDecision, actsApart, readingBlocks, actLaunchRef, actMade, actReceiptRef, actShown, actShownFrom, actLaunchId, keepLaunch, MAX_KEPT_LAUNCHES, proposalOffered, actWords, followLaunch, capacityRefWords, agentChoice, agentIdOf, agentItems, askProblem, briefingLine, briefingList, changedFromBaseline, changedSince, configProblems, displayBy, foldersLine, formField, grantHeld, grantLabel, briefAbout, briefEvidence, briefRegions, citedRuns, foldWords, regionHeading, keptBrief, kindWords, observesOnly, openedMark, parseRef, provenance, readsWords, receiptPath, refLabel, refPage, refRoute, refTicket, sameConfig, scopeJSONBytes, servedGrants, stateRank, stateWords, stopAction, unopened, withGrant } from './brakeman'
 
 // Brakeman's words, refs and checks on the app's pages (docs/plans/brakeman.md, PR-6).
 
@@ -24,6 +24,22 @@ function config(over: Partial<BrakemanConfig> = {}): BrakemanConfig {
     ...over,
   }
 }
+
+describe("a brief's digest, as the server keeps it", () => {
+  const src = readFileSync(new URL('../../../internal/brakeman/digest.go', import.meta.url), 'utf8')
+  /** The JSON names of a Go struct's fields, in order. */
+  const fields = (struct: string) => [...src.matchAll(/type ([A-Za-z]+) struct \{([^}]*)\}/g)].find((m) => m[1] === struct)![2]!.match(/json:"([a-zA-Z]+)/g)!.map((x) => x.slice(6))
+
+  it("cuts its reading where the server does, and names its fields as the server's", () => {
+    expect(MAX_READING).toBe(Number(/\bMaxReading\s*=\s*(\d+)/.exec(src)![1]))
+    const digest: Record<keyof BrakemanDigest, true> = { schema: true, title: true, reading: true, readingCut: true, counts: true, about: true }
+    const counts: Record<keyof BrakemanDigestCounts, true> = { decisions: true, proposals: true, drafts: true, handoffs: true, facts: true, interpretations: true, outcomes: true, overlaps: true, comparisons: true, evidence: true }
+    const about: Record<keyof BrakemanDigestAbout, true> = { runs: true, tasks: true, sessions: true, tickets: true }
+    expect(fields('Digest')).toEqual(Object.keys(digest))
+    expect(fields('DigestCounts')).toEqual(Object.keys(counts))
+    expect(fields('DigestAbout')).toEqual(Object.keys(about))
+  })
+})
 
 describe('the kinds and the states, in words', () => {
   it('names every kind the server takes, and only those', () => {
