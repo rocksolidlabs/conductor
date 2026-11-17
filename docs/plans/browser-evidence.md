@@ -588,7 +588,9 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
   `plans.go`'s `planCreated`); a set's row holds its `id`, `rev`,
   `digest` and `members` (under 1.5 KiB); the pointer's row its value
   and prior, `{rev, set}` each; a cancel's row its four fields; a send's input row its fields with the `request` (at
-  most 8 KiB); an outcome's row its fields.
+  most 32 KiB: 4,000 characters of a question or a summary in any script;
+  8 KiB until the review of PR-6, which a question in a script of three or
+  four bytes a character passed); an outcome's row its fields.
 - `rules.go`: a capture's page, origin and image fields `immutable`;
   annotation versions and sets immutable rows, inserted and never
   changed, so two replicas' sets are both kept (keyed by their id, never
@@ -905,7 +907,7 @@ what the server filled, as RV1's `ReviewSubmitArgs` does):
 | `GET /api/captures/{id}/sends/{send}` | the send with its frozen document, read from the content file its `digest` names; served for a deleted capture too (the tombstone hides the live capture, never what was sent) |
 | `POST /api/captures/{id}/edit` | `{opId, expectedRev, annotations}` (2 MiB; an element annotation named by its `k`, no new report) → `{receipt, capture}`; `409 stale`; `400 invalid` for a new element report |
 | `POST /api/captures/{id}/delete` | `{opId}` → `{receipt}` |
-| `POST /api/captures/{id}/send` | `{opId, rev, to: {kind: "ticket", project?, title?, key?} \| {kind: "brakeman", question}}` (8 KiB) → `201 {receipt, send}`; `409 stale`, `404 not_found` (a ticket), `409 bound`; for Brakeman, every answer the desk gives, as it gives it: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`, `503 brakeman_stuck`, `503 brakeman_not_owner` (the desk not yet recovered); `202 {receipt, send}` with the send `pending` for the last two, settled later (below) |
+| `POST /api/captures/{id}/send` | `{opId, rev, to: {kind: "ticket", project?, title?, key?} \| {kind: "brakeman", question}}` (32 KiB) → `201 {receipt, send}`; `409 stale`, `404 not_found` (a ticket), `409 bound`; for Brakeman, every answer the desk gives, as it gives it: `409 brakeman_off`, `429 queue_full`, `429 budget_spent`, `503 brakeman_stuck`, `503 brakeman_not_owner` (the desk not yet recovered); `202 {receipt, send}` with the send `pending` for the last two, settled later (below) |
 | `POST /api/captures/{id}/sends/{send}/cancel` | `{opId}` → `{receipt, send}` (the send with its state by `sendState` and its cancel's, `cancel: {asked, done}`); a repeat answered by its receipt; `409 stale` for a ticket send (made in one step: nothing is pending) or a `refused` one (its state named); a `sent` Brakeman send has its request cancelled at Brakeman, a `cancelled` one is answered as it is; the intent committed before any step, its steps serialized with the send's settlement and finished by it after a stop (below) |
 
   **What the server fills, never the client.** On a create, the API
