@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,7 +69,12 @@ With the workbench token (--server, --token and --insecure as conductor dispatch
                                             or 18:00 for the last one), or a duration back (12h)
   conductor brakeman status [--json]        whether Brakeman is on, the turn in progress, the queue and
                                             today's turns
-  conductor brakeman list [--json]          the requests, newest first, one a line
+  conductor brakeman list [--kind K] [--has H] [--about REF] [-q WORD] [--json]
+                                            the requests, newest first, one a line with its
+                                            brief's title: K a comma list of kinds (wake too), H
+                                            decision, proposal, draft or brief, REF a run:, task:,
+                                            session: or ticket: ref, WORD a word of the title, the
+                                            reading, the note, the subjects or what it cites
   conductor brakeman show br-n [--json]     a request whole, with its brief
   conductor brakeman role on|off|pause|resume|status [--json]
                                             the background role: on wakes Brakeman on events and at
@@ -757,6 +763,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	var server apiFlags
 	var asJSON *bool
 	var file, noteFile, since *string
+	var filter brakemanFilter
 	var subjects multiFlag
 	switch sub {
 	case "request":
@@ -771,6 +778,12 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			since = fs.String("since", "", "a briefing's start: a time, 18:00 for the last one, or a duration back such as 12h")
 		} else {
 			asJSON = fs.Bool("json", false, "print the server's reply as it is")
+		}
+		if sub == "list" {
+			fs.StringVar(&filter.kind, "kind", "", "only these kinds, a comma list (briefing,wake)")
+			fs.StringVar(&filter.has, "has", "", "only briefs holding a decision, proposal or draft, or any brief")
+			fs.StringVar(&filter.about, "about", "", "only requests about a run:, task:, session: or ticket: ref, by subject or by what the brief cites")
+			fs.StringVar(&filter.q, "q", "", "only requests with this word, whatever its case")
 		}
 	default:
 		fmt.Fprint(stderr, brakemanUsage)
@@ -856,7 +869,7 @@ func runBrakeman(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	case "status":
 		return brakemanStatus(ctx, client, *asJSON, stdout)
 	case "list":
-		return brakemanList(ctx, client, *asJSON, stdout)
+		return brakemanList(ctx, client, filter, *asJSON, stdout)
 	case "role":
 		return brakemanRole(ctx, client, arg, *asJSON, stdout)
 	}
@@ -1146,7 +1159,16 @@ func brakemanStatus(ctx context.Context, c *apiClient, asJSON bool, stdout io.Wr
 // requestLine is a request on one line: its id, state, kind and time, its
 // run and session once it has them, and why it ended.
 func requestLine(r brakeman.Request) string {
+	return titledLine(r, "")
+}
+
+// titledLine is requestLine with its brief's title, quoted, when it has
+// one.
+func titledLine(r brakeman.Request, title string) string {
 	line := fmt.Sprintf("%s %s %s %s", r.ID, r.State, r.Kind, r.CreatedAt.Local().Format("2006-01-02 15:04"))
+	if title != "" {
+		line += " " + strconv.Quote(title)
+	}
 	if r.RunID != "" {
 		line += " run " + r.RunID
 	}
@@ -1163,11 +1185,27 @@ func requestLine(r brakeman.Request) string {
 // and its reply's bound each at the request's. A test makes it smaller.
 var brakemanListPage = 20
 
-// brakemanList is conductor brakeman list: every page, newest first.
-func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writer) (int, error) {
+// brakemanFilter is list's filters, each passed to the server as it is
+// given, which checks it.
+type brakemanFilter struct{ kind, has, about, q string }
+
+// query is the filters given, as the list route's query.
+func (f brakemanFilter) query() string {
+	var out string
+	for _, p := range [][2]string{{"kind", f.kind}, {"has", f.has}, {"about", f.about}, {"q", f.q}} {
+		if p[1] != "" {
+			out += "&" + p[0] + "=" + url.QueryEscape(p[1])
+		}
+	}
+	return out
+}
+
+// brakemanList is conductor brakeman list: every page, newest first,
+// through the filters given.
+func brakemanList(ctx context.Context, c *apiClient, filter brakemanFilter, asJSON bool, stdout io.Writer) (int, error) {
 	all := []json.RawMessage{}
 	for after := ""; ; {
-		path := fmt.Sprintf("/api/brakeman/requests?limit=%d", brakemanListPage)
+		path := fmt.Sprintf("/api/brakeman/requests?limit=%d", brakemanListPage) + filter.query()
 		if after != "" {
 			path += "&after=" + url.QueryEscape(after)
 		}
@@ -1175,7 +1213,7 @@ func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writ
 			Requests []json.RawMessage `json:"requests"`
 			Next     string            `json:"next"`
 		}
-		if err := c.doLimit(ctx, http.MethodGet, path, nil, &page, wholeMiB(brakemanListPage*brakeman.MaxRequestDoc)); err != nil {
+		if err := c.doLimit(ctx, http.MethodGet, path, nil, &page, wholeMiB(brakemanListPage*(brakeman.MaxRequestDoc+brakeman.MaxDigestDoc))); err != nil {
 			return 1, fmt.Errorf("brakeman list: %w", err)
 		}
 		all = append(all, page.Requests...)
@@ -1196,10 +1234,22 @@ func brakemanList(ctx context.Context, c *apiClient, asJSON bool, stdout io.Writ
 	}
 	for _, raw := range all {
 		var r brakeman.Request
+		var row struct {
+			Digest *struct {
+				Title string `json:"title"`
+			} `json:"digest"`
+		}
 		if err := json.Unmarshal(raw, &r); err != nil {
 			return 1, fmt.Errorf("brakeman list: an unreadable request: %w", err)
 		}
-		fmt.Fprintln(stdout, requestLine(r))
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return 1, fmt.Errorf("brakeman list: an unreadable request: %w", err)
+		}
+		title := ""
+		if row.Digest != nil {
+			title = row.Digest.Title
+		}
+		fmt.Fprintln(stdout, titledLine(r, title))
 	}
 	return 0, nil
 }
