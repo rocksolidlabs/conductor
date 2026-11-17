@@ -61,6 +61,10 @@
 #                   conductor brakeman act, or the act tool;
 #                   what the server answered, taken or refused, is written to
 #                   <file>.out and the brief is submitted either way
+#                   A request that cites a capture's send (a person's Ask
+#                   Brakeman, capture:<id>/<send>) has the document that
+#                   send froze read (observe capture_send) and cited by the
+#                   brief's fact, its read written to the transcript.
 # $HOME/.codex/stub-hooks-review present: "Hooks need review" is drawn at
 # start as Codex 0.161 draws it when its hooks are new or changed (round 13,
 # G2c): 1. Review hooks highlighted; a digit moves the highlight, Enter
@@ -1246,6 +1250,23 @@ brakeman_turn() {
 		esac
 		printf 'brakeman: %s: read the ticket %s\n' "$req" "$STUB_BRAKEMAN_TICKET" >>"$transcript"
 	fi
+	local capre='capture:([0-9a-f]{16})/([0-9a-f]{16})' captured=
+	if [[ $got =~ $capre ]]; then
+		# A request that cites a capture's send (a person's Ask Brakeman):
+		# the document that send froze, read as the turn's observe_capture_send,
+		# and cited by the brief's fact.
+		local cid=${BASH_REMATCH[1]} csend=${BASH_REMATCH[2]} cread
+		case ${STUB_WORKER:-} in
+		mcp) cread=$(mcp_call observe "{\"what\":\"capture_send\",\"id\":\"$cid\",\"send\":\"$csend\"}") ;;
+		*) cread=$("$conductor" brakeman observe capture_send --id "$cid" --send "$csend" 2>&1) ;;
+		esac
+		if [[ $cread == *'"schema":"conductor.capture/1"'* ]]; then
+			captured="capture:$cid/$csend"
+			printf 'brakeman: %s: read the capture send %s: %s bytes\n' "$req" "$captured" "${#cread}" >>"$transcript"
+		else
+			printf 'brakeman: %s: the capture send %s could not be read: %s\n' "$req" "capture:$cid/$csend" "${cread:0:200}" >>"$transcript"
+		fi
+	fi
 	if [[ -n ${STUB_BRAKEMAN_ACT:-} && -s $STUB_BRAKEMAN_ACT.run ]]; then
 		# The run a spec's act changes (a decision's route), read before the
 		# act as the turn's read of what it proposes: its decisions, each
@@ -1265,6 +1286,7 @@ brakeman_turn() {
 	evidence=$(json_str "session:${CONDUCTOR_SESSION_ID:-}")
 	[[ -n $run ]] && evidence+=",$(json_str "run:$run")"
 	[[ -n ${STUB_BRAKEMAN_CHECK:-} ]] && evidence+=",$(json_str "$STUB_BRAKEMAN_CHECK")"
+	[[ -n $captured ]] && evidence+=",$(json_str "$captured")"
 	if [[ -n ${STUB_BRAKEMAN_BRIEF:-} && -s $STUB_BRAKEMAN_BRIEF ]]; then
 		brief=$(<"$STUB_BRAKEMAN_BRIEF")
 		[[ -n $actrev ]] && brief=${brief//@REV/$actrev}
