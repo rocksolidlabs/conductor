@@ -126,7 +126,7 @@ that order.
 | Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
 |---|---|---|---|---|---|---|---|---|---|
 | Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
-| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session (a host is not sent the form), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session whose host did not say it reads forms (an earlier release's, or one published to a switchyard: only a host whose register says `forms` is sent the form, #970, and asks it as a server session does), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
 | Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse` (working; a `toolCall` without the `error` field) / `PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
 | Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `userPromptSubmitted`/`preToolUse` (working), `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
 | Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `beforeSubmitPrompt`/`preToolUse` (working), `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
@@ -207,6 +207,77 @@ that order.
   join. The join page shows only the session name, agent, host and the role the
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
+
+## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
+
+What the item shipped, row by row (each row's issue says what it verified):
+
+- **PR-1 (#781)**: the usage readers of Claude Code and Codex in
+  `internal/agents`, each through its tool's documented commands and its own
+  output, qualified against the versions read on the planning machine.
+- **PR-2 (#782)**: `internal/capacity`: account references, readings and the
+  cache (a key at most once in 5 minutes, memory only).
+- **PR-3a (#783), PR-3b (#836)**: the accounts and capacity routes, the
+  `capacity` event, and `conductor accounts` and `conductor capacity`.
+- **PR-4 (#784), PR-4b (#856)**: a launch bound to its account and model once,
+  before its process starts, and held from its start by whatever runs in the
+  account's folder.
+- **PR-5 (#785), PR-5b (#872)**: Settings' Accounts, the capacity panel and
+  the session launch dialog; an entry that keeps its own login is said so,
+  and offered no account.
+- **PR-6 (#786)**: Brakeman reads the capacity view under its Capacity class
+  and cites a reading as a `capacity:` ref, and proposes only what owner
+  decision 11 allows.
+- **PR-7 (#787), PR-7b (#957)**: crews, a ticket's launches and Brakeman's
+  account in the app's screens, the launch sheet's lines; a crew's launch
+  names the revision the sheet read, and the server refuses another.
+- **PR-8 (#788)**: a capacity reading that warns, as the panel warns (a
+  window at the provider's warning or critical severity, at 90% used, or a
+  limit the provider says holds), wakes Brakeman's background role. Its row in
+  the role's log on the Brakeman page reads "An agent neared its usage limit:
+  capacity of `<agent>` on `<account>`". The wake names the agent and the
+  account by their ids alone (no label, folder or figure), is admitted by the
+  Capacity class alone (whatever the scope narrows), and a reading of the
+  agent and account Brakeman's own turns launch on (its configured agent on
+  the account its configured folder is) wakes nothing: a warning there would
+  spend a turn on the login that is near its limit. A batch's overflow, which
+  names no subject, is read only by a turn that also sees Capacity. Capacity
+  still acts on nothing. Tests: `TestCapacityWarningWakesRole` (one wake at
+  warning, a second reading inside the window coalesced with a count of two,
+  none at normal, the turn's batch reading the wake by its ids, and not at
+  all with Capacity off), `TestBrakemansOwnReadingWakesNothing`,
+  `TestACapacityWarningWakesOnlyWhereCapacityIsSeen`,
+  `TestACapacitySubjectIsAdmittedByItsClassAlone` and `TestCapacityWarns` in
+  `internal/api`; the words in `brakemanRole.test.ts`; and
+  `capacity-crew.spec.ts`'s wake, the stub's warning and limit readings
+  listed on the Brakeman page. The docs: `docs/architecture.md` (Accounts and
+  capacity), `docs/repository-map.md`, the README (Accounts and capacity) and
+  `docs/protocol.md` (The background role).
+
+**Owed: the by-hand check and the acceptance observation.** Neither has been
+made; both need the owner's machine, the real tools and the owner's own
+logins, which no test reaches. The issue stays open for them (#788).
+
+- *By hand*: Claude Code and Codex each read with the default login and with a
+  second folder; the windows and resets equal what Claude Code's `/usage` and
+  Codex's `/status` show in their own terminals at the same minute; a folder
+  never logged in shows signed out; a key-paid login, where one is at hand,
+  shows no windows; a session launched on one account and resumed after the
+  default changed resumes its own conversation.
+- *The observation*: on the owner's `conductor serve`, the session dialog for
+  each of the two shows the windows, their share used and their resets, the
+  plan, the provider's credit row, Conductor's count marked as an estimate,
+  and "Read … ago by" with the tool's version, matching the tools' own
+  terminals that minute; an agent with no reader shows unknown with its
+  reason. A managed crew of a Claude Code member and a Codex member, launched
+  from a ticket's approved revision, its launch sheet showing both lines; a
+  second account added and made the default mid-run, the next attempt and a
+  retried one still on the first account, a new session on the second, and a
+  session launched before the change resuming its own conversation. Brakeman,
+  asked for a briefing with Capacity on, cites a `capacity:` ref in a fact and
+  proposes nothing that moves work to another account.
+- What was missing, slow or wrong goes here when they are made, and the
+  owner's word that the panel told the truth about both logins closes AC1.
 
 ## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
 

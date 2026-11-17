@@ -458,10 +458,13 @@ that failed; a re-registration tries it again with its backoff, as it tries
 a dial that failed. Text frames are JSON; binary frames are RELAY
 envelopes.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
+Host → server: `register{proto, host{name,version,user?,answerAs?,forms?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
-never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+never does, an older host leaves it out and an older server ignores it; `forms: true` says the host reads
+a recipe's forms by the form's rules, so the owner's own server puts them in `registered.recipe` (below,
+#970): a bool, so the register's bound does not change; `conductor host` says it, a server publishing to
+a switchyard never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
 agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`,
 no `branch` and none of what the host reports, below),
@@ -797,14 +800,18 @@ the screen of the agent the host registered (`session.agentId`), so that a
 hosted session watches what a server session of the same agent watches:
 `{trustPrompt?, trustAnswers?: [{label, input}], questions?: [{prompt,
 words?, anytime?, answers?, answersFromScreen?, modeAnswers?,
-typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields
-(`internal/agents`' `HostRecipe`: the recipe the server's own sessions are
-started with, `Recipe`, without the questions that are forms, a question
+typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields:
+to a host whose register said `forms`, from the owner's own server, the
+recipe the server's own sessions are started with (`internal/agents`'
+`Recipe`), whole; to any other (an older host, and every host of a
+switchyard) the same without the questions that are forms, a question
 asked at any time whose answers are read off the screen and that names
-answers of its own, below). So a host is not sent Codex's MCP tool
-approval form: on a hosted session that form is answered in the terminal,
-and the recipe a host is sent is the one it was sent before the form was a
-question (#716). With it the host holds the trust question and the startup
+answers of its own, below (`HostRecipe`), byte for byte what a host was
+sent before the form was a question (#716). So a host that said `forms`
+asks Codex's MCP tool approval form as a server session asks it, with the
+same words, choices, keys and mode answers (#970), and answers to it are
+taken as a server session takes them; on any other hosted session that
+form is answered in the terminal. With it the host holds the trust question and the startup
 questions at start, raises the questions asked during the work with their
 choices (Codex's command approval, Claude Code's dialogs read off the
 screen), refuses a line typed into the session while one shows (a crew's
@@ -1806,8 +1813,9 @@ three of the call's arguments, "› 1. Allow", "Allow for this session" and
 "Cancel", each with its description in a column beside it, then "enter to
 submit | esc to cancel" on the last row) is found by that whole shape, at
 most 8 rows from Allow to Cancel, and asked as a form (below) on a server's
-own session. A host is not sent it (`registered.recipe`): on a hosted
-session the form is answered in the terminal. Its words are every row
+own session, and on the session of a host whose register said `forms`
+(#970), which is sent it (`registered.recipe`); any other host is not: on
+its hosted session the form is answered in the terminal. Its words are every row
 between "Field 1/1" and its list (the message and the arguments), its
 choices read off the form, Allow and the choices that remember it each its
 digit, which picks it and submits the form at once, Cancel an Escape, the
@@ -1869,8 +1877,9 @@ exactly one choice, which is sent as that answer's keys (a form where one
 is not asks nothing), the others as their numbers. What a reply to it is
 weighed against is those words and the whole list: the form with any row
 changed is another question. After an answer it is not asked again while
-it stays on the screen, as any question read off the screen (below). A
-host is not sent a form (`registered.recipe`). `modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
+it stays on the screen, as any question read off the screen (below). Only a
+host that said `forms`, of the owner's own server, is sent a form
+(`registered.recipe`). `modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
 matches, each read whole: its label with the rows that follow it up to the
 next choice (a narrow screen wraps "switch to" and "BYPASS PERMISSIONS"
 onto two rows). `typedAnswers`, a pattern bounded the
@@ -6577,7 +6586,18 @@ managed run read as its ledger holds it: never a change whose
 transaction is pending or was refused), a ticket moved to `ready` (by
 the status that change set; Dispatch's changes read from the server's
 start, every row of each commit, at most 20 pages of 500 a pass and
-the rest on the next pass at once), a person's own request (logged once,
+the rest on the next pass at once), a capacity reading that warns
+(`docs/plans/capacity.md`, PR-8: a reading the provider answered with a
+window at its `warning` or `critical` severity, at 90% used or more, or
+a limit it says holds, as the capacity panel warns; source `capacity`,
+subject `capacity:<agent>/<account>`, the key by its ids alone with no
+reading time, so a key's readings coalesce in a batch, and key the
+reading's `readAt`, so each reading fires once; no label, folder or
+figure; a reading of the agent and the account Brakeman's own turns
+launch on, its configured agent on the account its configured folder is,
+wakes nothing; admitted by the Capacity class alone, whatever the scope,
+as a `capacity:` ref is; capacity acts on nothing, and the wake only
+tells Brakeman), a person's own request (logged once,
 its op id asked again too; one whose write fails is kept and logged on a
 later pass), and the
 briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
@@ -6616,7 +6636,9 @@ request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
 30), then `idle`. Wakes while briefing, cooling or unavailable join the
 next batch. A batch holds at most 200 wakes, the same source and subject
 coalesced with a count, past them an `overflow` count with the first and
-last times; a wake whose source, subject and key the log holds already
+last times (a turn reads the overflow only under a grant that narrows no
+scope and sees every class a wake may be of: runs, sessions, Dispatch and
+capacity); a wake whose source, subject and key the log holds already
 (a task's attempts, a question's time) is one fired before, after a
 restart too. `paused` (a person) gathers nothing (a wake is logged
 `held: "paused"`), a turn running then runs to its end, and a wake

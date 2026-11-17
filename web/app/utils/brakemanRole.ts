@@ -14,6 +14,7 @@ export const WAKE_SOURCES: Readonly<Record<string, string>> = {
   run_ended: 'A run ended',
   run_paused: 'A run paused',
   ticket_ready: 'A ticket became ready',
+  capacity: 'An agent neared its usage limit',
   request: 'Your request',
   briefing: 'A briefing time',
 }
@@ -92,9 +93,15 @@ export function rowWords(row: RoleLogRow): { what: string; fate: string } {
   return { what, fate }
 }
 
-/** A wake's subject as the page names it: a ref's label, a request's id as it is. */
+/** A capacity wake's subject: capacity:<agent>/<account>, the key by its ids alone, no reading's time (internal/api, capacityWake). */
+const CAPACITY_SUBJECT = /^capacity:([a-z0-9-]{1,32})\/(default|a-[a-z2-7]{12})$/
+
+/** A wake's subject as the page names it: a ref's label, a capacity wake's agent and account, a request's id as it is. */
 export function subjectLabel(subject: string): string {
-  return /^br-[1-9][0-9]{0,17}$/.test(subject) ? subject : refLabel(subject)
+  if (/^br-[1-9][0-9]{0,17}$/.test(subject)) return subject
+  const cap = CAPACITY_SUBJECT.exec(subject)
+  if (cap) return `capacity of ${cap[1]} on ${cap[2] === 'default' ? 'its default login' : cap[2]}`
+  return refLabel(subject)
 }
 
 /** Whether the role's controls offer Pause (any state but paused) or Resume. */

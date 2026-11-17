@@ -188,7 +188,24 @@ add its rule here.
   test's arrays, which then saw a second request or an error not yet
   said (2026-11-11, #281). These composables read their auto-imports when
   they are called, so their static import before the stubs is safe; a
-  module that reads one as it loads is imported after its stubs.
+  module that reads one as it loads is imported after its stubs. A test
+  that needs the module fresh (`vi.resetModules`, a new tab's page) takes
+  an instance the file loaded as it was collected, one per load, each
+  handed out once (`useIdentityPass.test.ts`, 2026-11-16, #281): a load
+  in its body is a request to vitest's module server, which a whole run
+  on a loaded machine keeps busy for seconds.
+- Parallel subtests share what their process has. Go runs GOMAXPROCS of
+  them at once by default, and a lock a library takes for the whole
+  process makes each step of each as slow as all of theirs together:
+  every store goes through one SQLite whose allocator takes one lock per
+  process (`modernc.org/libc`'s malloc), so 64 of the address walk's 370
+  fresh stores at once had a tenth of a core each, the process about six
+  cores, and a store's open ran past the 30 s the store gives it at a load
+  average of 40 (`TestNoTextKeepsAnAddressesQuery`, 2026-11-16, #281).
+  Run at once what the work can use (a channel of slots taken after
+  `t.Parallel` and given back by a cleanup registered first, `walkSlots`
+  in `internal/dispatch`), and do once what every check reads (one export
+  for all the secrets a case carries).
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
