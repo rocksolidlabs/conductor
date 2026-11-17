@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
+import { expect, standingRoute, stopStrays, task, test, type Api, type Run } from './fixtures'
 
 // A project manifest run end to end (EN1 PR-7, #399), with the stub as the
 // worker as in tasks.spec.ts: a setup step that writes under .conductor/, a
@@ -24,11 +24,9 @@ import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
 // waits for a file the spec writes. Rows are found by their ids.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 interface Step {

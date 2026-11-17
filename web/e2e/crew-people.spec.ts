@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, task, test, type Api, type Run, type Session } from './fixtures'
+import { expect, standingRoute, task, test, type Api, type Run, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 
 // People in a crew (docs/plans/decisions.md, HM1, PR-10): the crew editor's People section and Owner column, the run page's people and
@@ -20,11 +20,9 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 let crewId = ''

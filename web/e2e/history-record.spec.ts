@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, task, test, type Run, type Session, tokenAsk } from './fixtures'
+import { Api, expect, standingRoute, task, test, tokenAsk, type Run, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
@@ -13,11 +13,9 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // receipt (a pause, its actor and time). A ticket's page at a comment the page's first read does not hold, shown marked.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 interface RecordReply {

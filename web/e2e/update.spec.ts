@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { callAnswer, expect, startCall, test, type Session } from './fixtures'
+import { callAnswer, expect, standingRoute, startCall, test, type Session } from './fixtures'
 
 // The update the desktop app downloaded (#290): never a dialog of the app's
 // own, which every check that found the same download used to open again.
@@ -12,11 +12,9 @@ import { callAnswer, expect, startCall, test, type Session } from './fixtures'
 // while it checks for updates, as the app does.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 type Told = { ready: string; announce: boolean; failed: string; restart?: string; checking?: boolean }

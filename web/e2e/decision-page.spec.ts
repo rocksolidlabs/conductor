@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
-import { Api, expect, task, test, type Session } from './fixtures'
+import { Api, expect, standingRoute, task, test, type Session } from './fixtures'
 import { holdOne } from './held-helpers'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
@@ -89,15 +89,14 @@ test.afterAll(async () => {
 })
 
 /**
- * A browser context on this spec's server, with its token where the workbench keeps it and a display name, and a route that lets every
- * request through, set before any page loads: the tests' own routes go on top, so interception is never switched on or off while a page
- * has requests out (AGENTS.md, "Tests that do not flake"; #281).
+ * A browser context on this spec's server, with its token where the workbench keeps it and a display name, and the standing route
+ * (standingRoute) from before any page loads: its tests route their pages while they work.
  */
 async function context(browser: Browser, phone: boolean): Promise<BrowserContext> {
   const ctx = await browser.newContext(
     phone ? { baseURL: server!.baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } : { baseURL: server!.baseURL, viewport: { width: 1440, height: 900 } },
   )
-  await ctx.route('**/*', (route) => route.fallback())
+  await standingRoute(ctx)
   await ctx.addInitScript((t) => {
     localStorage.setItem('conductor.workbenchToken', t)
     localStorage.setItem('conductor.displayName', 'Nate')

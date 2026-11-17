@@ -1,5 +1,5 @@
 import type { BrowserContext, Page } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import { expect, standingRoute, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTicket } from './dispatch-helpers'
 
 // The close policy on a ticket's page (docs/plans/dispatch.md, PR-11): Done refused on the page with the policy's words, by the status
@@ -15,11 +15,9 @@ import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTic
 // key.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 let other: BrowserContext | null = null

@@ -484,12 +484,25 @@ export interface DayPageOptions {
 }
 
 /**
+ * A route on `ctx` that keeps the context's request interception on from before its first load to its end, for a spec that routes a
+ * page while the page works: the test's own routes then come and go on top of it, and interception is never switched on or off
+ * while a page has requests out (AGENTS.md, "Tests that do not flake"; #281). Its address is one the app never asks for, so no
+ * request is handed to the test by it: Playwright continues every request no route of the test's takes, as with no route at all. A
+ * route that took every request and let it through would hand each one to the test and back, and Playwright 1.44.1 sends a file
+ * picked in the page without its bytes that way (dispatch.spec.ts's attachment upload reached the server as an empty part).
+ * A context route, so that a test's page.unrouteAll leaves it, and it reaches every page of the context.
+ */
+export function standingRoute(ctx: BrowserContext): Promise<void> {
+  return ctx.route('**/e2e-standing-route-no-request-has', (route) => route.fallback())
+}
+
+/**
  * A page in a context of its own on the day's server (or `server`): the workbench token, the display name "Nate" and the colour mode
  * set in the context's storage before the first load (so that a later write of the page's, or useTheme's, survives a reload), the
  * window and touch as asked. It goes to `path` and returns once the layout's root is drawn (`#dashboard-sidebar-main`, or
  * `[data-bottom-bar]` below 1024 px wide; `ready` in their place), `html` carries the theme's class, and `document.fonts.ready` has
- * settled. The context lets every request through a route of its own from before that load, under any route the test adds. The context
- * is closed at the end of the test, before the day's guard.
+ * settled. The context holds its standing route (standingRoute) from before that load. The context is closed at the end of the test,
+ * before the day's guard.
  */
 export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise<Page> {
   const server = o.server ?? today?.server.started
@@ -508,9 +521,7 @@ export async function dayPage(browser: Browser, o: DayPageOptions = {}): Promise
     storageState: { cookies: [], origins: [{ origin: new URL(server.baseURL).origin, localStorage: storage }] },
   })
   dayContexts.add(ctx)
-  // A route that lets every request through, set before the first load: a spec that routes the page dayPage drew puts its own on
-  // top, so interception is never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281).
-  await ctx.route('**/*', (route) => route.fallback())
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   await page.goto(o.path ?? '/')
   await drawn(page, theme, o.ready ?? (width < 1024 ? '[data-bottom-bar]' : '#dashboard-sidebar-main'))

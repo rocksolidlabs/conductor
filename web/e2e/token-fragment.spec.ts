@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page, Request } from '@playwright/test'
-import { expect, test, tokenAsk } from './fixtures'
+import { expect, standingRoute, test, tokenAsk } from './fixtures'
 import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, workbenchHeld } from './fragment-helpers'
 
 /** A token shaped as one (16 to 256 of `A-Z a-z 0-9 _ -`) that the server does not know. */
@@ -28,12 +28,6 @@ async function savedByAnotherTab(ctx: BrowserContext, token: string) {
   await other.evaluate((t) => localStorage.setItem('conductor.workbenchToken', t), token)
   await other.close()
 }
-/**
- * A route on `ctx` that lets every request through, set before its first page loads, for a test that routes the context or its page
- * while the page works: the test's own routes go on top, so interception is never switched on or off while the page has requests out
- * (AGENTS.md, "Tests that do not flake"; #281). A context made by `keeping` has a route from before its first page already.
- */
-const letThrough = (ctx: BrowserContext) => ctx.route('**/*', (route) => route.fallback())
 /** A fresh context whose browser keeps `token`: its first page opens with it kept. */
 async function keeping(browser: Browser, token: string) {
   const ctx = await browser.newContext()
@@ -287,7 +281,8 @@ test("a load with a link's token while the browser keeps another: accepted, the 
 test("a later link in a tab at the gate, after another tab saved another token: the page is signed in with the link's, with no load, and the browser keeps the other", async ({ browser, state }) => {
   const token = state.token
   const ctx = await browser.newContext()
-  await letThrough(ctx)
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
@@ -311,7 +306,8 @@ test("a later link in a tab at the gate, after another tab saved another token: 
 test("a later link in a tab at the gate that holds none, carrying the token another tab saved meanwhile: tried with no load; accepted, the gate is gone and the browser keeps it as it was", async ({ browser, state }) => {
   const token = state.token
   const ctx = await browser.newContext()
-  await letThrough(ctx)
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
@@ -737,7 +733,8 @@ test('a load with a token the server refuses, the browser keeping a good one: th
 
 test('a kept token the server refuses stays kept: the gate asks, a decide address the page opens is the decide page, and a load counts the kept token again', async ({ browser }) => {
   const ctx = await browser.newContext()
-  await letThrough(ctx)
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const gate = tokenAsk(page)
   await page.goto('/')

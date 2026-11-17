@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, standingRoute, test, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
 
 // The command palette (#302): Ctrl+K opens it over the page and Escape
@@ -14,11 +14,9 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // and the sidebar's filter box still filters the list.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 const sessions: string[] = []

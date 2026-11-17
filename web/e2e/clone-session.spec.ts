@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, openSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
-import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, standingRoute, test, type Session } from './fixtures'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // Cloning a session (#434): Clone… on a row's menu (More, a right-click, the phone's sheet) starts the same session again under
@@ -12,11 +12,9 @@ import { serverBinary, stubBash, stubPath } from './server'
 // earlier repetition left listed holds its name, ended or not.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 const sessions: string[] = []

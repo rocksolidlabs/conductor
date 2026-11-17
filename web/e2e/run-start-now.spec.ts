@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, member, test, type Api, type Run } from './fixtures'
+import { expect, member, standingRoute, test, type Api, type Run } from './fixtures'
 
 // The run page offers a hand's start or resume where the server takes it (memberOffer): Start now on a waiting member of a run
 // without tasks, on its tile and its node of the graph; never on a managed run's waiting member, whose tasks start it (the start
@@ -10,11 +10,9 @@ import { expect, member, test, type Api, type Run } from './fixtures'
 // Each step raises the test's timeout by the caps of its own waits as it takes them (budget), the config's 120 s above their sum.
 test.describe.configure({ mode: 'serial' })
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (AGENTS.md, "Tests that do not flake"; #281). A context route: a
-// test's page.unrouteAll leaves it, and it reaches every page of the context.
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
 test.beforeEach(async ({ page }) => {
-  await page.context().route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 /** The cap of one wait the page's steps make: the config's expect bound, and its actions' (a navigation, a click). */
