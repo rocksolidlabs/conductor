@@ -1354,8 +1354,9 @@ func filterProjects(r *http.Request, o *observer, body []byte) ([]byte, error) {
 }
 
 // filterTickets is GET /api/dispatch/tickets for a turn: the tickets in
-// the grant, each with its ref and noted at its rev. The page's total
-// counts the store's.
+// the grant, each with its ref and noted at its rev, and its title as an
+// agent reads it (dispatch.TitlesForAgent: a quoted line when a read of a
+// linked item wrote it). The page's total counts the store's.
 func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	var in struct {
 		Tickets []json.RawMessage `json:"tickets"`
@@ -1363,22 +1364,34 @@ func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	out := []json.RawMessage{}
-	for _, t := range in.Tickets {
-		var head struct {
-			Key    string `json:"key"`
-			Status string `json:"status"`
-			Rev    int64  `json:"rev"`
-		}
-		if err := json.Unmarshal(t, &head); err != nil {
+	heads := make([]dispatch.TicketSummary, len(in.Tickets))
+	for i, t := range in.Tickets {
+		if err := json.Unmarshal(t, &heads[i]); err != nil {
 			return nil, err
 		}
+	}
+	ds, err := agentStore(o)
+	if err != nil {
+		return nil, err
+	}
+	titles, err := ds.TitlesForAgent(r.Context(), heads)
+	if err != nil {
+		return nil, err
+	}
+	out := []json.RawMessage{}
+	for i, t := range in.Tickets {
+		head := heads[i]
 		ok, err := o.ticketAdmitted(r.Context(), head.Key)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
+		}
+		if titles[i].Title != head.Title {
+			if t, err = withField(t, "title", titles[i].Title); err != nil {
+				return nil, err
+			}
 		}
 		ref := "ticket:" + head.Key
 		o.noteRef(ref, brakeman.ClassDispatch, head.Status, strconv.FormatInt(head.Rev, 10))
@@ -1390,26 +1403,63 @@ func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	return refreshed(body, "tickets", out)
 }
 
+// agentStore is the Dispatch store a turn's read of Dispatch's records is
+// made as an agent reads them through: an error when there is none, so a
+// filter that needs it never hands the route's answer on unfiltered.
+func agentStore(o *observer) (*dispatch.Store, error) {
+	ds, err := o.rr.dispatch()
+	if err == nil && ds == nil {
+		err = errors.New("no Dispatch store")
+	}
+	return ds, err
+}
+
+// withField is the JSON object raw with the field name set to the string
+// value.
+func withField(raw json.RawMessage, name, value string) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	b, err := marshalNoEscape(value)
+	if err != nil {
+		return nil, err
+	}
+	m[name] = b
+	return marshalNoEscape(m)
+}
+
 // filterTicket is GET /api/dispatch/tickets/{key} for a turn: the ticket
-// and its comments, each with its ref and noted at its rev.
+// as an agent reads it (dispatch.ForAgent: a title or a description a read
+// of a linked item wrote quoted, a related ticket's such title withheld,
+// the snapshot without what was written on the item but its steps to
+// reproduce, quoted) and its comments, each with its ref and noted at its
+// rev.
 func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	key := r.PathValue("key")
 	var in struct {
-		Ticket json.RawMessage `json:"ticket"`
+		Ticket dispatch.TicketView `json:"ticket"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(in.Ticket, &m); err != nil {
+	ds, err := agentStore(o)
+	if err != nil {
 		return nil, err
 	}
-	var head struct {
-		Status string `json:"status"`
-		Rev    int64  `json:"rev"`
+	v, err := ds.ForAgent(r.Context(), in.Ticket)
+	if err != nil {
+		return nil, err
 	}
-	_ = json.Unmarshal(in.Ticket, &head)
-	o.noteRef("ticket:"+key, brakeman.ClassDispatch, head.Status, strconv.FormatInt(head.Rev, 10))
+	raw, err := marshalNoEscape(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	o.noteRef("ticket:"+key, brakeman.ClassDispatch, v.Status, strconv.FormatInt(v.Rev, 10))
 	if err := filterRelated(r.Context(), o, m); err != nil {
 		return nil, err
 	}
@@ -1735,8 +1785,9 @@ func filterRelated(ctx context.Context, o *observer, m map[string]json.RawMessag
 }
 
 // filterHistory is GET /api/dispatch/tickets/{key}/history for a turn:
-// each change with the ref of the operation that made it, the ticket
-// noted as read, and each operation once.
+// each change as an agent reads it (dispatch.ChangesForAgent: a value a
+// read of a linked item wrote WithheldText) with the ref of the operation
+// that made it, the ticket noted as read, and each operation once.
 func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	key := r.PathValue("key")
 	var in struct {
@@ -1745,17 +1796,32 @@ func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
+	rows := make([]dispatch.ChangeRow, len(in.Changes))
+	for i, c := range in.Changes {
+		if err := json.Unmarshal(c, &rows[i]); err != nil {
+			return nil, err
+		}
+	}
+	ds, err := agentStore(o)
+	if err != nil {
+		return nil, err
+	}
+	held, err := ds.ChangesForAgent(r.Context(), key, rows)
+	if err != nil {
+		return nil, err
+	}
 	o.noteRef("ticket:"+key, brakeman.ClassDispatch, "history", "")
 	noted := map[string]bool{}
 	for i, c := range in.Changes {
-		var head struct {
-			Actor string `json:"actor"`
-			OpID  string `json:"opId"`
-			Op    string `json:"op"`
+		head := rows[i]
+		for _, f := range []struct{ name, was, now string }{{"value", head.Value, held[i].Value}, {"prior", head.Prior, held[i].Prior}} {
+			if f.now != f.was {
+				if c, err = withField(c, f.name, f.now); err != nil {
+					return nil, err
+				}
+			}
 		}
-		if err := json.Unmarshal(c, &head); err != nil {
-			return nil, err
-		}
+		in.Changes[i] = c
 		ref := "op:" + head.Actor + "/" + head.OpID
 		if rf, err := brakeman.ParseRef(ref); err != nil || rf.Valid() != nil {
 			continue
@@ -1764,7 +1830,6 @@ func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 			noted[ref] = true
 			o.noteRef(ref, brakeman.ClassDispatch, head.Op, "")
 		}
-		var err error
 		if in.Changes[i], err = withRef(c, ref); err != nil {
 			return nil, err
 		}
