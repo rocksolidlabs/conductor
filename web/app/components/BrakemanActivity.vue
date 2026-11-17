@@ -38,10 +38,9 @@ watch(open, (o) => {
     title="Wakes and notes"
     description="What woke Brakeman in the background, and the notes every turn is given."
     :ui="{ content: 'max-w-[32rem]', close: 'max-lg:min-h-11 max-lg:min-w-11 max-lg:justify-center' }"
-    data-role-sheet
   >
     <template #body>
-      <div class="flex flex-col gap-6 text-sm" data-role-sheet-body>
+      <div class="flex flex-col gap-6 text-sm" data-role-sheet>
         <section class="flex flex-col gap-2" data-role-log>
           <h3 class="text-sm font-semibold text-highlighted">Wakes</h3>
           <p v-if="!log.length" class="text-xs text-muted">Nothing has woken it yet.</p>

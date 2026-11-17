@@ -280,7 +280,7 @@ const prefill = computed(() => {
       </div>
     </template>
     <template v-if="phone && !unavailable" #footer>
-      <div class="border-t border-default bg-default px-4 py-2" data-ask-foot>
+      <div class="border-t border-default bg-default px-4 py-2" data-brakeman-foot>
         <BrakemanAskBar label="Ask Brakeman" :chips="chips" size="foot" :disabled="askWhy" :prefill="prefill" />
       </div>
     </template>
