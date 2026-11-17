@@ -83,7 +83,7 @@ export const PAGES: readonly PageEntry[] = [
     when: 'always',
     place: { nav: 4, tile: 4, more: 1, palette: 5 },
   },
-  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 5, tile: 5, more: 2 } },
+  { id: 'brakeman', label: 'Brakeman', title: 'Brakeman', to: '/brakeman', icon: 'i-lucide-notebook-pen', chord: ['G', 'B'], about: 'A sidekick that reads all of it and briefs you.', when: 'brakeman', place: { nav: 5, tile: 5, more: 2 } },
   {
     id: 'agents',
     label: 'Agents',

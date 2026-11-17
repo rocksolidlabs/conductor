@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import type { BrakemanConfig, BrakemanScope, BrakemanVisibility } from '~/utils/brakeman'
-import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, briefingLine, briefingList, configProblems, foldersLine, formField, sameConfig, grantHeld, observesOnly, scopeLines, scopeList, servedGrants, withGrant } from '~/utils/brakeman'
+import { BOUNDS, BRAKEMAN_ADAPTERS, GRANTS, agentChoice, agentIdOf, agentItems as agentChoices, configProblems, foldersLine, formField, sameConfig, grantHeld, observesOnly, servedGrants, withGrant } from '~/utils/brakeman'
+import { PRESETS, applyPreset, briefingTimes, crewItems, presetChoice, projectItems, runItems, sessionItems, withEntry, withoutAt, type PickerItem, type Preset } from '~/utils/brakemanSettings'
 import { ApiError } from '~/composables/useApi'
 import { SETTINGS_FIELD_UI as fieldUi } from '~/utils/settingsSections'
 import { StaleRefusal, configForm, type BrakemanPart } from '~/utils/settingsSave'
@@ -22,6 +23,12 @@ import { OWN_LOGIN, brakemanAccount } from '~/utils/crewLaunch'
  * it holds a change, and only then, since every save of the configuration drops Brakeman's pending work (#721). Refused, the form
  * keeps every edit: a revision saved elsewhere meanwhile offers two choices, each on a fresh read of what is saved now: read it (the
  * edits dropped) or keep these (the next Save replaces the other change).
+ *
+ * It starts from a preset (#993): Observe, Draft and propose, or Act within grants. A preset only fills the switches of what it may do
+ * and may run (utils/brakemanSettings.ts), which stay drawn under it; it never turns on terminal screens and never changes the agent,
+ * its account, its folder or its tools. A form that matches none is Custom. Its scope is picked from what the app lists, the
+ * briefing times are a list of times, and the limits (the budget, the window, the cooldown and a question's wait) sit under Advanced,
+ * a fold that keeps its fields mounted and says how many of them hold a value refused.
  *
  * What it may run (PR-13): the four operations a person may grant Brakeman (BK2's closed list), each with what it authorizes in words,
  * a switch each. A grant this server serves no route of is shown as not in this build and cannot be turned on (the admin's guide lists
@@ -60,9 +67,27 @@ const stale = ctl.stale
 /** A choice's read of what is saved now failed: its words, the form and the refusal kept. */
 const staleError = ctl.staleError
 const choosing = ctl.choosing
-const scopeText = reactive<Record<keyof BrakemanScope, string>>({ projects: '', repos: '', crews: '', runs: '', sessions: '' })
-/** The briefing times as the form's field holds them, comma or space apart. */
-const briefingText = ref('')
+const scopePicked = reactive<Record<keyof BrakemanScope, string[]>>({ projects: [], repos: [], crews: [], runs: [], sessions: [] })
+/** The briefing times as the form's rows hold them: a row added and not yet set is left out of what is saved. */
+const times = ref<string[]>([])
+/** The folder being typed for the repositories, added by Add. */
+const repoText = ref('')
+/** The preset the person last picked here, null once the form is read again: Act within grants picked with no grant yet stays shown. */
+const picked = ref<Preset | null>(null)
+const preset = computed(() => (form.value ? presetChoice(form.value.permissions, picked.value) : null))
+function choosePreset(v: unknown) {
+  const p = PRESETS.find((x) => x.value === v)?.value
+  if (!p || !form.value) return
+  picked.value = p
+  applyPreset(form.value, p)
+}
+const presetItems = computed(() => [
+  ...PRESETS.map((p) => ({ label: p.label, value: p.value, description: p.description })),
+  ...(preset.value?.value === 'custom' ? [{ label: 'Custom', value: 'custom', description: 'The switches below, as set: no preset sets them so.', disabled: true }] : []),
+])
+/** Advanced, the limits: folded at first, its fields kept mounted. */
+const advancedOpen = ref(false)
+const ADVANCED = ['budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes']
 
 /** The background switch: the wake mode, background or invoked. */
 function setBackground(on: boolean) {
@@ -75,8 +100,9 @@ const available = computed(() => bk.available.value)
 
 /** Fields of the form were set, by a read or a reply (`all`: the form whole): the text fields follow them. */
 function shown(c: BrakemanConfig, fields: Array<keyof BrakemanConfig> | 'all') {
-  if (fields === 'all' || fields.includes('scope')) for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) scopeText[k] = scopeLines(c.scope[k])
-  if (fields === 'all' || fields.includes('wake')) briefingText.value = briefingLine(c.wake.briefings)
+  if (fields === 'all' || fields.includes('scope')) for (const k of Object.keys(scopePicked) as Array<keyof BrakemanScope>) scopePicked[k] = [...(c.scope[k] ?? [])]
+  if (fields === 'all' || fields.includes('wake')) times.value = [...(c.wake.briefings ?? [])]
+  if (fields === 'all' || fields.includes('permissions')) picked.value = null
   if (fields === 'all') serverError.value = null
 }
 
@@ -88,15 +114,15 @@ onMounted(async () => {
     .catch(() => (agents.value = []))
 })
 
-/** The form as the server takes it, its scope from the text fields. */
+/** The form as the server takes it, its scope from the pickers and its briefing times from the rows. */
 const body = computed<BrakemanConfig | null>(() => {
   if (!form.value) return null
   const scope: BrakemanScope = {}
-  for (const k of Object.keys(scopeText) as Array<keyof BrakemanScope>) {
-    const list = scopeList(scopeText[k])
-    if (list.length) scope[k] = list
+  for (const k of Object.keys(scopePicked) as Array<keyof BrakemanScope>) {
+    const list = scopePicked[k]
+    if (list.length) scope[k] = [...list]
   }
-  const briefings = briefingList(briefingText.value)
+  const briefings = briefingTimes(times.value)
   const c: BrakemanConfig = { ...form.value, scope, wake: { ...form.value.wake, briefings: briefings.length ? briefings : undefined }, account: form.value.account?.trim() || undefined, model: form.value.model?.trim() || undefined, cwd: form.value.cwd.trim() }
   return c
 })
@@ -153,11 +179,13 @@ const folders = computed(() => {
 /** The fields the form draws a control for, by the names the server gives them; `scope` is the scope's fieldset. */
 const controls = computed(() => {
   const out = new Set(['agentId', 'account', 'cwd', 'scope', 'permissions.act', 'budget.turnMinutes', 'budget.readsPerTurn', 'budget.turnsPerDay', 'budget.minutesPerDay', 'wake.windowSeconds', 'wake.cooldownMinutes', 'wake.questionMinutes', 'wake.briefings'])
-  for (const k of Object.keys(scopeText)) out.add(`scope.${k}`)
+  for (const k of Object.keys(scopePicked)) out.add(`scope.${k}`)
   if (caps.value?.model) out.add('model')
   if (caps.value?.allowTools) out.add('allowConductorTools')
   return out
 })
+/** How many of Advanced's fields hold a value refused: said on its toggle, so a folded field's refusal is not missed. */
+const advancedRefused = computed(() => ADVANCED.filter((f) => fieldError(f)).length)
 const fieldError = (field: string) => problems.value[field] || (serverError.value?.field && formField(serverError.value.field) === field ? serverError.value.message : undefined)
 /** What is refused of no field the form shows, said above Save: the server's refusal with no field or none drawn, and the form's own. */
 const unshown = computed(() => {
@@ -177,13 +205,48 @@ const visibility: Array<{ key: keyof BrakemanVisibility; label: string; descript
   { key: 'capacity', label: 'Capacity', description: "Each agent's usage on its accounts, by their labels and the provider's figures, never a folder: what it waits for a reset or holds work by." },
   { key: 'terminals', label: 'Terminal screens', description: "Lets Brakeman read what a session's screen shows, which can hold what no record does. Off until you turn it on." },
 ]
-const scopeFields: Array<{ key: keyof BrakemanScope; label: string; placeholder: string }> = [
-  { key: 'projects', label: 'Projects', placeholder: 'CND' },
-  { key: 'repos', label: 'Repositories', placeholder: '/home/me/code/app' },
-  { key: 'crews', label: 'Crews', placeholder: 'a crew id' },
-  { key: 'runs', label: 'Runs', placeholder: 'a run id' },
-  { key: 'sessions', label: 'Sessions', placeholder: 'a session id' },
-]
+// What the scope pickers list: Dispatch's projects and the saved crews, read once as the card mounts (a page each, at most
+// PICKER_PAGES of the projects), and the runs and sessions the page has live. A read that fails lists nothing: what is typed or saved
+// still shows.
+const PICKER_PAGES = 5
+const dispatchApi = useDispatchApi()
+const live = useAttention()
+const projects = ref<PickerItem[]>([])
+const crews = ref<PickerItem[]>([])
+onMounted(async () => {
+  try {
+    const all: Array<{ key: string; name: string; archivedAt?: string }> = []
+    let cursor = ''
+    for (let i = 0; i < PICKER_PAGES; i++) {
+      const page = await dispatchApi.projects(cursor)
+      all.push(...(page.projects ?? []))
+      if (!page.next) break
+      cursor = page.next
+    }
+    projects.value = projectItems(all)
+  } catch {
+    projects.value = []
+  }
+})
+onMounted(() =>
+  api
+    .listCrews(0, 500)
+    .then((r) => (crews.value = crewItems(r.crews)))
+    .catch(() => (crews.value = [])),
+)
+const pickers = computed<Array<{ key: Exclude<keyof BrakemanScope, 'repos'>; label: string; placeholder: string; listed: PickerItem[] }>>(() => [
+  { key: 'projects', label: 'Projects', placeholder: 'A project, or its key', listed: projects.value },
+  { key: 'crews', label: 'Crews', placeholder: "A crew, or its id", listed: crews.value },
+  { key: 'runs', label: 'Runs', placeholder: "A run, or its id", listed: runItems(live.runs.value) },
+  { key: 'sessions', label: 'Sessions', placeholder: "A session, or its id", listed: sessionItems(live.sessions.value) },
+])
+function addRepo() {
+  scopePicked.repos = withEntry(scopePicked.repos, repoText.value)
+  repoText.value = ''
+}
+function addTime() {
+  times.value = [...times.value, '']
+}
 
 /**
  * Brakeman's part of the page's Save, taken at the click (#707's review): the form as it is now and the store's generation, or null
@@ -252,28 +315,25 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <USwitch v-model="form.allowConductorTools" label="Run Conductor's tools without asking" description="Without it the agent asks before each of Conductor's tools, and the turn waits on you in Needs you." data-brakeman-allow-tools />
       </UFormField>
 
-      <!-- Two columns of switches once Settings' column has room for them (#433). -->
-      <fieldset class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
-        <legend class="mb-1 text-sm font-medium">What it may see</legend>
-        <USwitch v-for="v in visibility" :key="v.key" v-model="form.visibility[v.key]" :label="v.label" :description="v.description" :data-brakeman-visibility="v.key" />
-      </fieldset>
-
-      <fieldset class="flex flex-col gap-2">
-        <legend class="mb-1 text-sm font-medium">Its scope</legend>
-        <p class="text-xs text-muted">Empty is all of it; names given narrow it, one a line, at most {{ BOUNDS.selector }} each.</p>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <UFormField v-for="f in scopeFields" :key="f.key" :label="f.label" :error="fieldError(`scope.${f.key}`)">
-            <UTextarea v-model="scopeText[f.key]" :rows="2" :placeholder="f.placeholder" class="w-full font-mono text-xs" :data-brakeman-scope="f.key" />
-          </UFormField>
-        </div>
-        <p v-if="fieldError('scope')" class="text-xs text-error" data-brakeman-scope-error>{{ fieldError('scope') }}</p>
-      </fieldset>
-
-      <fieldset class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
+      <!-- What it may do, from a preset (#993): the preset only fills the switches below it, which stay drawn. -->
+      <fieldset class="flex flex-col gap-2" data-brakeman-presets>
         <legend class="mb-1 text-sm font-medium">What it may do</legend>
-        <USwitch v-model="form.permissions.draft" label="Draft" description="Draft tickets, crews and handoffs, which you edit and make." data-brakeman-draft />
-        <USwitch v-model="form.permissions.propose" label="Propose" description="Propose operations and prepare decisions, which you take." data-brakeman-propose />
-        <p v-if="observesOnly(form.permissions)" class="text-xs text-muted @3xl:col-span-2" data-brakeman-observe-only>Observe only.</p>
+        <URadioGroup
+          :model-value="preset?.value"
+          :items="presetItems"
+          variant="card"
+          size="sm"
+          aria-label="Start from a preset"
+          :ui="{ fieldset: 'grid gap-2 @3xl:grid-cols-3', description: 'text-xs leading-snug' }"
+          :data-brakeman-preset="preset?.value"
+          @update:model-value="choosePreset"
+        />
+        <p v-if="preset?.hint" class="text-xs" :class="preset.value === 'act' ? 'text-warning' : 'text-muted'" data-brakeman-preset-hint>{{ preset.hint }}</p>
+        <div class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
+          <USwitch v-model="form.permissions.draft" label="Draft" description="Draft tickets, crews and handoffs, which you edit and make." data-brakeman-draft />
+          <USwitch v-model="form.permissions.propose" label="Propose" description="Propose operations and prepare decisions, which you take." data-brakeman-propose />
+          <p v-if="observesOnly(form.permissions)" class="text-xs text-muted @3xl:col-span-2" data-brakeman-observe-only>Observe only.</p>
+        </div>
       </fieldset>
 
       <fieldset class="flex flex-col gap-2" data-brakeman-grants>
@@ -299,20 +359,35 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
         <p v-if="fieldError('permissions.act')" class="text-xs text-error" data-brakeman-grant-error>{{ fieldError('permissions.act') }}</p>
       </fieldset>
 
-      <fieldset class="grid gap-3 sm:grid-cols-3">
-        <legend class="mb-1 text-sm font-medium">Its budget</legend>
-        <UFormField label="Minutes a turn" :error="fieldError('budget.turnMinutes')">
-          <UInput v-model.number="form.budget.turnMinutes" type="number" :min="BOUNDS.turnMinutes[0]" :max="BOUNDS.turnMinutes[1]" class="w-full" data-brakeman-turn-minutes />
-        </UFormField>
-        <UFormField label="Reads a turn" :error="fieldError('budget.readsPerTurn')">
-          <UInput v-model.number="form.budget.readsPerTurn" type="number" :min="BOUNDS.readsPerTurn[0]" :max="BOUNDS.readsPerTurn[1]" class="w-full" data-brakeman-reads />
-        </UFormField>
-        <UFormField label="Turns a day" :error="fieldError('budget.turnsPerDay')">
-          <UInput v-model.number="form.budget.turnsPerDay" type="number" :min="BOUNDS.turnsPerDay[0]" :max="BOUNDS.turnsPerDay[1]" class="w-full" data-brakeman-turns />
-        </UFormField>
-        <UFormField label="Minutes a day" description="Every turn's, whoever started it." :error="fieldError('budget.minutesPerDay')">
-          <UInput v-model.number="form.budget.minutesPerDay" type="number" :min="BOUNDS.minutesPerDay[0]" :max="BOUNDS.minutesPerDay[1]" class="w-full" data-brakeman-minutes />
-        </UFormField>
+      <!-- Two columns of switches once Settings' column has room for them (#433). -->
+      <fieldset class="grid gap-2 @3xl:grid-cols-2 @3xl:gap-x-8">
+        <legend class="mb-1 text-sm font-medium">What it may see</legend>
+        <USwitch v-for="v in visibility" :key="v.key" v-model="form.visibility[v.key]" :label="v.label" :description="v.description" :data-brakeman-visibility="v.key" />
+      </fieldset>
+
+      <fieldset class="flex flex-col gap-2">
+        <legend class="mb-1 text-sm font-medium">Its scope</legend>
+        <p class="text-xs text-muted">None picked is all of it; each one picked narrows it, at most {{ BOUNDS.selector }} of a kind.</p>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <UFormField v-for="f in pickers" :key="f.key" :label="f.label" :error="fieldError(`scope.${f.key}`)">
+            <BrakemanScopePicker v-model="scopePicked[f.key]" :listed="f.listed" :label="f.label" :placeholder="f.placeholder" :scope-key="f.key" />
+          </UFormField>
+          <UFormField label="Repositories" :error="fieldError('scope.repos')" class="sm:col-span-2">
+            <div class="flex flex-col gap-2" data-brakeman-scope="repos">
+              <ul v-if="scopePicked.repos.length" class="flex flex-col gap-1">
+                <li v-for="(r, i) in scopePicked.repos" :key="r" class="flex min-w-0 items-center gap-2 text-sm" :data-scope-chip="r">
+                  <span class="min-w-0 flex-1 font-mono text-xs break-all" data-mono="path">{{ r }}</span>
+                  <IconButton label="Take this repository out" icon="i-lucide-x" color="neutral" variant="ghost" size="sm" @click="scopePicked.repos = withoutAt(scopePicked.repos, i)" />
+                </li>
+              </ul>
+              <div class="flex items-start gap-2">
+                <DirInput v-model="repoText" class="min-w-0 flex-1" placeholder="/home/me/code/app" picker-title="A repository Brakeman reads" data-brakeman-repo-input />
+                <UButton label="Add" color="neutral" variant="outline" :disabled="!repoText.trim()" data-brakeman-repo-add @click="addRepo" />
+              </div>
+            </div>
+          </UFormField>
+        </div>
+        <p v-if="fieldError('scope')" class="text-xs text-error" data-brakeman-scope-error>{{ fieldError('scope') }}</p>
       </fieldset>
 
       <fieldset class="flex flex-col gap-3" data-brakeman-role-settings>
@@ -324,21 +399,61 @@ defineExpose({ dirty, blocked: computed(() => Object.keys(problems.value).length
           data-brakeman-background
           @update:model-value="setBackground"
         />
-        <div class="grid gap-3 sm:grid-cols-3">
-          <UFormField label="Window, seconds" description="How long it gathers wakes into one turn." :error="fieldError('wake.windowSeconds')">
-            <UInput v-model.number="form.wake.windowSeconds" type="number" :min="BOUNDS.windowSeconds[0]" :max="BOUNDS.windowSeconds[1]" class="w-full" data-brakeman-window />
-          </UFormField>
-          <UFormField label="Cooldown, minutes" description="How long it waits after a turn." :error="fieldError('wake.cooldownMinutes')">
-            <UInput v-model.number="form.wake.cooldownMinutes" type="number" :min="BOUNDS.cooldownMinutes[0]" :max="BOUNDS.cooldownMinutes[1]" class="w-full" data-brakeman-cooldown />
-          </UFormField>
-          <UFormField label="A question waits, minutes" description="Before an open question wakes it." :error="fieldError('wake.questionMinutes')">
-            <UInput v-model.number="form.wake.questionMinutes" type="number" :min="BOUNDS.questionMinutes[0]" :max="BOUNDS.questionMinutes[1]" class="w-full" data-brakeman-question />
-          </UFormField>
-        </div>
-        <UFormField label="Briefing times" :description="`HH:MM in this server's time, comma apart, at most ${BOUNDS.briefings}; they fire while the server runs.`" :error="fieldError('wake.briefings')" :ui="fieldUi">
-          <UInput v-model="briefingText" class="w-full font-mono text-xs" placeholder="07:00, 18:00" data-brakeman-briefings />
+        <UFormField label="Briefing times" :description="`In this server's time, at most ${BOUNDS.briefings}; they fire while the server runs.`" :error="fieldError('wake.briefings')" :ui="fieldUi">
+          <div class="flex flex-col gap-2" data-brakeman-briefings>
+            <div v-for="(_, i) in times" :key="i" class="flex items-center gap-2" data-briefing-time>
+              <UInput v-model="times[i]" type="time" class="w-36" :aria-label="`Briefing time ${i + 1}`" />
+              <IconButton label="Take this time out" icon="i-lucide-x" color="neutral" variant="ghost" size="sm" @click="times = withoutAt(times, i)" />
+            </div>
+            <UButton label="Add a time" icon="i-lucide-plus" color="neutral" variant="outline" size="sm" class="self-start" :disabled="times.length >= BOUNDS.briefings" data-brakeman-briefing-add @click="addTime" />
+          </div>
         </UFormField>
       </fieldset>
+
+      <!-- The limits, folded: the fold keeps its fields mounted, and its toggle says how many hold a value refused. -->
+      <UCollapsible v-model:open="advancedOpen" :unmount-on-hide="false" data-brakeman-advanced>
+        <UButton
+          :label="advancedRefused ? `Advanced: ${advancedRefused} to fix` : 'Advanced'"
+          :color="advancedRefused ? 'error' : 'neutral'"
+          variant="ghost"
+          :trailing-icon="advancedOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+          class="-ms-2.5"
+          :aria-expanded="advancedOpen"
+          data-brakeman-advanced-toggle
+        />
+        <template #content>
+          <div class="flex flex-col gap-4 pt-2">
+            <p class="text-xs text-muted">Its budget and how it wakes in the background: each turn, each day, and between turns.</p>
+            <fieldset class="grid gap-3 sm:grid-cols-3">
+              <legend class="mb-1 text-sm font-medium">Its budget</legend>
+              <UFormField label="Minutes a turn" :error="fieldError('budget.turnMinutes')">
+                <UInput v-model.number="form.budget.turnMinutes" type="number" :min="BOUNDS.turnMinutes[0]" :max="BOUNDS.turnMinutes[1]" class="w-full" data-brakeman-turn-minutes />
+              </UFormField>
+              <UFormField label="Reads a turn" :error="fieldError('budget.readsPerTurn')">
+                <UInput v-model.number="form.budget.readsPerTurn" type="number" :min="BOUNDS.readsPerTurn[0]" :max="BOUNDS.readsPerTurn[1]" class="w-full" data-brakeman-reads />
+              </UFormField>
+              <UFormField label="Turns a day" :error="fieldError('budget.turnsPerDay')">
+                <UInput v-model.number="form.budget.turnsPerDay" type="number" :min="BOUNDS.turnsPerDay[0]" :max="BOUNDS.turnsPerDay[1]" class="w-full" data-brakeman-turns />
+              </UFormField>
+              <UFormField label="Minutes a day" description="Every turn's, whoever started it." :error="fieldError('budget.minutesPerDay')">
+                <UInput v-model.number="form.budget.minutesPerDay" type="number" :min="BOUNDS.minutesPerDay[0]" :max="BOUNDS.minutesPerDay[1]" class="w-full" data-brakeman-minutes />
+              </UFormField>
+            </fieldset>
+            <fieldset class="grid gap-3 sm:grid-cols-3">
+              <legend class="mb-1 text-sm font-medium">Waking in the background</legend>
+              <UFormField label="Window, seconds" description="How long it gathers wakes into one turn." :error="fieldError('wake.windowSeconds')">
+                <UInput v-model.number="form.wake.windowSeconds" type="number" :min="BOUNDS.windowSeconds[0]" :max="BOUNDS.windowSeconds[1]" class="w-full" data-brakeman-window />
+              </UFormField>
+              <UFormField label="Cooldown, minutes" description="How long it waits after a turn." :error="fieldError('wake.cooldownMinutes')">
+                <UInput v-model.number="form.wake.cooldownMinutes" type="number" :min="BOUNDS.cooldownMinutes[0]" :max="BOUNDS.cooldownMinutes[1]" class="w-full" data-brakeman-cooldown />
+              </UFormField>
+              <UFormField label="A question waits, minutes" description="Before an open question wakes it." :error="fieldError('wake.questionMinutes')">
+                <UInput v-model.number="form.wake.questionMinutes" type="number" :min="BOUNDS.questionMinutes[0]" :max="BOUNDS.questionMinutes[1]" class="w-full" data-brakeman-question />
+              </UFormField>
+            </fieldset>
+          </div>
+        </template>
+      </UCollapsible>
 
       <UAlert v-for="w in unshown" :key="w" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="w" data-brakeman-save-error />
       <UAlert

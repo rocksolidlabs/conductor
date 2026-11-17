@@ -95,9 +95,9 @@ describe("the subject's requests", () => {
 describe("the panel's and the row's words", () => {
   const now = Date.parse('2026-11-17T05:12:00Z')
   it("says the latest brief's age, and a wake's or a citation's", () => {
-    expect(latestWords(req('br-9040', { briefAt: '2026-11-17T05:00:00Z', match: 'subject' }), `run:${RUN}`, now)).toBe('Latest brief · 12m ago')
+    expect(latestWords(req('br-9040', { briefAt: '2026-11-17T05:00:00Z', match: 'subject', by: 'Nate' }), `run:${RUN}`, now)).toBe('Latest brief · 12m ago · asked by Nate')
     expect(latestWords(req('br-9041', { kind: 'wake', briefAt: '2026-11-17T05:00:00Z', match: 'cited' }), `run:${RUN}`, now)).toBe('Latest brief · 12m ago · woken by events')
-    expect(latestWords(req('br-9042', { briefAt: '2026-11-17T05:00:00Z', match: 'cited' }), 'ticket:CND-41', now)).toBe('Latest brief · 12m ago · mentions this ticket')
+    expect(latestWords(req('br-9042', { briefAt: '2026-11-17T05:00:00Z', match: 'cited' }), 'ticket:CND-41', now)).toBe('Latest brief · 12m ago · asked · mentions this ticket')
     expect(noneWords(`run:${RUN}`)).toBe('Brakeman has said nothing about this run.')
     expect(noneWords('ticket:CND-41')).toBe('Brakeman has said nothing about this ticket.')
   })

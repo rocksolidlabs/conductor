@@ -15,6 +15,7 @@ import { joinedPath } from '~/utils/joined'
 import { joinedStatus, sessionStatus, statusOfKey, statusTally, type StatusView } from '~/utils/status'
 import { resolveTyped } from '~/utils/fileTree'
 import { PAGES, palettePages } from '~/utils/pages'
+import { askDisabled, briefingChipLabel, type AskBody } from '~/utils/brakemanAsk'
 import { needsCount, type NeedsItem } from '~/utils/needsYou'
 import { capGroup, foldActions, parsePrefix, parseVerb, placeAfter, rank, readRecent, sessionGroups, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
@@ -145,6 +146,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const renameModal = useRenameModal()
   const cloneModal = useCloneModal()
   const brakeman = useBrakeman()
+  const asker = useAskBrakeman()
   const decisions = useDecisions()
   const oneList = useNeedsYou()
   const decisionModal = useDecisionModal()
@@ -629,31 +631,38 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
 
   /**
-   * The Brakeman group (docs/plans/brakeman.md, PR-7), where the server has Brakeman: each row opens the Brakeman page's composer
-   * with what to ask and about what, the run, the task or the ticket the page shows; the person sends it there.
+   * The Brakeman group (docs/plans/brakeman.md, PR-7; the Brakeman design review), where the server has Brakeman: each row asks at
+   * once from where the person is, a briefing everywhere, the run, the task or the ticket the page shows, under the person's name, and
+   * says "Asked as br-n" with Open (useAskBrakeman): the answer comes where it was asked. While Brakeman is off, or another server owns
+   * its records, the rows are there and say why they cannot ask. Open Brakeman goes to its page.
    */
   function brakemanItems(): PaletteItem[] {
     if (brakeman.available.value !== true) return []
-    const ask = (key: string, label: string, kind: string, subject?: string, detail?: string): PaletteItem => ({
+    const why = askDisabled(brakeman.state.value)
+    const ask = (key: string, label: string, body: AskBody, detail?: string): PaletteItem => ({
       key: `brakeman:${key}`,
       label,
       detail,
       icon: 'i-lucide-notebook-pen',
-      run: () => go(`/brakeman?kind=${kind}${subject ? `&subject=${encodeURIComponent(subject)}` : ''}`),
+      disabled: !!why,
+      note: why || undefined,
+      run: () => void asker.tell(body),
     })
-    const out = [ask('briefing', 'Ask Brakeman: brief me since…', 'briefing')]
+    const since = brakeman.sinceNow.value?.since
+    const briefing = since ? briefingChipLabel(since.from === 'briefing' ? since.at : undefined) : 'Brief me since the last briefing'
+    const out = [ask('briefing', `Ask Brakeman: ${briefing.charAt(0).toLowerCase()}${briefing.slice(1)}`, { kind: 'briefing' })]
     const run = route.path.startsWith('/runs/') ? String(route.params.run ?? '') : ''
     if (run) {
-      out.push(ask('explain-run', 'Ask Brakeman: explain this run', 'explain', `run:${run}`, attention.runNames.value[run] || run))
+      out.push(ask('explain-run', 'Ask Brakeman: explain this run', { kind: 'explain', subjects: [`run:${run}`] }, attention.runNames.value[run] || run))
       const task = typeof route.query.task === 'string' ? route.query.task : ''
-      if (task) out.push(ask('explain-task', 'Ask Brakeman: explain this task', 'explain', `task:${run}/${task}`, task))
+      if (task) out.push(ask('explain-task', 'Ask Brakeman: explain this task', { kind: 'explain', subjects: [`task:${run}/${task}`] }, task))
     }
     const ticket = route.path.startsWith('/dispatch/') && route.params.number ? `${String(route.params.project)}-${String(route.params.number)}` : ''
     if (ticket) {
-      out.push(ask('draft-tickets', 'Ask Brakeman: draft tickets from this ticket', 'draft_tickets', `ticket:${ticket}`, ticket))
-      out.push(ask('propose-crew', 'Ask Brakeman: propose a crew for this ticket', 'propose_crew', `ticket:${ticket}`, ticket))
+      out.push(ask('draft-tickets', 'Ask Brakeman: draft tickets from this ticket', { kind: 'draft_tickets', subjects: [`ticket:${ticket}`] }, ticket))
+      out.push(ask('propose-crew', 'Ask Brakeman: propose a crew for this ticket', { kind: 'propose_crew', subjects: [`ticket:${ticket}`] }, ticket))
     }
-    out.push({ key: 'brakeman:open', label: 'Open Brakeman', icon: 'i-lucide-notebook-pen', run: () => go('/brakeman') })
+    out.push({ key: 'brakeman:open', label: 'Open Brakeman', icon: 'i-lucide-notebook-pen', kbds: ['G', 'B'], run: () => go('/brakeman') })
     return out
   }
 

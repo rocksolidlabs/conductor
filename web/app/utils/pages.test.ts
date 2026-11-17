@@ -140,6 +140,11 @@ describe('the pages in one table', () => {
     expect(pageTip(pageById('decisions'))).toBe('Needs you: everything that waits for your answer, in one list')
   })
 
+  it('gives Brakeman the key G B, and no place in Go to: its rows are its own group', () => {
+    expect(pageById('brakeman').chord).toEqual(['G', 'B'])
+    expect(ids(palettePages())).not.toContain('brakeman')
+  })
+
   it("gives every page's key as a row of the shortcuts dialog, and no two pages one key", () => {
     const rows = GLOBAL_SHORTCUTS.rows.map((r) => r.keys.join(' '))
     const chords = PAGES.filter((p) => p.chord).map((p) => p.chord!.join(' '))

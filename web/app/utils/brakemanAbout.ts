@@ -1,6 +1,7 @@
 import type { BrakemanBrief, BrakemanDigestAbout, BrakemanRequest, BrakemanRow, BrakemanState } from './brakeman'
 import { closed, parseRef, requestNumber } from './brakeman'
 import { relativeTime } from './sessions'
+import { askOf, briefHeadWords, type AskBody } from './brakemanRows'
 
 // What Brakeman said about one subject, where it was asked (issue 993, F8): a run's page, a task's row, a ticket's page. The subject
 // half of the server's "about" rule (GET /api/brakeman/requests?about=, internal/brakeman), held equal to it by the one table both
@@ -131,14 +132,12 @@ export function aboutAt(r: Pick<BrakemanRequest, 'briefAt' | 'closedAt' | 'creat
 }
 
 /**
- * The panel's line over its latest brief: "Latest brief · 12m ago", then "woken by events" for the background role's, or "mentions
- * this run" for a brief that cites the subject without being asked about it.
+ * The panel's line over its latest brief, the page's own head words (briefHeadWords: "Latest brief · 12m ago · woken by events", or
+ * "· asked by Nate"), then "mentions this run" for an asked brief that cites the subject without being asked about it.
  */
 export function latestWords(r: BrakemanRow, about: string, now: number): string {
-  const parts = ['Latest brief', relativeTime(aboutAt(r), now, { suffix: true })]
-  if (r.kind === 'wake') parts.push('woken by events')
-  else if (r.match === 'cited') parts.push(matchWords('cited', about))
-  return parts.join(' · ')
+  const head = briefHeadWords(r, true, now)
+  return r.kind !== 'wake' && r.match === 'cited' ? `${head} · ${matchWords('cited', about)}` : head
 }
 
 /** The panel's words when Brakeman said nothing about the subject. */
@@ -168,8 +167,10 @@ export function answerEvidence(brief: Pick<BrakemanBrief, 'items'> | null | unde
   return [...new Set(refs)].slice(0, max)
 }
 
-/** The body that asks again what a request asked: its kind, subjects, note and since, never a wake's (a person cannot ask one). */
-export function askAgainBody(r: Pick<BrakemanRequest, 'kind' | 'subjects' | 'note' | 'since'>): { kind: string; subjects?: string[]; note?: string; since?: string } | null {
-  if (r.kind === 'wake') return null
-  return { kind: r.kind, ...(r.subjects?.length ? { subjects: [...r.subjects] } : {}), ...(r.note ? { note: r.note } : {}), ...(r.since ? { since: r.since } : {}) }
+/**
+ * The body a row's answer asks again (askOf: its kind, subjects, note and since), briefed or not, never a wake's (a person cannot ask
+ * one). The answer is the task's newest request, so no same ask waits after it.
+ */
+export function askAgainBody(r: Pick<BrakemanRequest, 'kind' | 'subjects' | 'note' | 'since'>): AskBody | null {
+  return r.kind === 'wake' ? null : askOf(r)
 }
