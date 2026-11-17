@@ -919,9 +919,11 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
  * The candidate the Review view opens when the route names none, on a ticket whose runs hold a comparison (Program item CP1, PR-8b):
  * its applied selection's candidate (`<run>/<task>/<n>@<commit>`); while the comparison is being read (`selected` undefined) none yet,
  * so the view does not settle on another first; with no selection applied, or None of these, the view's own first. A ticket with no
- * comparison (`compare` false) opens as it always has.
+ * comparison (`compare` false) opens as it always has; while whether one of its runs is a comparison is not known yet (`compare`
+ * undefined: a run neither the live store holds nor its own read has answered), none yet either.
  */
-export function reviewDefault(runs: readonly ReviewableRun[], compare: boolean, selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined): string {
+export function reviewDefault(runs: readonly ReviewableRun[], compare: boolean | undefined, selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined): string {
+  if (compare === undefined) return ''
   if (!compare) return firstReviewCandidate(runs)
   if (selected === undefined) return ''
   if (selected && selected !== 'none') return `${selected.run}/${selected.task}/${selected.attempt}@${selected.commit}`

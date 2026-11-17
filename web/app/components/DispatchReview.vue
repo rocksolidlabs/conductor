@@ -10,8 +10,8 @@ import { shortCommit } from '~/utils/dispatchPlans'
 import { CommandRefused } from '~/utils/tasks'
 import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/dispatchEvidence'
 import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
-import { runCompare } from '~/utils/compare'
-import { appliedSelection, candidateSelection } from '~/utils/compareSelect'
+import type { RunInfo } from '~/composables/useSessions'
+import { appliedSelection, candidateSelection, compareRunOf } from '~/utils/compareSelect'
 import {
   latest,
   barTop,
@@ -112,13 +112,28 @@ interface Option extends ReviewCandidateOption {
   c: RunCandidate
 }
 const attention = useAttention()
-/** The run of a comparison among the ticket's runs: the named candidate's when it is one, else the first such run. */
-const compareRun = computed(() => {
-  const isCompare = (id: string) => !!runCompare(attention.runOf(id))
-  const named = parseCandidate(props.candidate)?.run
-  if (named && isCompare(named)) return named
-  return props.candidates.runs.value.map((r) => r.run).find(isCompare) ?? ''
-})
+/** The ticket's runs the live store does not hold (a record after a restart or an eviction), each read once through its own route. */
+const readRuns = ref(new Map<string, RunInfo | null>())
+const asked = new Set<string>()
+const ticketRuns = computed(() => props.candidates.runs.value.map((r) => r.run))
+watch(
+  () => [...ticketRuns.value, parseCandidate(props.candidate)?.run ?? ''].filter((id) => id && !attention.runOf(id) && !asked.has(id)),
+  (ids) => {
+    for (const id of ids) {
+      asked.add(id)
+      void attention.refreshRun(id).then(
+        (r) => readRuns.value.set(id, r),
+        () => readRuns.value.set(id, null),
+      )
+    }
+  },
+  { immediate: true },
+)
+/** A run as the live store holds it, else as its own read answered; undefined while neither has. */
+const runInfo = (id: string) => attention.runOf(id) ?? readRuns.value.get(id)
+/** The run of a comparison among the ticket's runs, and whether every run is known yet (compareRunOf). */
+const compareOf = computed(() => compareRunOf(ticketRuns.value, parseCandidate(props.candidate)?.run, runInfo))
+const compareRun = computed(() => compareOf.value.run)
 const comparing = useComparison({ run: () => compareRun.value })
 /** The comparison's applied selection: undefined while it is read, null when none applies (none applied, a read that failed or found none). */
 const selected = computed(() => {
@@ -127,7 +142,7 @@ const selected = computed(() => {
   return comparing.loaded.value ? appliedSelection(comparing.comparison.value?.selection) : undefined
 })
 const selectionOf = (task: string, attempt: number, commit: string | undefined) => candidateSelection(comparing.comparison.value, { task, attempt, commit })
-const chosen = computed(() => props.candidate || reviewDefault(props.candidates.runs.value, !!compareRun.value, selected.value))
+const chosen = computed(() => props.candidate || reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value))
 const cref = computed(() => parseCandidate(chosen.value))
 const dispatchApi = useDispatchApi()
 /** What moves what the view reads of the candidate and its findings: the ticket read again, the stream's reset, the runs' candidates read again (a run's change). */

@@ -20,21 +20,23 @@ import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
  * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
  * offers Review, the ticket's Review view at it, with the open findings of its task counted; a failed receipt opened offers Prepare a
  * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A comparison's
- * run (its `compare` part, as the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
+ * run (its `compare` part, as the page read the run or the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
  * applied (Program item CP1, PR-7), read from the comparison alone, in neutral ink.
  */
 const props = defineProps<{
   runId: string
   /** The run's revision in the ledger as the live store holds it: a move reads the candidates again. Absent for a record. */
   revision?: number
+  /** The run is a comparison's, as the page that draws it read the run (a record the live store leaves out among them). */
+  compare?: boolean
 }>()
 
 const copy = useCopy()
 const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
 const fixes = computed(() => repairs(tasks.value, details))
 const attention = useAttention()
-/** The comparison of a compare run, read only for one: its applied selection labels the candidates. */
-const comparison = useComparison({ run: () => (runCompare(attention.runOf(props.runId)) ? props.runId : '') }).comparison
+/** The comparison of a compare run (the page's word for it, else the live store's), read only for one: its applied selection labels the candidates. */
+const comparison = useComparison({ run: () => (props.compare || runCompare(attention.runOf(props.runId)) ? props.runId : '') }).comparison
 const selectionOf = (c: RunCandidate) => (c.kind === 'work' ? candidateSelection(comparison.value, { task: c.task, attempt: c.attempt, commit: c.commit ?? '' }) : undefined)
 const ckey = candidateKey
 /** The ticket page's Review entry: absent anywhere else. */
