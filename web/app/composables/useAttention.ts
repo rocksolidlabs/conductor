@@ -9,7 +9,7 @@ import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protoc
 import { RunStore } from '~/utils/runs'
 import { decisionsLive } from './useDecisions'
 import { asDispatchEvent, asDispatchRead, dispatchLive } from './useDispatchLive'
-import { asBrakemanEvent, brakemanLive } from './useBrakeman'
+import { asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
 import { notificationTarget } from '~/utils/inbox'
@@ -342,11 +342,14 @@ export function useAttention() {
         const r = payload as { id: string; removed?: boolean }
         if (r.removed) runs.remove(r.id)
         else runs.schedule(r.id)
+        // A run ended or a task failed: what changed since the last briefing, on the Brakeman page, is read again.
+        brakemanLive().nudgeSince()
       } else if (event === 'dispatch') {
         // Something of Dispatch's changed: the pages it names or touches read again (useDispatchLive).
         const e = asDispatchEvent(payload)
         if (e) dispatchLive().event(e)
         void inboxLive().event()
+        brakemanLive().nudgeSince()
       } else if (event === 'dispatch_read') {
         // A read of a GitHub item recorded (IN1a): the ticket pages it touches read again, apart from the events' sequence.
         const n = asDispatchRead(payload)
@@ -356,6 +359,13 @@ export function useAttention() {
         const e = asBrakemanEvent(payload)
         if (e) brakemanLive().event(e)
         void inboxLive().event()
+      } else if (event === 'brakeman_progress') {
+        // A Brakeman turn's reads as they stand: the progress line follows, and nothing else (no read, no focus).
+        const p = asBrakemanProgress(payload)
+        if (p) brakemanLive().progressEvent(p)
+      } else if (event === 'brakeman_opened') {
+        // A brief was marked opened with this credential somewhere: the unread count reads again (useBrakeman).
+        if (asBrakemanOpened(payload)) brakemanLive().openedEvent()
       } else if (event === 'capacity') {
         // A reading of an agent's usage was kept: the capacity views shown of its key read again (useCapacity). Nothing else moves.
         capacityLive().event(payload)
