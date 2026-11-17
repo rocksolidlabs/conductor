@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 )
 
 // A comparison from the shell (docs/plans/compare-crew.md, Program item
@@ -27,7 +28,7 @@ import (
 // the template route's own bound. maxCompareCrewReply bounds the crew it
 // answers: a crew file's bound, twice for its escapes and its revision.
 const (
-	maxCompareSpec      = 64 << 10
+	maxCompareSpec      = 256 << 10
 	maxCompareCrewReply = 2 * crew.MaxEncoded
 )
 
@@ -36,7 +37,7 @@ const crewsCompareUsage = `Usage:
       save a comparison's crew from its template (POST /api/crews/templates/compare):
       SPEC.json, or - for stdin, a JSON object {name, cwd, goal, instructions,
       criteria, checks?, manifest?, candidates, reviews?, reviewAgent?,
-      brakeman?, yolo?} of at most 64 KiB; prints the crew's id and its tasks.
+      brakeman?, yolo?} of at most 256 KiB; prints the crew's id and its tasks.
       It launches nothing: a comparison is launched from a ticket's approved
       plan revision (conductor dispatch launch KEY-n --candidates N)
 `
@@ -142,8 +143,8 @@ func dispatchComparison(ctx context.Context, c *apiClient, key, run string, asJS
 	return 0, nil
 }
 
-// newestComparison is the run of the ticket's newest launch from a
-// comparison's revision, from the ticket's revisions (each comparison's
+// newestComparison is the run of the ticket's newest started launch from
+// a comparison's revision, from the ticket's revisions (each comparison's
 // with its compare part) and its runs, newest first.
 func newestComparison(ctx context.Context, c *apiClient, key string) (string, error) {
 	plans, err := ticketPlans(ctx, c, key)
@@ -170,7 +171,10 @@ func newestComparison(ctx context.Context, c *apiClient, key string) (string, er
 				return "", err
 			}
 			for _, e := range page.Entries {
-				if e.Kind == "launch" && e.Launch != nil && compared[e.Launch.PlanID] && e.Launch.RunID != "" {
+				// A launch that did not start (failed, or still pending)
+				// has no run to read: the newest one that started is
+				// the ticket's comparison.
+				if e.Kind == "launch" && e.Launch != nil && e.Launch.State == dispatch.LaunchStarted && compared[e.Launch.PlanID] && e.Launch.RunID != "" {
 					return e.Launch.RunID, nil
 				}
 			}
