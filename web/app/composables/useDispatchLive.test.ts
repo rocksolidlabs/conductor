@@ -138,6 +138,62 @@ describe("a burst of events naming a ticket page's ticket", () => {
     expect(asked.length).toBe(4)
   })
 
+  it('sends the read waiting behind two that hang after the longest retry wait, and the next one the same way: a page is never left as it was', async () => {
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (let i = 0; i < 5; i++) live.event(comment())
+    expect(asked.length).toBe(2)
+    const last = seq
+    await vi.advanceTimersByTimeAsync(DISPATCH_RETRY_MAX_MS - 1)
+    expect(asked.length, 'two reads hang, one waits behind them: not sent yet').toBe(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(asked.length, 'the longest retry wait has passed: it is sent past the two').toBe(3)
+    expect(asked[2]!.covered).toBe(last)
+    // Nothing came since: no read more, however long the three hang.
+    await vi.advanceTimersByTimeAsync(4 * DISPATCH_RETRY_MAX_MS)
+    expect(asked.length).toBe(3)
+    // An event behind three reads that hang waits the same bound, once.
+    live.event(comment())
+    live.event(comment())
+    expect(asked.length).toBe(3)
+    await vi.advanceTimersByTimeAsync(DISPATCH_RETRY_MAX_MS)
+    expect(asked.length).toBe(4)
+    expect(asked[3]!.covered).toBe(seq)
+    // One of them answers at last: nothing waits, so nothing more is read; a page gone reads nothing when its wait ends.
+    asked[0]!.answer()
+    await vi.advanceTimersByTimeAsync(4 * DISPATCH_RETRY_MAX_MS)
+    expect(asked.length).toBe(4)
+  })
+
+  it('does not put the wait off for events that keep coming behind two reads that hang', async () => {
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (let i = 0; i < 3; i++) live.event(comment())
+    expect(asked.length).toBe(2)
+    // An event every second for the whole wait: the read behind the two is still sent when the first one's wait ends.
+    for (let s = 1; s < DISPATCH_RETRY_MAX_MS / 1000; s++) {
+      await vi.advanceTimersByTimeAsync(1000)
+      live.event(comment())
+      expect(asked.length, `${s} s in`).toBe(2)
+    }
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(asked.length, 'the first wait ended').toBe(3)
+    expect(asked[2]!.covered).toBe(seq)
+  })
+
+  it('reads nothing for a page gone while a read waited behind two that hang', async () => {
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    const stop = live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (let i = 0; i < 3; i++) live.event(comment())
+    expect(asked.length).toBe(2)
+    stop()
+    await vi.advanceTimersByTimeAsync(4 * DISPATCH_RETRY_MAX_MS)
+    expect(asked.length, 'gone: the wait behind the two sends nothing').toBe(2)
+  })
+
   it('reads a snapshot behind two reads on their way once one answers, and nothing for a page gone meanwhile', async () => {
     const live = new DispatchLive()
     const { asked, read } = heldReads()

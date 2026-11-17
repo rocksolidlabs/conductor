@@ -9,8 +9,9 @@ export const DISPATCH_RETRY_MAX_MS = 8000
 /**
  * The most re-reads of one page on their way at once. A re-read asked while that many are on their way is sent once one of them
  * answers, one for all the events that came meanwhile: fifty comments posted in a row were fifty reads of the whole ticket at once,
- * each answer applied and drawn in turn, and the newest waited behind every older one. Two, not one, so that a read that hangs never
- * holds the page back.
+ * each answer applied and drawn in turn, and the newest waited behind every older one. Two, not one, so that one read that hangs
+ * holds nothing back; and when every one of them hangs (a request has no time bound of its own), the re-read waiting behind them is
+ * sent anyway after the longest retry wait, so a page is never left showing what it showed.
  */
 export const DISPATCH_READS_IN_FLIGHT = 2
 
@@ -261,16 +262,23 @@ export class DispatchLive {
 
   /**
    * Reads the page again now: the read stands for a window or a retry pending, which goes. While DISPATCH_READS_IN_FLIGHT reads are on
-   * their way it is sent once one of them answers instead, standing for every event since (`again`). A failure is asked again after
+   * their way it is sent once one of them answers instead, standing for every event since (`again`), or after the longest retry wait
+   * when none of them has answered by then (`overdue`): reads that hang do not hold the page back. A failure is asked again after
    * the delay, or at once when a read was asked meanwhile.
    */
-  private read(w: Watching): void {
-    clearTimeout(w.timer)
-    w.timer = undefined
-    if (w.flying >= this.maxInFlight) {
-      w.again = true
+  private read(w: Watching, overdue = false): void {
+    if (w.gone) return
+    if (w.flying >= this.maxInFlight && !overdue) {
+      // The first one asked behind them starts the wait; those asked after it join it and do not put it off.
+      if (!w.again) {
+        clearTimeout(w.timer)
+        w.again = true
+        w.timer = setTimeout(() => this.read(w, true), this.maxDelayMs)
+      }
       return
     }
+    clearTimeout(w.timer)
+    w.timer = undefined
     w.again = false
     w.flying++
     w.covered = this.seen
