@@ -119,7 +119,7 @@ export interface CheckCell {
   /** `check:<run>/<task>/<n>/<id>/<k>`. */
   receipt: string
   logSha256?: string
-  /** Why it did not run: earlier_failed, or no_such_step. */
+  /** Why it did not run: earlier_failed, no_such_step, pending, or ended (its attempt ended before this check). */
   notRun?: string
 }
 
@@ -265,11 +265,15 @@ function cellMark(key: MarkKey, word: string, legend: string): MarkView {
   return { key, word, legend }
 }
 
-/** Why a cell did not run, in words: an earlier check failed (a tree stops at its first failure), or its manifest has no such step. */
+/**
+ * Why a cell did not run, in words: an earlier check failed (a tree stops at its first failure), its manifest has no such step, its
+ * checks are under way, or its attempt ended before this check (stopped, interrupted, or failed before its checks ran).
+ */
 export function notRunWords(why: string | undefined): string {
   if (why === 'earlier_failed') return 'not run: an earlier check failed'
   if (why === 'no_such_step' || why === 'no_step') return 'not run: its manifest has no such step'
   if (why === 'pending') return 'not run yet: its checks are under way'
+  if (why === 'ended') return 'not run: its attempt ended before this check'
   return 'not run'
 }
 
