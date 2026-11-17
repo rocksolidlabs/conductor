@@ -4965,8 +4965,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   machine that is not WSL or through the desktop app's own forwarding
   (no networking configured by anyone). A defect it finds is fixed in
   the stream.
-- **Needs your decision: the decision inbox, on the desktop and from a
-  phone (MB0, #646 to #650, 2026-11-06 to 2026-11-08).** Program item
+- **Needs you: the decision inbox, on the desktop and from a phone (MB0,
+  #646 to #652, 2026-11-06 to 2026-11-15; the page was Needs your decision
+  until UX1).** Program item
   MB0, planned in `docs/plans/decision-inbox.md` (PR #610). The page is
   one list of what waits on the operator (a member's question, a failed
   or held task, a plan revision, a Brakeman card), each item with its
@@ -4990,8 +4991,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   page has a hosted desk's identity it keeps it, joining it again on the
   backoff, until this link itself is refused (4403). The share switch
   learns that a switchyard is too old from the server's `409
-  switchyard_too_old` and stays off with its words. Each PR's checks are
-  in its body.
+  switchyard_too_old` and stays off with its words. PR-3 (#651, PR #750):
+  DR1's records as the inbox's items (`decision:dr-<n>`), every action
+  through DR1's own routes, one answered and not yet applied listed until
+  DR1 gives it a final state, and the records closed in the last day in
+  the first page's `recent`. PR-4 (#652, PR #761): DR1's records on the
+  page, drawn by DR1's card and controls inside the item (a gate answered
+  there, across a restart: `decision-page-durable.spec.ts`), and the
+  ticket page's links to them. PR #912 (2026-11-15, for #653) fixed what
+  the page's live check on the open-source build met, each with a test
+  that fails without it: the page asks for the workbench token at once, as
+  the other pages do; a long title stays inside its row, cut, with the
+  waiting time in view; the run page offers a start, a resume or an added
+  agent by hand only where the engine takes it, and a run's record
+  nothing; a plan revision's member line names its model; the gate's words
+  fit one task and several; a repair's line in a continued run's log names
+  the attempt that takes it up; a card of an item no longer open never
+  says it waits, and its time follows the page's clock; no Resume or
+  Relaunch on a managed run's member or attempt, nor on a Brakeman turn's
+  session or member; a person's page lists a continued run's tasks as its
+  continuation holds them; and a task a continued run did not end says
+  its continuation takes it up. UX1 (PR #956, 2026-11-16) renamed the page
+  and the phone's first tab **Needs you** (UX1 PR-5, #920; the join page's
+  Decide is its Needs you tab), made the page with nothing on it one
+  column that says what shows up there (UX1 PR-6, #921), and put the list and the item in a
+  person's words, a wide window opening the oldest item by itself (UX1
+  PR-21, #936). Each PR's checks are in its body.
 
   The acceptance (a decision is resolved from a phone on the LAN or a
   self-hosted switchyard, and the page says whether it was recorded or
@@ -5008,16 +5033,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   loopback origin's decision link and QR code (`share.spec.ts`); the
   switchyard saying `decisions` only from a build with the join page
   (`TestTheSwitchyardSaysDecisions`,
-  `TestAnAPIOnlySwitchyardSaysNoDecisions`). Not yet made: the
-  maintainers' by-hand check on the owner's real phone, which needs
-  PR-3 and PR-4 (#651, #652: DR1's records as items, a gate's decision
-  answered on the page) and is recorded here by PR-8 (#653), with what
-  ran, against which `main` and what it did not exercise. Its steps: on
+  `TestAnAPIOnlySwitchyardSaysNoDecisions`). Not yet made: the by-hand
+  check on a real phone, a person's to make (PR-3 and PR-4, which it
+  needed, are merged), recorded here by PR-8 (#653) when it is made, with
+  what ran, against which `main` and what it did not exercise. Its steps: on
   the LAN, a `conductor serve` on a machine the phone reaches that is not
   WSL (the LAN Linux box or the Mac), Claude Code in a managed run from a
   Dispatch ticket's approved revision with a gate before a task, a check
   that fails once and a member that asks a permission question; on iOS
-  Safari, then Android Chrome, the Decide tab showing the three items,
+  Safari, then Android Chrome, the Needs you tab showing the three items,
   the gate answered (recorded, applied, resumed as the task starts), the
   failed task retried, the question answered with a choice, a response
   at a revision made stale on the desktop refused with words, and the
@@ -5028,17 +5052,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+  That gate is a DR1 record answered over a link, so the switchyard
+  observation also waits for DR1's plan to accept a decision link's actor
+  under `local/1`: until then a link shows a run's decision with no
+  action ("a link cannot answer a run's decision yet").
   The run of 2026-11-14 for `main` at 93afee23 (R1's workflow in one run,
   its entry below, #904) observed part of it on the LAN: a server on the
   Mac, Claude Code in a managed run from a Dispatch ticket's approved
   revision with a gate before a task, the gate approved from a
   maintainer's own phone and held applied and resumed as the task file
   reached the builder's first attempt, and the server restarted with the
-  decision the same; still open are the three items on the Decide tab,
-  the failed task retried and a permission question answered from the
-  phone, a response at a stale revision refused, iOS Safari and Android
-  Chrome each, and every step through a self-hosted switchyard, so #653
-  stays open.
+  decision the same; still open are the three items on the Needs you
+  tab, the failed task retried and a permission question answered from
+  the phone, a response at a stale revision refused, iOS Safari and
+  Android Chrome each, and every step through a self-hosted switchyard.
+  Both observations, on the LAN from a machine that is not WSL and
+  through a self-hosted switchyard, are a person's, on a real phone and
+  with the owner's word, and they are owed: #653 stays open until they
+  are recorded here.
 - **Searchable history: what was said, decided and checked, found from the
   palette with its source (HS1, #613 to #617, #619, #621 and #624,
   2026-11-06 to 2026-11-08).** Program item HS1, planned in
