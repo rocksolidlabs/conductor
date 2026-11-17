@@ -172,6 +172,12 @@ type Registered struct {
 	// only then does the host send it. Absent from an older server, from a
 	// switchyard and on a desk's registered.
 	SessionInfo bool `json:"sessionInfo,omitempty"`
+	// AgentSessions says the server takes agent_session
+	// (HostAgentSessionMsg) and keeps the id as the attention route keeps
+	// one: only then does the host send it, and only then does it name its
+	// socket to its agent (docs/protocol.md, The host's socket). Absent
+	// from an older server and on a desk's registered.
+	AgentSessions bool `json:"agentSessions,omitempty"`
 	// Renews says the switchyard rechecks this connection's credential and
 	// takes host_token on it (HostTokenMsg): only on a connection admitted
 	// through an identity provider's principal; absent from an older

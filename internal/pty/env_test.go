@@ -31,3 +31,18 @@ func TestInjectWithoutABinary(t *testing.T) {
 		t.Fatalf("env %v", env)
 	}
 }
+
+// A server's own session never gets the host's socket: neither from the
+// server's environment, even passed through by name, nor from the catalog,
+// and Inject sets none.
+func TestAServerSessionGetsNoHostSocket(t *testing.T) {
+	const name = "CONDUCTOR_HOST_SOCKET"
+	inject := Inject("s1", "http://c/api/sessions/s1/attention", "tok", "/opt/conductor")
+	if _, ok := inject[name]; ok {
+		t.Fatalf("inject %v", inject)
+	}
+	env := BuildEnv([]string{name + "=/run/user/1/conductor-host-1/report.sock"}, []string{name}, map[string]string{name: "/tmp/x/report.sock"}, inject)
+	if slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, name+"=") }) {
+		t.Fatalf("env %v", env)
+	}
+}

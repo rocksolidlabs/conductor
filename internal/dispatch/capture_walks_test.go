@@ -490,6 +490,10 @@ func TestEveryReadHidesADeletedCapture(t *testing.T) {
 		"Comments", "Findings", "Label", "Labels", "LaunchByID", "Launches", "LinkReadOf", "LinkedTicket", "Links", "List", "Marks", "Milestone", "Milestones",
 		"OpenPlans", "PendingLaunches", "PendingReviews", "People", "Plan", "Plans", "Project", "Projects", "Relations", "Review", "Reviews",
 		"RunTicket", "Ticket", "View", "Views",
+		// What an agent reads of a ticket: a ticket's, a list's or a
+		// history's rows it is handed, judged by the tickets' and the
+		// changes' tables alone.
+		"ForAgent", "TitlesForAgent", "ChangesForAgent",
 		// A publication's reads and its server-made operations read a
 		// publication's row and its ticket's alone.
 		"Publication", "Publications", "SendingPublications", "SettlePublication", "BeginClose", "SettleClose"} {
