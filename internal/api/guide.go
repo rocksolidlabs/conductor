@@ -585,7 +585,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// A person's reviews of a ticket's candidates (RV1,
 		// dispatch_reviews.go).
 		{Name: "review_submit", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/reviews", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
-			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing. A finding of kind capture names a capture, its send to a review and an annotation ({capture, send, k}); the server words it.",
+			Summary: "Review a candidate (run/task/n@commit) against a base, as one batch: request_changes is applied as a repair (continueRun for a run not running); comment and approve apply nothing. A capture finding names a capture, its send to a review and an annotation ({capture, send, k}); the server words it.",
 			CLI:     []string{"conductor", "dispatch", "review", "KEY-n", "--candidate", "RUN/TASK/N@COMMIT", "--verdict", "VERDICT", "--file", "NOTES.json"},
 			Input:   bodySchema(reviewSubmitBody{}),
 			Bounds:  map[string]int{"body": maxReviewBody, "reply": dispatch.MaxReviewReply}},
