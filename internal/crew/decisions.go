@@ -2487,7 +2487,12 @@ func answerWords(d *decision, ans *accepted) string {
 // (decisionsHeld), as the place it takes over did. The caller holds e.mu,
 // in that transaction's change, which has no undo.
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
-	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject}
+	// A comparison's selection keeps its options' candidates: the
+	// replacement lists the same ones, and its answer selects one of them.
+	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject, cands: slices.Clone(d.cands)}
+	if d.origin == ledger.OriginCompare {
+		r.sel.last = d.id()
+	}
 	held := slices.Clone(d.holds)
 	d.state = ledger.DecisionSuperseded
 	r.dropDecision(d)
