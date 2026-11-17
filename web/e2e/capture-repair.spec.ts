@@ -30,6 +30,14 @@ const REPAIR_PAGE = fileURLToPath(new URL('./fixtures/repair/page.html', import.
 const BOOT_MS = 60_000
 const REPAIR_MS = 240_000
 const CHECKOUT_MS = 120_000
+/**
+ * The setup's waits, each its helper's own cap: stopStrays waits 15 s for each stray session to end, stepIn 120 s for the first
+ * attempt's check to run (preview-fixtures.ts); the git and API calls beside them get 60 s. The hook's timeout is their sum, set
+ * before the first wait, since a hook takes the config's 120 s otherwise.
+ */
+const STRAY_MS = 15_000
+const STEP_MS = 120_000
+const SETUP_MS = 60_000
 
 const m = made()
 let repo = ''
@@ -57,6 +65,9 @@ interface Capture {
 }
 
 test.beforeAll(async ({ api, state }) => {
+  const r = await api.ok<{ sessions?: Array<{ status: string }> } | Array<{ status: string }>>('GET', '/api/sessions')
+  const strays = (Array.isArray(r) ? r : (r.sessions ?? [])).filter((s) => ['running', 'starting', 'pending'].includes(s.status)).length
+  test.setTimeout(SETUP_MS + strays * STRAY_MS + STEP_MS)
   await stopStrays(api, [])
   // A repository of the spec's own, under the server's allowed root: the broken page, and node_modules left out as a project does.
   repo = join(state.root, `capture-repair-${Date.now().toString(36)}`)
