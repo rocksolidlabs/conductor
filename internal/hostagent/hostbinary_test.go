@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,8 +22,10 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/api"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/journal"
 	"github.com/rocksolidlabs/conductor/internal/notify"
 	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // cutLink is a TCP proxy to a server that a test can cut: every connection
@@ -117,6 +120,8 @@ while IFS= read -r line; do
   case $how in
     done) "$CONDUCTOR_BIN" notify --quiet=false --state done --message "$words" 2>>"$errs" ;;
     older) env -u CONDUCTOR_HOST_SOCKET "$CONDUCTOR_BIN" notify --quiet=false --state done --message "$words" 2>>"$errs" ;;
+    event) "$CONDUCTOR_BIN" notify --quiet=false --event progress --message "$words" 2>>"$errs" ;;
+    oldevent) env -u CONDUCTOR_HOST_SOCKET -u CONDUCTOR_HOST_EVENTS "$CONDUCTOR_BIN" notify --quiet=false --event progress --message "$words" 2>>"$errs" ;;
     wrong) CONDUCTOR_NOTIFY_TOKEN=wrong "$CONDUCTOR_BIN" notify --quiet=false --state done --message "$words" 2>>"$errs" ;;
     gone) CONDUCTOR_HOST_SOCKET=/nonexistent/report.sock "$CONDUCTOR_BIN" notify --quiet=false --state done --message "$words" 2>>"$errs" ;;
   esac
@@ -174,7 +179,12 @@ func TestARealHostTakesItsAgentsReportsOnItsSocket(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := api.New(cfg, cat, discardLog, nil, nil)
+	cfg.DataDir = t.TempDir()
+	st, err := store.Open(cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := api.New(cfg, cat, discardLog, nil, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +290,22 @@ func TestARealHostTakesItsAgentsReportsOnItsSocket(t *testing.T) {
 		t.Fatalf("the agent logged %q", got)
 	}
 	shows("the host connected", "on the socket")
+	progress := func(what string, want ...string) {
+		t.Helper()
+		for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if got := recordProgress(t, ts.URL, hs.Info().ID); slices.Equal(got, want) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the record holds %q, want %q", what, recordProgress(t, ts.URL, hs.Info().ID), want)
+			}
+		}
+	}
+	say("event up")
+	if got := agentLog(t, logPath, "event 0 up", 15*time.Second); got != "event 0 up" {
+		t.Fatalf("the agent logged %q", got)
+	}
+	progress("an event with the link up", "up")
 
 	link.sever()
 	untilListed(t, hs, "the host gone", func(i session.Info) bool { return i.Status == session.StatusHostDisconnected })
@@ -287,17 +313,31 @@ func TestARealHostTakesItsAgentsReportsOnItsSocket(t *testing.T) {
 	if got := agentLog(t, logPath, "done 0 while", 15*time.Second); got != "done 0 while the host is away" {
 		t.Fatalf("the agent logged %q", got)
 	}
+	say("event away")
+	if got := agentLog(t, logPath, "event 0 away", 15*time.Second); got != "event 0 away" {
+		t.Fatalf("the agent logged %q", got)
+	}
+	if got := recordProgress(t, ts.URL, hs.Info().ID); !slices.Equal(got, []string{"up"}) {
+		t.Fatalf("the record changed while the link was cut: %q", got)
+	}
 	link.mend()
 	shows("the host back", "while the host is away")
+	progress("the event made while the link was cut", "up", "away")
 	if n := route.n.Load(); n != 0 {
-		t.Fatalf("the server's route was asked %d times", n)
+		t.Fatalf("the server's routes were asked %d times", n)
 	}
 
 	say("older a sender of an earlier release")
 	agentLog(t, logPath, "older 0 ", 15*time.Second)
 	shows("an older sender", "a sender of an earlier release")
 	if n := route.n.Load(); n != 1 {
-		t.Fatalf("the server's route was asked %d times", n)
+		t.Fatalf("the server's routes were asked %d times", n)
+	}
+	say("oldevent by an earlier sender")
+	agentLog(t, logPath, "oldevent 0 ", 15*time.Second)
+	progress("an older sender's event", "up", "away", "by an earlier sender")
+	if n := route.n.Load(); n != 2 {
+		t.Fatalf("the server's routes were asked %d times", n)
 	}
 
 	say("wrong refused")
@@ -307,14 +347,14 @@ func TestARealHostTakesItsAgentsReportsOnItsSocket(t *testing.T) {
 	if b, _ := os.ReadFile(errsPath); !strings.Contains(string(b), "the host returned 401") {
 		t.Fatalf("the sender said %q", b)
 	}
-	if n := route.n.Load(); n != 1 {
+	if n := route.n.Load(); n != 2 {
 		t.Fatalf("a refusal was sent to the server: %d", n)
 	}
 
 	say("gone through the server")
 	agentLog(t, logPath, "gone 0 ", 15*time.Second)
 	shows("the socket gone", "through the server")
-	if n := route.n.Load(); n != 2 {
+	if n := route.n.Load(); n != 3 {
 		t.Fatalf("the server's route was asked %d times", n)
 	}
 
@@ -364,4 +404,28 @@ func TestARealHostTakesItsAgentsReportsOnItsSocket(t *testing.T) {
 			t.Fatal("the server's session never printed its environment")
 		}
 	}
+}
+
+// recordProgress is the progress events the server's record of session id
+// holds, in order.
+func recordProgress(t *testing.T, base, id string) []string {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/history/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct{ Record journal.Record }
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the record: %d %v", resp.StatusCode, err)
+	}
+	var out []string
+	for _, e := range got.Record.Entries {
+		if e.Event == session.ActivityProgress {
+			out = append(out, e.Message)
+		}
+	}
+	return out
 }

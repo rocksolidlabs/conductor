@@ -502,7 +502,7 @@ func TestMCPForEachAdapter(t *testing.T) {
 // adapter names every variable the server needs to find its session: the
 // notify URL, token and session id among them (#354).
 func TestCodexPassesTheSessionsVariablesToItsMCPServer(t *testing.T) {
-	for _, v := range []string{"CONDUCTOR_SESSION_ID", "CONDUCTOR_NOTIFY_URL", "CONDUCTOR_NOTIFY_TOKEN", "CONDUCTOR_HOST_SOCKET", "CONDUCTOR_RUN", "CONDUCTOR_MEMBER", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT"} {
+	for _, v := range []string{"CONDUCTOR_SESSION_ID", "CONDUCTOR_NOTIFY_URL", "CONDUCTOR_NOTIFY_TOKEN", "CONDUCTOR_HOST_SOCKET", "CONDUCTOR_HOST_EVENTS", "CONDUCTOR_RUN", "CONDUCTOR_MEMBER", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT"} {
 		if !strings.Contains(codexMCPEnv, `"`+v+`"`) {
 			t.Errorf("Codex's MCP server is not given %s", v)
 		}

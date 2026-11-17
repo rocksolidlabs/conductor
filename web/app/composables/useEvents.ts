@@ -1,6 +1,6 @@
 import type { SessionInfo } from './useSessions'
 import type { ActivityEntry } from '~/utils/protocol'
-import { EntryHold, parseRoutes, pruneMarks, routeEntry, type EventMark, type EventType, type FeedEntry, type RouteRow, type RoutedEvent } from '~/utils/events'
+import { EntryHold, liveEvent, parseRoutes, pruneMarks, routeEntry, type EventMark, type EventType, type FeedEntry, type RouteRow, type RoutedEvent } from '~/utils/events'
 
 /** Browser storage key of the routing: routes are per browser. */
 export const ROUTES_KEY = 'conductor.events.routes'
@@ -59,6 +59,8 @@ export function useEvents() {
     if (!type) return
     if (state.feed !== feed.value) feed.value = state.feed as FeedEntry[]
     setMarks(state.marks)
+    // Late (recorded while its host was away, or sent again): shown, never a live event, so no listener hears it.
+    if (!liveEvent(entry)) return
     const e: RoutedEvent = { sessionId, session: s, type, entry }
     for (const fn of listeners) {
       try {
