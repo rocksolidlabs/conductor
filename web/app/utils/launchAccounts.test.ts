@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CapacityView } from './capacity'
 import { launchLines } from './crewLaunch'
+import { draftTasks, plainTasks } from './crews'
 import { accountCountWords, launchAccounts, memberLogin, type CountedMember } from './launchAccounts'
 
 const doc = {
@@ -90,5 +91,19 @@ describe("a launch's sessions per account", () => {
     launchAccounts({ ...c, accountOf: byNamed(c.members) })
     expect(JSON.stringify(launchLines(c.members, o))).toBe(before)
     expect(JSON.parse(before).map((l: { account: string }) => l.account)).toEqual(['Work', 'the default at the launch'])
+  })
+
+  it("counts a draft's tasks by their needs as the sheet hands them (plainTasks), a review after its candidate as later", () => {
+    const c = comparison([{ agentId: 'claude', account: 'a-work' }, { agentId: 'claude', account: 'a-work' }], { agentId: 'codex', account: 'a-team' })
+    const drafted = draftTasks(c.tasks.map((t) => ({ ...t, instructions: '' })))
+    // A draft keeps its needs by key: unread, every task would look like one that needs none.
+    expect(drafted.every((t) => !('needs' in t))).toBe(true)
+    expect(launchAccounts({ ...c, tasks: plainTasks(drafted), accountOf: byNamed(c.members) }).map(accountCountWords)).toEqual(['this launch: 2 sessions on Work', 'this launch: up to 2 sessions on Team, after the candidates'])
+    // An ordinary crew's draft: the review needs the build, so it starts nothing at once.
+    const plain = draftTasks([
+      { id: 'build', member: 'cand-a', kind: 'work', instructions: '' },
+      { id: 'look', member: 'rev-a', kind: 'review', instructions: '', needs: ['build'] },
+    ])
+    expect(launchAccounts({ members: c.members, tasks: plainTasks(plain), accountOf: byNamed(c.members) }).map(accountCountWords)).toEqual(['this launch: 1 session on Work'])
   })
 })
