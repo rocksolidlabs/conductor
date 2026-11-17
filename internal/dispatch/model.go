@@ -458,6 +458,17 @@ const (
 	// holds the bound within 4 KiB of the measure). The room the API's
 	// MaxTicketReply keeps for it.
 	MaxTicketExternalParts = 212 << 10
+	// MaxAgentExternalParts bounds the same parts of a ticket's read as an
+	// agent reads it (ForAgent: the snapshot without what was written on
+	// the item but its steps to reproduce, quoted, and the linked issue's
+	// read without its validators), measured as MaxTicketExternalParts is,
+	// at the admin's worst and with the steps at the quote's worst, and
+	// rounded up to a KiB or two (TestTicketReplyBound holds it within 4
+	// KiB of the measure): the room the API's MaxTicketReply keeps for
+	// them beside an agent's copy of the rest, whose description a quote
+	// can make three times its size as JSON (internal/api's
+	// TestTheLargestTicketForAnAgentIsUnderItsBound).
+	MaxAgentExternalParts = 204 << 10
 	// MaxMergedReadAge is how old a link's read may be for the close
 	// policy's merged: the close route's own read is what counts.
 	MaxMergedReadAge = 5 * time.Minute

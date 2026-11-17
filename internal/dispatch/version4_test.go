@@ -499,6 +499,7 @@ func TestTicketReplyBound(t *testing.T) {
 	if parts > MaxTicketExternalParts || MaxTicketExternalParts-parts > 4<<10 {
 		t.Fatalf("the new parts are %d bytes at their worst, their bound %d", parts, MaxTicketExternalParts)
 	}
+	agentPartsBound(t, s, key, v, worstSn)
 	// A read past its bounds is refused, nothing written: each case on a
 	// link of its own that holds no read, the read it changes accepted
 	// there after its refusal.
@@ -573,4 +574,55 @@ func bigChecks() []LinkCheck {
 		out = append(out, LinkCheck{ID: "1", Name: strings.Repeat("n", MaxCheckName), App: strings.Repeat("a", MaxCheckName)})
 	}
 	return out
+}
+
+// agentPartsBound holds the same parts of the read as an agent reads it
+// (ForAgent) to MaxAgentExternalParts, measured as TestTicketReplyBound
+// measures the admin's, for the read v at the admin's worst and with the
+// snapshot's steps to reproduce at the quote's worst instead (blank lines,
+// each a line `>` of three bytes as JSON for one of the steps'), and
+// within 4 KiB of the measure.
+func agentPartsBound(t *testing.T, s *Store, key string, v TicketView, sn ExternalSnapshot) {
+	t.Helper()
+	ctx := context.Background()
+	measure := func(v TicketView) int {
+		t.Helper()
+		a, err := s.ForAgent(ctx, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply, err := encodeValue(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec := json.NewDecoder(strings.NewReader(reply))
+		dec.UseNumber()
+		var tree map[string]any
+		if err := dec.Decode(&tree); err != nil {
+			t.Fatal(err)
+		}
+		asMain, err := encodeValue(mainOf(tree))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(reply) - len(asMain)
+	}
+	most := measure(v)
+	sn.Repro, _ = cutLines("a"+strings.Repeat("\n", MaxRepro-2)+"a", MaxRepro, reproMore)
+	snapshot, err := encodeSnapshot(sn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE tickets SET external_snapshot = ? WHERE key = ?", snapshot, key); err != nil {
+		t.Fatal(err)
+	}
+	quote, err := s.Ticket(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	most = max(most, measure(quote))
+	t.Logf("the new parts as an agent reads them, at their worst: %d bytes, their bound %d", most, MaxAgentExternalParts)
+	if most > MaxAgentExternalParts || MaxAgentExternalParts-most > 4<<10 {
+		t.Fatalf("the new parts as an agent reads them are %d bytes at their worst, their bound %d", most, MaxAgentExternalParts)
+	}
 }
