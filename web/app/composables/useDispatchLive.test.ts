@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
-import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
+import { DISPATCH_READS_IN_FLIGHT, DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
 import { asDispatchRead, noDispatchStore, runLinkWatch, runTicketRead, viewsWatch, type DispatchReadNotice } from './useDispatchLive'
 import { ApiError } from './useApi'
 import type { RelatedTicket } from './useDispatch'
@@ -90,6 +90,75 @@ describe('a ticket page', () => {
   })
 })
 
+describe("a burst of events naming a ticket page's ticket", () => {
+  /** A page's re-read whose answers the test hands out: each read waits until the test answers or fails it. */
+  function heldReads() {
+    const asked: Array<{ answer: () => void; fail: () => void; covered: number }> = []
+    const read = () => new Promise<void>((answer, fail) => asked.push({ answer, fail: () => fail(new Error('Cannot reach the server')), covered: seq }))
+    return { asked, read }
+  }
+  const comment = () => ev({ entity: 'comment', id: `c${seq}`, ticket: 't1', project: 'CND' })
+
+  it('has two reads on their way at most, then one more for every event since, once one of them answers', async () => {
+    expect(DISPATCH_READS_IN_FLIGHT).toBe(2)
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (let i = 0; i < 50; i++) live.event(comment())
+    expect(asked.length, 'fifty comments: two reads on their way').toBe(2)
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(asked.length, 'no window or retry sends more meanwhile').toBe(2)
+    const last = seq
+    asked[0]!.answer()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(asked.length, 'one answered: one read more, for the 48 events since').toBe(3)
+    expect(asked[2]!.covered).toBe(last)
+    asked[1]!.answer()
+    asked[2]!.answer()
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(asked.length, 'nothing came since it was sent: no read more').toBe(3)
+    // Every read answered, an event is read again at once.
+    live.event(comment())
+    expect(asked.length).toBe(4)
+  })
+
+  it('reads at once, not after the retry\'s wait, when a read fails with events waiting behind it; with none, it is retried', async () => {
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (let i = 0; i < 3; i++) live.event(comment())
+    expect(asked.length).toBe(2)
+    asked[0]!.fail()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(asked.length, 'failed, an event waiting: read at once').toBe(3)
+    asked[1]!.fail()
+    await vi.advanceTimersByTimeAsync(WINDOW - 1)
+    expect(asked.length, 'failed, nothing waiting: the retry waits the window').toBe(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(asked.length).toBe(4)
+  })
+
+  it('reads a snapshot behind two reads on their way once one answers, and nothing for a page gone meanwhile', async () => {
+    const live = new DispatchLive()
+    const { asked, read } = heldReads()
+    const stop = live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(comment())
+    live.event(comment())
+    live.snapshot()
+    expect(asked.length).toBe(2)
+    asked[0]!.answer()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(asked.length, "the snapshot's read").toBe(3)
+    live.event(comment())
+    live.event(comment())
+    stop()
+    asked[1]!.answer()
+    asked[2]!.fail()
+    await vi.advanceTimersByTimeAsync(20 * WINDOW)
+    expect(asked.length, 'gone: nothing more').toBe(3)
+  })
+})
+
 describe('a project event', () => {
   it('reads a list of that project and a ticket page of it again after the window, and nothing of another project', async () => {
     const live = new DispatchLive()
@@ -133,13 +202,15 @@ describe('a snapshot', () => {
     expect(pages.map((p) => p.r.count)).toEqual([1, 1, 1])
   })
 
-  it('starts the seqs over: an event after it is read whatever seq it has (a store restored from a backup)', () => {
+  it('starts the seqs over: an event after it is read whatever seq it has (a store restored from a backup)', async () => {
     const live = new DispatchLive()
     const { r, read } = reads()
     live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
     live.event(ev({ at: 900, entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
     live.snapshot()
     expect(r.count).toBe(2)
+    // Both answered (two on their way is the most: a third waits for one of them).
+    await vi.advanceTimersByTimeAsync(0)
     live.event(ev({ at: 5, entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
     expect(r.count).toBe(3)
   })

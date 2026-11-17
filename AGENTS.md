@@ -629,6 +629,13 @@ add its rule here.
   let the dial fail through the seam the test gives its transport (its
   dial function), with the error the kernel gives a port nobody listens
   on.
+- A burst a test makes meets the page's answer to each change. A ticket
+  page read the whole ticket again at once for every event naming it:
+  fifty comments in a row were some fifty reads on their way together,
+  each answer applied and drawn in turn, and the last comment showed
+  seconds after the last answer came, past the expect's bound on a loaded
+  box (`dispatch.spec.ts`, #281). Count the page's requests before
+  doubting the bound; the page bounds its own (`DISPATCH_READS_IN_FLIGHT`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
