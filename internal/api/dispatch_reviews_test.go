@@ -869,6 +869,41 @@ func TestReviewViaIsTheServers(t *testing.T) {
 	}
 }
 
+// captureOf is a finding of kind capture as a body would name it.
+func captureOf() map[string]any {
+	return map[string]any{"kind": dispatch.FindingKindCapture, "intent": "change", "severity": "major", "message": "Save is covered."}
+}
+
+// A review holding a finding of kind capture is refused 400 by RV1's
+// route before anything is read or recorded, whatever its verdict and
+// wherever the finding stands among the others: no review, no receipt,
+// so the same opId is free for a review without it; the store keeps that
+// kind (schema version 7), and no route takes one yet (#798).
+func TestTheReviewRouteRefusesACaptureFinding(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	cand := candName(run, "build", 1, c1)
+	for _, body := range []map[string]any{
+		reviewOf(cand, l.head, "request_changes", captureOf()),
+		reviewOf(cand, l.head, "request_changes", changeOf("Handle the error."), captureOf()),
+		reviewOf(cand, l.head, "comment", captureOf()),
+	} {
+		out := sendReview(t, l.testEnv, "CND-1", body, http.StatusBadRequest, "invalid_request")
+		if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "a finding of kind capture is not taken yet") {
+			t.Fatalf("the refusal: %v", out)
+		}
+		if _, found, err := l.srv.dispatch.Receipt(t.Context(), adminActor, body["opId"].(string)); err != nil || found {
+			t.Fatalf("a receipt kept: %v %v", found, err)
+		}
+	}
+	if n := reviewsOn(t, l.srv, "CND-1"); n != 0 {
+		t.Fatalf("%d reviews kept", n)
+	}
+	body := reviewOf(cand, l.head, "comment", captureOf())
+	body["findings"] = []map[string]any{changeOf("Handle the error.")}
+	sendReview(t, l.testEnv, "CND-1", body, http.StatusCreated, "")
+}
+
 // retryReview sends Request again of the review, failing t unless it
 // answers the status and code.
 func retryReview(t *testing.T, e *testEnv, id string, body map[string]any, status int, code string) map[string]any {

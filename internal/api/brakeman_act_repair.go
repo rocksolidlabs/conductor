@@ -37,7 +37,8 @@ var repairActClasses = []string{brakeman.ClassDispatch, brakeman.ClassRuns}
 // repairArgs reads a request_repair act's body as RV1's route decodes it
 // (unknown fields refused): a request for changes, nothing the server
 // records for the person (via, continueRun), the run's revision none or
-// one (runRevisionRefused, as RV1's route asks), its candidate parsed. canon is
+// one (runRevisionRefused, as RV1's route asks), no finding of kind
+// capture (captureFindingRefused), its candidate parsed. canon is
 // what the act's args are hashed from: every field but the op id and the
 // name.
 func repairArgs(raw []byte) (actBody, any, *apiError) {
@@ -54,6 +55,9 @@ func repairArgs(raw []byte) (actBody, any, *apiError) {
 		return actBody{}, nil, newAPIError(http.StatusForbidden, "not_granted", "continuing a run the server no longer runs takes the person's word (continueRun): Brakeman requests changes only of a run the server runs")
 	}
 	if aerr := runRevisionRefused(b.ExpectedRevision); aerr != nil {
+		return actBody{}, nil, aerr
+	}
+	if aerr := captureFindingRefused(b.NewReview); aerr != nil {
 		return actBody{}, nil, aerr
 	}
 	c, err := dispatch.ParseCandidate(b.Candidate)
