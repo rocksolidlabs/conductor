@@ -26,7 +26,7 @@ describe('sendBody', () => {
   })
 
   it('offers the four destinations of today, in the editor’s order', () => {
-    expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman', 'decision'])
+    expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman', 'decision', 'review', 'review-draft'])
   })
 })
 

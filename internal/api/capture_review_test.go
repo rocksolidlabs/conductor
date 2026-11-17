@@ -387,3 +387,41 @@ func TestALostReviewSendIsFinishedByTheWorker(t *testing.T) {
 		t.Fatalf("%d reviews", n)
 	}
 }
+
+// The send route takes a send to a review (POST /api/captures/{id}/send,
+// kind review): Request a change sent and answered 201 with its review,
+// the same opId again 200 with the same send and no second review; a
+// review's fields on another kind, and a summary past its bound, refused
+// 400 before anything is kept; a store's refusal (another revision)
+// answered with its receipt.
+func TestTheSendRouteTakesASendToAReview(t *testing.T) {
+	l := newLaunchTest(t, nil, nil)
+	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
+	shot := testPNG(t)
+	n, f := capturedOf(run, c1, "Save is covered.", shot, false)
+	id := seedCapture(t, l.srv, n, f, shot)
+	cand := candName(run, "build", 1, c1)
+	path := "/api/captures/" + id + "/send"
+	body := map[string]any{"opId": "route-1", "byName": "Nate", "rev": 1, "to": map[string]any{"kind": "review", "candidate": cand, "verdict": "request_changes"}}
+	out := l.expect(t, "POST", path, body, http.StatusCreated, "")
+	sv := out["send"].(map[string]any)
+	rv := out["review"].(map[string]any)
+	if sv["state"] != dispatch.SendSent || sv["target"] != rv["id"] || out["key"] != "CND-1" || rv["application"].(map[string]any)["state"] != dispatch.ApplicationApplied {
+		t.Fatalf("the send: %v", out)
+	}
+	again := l.expect(t, "POST", path, body, http.StatusOK, "")
+	if again["send"].(map[string]any)["id"] != sv["id"] || again["receipt"].(map[string]any)["repeat"] != true {
+		t.Fatalf("the same send again: %v", again)
+	}
+	if n := reviewsOn(t, l.srv, "CND-1"); n != 1 {
+		t.Fatalf("%d reviews", n)
+	}
+	for _, to := range []map[string]any{
+		{"kind": "ticket", "key": "CND-1", "candidate": cand},
+		{"kind": "brakeman", "question": "Why?", "draft": true},
+		{"kind": "review", "candidate": cand, "verdict": "request_changes", "summary": strings.Repeat("é", dispatch.MaxReviewSummary+1)},
+	} {
+		l.expect(t, "POST", path, map[string]any{"opId": opID(), "rev": 1, "to": to}, http.StatusBadRequest, "invalid_request")
+	}
+	l.expect(t, "POST", path, map[string]any{"opId": opID(), "rev": 2, "to": map[string]any{"kind": "review", "candidate": cand, "draft": true}}, http.StatusConflict, dispatch.RefusalStaleRevision)
+}

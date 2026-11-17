@@ -144,6 +144,40 @@ func reviewSendOp(sv dispatch.CaptureSend, step string) dispatch.Op {
 type reviewSendReply struct {
 	status int
 	reply  map[string]any
+	// stored is the store's refusal of the send, with its receipt.
+	stored *dispatch.Receipt
+}
+
+// captureSendToReview is the send route's kind review (handleCaptureSend,
+// after its gate, its scrub and its replay): a send made now, or the same
+// send sent again (found, rc its receipt), whose steps left are taken.
+func (s *Server) captureSendToReview(w http.ResponseWriter, ctx context.Context, ds *dispatch.Store, op dispatch.Op, digest, id string, body captureSendBody, rc dispatch.Receipt, found bool) {
+	t := body.To
+	to := reviewSendTo{Candidate: t.Candidate, Verdict: t.Verdict, Ks: t.Ks, Draft: t.Draft, Severity: t.Severity, Summary: t.Summary, ContinueRun: t.ContinueRun}
+	var out reviewSendReply
+	var aerr *apiError
+	var err error
+	switch {
+	case found && rc.Status == dispatch.StatusDone:
+		out, aerr, err = s.continueReviewSend(ctx, ds, op, rc, to.ContinueRun)
+	case found:
+		out.stored = &rc
+	default:
+		// Answered by the route's own words, in the hold the send's steps take.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReviewTimeout)
+		defer cancel()
+		out, aerr, err = s.sendCaptureToReview(ctx, ds, op, digest, id, body.Rev, to)
+	}
+	switch {
+	case out.stored != nil:
+		s.answerCapture(w, ctx, ds, *out.stored, nil, true, "-")
+	case err != nil:
+		s.dispatchError(w, "send", err)
+	case aerr != nil:
+		writeAPIError(w, aerr)
+	default:
+		writeDispatch(w, out.status, out.reply)
+	}
 }
 
 // sendCaptureToReview is the send route's kind review, the operation not
@@ -190,8 +224,11 @@ func (s *Server) sendCaptureToReview(ctx context.Context, ds *dispatch.Store, op
 	defer unlock()
 	if to.Draft {
 		rc, err := ds.SendCapture(ctx, op, digest, id, rev, dest, dispatch.SendFacts{})
-		if err != nil || rc.Status != dispatch.StatusDone {
-			return reviewSendReply{}, storeRefusal(rc), err
+		if err != nil {
+			return reviewSendReply{}, nil, err
+		}
+		if rc.Status != dispatch.StatusDone {
+			return reviewSendReply{stored: &rc}, nil, nil
 		}
 		return s.reviewSendAnswer(ctx, ds, rc, key, nil, nil)
 	}
@@ -231,8 +268,11 @@ func (s *Server) sendCaptureToReview(ctx context.Context, ds *dispatch.Store, op
 		return reviewSendReply{}, nil, err
 	}
 	rc, err := ds.SendCapture(ctx, op, digest, id, rev, dest, dispatch.SendFacts{Request: request})
-	if err != nil || rc.Status != dispatch.StatusDone {
-		return reviewSendReply{}, storeRefusal(rc), err
+	if err != nil {
+		return reviewSendReply{}, nil, err
+	}
+	if rc.Status != dispatch.StatusDone {
+		return reviewSendReply{stored: &rc}, nil, nil
 	}
 	return s.stepsOfReviewSend(ctx, ds, rc, to.ContinueRun)
 }
@@ -301,22 +341,6 @@ func candidateAsked(sv dispatch.CaptureSend) string {
 	var to dispatch.Destination
 	_ = json.Unmarshal(sv.Asked, &to)
 	return to.Candidate
-}
-
-// storeRefusal is the store's refused receipt as a route's error, nil for
-// one done.
-func storeRefusal(rc dispatch.Receipt) *apiError {
-	if rc.Status == dispatch.StatusDone || rc.Status == "" {
-		return nil
-	}
-	status := http.StatusConflict
-	switch rc.Refusal {
-	case dispatch.RefusalNotFound:
-		status = http.StatusNotFound
-	case dispatch.RefusalBound:
-		status = http.StatusRequestEntityTooLarge
-	}
-	return newAPIError(status, rc.Refusal, rc.Error)
 }
 
 // reviewTicket is the ticket whose review a candidate of the run is: the

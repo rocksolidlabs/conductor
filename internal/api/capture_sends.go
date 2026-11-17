@@ -84,6 +84,15 @@ type (
 		Key      string `json:"key,omitempty"`
 		Question string `json:"question,omitempty"`
 		Decision string `json:"decision,omitempty"`
+		// A send to a review's (capture_review.go): Request a change and
+		// Add to a review.
+		Candidate   string `json:"candidate,omitempty"`
+		Verdict     string `json:"verdict,omitempty"`
+		Ks          []int  `json:"ks,omitempty"`
+		Draft       bool   `json:"draft,omitempty"`
+		Severity    string `json:"severity,omitempty"`
+		Summary     string `json:"summary,omitempty"`
+		ContinueRun bool   `json:"continueRun,omitempty"`
 	}
 	captureSendBody struct {
 		OpID   string        `json:"opId"`
@@ -255,6 +264,10 @@ func readCaptureSend(w http.ResponseWriter, r *http.Request) (captureRequest[cap
 		return req, badCapture(fmt.Sprintf("a send to Brakeman asks a question of 1 to %d characters", maxSendQuestion))
 	case to.Kind != dispatch.SendBrakeman && to.Question != "":
 		return req, badCapture("only a send to Brakeman asks a question")
+	case to.Kind != dispatch.SendReview && (to.Candidate != "" || to.Verdict != "" || len(to.Ks) > 0 || to.Draft || to.Severity != "" || to.Summary != "" || to.ContinueRun):
+		return req, badCapture("only a send to a review names a candidate, annotations, a draft, a verdict, a severity, a summary or the word to continue")
+	case to.Kind == dispatch.SendReview && utf8.RuneCountInString(to.Summary) > dispatch.MaxReviewSummary:
+		return req, badCapture(fmt.Sprintf("a summary is at most %d characters", dispatch.MaxReviewSummary))
 	}
 	content := req.body
 	content.OpID, content.ByName = "", ""
@@ -298,6 +311,10 @@ func (s *Server) handleCaptureSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := opContext(r)
 	defer cancel()
 	rc, found, err := ds.Replay(ctx, req.op, dispatch.IntentCaptureSend, captureArgs{ID: id, Received: req.digest})
+	if err == nil && req.body.To.Kind == dispatch.SendReview {
+		s.captureSendToReview(w, ctx, ds, req.op, req.digest, id, req.body, rc, found)
+		return
+	}
 	if err == nil && !found {
 		to := req.body.To
 		dest := dispatch.Destination{Kind: to.Kind, Project: to.Project, Title: to.Title, Key: to.Key, Decision: to.Decision}

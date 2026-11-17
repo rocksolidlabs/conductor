@@ -36,6 +36,9 @@ export const SEND_KINDS: ReadonlyArray<{ kind: SendKind; label: string; icon: st
   { kind: 'ticket', label: 'Attach to a ticket', icon: 'i-lucide-paperclip' },
   { kind: 'brakeman', label: 'Ask Brakeman', icon: 'i-lucide-notebook-pen' },
   { kind: 'decision', label: 'Attach to a decision', icon: 'i-lucide-message-square-plus' },
+  // A review of the candidate a capture shows (PR-10): CaptureSendReview.vue, offered on a candidate's capture alone (Decision 9).
+  { kind: 'review', label: 'Request a change', icon: 'i-lucide-git-pull-request-arrow' },
+  { kind: 'review-draft', label: 'Add to a review', icon: 'i-lucide-list-plus' },
 ]
 
 /** A question's bound, in characters, as the route holds it. */

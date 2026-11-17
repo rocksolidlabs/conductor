@@ -3,6 +3,7 @@ import type { CaptureDocumentView, CaptureView } from '~/composables/useCaptureS
 import type { ProjectSummary, TicketSummary } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
 import { diffSinceSent } from '~/utils/capture'
+import { reviewOffered } from '~/utils/captureReview'
 import { SEND_KINDS, type CaptureSendView, type SendForm, type SendKind, cancellable, sendBody, sendState, titleFrom, MAX_SEND_QUESTION, MAX_TICKET_TITLE } from '~/utils/captureSend'
 
 /**
@@ -77,7 +78,10 @@ async function loadDecisions() {
 }
 
 /** The destinations offered: Attach to a decision while the run has an open one. */
-const kinds = computed(() => SEND_KINDS.filter((k) => k.kind !== 'decision' || decisions.value.length))
+/** A review's kinds are offered on a capture of a candidate's preview alone (Decision 9, CaptureSendReview). */
+const reviewable = computed(() => reviewOffered(props.capture).offered)
+const reviewKind = computed(() => kind.value === 'review' || kind.value === 'review-draft')
+const kinds = computed(() => SEND_KINDS.filter((k) => (k.kind !== 'decision' || decisions.value.length) && ((k.kind !== 'review' && k.kind !== 'review-draft') || reviewable.value)))
 const decisionItems = computed(() => decisions.value.map((d) => ({ label: `${d.id} · ${d.request.question}`, value: d.id })))
 
 onMounted(() => {
@@ -245,7 +249,9 @@ async function cancel(s: CaptureSendView) {
       <p class="text-xs text-muted">A comment on the decision names this capture at r{{ capture.rev }}; whoever answers it reads what was sent.</p>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2">
+    <CaptureSendReview v-else-if="kind === 'review' || kind === 'review-draft'" :key="kind" :capture="capture" :kind="kind" @sent="readSends" />
+
+    <div v-if="!reviewKind" class="flex flex-wrap items-center gap-2">
       <UButton label="Send" icon="i-lucide-send" :loading="sending" :disabled="!!problem || sending" data-capture-send-go @click="send" />
       <span v-if="problem" class="text-xs text-muted" data-send-problem>{{ problem }}</span>
     </div>
