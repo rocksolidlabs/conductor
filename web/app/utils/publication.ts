@@ -102,6 +102,17 @@ export function pickTarget(asked: string | undefined, targets: ReadonlyArray<{ t
   return { target: targets[0]?.target ?? '', refused: '' }
 }
 
+/** What Publish as new says when the item its text was written for is no longer offered. */
+export const TARGET_GONE = 'The item this was written for can no longer be published to: pick where it goes, or discard it.'
+
+/**
+ * Where Publish as new opens: on the item the publication was written for while the offer still lists it, else on none, with the
+ * words that say so. Never on another item in its place: the text was written for that one, and the person picks where it goes.
+ */
+export function asNewTarget(written: string, targets: ReadonlyArray<{ target: string }>): { target: string; gone: string } {
+  return targets.some((t) => t.target === written) ? { target: written, gone: '' } : { target: '', gone: TARGET_GONE }
+}
+
 /** `owner/repo#n` of a GitHub item's address, '' for one that is not. */
 export function itemRef(url: string): string {
   try {

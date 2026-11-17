@@ -13,6 +13,7 @@ import {
   markerWords,
   normalBody,
   offeredParts,
+  asNewTarget,
   pickTarget,
   previewHolds,
   previewParts,
@@ -66,6 +67,8 @@ const error = ref('')
 const asNew = ref(false)
 /** The target asked for is not among the offer's: why, in words; nothing is offered to prepare. */
 const targetRefused = ref('')
+/** Publish as new of a publication whose own item is no longer offered: the words that say so, and no target until one is picked. */
+const targetGone = ref('')
 /** Each opening is a new one: an answer to an earlier opening changes nothing in this one. */
 let opening = 0
 
@@ -121,6 +124,7 @@ async function start() {
   asNew.value = props.from?.mode === 'new'
   target.value = ''
   targetRefused.value = ''
+  targetGone.value = ''
   // A failed one sent again needs no offer: its preview is read, never composed here.
   if (props.from?.mode !== 'resend') {
     busy.value = 'offer'
@@ -148,9 +152,12 @@ async function start() {
       sendOp.value = mintCommandId()
       step.value = 'preview'
     } else {
-      // Its text as the person approved it, the parts already in it; the target as before when it is still offered.
+      // Its text as the person approved it, the parts already in it; the target as before when it is still offered, and none
+      // when it is not: the text was written for that item, so it is never opened on another in its place.
       text.value = p.publication.body
-      if (offer.value?.targets.some((t) => t.target === p.publication.target)) target.value = p.publication.target
+      const again = asNewTarget(p.publication.target, offer.value?.targets ?? [])
+      target.value = again.target
+      targetGone.value = again.gone
     }
   } catch (e) {
     if (n === opening) error.value = (e as Error).message
@@ -295,6 +302,7 @@ const reading = computed(() => (busy.value === 'prepare' ? 'Reading GitHub: the 
           <p v-else-if="!targets.length" class="text-muted" data-publish-no-target>This ticket has no linked GitHub item and no link to one: link one to publish.</p>
           <template v-if="!targetRefused && targets.length">
             <p v-if="asNew" class="text-muted" data-publish-as-new>{{ PUBLISH_AS_NEW_WARNING }}</p>
+            <p v-if="targetGone" class="text-muted" data-publish-target-gone>{{ targetGone }}</p>
             <UFormField label="Published to" size="sm">
               <USelect v-model="target" :items="targets" class="w-full" aria-label="Where it is published" data-publish-target />
             </UFormField>

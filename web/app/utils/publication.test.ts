@@ -17,6 +17,8 @@ import {
   normalBody,
   offeredParts,
   packageSourceWords,
+  TARGET_GONE,
+  asNewTarget,
   pickTarget,
   previewHolds,
   previewParts,
@@ -258,6 +260,14 @@ describe('the fix pass of the one review', () => {
     expect(pickTarget('link:L9', []).target).toBe('')
     expect(pickTarget(undefined, targets)).toEqual({ target: 'linked', refused: '' })
     expect(pickTarget(undefined, [])).toEqual({ target: '', refused: '' })
+  })
+
+  it('opens Publish as new on the item the text was written for, or on none: never another item', () => {
+    expect(asNewTarget('link:L2', targets)).toEqual({ target: 'link:L2', gone: '' })
+    // Its own item no longer offered (its link removed, its host's token gone): no target, and the words that say so.
+    expect(asNewTarget('link:L9', targets)).toEqual({ target: '', gone: TARGET_GONE })
+    expect(asNewTarget('link:L9', [])).toEqual({ target: '', gone: TARGET_GONE })
+    expect(TARGET_GONE).toMatch(/pick where it goes, or discard it/)
   })
 
   it('says the close by the reason the publication holds', () => {
