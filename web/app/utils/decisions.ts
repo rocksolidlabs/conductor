@@ -210,8 +210,9 @@ export function optionsOf(d: Pick<Decision, 'type' | 'request'>): DecisionOption
   return d.request.options ?? []
 }
 
-/** The option the requester recommends, by its index; -1 for none. */
-export function recommended(d: Pick<Decision, 'type' | 'request'>): number {
+/** The option the requester recommends, by its index; -1 for none, and always for a selection: nothing is preselected (CP1's I6). */
+export function recommended(d: Pick<Decision, 'type' | 'request'> & { origin?: DecisionOrigin }): number {
+  if (d.origin === 'compare') return -1
   const r = d.request.recommendation
   return typeof r === 'number' && r >= 0 && r < optionsOf(d).length ? r : -1
 }
@@ -327,9 +328,42 @@ export function acceptedAnswer(d: Pick<Decision, 'type' | 'request' | 'responses
  */
 export function confirmAuthorizes(d: Pick<Decision, 'origin' | 'type' | 'request'>, choice: number): string {
   const a = d.request.authorizes
-  if (!a) return ''
+  // A selection's confirm says that it is final in words of its own (selectionWords), whichever is picked.
+  if (!a || d.origin === 'compare') return ''
   if (d.origin === 'plan' || d.type === 'assignment') return choice === 0 ? `A yes authorizes: ${a}` : ''
   return d.type === 'approval' ? `This approval authorizes: ${a}` : ''
+}
+
+/** The finality words a selection says before its Send, for a candidate (CP1's I12, the plan's words) and for None of these. */
+export const SELECTION_FINAL = 'Final: the candidates not selected cannot be continued; a new comparison tries them again.'
+export const SELECTION_FINAL_NONE = 'Final: the comparison ends with no candidate selected; a new comparison tries the candidates again.'
+/** The rationale field's words: optional and kept with the answer, or a selection's, required. */
+export const RATIONALE_OPTIONAL = 'Why (optional, kept with the answer)…'
+export const RATIONALE_REQUIRED = 'Why (required: the record of this selection)…'
+
+/** Whether an answer of `d` must carry a rationale: a selection's always, on every path (CP1's I7; the server refuses one without). */
+export function rationaleRequired(d: Pick<Decision, 'origin'>): boolean {
+  return d.origin === 'compare'
+}
+
+/**
+ * How the answer to `d` is asked for, choice `choice` picked: the confirm button's label, the finality words above it ('' for none),
+ * the rationale's placeholder, and whether the confirm may be sent with `rationale` as typed. A selection's confirm names the
+ * candidate and says final ("Select approach-b (final)"; None of these "Answer None of these (final)"), says before it that the answer
+ * is final, and is held until the rationale holds text. Every other origin is as DR1 made it.
+ */
+export function answerAsk(d: Pick<Decision, 'origin' | 'type' | 'request'>, choice: number | undefined, rationale: string): { confirm: string; final: string; placeholder: string; ready: boolean } {
+  const o = choice === undefined ? undefined : optionsOf(d)[choice]
+  const required = rationaleRequired(d)
+  const ready = !required || !!rationale.trim()
+  if (!required) return { confirm: `Answer ${o?.label ?? ''}`, final: '', placeholder: RATIONALE_OPTIONAL, ready }
+  const task = o?.subject?.kind === 'candidate' ? o.subject.task : undefined
+  return {
+    confirm: task ? `Select ${task} (final)` : `Answer ${o?.label ?? ''} (final)`,
+    final: o ? (task ? SELECTION_FINAL : SELECTION_FINAL_NONE) : '',
+    placeholder: RATIONALE_REQUIRED,
+    ready,
+  }
 }
 
 /** An option's subject in words with its link (a selection's candidate, on its comparison when the ticket's key is known); null for none. */
