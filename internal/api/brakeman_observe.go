@@ -671,6 +671,66 @@ func admitRunPath(r *http.Request, o *observer) (bool, error) {
 	return ok, err
 }
 
+// admitChainPath admits a route whose path names a run of a chain every
+// run of which is in the grant: a comparison is read over its whole
+// chain (its continuations and the runs it continues), so a scope that
+// names some of the chain's runs and not the others is refused the read
+// (outside_scope), as one naming none is.
+func admitChainPath(r *http.Request, o *observer) (bool, error) {
+	id := r.PathValue("run")
+	if !crew.ValidRunID(id) {
+		return true, nil // the handler answers it
+	}
+	chain, err := o.chainOf(r.Context(), id)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range chain {
+		if _, ok, err := o.runAdmitted(r.Context(), run); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// maxObservedChain bounds the runs of a chain admitChainPath reads, a
+// comparison's own bound (crew's maxCompareChain).
+const maxObservedChain = 256
+
+// chainOf is the runs of the chain the run belongs to, as the ledger
+// links them: back along continued_from, on along continued_by, each way
+// at most maxObservedChain; the run alone without a ledger or a row.
+func (o *observer) chainOf(ctx context.Context, id string) ([]string, error) {
+	ld := o.rr.s.ledger
+	if ld == nil {
+		return []string{id}, nil
+	}
+	row, ok, err := ld.Run(ctx, id)
+	if err != nil || !ok {
+		return []string{id}, err
+	}
+	chain := []string{id}
+	seen := map[string]bool{id: true}
+	for _, way := range []func(r ledger.RunRow) string{
+		func(r ledger.RunRow) string { return r.ContinuedFrom },
+		func(r ledger.RunRow) string { return r.ContinuedBy },
+	} {
+		for next, n := way(row), 0; next != "" && !seen[next] && n < maxObservedChain; n++ {
+			seen[next] = true
+			chain = append(chain, next)
+			r, ok, err := ld.Run(ctx, next)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				break
+			}
+			next = way(r)
+		}
+	}
+	return chain, nil
+}
+
 // admitTicketPath admits a route whose path names a ticket in the grant.
 func admitTicketPath(r *http.Request, o *observer) (bool, error) {
 	key := r.PathValue("key")
@@ -1647,11 +1707,19 @@ func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error)
 // commit its ref resolves to now, and each check cell's receipt with its
 // check: ref, noted at its state, the commit it checked and its log's
 // SHA-256, so a brief citing them after this read alone cites what it
-// observed. A candidate of a run outside the grant (an imported one's
-// source) is shown without a ref and not noted. The selection and the
-// state it gives the comparison are left out: the person's answer is
-// never Brakeman's input.
+// observed. The read is admitted only when every run of the chain is in
+// the grant (admitChainPath), and the chain is held to it again once
+// the reply is made, so a continuation made meanwhile outside the grant
+// refuses the read (outside_scope) rather than showing its runs. The
+// selection and the state it gives the comparison are left out: the
+// person's answer is never Brakeman's input.
 func filterComparison(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	switch ok, err := admitChainPath(r, o); {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, &apiError{Code: "outside_scope", Message: "outside the request's scope", status: http.StatusForbidden}
+	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
@@ -2729,7 +2797,7 @@ var brakemanReads = []sharedRead{
 	// A comparison as the page measures it (docs/plans/compare-crew.md,
 	// PR-5): runs data alone (the crew as launched, the ledger's rows, git
 	// of the run's repository), nothing of the touched index.
-	{"GET /api/runs/{run}/comparison", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterComparison}, crew.MaxComparison},
+	{"GET /api/runs/{run}/comparison", readSpec{class: brakeman.ClassRuns, admit: admitChainPath, filter: filterComparison}, crew.MaxComparison},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
 	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers

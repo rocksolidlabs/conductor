@@ -741,3 +741,51 @@ func TestTheCompareBriefIsHeldAtSubmit(t *testing.T) {
 		t.Fatalf("the table: %d %v", status, out)
 	}
 }
+
+// A comparison is read over its whole chain, so a turn reads it only when
+// its scope admits every run of the chain: a scope naming the launched
+// run and not its continuation, or the continuation and not the launched
+// run, is refused outside_scope through either run, nothing noted; one
+// naming both reads it.
+func TestBrakemanReadsAComparisonWhoseWholeChainIsInScope(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.expect(t, "POST", "/api/runs/"+de.run+"/stop", nil, http.StatusOK, "")
+	r2 := entityOf(t, de.expect(t, "POST", "/api/runs/"+de.run+"/resume", nil, http.StatusCreated, ""), "run")["id"].(string)
+	de.expectAs(t, adminToken, "GET", "/api/runs/"+r2+"/comparison", nil, http.StatusOK, "")
+	turn := func(runs ...string) (string, string, string) {
+		t.Helper()
+		de.bk.enable(t, "bk", func(c map[string]any) {
+			c["visibility"].(map[string]any)["runs"] = true
+			c["scope"] = map[string]any{"runs": runs}
+		})
+		status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+		if status != http.StatusCreated {
+			t.Fatalf("ask: %d %v", status, req)
+		}
+		id := req["id"].(string)
+		sid, tok, _ := de.bk.turnSession(t, id)
+		return id, sid, tok
+	}
+	endTurn := func(sid string) {
+		t.Helper()
+		de.expect(t, "POST", "/api/runs/"+de.bk.runOf(t, sid)+"/stop", nil, http.StatusOK, "")
+		de.bk.slotFree(t)
+	}
+	for _, scope := range [][]string{{de.run}, {r2}} {
+		id, sid, tok := turn(scope...)
+		for _, run := range []string{de.run, r2} {
+			status, raw, out := de.readComparison(t, tok, sid, run)
+			if status != http.StatusForbidden || errorCode(out) != "outside_scope" || strings.Contains(string(raw), "approach-") {
+				t.Fatalf("scope %v reading %s: %d %s", scope, run, status, raw)
+			}
+		}
+		if log, err := de.bk.desk.st.Reads(id); err != nil || len(log.Reads) != 0 {
+			t.Fatalf("scope %v noted %v %v", scope, log.Reads, err)
+		}
+		endTurn(sid)
+	}
+	_, sid, tok := turn(de.run, r2)
+	if status, raw, _ := de.readComparison(t, tok, sid, de.run); status != http.StatusOK {
+		t.Fatalf("the whole chain in scope: %d %s", status, raw)
+	}
+}
