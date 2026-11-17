@@ -863,6 +863,90 @@ function useUpload() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// A ticket's publications to GitHub (Program item IN1a, docs/protocol.md, "A ticket's publications").
+
+/** A publication's state: `unconfirmed` is never sent again (GitHub may still show its comment). */
+export type PublicationState = 'draft' | 'sending' | 'sent' | 'failed' | 'unconfirmed' | 'discarded'
+
+/** A publication as a list carries it, without its body (dispatch.PublicationSummary). Times are RFC 3339; a zero one is absent. */
+export interface PublicationSummary {
+  id: string
+  ticket: string
+  /** `linked` (the ticket's linked item) or `link:<id>`. */
+  target: string
+  /** `issue` or `change`, GitHub's type of the item read at the prepare. */
+  targetKind: string
+  targetUrl: string
+  /** `owner/repo#n`. */
+  targetRef: string
+  targetNodeId: string
+  targetSpaceId: string
+  /** Of another store instance (a restored data directory): never sent and never closed here. */
+  restored?: boolean
+  /** GitHub's hidden marker, `<!-- conductor-publication:<id> -->`: the publication's random id, nothing of the ticket. */
+  marker: string
+  postSha256: string
+  parts: string[]
+  closeIssue?: 'completed' | 'not_planned'
+  state: PublicationState
+  tries: number
+  attempt: number
+  findSince?: string
+  sentAsId?: string
+  sentAsLogin?: string
+  remoteId?: string
+  remoteUrl?: string
+  closeState?: 'pending' | 'closing' | 'closed' | 'refused'
+  closeTries: number
+  closeError?: string
+  error?: string
+  sendingAt?: string
+  sentAt?: string
+  sentBy?: string
+  createdAt: string
+  createdBy: string
+  rev: number
+}
+
+/** A publication in its own read, its body among it. */
+export type Publication = PublicationSummary & { body: string }
+
+/** What the composer may offer (GET …/publish/offer): each part's exact Markdown, and where a publication may go. */
+export interface PublishOffer {
+  parts: Array<{ name: string; markdown: string }>
+  targets: Array<{ target: string; url: string }>
+}
+
+/** A publication prepared, or read: `preview` the exact bytes Send posts, `postSha256` their SHA-256, which Send names. */
+export interface PublicationPreview {
+  publication: Publication
+  preview: string
+  postSha256: string
+}
+
+/** A publication made (POST …/publications, 201). */
+export type PreparedPublication = PublicationPreview & { receipt: DispatchReceipt }
+
+/** What a publication's prepare carries beside the op's fields. */
+export interface NewPublication {
+  target: string
+  body: string
+  parts?: string[]
+  closeIssue?: 'completed' | 'not_planned'
+}
+
+export interface PublicationReply {
+  receipt: DispatchReceipt
+  publication: PublicationSummary | null
+}
+
+export interface PublicationsPage {
+  publications: PublicationSummary[]
+  /** The cursor of the next page, '' at the end. */
+  next: string
+}
+
 /** Dispatch's routes, over useApi: the workbench token in the header, errors as ApiError (a refused operation's `body` carries its receipt). */
 export function useDispatchApi() {
   const { request, requestBlob } = useApi()
@@ -939,6 +1023,19 @@ export function useDispatchApi() {
       request<RunCandidatesPage>(`/api/runs/${enc(run)}/candidates?task=${enc(task)}&before=${before}`),
     /** An operation's receipt, read without acting. */
     receipt: (opId: string) => request<{ receipt: DispatchReceipt }>(`/api/dispatch/ops/${enc(opId)}`).then((r) => r.receipt),
+    // A ticket's publications to GitHub (IN1a): no timeout of the page's own, the server's deadline bounds each.
+    publishOffer: (key: string) => request<PublishOffer>(`/api/dispatch/tickets/${enc(key)}/publish/offer`),
+    preparePublication: (key: string, body: OpBody & NewPublication) => request<PreparedPublication>(`/api/dispatch/tickets/${enc(key)}/publications`, { method: 'POST', body }),
+    /** A page of a ticket's publications, newest first, after `cursor`; `needYou` those a person can act on. */
+    publications: (key: string, cursor = '', needYou = false) => {
+      const q = [cursor ? `cursor=${enc(cursor)}` : '', needYou ? 'needYou=1' : ''].filter(Boolean).join('&')
+      return request<PublicationsPage>(`/api/dispatch/tickets/${enc(key)}/publications` + (q ? `?${q}` : ''))
+    },
+    publication: (id: string) => request<PublicationPreview>(`/api/dispatch/publications/${enc(id)}`),
+    sendPublication: (id: string, body: OpBody & { postSha256: string }) => request<PublicationReply>(`/api/dispatch/publications/${enc(id)}/send`, { method: 'POST', body }),
+    checkPublication: (id: string) => request<{ publication: PublicationSummary }>(`/api/dispatch/publications/${enc(id)}/check`, { method: 'POST', body: {} }),
+    closePublication: (id: string, body: OpBody) => request<{ publication: PublicationSummary }>(`/api/dispatch/publications/${enc(id)}/close`, { method: 'POST', body }),
+    discardPublication: (id: string, body: OpBody) => request<PublicationReply>(`/api/dispatch/publications/${enc(id)}/discard`, { method: 'POST', body }),
   }
 }
 
