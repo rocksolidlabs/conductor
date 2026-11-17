@@ -600,9 +600,9 @@ redirect is followed and a proxy used as before.
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?, activitySeq?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
-page's Decide tab, below, Decision links: a publisher mints a decision link
+page's Needs you tab, below, Decision links: a publisher mints a decision link
 only at one that says so; absent from an older switchyard, and from a
-switchyard built before its join page has the Decide tab (it relays the
+switchyard built before its join page has the Needs you tab (it relays the
 lane and keeps desks all the same, but says nothing), a boolean in the
 64 KiB host message; `iceServers`: the configured ones, then the media provider's for the
 host's session, as the viewer's welcome carries them, none dropped for

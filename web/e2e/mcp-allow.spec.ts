@@ -122,7 +122,7 @@ async function toolApproval(page: Page, api: Api, state: { home: string }, narro
     else await expect(choices.nth(i)).not.toHaveAttribute('data-choice-mode')
   }
 
-  // Needs your decision: the question's item, its answers the form's choices, the two mode answers after the others.
+  // Needs you: the question's item, its answers the form's choices, the two mode answers after the others.
   const ref = `question:${s.id}/${att?.id ?? ''}`
   await page.goto('/decisions')
   await page.locator(`[data-inbox-row="${ref}"]`).click()

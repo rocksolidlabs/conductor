@@ -6,7 +6,7 @@ import { budget as budgetMs, decision, decisionServer, decisionUntil, decisionsO
 // DR1's records on the decision page (docs/plans/decision-inbox.md, Program item MB0, PR-4), on a phone (390 x 844, touch), on a server
 // of the spec's own (decisions-helpers: its decisions are its alone, and it is restarted over its data directory). A ticket's approved
 // revision names an approval, `ship`, before `deploy`; two runs are launched from it, each opening its gate; a third run's agent asks
-// the operator a clarification and waits. From the Decide tab, through DR1's card and controls drawn inside the item:
+// the operator a clarification and waits. From the Needs you tab, through DR1's card and controls drawn inside the item:
 //
 // - the first gate: Approve picked, the record moved by a comment through the API, Confirm refused with words and nothing recorded;
 //   read again, approved, its four states through to applied;
@@ -216,7 +216,7 @@ function states(card: ReturnType<Page['locator']>): Promise<Record<string, strin
   return card.locator('[data-decision-step]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-decision-step'), e.getAttribute('data-step-status')])))
 }
 
-test('a gate answered from the Decide tab through DR1\'s card, a stale response refused, the ticket\'s link, Ask for more, a restart, and an answer waiting for its run', async ({ browser }) => {
+test('a gate answered from the Needs you tab through DR1\'s card, a stale response refused, the ticket\'s link, Ask for more, a restart, and an answer waiting for its run', async ({ browser }) => {
   test.slow()
   const question = 'May deploy go out?'
   // Revision 1 with the gate, approved; two runs launched from it, each opening its own gate with its first transaction.
@@ -236,7 +236,7 @@ test('a gate answered from the Decide tab through DR1\'s card, a stale response 
     .poll(async () => (asked = (await decisionsOf(srv.api, asking)).find((d) => d.asker?.task === 'ask' && d.state === 'open')?.id ?? ''), { timeout: 120_000, intervals: [500], message: "ask's attempt asks its decision" })
     .toMatch(/^dr-[1-9][0-9]*$/)
 
-  // The Decide tab: the first gate's row, and its item drawn through DR1's card, with the inbox's brief and what waits around it.
+  // The Needs you tab: the first gate's row, and its item drawn through DR1's card, with the inbox's brief and what waits around it.
   const phone = await phonePage(browser, srv.started)
   budget(6)
   await phone.goto('/decisions')

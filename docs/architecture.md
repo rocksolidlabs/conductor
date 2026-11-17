@@ -1216,7 +1216,7 @@ carried over the last hour for the operator's card.
 
 ### Answering from a phone
 
-Needs your decision (docs/plans/decision-inbox.md) is answered from a phone
+Needs you (docs/plans/decision-inbox.md) is answered from a phone
 one of two ways. **On the LAN**, the phone opens the server's own page,
 `/decisions`, with the workbench token, and acts through each operation's
 own route. **Away from the LAN**, it holds a decision link: a control link
@@ -1252,7 +1252,7 @@ stores nothing of a decision, runs no crew and answers nothing: every read
 and every action is the publisher's, through the item's own operation
 (the question's claim, the engine's command at its revision), as the
 link's actor, `link:<id>`. A switchyard says it carries the lane in its
-`registered` (`decisions`) only when its join page has the Decide tab;
+`registered` (`decisions`) only when its join page has the Needs you tab;
 at one that does not, the publisher mints no decision link
 (`switchyard_too_old`).
 
