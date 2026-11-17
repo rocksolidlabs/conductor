@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { dayPage, expect, test, useTheme, type Api, type Session } from './fixtures'
+import { atRest, dayPage, expect, test, useTheme, type Api, type Session } from './fixtures'
 import { BOX_SLACK, noOverlap, noSideways, probeColour, uncut } from './layout'
 
 // A session's page where the terminal has the room (the UX review, P11, D7, D9): the inspector closed until a person opens it, the
@@ -238,6 +238,8 @@ const GUTTER = 16
 async function wholeShown(page: Page, at: string, header: Locator, height: number) {
   const whole = page.locator('[data-session-title-whole]')
   await expect(whole, `${at}: the popover shows the whole name`).toHaveText(LONG_NAME)
+  // The popover scales in as it opens: it is measured at rest (in CI its text, measured 0.6 px out of a box still scaled, "ran out").
+  await atRest(whole)
   const m = await whole.evaluate((e) => {
     const box = e.closest('[role="dialog"]')!.getBoundingClientRect()
     return { sw: e.scrollWidth, cw: e.clientWidth, sh: e.scrollHeight, ch: e.clientHeight, left: box.left, right: box.right, top: box.top, bottom: box.bottom, vw: innerWidth, vh: innerHeight }

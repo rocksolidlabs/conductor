@@ -246,15 +246,27 @@ export async function rowAnswer(page: Page, row: Locator): Promise<Locator> {
   await expect(panel).toBeVisible()
   // The panel scales in as it opens (the popover's 100 ms): it is returned at rest, its opening animations ended, so that a spec
   // that measures it does not measure a panel still moving.
-  await panel.evaluate((el) =>
-    Promise.all(
-      document
-        .getAnimations()
-        .filter((a) => a.effect instanceof KeyframeEffect && a.effect.target instanceof Element && a.effect.target.contains(el))
-        .map((a) => a.finished.catch(() => undefined)),
-    ).then(() => undefined),
-  )
+  await atRest(panel)
   return panel
+}
+
+/**
+ * Waits until nothing moves what `l` draws: no running animation or transition on it, on an element it lies in (a popover, a
+ * tooltip or a dialog that scales in as it opens) or on one inside it, each awaited by its own `finished`, again until none is
+ * left. An endless one is never waited for. A box or a text measured after it is the last frame's, not one passed through
+ * (AGENTS.md, "Measure a thing at rest"): call it between a thing's appearing and its measure.
+ */
+export async function atRest(l: Locator): Promise<void> {
+  await l.evaluate(async (el) => {
+    for (;;) {
+      const moving = document.getAnimations().filter((a) => {
+        const t = (a.effect as KeyframeEffect | null)?.target
+        return !!t && (t.contains(el) || el.contains(t)) && a.playState === 'running' && Number.isFinite(Number(a.effect?.getComputedTiming().endTime))
+      })
+      if (!moving.length) return
+      await Promise.all(moving.map((a) => a.finished.catch(() => undefined)))
+    }
+  })
 }
 
 /**

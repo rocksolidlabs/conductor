@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
+import { atRest, dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
 import { inside, noOverlap, tabTo, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
@@ -1191,6 +1191,7 @@ test("each sidebar tile's tooltip shows its sentence whole, inside the window, a
         const content = page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { includeHidden: true }) })
         const text = content.locator('[data-slot="text"]')
         await expect(text, `${at}: ${name}'s tooltip`).toBeVisible()
+        await atRest(text)
         const m = await text.evaluate((e) => {
           const box = e.closest('[data-slot="content"]')!.getBoundingClientRect()
           return { sw: e.scrollWidth, cw: e.clientWidth, sh: e.scrollHeight, ch: e.clientHeight, left: box.left, right: box.right, top: box.top, bottom: box.bottom, vw: innerWidth, vh: innerHeight, words: e.textContent }
