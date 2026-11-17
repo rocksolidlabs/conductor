@@ -54,7 +54,9 @@ type supportClaim struct {
 	Task    string `json:"task"`
 	Attempt int    `json:"attempt"`
 	Summary string `json:"summary"`
-	Favours string `json:"favours"`
+	// SummaryCut says the summary is longer than it is given here.
+	SummaryCut bool   `json:"summaryCut,omitempty"`
+	Favours    string `json:"favours"`
 }
 
 // supportReview is the verdict of a review of a candidate's commit, and
@@ -65,7 +67,10 @@ type supportReview struct {
 	Attempt  int      `json:"attempt"`
 	Verdict  string   `json:"verdict"`
 	Findings []string `json:"findings"`
-	Favours  string   `json:"favours,omitempty"`
+	// FindingsTotal is how many findings the review gave, of which
+	// Findings holds the first maxReviewFindings.
+	FindingsTotal int    `json:"findingsTotal"`
+	Favours       string `json:"favours,omitempty"`
 }
 
 // supportBrakeman is the newest compare request about the comparison:
@@ -115,6 +120,7 @@ func (s *Server) comparisonSupporting(ctx context.Context, c crew.Comparison) *c
 			continue
 		}
 		out.Claims = append(out.Claims, supportClaim{Task: cand.Task, Attempt: cand.Attempt, Summary: cutEncoded(res.Summary, maxClaimSummary), Favours: cand.Task})
+		out.Claims[len(out.Claims)-1].SummaryCut = len(out.Claims[len(out.Claims)-1].Summary) < len(res.Summary)
 		if r, ok := s.reviewOf(launched, chain, attemptsOf, cand); ok {
 			out.Reviews = append(out.Reviews, r)
 		}
@@ -185,7 +191,7 @@ func (s *Server) reviewOf(launched crew.Crew, chain []string, attemptsOf func(st
 		if !ok {
 			continue
 		}
-		r := supportReview{Task: best.TaskID, Attempt: best.N, Verdict: cutEncoded(res.Verdict, maxSupportVerdict), Findings: []string{}}
+		r := supportReview{Task: best.TaskID, Attempt: best.N, Verdict: cutEncoded(res.Verdict, maxSupportVerdict), Findings: []string{}, FindingsTotal: len(res.Findings)}
 		if res.Verdict == crew.VerdictApproved {
 			r.Favours = cand.Task
 		}

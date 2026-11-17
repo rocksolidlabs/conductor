@@ -329,12 +329,12 @@ func TestTheSupportingPartKeepsItsBound(t *testing.T) {
 		t.Fatalf("claims %d, reviews %d", len(sup.Claims), len(sup.Reviews))
 	}
 	for _, c := range sup.Claims {
-		if e, _ := json.Marshal(c.Summary); len(e)-2 > maxClaimSummary || len(e)-2 < maxClaimSummary-6 {
+		if e, _ := json.Marshal(c.Summary); len(e)-2 > maxClaimSummary || len(e)-2 < maxClaimSummary-6 || !c.SummaryCut {
 			t.Errorf("%s's summary is %d bytes encoded", c.Task, len(e)-2)
 		}
 	}
 	for _, r := range sup.Reviews {
-		if r.Attempt != 2 || r.Verdict != crew.VerdictNeedsChanges || len(r.Findings) != maxReviewFindings {
+		if r.Attempt != 2 || r.Verdict != crew.VerdictNeedsChanges || len(r.Findings) != maxReviewFindings || r.FindingsTotal != 30 {
 			t.Errorf("review %s/%d %s with %d findings", r.Task, r.Attempt, r.Verdict, len(r.Findings))
 		}
 		for _, f := range r.Findings {
@@ -691,7 +691,7 @@ func TestTheBriefIsSupportingOnly(t *testing.T) {
 	if bk["request"] != id || bk["brief"] != id || bk["state"] != brakeman.StateBriefed {
 		t.Fatalf("Brakeman's part: %v", sup)
 	}
-	if claims, _ := sup["claims"].([]any); len(claims) != 2 || claims[0].(map[string]any)["summary"] != "done by review-a" {
+	if claims, _ := sup["claims"].([]any); len(claims) != 2 || claims[0].(map[string]any)["summary"] != "done by review-a" || claims[0].(map[string]any)["summaryCut"] != nil {
 		t.Fatalf("the claims: %v", sup["claims"])
 	}
 	if reviews, _ := sup["reviews"].([]any); len(reviews) != 2 || reviews[0].(map[string]any)["verdict"] != crew.VerdictApproved || reviews[0].(map[string]any)["task"] != "review-a" {
