@@ -8,8 +8,9 @@ import { isActive } from '~/utils/attention'
  * The phone's bar at the foot (design 3e): Needs you first (with the one
  * number of what waits), Sessions, Yard (the asking sessions on its grid,
  * in neutral ink), Crews; Dispatch, Brakeman (while the server has it),
- * Agents, History, Settings, Alerts and your menu under More; the
- * alerts end with "All alert rules", the Alerts panel. Every target is at
+ * Agents, History, Settings, Alerts and your menu under More, lit
+ * while one of its pages is shown, Brakeman's row with the briefs not
+ * yet opened; the alerts end with "All alert rules", the Alerts panel. Every target is at
  * least 44 px tall; the padding reads the safe
  * area under the home indicator. Below lg only: the one root hides itself
  * at lg and up (a class from the layout would not reach several roots).
@@ -47,6 +48,10 @@ function active(id: PageId): boolean {
 const more = ref(false)
 const nameOpen = ref(false)
 const pages = computed(() => phoneMore({ desktop: desktop.isDesktop.value, brakeman: brakeman.available.value === true }))
+/** More is lit while the page shown is one of its own, as a tab is while its page is shown. */
+const moreActive = computed(() => pages.value.some((p) => active(p.id)))
+/** The briefs not yet opened, on Brakeman's row in neutral ink: the phone's one amber number is Needs you's. */
+const brakemanCount = computed(() => brakeman.unopened.value.length)
 /** Your menu's items as buttons, the sheet closed before each acts. */
 const account = computed(() =>
   accountItems(hasToken.value, {
@@ -96,7 +101,15 @@ function act(fn?: (e: Event) => void) {
       </span>
       {{ t.label }}
     </NuxtLink>
-    <button ref="moreButton" type="button" class="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium text-muted" :class="more && 'text-primary'" data-bottom-tab="more" @click="more = true">
+    <button
+      ref="moreButton"
+      type="button"
+      class="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 text-[10px] font-medium"
+      :class="more || moreActive ? 'text-primary' : 'text-muted'"
+      :aria-current="moreActive ? 'page' : undefined"
+      data-bottom-tab="more"
+      @click="more = true"
+    >
       <UIcon name="i-lucide-ellipsis" class="size-5" />
       More
     </button>
@@ -105,7 +118,11 @@ function act(fn?: (e: Event) => void) {
     <template #body>
       <div class="flex flex-col gap-4" data-bottom-more>
         <div class="flex flex-col">
-          <UButton v-for="p in pages" :key="p.to" :label="p.label" :icon="p.icon" :to="p.to" color="neutral" variant="ghost" size="lg" class="min-h-11 justify-start" @click="more = false" />
+          <UButton v-for="p in pages" :key="p.to" :label="p.label" :icon="p.icon" :to="p.to" color="neutral" variant="ghost" size="lg" class="min-h-11 justify-start" :data-more-page="p.id" @click="more = false">
+            <template v-if="p.id === 'brakeman' && brakemanCount" #trailing>
+              <UBadge :label="String(brakemanCount)" color="neutral" variant="subtle" size="sm" :aria-label="`${brakemanCount} new ${brakemanCount === 1 ? 'brief' : 'briefs'}`" data-more-count />
+            </template>
+          </UButton>
         </div>
         <AlertSwitches rules @rules="openRules" />
         <div class="flex flex-col border-t border-default pt-2">
