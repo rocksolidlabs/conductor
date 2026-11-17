@@ -254,6 +254,8 @@ const prefill = computed(() => {
 
             <BrakemanAskBar v-if="!phone" label="Ask Brakeman" :chips="chips" size="full" :disabled="askWhy" :prefill="prefill" />
 
+            <BrakemanNow />
+
             <!-- Wide, two columns: the latest brief and Earlier; In progress, In the background and Notes at the side. Narrower than
                  both side by side, one column: In progress between Now and the latest brief (on a phone, after it). -->
             <div class="flex flex-col gap-5 @min-[53.75rem]:flex-row @min-[53.75rem]:items-start">
