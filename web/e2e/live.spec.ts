@@ -16,6 +16,11 @@ import { git, renderConfig, scratchRepo, startServer, stopServer, type Started }
 // pass through); it writes nothing there itself beyond what the agents
 // write as they always do, and takes the trust it made them save off again.
 // The worktrees and branches it makes in the repository are removed after.
+// A machine nobody has used the agents on (a CI runner) is brought there
+// first by scripts/live_setup.py; in CI an agent whose key the run does not
+// hold is skipped, and Codex's hooks row with it (see there). A row whose
+// agent is held by a first-run, sign-in or trust screen says so in one
+// line instead of waiting its time out.
 //
 // What it checks, per agent: a typed prompt answered without a person
 // pressing Enter (and, for Codex, no false "needs input" from its hidden
@@ -36,11 +41,14 @@ const TRUST_WORDS: Record<string, RegExp> = { claude: /project you created or on
 // What answers the trust question with "yes": Claude Code 2.1.288 highlights "No, exit" first, so its yes is Down then Enter
 // (verified in a PTY on 2026-10-03); Codex 0.159 highlights the trusting answer, so Enter alone.
 const TRUST_YES: Record<string, string[]> = { claude: ['ArrowDown', 'Enter'], codex: ['Enter'] }
-const MODEL_ENV: Record<string, Record<string, string>> = {
-  // The cheapest model each agent takes from its environment (verify with each release).
-  claude: { ANTHROPIC_MODEL: process.env.CONDUCTOR_E2E_LIVE_CLAUDE_MODEL ?? 'claude-haiku-4-5-20251001' },
-  codex: {},
+// What the live server's sessions get beside the keys: the cheapest model Claude Code takes from its environment, by its alias
+// (it follows the newest release of that tier; CONDUCTOR_E2E_LIVE_CLAUDE_MODEL names another). Codex runs its default. Claude
+// Code's demo switch (IS_DEMO) is NOT set: with it the tool asked no trust question in a repository it had not seen (#988).
+const SESSION_ENV: Record<string, string> = {
+  ANTHROPIC_MODEL: process.env.CONDUCTOR_E2E_LIVE_CLAUDE_MODEL ?? 'haiku',
 }
+// The key each agent runs on where nobody is signed in.
+const KEY: Record<string, string> = { claude: 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY' }
 
 function onPath(program: string): boolean {
   try {
@@ -143,6 +151,7 @@ const test = base.extend<object, { server: Started & { root: string; untrusted: 
         log: join(root, 'server.log'),
         realAgents: true,
         passEnv: ['USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'CODEX_HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+        env: SESSION_ENV,
       })
       try {
         await use({ ...started, root, untrusted })
@@ -183,18 +192,133 @@ async function pressInTerminal(page: Page, server: Started, sessionId: string, k
   }
 }
 
-/** answerOrExit polls the member's answer; a member that ended before answering fails at once with what to check. */
+/** How long a startup question must stay on a member's screen before its row fails: one a row has just answered is gone sooner. */
+const HELD_MS = 5_000
+
+/**
+ * The words a first run, a sign-in, a hub, a refusal of the key or a tool at work is known by. A row that got no answer says which
+ * of them its member's screen holds, and nothing else of the screen: what a screen says beside them can name an account.
+ */
+const KNOWN_WORDS = [
+  'Choose the text style', 'Select login method', 'Detected a custom API key', 'Do you want to use this API key', 'project you created or one you trust',
+  'Quick safety check', 'Welcome to Claude Code', 'Invalid API key', 'Credit balance', 'Please run /login', 'API Usage Billing',
+  'Sign in with ChatGPT', 'Sign in with Device Code', 'Use an OpenAI API key', 'Sign in another way', 'Welcome to Codex', 'Agent Command Center', 'Folder access',
+  'Trust this folder', 'Do you trust', 'Update available', 'Update now', 'Hooks need review', 'incompatible feature settings', 'Try new model', 'bubblewrap', 'bwrap',
+  'Incorrect API key', '401 Unauthorized', 'status 401', 'status 403', '429 Too Many', 'insufficient_quota', 'exceeded your current quota', 'rate limit',
+  'does not exist', 'not supported', 'not have access', 'must be verified', 'stream error', 'stream disconnected', 'Reconnecting', 'retrying', 'unexpected status',
+  'usage limit', 'billing', 'interrupted', 'esc to interrupt', 'Working', 'Worked for', 'tokens used', 'context left', 'Reply with the single word',
+]
+
+/** The test's page, for a row that fails to say what its member's screen holds (screenHolds). */
+let look: ((sessionId: string, want: string) => Promise<string[]>) | undefined
+/** The agent whose row runs. */
+let current = ''
+/**
+ * Why an agent's later rows are skipped once one of its turns ended in an error on this run's key. Kept in a file of this run (the
+ * runner's process, the parent of every worker): a worker is started anew after a failed test, and what a module holds goes with it.
+ */
+const GAVE_UP = join(tmpdir(), `conductor-e2e-live-gave-up-${process.ppid}.json`)
+function gaveUp(): Record<string, string> {
+  try {
+    return JSON.parse(readFileSync(GAVE_UP, 'utf8')) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+function giveUp(agent: string, why: string) {
+  writeFileSync(GAVE_UP, JSON.stringify({ ...gaveUp(), [agent]: why }))
+}
+/** How long a row waits before it looks once at what the program signalled: an agent that answers does so sooner. */
+const LOOK_MS = 30_000
+
+/**
+ * Which of KNOWN_WORDS the session's screen holds: the page opens the session, the terminal's bytes are read off the page's own
+ * socket as they arrive (the replay a viewer is sent, then what follows) until a second passes with none, and the words are looked
+ * for with the escapes and the spaces taken out (a full-screen program moves the cursor where a line has a space).
+ */
+async function screenHolds(page: Page, server: Started, sessionId: string, want: string): Promise<string[]> {
+  let bytes = ''
+  let last = Date.now()
+  page.on('websocket', (ws) => {
+    if (!ws.url().includes(`/ws/sessions/${sessionId}`)) return
+    ws.on('framereceived', (f) => {
+      const b = typeof f.payload === 'string' ? Buffer.from(f.payload) : f.payload
+      // The protocol's frames: a type byte, then the payload; 0x01 is output, 0x04 the scrollback a new viewer is sent.
+      if (b[0] !== 0x01 && b[0] !== 0x04) return
+      bytes += b.subarray(1).toString('utf8')
+      last = Date.now()
+    })
+  })
+  await signIn(page, server)
+  await page.goto(`${server.baseURL}/sessions/${encodeURIComponent(sessionId)}`)
+  await expect(page.locator('.terminal-host .xterm-screen').first()).toBeVisible()
+  const until = Date.now() + 15_000
+  while (Date.now() < until && (bytes === '' || Date.now() - last < 1_000)) await new Promise((done) => setTimeout(done, 200))
+  // eslint-disable-next-line no-control-regex
+  const plain = bytes.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b[@-Z\\-_]/g, '').replace(/\s+/g, '').toLowerCase()
+  const words = KNOWN_WORDS.filter((w) => plain.includes(w.replace(/\s+/g, '').toLowerCase()))
+  // What the program itself signalled, as counts and its own state words (a notification's text is the agent's and is not printed):
+  // the status sequence Codex sends (OSC 7501, "state=..."), the notifications (OSC 9) and the bells outside any sequence.
+  const states: string[] = []
+  // eslint-disable-next-line no-control-regex
+  for (const m of bytes.matchAll(/\x1b\]7501;([^\x07\x1b]*)(?:\x07|\x1b\\)/g)) {
+    const s = /state=([a-z_-]+)/.exec(m[1] ?? '')?.[1] ?? '?'
+    if (states[states.length - 1] !== s) states.push(s)
+  }
+  // eslint-disable-next-line no-control-regex
+  const notes = [...bytes.matchAll(/\x1b\]9;[^\x07\x1b]*(?:\x07|\x1b\\)/g)].length
+  // eslint-disable-next-line no-control-regex
+  const bells = (bytes.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').match(/\x07/g) ?? []).length
+  const times = plain.split(want.replace(/\s+/g, '').toLowerCase()).length - 1
+  return [...words, `"${want}" ${times} time(s)`, `program states: ${states.join(' > ') || 'none'}`, `notifications: ${notes}`, `bells: ${bells}`, `${bytes.length} bytes read`]
+}
+
+/**
+ * answerOrExit waits for the member's answer. It fails at once, in one line, when the member ended before answering, and when its
+ * session has been held for HELD_MS by a startup question the catalog knows (a first-run, sign-in or trust screen: the agent is not
+ * ready, and no wait changes that). A value handed to expect.poll never ends its wait early, so this is a loop with a deadline.
+ */
 async function answerOrExit(api: Api, runId: string, read: () => Promise<string>, want: string, timeout: number) {
-  await expect
-    .poll(
-      async () => {
-        const m = member(await api.run(runId), 'solo')
-        if (m.status === 'ended') return `ENDED (${m.error || 'the agent exited'}: is it signed in? run it once by hand in the repository)`
-        return read()
-      },
-      { timeout, intervals: [1_000] },
-    )
-    .toContain(want)
+  const until = Date.now() + timeout
+  const lookAt = Date.now() + LOOK_MS
+  let looked = false
+  let held: { words: string; since: number } | undefined
+  let last = ''
+  for (;;) {
+    const m = member(await api.run(runId), 'solo')
+    if (m.status === 'ended') throw new Error(`the agent ended before answering (${m.error || 'it exited'}): is it signed in? run it once by hand in the repository`)
+    const asks = m.sessionId ? (await api.session(m.sessionId)).attention : undefined
+    if (asks?.state === 'needs_input' && asks.source === 'trust') {
+      const words = asks.message ?? ''
+      if (held?.words !== words) held = { words, since: Date.now() }
+      else if (Date.now() - held.since >= HELD_MS) throw new Error(`the agent is not ready: its screen asks "${words}", which nobody here answers`)
+    } else held = undefined
+    last = await read()
+    if (last.includes(want)) return
+    // A turn that ended in an error is never answered, and Conductor's session goes on saying "working" (the program's own status
+    // says error): the row says so once it has waited LOOK_MS, and the agent's other rows are skipped, since the same key runs them.
+    if (!looked && Date.now() >= lookAt && m.sessionId && look) {
+      looked = true
+      const holds = await look(m.sessionId, want).catch(() => [] as string[])
+      if (holds.some((h) => h.startsWith('program states:') && h.endsWith('error'))) {
+        const why = `its turn ended in an error${holds.includes('billing') ? ', and its screen names billing: the provider refuses this key for its quota or its billing' : ''}`
+        if (current) giveUp(current, `${current}: an earlier row's turn ended in an error on this run's key${holds.includes('billing') ? ' (its screen named billing)' : ''}`)
+        throw new Error(`the agent did not answer: ${why}; of the words this suite knows a screen by, its screen holds: ${holds.join(', ')}`)
+      }
+    }
+    if (Date.now() >= until) {
+      // Conductor's own lines about the member, and which known words its screen holds: never the screen itself.
+      const log = (await api.run(runId)).log.slice(-5).map((e) => e.message ?? e.type).join(' | ')
+      const holds = m.sessionId && look ? await look(m.sessionId, want).catch(() => ['(its screen could not be read)']) : []
+      const s = m.sessionId ? await api.session(m.sessionId) : undefined
+      throw new Error(
+        `no "${want}" from the agent in ${timeout / 1000} s; its last words: ${JSON.stringify(last.slice(0, 200))}; the run's log ends: ${log}; ` +
+          `the session: attention ${s?.attention?.state ?? 'none'}/${s?.attention?.source ?? '-'}, reports its turns: ${s?.turns ?? false}; ` +
+          `of the words this suite knows a screen by, its screen holds: ${holds.join(', ') || 'none'}`,
+      )
+    }
+    await new Promise((done) => setTimeout(done, 1_000))
+  }
 }
 
 function cleanup(api: Api, run: Run, repoDir: string) {
@@ -215,6 +339,14 @@ function cleanup(api: Api, run: Run, repoDir: string) {
 for (const agent of ['claude', 'codex']) {
   test.describe(agent, () => {
     test.skip(!onPath(agent), `${agent} is not on the PATH`)
+    // In CI nobody is signed in: an agent runs on its key or not at all. On a person's machine its own login may stand in.
+    test.skip(!!process.env.CI && !process.env[KEY[agent]!], `${agent}: this run holds no ${KEY[agent]}`)
+    test.beforeEach(({ page, server }) => {
+      const why = gaveUp()[agent]
+      test.skip(!!why, why ?? '')
+      current = agent
+      look = (sessionId, want) => screenHolds(page, server, sessionId, want)
+    })
 
     const crewBody = (name: string, cwd: string, prompt: string, yolo: boolean | null, isolation: 'none' | 'worktree') => ({
       name: `Live ${agent} ${name}`,
@@ -260,6 +392,9 @@ for (const agent of ['claude', 'codex']) {
     })
 
     test('reports the files it reads and writes through its hooks', async ({ server }) => {
+      // Codex reports files through hooks a person installs once (`conductor hooks install codex`) and then reviews in Codex itself
+      // ("Hooks need review"): a machine nobody has used has neither, and no setup answers that review for a person.
+      test.skip(agent === 'codex' && !!process.env.CI, "Codex's hooks are installed and reviewed by a person: a fresh runner has none")
       test.setTimeout(240_000)
       const api = new Api(server)
       const seen: FileEvent[] = []
@@ -355,12 +490,14 @@ for (const agent of ['claude', 'codex']) {
           expect(after.includes(server.untrusted), 'config.toml gains no trust entry').toBe(false)
           expect(after === before || !after.includes(server.untrusted)).toBe(true)
         } else {
+          // The trust question itself: every startup screen the catalog knows raises the same source, a first-run one too.
           await expect
             .poll(async () => {
               const m = member(await api.run(run.id), 'solo')
-              return m.sessionId ? (await api.session(m.sessionId)).attention?.source ?? '' : ''
+              const asks = m.sessionId ? (await api.session(m.sessionId)).attention : undefined
+              return asks?.source === 'trust' ? (asks.message ?? '') : ''
             }, { timeout: 90_000, intervals: [500] })
-            .toBe('trust')
+            .toMatch(TRUST_WORDS[agent]!)
         }
       } finally {
         await cleanup(api, run, server.untrusted)
@@ -400,5 +537,3 @@ for (const agent of ['claude', 'codex']) {
     })
   })
 }
-
-void MODEL_ENV
