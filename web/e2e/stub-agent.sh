@@ -971,8 +971,9 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # STUB_DECISION_OPTIONS is the request's options as JSON, in place of the
 # two the type asks with (the first stays the recommended one).
 # STUB_CAPTURE_FIX=1 repairs from a capture (PV1): a work task reads the
-# first .conductor/attachments/capture-*.json its package holds (the
-# capture's document, conductor.capture/1), takes the first source its
+# first capture document its package holds (.conductor/attachments/
+# NN-capture-*.json, the package numbering each file before its name;
+# conductor.capture/1), takes the first source its
 # annotations name (the app's tracked file; a library's under node_modules
 # is listed after it, and left), and removes from that file every line
 # that holds stub-capture-broken, committed with stub-<member>.txt. A path
@@ -982,7 +983,7 @@ holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 # capture_fix does STUB_CAPTURE_FIX's repair for attempt $1.
 capture_fix() {
 	local doc='' f text path re
-	for f in .conductor/attachments/capture-*.json; do
+	for f in .conductor/attachments/*capture-*.json; do
 		[[ -f $f ]] && { doc=$f; break; }
 	done
 	if [[ -z $doc ]]; then
