@@ -51,7 +51,7 @@ func (a *agent) sendNow(e session.ActivityEntry) {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	a.sendActivity(e, "", a.madeOn())
+	a.sendActivity(e, "", a.madeOn(e.At))
 }
 
 // untilEntries waits for the record's agent messages to be want.

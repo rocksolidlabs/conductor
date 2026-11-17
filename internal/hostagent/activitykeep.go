@@ -51,18 +51,18 @@ type keptActivity struct {
 }
 
 // keepActivity numbers m and keeps it, the oldest going past the bound. It
-// is late unless the code can show it was made on the current connection:
-// handed over on this registration (made, madeOn) and stamped (at; none
-// counts as earlier) no earlier than the registration began. An entry recorded while the host was
-// away and handed to its sender only after the connection came back (the
-// forwarder behind a burst, a slow goroutine) is late, whichever goroutine
-// reaches here first; in doubt, it is late and pages no one.
-func (a *agent) keepActivity(m proto.HostActivityMsg, made uint64, at time.Time) {
+// is late unless it was made on the current connection: made (madeOn, taken
+// as the session handed the entry over) is this registration. An entry
+// recorded while the host was away and handed to its sender only after the
+// connection came back (the forwarder behind a burst, a slow goroutine) is
+// late, whichever goroutine reaches here first; in doubt, it is late and
+// pages no one.
+func (a *agent) keepActivity(m proto.HostActivityMsg, made uint64) {
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
 	a.actSeq++
 	m.Seq = a.actSeq
-	late := made != a.actEpoch || at.Before(a.actBegan)
+	late := made != a.actEpoch
 	a.actKept = append(a.actKept, keptActivity{m: m, late: late})
 	if len(a.actKept) > a.keptBound() {
 		a.actLeftOut = min(a.actLeftOut+1+a.actKept[0].m.LeftOut, proto.MaxActivityLeftOut)
@@ -215,13 +215,45 @@ func (a *agent) confirmActivity(w *controlWriter, on, upTo uint64) {
 	}()
 }
 
-// madeOn is the registration the host is on (actEpoch), for an entry the
-// session hands over now: an entry is live only when it is kept on the same
-// one (keepActivity).
-func (a *agent) madeOn() uint64 {
+// handOverBound bounds the one gap madeOn's time guard is for: between the
+// session's stamp of an entry and its hand-over to the host (the record
+// call itself, Local.record). Within it after a registration began, an
+// entry stamped before that start is the earlier registration's; past it,
+// an entry handed over on this registration is made on it whatever its
+// stamp says, so a wall clock set back after a registration makes none of
+// the connection's entries late.
+const handOverBound = time.Second
+
+// madeOn is the registration an entry the session hands over now, stamped
+// at, was made on: the one the host is on (actEpoch), or the one before it
+// for an entry stamped before this one began and handed over within
+// handOverBound of its start, judged by the monotonic clock. An entry is
+// live only when it is kept on the registration it was made on
+// (keepActivity).
+func (a *agent) madeOn(at time.Time) uint64 {
 	a.actMu.Lock()
 	defer a.actMu.Unlock()
+	if a.actEpoch > 0 && at.Before(a.actBegan) && a.sinceBegan() < handOverBound {
+		return a.actEpoch - 1
+	}
 	return a.actEpoch
+}
+
+// sinceBegan is how long ago the registration began, on the monotonic
+// clock; tests replace it (actSince). Guarded by actMu.
+func (a *agent) sinceBegan() time.Duration {
+	if a.actSince != nil {
+		return a.actSince()
+	}
+	return time.Since(a.actBegan)
+}
+
+// registrationBegan is when the registration the host is on began, the
+// one start a connection's retell and its entries are judged by.
+func (a *agent) registrationBegan() time.Time {
+	a.actMu.Lock()
+	defer a.actMu.Unlock()
+	return a.actBegan
 }
 
 // confirmOn says whether the server answered a ping sent on w; tests

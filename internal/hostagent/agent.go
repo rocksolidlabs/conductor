@@ -541,11 +541,13 @@ type agent struct {
 	actConfirming bool
 	actConfirmTo  uint64
 	// actEpoch numbers the registrations (registeredActivity), the last
-	// one's time in actBegan, its resumed in actResumed; actConfirmOn and actConfirmW are the
-	// registration and the writer the confirmation asked last is of.
-	// Guarded by actMu.
+	// one's start in actBegan (with the monotonic clock's reading; actSince
+	// replaces the time since it in tests), its resumed in actResumed;
+	// actConfirmOn and actConfirmW are the registration and the writer the
+	// confirmation asked last is of. Guarded by actMu.
 	actEpoch     uint64
 	actBegan     time.Time
+	actSince     func() time.Duration
 	actResumed   bool
 	actConfirmOn uint64
 	actConfirmW  *controlWriter
@@ -1211,7 +1213,7 @@ func hostAttentionMsg(sessionID string, att session.Attention, kept []string, tu
 // viewers have its log over their connection.
 func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
 	if !a.opts.Switchyard {
-		a.activity.push(e, state, a.madeOn())
+		a.activity.push(e, state, a.madeOn(e.At))
 	}
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
@@ -1238,9 +1240,9 @@ func (a *agent) sendChat(m session.ChatMessage) {
 }
 
 // sendActivity delivers one entry, and the attention state it records, on the
-// control connection; made is the registration the host was on as the
-// session handed it over (madeOn), which with the entry's time says whether
-// it is late (keepActivity). A file entry whose path this host's own deny list
+// control connection; made is the registration it was made on, taken as
+// the session handed it over (madeOn), which says whether it is late
+// (keepActivity). A file entry whose path this host's own deny list
 // refuses (Options.FileDeny) is not sent: what the host leaves out of its
 // sessions' files it leaves out of what it reports of them, the server
 // asking nothing of its own machine about a host's paths.
@@ -1252,7 +1254,7 @@ func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionSta
 	m.State = string(state)
 	if a.activitySeq.Load() {
 		// Kept until the server took it (activitykeep.go).
-		a.keepActivity(m, made, e.At)
+		a.keepActivity(m, made)
 		a.sendKeptActivity()
 		return
 	}
