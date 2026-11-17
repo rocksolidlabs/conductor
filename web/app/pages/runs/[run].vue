@@ -17,6 +17,7 @@ import { replyFailure } from '~/utils/reply'
 import type { RelatedTicket } from '~/composables/useDispatch'
 import { chainLinkedTicket, latest } from '~/utils/review'
 import { runLinkWatch, runTicketRead } from '~/composables/useDispatchLive'
+import { previewPath } from '~/utils/capture'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -34,6 +35,7 @@ const live = useAttention()
 const events = useEvents()
 const toast = useToast()
 const { create } = useTerminalTransport()
+const previewOpen = usePreviewOpen()
 
 const runId = computed(() => String(route.params.run))
 /** The record of a run the server no longer holds, as the page read it (`record`): shown read-only, never among the live runs. */
@@ -425,9 +427,12 @@ palette.registerPage(() => {
     const a = taskActions(t, r)
     const actions: Action[] = []
     if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => router.push(`/sessions/${t.attempt!.sessionId}`) })
-    // The attempt's preview (EN1), in a new tab: on the server's loopback, not proxied, never in an iframe.
+    // The attempt's preview (EN1): in a new tab (at the label's admin URL when it names its tree's secret), or framed on the preview
+    // page, Open in Conductor, where it is captured.
     const preview = a.preview
-    if (preview) actions.push({ id: 'open-preview', kind: 'page', target: t.id, label: 'Open preview', icon: 'i-lucide-external-link', run: () => void window.open(preview, '_blank', 'noopener,noreferrer') })
+    const n = t.attempt?.n ?? 0
+    if (preview) actions.push({ id: 'open-preview', kind: 'page', target: t.id, label: 'Open preview', icon: 'i-lucide-external-link', run: () => void previewOpen.newTab({ run: r.id, task: t.id, attempt: n }, preview) })
+    if (a.inConductor) actions.push({ id: 'open-in-conductor', kind: 'page', target: t.id, label: 'Open in Conductor', icon: 'i-lucide-scan', run: () => void router.push(previewPath({ run: r.id, task: t.id, attempt: n })) })
     if (a.retry) actions.push({ id: 'retry', kind: 'page', target: t.id, label: 'Retry', icon: 'i-lucide-rotate-ccw', run: () => void taskCommands.send(t, 'retry') })
     if (a.accept) actions.push({ id: 'accept', kind: 'page', target: t.id, label: 'Accept anyway…', icon: 'i-lucide-check', ask: taskCommands.question(t, 'accept'), run: () => void taskCommands.send(t, 'accept') })
     if (a.cancel) actions.push({ id: 'cancel', kind: 'page', target: t.id, label: 'Cancel…', icon: 'i-lucide-x', color: 'error', ask: taskCommands.question(t, 'cancel'), run: () => void taskCommands.send(t, 'cancel') })

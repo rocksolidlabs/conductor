@@ -5,6 +5,7 @@ import { type ReceiptPick, candidateWords, findingsCount, findingsWords, followP
 import { shortCommit } from '~/utils/dispatchPlans'
 import { REVIEW_ENTRY } from '~/composables/useReview'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
+import { previewPath } from '~/utils/capture'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -17,7 +18,8 @@ import { candidateRef, parseCandidate } from '~/utils/dispatch'
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
  * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
  * offers Review, the ticket's Review view at it, with the open findings of its task counted; a failed receipt opened offers Prepare a
- * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7).
+ * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A candidate whose
+ * attempt's preview is offered now offers Open in Conductor, the preview page (PV1).
  */
 const props = defineProps<{
   runId: string
@@ -26,6 +28,13 @@ const props = defineProps<{
 }>()
 
 const copy = useCopy()
+// Open in Conductor (docs/plans/browser-evidence.md): a candidate whose attempt's preview the live run offers now, framed on the
+// preview page.
+const live = useAttention()
+function previewOf(c: RunCandidate): string {
+  const t = live.runOf(props.runId)?.tasks?.find((x) => x.id === c.task)
+  return t?.attempt?.n === c.attempt && t.attempt.preview ? previewPath({ run: props.runId, task: c.task, attempt: c.attempt }) : ''
+}
 const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
 const fixes = computed(() => repairs(tasks.value, details))
 const ckey = candidateKey
@@ -103,6 +112,7 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
                 data-candidate-accepted-anyway
               />
               <span :class="tone[candidateWords(c).tone]" data-candidate-words>{{ candidateWords(c).text }}</span>
+              <UButton v-if="previewOf(c)" label="Open in Conductor" icon="i-lucide-scan" size="xs" color="neutral" variant="ghost" :to="previewOf(c)" :data-candidate-preview-open="ckey(c)" />
               <span v-if="review && c.kind === 'work' && c.commit && c.standing" class="ml-auto flex flex-none items-center gap-1">
                 <UBadge
                   v-if="review.openFindings(runId, t.task)"

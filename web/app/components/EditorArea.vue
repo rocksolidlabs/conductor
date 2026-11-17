@@ -262,7 +262,10 @@ function openFileOfDiff() {
 
 const refused = refusedWords
 
+/** A link tab's Refresh makes its frame anew (a frame's address set again with a fragment would not reload it). */
+const urlReloads = ref(0)
 function reload() {
+  if (active.value?.kind === 'url') urlReloads.value++
   if (active.value) load(active.value)
 }
 
@@ -943,7 +946,8 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="max-w-md text-muted">Files, changes and saves come from that machine. They return when it does; the terminal's scrollback stays.</span>
         </div>
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
-        <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
+        <!-- A link's preview: framed by the pane, its label "a link · no revision", with the device mode and Capture (PV1). -->
+        <PreviewPane v-else-if="view.state === 'url'" :key="`${active!.id}:${urlReloads}`" :link="active!.path" compact />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
         <template v-else-if="view.state === 'text'">
           <MarkdownPreview v-if="previewing" ref="previewRef" :key="`${active!.id}:preview`" :text="previewText" :dir="dirOf(active!.path)" :raw-url="rawUrl" @open="tabs = openTab(tabs, 'file', $event)" />
