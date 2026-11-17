@@ -713,6 +713,25 @@ func viaRefused(w http.ResponseWriter, via string) bool {
 	return true
 }
 
+// captureFindingRefused refuses a review holding a finding of kind
+// capture with 400 invalid_request, nil for any other. Dispatch's store
+// keeps such a finding since its schema version 7, its capture the
+// server's evidence; no route and no act takes one until the row that
+// binds a capture's annotation to a finding and fills its evidence lands
+// (docs/plans/browser-evidence.md, PR-10, #798), which replaces this
+// refusal with that binding. RV1's route asks it in submitReview, the one
+// function that sends a review to the store, after the replay and before
+// anything is read or recorded; Brakeman's request_repair asks it as its
+// body is read (repairArgs), before the act is written into its request.
+func captureFindingRefused(rv dispatch.NewReview) *apiError {
+	for i, f := range rv.Findings {
+		if f.Kind == dispatch.FindingKindCapture {
+			return newAPIError(http.StatusBadRequest, "invalid_request", fmt.Sprintf("finding %d: a finding of kind capture is not taken yet", i+1))
+		}
+	}
+	return nil
+}
+
 // runRevisionRefused refuses the run's revision a request's application
 // is held to (expectedRevision) when it is none: a revision is 1 or
 // more, 0 for none. RV1's route and Brakeman's request_repair (repairArgs)
@@ -777,6 +796,10 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		return
 	case found:
 		s.answerReview(w, ctx, ds, rc, rc.ID, true)
+		return
+	}
+	if aerr := captureFindingRefused(rv); aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 	request := rv.Verdict == dispatch.VerdictRequestChanges
