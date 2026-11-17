@@ -600,7 +600,7 @@ test("Brakeman's account is chosen from the accounts of its agent's tool, saved 
 })
 
 test("a usage reading that warns wakes Brakeman's background role, and the Brakeman page's log names its agent and account", async ({ page, api, state }) => {
-  budget(READ, READ, READ, READ, EXPECT, EXPECT)
+  budget(READ, READ, READ, READ, READ, EXPECT, EXPECT)
   // Claude Code's Work at the provider's warning, Codex's Team at its rate limit: each panel warns, so each reading wakes the role.
   const workDir = folder(state.home)
   writeFileSync(join(workDir, 'stub-usage'), 'warning\n')
@@ -630,6 +630,8 @@ test("a usage reading that warns wakes Brakeman's background role, and the Brake
     await expect.poll(async () => (await roleLog()).find((r) => r.source === 'capacity' && r.subject === subject)?.batch ?? '', { timeout: READ, message: `${subject} woke the role` }).toMatch(/^wb-\d+$/)
   }
   await page.goto('/brakeman')
+  // The role's card drawn first, with the bound of a first read (a loaded machine takes seconds to boot the page), then its rows.
+  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toBeVisible({ timeout: READ })
   const rows = page.locator('[data-brakeman-role] [data-role-row="capacity"]')
   await expect(rows.filter({ hasText: workId })).toContainText(`An agent neared its usage limit: capacity of worker on ${workId}`, { timeout: EXPECT })
   await expect(rows.filter({ hasText: workId })).toContainText(/waiting in wb-\d+/)
