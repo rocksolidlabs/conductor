@@ -13,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -592,5 +594,49 @@ func TestActWordsNameADecisionsRoute(t *testing.T) {
 	repeat := `{"receipt":{"decision":"dr-7","seq":4,"words":"w","repeat":true}}`
 	if got := actWords("route_decision", "r1", json.RawMessage(repeat)); got != "route_decision ran (opId r1): done; its receipt is row 4 of dr-7's history: w (a repeat of the act already kept)" {
 		t.Errorf("the repeat: %q", got)
+	}
+}
+
+// list passes its filters to the server as given, escaped, on every
+// page, and shows each request's brief's title; a filter the server
+// refuses ends the command with the server's words.
+func TestBrakemanListFiltersAndShowsTheTitle(t *testing.T) {
+	clearConductorEnv(t)
+	var mu sync.Mutex
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("has") == "nope" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_request","message":"has is one of decision, proposal, draft, brief"}}`)
+			return
+		}
+		if r.URL.Query().Get("after") == "" {
+			_, _ = io.WriteString(w, `{"requests":[{"id":"br-3","kind":"wake","state":"briefed","createdAt":"2026-11-02T09:00:00Z","agent":{},"config":{},"reads":2,"hasBrief":true,
+"digest":{"schema":1,"title":"Build is \"out\" of attempts","reading":"Three failures.","counts":{"decisions":1},"about":{"runs":["fix-login-1a2b3c4d"]}},"match":"cited"}],"next":"br-3"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"requests":[{"id":"br-1","kind":"ask","state":"cancelled","createdAt":"2026-11-02T08:00:00Z","agent":{},"config":{},"reads":0}],"next":""}`)
+	}))
+	t.Cleanup(srv.Close)
+	code, out, _, err := brakemanCmd(t, "", "list", "--kind", "briefing,wake", "--has", "brief", "--about", "run:fix-login-1a2b3c4d", "-q", "a b&c", "--server", srv.URL, "--token", dispatchToken)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if code != 0 || err != nil || len(lines) != 2 || !strings.HasPrefix(lines[0], "br-3 briefed wake ") || !strings.HasSuffix(lines[0], ` "Build is \"out\" of attempts"`) ||
+		!strings.HasPrefix(lines[1], "br-1 cancelled ask ") || strings.Contains(lines[1], `"`) {
+		t.Fatalf("list: %d %v\n%s", code, err, out)
+	}
+	want := "&kind=briefing%2Cwake&has=brief&about=run%3Afix-login-1a2b3c4d&q=a+b%26c"
+	mu.Lock()
+	got := slices.Clone(queries)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != fmt.Sprintf("limit=%d", brakemanListPage)+want || got[1] != fmt.Sprintf("limit=%d", brakemanListPage)+want+"&after=br-3" {
+		t.Fatalf("the queries %q", got)
+	}
+	code, _, _, err = brakemanCmd(t, "", "list", "--has", "nope", "--server", srv.URL, "--token", dispatchToken)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "has is one of decision") {
+		t.Fatalf("a refused filter: %d %v", code, err)
 	}
 }
