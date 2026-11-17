@@ -1,5 +1,5 @@
 import { ApiError } from './useApi'
-import { SerialReads } from './useDecisions'
+import { SerialReads, decisionsLive } from './useDecisions'
 import { type DispatchWatch, dispatchLive } from './useDispatchLive'
 import { RUN_CHANGING_RETRY_MS, gather } from '~/utils/dispatchEvidence'
 import { comparisonRuns, type Comparison } from '~/utils/compare'
@@ -15,6 +15,9 @@ import { comparisonRuns, type Comparison } from '~/utils/compare'
  * - a `brakeman` event naming the comparison's request (`supporting.brakeman.request`, PR-5), as the live store of Brakeman's
  *   requests moves it: the run sits idle while it selects and its ticket does not change, so without this a draft that arrived would
  *   stay "queued";
+ * - a `decision` event (DR1's) naming the comparison's selection or a record of a run it is of (PR-7): an answer made on the card,
+ *   the CLI or another client changes neither the run's events while the run is not held nor the ticket's, and without this an open
+ *   comparison would keep the old selection;
  * - the event stream's `snapshot` (a reconnect: what was missed is unknown).
  *
  * A run of no comparison (404) is said, not asked again; a read refused while the chain moved through every read (503 run_changing,
@@ -128,10 +131,18 @@ export function useComparison(o: { run: () => string; ticket?: () => string }) {
     if (now.split('|')[0] === before.split('|')[0] && now !== before) ask()
   })
 
+  // DR1's `decision` events: the selection, or any record of a run the comparison is of (a new selection opened, one closed).
+  const undecide = decisionsLive().subscribe((e) => {
+    if (!e || !o.run()) return
+    const c = comparison.value
+    if (e.id === c?.selection?.decision || comparisonRuns(o.run(), c).includes(e.run)) ask()
+  })
+
   onBeforeUnmount(() => {
     serial.stop()
     retry.stop()
     unwatch()
+    undecide()
   })
 
   return { comparison, error, missing, changing, loaded, sent, read: ask }
