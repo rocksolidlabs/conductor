@@ -219,6 +219,10 @@ export interface TaskActionSet {
   preview: string
   /** Open in Conductor: the preview page frames the attempt's preview while it is offered (docs/plans/browser-evidence.md). */
   inConductor: boolean
+  /** Preview this candidate: the attempt submitted a commit, no checkout of it is open, and no continuation owns the run. */
+  candidate: boolean
+  /** The candidate's checkout while one is open: Open (the preview page at its `seq`) and Close. */
+  previewing: { seq: number; state: 'resolved' | 'ready' | 'ending' } | null
   /** Ask Brakeman why (docs/plans/brakeman.md, PR-7): a task that failed, was cancelled or is blocked, or whose attempt reports a blocker. */
   askWhy: boolean
 }
@@ -244,12 +248,14 @@ export function taskActions(t: RunTask, run: Pick<RunInfo, 'record' | 'resumedBy
     showResult: !!t.result,
     preview: t.attempt?.preview ?? '',
     inConductor: !!t.attempt?.preview,
+    candidate: !!t.attempt?.result && !t.attempt.previewing && !run.resumedBy,
+    previewing: t.attempt?.previewing && t.attempt.previewing.state !== 'ending' ? { seq: t.attempt.previewing.seq, state: t.attempt.previewing.state } : null,
     askWhy: t.state === 'failed' || t.state === 'cancelled' || t.state === 'blocked' || !!t.blocker,
   }
 }
 
 /** An action a task's row offers: in the row (`shown`) or behind its menu (`menu`). */
-export type RowAction = 'answer' | 'retry' | 'accept' | 'open' | 'preview' | 'inConductor' | 'cancel' | 'copyBranch' | 'askWhy'
+export type RowAction = 'answer' | 'retry' | 'accept' | 'open' | 'preview' | 'inConductor' | 'previewCandidate' | 'candidateOpen' | 'candidateClose' | 'cancel' | 'copyBranch' | 'askWhy'
 
 /** A task as the task table draws its row: each part said once. */
 export interface TaskRowParts {
@@ -261,14 +267,17 @@ export interface TaskRowParts {
   owner: string
   /** The actions in the row, in this order: Answer, Retry, Accept anyway, Open, Open preview. */
   shown: RowAction[]
-  /** The actions behind the row's menu, in this order: Open in Conductor, Cancel, Copy branch, Ask Brakeman why. */
+  /**
+   * The actions behind the row's menu, in this order: Open in Conductor, Preview this candidate (or, its checkout open, Open the
+   * candidate's preview and Close it), Cancel, Copy branch, Ask Brakeman why.
+   */
   menu: RowAction[]
 }
 
 /**
  * A task's row in the task table (the UX review's P7): its words without the attempt, the attempt said once, the owner only when the
  * task names one, the actions a waiting state asks for in the row (Answer, Retry, Accept anyway, Open, Open preview) and the rest behind
- * a menu (Open in Conductor, Cancel, Copy branch, Ask Brakeman why), from taskActions and taskAnswer as the row offered them. `brakeman`: the server has
+ * a menu (Open in Conductor, Preview this candidate or its Open and Close, Cancel, Copy branch, Ask Brakeman why), from taskActions and taskAnswer as the row offered them. `brakeman`: the server has
  * Brakeman, so Ask Brakeman why is offered where it applies.
  */
 export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'resumedBy'>, o: { brakeman?: boolean } = {}): TaskRowParts {
@@ -284,6 +293,8 @@ export function taskRow(t: RunTask, run: TaskRun & Pick<RunInfo, 'record' | 'res
   if (a.preview) shown.push('preview')
   const menu: RowAction[] = []
   if (a.inConductor) menu.push('inConductor')
+  if (a.previewing) menu.push('candidateOpen', 'candidateClose')
+  else if (a.candidate) menu.push('previewCandidate')
   if (a.cancel) menu.push('cancel')
   if (a.copyBranch) menu.push('copyBranch')
   if (a.askWhy && o.brakeman) menu.push('askWhy')

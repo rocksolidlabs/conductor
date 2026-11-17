@@ -658,6 +658,12 @@ export interface RunAttempt {
    * before the server kept it has none. Not a crew's `where` (`server` or `host`).
    */
   where?: string
+  /**
+   * The candidate's preview checkout while one is open (docs/plans/browser-evidence.md, "A candidate's preview"): its number (`seq`,
+   * the preview page's `&seq=`), its state (resolved while its setup and services start, ready once its preview answers, ending once
+   * its end began) and, ready, its preview's address.
+   */
+  previewing?: { seq: number; state: 'resolved' | 'ready' | 'ending'; preview?: string }
 }
 
 /**
