@@ -2,8 +2,14 @@ name: live
 
 # The live tier: the real agents, with test accounts, driven by the
 # Playwright live spec (web/e2e/live.spec.ts). Weekly and on demand only; the
-# keys live in the `live` environment, whose reviewers approve each run. A
-# row whose key is absent is skipped, not failed.
+# keys live in the `live` environment, whose reviewers approve each run. An
+# agent whose key the run does not hold is skipped, not failed (the spec
+# skips its rows). The suite was written for a machine whose owner uses both
+# agents; a fresh runner's are brought there first by scripts/live_setup.py
+# (signed in with the key, past their first-run screens, trusting the live
+# repository and no other folder). The agents are installed at their newest
+# release on purpose: this tier is where a release that changes a screen
+# Conductor reads is first seen, and the run's summary names what it met.
 on:
   schedule:
     - cron: '41 5 * * 1'
@@ -21,6 +27,8 @@ jobs:
     # 22.04, as ci.yml's e2e: Playwright 1.44.1's dependency list names libasound2, which 24.04 no longer has.
     runs-on: ubuntu-22.04
     environment: live
+    # Ten rows of at most five minutes each, after some fifteen minutes of setup: a hang ends here, not at GitHub's six hours.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -85,11 +93,20 @@ jobs:
       - name: install the agents
         run: |
           npm install -g @anthropic-ai/claude-code @openai/codex
-      - name: a never-trusted scratch repository
+          # The releases this run met, for whoever reads a failure: the suite's patterns are checked against named releases.
+          { echo "### The agents this run met"; echo "- Claude Code: $(claude --version)"; echo "- Codex: $(codex --version)"; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: the live repository
         run: |
           mkdir -p "$RUNNER_TEMP/live-repo" && cd "$RUNNER_TEMP/live-repo"
           git init -q && git config user.name live && git config user.email live@conductor.invalid
           echo "# live" > README.md && git add README.md && git commit -q -m init
+      - name: bring the agents to where a person's machine has them
+        # Signed in with the environment's key, past their first-run screens, trusting the live repository and no other
+        # folder (#988). The script says what it did, in a line per agent; it prints no key and no file.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 scripts/live_setup.py --repo "$RUNNER_TEMP/live-repo" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: the live spec
         env:
           CONDUCTOR_E2E_LIVE: '1'
