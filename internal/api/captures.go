@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -76,7 +77,8 @@ func (s *Server) routeCaptures(mux *http.ServeMux) {
 // The bodies a capture route takes, as the gate decodes them.
 type (
 	// captureFrom is what a capture was taken of: an attempt's preview
-	// (Seq a candidate's checkout, which no row offers yet), or a link.
+	// (with Seq, the preview checkout of its result by its seq), or a
+	// link.
 	captureFrom struct {
 		Run     string `json:"run,omitempty"`
 		Task    string `json:"task,omitempty"`
@@ -620,8 +622,11 @@ func otherOrigin(page, want string, secrets []string) *apiError {
 
 // captureFacts is what the server reads at a create, from what it holds
 // and never from the request: for a link, the origin alone (its page of
-// the link's origin); for an attempt, its worktree preview open now (404
-// no_preview otherwise, a candidate's checkout among it), the page of
+// the link's origin); for an attempt, its worktree preview open now, or
+// with from.seq the preview checkout of its result by that seq while it is
+// ready (crew.Engine.ReadPreview, keyed by the run, task and attempt from
+// names, so no other attempt's checkout is reached; 404 no_preview
+// otherwise), the page of
 // that preview's origin (400 invalid), the tree's revision read now by the
 // label's read (treeReads.read) with, as its step, the top of the run's
 // repository looked up (for every read that named the commit, the commit
@@ -647,10 +652,19 @@ func (s *Server) captureFacts(ctx context.Context, ds *dispatch.Store, from capt
 		return dispatch.CaptureFacts{}, newAPIError(http.StatusBadRequest, "invalid", "from names an attempt (run, task, attempt) or a link (url), not both")
 	}
 	noPreview := newAPIError(http.StatusNotFound, "no_preview", "the attempt's preview is not open now")
-	if from.Seq != 0 || s.runs == nil {
+	if s.runs == nil || from.Seq < 0 {
 		return dispatch.CaptureFacts{}, noPreview
 	}
-	wp, ok := s.runs.WorktreePreview(from.Run, from.Task, from.Attempt)
+	var wp crew.WorktreePreview
+	var ps crew.PreviewState
+	ok := false
+	if from.Seq > 0 {
+		ps, ok = s.runs.ReadPreview(from.Run, from.Task, from.Attempt, from.Seq)
+		ok = ok && ps.State == ledger.PreviewReady && ps.Preview != ""
+		wp = checkoutPreview(ps)
+	} else {
+		wp, ok = s.runs.WorktreePreview(from.Run, from.Task, from.Attempt)
+	}
 	if !ok {
 		return dispatch.CaptureFacts{}, noPreview
 	}
@@ -666,15 +680,30 @@ func (s *Server) captureFacts(ctx context.Context, ds *dispatch.Store, from capt
 		hints = append(hints, hs)
 	}
 	run, held := s.runs.Get(from.Run)
+	cwd := run.Cwd
+	if from.Seq > 0 && !held {
+		// A run the engine does not hold, its preview opened from the
+		// ledger: its crew and working directory are the preview's.
+		run, held, cwd = crew.Run{CrewID: ps.Crew}, true, ps.Root
+	}
 	var sources [][]dispatch.Source
 	var top string
 	var unclassed, untopped error
+	intact := false
 	read, err := s.trees.read(ctx, wp, func(ctx context.Context, t *crew.Tree, ix *crew.TreeIndex, commit string, whole bool) (err error) {
 		// The repository's top is looked for here, for every read that
 		// named the commit, in the read's time and under what the stop
 		// cancels and waits for: no git of a capture runs outside its read.
 		if held {
-			top, untopped = s.topOf(ctx, run.Cwd)
+			top, untopped = s.topOf(ctx, cwd)
+		}
+		if from.Seq > 0 && commit == ps.Commit {
+			// The candidate is the checkout's at the save, by the engine's
+			// own comparison: HEAD at the commit and no tracked change,
+			// through an index no flag in the checkout can fool.
+			if ok, ierr := crew.CandidateIntact(ctx, ps.Dir, ps.Commit); ierr == nil {
+				intact = ok
+			}
 		}
 		if whole && slices.ContainsFunc(hints, func(hs []dispatch.Hint) bool { return len(hs) > 0 }) {
 			sources, unclassed, err = captureSources(ctx, t, ix, commit, wp.Dir, hints)
@@ -702,6 +731,12 @@ func (s *Server) captureFacts(ctx context.Context, ds *dispatch.Store, from capt
 	f := dispatch.CaptureFacts{Origin: dispatch.OriginAttempt, Run: from.Run, Task: from.Task, Attempt: from.Attempt, Tree: dispatch.TreeWorktree,
 		Commit: read.Commit, Content: read.Content, Changed: read.Changed, ChangedPaths: storedPaths(read.Paths), Mutable: true,
 		Where: cmpOr(wp.Where, "native"), Scope: s.captureScope(ctx, ds, from.Run, run, held, top), Sources: sources}
+	if from.Seq > 0 {
+		f.Origin, f.Tree, f.Mutable = dispatch.OriginCandidate, dispatch.TreePreview, checkoutMutable(ps, read, err)
+		if intact && read.Commit == ps.Commit {
+			f.Candidate = checkoutCandidate(ps)
+		}
+	}
 	// The names the server read (git's ids aside), scrubbed of the read's
 	// own tree's secret beside every secret held now.
 	secrets := append(s.liveSecrets(), wp.Secret)

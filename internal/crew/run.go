@@ -374,7 +374,11 @@ type Engine struct {
 	// before the end's change; previewFinished as a preview's end has let
 	// go of it (finishPreview). life ends with Drain (endLife): an owed
 	// write of a preview's end is not tried after it.
-	previews        map[previewKey]*preview
+	previews map[previewKey]*preview
+	// previewRuns are the preview-only contexts of runs the engine does
+	// not hold (preview_context.go), by run id, under mu: never in runs,
+	// kept while a preview of theirs is, dropped with its last.
+	previewRuns     map[string]*run
 	idleTimer       func(time.Duration) <-chan time.Time
 	checkoutBound   func() (context.Context, context.CancelFunc)
 	checkoutMade    func(dir string)
@@ -692,7 +696,13 @@ type run struct {
 	// previews counts the preview checkouts of the run's candidates the
 	// engine holds (preview.go), from their reservation until their end's
 	// last commit: the run is not idle meanwhile. Under e.mu.
-	previews        int
+	previews int
+	// previewOnly says the run is a preview-only context built from the
+	// ledger for a run the engine does not hold (preview_context.go): in
+	// e.previewRuns, never in e.runs, so nothing schedules it, and its
+	// transactions write the previews' rows, events and receipts alone,
+	// never a row of its run, tasks or attempts. Set as it is made.
+	previewOnly     bool
 	pendingTrees    []treeEnd
 	pendingReleases []*tree
 	// messages are the members' messages to one another (messages.go), in

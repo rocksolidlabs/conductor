@@ -1191,6 +1191,12 @@ func (e *Engine) commitHeld(ctx context.Context, r *run, first firstTx, judge fu
 		laterMore, laterDone = r.dec.more, r.dec.done
 		r.dec.more, r.dec.done = nil, nil
 		snap = r.drain()
+		if r.previewOnly {
+			// A preview-only context mirrors its run's rows from the ledger,
+			// which are the truth: it writes its previews' rows, events and
+			// receipts, never a row of the run, its tasks or its attempts.
+			snap = snapshot{}
+		}
 		pending, pendingMore, pendingLast, pendingDone = r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone
 		r.pendingEvents, r.pendingMore, r.pendingLast, r.pendingDone = nil, nil, nil, nil
 		events = append(slices.Clip(pending), writable(t.events)...)

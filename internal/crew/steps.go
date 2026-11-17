@@ -2387,10 +2387,17 @@ func (e *Engine) Drain(ctx context.Context) {
 	for {
 		e.mu.Lock()
 		var idle <-chan struct{}
+		// The runs it holds, and the preview-only contexts of runs it does
+		// not (preview_context.go), whose previews' teardowns count there.
 		for _, r := range e.runs {
 			if r.trees.n > 0 {
 				idle = r.trees.idle()
 				break
+			}
+		}
+		for _, r := range e.previewRuns {
+			if idle == nil && r.trees.n > 0 {
+				idle = r.trees.idle()
 			}
 		}
 		e.mu.Unlock()

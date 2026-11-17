@@ -3241,7 +3241,7 @@ its run, and on no other.
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
-| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?, preview?, where?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`), `steps` its receipts as the steps route below answers them, `preview` its worktree's preview while the tree answers behind it (Project manifests, under Managed runs) and `where` where it ran (Where an attempt ran, under Managed runs), absent only from a run record saved before the ledger kept it; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?, preview?, where?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`), `steps` its receipts as the steps route below answers them, `preview` its worktree's preview while the tree answers behind it (Project manifests, under Managed runs), `previewing` a preview checkout of its result while one is open (A candidate's preview) and `where` where it ran (Where an attempt ran, under Managed runs), absent only from a run record saved before the ledger kept it; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no `preview` and with the `previewing` the server holds, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` | admin | an attempt's receipts from the ledger (Project manifests below): `{steps}`, by when each started, each `{phase, id, k, state, argv?, url?, dir?, subject?, manifest?, exit?, timedOut?, duration?, error?, ports?, tries, startedAt, finishedAt?, logBytes, logDropped?, logSha256?, where}`, the row whole but for its log, `where` where its command ran (its attempt's; Where an attempt ran, under Managed runs) (`duration` in milliseconds; `exit` once it finished); a run the server let go answers the same; `404 not_found` for a run or attempt the ledger has not; `503 ledger_unavailable`; `400 invalid_request` for an id or number that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script; a log kept empty answers `200`, empty, with its hash); `404 not_found` for a row the ledger has not, one still running, or one that ended with no log (a check its attempt closed under, a step or prerequisite the recovery concluded); `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/repair` | admin | the prepared failed-check request of one receipt (Program item RV1, docs/plans/review-repair.md): `{finding, criteria, plan?, ticket?, recheck}`; `finding` a draft note `{kind: "check", intent: "change", message, check}`, `message` a first draft of its words (at most 1,000 characters), `check` the receipt as the ledger keeps it `{source: "ledger", receipt, run, task, attempt, phase, id, k, subject, argv, exit?, signal?, timedOut, killed, stable, state, error?, where, logSha256?, logBytes, tail, class, chosen, quote, previous?}`, `receipt` its identity `<run>/<task>/<n>/<phase>/<id>/<k>`, `argv` whole, `error` cut to 500 bytes, `tail` the log's last 2 KiB, `class` the server's (`code`, `infrastructure`, `flaky`, `unavailable`, `cancelled`, worked out from the receipt's row, its attempt and the same check's receipts on the same commit in the run's chain), `chosen` and `quote` the person's to change (set to the class and the tail), `previous` the attempt before `{attempt, state, stage?, commit?}`; `criteria` `{source: "ticket", acceptance}` from the package of a run a ticket launched, else `{source: "checks", checks}` the task's checks as the crew names them; `plan` `{id, n}` and `ticket` `{id, key}` the launch's; `recheck` `{allowed, run, revision, attempt, commit, why?}`: whether Check again would be taken now, by the engine's own rule, on the newest run of the receipt's chain (`run`, at `revision`), `attempt` and `commit` the candidate as the receipt names it, `why` the words when not ("continue run X first", "attempt 4 failed since, …"); `404 not_found` for a run, attempt or receipt the ledger has not; `409 task_state` for a receipt that did not fail (running, passed) or a cleanup step's; `503 run_changing` while a continuation of the chain is made; whole, under 512 KiB (`MaxRepairReply`) |
@@ -5181,6 +5181,61 @@ commit that changed many entities (a label's delete on hundreds of
 tickets) never drops a client that keeps up. It reaches the pages alone,
 never a webhook or the run engine.
 
+#### A candidate's preview
+
+A person opens a candidate (an attempt that submitted a result whose
+commit is known, closed or not) in a preview checkout of its own
+(`docs/plans/browser-evidence.md`, "A candidate's preview"): the commit
+checked out detached at `<worktree>.preview` and served by the run's
+project manifest as a tree is, for a run the server holds and for one it
+no longer holds (evicted, or finished under an earlier server of this
+ledger), whose preview it opens from the ledger and schedules nothing of.
+Both routes are the admin's (a share link, a session's token, a host
+token and a Brakeman turn answer `401`) and a switchyard's `403
+switchyard`; each takes no parameter (`400 invalid_request`) and the body
+`{commandId}` and nothing else, at most 1 KiB, `commandId` 1 to 32 of
+letters, digits, `.`, `_`, `~` and `-` (`400 invalid_request` otherwise).
+Each is a command with its receipt in the run's ledger, as the task
+commands keep theirs: taken (`command.accepted`) before anything of the
+preview is begun, settled with what came of it (`command.preview.open`,
+`command.preview.close`), the same `commandId` again with the same
+content answered by its receipt (`receipt.repeat`) and never a second
+open or close, other content `409 command_conflict`; the receipt names
+the preview (`receipt.preview {run, task, attempt, seq}`) and is read
+back by `GET /api/runs/{run}/commands/{command}` like any other.
+
+| Route | Body → reply |
+|---|---|
+| `POST /api/runs/{run}/tasks/{task}/attempts/{n}/preview` | `{commandId}` → `202 {receipt, seq, state}` (`state` `resolved`: the checkout made, its readiness to come), `200` the same for a repeat (the preview's `state` now, `ended` once it is let go); with its receipt, `{error, receipt}`: `409 not_candidate` (no result to preview: a review's attempt, or one that submitted none), `409 no_manifest`, `409 run_continued`, `409 run_stopped`, `409 preview_open` (one preview of a candidate at a time), `409 preview_limit` (20 opens of a candidate), `409 preview_dirty` (a folder at the checkout's path that is not the commit's checkout, its path and what is wrong named; nothing of it is removed), `409 preview_failed` (the open began and failed: the checkout could not be made, the manifest could not be read or recorded), `404 not_found` (no such task or attempt), `429 previews_busy {error, receipt, open: [{run, task, attempt, seq}]}` (two previews open on the server, named); with none, `404 not_found` (a run neither the server nor its ledger has), `409 run_continued` and `409 run_stopped` (as the ledger has the run: stopped before it finished; one a server's shutdown stopped once it had finished is previewed), `409 command_conflict`, `409 too_many_commands`, `503 ledger_unavailable` |
+| `POST /api/runs/{run}/tasks/{task}/attempts/{n}/preview/{seq}/close` | `{commandId}` → `200 {receipt, state}` (`ending`, or `ended` once it is let go; a repeat the same, the state now); with its receipt, `409 preview_opening` (its open is under way: nothing of it changes, close it once it is open) and `404 no_preview` (that preview is not open); with none, `404 no_preview` for a run the server neither holds nor holds a preview of |
+
+A preview is ended by its Close, after 30 minutes with no read of its
+label, by a service of it that exits after it is ready, by an open that
+failed, by its run's stop and by the server's shutdown, each once; its
+URL is cleared in the ledger before any of its services is signalled. At
+most two previews are open on a server, held runs' and others' together.
+While one is open the attempt carries `previewing: {seq, state,
+preview?}` (`state` `resolved`, `ready` or `ending`, `preview` its URL
+while `ready`, naming `${CONDUCTOR_TREE_SECRET}` by name) in the run's
+reads, in the task's read (`GET /api/runs/{run}/tasks/{task}`) of a run
+the server does not hold, and in a run record's read. The ledger's
+events, each with `{task, attempt, seq, preview, why}`: `preview.opened`
+(`by` who opened it; the row `resolved`), `preview.ready` (`preview` its
+URL) and `preview.ended` (`why` `closed`, `idle`, `service_exited`,
+`run_stopped`, `shutdown`, or where an open failed in words; one the
+next start's recovery ends is `interrupted: true, recovered: true`),
+with its steps' `step.*` and `service.ended` events beside them, its
+receipts the attempt's (`tree: "preview"`), numbered after the attempt's
+own.
+
+A capture of a preview checkout (`from.seq`, Captures below) is of
+origin `candidate` and tree `preview`; it names its `candidate` only
+when, at the save, the checkout's HEAD is the candidate's commit and no
+tracked path differs from it as a fresh index of the server's own reads
+it (no `assume-unchanged` or `skip-worktree` flag hides a change), and
+none otherwise. Its scope's crew and repository are the run's, whether
+or not the server holds the run.
+
 #### The preview label
 
 The label of an attempt's preview (`docs/plans/browser-evidence.md`) is
@@ -5188,10 +5243,21 @@ the admin's (a share link, a session's token, a host token and a
 Brakeman turn answer `401`) and a switchyard's `403 switchyard`.
 
 `GET /api/runs/{run}/tasks/{task}/attempts/{n}/preview`
-(no parameter) answers the attempt's worktree preview while it is
+answers the attempt's worktree preview while it is
 offered: `{url, tree: "worktree", commit, content, changed,
 changedPaths, changedCut, mutable: true, state: "ready", where, readAt,
-unread?}`; `404 no_preview` when it is not open. `url` is the preview
+unread?}`; `404 no_preview` when it is not open. With `?seq=N` it
+answers the candidate's preview checkout `N` (A candidate's preview)
+while it is ready: `{url, tree: "preview", seq, candidate, commit,
+content, changed, changedPaths, changedCut, mutable, state: "ready",
+where, readAt, unread?}`, `candidate` `<run>/<task>/<n>@<commit>`,
+`mutable` true when the checkout holds anything git sees other than its
+commit (a tracked file changed, a file not ignored added, HEAD moved) or
+was not read; a read of it puts its idle end 30 minutes after it; `404
+no_preview` when that checkout is not open, is still opening or is
+ending. `seq` is the only parameter: another, `seq` twice or empty, or
+one that is not a number from 1 in at most four decimal digits with no
+leading zero, is `400 invalid_request`. `url` is the preview
 with the tree's secret put in for `${CONDUCTOR_TREE_SECRET}`: the one
 place its value leaves the server: the changed paths, the only names the
 label carries beside git's ids and its own words, kept by the read
@@ -5384,7 +5450,7 @@ registered alone, the admin's check outermost.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels as 8-bit RGBA, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now; a candidate's checkout, `from.seq`, is not offered yet); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
+| `POST /api/captures` | `multipart/form-data`, at most 6 MiB + 64 KiB, whatever follows the closing boundary counted: the part `capture` first (JSON, at most 2 MiB): `{opId, byName?, from: {run, task, attempt, seq?} \| {url}, via, url, title, viewport, epoch, revision?, label: {commit, content, changed, readAt}, selectedAt, imageHow, imageScale?, imageWhy?, retakeOf?, annotations: [{kind, note, rect, element?, observed?}]}`, `element` the bridge's report as it gave it (Preview bridge); then, with a screenshot, the part `image` (`image/png`, at most 4 MiB) | `201 {receipt, capture}`, `200` for a repeat; `400 invalid` and `413 bound` (every refusal of the store's below, with its receipt; a screenshot that is not a whole PNG or has a side past 4,096 pixels, or whose kept file, the server's own encoding of its pixels as 8-bit RGBA, is past 4 MiB (`413`) or holds a part of a tree's secret; the page of another origin than the preview's, or a link's page of another origin than the link); `400 invalid_request` (the gate's refusals: the body's form, an `opId` not of its form or holding a part of a tree's secret, a `byName` past 60 characters as sent); `404 no_preview` (the attempt's preview is not open now, or the candidate's preview checkout `from.seq` of that attempt is not ready now); `409 op_conflict`; `503 busy` (the server is checking another screenshot: save again); `503 tree_unread` (the tree's read gave no commit or was refused: nothing is kept, save again) |
 | `GET /api/captures` | `?run=&task=&attempt=` (an attempt from 1), `?ticket=` (the captures a send was sent to), `?after=` (a page's `next`), `?limit=` (1 to 100, 100 when absent); each at most once, `attempt` and `limit` in decimal digits alone | `{captures, next?}`, newest first, each with its first annotation alone, its note cut to 200 characters; `400 invalid_request` for a parameter given twice, an `attempt` or a `limit` given empty or with anything but digits (a sign among it), a limit of 0 or past 100, an attempt of 0, a task without its run or an attempt without its task |
 | `GET /api/captures/{id}` | none | the capture with its annotations and its sends (their requests aside); a deleted capture is its tombstone `{id, rev, createdAt, deletedAt}` |
 | `GET /api/captures/{id}/image` | none | the kept PNG, whole, `200` whatever range the request names (never a part): `Content-Type: image/png`, `Content-Length`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`, `Content-Disposition: inline`, `X-Conductor-SHA256` (the kept file's); `404 not_found` without one, and for a deleted capture |
