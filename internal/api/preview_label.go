@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/gitcli"
 	"github.com/rocksolidlabs/conductor/internal/proto"
@@ -25,8 +28,9 @@ import (
 
 // The label of an attempt's preview over HTTP (Program item PV1,
 // docs/plans/browser-evidence.md "The label"): the tree's revision read
-// now, the admin's alone. The captures of a preview, which read the tree
-// the same way, are a later row's.
+// now, the admin's alone, of the attempt's worktree preview or, with
+// ?seq=, of a candidate's preview checkout open now (PR-8). The captures
+// of a preview read the tree the same way (captures.go).
 
 const (
 	// labelReadWait bounds a read of a tree.
@@ -336,12 +340,15 @@ func (tr *treeReads) read(ctx context.Context, wp crew.WorktreePreview, step fun
 }
 
 // previewLabel is an attempt's preview label: the URL to open (the
-// admin's, the tree's secret in it), the tree and its revision as read
-// now (unread says why content is empty when it is), whether it is
-// mutable, its state, where it runs and when it was read.
+// admin's, the tree's secret in it), the tree (its worktree, or a preview
+// checkout of its result by seq, which names its candidate) and its
+// revision as read now (unread says why content is empty when it is),
+// whether it is mutable, its state, where it runs and when it was read.
 type previewLabel struct {
 	URL          string    `json:"url"`
 	Tree         string    `json:"tree"`
+	Seq          int       `json:"seq,omitempty"`
+	Candidate    string    `json:"candidate,omitempty"`
 	Commit       string    `json:"commit"`
 	Content      string    `json:"content"`
 	Changed      int       `json:"changed"`
@@ -365,11 +372,14 @@ func labelURL(preview, secret string, admin bool) string {
 	return u
 }
 
-// handlePreviewLabel answers the label of an attempt's worktree preview:
-// 200 previewLabel, its revision read now (crew.TreeRevision, within 5 s:
-// past it content is "" and unread says so); 404 no_preview when the
-// attempt's preview is not open. It takes no parameter (a candidate's
-// checkout, ?seq=, is a later row's).
+// handlePreviewLabel answers the label of an attempt's worktree preview,
+// or with ?seq=N of the preview checkout N of its result while it is
+// ready (crew.Engine.ReadPreview, which puts its idle end previewIdle
+// after the read): 200 previewLabel, its revision read now
+// (crew.TreeRevision, within 5 s: past it content is "" and unread says
+// so); 404 no_preview when the attempt's preview, or that checkout, is
+// not open; 400 invalid_request for any parameter but seq, seq given twice,
+// or a seq that is not a number from 1 in decimal digits.
 func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 	runID, taskID := r.PathValue("run"), r.PathValue("task")
 	n, ok := pathNumber(r.PathValue("n"))
@@ -377,14 +387,23 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "a run id, a task id and an attempt number")
 		return
 	}
-	if !noQuery(w, r) {
+	seq, ok := labelSeq(w, r)
+	if !ok {
 		return
 	}
 	var wp crew.WorktreePreview
-	if s.runs != nil {
+	var ps crew.PreviewState
+	switch {
+	case s.runs == nil:
+		ok = false
+	case seq > 0:
+		ps, ok = s.runs.ReadPreview(runID, taskID, n, seq)
+		ok = ok && ps.State == ledger.PreviewReady && ps.Preview != ""
+		wp = checkoutPreview(ps)
+	default:
 		wp, ok = s.runs.WorktreePreview(runID, taskID, n)
 	}
-	if s.runs == nil || !ok {
+	if !ok {
 		writeError(w, http.StatusNotFound, "no_preview", "the attempt's preview is not open now")
 		return
 	}
@@ -398,6 +417,13 @@ func (s *Server) handlePreviewLabel(w http.ResponseWriter, r *http.Request) {
 	cut := labelPaths(paths)
 	l := previewLabel{Tree: dispatch.TreeWorktree, Commit: read.Commit, Content: read.Content, Changed: read.Changed, ChangedPaths: cut,
 		ChangedCut: len(cut) < read.Changed, Mutable: true, State: "ready", Where: cmpOr(wp.Where, "native"), ReadAt: time.Now().UTC()}
+	if seq > 0 {
+		// A checkout is the commit as committed while it holds nothing
+		// else that git sees; the label shows so, the save's
+		// crew.CandidateIntact decides the candidate.
+		l.Tree, l.Seq, l.Candidate = dispatch.TreePreview, seq, checkoutCandidate(ps)
+		l.Mutable = checkoutMutable(ps, read, err)
+	}
 	if err != nil {
 		s.log.Warn("the preview label's tree was not read", "run", runID, "task", taskID, "attempt", n, "why", readFailure(err))
 		l.Unread = "the tree could not be read"
@@ -564,4 +590,62 @@ func labelPaths(paths []string) []string {
 func principalAdmin(r *http.Request) bool {
 	p, ok := r.Context().Value(principalKey{}).(principal)
 	return ok && p.admin
+}
+
+// maxLabelSeq bounds the digits of a label's seq: a candidate is opened in
+// at most ledger.MaxPreviews previews.
+const maxLabelSeq = 4
+
+// labelSeq reads the label's one parameter, seq: 0 with none, else its
+// number from 1 in decimal digits (at most maxLabelSeq of them, no sign,
+// no leading zero); 400 invalid_request for any other parameter, seq given
+// twice or empty, or one not so. When it reports false it has answered.
+func labelSeq(w http.ResponseWriter, r *http.Request) (int, bool) {
+	q, ok := queryValues(w, r)
+	if !ok {
+		return 0, false
+	}
+	bad := func(words string) (int, bool) {
+		writeError(w, http.StatusBadRequest, "invalid_request", words)
+		return 0, false
+	}
+	for name := range q {
+		if name != "seq" {
+			return bad("the label takes one parameter, seq")
+		}
+	}
+	vs := q["seq"]
+	switch {
+	case len(vs) == 0:
+		return 0, true
+	case len(vs) > 1:
+		return bad("seq is given once")
+	}
+	v := vs[0]
+	if v == "" || len(v) > maxLabelSeq || v[0] == '0' || strings.ContainsFunc(v, func(c rune) bool { return c < '0' || c > '9' }) {
+		return bad("seq is a preview's number, from 1, in decimal digits")
+	}
+	n, _ := strconv.Atoi(v)
+	return n, true
+}
+
+// checkoutPreview is a candidate's preview checkout as the tree reads take
+// a preview: its URL (naming the tree's secret), the run's working
+// directory it is under, its directory, its tree's secret and where it
+// runs.
+func checkoutPreview(ps crew.PreviewState) crew.WorktreePreview {
+	return crew.WorktreePreview{URL: ps.Preview, Root: ps.Root, Dir: ps.Dir, Secret: ps.Secret, Where: ps.Where}
+}
+
+// checkoutCandidate names the candidate a preview checkout is of:
+// <run>/<task>/<n>@<commit>.
+func checkoutCandidate(ps crew.PreviewState) string {
+	return fmt.Sprintf("%s/%s/%d@%s", ps.Run, ps.Task, ps.N, ps.Commit)
+}
+
+// checkoutMutable is whether a checkout's read is other than its commit's
+// tree: HEAD moved, a change git sees (a tracked file changed, a file it
+// does not ignore added), or a read that did not say.
+func checkoutMutable(ps crew.PreviewState, read crew.TreeRead, err error) bool {
+	return err != nil || read.Content == "" || read.Commit != ps.Commit || read.Changed > 0
 }
