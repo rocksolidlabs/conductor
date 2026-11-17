@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunTask } from '~/composables/useSessions'
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
-import { closed, displayBy, stateWords } from '~/utils/brakeman'
+import { closed, stateWords } from '~/utils/brakeman'
 import { answerEvidence, answerWords, askAgainBody } from '~/utils/brakemanAbout'
 
 /**
@@ -14,7 +14,7 @@ const props = defineProps<{ request: BrakemanRow; runId: string; task: RunTask; 
 const emit = defineEmits<{ asked: [request: BrakemanRequest] }>()
 
 const bk = useBrakeman()
-const identity = useIdentity()
+const asker = useAskBrakeman()
 const about = computed(() => `task:${props.runId}/${props.task.id}`)
 const open = computed(() => !closed(props.request.state))
 const briefed = computed(() => props.request.state === 'briefed' && !!props.request.hasBrief)
@@ -45,7 +45,7 @@ async function askAgain() {
   asking.value = true
   problem.value = ''
   try {
-    emit('asked', await bk.ask({ ...body, by: displayBy(identity.name.value) || undefined }))
+    emit('asked', await asker.send(body))
   } catch (e) {
     problem.value = (e as Error).message
   } finally {

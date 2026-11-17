@@ -31,8 +31,10 @@ const props = defineProps<{
   refusal?: string
   /** The words of an action whose outcome nobody confirmed (sent, and no word will come), with a way to read again; none otherwise. */
   unknown?: string
-  /** Where Ask Brakeman goes (the Brakeman page's composer about the item's subject), when the server has Brakeman. */
+  /** The subject Ask Brakeman asks Brakeman to explain, at once (the page sends it: `ask`), when the server has Brakeman. */
   askBrakeman?: string
+  /** Whether that ask is on its way. */
+  askingBrakeman?: boolean
   /** The question Accept anyway and Cancel ask, the run page's (useTaskCommands.question). */
   confirmQuestion?: (a: InboxAction) => { title: string; detail: string }
   /** A decision link's page (the join page's Needs you tab): an evidence entry read through the link's lane. */
@@ -49,7 +51,7 @@ const props = defineProps<{
    */
   recordShown?: boolean
 }>()
-const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: [] }>()
+const emit = defineEmits<{ act: [ref: string, action: InboxAction, text?: string]; comment: [ref: string, ticket: string, text: string, taken: (sent: boolean) => void]; reread: []; ask: [subject: string] }>()
 
 const brakeman = computed(() => props.item.briefBy === 'brakeman')
 /** The heading's time: waiting while the item is open, when it was answered once it is not (itemTimeWords). */
@@ -248,7 +250,7 @@ function sendComment() {
         data-inbox-unknown
       />
       <div class="flex flex-wrap gap-2">
-        <UButton v-if="askBrakeman" :to="askBrakeman" label="Ask Brakeman" icon="i-lucide-notebook-pen" color="neutral" variant="outline" size="md" class="min-h-11" data-inbox-ask-brakeman />
+        <UButton v-if="askBrakeman" label="Ask Brakeman" icon="i-lucide-notebook-pen" color="neutral" variant="outline" size="md" class="min-h-11" :loading="askingBrakeman" :disabled="askingBrakeman" data-inbox-ask-brakeman @click="emit('ask', askBrakeman)" />
         <UButton v-if="ticket" :label="`Comment on ${ticket}`" icon="i-lucide-message-square" color="neutral" variant="outline" size="md" class="min-h-11" data-inbox-comment-open @click="commenting = !commenting" />
       </div>
       <form v-if="commenting" class="flex flex-col gap-2" data-inbox-comment @submit.prevent="sendComment">
