@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto'
 import type { Page, Request } from '@playwright/test'
 import { expect, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
+import { createComparison } from './compare-helpers'
+import { noOverlap, noSideways } from './layout'
 
 // A comparison's launch from a ticket's approved plan revision (CP1, docs/plans/compare-crew.md, "The launch says what it costs"): the
 // dialog says what it starts from the revision's own `compare` part, above the members' lines, and its button says the count; the
@@ -185,4 +187,108 @@ test("a comparison whose statement the server did not give is not launched from 
   await expect(d2.locator('[data-launch-refused]')).toContainText('e2e: managed runs are off here', { timeout: 30_000 })
   expect(plainSent).toHaveLength(1)
   expect(plainSent[0]).not.toHaveProperty('candidates')
+})
+
+/**
+ * Until the template route is on the server (CP1 PR-3): POST /api/crews/templates/compare answered as the server's CompareTemplate makes
+ * the crew (internal/crew compare.go), saved through POST /api/crews, its reply handed back as the route's.
+ */
+async function templateStub(page: Page, api: Api, seen: Array<Record<string, unknown>>) {
+  await page.route(
+    (u) => u.pathname === '/api/crews/templates/compare',
+    async (route) => {
+      const spec = route.request().postDataJSON() as { name: string; cwd: string; goal: string; instructions: string; criteria: unknown[]; checks?: unknown[]; manifest?: unknown; candidates: Array<{ agentId: string; args?: string[]; approach?: string }>; reviews?: boolean; reviewAgent?: string; brakeman?: boolean }
+      seen.push(spec as unknown as Record<string, unknown>)
+      const l = spec.candidates.map((_, i) => String.fromCharCode(97 + i))
+      const crew = {
+        name: spec.name,
+        goal: spec.goal,
+        cwd: spec.cwd,
+        where: 'server',
+        isolation: 'worktree',
+        openAfterLaunch: false,
+        ...(spec.manifest ? { manifest: spec.manifest } : {}),
+        members: [
+          ...spec.candidates.map((c, i) => ({ name: `cand-${l[i]}`, agentId: c.agentId, ...(c.args ? { args: c.args } : {}), prompt: `candidate ${i + 1}`, start: { when: 'task' } })),
+          ...(spec.reviews ? l.map((x) => ({ name: `rev-${x}`, agentId: spec.reviewAgent, prompt: 'review', start: { when: 'task' } })) : []),
+        ],
+        tasks: [
+          ...l.map((x) => ({ id: `approach-${x}`, member: `cand-${x}`, kind: 'work', instructions: spec.instructions, ...(spec.checks ? { checks: spec.checks } : {}) })),
+          ...(spec.reviews ? l.map((x) => ({ id: `review-${x}`, member: `rev-${x}`, kind: 'review', instructions: 'Review it.', needs: [`approach-${x}`] })) : []),
+        ],
+        compare: { criteria: spec.criteria, candidates: spec.candidates.map((c, i) => ({ task: `approach-${l[i]}`, ...(c.approach ? { approach: c.approach } : {}) })), ...(spec.brakeman ? { brakeman: true } : {}) },
+      }
+      const r = await api.call<{ crew: { id: string } }>('POST', '/api/crews', crew)
+      if (r.status < 300) made.crews.push(r.body.crew.id)
+      return route.fulfill({ status: r.status === 200 ? 201 : r.status, contentType: 'application/json', body: JSON.stringify(r.body) })
+    },
+  )
+}
+
+test("New comparison on Crews makes a comparison's crew, and the crew editor shows its block read only, on a phone too", async ({ page, api, state }) => {
+  test.setTimeout(120_000)
+  const seen: Array<Record<string, unknown>> = []
+  await templateStub(page, api, seen)
+  for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(size)
+    await page.goto('/crews')
+    // The navbar's right side: About, New crew, New comparison and Full screen.
+    const navbar = page.locator('[data-new-comparison]').locator('..')
+    await expect(page.locator('[data-new-comparison]')).toBeVisible({ timeout: 30_000 })
+    // Beside New crew, neither filled: one filled button a navbar, and none here.
+    await expect(page.locator('[data-new-comparison]')).toHaveText('New comparison')
+    await noOverlap(navbar)
+    await noSideways(page)
+  }
+  await page.locator('[data-new-comparison]').click()
+  const form = page.locator('[data-compare-template]')
+  await expect(form).toBeVisible()
+  await noSideways(page)
+  // Create waits for what the server would refuse, in words: here, the name first.
+  await expect(form.locator('[data-compare-template-problem]')).toHaveText('Name the comparison')
+  await expect(form.locator('[data-compare-create]')).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(form).toHaveCount(0)
+  await page.setViewportSize({ width: 1440, height: 900 })
+
+  const crewId = await createComparison(page, api, {
+    name: `e2e compare ${tag()}`,
+    cwd: state.repo,
+    criteria: ['no new dependency', 'p99 of the cache read under 2 ms'],
+    checks: [{ id: 'unit', argv: ['true'] }],
+    candidates: [{ agentId: 'worker', approach: 'key the cache by locale' }, { agentId: 'worker-cli', args: ['--model', 'e2e'] }],
+    reviewAgent: 'worker',
+    brakeman: true,
+  })
+  expect(seen).toHaveLength(1)
+  expect(seen[0]).toEqual({
+    name: expect.stringMatching(/^e2e compare /),
+    cwd: state.repo,
+    goal: 'Make the cache read fast',
+    instructions: 'Keep the API as it is.',
+    criteria: [
+      { id: 'no-new-dependency', text: 'no new dependency' },
+      { id: 'p99-of-the-cache-read-under-2-ms', text: 'p99 of the cache read under 2 ms' },
+    ],
+    checks: [{ id: 'unit', argv: ['true'] }],
+    candidates: [{ agentId: 'worker', approach: 'key the cache by locale' }, { agentId: 'worker-cli', args: ['--model', 'e2e'] }],
+    reviews: true,
+    reviewAgent: 'worker',
+    brakeman: true,
+  })
+  const crew = await api.crew(crewId)
+  expect(crew.tasks?.map((t) => t.id)).toEqual(['approach-a', 'approach-b', 'review-a', 'review-b'])
+
+  // The editor: the block, read only, above the tasks.
+  const block = page.locator('[data-crew-compare-block]')
+  await expect(block).toHaveAttribute('data-compare-candidates', '2', { timeout: 30_000 })
+  await expect(block.locator('[data-crew-compare-criterion]')).toHaveText(['no new dependency', 'p99 of the cache read under 2 ms'])
+  await expect(block.locator('[data-crew-compare-lane="approach-a"] [data-crew-compare-approach]')).toHaveText('key the cache by locale')
+  await expect(block.locator('[data-crew-compare-lane="approach-b"] [data-crew-compare-approach]')).toHaveText('No approach given: an independent try')
+  await expect(block.locator('[data-crew-compare-lane="approach-b"]')).toContainText('cand-b · Worker, CLI (e2e stub) · --model e2e')
+  await expect(block.locator('[data-crew-compare-lane="approach-a"]')).toContainText('Then: review-a')
+  await expect(block.locator('[data-crew-compare-brakeman]')).toHaveText('Brakeman drafts the comparison when all candidates are done.')
+  await expect(block.locator('input, textarea, [role="combobox"]')).toHaveCount(0)
+  const box = async (sel: string) => (await page.locator(sel).first().boundingBox())!
+  expect((await box('[data-crew-compare-block]')).y).toBeLessThan((await box('[data-crew-tasks-section]')).y)
 })
