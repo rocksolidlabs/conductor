@@ -3846,7 +3846,9 @@ no_section` for a name not below, `400 invalid_request` for any other
 parameter. Every reply is `{guide: 1, version, commit, section, <section>:
 …}`, `version` and `commit` the server's build, the content under the
 section's own name; encoded with HTML escaping off and measured so: the
-overview at most 4 KiB, `operations` at most 128 KiB (it lists every
+overview at most 8 KiB (it names every operation its caller may do, and
+the admin's names filled the 4 KiB it had once the comparison's and the
+trackers' operations were both in the table), `operations` at most 128 KiB (it lists every
 operation of the table, and the admin's rows filled the 64 KiB it had
 until RV1's review operations), each other section at most 64 KiB, the
 eight at most 256 KiB, which a test holds with every entry at its largest

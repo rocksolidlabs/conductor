@@ -123,7 +123,11 @@ const (
 	guideVersion     = 1
 	maxOpSummary     = 300
 	maxOpDescription = 1 << 10
-	maxGuideOverview = 4 << 10
+	// maxGuideOverview bounds the overview, which names every operation
+	// its caller may do: twice the 4 KiB it had, which the admin's names
+	// filled once the comparison's and the trackers' operations were
+	// both in the table.
+	maxGuideOverview = 8 << 10
 	maxGuideSection  = 64 << 10
 	// maxGuideOperations bounds the operations section, which lists every
 	// operation of the table: twice a section's, since the admin's rows
