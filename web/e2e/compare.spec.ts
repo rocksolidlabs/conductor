@@ -65,8 +65,8 @@ test('the compare view draws the comparison as the server measured it, in place 
   await expect(b.locator('[data-compare-candidate-commit]')).toContainText('last submitted commit · failed: not selectable')
   await expect(b.locator('[data-compare-candidate-args]')).toHaveText('--model small')
   await expect(b.locator('[data-compare-candidate-attempts]')).toHaveText('attempt 3 shown · 3 attempts made')
-  // Until the selection arrives, said under the columns.
-  await expect(v.locator('[data-compare-select-slot]')).toHaveText('Selecting a candidate arrives with durable decisions.')
+  // Under the columns, the selection's panel: with no record yet, when one opens (PR-7, CompareSelect).
+  await expect(v.locator('[data-compare-select] [data-compare-select-words]')).toHaveText(/^(The selection opens when every lane has ended\. Nothing is selected by default\.|The selection opens next: every lane has ended\.)$/)
 
   // The checks: each with the server's verdict and its reasons, each cell its outcome.
   const unit = v.locator('[data-compare-check="check/unit"]')
