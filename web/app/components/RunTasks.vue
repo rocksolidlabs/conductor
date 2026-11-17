@@ -2,8 +2,6 @@
 import type { RouteLocationRaw } from 'vue-router'
 import type { RunAttempt, RunInfo, RunStep, RunTask } from '~/composables/useSessions'
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
-import { displayBy } from '~/utils/brakeman'
-import { askedToast } from '~/utils/brakemanAsk'
 import { candidateRef, ticketPath } from '~/utils/dispatch'
 import { taskReviewTarget } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
@@ -112,18 +110,15 @@ function hasActs(t: RunTask): boolean {
 // the row, under which the answer stands while it is selected. A refusal is said in a toast, in the server's words.
 const brakeman = useBrakeman()
 const decisionModal = useDecisionModal()
-const toast = useToast()
-const identity = useIdentity()
+const asker = useAskBrakeman()
 async function askWhy(t: RunTask) {
   if (props.selected !== t.id) emit('select', t.id)
-  try {
-    const r = await brakeman.ask({ kind: 'explain', subjects: [`task:${props.run.id}/${t.id}`], by: displayBy(identity.name.value) || undefined })
-    emit('asked', r)
-    if (!props.answers) toast.add(askedToast(r))
-  } catch (e) {
-    toast.add({ title: 'Brakeman was not asked', description: (e as Error).message, icon: 'i-lucide-circle-alert', color: 'neutral' })
-  }
+  const body = { kind: 'explain', subjects: [`task:${props.run.id}/${t.id}`] }
+  // Where the page shows the answer under the row, the row says it; elsewhere a toast names the request (or the refusal).
+  const r = props.answers ? await asker.send(body).catch((e: Error) => (toast.add({ title: 'Not asked', description: e.message, icon: 'i-lucide-triangle-alert', color: 'error' }), null)) : await asker.tell(body)
+  if (r) emit('asked', r)
 }
+const toast = useToast()
 /** The answer under the task's row: the selected row's alone, when the page holds one. */
 const answerOf = (t: RunTask) => (props.selected === t.id ? props.answers?.[t.id] : undefined)
 /** The attempt's preview page (Open in Conductor): it frames the preview and captures it. */
