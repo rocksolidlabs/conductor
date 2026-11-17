@@ -264,6 +264,16 @@ export function snapshotOf(raw: unknown): ExternalSnapshot | null {
 }
 
 /**
+ * An imported image's caption (#989): the name of the attachment the import downloaded it as (`github-1.png`), else "image N" by its
+ * place in the list (`index` from 0), as in the import's preview, where no attachment exists yet. Never the last part of the image's
+ * address: GitHub serves an image under an identifier (a long run of hexadecimal digits, or an id of 36 characters), not a name.
+ */
+export function imageCaption(index: number, attachmentId?: string, attachments: readonly { id: string; name: string }[] = []): string {
+  const name = attachmentId ? attachments.find((a) => a.id === attachmentId)?.name.trim() : ''
+  return name || `image ${index + 1}`
+}
+
+/**
  * A link's checks counted in words: "3 passed · 1 failed · 2 pending"; "no checks" for none. A cut list never says all passed: its
  * words are "incomplete: N checks not read, see them on GitHub" (`incomplete`), shown in place of any all-passed word.
  */

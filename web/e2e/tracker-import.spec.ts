@@ -17,6 +17,9 @@ const STEP_MS = 15_000
 const TOKEN = 'ghp_e2eFakeToken0123456789abcdefIMPORT'
 const REFUSED = 'ghp_e2eRefusedToken0123456789abcdefNOPE'
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6300010000000500010d0a2db40000000049454e44ae426082', 'hex')
+/** The names GitHub serves an issue's images under: a run of hexadecimal digits, and an id of 36 characters. */
+const GH_HEX = '4f9a0c3e8b2d7a61c5e0f8b9a3d2c1e07b6a5f4e9d8c7b6a5f4e3d2c1b0a9f8e'
+const GH_UUID = '0a1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d'
 
 let srv: OwnServer
 let gh: FakeGitHub
@@ -134,7 +137,7 @@ test('an issue with two images and steps to reproduce, imported from the palette
     '[a link](javascript:window.__pwned=2)',
     '![remote](https://evil.example/pixel.png)',
   ].join('\n')
-  gh.set({ n: 12, kind: 'issue', title: 'The list crashes when empty', body, state: 'open', labels: ['bug'], assignees: ['hubot-example'], images: [{ path: 'one.png', type: 'image/png', bytes: PNG }, { path: 'two.png', type: 'image/png', bytes: PNG }] })
+  gh.set({ n: 12, kind: 'issue', title: 'The list crashes when empty', body, state: 'open', labels: ['bug'], assignees: ['hubot-example'], images: [{ path: GH_HEX, type: 'image/png', bytes: PNG }, { path: GH_UUID, type: 'image/png', bytes: PNG }] })
 
   const page = await dayPage(browser, { path: `/dispatch/${key}`, server: srv.started })
   await expect(page.locator('[data-dispatch-import-open]')).toBeVisible()
@@ -150,7 +153,9 @@ test('an issue with two images and steps to reproduce, imported from the palette
   await dialog.locator('[data-import-read]').click()
   const preview = dialog.locator('[data-import-preview]')
   await expect(preview.locator('[data-import-title]')).toHaveText('The list crashes when empty')
-  await expect(preview.locator('[data-import-image]')).toHaveCount(2)
+  // Each image by its place: GitHub serves it under an identifier, never shown (#989).
+  await expect(preview.locator('[data-import-image]')).toHaveText(['image 1', 'image 2'])
+  for (const id of [GH_HEX, GH_UUID]) await expect(dialog).not.toContainText(id.slice(0, 8))
   await expect(preview.locator('[data-import-repro]')).toContainText('Remove every item')
   await expect(preview.locator('[data-import-state]')).toHaveText('Open')
   await expect(preview.locator('[data-import-owners]')).toContainText('Title: GitHub · Description: GitHub')
@@ -180,6 +185,12 @@ test('an issue with two images and steps to reproduce, imported from the palette
   const imgs = panel.locator('[data-github-images] img')
   await expect(imgs).toHaveCount(2)
   for (const src of await imgs.evaluateAll((l) => l.map((e) => (e as HTMLImageElement).src))) expect(src).toMatch(/^blob:/)
+  // Each captioned with its attachment's name, its title and its alt the same; the identifier it was served under is nowhere (#989).
+  const captions = panel.locator('[data-github-image-caption]')
+  await expect(captions).toHaveText(['github-1.png', 'github-2.png'])
+  expect(await captions.evaluateAll((l) => l.map((e) => e.getAttribute('title')))).toEqual(['github-1.png', 'github-2.png'])
+  expect(await imgs.evaluateAll((l) => l.map((e) => e.getAttribute('alt')))).toEqual(['github-1.png', 'github-2.png'])
+  for (const id of [GH_HEX, GH_UUID]) await expect(panel).not.toContainText(id.slice(0, 8))
   expect(gh.count('image')).toBe(2)
   expect(gh.requests().filter((r) => r.route === 'image').every((r) => r.token === '')).toBe(true)
   await expect(panel.locator('[data-github-repro]')).toContainText('Remove every item')

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DispatchTicket, SnapshotImage } from '~/composables/useDispatch'
-import { descriptionDiffersFrom, githubHref, githubStateWords, ownerWord, readAge, refWords, snapshotOf } from '~/utils/tracker'
+import { descriptionDiffersFrom, githubHref, githubStateWords, imageCaption, ownerWord, readAge, refWords, snapshotOf } from '~/utils/tracker'
 import { sha256Hex } from '~/utils/publication'
 
 /**
@@ -156,15 +156,8 @@ watch(
   { immediate: true },
 )
 const imageWords = (im: SnapshotImage) => (im.attachmentId ? '' : im.skipped === 'type' ? 'skipped: not a PNG, JPEG, GIF or WebP' : im.skipped === 'size' ? 'skipped: past 16 MiB' : 'not downloaded yet: Refresh fetches it')
-/** An image's file name, from its id: the last part of its address's path, as text. */
-function imageName(im: SnapshotImage): string {
-  const last = im.id.slice(im.id.lastIndexOf('/') + 1)
-  try {
-    return decodeURIComponent(last) || 'image'
-  } catch {
-    return last || 'image'
-  }
-}
+/** An image's caption, its title and its alt (no alternative text reaches the app): its attachment's name, else "image N". */
+const caption = (im: SnapshotImage, i: number) => imageCaption(i, im.attachmentId, props.ticket.attachments)
 
 watch(
   () => props.ticket.key,
@@ -242,10 +235,10 @@ watch(
       </div>
 
       <ul v-if="images.length" class="flex flex-wrap gap-2" data-github-images>
-        <li v-for="im in images" :key="im.id" class="flex w-28 flex-col gap-1 text-xs" :data-github-image="im.attachmentId ?? ''">
-          <img v-if="im.attachmentId && shown.get(im.attachmentId)" :src="shown.get(im.attachmentId)" :alt="imageName(im)" class="h-20 w-28 rounded object-cover ring ring-default" />
+        <li v-for="(im, i) in images" :key="im.id" class="flex w-28 flex-col gap-1 text-xs" :data-github-image="im.attachmentId ?? ''">
+          <img v-if="im.attachmentId && shown.get(im.attachmentId)" :src="shown.get(im.attachmentId)" :alt="caption(im, i)" class="h-20 w-28 rounded object-cover ring ring-default" />
           <span v-else class="flex h-20 w-28 items-center justify-center rounded bg-elevated text-dimmed"><UIcon name="i-lucide-image" class="size-5" /></span>
-          <span class="truncate text-muted" :title="imageName(im)">{{ imageName(im) }}</span>
+          <span class="truncate text-muted" :title="caption(im, i)" data-github-image-caption>{{ caption(im, i) }}</span>
           <span v-if="imageWords(im)" class="text-dimmed">{{ imageWords(im) }}</span>
         </li>
       </ul>
