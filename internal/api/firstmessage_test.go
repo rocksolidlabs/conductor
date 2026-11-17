@@ -201,6 +201,46 @@ func TestAFirstMessageEndsWithTheServer(t *testing.T) {
 	}
 }
 
+// The server's stop ends a first message still waiting: Shutdown returns
+// within its context, the message untyped, also once the readiness it
+// waited for comes after the stop. A launch's first message given after
+// the stop, its session ready at once, is typed by no one either: its
+// typer returns, the session no longer saying it waits, nothing typed.
+func TestTheServersStopEndsItsFirstMessages(t *testing.T) {
+	e := promptedEnv(t)
+	gate := gateFirst(e)
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "prompted", "message": "fix the parser"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("the launch: %d %v", resp.StatusCode, out)
+	}
+	stopCreated(e, out)
+	before, _ := out["id"].(string)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	if ctx.Err() != nil {
+		t.Fatal("Shutdown waited out its context")
+	}
+	close(gate)
+	untyped := func(l *session.Local, which string) {
+		t.Helper()
+		until(t, "the typer of "+which+" returned", func() bool { return l.Info().FirstMessage == "" })
+		for _, en := range l.Activity() {
+			if en.Type == session.ActivityInput {
+				t.Fatalf("%s typed %+v", which, en)
+			}
+		}
+	}
+	untyped(e.local(before), "the launch before the stop")
+	resp, out = e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "prompted", "message": "after the stop"})
+	if resp.StatusCode != http.StatusCreated {
+		return
+	}
+	stopCreated(e, out)
+	after, _ := out["id"].(string)
+	untyped(e.local(after), "the launch after the stop")
+}
+
 // The clone route keeps its own body: a message there is an unknown field.
 func TestTheCloneRouteTakesNoMessage(t *testing.T) {
 	e := newTestEnv(t, nil)
