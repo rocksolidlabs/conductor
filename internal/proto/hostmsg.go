@@ -87,6 +87,13 @@ type HostInfo struct {
 	// kept with its attention (HostAttentionMsg.Kept). A host publishing to
 	// a switchyard never says it; an older server ignores it.
 	AnswerAs bool `json:"answerAs,omitempty"`
+	// Forms says the host reads a recipe's forms by the form's rules (a
+	// question asked at any time whose answers are read off the screen and
+	// that names answers of its own: Codex's MCP tool approval, #716), so
+	// the owner's own server puts them in its recipe (Registered.Recipe).
+	// A bool, so the register's bound does not change. A host publishing
+	// to a switchyard never says it; an older server ignores it.
+	Forms bool `json:"forms,omitempty"`
 }
 
 // MaxHostUser bounds HostInfo.User; MaxHostInstance and MaxLocalID bound

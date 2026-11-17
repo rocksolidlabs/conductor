@@ -1289,7 +1289,8 @@ server's own among them; they are not asked again, and their calls keep
 waiting, as when you press Esc in the terminal. The four choices are
 offered in a terminal at least 53 columns wide (Allow and Cancel alone at
 40 too). Narrower, as a phone's 40 columns, on a screen that does not
-plainly show the one form, and on a hosted session (`conductor host`),
+plainly show the one form, and on a session hosted by an earlier
+release's `conductor host` (or published to a switchyard),
 Conductor offers no choices: you answer the form in the terminal (Codex
 0.167 and later say they wait on a permission, and the session needs you
 with no choices; with 0.163 it reads as working). The same form shown
