@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
-import { asDesktopZoom, zoomWords, plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { asDesktopCapture, frameOrigin, previewRect, asDesktopZoom, zoomWords, plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -125,5 +125,29 @@ describe("the desktop app's zoom (#431)", () => {
     expect(zoomWords({ level: 1.5, percent: 131, bound: '' })).toBe('131%')
     expect(zoomWords({ level: 5, percent: 249, bound: 'largest' })).toBe('249%, the largest')
     expect(zoomWords({ level: -3, percent: 58, bound: 'smallest' })).toBe('58%, the smallest')
+  })
+})
+
+describe("the preview's screenshot in the desktop app", () => {
+  it("takes a box of the page in whole CSS pixels, its edges moved out", () => {
+    expect(previewRect({ left: 10, top: 20, right: 110, bottom: 70 })).toEqual({ x: 10, y: 20, width: 100, height: 50 })
+    expect(previewRect({ left: 10.5, top: 20.25, right: 109.1, bottom: 69.9 })).toEqual({ x: 10, y: 20, width: 100, height: 50 })
+    expect(previewRect({ left: -3.5, top: 0, right: 10, bottom: 10 })).toEqual({ x: -4, y: 0, width: 14, height: 10 })
+    expect(previewRect({ left: 5, top: 5, right: 5, bottom: 50 })).toBeNull()
+    expect(previewRect({ left: Number.NaN, top: 0, right: 10, bottom: 10 })).toBeNull()
+    expect(previewRect({ left: 0, top: 0, right: Infinity, bottom: 10 })).toBeNull()
+  })
+  it("reads the app's answer: a screenshot whole, or why there is none", () => {
+    const png = new Uint8Array([137, 80])
+    expect(asDesktopCapture({ png, width: 200, height: 100, scale: 2 })).toEqual({ png, width: 200, height: 100, scale: 2 })
+    expect(asDesktopCapture({ refused: 'refused: a screenshot is being taken' })).toEqual({ refused: 'refused: a screenshot is being taken' })
+    for (const v of [null, undefined, 'png', {}, { png: [1], width: 1, height: 1, scale: 1 }, { png, width: 0, height: 1, scale: 1 }, { png, width: 1, height: 1, scale: 0 }, { png, width: 1, height: 1, scale: Infinity }]) {
+      expect(asDesktopCapture(v)).toEqual({ refused: 'the desktop app gave no screenshot' })
+    }
+  })
+  it("names the origin of the frame's page, and none for a page without one", () => {
+    expect(frameOrigin('http://127.0.0.1:5173/app?x=1#token=abc', 'http://127.0.0.1:4312/')).toBe('http://127.0.0.1:5173')
+    expect(frameOrigin('/sessions', 'http://127.0.0.1:4312/preview')).toBe('http://127.0.0.1:4312')
+    for (const src of ['about:blank', 'data:text/html,x', 'javascript:1', 'file:///etc/passwd', 'http://']) expect(frameOrigin(src, 'http://127.0.0.1:4312/'), src).toBe('')
   })
 })
