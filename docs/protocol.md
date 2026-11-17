@@ -6577,7 +6577,18 @@ managed run read as its ledger holds it: never a change whose
 transaction is pending or was refused), a ticket moved to `ready` (by
 the status that change set; Dispatch's changes read from the server's
 start, every row of each commit, at most 20 pages of 500 a pass and
-the rest on the next pass at once), a person's own request (logged once,
+the rest on the next pass at once), a capacity reading that warns
+(`docs/plans/capacity.md`, PR-8: a reading the provider answered with a
+window at its `warning` or `critical` severity, at 90% used or more, or
+a limit it says holds, as the capacity panel warns; source `capacity`,
+subject `capacity:<agent>/<account>`, the key by its ids alone with no
+reading time, so a key's readings coalesce in a batch, and key the
+reading's `readAt`, so each reading fires once; no label, folder or
+figure; a reading of the agent and the account Brakeman's own turns
+launch on, its configured agent on the account its configured folder is,
+wakes nothing; admitted by the Capacity class alone, whatever the scope,
+as a `capacity:` ref is; capacity acts on nothing, and the wake only
+tells Brakeman), a person's own request (logged once,
 its op id asked again too; one whose write fails is kept and logged on a
 later pass), and the
 briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
@@ -6616,7 +6627,9 @@ request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
 30), then `idle`. Wakes while briefing, cooling or unavailable join the
 next batch. A batch holds at most 200 wakes, the same source and subject
 coalesced with a count, past them an `overflow` count with the first and
-last times; a wake whose source, subject and key the log holds already
+last times (a turn reads the overflow only under a grant that narrows no
+scope and sees every class a wake may be of: runs, sessions, Dispatch and
+capacity); a wake whose source, subject and key the log holds already
 (a task's attempts, a question's time) is one fired before, after a
 restart too. `paused` (a person) gathers nothing (a wake is logged
 `held: "paused"`), a turn running then runs to its end, and a wake

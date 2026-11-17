@@ -83,6 +83,66 @@ watches the screen's text for the agent's workspace-trust question
 (`Options.TrustPattern`), and an INPUT that is only a terminal's automatic
 reports answers nothing. A session that ends clears its attention as it ends.
 
+## Accounts and capacity
+
+An agent's login and its usage sit beside the launch (`docs/plans/capacity.md`,
+Program item AC1; `docs/protocol.md`, Capacity). `internal/capacity` keeps
+**accounts**, references to an agent's own login on this machine (an adapter
+that moves its login folder, Claude Code's `CLAUDE_CONFIG_DIR` and Codex's
+`CODEX_HOME`, a label and that folder), in `capacity/accounts.json`, written
+only by the server holding `capacity/owner.lock`; every adapter also has
+`default`, the agent's own login, never stored. Nothing in a folder is read and
+no credential, email or provider id is kept.
+
+```mermaid
+flowchart LR
+  L[a launch: session, resume, clone,<br/>member, attempt, Brakeman turn] -->|binds once, before its process| A[account: folder variable set]
+  R[POST /api/capacity/read<br/>the admin's] --> C[capacity.Cache<br/>5 min a key, memory only]
+  C -->|internal/agents' readers:<br/>the tool's own commands| T[claude / codex]
+  C -->|OnRead| E[capacity event, the page reads again]
+  C -->|OnRead, a reading that warns| W[Brakeman's background role]
+  C -->|kept readings| V[GET /api/capacity: the view]
+```
+
+**A launch is bound to its login.** One function starts every server session
+(a person's launch, a resume, a clone, a crew member, a managed run's attempt,
+a Brakeman turn), and it decides the login there, once, before the process
+starts: the account the launch names, or its adapter's default at that moment.
+The account's folder is set as the adapter's variable over everything else the
+environment holds, the account is held against removal until the process
+ends, and what the session was bound to (its binding) is kept with the
+session, the run and the record, so a resume, a retry or a continuation starts
+only on the same login and a changed default moves nothing launched. The
+folder and the login's fingerprint are in no reply.
+
+**Capacity is read, never acted on.** A **reading** is what an agent's own
+tool reported of a login's usage (`internal/agents`' usage readers: Claude
+Code's `auth status --json` and `/usage`, Codex's `app-server`, each through
+its documented commands and output, never a credential file), kept by
+`capacity.Cache` in memory only: a key (an agent and an account) at most once
+in 5 minutes, two reads at once across the server, eight readings a key. Only
+the admin's `POST /api/capacity/read` starts a read; every `GET`, a page's or a
+Brakeman turn's, answers what is kept. A reading is shown as a **view** (the
+provider's windows with their share used, reset and severity; its credits and
+limits; Conductor's own counts apart, marked an estimate) in Settings'
+Accounts, the session launch dialog, a crew's launch sheet and a ticket's
+launch. The panel warns at a window at the provider's warning or critical
+severity, at 90% used, or at a limit the provider says holds, and the launch
+stays enabled: no reading refuses, delays, pauses or reroutes anything, and
+`internal/crew` never imports `internal/capacity`.
+
+**Brakeman reads it under its Capacity class.** A turn reads the views
+(`GET /api/capacity`) and cites a reading as a `capacity:` ref, which a brief
+keeps as the server held it. A reading that warns, as the panel warns, also
+wakes Brakeman's background role: the cache's `OnRead` notes the key and the
+reading's time (it never waits), and the role's next pass turns the note into a
+wake of the source `capacity` whose subject names the agent and the account by
+their ids alone, admitted by the Capacity class alone; a reading of the agent
+and account Brakeman's own turns launch on wakes nothing. Brakeman may propose
+waiting for a reset, holding named work, fewer members at once or another
+model or agent already configured, never another account of the same provider
+because this one is near its limit.
+
 ## Developer-hosted sessions
 
 ```mermaid

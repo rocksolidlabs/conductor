@@ -208,6 +208,77 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
+
+What the item shipped, row by row (each row's issue says what it verified):
+
+- **PR-1 (#781)**: the usage readers of Claude Code and Codex in
+  `internal/agents`, each through its tool's documented commands and its own
+  output, qualified against the versions read on the planning machine.
+- **PR-2 (#782)**: `internal/capacity`: account references, readings and the
+  cache (a key at most once in 5 minutes, memory only).
+- **PR-3a (#783), PR-3b (#836)**: the accounts and capacity routes, the
+  `capacity` event, and `conductor accounts` and `conductor capacity`.
+- **PR-4 (#784), PR-4b (#856)**: a launch bound to its account and model once,
+  before its process starts, and held from its start by whatever runs in the
+  account's folder.
+- **PR-5 (#785), PR-5b (#872)**: Settings' Accounts, the capacity panel and
+  the session launch dialog; an entry that keeps its own login is said so,
+  and offered no account.
+- **PR-6 (#786)**: Brakeman reads the capacity view under its Capacity class
+  and cites a reading as a `capacity:` ref, and proposes only what owner
+  decision 11 allows.
+- **PR-7 (#787), PR-7b (#957)**: crews, a ticket's launches and Brakeman's
+  account in the app's screens, the launch sheet's lines; a crew's launch
+  names the revision the sheet read, and the server refuses another.
+- **PR-8 (#788)**: a capacity reading that warns, as the panel warns (a
+  window at the provider's warning or critical severity, at 90% used, or a
+  limit the provider says holds), wakes Brakeman's background role. Its row in
+  the role's log on the Brakeman page reads "An agent neared its usage limit:
+  capacity of `<agent>` on `<account>`". The wake names the agent and the
+  account by their ids alone (no label, folder or figure), is admitted by the
+  Capacity class alone (whatever the scope narrows), and a reading of the
+  agent and account Brakeman's own turns launch on (its configured agent on
+  the account its configured folder is) wakes nothing: a warning there would
+  spend a turn on the login that is near its limit. A batch's overflow, which
+  names no subject, is read only by a turn that also sees Capacity. Capacity
+  still acts on nothing. Tests: `TestCapacityWarningWakesRole` (one wake at
+  warning, a second reading inside the window coalesced with a count of two,
+  none at normal, the turn's batch reading the wake by its ids, and not at
+  all with Capacity off), `TestBrakemansOwnReadingWakesNothing`,
+  `TestACapacityWarningWakesOnlyWhereCapacityIsSeen`,
+  `TestACapacitySubjectIsAdmittedByItsClassAlone` and `TestCapacityWarns` in
+  `internal/api`; the words in `brakemanRole.test.ts`; and
+  `capacity-crew.spec.ts`'s wake, the stub's warning and limit readings
+  listed on the Brakeman page. The docs: `docs/architecture.md` (Accounts and
+  capacity), `docs/repository-map.md`, the README (Accounts and capacity) and
+  `docs/protocol.md` (The background role).
+
+**Owed: the by-hand check and the acceptance observation.** Neither has been
+made; both need the owner's machine, the real tools and the owner's own
+logins, which no test reaches. The issue stays open for them (#788).
+
+- *By hand*: Claude Code and Codex each read with the default login and with a
+  second folder; the windows and resets equal what Claude Code's `/usage` and
+  Codex's `/status` show in their own terminals at the same minute; a folder
+  never logged in shows signed out; a key-paid login, where one is at hand,
+  shows no windows; a session launched on one account and resumed after the
+  default changed resumes its own conversation.
+- *The observation*: on the owner's `conductor serve`, the session dialog for
+  each of the two shows the windows, their share used and their resets, the
+  plan, the provider's credit row, Conductor's count marked as an estimate,
+  and "Read … ago by" with the tool's version, matching the tools' own
+  terminals that minute; an agent with no reader shows unknown with its
+  reason. A managed crew of a Claude Code member and a Codex member, launched
+  from a ticket's approved revision, its launch sheet showing both lines; a
+  second account added and made the default mid-run, the next attempt and a
+  retried one still on the first account, a new session on the second, and a
+  session launched before the change resuming its own conversation. Brakeman,
+  asked for a briefing with Capacity on, cites a `capacity:` ref in a fact and
+  proposes nothing that moves work to another account.
+- What was missing, slow or wrong goes here when they are made, and the
+  owner's word that the panel told the truth about both logins closes AC1.
+
 ## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
 
 - **The server's side.** `POST /api/sessions` takes `message` (at most

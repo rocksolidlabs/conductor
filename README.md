@@ -1782,6 +1782,28 @@ revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
 
+## Accounts and capacity
+
+**Settings → Accounts** lists the logins your agents use on this server, each
+by the folder it lives in (Claude Code's `CLAUDE_CONFIG_DIR`, Codex's
+`CODEX_HOME`), beside each tool's own default login; one may be made the
+default of its tool. Conductor keeps no credential and reads nothing in a
+folder. Every launch (a session, a resume, a crew member, a run's attempt, a
+Brakeman turn) is bound to its login before its process starts, so a changed
+default moves nothing already launched, and a resume continues on the login
+it began on. A capacity panel's **Read now** asks the agent's own tool, through its own
+commands, for that login's windows (each with its share used, its reset and
+the provider's severity), its plan and the provider's credits, kept in memory
+for a while and never read more than once in 5 minutes; Conductor's own count
+of sessions sits apart, marked an estimate. The launch dialog, a crew's
+launch sheet and a ticket's launch show each line's panel, which warns at a
+window near its limit (the provider's warning or critical, or 90% used) or a
+limit the provider reports, and launching stays yours to decide: capacity
+never refuses, delays or moves work. Brakeman may read it, with its
+**Capacity** switch on, and such a warning wakes it in the background (below).
+From a shell, `conductor accounts` and `conductor capacity` (see
+`docs/protocol.md`, Capacity).
+
 ## Brakeman
 
 Brakeman is Conductor's sidekick agent: an agent of your own choosing, on your
@@ -1860,8 +1882,10 @@ no grant and a grant gives no read.
 
 **In the background.** With **Wake on events** on, Brakeman wakes by itself
 when a task fails with proof, a question has waited past its time (15 minutes
-by default), a run ends or pauses, a ticket is made ready, you ask, or at the
-briefing times you set (`HH:MM` in the server's zone, while it runs). It
+by default), a run ends or pauses, a ticket is made ready, an agent's usage
+reading warns as its capacity panel does (with **Capacity** on; never a
+reading of the agent and account Brakeman's own turns run on), you ask, or at
+the briefing times you set (`HH:MM` in the server's zone, while it runs). It
 gathers what wakes it for a window (120 s) into one turn, then cools down (30
 minutes) before the next, and stops with words when the day's turns or
 minutes are spent. Between turns no process runs and no model is polled, and
