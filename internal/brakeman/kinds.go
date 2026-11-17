@@ -81,6 +81,7 @@ const (
 	exQuestion = "8192a3b4c5d6e7f8"
 	exCommit   = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	exLaunch   = "5f3e2d1c0b9a8f7e"
+	exCapture  = "3c4d5e6f708192a3"
 	// exActOp is an act's receipt's opId: bk and 30 hex digits, the act's
 	// derived key.
 	exActOp = "bk0f1e2d3c4b5a69788796a5b4c3d2e1"
@@ -108,6 +109,7 @@ var refForms = []RefForm{
 	{RefCandidate, "candidate:<run>/<task>/<n>", "a run's candidate: attempt n of the task, which submitted something", "candidate:" + exRun + "/build/3"},
 	{RefDecision, "decision:<dr-n>", "a decision record, as its run's read lists it", "decision:dr-7"},
 	{RefCapacity, "capacity:<agent>/<account>@<readAt>", "a reading of an agent's usage on an account, as observe_capacity gives its ref", "capacity:claude/default@2026-11-11T03:00:00Z"},
+	{RefCapture, "capture:<id>[/<send>]", "a capture of a preview, 16 hex digits: the capture as it is now; with /<send>, the document that send of it froze, the same after an edit or a delete", "capture:" + exCapture + "/" + exLaunch},
 }
 
 // RefForms is every ref a brief may cite, as Evidence references names
