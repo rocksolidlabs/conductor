@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="conductor-revision" content="__REVISION__" />
+    <title>Repair fixture</title>
+    <script>
+      // The spec reads the bridge's outline through the shadow roots the page makes (the bridge's is the last made).
+      const roots = []
+      const attach = Element.prototype.attachShadow
+      Element.prototype.attachShadow = function (o) {
+        const r = attach.call(this, o)
+        roots.push(r)
+        return r
+      }
+      window.outlined = () => {
+        const box = roots.at(-1)?.firstElementChild
+        return box?.isConnected && box.style.display === 'block' ? box.firstElementChild.textContent : 'none'
+      }
+      window.selecting = () => !!roots.at(-1)?.host?.isConnected
+    </script>
+    <!--BRIDGE-->
+    <style>
+      body { margin: 0; font: 16px/1.4 sans-serif; background: #fff; color: #111; }
+      main { padding: 24px; }
+      button { font: inherit; padding: 8px 14px; border: 1px solid #333; background: #eee; }
+      .cover { position: fixed; inset: 0; z-index: 10; background: transparent; }
+    </style>
+  </head>
+  <body>
+    <main id="form" data-conductor-source="node_modules/widgets/Form.vue:3:1">
+      <h1>Settings</h1>
+      <button id="save" class="save" data-conductor-source="app/page.html:33:7">Save</button>
+    </main>
+    <div id="cover" class="cover stub-capture-broken"></div>
+  </body>
+</html>
