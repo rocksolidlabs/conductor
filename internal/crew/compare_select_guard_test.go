@@ -567,3 +567,52 @@ func TestTheSelectedCandidateIsReviewedAsIs(t *testing.T) {
 		}
 	})
 }
+
+// I10: a later candidate of the selected task leaves the selection
+// applied, S1 never touching it, and the comparison keeps showing the
+// commit the selection named: a Request changes of the selected lane makes
+// a repair whose standing result is newer, and the lane's column, its
+// attempt and its check cells stay the selected candidate's.
+func TestARepairOfTheSelectedLaneKeepsTheSelection(t *testing.T) {
+	se := launchSelect(t, 2)
+	defer stopRun(t, se.e, se.run.ID)
+	a := se.pass(t, se.run.ID, "approach-a", 1)
+	se.pass(t, se.run.ID, "approach-b", 1)
+	row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+	selectAs(t, se.e, row.ID(), 0, row.Rev)
+	decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
+	if rc, err := requestChanges(se.e, se.run.ID, "q1", "approach-a", 1, a.Result.Commit, personsRequest("rv-0001")); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("Request changes of the selected lane: %+v %v", rc, err)
+	}
+	repaired := se.pass(t, se.run.ID, "approach-a", 2)
+	if repaired.Result.Commit == a.Result.Commit {
+		t.Fatal("the repair made no new commit")
+	}
+	waitOutcome(t, se.e, se.run.ID, ledger.OutcomeSucceeded)
+	rec := decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
+	if kindCount(rec, ledger.HistorySuperseded) != 0 {
+		t.Fatalf("the repair superseded the selection: %q", historyKinds(rec))
+	}
+	if st := stateOf(t, se.e, se.run.ID); st.State != CompareSelected || st.Selected.Commit != a.Result.Commit {
+		t.Fatalf("the comparison's state: %+v", st)
+	}
+	c, err := se.e.Comparison(t.Context(), se.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cd := range c.Candidates {
+		if cd.Task == "approach-a" && (cd.Commit != a.Result.Commit || cd.Attempt != 1 || !cd.Selectable) {
+			t.Fatalf("the selected lane's column: commit %s attempt %d selectable %v, want the selected %s, attempt 1", cd.Commit, cd.Attempt, cd.Selectable, a.Result.Commit)
+		}
+	}
+	for _, ck := range c.Checks {
+		for _, cell := range ck.Cells {
+			if cell.Task == "approach-a" && cell.Attempt != 1 {
+				t.Fatalf("check %s's cell of the selected lane is attempt %d's", ck.ID, cell.Attempt)
+			}
+		}
+	}
+	if rows := selections(t, se.ld, se.run.ID); len(rows) != 1 {
+		t.Fatalf("the repair opened another selection: %+v", rows)
+	}
+}

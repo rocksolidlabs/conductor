@@ -9,7 +9,7 @@ import { ownServer } from './own-server'
 // with a rationale through DR1's route. From the ticket's Decisions and from the comparison, RV1's Review view opens on approach-b; its
 // picker says selected and not selected, and opens on the selected one by itself. A Request changes of approach-a is refused in
 // not_selected's words, nothing kept; one of approach-b makes the repair, whose new candidate the picker shows while the comparison
-// still labels approach-b selected. Every wait is on the server's reads or on what the page draws.
+// still labels approach-b selected at the commit the selection named. Every wait is on the server's reads or on what the page draws.
 
 const LOAD_MS = 15_000
 
@@ -98,6 +98,8 @@ test('Review the selected candidate opens RV1’s view on it; a Request changes 
     await expect(page.getByRole('listbox')).toHaveCount(0)
     await page.goto(`${c.path}?view=compare&run=${c.run}`)
     await expect(page.locator('[data-compare-candidate="approach-b"] [data-compare-selection]')).toHaveText('selected')
+    // The comparison keeps showing the commit the selection named; the repair's candidates are the Review view's.
+    await expect(page.locator('[data-compare-candidate="approach-b"] [data-compare-candidate-commit]')).toHaveAttribute('data-commit', b.commit)
     await page.context().close()
   } finally {
     await s.stop()

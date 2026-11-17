@@ -358,6 +358,9 @@ type chainRead struct {
 	checks   map[string][]ledger.CheckRow // by run/task/n
 	trees    map[string][]ledger.TreeRow  // by run
 	settled  []SettledCandidate           // the chain's newest compare.settled, nil for none
+	// selected is the chain's applied selection, nil for none: the
+	// selected lane shows the commit it names, whatever came after it.
+	selected *AppliedSelection
 }
 
 // Comparison measures the comparison of the chain runID belongs to: any
@@ -467,6 +470,9 @@ func (e *Engine) readChain(ctx context.Context, cl compareLedger, runID string) 
 			return cr, err
 		}
 	}
+	if cr.selected, err = readSelected(ctx, e.ledger, chain); err != nil {
+		return cr, err
+	}
 	for _, cd := range cr.crew.Compare.Candidates {
 		sh, ok := cr.shown(cd.Task)
 		if !ok {
@@ -562,6 +568,14 @@ func (cr chainRead) shown(task string) (shownAttempt, bool) {
 	tr, ok := cr.task(task)
 	if !ok {
 		return shownAttempt{}, false
+	}
+	// Once a selection is applied, the selected lane shows the commit it
+	// named: a later candidate of the task (a Retry, a repair) is of the
+	// approach, and RV1's Review view and the candidates list show it.
+	if sel := cr.selected; sel != nil && !sel.None && sel.Task == task {
+		if a, ok := cr.attemptIn(sel.Run, task, sel.Attempt); ok && submittedCommit(a) == sel.Commit {
+			return shownAttempt{run: sel.Run, attempt: a, standing: true}, true
+		}
 	}
 	if tr.State == ledger.TaskSucceeded && tr.ResultAttempt > 0 && tr.ResultAttempt > tr.Withdrawn {
 		run := cr.chain[len(cr.chain)-1].ID
@@ -1578,4 +1592,27 @@ func cutEncoded(s string, n int) string {
 		i += w
 	}
 	return s
+}
+
+// readSelected is the applied selection of the chain's runs, read with
+// the rest of the chain (an application is a transition of the run that
+// holds it, so moved sees it); nil for none, and for a ledger that keeps
+// no decisions.
+func readSelected(ctx context.Context, l Ledger, chain []ledger.RunPointer) (*AppliedSelection, error) {
+	dl, ok := l.(decisionLedger)
+	if !ok {
+		return nil, nil
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		rows, err := allDecisions(ctx, dl, ledger.DecisionFilter{CurrentRun: chain[i].ID, States: []string{ledger.DecisionApplied}})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if sel := selectionOf(row); sel != nil {
+				return sel, nil
+			}
+		}
+	}
+	return nil, nil
 }
