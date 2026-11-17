@@ -625,6 +625,68 @@ the criteria and the plan, the candidate's lineage, its diff, its checks,
 the findings, the draft, the reviews sent, the decisions and the
 delivery side by side; nothing in it merges, pushes or closes.
 
+### Dispatch: GitHub linking
+
+A ticket can be linked to one GitHub issue or pull request (Program item
+IN1a, `docs/plans/tracker-linking.md`), imported from it or linked to it
+later, and its delivery and external links to GitHub items are read for
+their state and, for a pull request, its checks. Everything is read with
+the person's own token and nothing else: `internal/tracker` is the
+system-neutral contract and `internal/tracker/github` its GitHub adapter;
+the API (`api/trackers.go`, `api/dispatch_external.go`,
+`api/dispatch_publish.go`) joins them to Dispatch's store, which keeps a
+linked item's last read as a snapshot beside the ticket and never calls
+GitHub itself.
+
+**The token.** One token per host, for at most four hosts (github.com or
+a GitHub Enterprise Server address), saved from Settings or
+`conductor trackers set` into `credentials/github.json` in the data
+directory, the one file that holds it, or given to the server as
+`CONDUCTOR_GITHUB_TOKEN`, which no file holds. A save is checked with
+GitHub first. The token is carried to the API host of its own host
+alone, never served by a route, never printed and never logged: a page
+and the CLI see the account it belongs to and a fingerprint, an HMAC
+under a key the process makes at start, so it tells this server's
+tokens apart and changes at a restart. Remove deletes the server's copy
+and so stops Conductor's use of the token; it does not revoke it.
+Revoking a token is done on GitHub, which the Settings card links to. An
+export never carries `credentials/`, and a restore refuses an archive
+that holds it.
+
+**Reads and owners.** A linked item is read when a person asks (import,
+link, Refresh, a link's Read again) and when a ticket page opens on a
+snapshot older than ten minutes; nothing polls. GitHub owns the title and
+the description of an imported ticket until a person takes either over;
+the ticket's status never moves because GitHub's state did. GitHub's text
+reaches an agent only inside `internal/quoted`'s mark, which names where
+it was written and that it is not Conductor's.
+
+**Publishing.** A publication is one comment, a person's own act:
+composed on the ticket page (the person's text and the parts the server
+offers, each off until ticked: the delivery links, the delivered
+candidate's checks, the ticket's key and title; "Close the issue as
+completed" for an issue alone, off until ticked), previewed as the exact
+bytes the server will post with GitHub's hidden marker
+(`<!-- conductor-publication:<id> -->`, the publication's random id),
+and sent by Publish, which names those bytes by their SHA-256. The store
+commits each try before its one request to post and decides a later try
+by the marker on the item, so a double click, a reload, a lost reply or
+a restart posts once; a send whose answer never came and whose comment
+GitHub does not show is `unconfirmed` and is never sent again, by the
+server or by a button. No Brakeman grant, MCP tool or agent route posts
+to GitHub.
+
+**A restored data directory.** A restore makes the store a new instance
+(`dispatch.Reissue`), and a publication is sent only from the instance it
+was prepared in: a restored data directory sends none of the
+publications it was exported with (Check still finds a comment the
+original posted, and Publish as new prepares a new publication, the
+composer saying that the first may already be on GitHub). A copy of the
+data directory made by hand rather than exported and restored keeps its
+instance and does not know it is one: two servers over two such copies
+can each send the same drafts, so export and restore is the way to move
+one.
+
 ## Brakeman
 
 Brakeman is the sidekick agent (`docs/plans/brakeman.md`, Program items BK0
@@ -1401,6 +1463,9 @@ still resolved. A switchyard routes and answers none.
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
+| `internal/tracker` | an external tracker's contract for Dispatch (IN1a): the adapter, the records a read gives, the person's token as a `Credential` carried to one API address, GitHub references, the steps to reproduce, the hosts an image or a log may come from; standard library only |
+| `internal/tracker/github` | the GitHub adapter: REST over `net/http` and GraphQL for the calls that address an item by its node id, every answer read to its bound, nothing retried; `githubtest` is its fake GitHub |
+| `internal/quoted` | the one writer of the mark on text written outside Conductor (a GitHub title, description or steps to reproduce) wherever an agent is handed it |
 | `internal/journal` | the session records (History): one JSON document per server session in `dataDir/history/sessions/` under the owner lock `history/owner.lock`, its evidence folded from the session's activity and chat, bounded, settled from the session's state, its resume receipts; standard library and `internal/store` only |
 | `internal/history` | the index of history (History): `dataDir/history/index.sqlite`, a cache rebuilt from the stores; entries and links per source, the class from the kind alone, the budget, the search, `Similar`, `Check`; the third importer of `modernc.org/sqlite` |
 | `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |

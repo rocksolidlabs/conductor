@@ -274,6 +274,64 @@ that order.
   Roundhouse, Agents · Reporting, History · Feed and Paste invite.
   `web/e2e/destinations.spec.ts` holds every list as drawn.
 
+## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-9; 2026-11-16)
+
+`docs/plans/tracker-linking.md`. A person's own GitHub token, and nothing
+said on GitHub but what a person publishes.
+
+- **The token (PR-3).** One per host, at most four hosts, kept in
+  `credentials/github.json` in the data directory or given to the server
+  as `CONDUCTOR_GITHUB_TOKEN`; checked with GitHub before it is kept;
+  shown as its account and a fingerprint that changes at a restart, never
+  served, printed or logged; left out of every export. Remove stops
+  Conductor's use of it; revoking it is done on GitHub.
+- **The adapter (PR-2).** `internal/tracker` and `internal/tracker/github`:
+  an issue's or a pull request's read, its images, a pull request's checks
+  at its head commit, a comment posted and an issue closed by the item's
+  node id, each answer read to its bound.
+- **A linked item (PR-1, PR-4, PR-4b).** Import a ticket from an issue or a
+  pull request, or link one later; its snapshot, read on demand and on
+  opening a ticket page whose read is older than ten minutes; GitHub owns
+  the title and the description until a person takes them over; the
+  ticket's status never moves because GitHub's did. A delivery or external
+  link to a GitHub item is read for its state and checks, and a close
+  policy may ask for `merged`.
+- **Publications (PR-5, PR-5b).** One comment a publication, prepared,
+  previewed as the exact bytes with GitHub's hidden marker, sent by the
+  person's Send alone, once: a try is committed before its post and a
+  later try decides by the marker, a send whose comment GitHub does not
+  show is `unconfirmed` and is never sent again, the issue's close is made
+  only when asked for, and a restored data directory sends none of what
+  it was exported with.
+- **The package (PR-6).** A launch's package names its source (the item,
+  its state at the launch, the snapshot's digest) and, when the revision
+  hands them over, the steps to reproduce and the evidence links; every
+  text a GitHub read wrote reaches an agent inside `internal/quoted`'s
+  mark.
+- **The commands (PR-7) and the pages (PR-8, PR-9).** `conductor trackers`
+  and the dispatch commands; Settings' GitHub card, Import, the ticket's
+  GitHub panel and its links' reads; on the ticket page **Publish to
+  GitHub** (the target, the person's own words, the offered parts and
+  Close the issue as completed, all off to start; **Preview** draws the
+  server's bytes as text and checks them against the SHA-256 Publish
+  names; one op id for every press of Publish) and **Publications** (the
+  newest ten, older ones a page at a time, "N older publications need
+  you"; Check, Send again for a failed one only, Close now, Publish as new
+  with its warning, Discard). A plan revision's proposal offers Steps to
+  reproduce (on when the issue has them) and the links as evidence, and
+  the run page's launched-from chip adds "· GitHub owner/repo#612".
+- **What needs you.** A publication a person can act on (not confirmed,
+  failed, a close not finished) is named in words on the ticket's
+  Publications, the error tone for a send that failed and neutral ink
+  otherwise. It is not yet among the one list of what needs you, so it is
+  never amber: a later row joins it to that list.
+- **By hand, after merge.** The plan's Acceptance against github.com with
+  the owner's token (a fine-grained and a classic token, a private
+  repository's screenshot imported, a renamed repository followed, a merge
+  read, one comment posted and the issue closed, the server's log holding
+  no token, `jwt=` or `X-Amz-`, and the same from the Windows app's own
+  server) is recorded here with the build, with PR-10's part.
+
 ## Future features
 
 Collected here so they are not lost. None of these block the planned work.
