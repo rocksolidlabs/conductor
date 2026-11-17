@@ -123,7 +123,11 @@ const (
 	guideVersion     = 1
 	maxOpSummary     = 300
 	maxOpDescription = 1 << 10
-	maxGuideOverview = 4 << 10
+	// maxGuideOverview bounds the overview, which names every operation
+	// its caller may do: twice the 4 KiB it had, which the admin's names
+	// filled once the comparison's and the trackers' operations were
+	// both in the table.
+	maxGuideOverview = 8 << 10
 	maxGuideSection  = 64 << 10
 	// maxGuideOperations bounds the operations section, which lists every
 	// operation of the table: twice a section's, since the admin's rows
@@ -423,7 +427,7 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			"Launch a managed run from a ticket's plan revision the operator approved and whose approval still holds (plan: its id; expectedRev: the ticket's revision you read); the same launch for the same opId."),
 		actEntry(brakeman.ActRequestRepair, reviewSubmitBody{},
 			"Request changes of a candidate (<run>/<task>/<n>@<commit>: its task's newest result, in a run this server runs; verdict request_changes; expectedRev: the ticket's revision you read): Yardmaster repairs the task. Never a comment or an approval; via and continueRun are not yours."),
-		actEntry(brakeman.ActPrepareFollowup, planProposeBody{},
+		actEntry(brakeman.ActPrepareFollowup, followupActBody{},
 			"Propose a revision of a ticket's plan basedOn the approved one (its id), which the operator then approves or not: never approved by you."),
 		routeActEntry(),
 		// The guide itself.
@@ -473,6 +477,10 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			Summary: "A failed receipt as a prepared repair: a check finding with its class, the criteria, and whether Check again would be taken now (recheck).",
 			Input:   map[string]any{"type": "object", "description": "no body"},
 			Bounds:  map[string]int{"reply": MaxRepairReply}},
+		{Name: "external_job_repair", Scope: "admin", Method: http.MethodGet, Path: "/api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair", needs: needLauncher,
+			Summary: "A delivery pull request's failed CI job (job:<n> or run:<n>) at the delivered candidate's commit as a prepared repair: a check finding of source external, read fresh from GitHub with the saved token, an Actions job's log tail with it.",
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": MaxRepairReply, "tail": dispatch.MaxCheckExcerpt}},
 		{Name: "decision_respond", Scope: "admin", Method: http.MethodPost, Path: "/api/decisions/{did}/respond", needs: needLauncher, Receipt: "ledger", Revision: "decision",
 			Summary: "Answer a decision as the operator: an option's index, a text, or both for a clarification, with a rationale and the rev read. Recorded, then applied by Yardmaster.",
 			CLI:     []string{"conductor", "decision", "respond", "dr-N", "--choice", "N"},
@@ -515,48 +523,59 @@ var operationsTable = sync.OnceValue(func() []Operation {
 		// (dispatch_external.go): the admin's alone, no MCP tool.
 		{Name: "ticket_import_preview", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/external/preview", needs: needLauncher,
 			Summary: "Read a GitHub issue or pull request and show what an import would make; writes nothing.",
+			CLI:     []string{"conductor", "dispatch", "import", "URL", "--project", "KEY", "--preview"},
 			Input:   bodySchema(externalPreviewBody{}),
 			Bounds:  map[string]int{"body": maxBody, "images": dispatch.MaxImportImages}},
 		{Name: "ticket_import", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/projects/{key}/import", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Import a GitHub issue or pull request as a ticket, GitHub owning its title and description, its images made attachments.",
+			CLI:     []string{"conductor", "dispatch", "import", "URL", "--project", "KEY"},
 			Input:   bodySchema(externalImportBody{}),
 			Bounds:  map[string]int{"body": maxBody, "images": dispatch.MaxImportImages, "image": dispatch.MaxAttachmentSize}},
 		{Name: "ticket_link_issue", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/external", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
 			Summary: "Link a ticket to a GitHub issue or pull request, every field staying Dispatch's.",
+			CLI:     []string{"conductor", "dispatch", "link-issue", "KEY-n", "URL"},
 			Input:   bodySchema(externalLinkBody{}),
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "ticket_unlink_issue", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/external/delete", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
 			Summary: "Unlink a ticket's GitHub item; the fields GitHub owned become Dispatch's with their text.",
+			CLI:     []string{"conductor", "dispatch", "unlink-issue", "KEY-n"},
 			Input:   bodySchema(dispatchOp{}),
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "ticket_refresh", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/external/refresh", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Read a ticket's GitHub item again: what changed is written to the fields GitHub owns; the ticket's status never moves.",
+			CLI:     []string{"conductor", "dispatch", "refresh", "KEY-n"},
 			Input:   bodySchema(externalRefreshBody{}),
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "ticket_authority", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/external/authority", needs: needLauncher, Receipt: "dispatch", Revision: "ticket",
 			Summary: "Take a ticket's title or description over from GitHub, or give it back (read from GitHub again).",
+			CLI:     []string{"conductor", "dispatch", "authority", "KEY-n", "FIELD", "github|dispatch"},
 			Input:   bodySchema(externalAuthorityBody{}),
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "link_read", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/links/{id}/read", needs: needLauncher,
 			Summary: "Read what GitHub says of a ticket's link: open, closed or merged, and a pull request's checks at its head commit.",
+			CLI:     []string{"conductor", "dispatch", "read", "KEY-n", "LINK"},
 			Input:   bodySchema(linkReadBody{}),
 			Bounds:  map[string]int{"body": maxBody, "checks": dispatch.MaxLinkChecks}},
 		// A ticket's publications (dispatch_publish.go): a person composes,
 		// previews, sends and closes; no MCP tool and no grant posts.
 		{Name: "publication_prepare", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/tickets/{key}/publications", needs: needLauncher, Receipt: "dispatch",
 			Summary: "Prepare a comment to a ticket's GitHub item: the exact bytes previewed with their digest, nothing sent.",
+			CLI:     []string{"conductor", "dispatch", "publish", "KEY-n", "--target", "linked|LINK"},
 			Input:   bodySchema(publicationBody{}),
 			Bounds:  map[string]int{"body": maxBody, "text": dispatch.MaxPublicationBody, "publications": dispatch.MaxPublications}},
 		{Name: "publication_send", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/send", needs: needLauncher, Receipt: "dispatch", Revision: "publication",
 			Summary: "Post a prepared publication once, with the digest of its preview; a resend posts nothing, and one not confirmed is never sent again.",
+			CLI:     []string{"conductor", "dispatch", "publish", "send", "ID", "--digest", "SHA256"},
 			Input:   bodySchema(publicationSendBody{}),
 			Bounds:  map[string]int{"body": maxBody, "tries": dispatch.MaxPublicationTries}},
 		{Name: "publication_check", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/check", needs: needLauncher,
 			Summary: "Look on GitHub for a publication's comment by its marker, and record what was found; posts nothing.",
+			CLI:     []string{"conductor", "dispatch", "publish", "check", "ID"},
 			Input:   bodySchema(publicationCheckBody{}),
 			Bounds:  map[string]int{"body": maxBody}},
 		{Name: "publication_close", Scope: "admin", Method: http.MethodPost, Path: "/api/dispatch/publications/{id}/close", needs: needLauncher, Revision: "publication",
 			Summary: "Close the issue a sent publication asked to close, when its close did not finish.",
+			CLI:     []string{"conductor", "dispatch", "publish", "close", "ID"},
 			Input:   bodySchema(dispatchOp{}),
 			Bounds:  map[string]int{"body": maxBody, "tries": dispatch.MaxPublicationCloseTries}},
 		// A person's reviews of a ticket's candidates (RV1,
@@ -606,6 +625,11 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "trackers", "set", "--host", "HOST"},
 			Input:   bodySchema(trackerSaveBody{}),
 			Bounds:  map[string]int{"body": maxTrackerBody, "token": maxTrackerToken}},
+		{Name: "tracker_remove", Scope: "admin", Method: http.MethodPost, Path: "/api/trackers/github/remove", needs: needLauncher,
+			Summary: "Drop the GitHub token kept for a host: Conductor no longer uses it; it stays valid on GitHub until revoked there.",
+			CLI:     []string{"conductor", "trackers", "remove", "--host", "HOST"},
+			Input:   bodySchema(trackerRemoveBody{}),
+			Bounds:  map[string]int{"body": maxTrackerBody}},
 		{Name: "crew_create", Scope: "admin", Method: http.MethodPost, Path: "/api/crews", needs: needLauncher,
 			Summary: "Save a crew: its members, and for a managed run its tasks and checks. Saving launches nothing.",
 			Input:   bodySchema(crewInput{}),
@@ -877,6 +901,13 @@ func schemaFields(t reflect.Type, d int, props map[string]any, required map[stri
 		name, opts, _ := strings.Cut(tag, ",")
 		if f.Tag.Get("guide") == "-" {
 			// The server's alone (crew.Member.Bound): no body may send it.
+			// A field of that name it shadows is not offered either (a
+			// turn's follow-up takes no source, followupActBody).
+			if have, ok := depth[name]; name != "" && (!ok || have > d) {
+				depth[name] = d
+				delete(props, name)
+				delete(required, name)
+			}
 			continue
 		}
 		ft := f.Type

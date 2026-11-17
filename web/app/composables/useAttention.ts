@@ -8,7 +8,7 @@ import { desktopBridge } from '~/utils/desktop'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
 import { RunStore } from '~/utils/runs'
 import { decisionsLive } from './useDecisions'
-import { asDispatchEvent, dispatchLive } from './useDispatchLive'
+import { asDispatchEvent, asDispatchRead, dispatchLive } from './useDispatchLive'
 import { asBrakemanEvent, brakemanLive } from './useBrakeman'
 import { capacityLive } from './useCapacity'
 import { inboxLive } from './useInbox'
@@ -347,6 +347,10 @@ export function useAttention() {
         const e = asDispatchEvent(payload)
         if (e) dispatchLive().event(e)
         void inboxLive().event()
+      } else if (event === 'dispatch_read') {
+        // A read of a GitHub item recorded (IN1a): the ticket pages it touches read again, apart from the events' sequence.
+        const n = asDispatchRead(payload)
+        if (n) dispatchLive().notice(n)
       } else if (event === 'brakeman') {
         // A Brakeman request changed state: the pages' list and the sidebar's count follow (useBrakeman). Nothing takes the focus.
         const e = asBrakemanEvent(payload)

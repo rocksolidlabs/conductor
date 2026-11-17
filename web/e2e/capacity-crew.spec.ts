@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
-import { expect, task, test, type Api, type Run } from './fixtures'
+import { expect, readAgain, task, test, type Api, type Run } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
 // Crews, a ticket's launch and Brakeman on their accounts (docs/plans/capacity.md, Program item AC1, PR-7). A managed crew of a
@@ -807,7 +807,9 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await page.locator('[data-launch]').click()
   await expect(lead.locator('[data-capacity-error]')).toContainText('e2e: the view is held back', { timeout: 30_000 })
   refuseView = false
-  await lead.locator('[data-capacity-again]').click()
+  // The panel reads again by itself after a refused view: Read again only hurries it, and can be gone before a click lands. It is
+  // pressed until the view it leads to is drawn (readAgain), never once and blind.
+  await readAgain(lead.locator('[data-capacity-again]'), lead.locator('[data-capacity-panel]:not(:has([data-capacity-error]))'))
   await expect(lead.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', /^[a-z_]+$/)
   await expect(lead.locator('[data-capacity-error]')).toHaveCount(0)
   await page.unroute(views)

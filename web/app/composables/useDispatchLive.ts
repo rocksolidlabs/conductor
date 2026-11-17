@@ -16,6 +16,11 @@ export interface DispatchWatch {
   now?: (e: DispatchEvent) => boolean
   /** Whether an event touches what the page shows: read again once, at the end of the window that gathers it. */
   later: (e: DispatchEvent) => boolean
+  /**
+   * Whether a read of a GitHub item recorded (a `dispatch_read` event: the ticket's linked item's, or a link's) touches what the page
+   * shows: read again once, at the end of the window that gathers it, apart from the events' sequence (IN1a).
+   */
+  onRead?: (n: DispatchReadNotice) => boolean
   /** The page's re-read, through its ordering gate: resolves once it answered, rejects when it failed. */
   read: () => Promise<unknown>
   /**
@@ -35,6 +40,8 @@ export function ticketWatch(ticketId: () => string, project: () => string, read:
   return {
     now: (e) => e.ticket !== '' && e.ticket === ticketId(),
     later: (e) => e.project !== '' && e.project === project(),
+    // A read of its linked item or of one of its links: what GitHub said shows on the page.
+    onRead: (n) => n.ticket !== '' && n.ticket === ticketId(),
     read,
   }
 }
@@ -100,6 +107,26 @@ export function asDispatchEvent(v: unknown): DispatchEvent | null {
   return { seq: e.seq, entity: e.entity as DispatchEvent['entity'], id: text(e.id), ticket: text(e.ticket), project: text(e.project) }
 }
 
+/**
+ * A read of a GitHub item recorded (the `dispatch_read` event, docs/protocol.md, "A ticket's GitHub item"): the ticket's id and its
+ * project's key, the link's id for a link's read, when it was read. It carries no `seq`: a read is no change of the log's.
+ */
+export interface DispatchReadNotice {
+  ticket: string
+  project: string
+  link: string
+  readAt: string
+}
+
+/** A `dispatch_read` event's data as the stream sent it, or null for what is not one. */
+export function asDispatchRead(v: unknown): DispatchReadNotice | null {
+  if (v === null || typeof v !== 'object') return null
+  const e = v as Record<string, unknown>
+  if (typeof e.ticket !== 'string' || !e.ticket) return null
+  const text = (x: unknown) => (typeof x === 'string' ? x : '')
+  return { ticket: e.ticket, project: text(e.project), link: text(e.link), readAt: text(e.readAt) }
+}
+
 /** One page's subscription. */
 interface Watching {
   watch: DispatchWatch
@@ -154,6 +181,16 @@ export class DispatchLive {
       if (w.watch.now?.(e)) this.read(w)
       else if (w.watch.later(e)) this.gather(w)
     }
+  }
+
+  /**
+   * A read of a GitHub item recorded (`dispatch_read`): every page it touches reads again once, at the end of the window that gathers it
+   * as a `later` event is, three in one window one read. It moves no page's covered seq, nor the seq seen: a read has no place in the
+   * log's sequence. One that arrives while a read is on its way gathers one more after it (that read may have been served before the
+   * read was recorded), since a read clears the window it stands for before it is sent.
+   */
+  notice(n: DispatchReadNotice): void {
+    for (const w of [...this.watching]) if (w.watch.onRead?.(n)) this.gather(w)
   }
 
   /**

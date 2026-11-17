@@ -28,6 +28,8 @@ const props = defineProps<{
   name: string
   /** The ticket's images of its attachments (`![…](attachment:<id>)`), as object URLs of their content (useDispatchAttachments). */
   attachmentUrl?: (id: string) => Promise<string | null>
+  /** Who owns the field when it is not the person's to edit here (a linked GitHub item's, IN1a), said where Edit would be. */
+  owned?: string
 }>()
 
 const editing = ref(false)
@@ -116,7 +118,8 @@ watch(
   <section class="flex min-w-0 flex-col gap-2" :data-ticket-markdown="name">
     <div class="flex items-center gap-2">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">{{ label }}</h3>
-      <IconButton v-if="!editing && !disabled" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :label="`Edit the ${label.toLowerCase()}`" class="ml-auto" data-markdown-edit @click="edit" />
+      <span v-if="owned" class="ml-auto text-xs text-muted" data-markdown-owned>{{ owned }}</span>
+      <IconButton v-else-if="!editing && !disabled" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :label="`Edit the ${label.toLowerCase()}`" class="ml-auto" data-markdown-edit @click="edit" />
     </div>
 
     <template v-if="!editing">

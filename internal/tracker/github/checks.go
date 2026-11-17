@@ -417,11 +417,25 @@ func (a *Adapter) CheckLog(ctx context.Context, c tracker.Credential, r tracker.
 		return tracker.LogTail{}, err
 	}
 	loc, err := url.Parse(ans.header.Get("Location"))
-	admit := func(u *url.URL) bool { return tracker.LogHost(tracker.GitHub, ep.host, u) }
+	admit := func(u *url.URL) bool { return a.logAdmitted(ep.host, u) }
 	if err != nil || !loc.IsAbs() || !admit(loc) {
 		return tracker.LogTail{}, &tracker.RequestError{System: tracker.GitHub, Method: req.method, Path: ep.errPath(req), Status: ans.status, Err: tracker.ErrUnsupported, Words: "the log is kept where Conductor does not fetch from: open it on GitHub"}
 	}
 	return a.fetchLog(ctx, loc, admit, tail)
+}
+
+// logAdmitted is tracker.LogHost for an item on host, and in loopback mode
+// alone (Options.Loopback, CONDUCTOR_TRACKER_LOOPBACK=1: the tests' and the
+// e2e harness's) an http address on the item's own loopback host, byte for
+// byte, with no user: the fake GitHub a test starts serves its jobs' logs
+// from where it serves its API, as it does its images (imageAdmitted). No
+// other host is ever admitted by it, and without the switch it is LogHost
+// exactly; the log is fetched with no credential either way.
+func (a *Adapter) logAdmitted(host string, u *url.URL) bool {
+	if tracker.LogHost(tracker.GitHub, host, u) {
+		return true
+	}
+	return a.o.Loopback && u != nil && tracker.IsLoopback(host) && u.Scheme == "http" && u.User == nil && u.Opaque == "" && u.Host == host
 }
 
 // tailOf is the last tail bytes of a log of size bytes held whole in data.

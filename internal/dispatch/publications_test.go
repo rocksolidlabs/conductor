@@ -1849,3 +1849,70 @@ func TestBeginCloseAtRevision(t *testing.T) {
 		t.Errorf("a begin at the row's revision: %v %v", a, err)
 	}
 }
+
+// A preview a person backs out of (prepared, then discarded unsent) never
+// uses up the ticket's publications nor pushes a sent one out of its
+// read's newest: past MaxPublications discarded drafts a prepare is still
+// taken, the read lists the sent one and none discarded, and the paged
+// listing keeps the discarded as history. The rows in every state stay
+// bounded by MaxPublicationRows.
+func TestDiscardedDraftsKeepTheBound(t *testing.T) {
+	f := newPubFixture(t)
+	ctx := context.Background()
+	sent := f.prepared(t, "sent", "")
+	f.send(t, "sent-s", sent)
+	if _, applied, err := f.settle(f.pub(t, sent.ID), found("1", "101")); !applied || err != nil {
+		t.Fatalf("found: %v %v", applied, err)
+	}
+	for i := range MaxPublications + 5 {
+		p := f.prepared(t, fmt.Sprint("draft", i), "")
+		rc, err := f.s.DiscardPublication(ctx, testOp(fmt.Sprint("drop", i)), p.ID)
+		want(t, rc, err, StatusDone, "")
+	}
+	again := f.prepared(t, "again", "")
+	if again.State != PublicationDraft {
+		t.Fatalf("a prepare past %d discarded drafts: %s", MaxPublications, again.State)
+	}
+	v, err := f.s.Ticket(ctx, f.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, p := range v.Publications {
+		if p.State == PublicationDiscarded {
+			t.Fatalf("the read lists a discarded draft: %+v", p)
+		}
+		ids = append(ids, p.ID)
+	}
+	if !slices.Equal(ids, []string{again.ID, sent.ID}) {
+		t.Fatalf("the read's publications: %v, want the new draft and the sent one", ids)
+	}
+	page, _, err := f.s.Publications(ctx, f.key, "", false)
+	if err != nil || len(page) != MaxPublicationPage || page[1].State != PublicationDiscarded {
+		t.Fatalf("the listing keeps the discarded as history: %d %v", len(page), err)
+	}
+	// The rows in every state are bounded: one past MaxPublicationRows is
+	// refused. The rows up to it are copies of a discarded draft, written on
+	// a connection of the test's (as many prepares would take minutes).
+	raw := rawConnAt(t, filepath.Join(f.dir, File))
+	tx, err := raw.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("CREATE TEMP TABLE pubcopy AS SELECT * FROM publications WHERE id = ?", page[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := MaxPublications + 7; i < MaxPublicationRows; i++ {
+		if _, err := tx.Exec("UPDATE pubcopy SET id = ?", fmt.Sprintf("f%015x", i)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO publications SELECT * FROM pubcopy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := f.s.PreparePublication(ctx, testOp("past"), PublicationArgs{Key: f.key, Target: TargetLinked, Body: "Fixed in v2."}, issueTarget, markOf)
+	want(t, rc, err, StatusFailed, RefusalBound)
+}

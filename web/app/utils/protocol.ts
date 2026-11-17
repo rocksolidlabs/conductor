@@ -1780,3 +1780,10 @@ export function crewLaunchBody(label: string, revision: string | undefined): Cre
   const name = label.trim()
   return name ? { label: name, revision } : { revision }
 }
+
+/**
+ * The `external` parameter of GET /api/dispatch/tickets (docs/protocol.md, the tickets' list): a pasted GitHub
+ * item's address the palette searches for, at most this many bytes (`dispatch.MaxLinkURL`; the server answers
+ * `400 invalid_request` past it). The admin's alone: a Brakeman turn's read of the list does not take it.
+ */
+export const MAX_TICKET_EXTERNAL_SEARCH = 2048

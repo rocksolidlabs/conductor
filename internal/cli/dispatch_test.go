@@ -84,6 +84,13 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 // newDispatchAPIWith is newDispatchAPI with more agents in its catalog.
 func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
 	t.Helper()
+	return newDispatchAPIConfig(t, nil, more...)
+}
+
+// newDispatchAPIConfig is newDispatchAPIWith with mutate applied to the
+// configuration before it is checked.
+func newDispatchAPIConfig(t *testing.T, mutate func(*config.Config), more ...catalog.Agent) *dispatchAPI {
+	t.Helper()
 	clearConductorEnv(t)
 	root := realTempDir(t)
 	cfg := config.Defaults()
@@ -91,6 +98,9 @@ func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
 	cfg.AllowedRoots = []string{root}
 	cfg.DefaultCwd = root
 	cfg.DataDir = filepath.Join(t.TempDir(), "data")
+	if mutate != nil {
+		mutate(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +393,7 @@ func TestDispatchCommandsAgainstTheServer(t *testing.T) {
 	shown := a.mustDispatch(t, "show", "CND-1")
 	for _, want := range []string{"# CND-1: Try the CLI\n", "- status: in_progress\n", "- priority: urgent\n", "- horizon: now\n", "- owner: Bob\n",
 		"- assignees: agent:claude, person:Carol\n", "- labels: docs\n", "- milestone: 1.0\n", "- to close: acceptance, met\n", "- accepted: by admin for Bob, ",
-		"## Description\n\nthe <b>work</b> & more\n", "## Acceptance note\n\nchecked by hand\n", "## Links (1)\n\n- delivery https://example.com/pull/1\n",
+		"## Description\n\nthe <b>work</b> & more\n", "## Acceptance note\n\nchecked by hand\n", "## Links (1)\n\n- delivery https://example.com/pull/1 (link " + a.ticket(t, "CND-1").Links[0].ID + ")\n",
 		"## Comments (1)\n\n### #1 admin, ", "the fix is <in>\n"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("show does not say %q:\n%s", want, shown)
@@ -697,7 +707,7 @@ func checkWhole(t *testing.T, out string, v dispatch.TicketView, labels []dispat
 		parts = append(parts, "- relates to "+r.Other.Key+": "+r.Other.Title)
 	}
 	for _, l := range v.Links {
-		parts = append(parts, "- external "+l.Ref+" "+l.URL+"\n  "+l.Note+"\n")
+		parts = append(parts, "- external "+l.Ref+" "+l.URL+" (link "+l.ID+")\n  "+l.Note+"\n")
 	}
 	for _, a := range v.Attachments {
 		parts = append(parts, "- "+a.Name+" (16.0 MiB, "+a.ContentType+")")
