@@ -453,7 +453,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("run record", "run", id, "err", err)
 		}
 		if ok {
-			// Its decisions are the ledger's, and outlast the engine's hold.
+			// Its decisions are the ledger's, and outlast the engine's hold;
+			// a preview of its candidates the engine's (PV1).
+			s.withPreviewing(&run)
 			reply := map[string]any{"run": run, "record": true}
 			s.addRunDecisions(r, reply, id, "", after)
 			writeJSON(w, http.StatusOK, reply)

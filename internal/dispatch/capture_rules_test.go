@@ -500,8 +500,9 @@ func TestEveryRelationOfTheEvidenceIsTheStores(t *testing.T) {
 		{"an element observed in another zone", nil, true, func(n *NewCapture, _ *CaptureFacts) {
 			n.Annotations[0].Observed.At = momentAt.In(time.FixedZone("east", 5*3600+1800))
 		}, ""},
-		// A candidate names its candidate.
-		{"a candidate naming none", candidateCapture, true, func(_ *NewCapture, f *CaptureFacts) { f.Candidate = "" }, RefusalInvalid},
+		// A candidate names its candidate, or none for a checkout the
+		// server did not find intact at the save; never another.
+		{"a candidate's checkout naming none", candidateCapture, true, func(_ *NewCapture, f *CaptureFacts) { f.Candidate = "" }, ""},
 		{"a candidate of another task", candidateCapture, true, func(_ *NewCapture, f *CaptureFacts) {
 			f.Candidate = fmt.Sprintf("%s/%s/%d@%s", f.Run, "test", f.Attempt, f.Commit)
 		}, RefusalInvalid},
