@@ -141,9 +141,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	}, sink)
 	if err != nil {
 		switch {
-		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
-			// Said as a revoke (or the session's end) after the attach says
-			// it: an error frame, then 4403 (or 4410).
+		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded), errors.Is(err, errShuttingDown):
+			// Said as a revoke (or the session's end, or the server's stop:
+			// Shutdown's CloseAllBy) after the attach says it: an error
+			// frame, then 4403 (or 4410); the stop's 1001 alone.
 			sink.Close(err)
 		case errors.Is(err, session.ErrTooManyViewers):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
