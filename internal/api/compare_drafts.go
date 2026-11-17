@@ -101,8 +101,11 @@ func (d *compareDrafts) runChanged(s *Server, runID string) {
 	start := !d.draining
 	d.draining = true
 	d.mu.Unlock()
-	if start {
-		s.track(func() { d.drain(s) })
+	if start && !s.trackWhileOpen(func() { d.drain(s) }) {
+		// The server's stop has begun: nothing more is read or asked.
+		d.mu.Lock()
+		d.pending, d.draining = nil, false
+		d.mu.Unlock()
 	}
 }
 

@@ -944,6 +944,18 @@ func (s *Server) walk(f func(), inline bool) {
 	}
 }
 
+// trackWhileOpen is track before the server's background wait begins
+// (WaitBackground), and nothing after it: false when f was not started.
+func (s *Server) trackWhileOpen(f func()) bool {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgDone {
+		return false
+	}
+	s.bg.Go(f)
+	return true
+}
+
 // track runs f on a goroutine of its own that Shutdown waits for.
 func (s *Server) track(f func()) {
 	s.bgMu.Lock()
