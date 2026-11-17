@@ -101,6 +101,28 @@ type planCrew struct {
 	Tasks     []struct {
 		ID string `json:"id"`
 	} `json:"tasks"`
+	// Compare is a comparison's block, of which the store reads how many
+	// candidates it starts (launchCount); nil for a crew of none.
+	Compare *struct {
+		Candidates []json.RawMessage `json:"candidates"`
+	} `json:"compare"`
+}
+
+// launchCount holds a launch of revision n of the crew to the count of
+// candidates the person confirmed: a comparison's own count, which the
+// launch must repeat (confirm_candidates, saying it), or 0 for a crew of no
+// comparison (invalid).
+func (c planCrew) launchCount(n, candidates int) error {
+	if c.Compare == nil {
+		if candidates != 0 {
+			return refuse(RefusalInvalid, "candidates is sent with the launch of a comparison: revision %d starts none", n)
+		}
+		return nil
+	}
+	if want := len(c.Compare.Candidates); candidates != want {
+		return refuse(RefusalConfirmCandidates, "this revision starts %d candidates: send candidates %d to launch them", want, want)
+	}
+	return nil
 }
 
 // ProposePlan makes a plan revision of the live ticket with the key

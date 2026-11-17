@@ -526,7 +526,7 @@ func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext
 	}
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), LaunchTimeout)
 	defer cancel()
-	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label, admit)
+	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label, 0, admit)
 	if withdrawn {
 		rec = newReplyRecorder()
 		writeError(rec, http.StatusServiceUnavailable, "withdrawn", "the provider's start was given up before the launch was kept: nothing was launched")

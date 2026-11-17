@@ -66,6 +66,10 @@ type compareOpts struct {
 	// the runs launch, and the env then waits for no session: the test
 	// does, at its seam.
 	launched func(crew.LaunchSpec, string)
+	// unticketed lets the engine launch a comparison no ticket's package
+	// carries (SetCompareOpenForTest), set before any run launches: a test
+	// of what such a run's lanes are given.
+	unticketed bool
 }
 
 func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
@@ -114,8 +118,11 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	if o.launched != nil {
 		srv.launches.setSeams(func(g *launchGate) { g.launched = o.launched })
 	}
-	srv.runs.SetCompareOpenForTest(true)
-	launch := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": plan}, http.StatusCreated, ""), "launch")
+	if o.unticketed {
+		srv.runs.SetCompareOpenForTest(true)
+	}
+	// A person's launch from the ticket, the count the statement said.
+	launch := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": plan, "candidates": 2}, http.StatusCreated, ""), "launch")
 	ce.run, ce.launch = launch["runId"].(string), launch["id"].(string)
 	plain, release, err := srv.runs.LaunchNamed(t.Context(), managedCrew(repo), "")
 	release()
@@ -469,7 +476,7 @@ func TestEachLaunchsLaneReadsByItsOwnLaunch(t *testing.T) {
 	ce.addComment(t, "agent:lead", "between the launches")
 	between := ce.addLink(t, map[string]any{"kind": "delivery", "url": "https://example.test/pull/8"}, "")
 	ce.attach(t, "between.txt")
-	launch := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": ce.plan}, http.StatusCreated, ""), "launch")
+	launch := entityOf(t, ce.expect(t, "POST", "/api/dispatch/tickets/CND-1/launch", map[string]any{"opId": opID(), "plan": ce.plan, "candidates": 2}, http.StatusCreated, ""), "launch")
 	second := launch["runId"].(string)
 	sid, tok := ce.session(t, second, "approach-b")
 	_, first := ce.laneTicketOf(t, ce.bTok, ce.b)
