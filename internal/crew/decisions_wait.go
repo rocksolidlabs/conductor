@@ -345,7 +345,9 @@ func (e *Engine) endedWork(r *run) {
 			return
 		}
 		for _, d := range slices.Clone(r.decisions) {
-			if d.n != 0 {
+			// A comparison's selection holds the run open while it waits
+			// (settleRun) and is never cancelled (compare_select.go).
+			if d.n != 0 && d.origin != ledger.OriginCompare {
 				e.closeDecision(r, d, ledger.DecisionCancelled, fmt.Sprintf("the run ended, %s, before %s was answered", r.outcome, d.id()), "yardmaster", decisionOp{}, nil, "")
 			}
 		}
@@ -1683,6 +1685,9 @@ func (e *Engine) RouteDecision(ctx context.Context, id, opID string, expectedRev
 	if len(to) == 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a route names its destination")
 	}
+	if err := e.refuseSelection(ctx, id, "%s is a comparison's selection, the operator's to answer: it is not routed"); err != nil {
+		return OpReceipt{}, err
+	}
 	label, ok := routeLabel(to)
 	if i := slices.IndexFunc(to, func(d Destination) bool { return d.Grant != "" && d.Kind != DestGrant }); !ok && i >= 0 {
 		return OpReceipt{}, refuse(CodeInvalid, "a destination of kind %q may name no grant: grant is a field of {kind: grant} alone", shortText(to[i].Kind))
@@ -1833,6 +1838,9 @@ func OptionLabels(typ, request string) []string { return optionsOf(typ, request)
 // cancelled once the decision is final; an agent's decision's hold is
 // released and its agent told.
 func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, expectedRev int, release bool, why, actor string) (OpReceipt, error) {
+	if err := e.refuseSelection(ctx, id, "%s: "+selectNoCancel); err != nil {
+		return OpReceipt{}, err
+	}
 	fp := fingerprintOf([]any{"cancel", release, why})
 	why, err := cleanOpText(why, false)
 	if err != nil {
@@ -1840,6 +1848,9 @@ func (e *Engine) CancelDecision(ctx context.Context, id, commandID string, expec
 	}
 	return e.operate(ctx, id, operation{kind: ledger.HistoryCancelled, opID: commandID, fp: fp, actor: actor, ahead: true, expectedRev: expectedRev,
 		held: func(r *run, d *decision, rec ledger.DecisionRecord) (opDetail, func(), error) {
+			if rec.Origin == ledger.OriginCompare {
+				return opDetail{}, nil, refuse(CodeInvalid, "%s: %s", id, selectNoCancel)
+			}
 			if d == nil || !d.waits() || d.n == 0 {
 				return opDetail{}, nil, refuse(CodeDecisionClosed, "%s is %s: it is not cancelled", id, cmpState(d, rec))
 			}

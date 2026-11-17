@@ -85,8 +85,10 @@ var ErrNotSelected = errors.New("not the comparison's selected candidate")
 // compareIntents are the commands a compare run takes, through act, the
 // one path of every task and run command. Any other, whatever row or plan
 // adds it, is refused (ErrNotListed) until its rule for a comparison is
-// written here.
-var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}
+// written here. Every task command listed takes the selection's rule
+// (laneSelected): after an applied selection, refused on a lane not
+// selected.
+var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck}
 
 // errComparisonNoTicket refuses the launch of a compare crew that no
 // ticket's approved plan revision carries: a comparison is launched by a

@@ -131,6 +131,14 @@ var decisionTables = []string{
 const (
 	OriginAgent = "agent"
 	OriginPlan  = "plan"
+	// OriginCompare is a comparison's selection (docs/plans/compare-crew.md,
+	// PR-6a): opened by Yardmaster itself when every lane of a compare run
+	// has ended, an approval with no asking task, attempt, session, member
+	// or gate and no hold, its options the candidates (each with its
+	// subject) and None of these, its own subject the comparison. Only the
+	// operator answers it: it is never routed, and never given to the
+	// decide grant (RouteFor, Hold).
+	OriginCompare = "compare"
 
 	DecisionClarification = "clarification"
 	DecisionApproval      = "approval"
@@ -440,6 +448,10 @@ type requestShape struct {
 	Options  []struct {
 		Label     string `json:"label"`
 		Tradeoffs string `json:"tradeoffs,omitempty"`
+		// Subject is a comparison's option's candidate (origin compare
+		// alone, kind candidate alone); nil for every other request's
+		// options and for None of these.
+		Subject *subjectShape `json:"subject,omitempty"`
 	} `json:"options,omitempty"`
 	Recommendation *int          `json:"recommendation,omitempty"`
 	Uncertainty    string        `json:"uncertainty,omitempty"`
@@ -487,7 +499,8 @@ func checkFor(f *forShape) error {
 
 // subjectShape is the exact thing a decision is about: a commit, a
 // candidate (a task's submitted result), an artifact (a file's blob at a
-// commit) or a plan revision.
+// commit), a plan revision, or a comparison (origin compare alone: the
+// chain's launched run, its base and the digest of its options' subjects).
 type subjectShape struct {
 	Kind   string `json:"kind"`
 	Commit string `json:"commit,omitempty"`
@@ -498,6 +511,7 @@ type subjectShape struct {
 	SHA256 string `json:"sha256,omitempty"`
 	Plan   string `json:"plan,omitempty"`
 	Digest string `json:"digest,omitempty"`
+	Base   string `json:"base,omitempty"`
 }
 
 type baselineEntry struct {
@@ -545,8 +559,8 @@ func tooLarge(what string, n int) error {
 }
 
 // checkRequest refuses a request that is not of its shape or passes a
-// bound, for a decision of type typ.
-func checkRequest(raw, typ string) error {
+// bound, for a decision of type typ and origin origin.
+func checkRequest(raw, typ, origin string) error {
 	if len(raw) > MaxDecisionRequest {
 		return tooLarge("the request", len(raw))
 	}
@@ -576,6 +590,15 @@ func checkRequest(raw, typ string) error {
 		}
 		if len(o.Tradeoffs) > MaxOptionTradeoffs {
 			return invalid("an option's tradeoffs are more than %d bytes", MaxOptionTradeoffs)
+		}
+		if o.Subject == nil {
+			continue
+		}
+		if origin != OriginCompare || o.Subject.Kind != "candidate" {
+			return invalid("an option's subject is a comparison's, a candidate")
+		}
+		if err := checkSubject(o.Subject); err != nil {
+			return err
 		}
 	}
 	if rec := r.Recommendation; rec != nil && (*rec < -1 || *rec >= len(r.Options)) {
@@ -608,7 +631,26 @@ func checkRequest(raw, typ string) error {
 	if err := checkFor(r.For); err != nil {
 		return err
 	}
-	return checkSubject(r.Subject)
+	if err := checkSubject(r.Subject); err != nil {
+		return err
+	}
+	// A comparison's selection, and only it, is about a comparison: the
+	// operator's choice between its options' candidates, recommending none
+	// and resting on no evidence (its options name the exact commits).
+	if (origin == OriginCompare) != (r.Subject.Kind == "comparison") {
+		return invalid("a comparison's selection, and only it, has a comparison subject")
+	}
+	if origin == OriginCompare {
+		switch {
+		case r.Recommendation == nil || *r.Recommendation != -1:
+			return invalid("a comparison's selection recommends no option: its recommendation is -1")
+		case len(r.Evidence) > 0:
+			return invalid("a comparison's selection cites no evidence: its options name their candidates")
+		case r.For != nil && r.For.Label == "grant:decide":
+			return invalid("a comparison's selection is the operator's: it is never given to the decide grant")
+		}
+	}
+	return nil
 }
 
 func checkSubject(s *subjectShape) error {
@@ -628,8 +670,10 @@ func checkSubject(s *subjectShape) error {
 		need = map[string]string{"path": s.Path, "commit": s.Commit, "sha256": s.SHA256}
 	case "plan":
 		need = map[string]string{"plan": s.Plan, "digest": s.Digest}
+	case "comparison":
+		need = map[string]string{"run": s.Run, "base": s.Base, "digest": s.Digest}
 	default:
-		return invalid("a subject is a commit, a candidate, an artifact or a plan, not %q", s.Kind)
+		return invalid("a subject is a commit, a candidate, an artifact, a plan or a comparison, not %q", s.Kind)
 	}
 	for name, v := range need {
 		if v == "" {
@@ -867,6 +911,14 @@ func (t *Tx) OpenDecision(d DecisionRow) (DecisionRow, bool, error) {
 func checkOpening(d DecisionRow) error {
 	switch d.Origin {
 	case OriginAgent, OriginPlan:
+	case OriginCompare:
+		// Opened by Yardmaster for the run: no asker, no gate.
+		if d.Type != DecisionApproval {
+			return invalid("a comparison's selection is an approval, not a %s", d.Type)
+		}
+		if d.TaskID != "" || d.Attempt != 0 || d.SessionID != "" || d.Member != "" || d.Gate != "" {
+			return invalid("a comparison's selection has no asking task, attempt, session or member and no gate")
+		}
 	default:
 		return invalid("origin %q", d.Origin)
 	}
@@ -885,7 +937,7 @@ func checkOpening(d DecisionRow) error {
 		"the ticket": d.Ticket, "the plan": d.Plan, "the plan's digest": d.PlanDigest, "the request id": d.RequestID, "the fingerprint": d.Fingerprint}, MaxDecisionKey); err != nil {
 		return err
 	}
-	if err := checkRequest(d.Request, d.Type); err != nil {
+	if err := checkRequest(d.Request, d.Type, d.Origin); err != nil {
 		return err
 	}
 	if err := checkBaseline(d.Evidence, d.Request); err != nil {
@@ -1015,7 +1067,12 @@ func (t *Tx) RouteFor(n int64, request string) error {
 	if cur.State != DecisionOpen {
 		return fmt.Errorf("%w: %s is %s: whom it is for changes only while it is open", ErrDecisionState, cur.ID(), cur.State)
 	}
-	if err := checkRequest(request, cur.Type); err != nil {
+	if cur.Origin == OriginCompare {
+		// Whom a selection is for is written at its opening alone: it is
+		// the operator's, and never routed to a person or the grant.
+		return invalid("%s is a comparison's selection, the operator's: it is not routed", cur.ID())
+	}
+	if err := checkRequest(request, cur.Type, cur.Origin); err != nil {
 		return err
 	}
 	rest := func(raw string) (map[string]json.RawMessage, error) {
@@ -1418,6 +1475,9 @@ func (t *Tx) Hold(run, task string, n int64) error {
 	}
 	if d.Final() {
 		return fmt.Errorf("%w: %s is %s", ErrDecisionState, d.ID(), d.State)
+	}
+	if d.Origin == OriginCompare {
+		return invalid("%s is a comparison's selection: it holds no task", d.ID())
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO decision_holds (run_id, task_id, decision, released_at) VALUES (?, ?, ?, '')
 		ON CONFLICT(run_id, task_id, decision) DO UPDATE SET released_at = ''`, run, task, n)
