@@ -321,12 +321,20 @@ func TestAReconnectSendsNoTakenIDAgain(t *testing.T) {
 	if got := drained(t, a, sent); len(got) != 0 {
 		t.Fatalf("sent again %q", got)
 	}
-	// A turn set on the last entry since is that entry changed: sent.
+	// The same id again, no turn: nothing new. A turn set on the last
+	// entry since it was taken is that entry changed: sent, with its turn.
 	a.noteAgentSession("b", false)
 	a.noteAgentSession("c", false)
-	a.noteAgentSession("c", true)
-	if got := drained(t, a, sent); !slices.Equal(got, []string{"c"}) && !slices.Equal(got, []string{"c", "c"}) {
+	if got := drained(t, a, sent); !slices.Equal(got, []string{"c"}) {
 		t.Fatalf("sent %q", got)
+	}
+	a.noteAgentSession("c", true)
+	untilSenderStopped(t, a)
+	if len(sent) != 1 {
+		t.Fatalf("sent %d for the turn", len(sent))
+	}
+	if m := <-sent; m.AgentSession != "c" || !m.Turn {
+		t.Fatalf("sent %+v for the turn", m)
 	}
 }
 
