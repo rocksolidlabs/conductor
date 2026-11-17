@@ -196,7 +196,7 @@ type change func(r *run) (t *task, events []event, err error)
 // and its receipt settles withdrawn with the commit after: its change is
 // committed by its own transaction, where the credential was asked, or
 // not at all. On a compare run a command whose intent compareIntents does
-// not list is refused before the first (ErrNotSelected): no row, no
+// not list is refused before the first (ErrNotListed): no row, no
 // receipt.
 func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, intent string, args []string, do change, undo func(r *run)) (Receipt, error) {
 	if !CommandIDPattern.MatchString(cmd.ID) {
@@ -213,7 +213,7 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	// other before anything is written (r.compare is fixed as the run is
 	// made).
 	if r.compare != nil && !slices.Contains(compareIntents, intent) {
-		return Receipt{}, ErrNotSelected
+		return Receipt{}, ErrNotListed
 	}
 	if e.afterLookup != nil {
 		e.afterLookup(runID)

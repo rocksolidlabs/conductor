@@ -3456,12 +3456,27 @@ tasks of one lane. `selector` is refused when set. Each rule is refused
 1 MiB. A task's comparison part of its task file (Managed runs) is never
 cut, so its goal, role, instructions, people and comparison together take
 at most 40 KiB as `task.json` keeps them. A crew's create and update take
-`compare` with the rest, so a crew read back saves again; in this build
-every launch and continuation of a crew with one, from the crews page or a
-ticket's plan revision, is
-refused as a crew that breaks a rule ("comparisons arrive with their
-launch statement"; `400 invalid_crew` from the crew launch route) before
-a run exists.
+`compare` with the rest, so a crew read back saves again. A comparison is
+launched from a ticket's approved plan revision alone (`POST
+/api/dispatch/tickets/{key}/launch` with `candidates`, Launches under
+Dispatch), and continued with its package; every other launch of a crew
+with one (the crews page, `conductor up`, an agent's crew) is refused as a
+crew that breaks a rule ("a comparison is launched from a ticket's
+approved plan revision"; `400 invalid_crew` from the crew launch route)
+before a run exists, and so is one whose candidates have no check and
+whose file-form manifest has no verify step at the base ("nothing to
+compare: the candidates have no checks and conductor.manifest.json at
+9f8e7d6a1b2c has no verify step"). A continuation of a comparison's
+chain is refused, with no run made, when the chain holds 256 runs
+already (`409 chain_too_long`, "this comparison has been continued 255
+times: launch a new comparison"), and when it would leave a candidate
+that succeeded without its result or give a candidate a repair before a
+selection selects it (`409 not_selected`, "a comparison's candidate is
+repaired once it is selected"). A run of a comparison reads (`GET
+/api/runs/{run}`, the run lists, its record) with `compare`,
+`{candidates: [{task, review?}]}`: each candidate task with the review task
+that reviews it, in the block's order, at most 4 (about 300 bytes);
+absent for a run of no comparison, whose JSON is unchanged.
 A session of a comparison's lane (a candidate's attempt or its review's)
 is one from its creation: the engine gives it its lane as it launches
 it. It calls with its agent token only these routes: its own session's
