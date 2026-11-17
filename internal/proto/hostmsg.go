@@ -91,8 +91,10 @@ type HostInfo struct {
 	// question asked at any time whose answers are read off the screen and
 	// that names answers of its own: Codex's MCP tool approval, #716), so
 	// the owner's own server puts them in its recipe (Registered.Recipe).
-	// A bool, so the register's bound does not change. A host publishing
-	// to a switchyard never says it; an older server ignores it.
+	// A bool, so the register's bound does not change. `conductor host`
+	// says it, whatever its server is; a server publishing its sessions to
+	// a switchyard (the Uplink) never says it; a switchyard ignores it, and
+	// so does an older server.
 	Forms bool `json:"forms,omitempty"`
 }
 
