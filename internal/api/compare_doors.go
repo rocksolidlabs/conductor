@@ -264,7 +264,8 @@ type laneLaunch struct {
 
 // laneTicket answers ticket_read for a session of the lane l
 // (laneTicketReply): what the store reads of the ticket for its run's
-// launch, as it reads it; 404 no_ticket when the ticket is deleted, as for
+// launch, as it reads it (dispatch.AtLaunch: its title and description as
+// an agent reads them, quoted when a read of a linked item wrote them); 404 no_ticket when the ticket is deleted, as for
 // any run's session; 409 lane when it cannot be told: a run no ticket
 // launched, or a launch the store does not hold.
 func (s *Server) laneTicket(w http.ResponseWriter, r *http.Request, ds *dispatch.Store, l crew.Lane) {

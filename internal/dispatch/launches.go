@@ -811,7 +811,9 @@ type LaunchComment struct {
 // AtLaunch reads the ticket of the launch with the id as a run launched
 // from it reads it, in one read transaction, by the launch's mark (the
 // seq of its create row, the mark ChangedSince counts from): its title,
-// description and acceptance criteria from the launch's package; each
+// description and acceptance criteria from the launch's package, the
+// title and the description as an agent reads them (launchedForAgent:
+// quoted when a read wrote them); each
 // link and attachment whose add row is below the mark and that is not
 // removed now, by the fields its add row records; each comment that is
 // not deleted, whose create row is below the mark and no other row of
@@ -839,7 +841,8 @@ func (s *Store) AtLaunch(ctx context.Context, id string, lim LaunchLimits) (AtLa
 			return err
 		}
 		var launched struct {
-			Ticket PackageTicket `json:"ticket"`
+			Ticket PackageTicket  `json:"ticket"`
+			Source *PackageSource `json:"source"`
 		}
 		if err := json.Unmarshal([]byte(pkg), &launched); err != nil {
 			return fmt.Errorf("dispatch: the package of launch %s: %w", id, err)
@@ -851,8 +854,11 @@ func (s *Store) AtLaunch(ctx context.Context, id string, lim LaunchLimits) (AtLa
 		if !tk.DeletedAt.IsZero() {
 			return ErrLaunchTicketGone
 		}
-		out = AtLaunch{ID: tk.ID, Key: tk.Key, Number: tk.Number, Title: launched.Ticket.Title, Description: launched.Ticket.Description,
-			Acceptance: launched.Ticket.Acceptance}
+		title, description, err := launchedForAgent(ctx, q, tk, launched.Ticket, launched.Source)
+		if err != nil {
+			return err
+		}
+		out = AtLaunch{ID: tk.ID, Key: tk.Key, Number: tk.Number, Title: title, Description: description, Acceptance: launched.Ticket.Acceptance}
 		var mark int64
 		if err := q.QueryRowContext(ctx, "SELECT COALESCE(MIN(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND op = ?",
 			EntityLaunch, id, OpCreate).Scan(&mark); err != nil {

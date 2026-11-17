@@ -517,9 +517,11 @@ func TestEachLaunchsLaneReadsByItsOwnLaunch(t *testing.T) {
 }
 
 // A ticket with as many comments, links and attachments as the store
-// admits, each text at its escaped worst, before the launch: the lane's
-// read holds the newest fifty comments, every link and every attachment,
-// under its stated bound (MaxTicketReply).
+// admits, each text at its escaped worst, and its description one a read
+// of a linked item wrote at a quote's worst (blank lines, three bytes as
+// JSON for each byte once quoted), before the launch: the lane's read
+// holds the newest fifty comments, every link and every attachment, and
+// the description quoted, under its stated bound (MaxTicketReply).
 func TestALanesTicketReadIsUnderItsBound(t *testing.T) {
 	f := worstFiller
 	ctx := context.Background()
@@ -548,6 +550,11 @@ func TestALanesTicketReadIsUnderItsBound(t *testing.T) {
 				}
 				comments = append(comments, body)
 			}
+			read := quoteRead("I_lanebig", quoteWorst)
+			done := doneOf(t)
+			done(ds.LinkExternal(ctx, adminOp(by), dispatch.LinkArgs{Key: "CND-1", URL: read.Snapshot.URL}, read))
+			done(ds.SetAuthority(ctx, adminOp(by), dispatch.AuthorityArgs{Key: "CND-1", Field: dispatch.FieldDescription, Owner: "github"}, &read))
+			ce.expect(t, "POST", "/api/dispatch/plans/"+ce.plan+"/approve", map[string]any{"opId": opID(), "byName": "Nate", "note": "Go."}, http.StatusOK, "")
 		}})
 	raw, out := ce.laneTicketOf(t, ce.bTok, ce.b)
 	t.Logf("the largest lane's ticket read: %d bytes of %d", len(raw), MaxTicketReply)
@@ -555,6 +562,8 @@ func TestALanesTicketReadIsUnderItsBound(t *testing.T) {
 		t.Fatalf("the lane's ticket read is %d bytes, not under %d", len(raw), MaxTicketReply)
 	}
 	tk := out["ticket"].(map[string]any)
+	description, _ := tk["description"].(string)
+	wantQuotedBlock(t, "the lane", description, quoteSource, "The description")
 	if got := fieldsOf(tk["comments"], "body"); !slices.Equal(got, comments[len(comments)-dispatch.MaxTicketComments:]) {
 		t.Fatalf("%d comments, not the newest %d", len(got), dispatch.MaxTicketComments)
 	}
