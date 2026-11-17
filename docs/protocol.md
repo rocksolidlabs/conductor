@@ -1468,16 +1468,23 @@ a kind raises a wait of its own where nothing with words of its own shows
 (`needs_input`, source `status`, kind `permission` or `prompt`, message "The
 agent asks for a permission", "The agent asks a question" or "The agent
 needs you to sign in"); a `blocked` without one (0.163, where a pending
-async question blocks too) raises nothing. A wait the status raised is
-withdrawn by a later status that is neither `blocked` nor `working`, by an
-Enter typed in the terminal and by the screen moving on, as an OSC
-notification's is; one read while a question held on the screen showed is
-remembered and shows once the screen moves on from that question. The state
-outlives Conductor's turns, since Codex writes it only when it changes. With
-Codex 0.163 a wait raised while an async question is pending stands until
-the status says `working` again, when the question is answered or resolves
-by itself, as under the title alone; with 0.164 it gives way after its
-`TitleSettle`.
+async question blocks too) raises nothing. An `error` (the turn failed: a
+refused key, a quota, an outage, which Codex's notify program does not
+report) raises one by the same rules (`needs_input`, source `status`, no
+kind, message "The agent's turn ended in an error; its terminal says why"),
+in place of a wait a `blocked` raised and the other way round. A wait the
+status raised is withdrawn by a later status that is neither `blocked` nor
+`working`, by an Enter typed in the terminal and by the screen moving on, as
+an OSC notification's is, but for the error's: a failed turn that sits idle
+still needs a person, so only `working` (settling it), `done`, a later
+turn's reported done, an Enter in the terminal and the session's end
+withdraw it. A `blocked` or `error` status read while a question held on
+the screen showed is remembered and shows once the screen moves on from that
+question. The state outlives Conductor's turns, since Codex writes it only
+when it changes. With Codex 0.163 a wait raised while an async question is
+pending stands until the status says `working` again, when the question is
+answered or resolves by itself, as under the title alone; with 0.164 it
+gives way after its `TitleSettle`.
 
 An agent's catalog entry can carry a `promptShape` (#714), its own prompt
 at rest matched by its shape against the server session's whole screen (its

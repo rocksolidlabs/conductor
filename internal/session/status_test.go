@@ -261,15 +261,16 @@ func TestAStatusOutlivesTheTurn(t *testing.T) {
 	stays(t, s, settle+100*time.Millisecond, "the next turn's wait under a blocked status", apiWaits)
 }
 
-// A wait the status raised is the status's to withdraw: idle, error or clear
+// A wait the status raised is the status's to withdraw: idle, done or clear
 // without a working (the form cancelled, the turn interrupted, Codex gone)
-// withdraws it at once, a wait of another source beside it untouched; the
+// withdraws it at once (an error puts the failed turn's wait in its place,
+// statuserror_test.go), a wait of another source beside it untouched; the
 // person's Enter in the terminal withdraws it as a bell's.
 func TestAStatusWithdrawsTheWaitItRaised(t *testing.T) {
 	const settle = 200 * time.Millisecond
 	s, p := newLocalWith(t, titled(settle, Options{}))
 	out(p, codexTurnBegins, codexStatus(StatusWorking, ""))
-	for _, end := range []string{StatusIdle, StatusError, StatusClear} {
+	for _, end := range []string{StatusIdle, StatusDone, StatusClear} {
 		out(p, codexStatus(StatusBlocked, "auth"))
 		waitAttention(t, s, statusWaits)
 		out(p, codexStatus(end, ""))
