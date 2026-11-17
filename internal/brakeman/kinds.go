@@ -160,7 +160,7 @@ const revisionPattern = `^[A-Za-z0-9._:-]*$`
 var briefFields = []Field{
 	{Name: "schema", Type: FieldName, Required: true, Pattern: "^" + strings.ReplaceAll(BriefSchema, ".", `\.`) + "$", Max: len(BriefSchema)},
 	fChars("title", MaxTitle, true, "what the brief is about"),
-	fText("summary", MaxSummary, true, "your reading, Markdown: marked as your interpretation, not a fact"),
+	fText("summary", MaxSummary, true, fmt.Sprintf("your reading, Markdown: its first paragraph one sentence of at most %d characters, what the person needs to know first, marked as your interpretation, not a fact", MaxReading)),
 	fText("uncertainty", MaxUncertainty, false, "what you could not read or are unsure of"),
 	{Name: "items", Type: FieldList, Min: 1, Max: MaxItems, Required: true, Of: &Field{Type: FieldItem, Required: true},
 		About: "the facts, interpretations, proposals, outcomes, decision cards and drafts, at least one; a briefing at least one fact"},
@@ -468,6 +468,7 @@ func rulesWords() []string {
 		"A fact names its evidence, an interpretation names facts of the brief, a proposal names an operation, an outcome names a receipt.",
 		"Every ref must resolve inside your scope and visibility; a revision you name must be the one you read.",
 		fmt.Sprintf("At most %d items, %d distinct refs and %d bytes as kept; a field past its bound is refused, never cut.", MaxItems, MaxBriefRefs, MaxBrief),
+		fmt.Sprintf("Lead the summary with your reading in one sentence of at most %d characters (the page shows it alone), and put the items in the order a person needs them: decision cards first, then proposals and drafts, then the facts they rest on, each fact's interpretation after it. A person reads the brief top down.", MaxReading),
 	}
 	for _, r := range requestRules {
 		out = append(out, r.Rule)
