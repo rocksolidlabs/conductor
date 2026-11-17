@@ -60,6 +60,9 @@ type decisionHistory struct {
 	// gate's decision last closed without it.
 	released map[string]bool
 	lastGate map[string]gateEnd
+	// selection is the chain's applied selection of a comparison, nil for
+	// none (compare_select.go).
+	selection *AppliedSelection
 }
 
 // allDecisions reads every decision run holds, newest first.
@@ -185,6 +188,12 @@ func (e *Engine) readDecisionHistory(ctx context.Context, from Loaded) (decision
 				} else if _, ok := dh.lastGate[row.Gate]; !ok {
 					dh.lastGate[row.Gate] = gateEnd{id: row.ID()}
 				}
+			case row.Origin == ledger.OriginCompare && row.State == ledger.DecisionApplied:
+				// The newest applied selection of the chain is the first seen;
+				// the chain has one at most (a selection is final).
+				if dh.selection == nil {
+					dh.selection = selectionOf(row)
+				}
 			case row.Origin == ledger.OriginAgent && row.State == ledger.DecisionApplied:
 				app := applicationOf(row.Applied)
 				if row.Type != ledger.DecisionApproval && app.How != HowTyped {
@@ -242,6 +251,11 @@ func decisionOfRecord(r *run, rec ledger.DecisionRecord) *decision {
 		d.answer = acceptedOf(rec)
 	}
 	d.delivery, d.taskFiled = deliveryOf(rec)
+	if rec.Origin == ledger.OriginCompare {
+		// A selection's subject is the comparison, which no subject rule
+		// of an agent's decision reads; its options name the candidates.
+		d.subject, d.cands = nil, selectionCands(rec.Request)
+	}
 	return d
 }
 
@@ -264,6 +278,9 @@ func (e *Engine) continueDecisions(r *run, from Loaded, h history) func(LedgerTx
 	dh := h.dec
 	r.dec.chain = append([]string{r.id}, dh.chain...)
 	r.dec.lastGate = dh.lastGate
+	// The chain's applied selection, before anything is scheduled (O8):
+	// its lanes not selected take no command in the continuation either.
+	r.sel.applied = dh.selection
 	if r.pkg != nil && len(r.pkg.p.Decisions) > 0 {
 		r.dec.gates = map[string]bool{}
 		for _, pd := range r.pkg.p.Decisions {

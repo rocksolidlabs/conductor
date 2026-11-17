@@ -345,7 +345,9 @@ func (e *Engine) endedWork(r *run) {
 			return
 		}
 		for _, d := range slices.Clone(r.decisions) {
-			if d.n != 0 {
+			// A comparison's selection holds the run open while it waits
+			// (settleRun) and is never cancelled (compare_select.go).
+			if d.n != 0 && d.origin != ledger.OriginCompare {
 				e.closeDecision(r, d, ledger.DecisionCancelled, fmt.Sprintf("the run ended, %s, before %s was answered", r.outcome, d.id()), "yardmaster", decisionOp{}, nil, "")
 			}
 		}
