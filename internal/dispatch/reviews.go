@@ -171,9 +171,9 @@ type NewFinding struct {
 	Message    string        `json:"message,omitempty"`
 	Resolution string        `json:"resolution,omitempty"`
 	Check      *CheckRequest `json:"check,omitempty"`
-	// Capture is the person's alone: the guide gives a Brakeman turn's act
-	// no such field, and its act refuses one.
-	Capture *CaptureRef `json:"capture,omitempty" guide:"-"`
+	// Capture is the person's alone: a Brakeman turn's act refuses one,
+	// and the guide's entry of that act names no such field.
+	Capture *CaptureRef `json:"capture,omitempty"`
 }
 
 // CheckRequest is what a client sends of a check finding's receipt: its
