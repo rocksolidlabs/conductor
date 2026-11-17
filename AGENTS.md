@@ -520,8 +520,12 @@ add its rule here.
   GET, asked as `page.unroute` ended, was never answered until the
   store's 30 s deadline aborted it, and the line stayed `never_read`
   (`capacity-crew.spec.ts`, #281). A spec that routes the page while
-  it works keeps a route that lets everything through, set before the
-  page loads (its `beforeEach`), and puts its own on top of it.
+  it works keeps a route set before the page loads (its `beforeEach`,
+  or `dayPage`'s), and puts its own on top of it. Make it one that no
+  request matches (`standingRoute` in `web/e2e/fixtures.ts`): it keeps
+  interception on all the same, and a route that takes every request
+  to let it through hands each one to the test and back, which sends a
+  file the page uploads without its bytes (`dispatch.spec.ts`).
 - Measure a thing at rest. A box, a colour or a place read while an
   opening animation or a transition still runs is a state passed through:
   a panel measured 47 ms into its 100 ms opening "moved under the pointer"
