@@ -3,7 +3,7 @@ import { computed, ref, watch, type Ref } from 'vue'
 import type { BrakemanConfig, BrakemanDigest, BrakemanRequest, BrakemanSince, BrakemanState } from '../utils/brakeman'
 import { makeAgain } from '../utils/brakemanCards'
 import { ApiError } from './useApi'
-import { BrakemanLive, MAX_OPENED_EVENT, MAX_PROGRESS_EVENT, SINCE_EVERY_MS, asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive, keepOpened, listParams, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
+import { BrakemanLive, MAX_MARKS, MAX_OPENED_EVENT, MAX_UNREAD, asOpenedReply, MAX_PROGRESS_EVENT, SINCE_EVERY_MS, asBrakemanEvent, asBrakemanOpened, asBrakemanProgress, brakemanLive, keepOpened, listParams, sendTwice, useBrakeman, type BrakemanReads } from './useBrakeman'
 import { DispatchLive } from './useDispatchLive'
 import { requestNumber, sameConfig } from '../utils/brakeman'
 import { StaleRefusal, configForm } from '../utils/settingsSave'
@@ -1260,6 +1260,219 @@ describe('the list route', () => {
       expect(sent.map((x) => x.query)).toEqual([undefined, { since: '2026-11-17T00:00:00Z' }])
       answers.push(() => Promise.reject(new ApiError(403, 'forbidden', 'not yours')))
       await expect(bk.since()).rejects.toThrow('not yours')
+    })
+  })
+})
+
+describe('the unread count, kept by the server', () => {
+  /** A store whose server keeps opened marks: each read and mark answered when the test says, or at once. */
+  function openedServer() {
+    const sent: Array<string[] | undefined> = []
+    let unread = ['br-3', 'br-2']
+    const held: Array<() => void> = []
+    let hold = false
+    let answer: (ids?: string[]) => Promise<{ unread: string[]; begun: string } | null> = async (ids) => {
+      if (ids) unread = unread.filter((id) => !ids.includes(id))
+      return { unread, begun: '2026-11-17T08:00:00Z' }
+    }
+    const live = new BrakemanLive()
+    live.attach({
+      state: async () => ({ config: {} as never, current: null, queue: [], turnsToday: 0 }),
+      page: async () => ({ requests: [req('br-3', 'briefed', { hasBrief: true }), req('br-2', 'briefed', { hasBrief: true }), req('br-1', 'briefed', { hasBrief: true })], next: '' }),
+      request: async (id) => ({ request: req(id, 'briefed', { hasBrief: true }), brief: null }),
+      opened: (ids) => {
+        sent.push(ids)
+        return hold ? new Promise((done) => held.push(() => void answer(ids).then(done))) : answer(ids)
+      },
+    })
+    return {
+      live,
+      sent,
+      setUnread: (u: string[]) => (unread = u),
+      answerWith: (f: typeof answer) => (answer = f),
+      holdReads: (on: boolean) => (hold = on),
+      release: async () => {
+        while (held.length) held.shift()!()
+        await settle()
+        await settle()
+      },
+    }
+  }
+
+  it("is the server's once it answers, and a brief marked opened leaves it at once and is sent", async () => {
+    const f = openedServer()
+    await f.live.readFirst()
+    await settle()
+    expect([f.live.openedMode, f.live.unread]).toEqual(['server', ['br-3', 'br-2']])
+    f.live.markOpened(['br-3'])
+    expect(f.live.unread).toEqual(['br-2'])
+    await settle()
+    expect(f.sent).toEqual([undefined, ['br-3']])
+    // One already opened is not sent again.
+    f.live.markOpened(['br-1'])
+    expect(f.sent).toHaveLength(2)
+  })
+
+  it('is read again when a brief is kept, on the opened event and on a snapshot, one read at a time', async () => {
+    const f = openedServer()
+    await f.live.readFirst()
+    await settle()
+    f.sent.length = 0
+    f.setUnread(['br-4', 'br-3', 'br-2'])
+    f.holdReads(true)
+    f.live.event({ id: 'br-4', state: 'briefed' })
+    expect(f.sent).toHaveLength(1)
+    f.live.openedEvent()
+    f.live.openedEvent()
+    expect(f.sent).toHaveLength(1)
+    await f.release()
+    // What was asked while the first read was out is one read after it.
+    expect(f.sent).toHaveLength(2)
+    await f.release()
+    expect(f.live.unread).toEqual(['br-4', 'br-3', 'br-2'])
+    expect(f.live.openedSeq).toBe(2)
+    f.holdReads(false)
+    f.live.event({ id: 'br-4', state: 'running' })
+    await settle()
+    expect(f.sent).toHaveLength(2)
+    f.live.snapshot()
+    await settle()
+    expect(f.sent).toHaveLength(3)
+  })
+
+  it('sends the marks made before it first answered once it does, and never counts them meanwhile', async () => {
+    const f = openedServer()
+    f.holdReads(true)
+    const first = f.live.readFirst()
+    await settle()
+    expect(f.live.openedMode).toBe('unknown')
+    f.live.markOpened(['br-3'])
+    expect(f.sent).toEqual([undefined])
+    await f.release()
+    await first
+    expect(f.live.unread).toEqual(['br-2'])
+    expect(f.sent).toEqual([undefined, ['br-3']])
+  })
+
+  it("is the browser's where the server keeps none: no mark is sent", async () => {
+    const f = openedServer()
+    f.answerWith(async () => null)
+    await f.live.readFirst()
+    await settle()
+    expect(f.live.openedMode).toBe('local')
+    f.live.markOpened(['br-3'])
+    f.live.openedEvent()
+    await settle()
+    expect(f.sent).toEqual([undefined])
+  })
+
+  it('reads again when a mark is not taken, and drops what it held at a new token', async () => {
+    const f = openedServer()
+    await f.live.readFirst()
+    await settle()
+    f.answerWith(async (ids) => {
+      if (ids) throw new ApiError(0, 'network', 'Cannot reach the server')
+      return { unread: ['br-3', 'br-2'], begun: '' }
+    })
+    f.live.markOpened(['br-3'])
+    await settle()
+    await settle()
+    expect(f.sent.slice(1)).toEqual([['br-3'], undefined])
+    expect(f.live.unread).toEqual(['br-3', 'br-2'])
+    f.live.reset()
+    expect([f.live.openedMode, f.live.unread]).toEqual(['unknown', []])
+  })
+
+  it('sends many marks at most a hundred at a time, and reads a reply only as it is', () => {
+    expect(MAX_MARKS).toBe(100)
+    expect(asOpenedReply({ unread: ['br-2', 'br-1'], begun: '2026-11-17T08:00:00Z' })).toEqual({ unread: ['br-2', 'br-1'], begun: '2026-11-17T08:00:00Z' })
+    expect(asOpenedReply({ unread: ['x'] })).toBeNull()
+    expect(asOpenedReply({ unread: Array.from({ length: MAX_UNREAD + 1 }, (_, i) => `br-${i + 1}`) })).toBeNull()
+    expect(asOpenedReply(null)).toBeNull()
+  })
+
+  describe('through the composable', () => {
+    let states: Map<string, Ref<unknown>>
+    let answers: Array<(path: string, opts: { method?: string; body?: unknown }) => Promise<unknown>>
+    let sent: Array<{ path: string; method?: string; body?: unknown }>
+    beforeEach(() => {
+      states = new Map()
+      answers = []
+      sent = []
+      vi.stubGlobal('useState', <T>(key: string, init: () => T) => {
+        if (!states.has(key)) states.set(key, ref(init()))
+        return states.get(key) as Ref<T>
+      })
+      vi.stubGlobal('computed', computed)
+      vi.stubGlobal('watch', watch)
+      vi.stubGlobal('useApi', () => ({
+        request: (path: string, opts: { method?: string; body?: unknown } = {}) => {
+          sent.push({ path, method: opts.method, body: opts.body })
+          return (answers.shift() ?? (() => Promise.reject(new Error(`unasked: ${path}`))))(path, opts)
+        },
+      }))
+      browserStorage()
+      // The app's one store keeps the reads of the first composable that attached them (an earlier block's): these tests' own are given it.
+      ;(brakemanLive() as unknown as { reads?: unknown }).reads = undefined
+      brakemanLive().reset()
+    })
+    afterEach(() => void vi.unstubAllGlobals())
+    const briefed = req('br-3', 'briefed', { hasBrief: true })
+
+    it("counts what the server says is unread, the same on every browser of the credential, and marks through it", async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      live.available = true
+      live.apply(briefed)
+      answers.push(() => Promise.resolve({ unread: ['br-3'], begun: '' }))
+      await live.readOpened()
+      expect(bk.unopened.value).toEqual(['br-3'])
+      answers.push(() => Promise.resolve({ unread: [], begun: '' }))
+      bk.markOpened(briefed)
+      expect(bk.unopened.value).toEqual([])
+      await settle()
+      expect(sent.map((x) => [x.path, x.method, x.body])).toEqual([
+        ['/api/brakeman/opened', undefined, undefined],
+        ['/api/brakeman/opened', 'POST', { ids: ['br-3'] }],
+      ])
+    })
+
+    for (const [what, refusal] of [
+      ['an older server, which has no such route', new ApiError(404, 'not_found', 'no such route')],
+      ['a read-only store', new ApiError(503, 'brakeman_not_owner', "Another server owns Brakeman's records")],
+    ] as const) {
+      it(`keeps the browser's own marks on ${what}, and sends none`, async () => {
+        const bk = useBrakeman()
+        const live = brakemanLive()
+        live.available = true
+        live.apply(req('br-1', 'queued'))
+        await settle()
+        live.apply(briefed)
+        answers.push(() => Promise.reject(refusal))
+        await live.readOpened()
+        expect(live.openedMode).toBe('local')
+        expect(bk.unopened.value).toEqual(['br-3'])
+        bk.markOpened(briefed)
+        expect(bk.unopened.value).toEqual([])
+        expect(sent).toHaveLength(1)
+      })
+    }
+
+    it('leaves the count shown when a read fails another way, and reads again on the next event', async () => {
+      const bk = useBrakeman()
+      const live = brakemanLive()
+      live.available = true
+      live.apply(req('br-1', 'queued'))
+      await settle()
+      live.apply(briefed)
+      answers.push(() => Promise.reject(new ApiError(500, 'internal', 'broken')))
+      await live.readOpened()
+      expect(live.openedMode).toBe('unknown')
+      expect(bk.unopened.value).toEqual(['br-3'])
+      answers.push(() => Promise.resolve({ unread: [], begun: '' }))
+      live.openedEvent()
+      await settle()
+      expect(bk.unopened.value).toEqual([])
     })
   })
 })

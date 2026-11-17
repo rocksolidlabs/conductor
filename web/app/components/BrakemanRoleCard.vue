@@ -1,33 +1,34 @@
 <script setup lang="ts">
 import type { BrakemanRole, RoleLogRow } from '~/utils/brakeman'
-import { ReadOrder, clockTime, pauseAction, retryWords, roleWords, rowWords } from '~/utils/brakemanRole'
+import { ROLE_LOG_READ, ReadOrder, nextBriefingWords, pauseAction, retryWords, roleSentence, wokenWords } from '~/utils/brakemanRole'
 
 /**
- * Brakeman's background role on the Brakeman page (docs/plans/brakeman.md, BK3, PR-15): its state in words (an unavailable role says
- * why and what tries again), Pause and Resume, its durable notes with Clear, and its log of wakes, newest first, each with its source,
- * what it was about, the batch it joined and the request that batch made. The role and its log are read again on each of its
- * `brakeman` events and after a reconnect (the store's snapshot moves roleSeq too); reads that overlap are taken newest only
- * (ReadOrder); nothing here takes the focus or moves the page when the role changes.
+ * Brakeman's background role on the Brakeman page (docs/plans/brakeman.md, BK3, PR-15; the Brakeman design review's "In the
+ * background"): one sentence, its state said once, and when the next briefing is; under it how often it was woken today and the day's
+ * budget; Pause or Resume (which never stops a turn in progress), and Activity, which opens its wakes and notes. Then a Notes card:
+ * how many notes are kept, given to every turn, and Open. The role and its log are read again on each of its `brakeman` events and
+ * after a reconnect (the store's snapshot moves roleSeq too); reads that overlap are taken newest only (ReadOrder); nothing here takes
+ * the focus or moves the page when the role changes.
  */
-const props = defineProps<{ windowSeconds?: number; background: boolean }>()
+const props = defineProps<{ windowSeconds?: number; background: boolean; briefings?: string[] }>()
 
 const bk = useBrakeman()
 const toast = useToast()
+const now = useNow()
 
 const role = ref<BrakemanRole | null>(null)
 const log = ref<RoleLogRow[]>([])
 const busy = ref(false)
 const problem = ref('')
-
-/** How many rows of the log the page shows. */
-const LOG_ROWS = 50
+const sheet = ref(false)
+const sheetAt = ref<'wakes' | 'notes'>('wakes')
 
 const reads = new ReadOrder()
 
 async function read() {
   const ticket = reads.begin()
   try {
-    const out = await bk.role(LOG_ROWS)
+    const out = await bk.role(ROLE_LOG_READ)
     if (!reads.current(ticket)) return
     role.value = out.role
     log.value = out.log
@@ -41,16 +42,23 @@ onMounted(read)
 watch(() => bk.roleSeq.value, () => void read())
 
 const action = computed(() => pauseAction(role.value ?? undefined))
-const tone = computed(() => {
-  switch (role.value?.state) {
-    case 'unavailable':
-      return 'warning' as const
-    case 'briefing':
-    case 'gathering':
-      return 'primary' as const
-  }
-  return 'neutral' as const
+const state = computed(() => bk.state.value)
+const sentence = computed(() => {
+  if (!role.value) return ''
+  const next = nextBriefingWords(role.value, state.value?.nextBriefing, props.briefings, props.background)
+  return next ? `${roleSentence(role.value, props.windowSeconds)} ${next}` : roleSentence(role.value, props.windowSeconds)
 })
+/** The day's budget, spent and allowed. */
+const budget = computed(() => {
+  const s = state.value
+  if (!s) return ''
+  return `${s.turnsToday} of ${s.config.budget.turnsPerDay} turns, ${s.minutesToday ?? 0} of ${s.config.budget.minutesPerDay} minutes today`
+})
+const woken = computed(() => {
+  void now.value
+  return props.background && role.value ? wokenWords(log.value, new Map(bk.requests.value.map((r) => [r.id, r]))) : ''
+})
+const notes = computed(() => role.value?.notes?.length ?? 0)
 
 async function toggle() {
   const a = action.value
@@ -79,61 +87,55 @@ async function clear() {
     busy.value = false
   }
 }
+
+function show(at: 'wakes' | 'notes') {
+  sheetAt.value = at
+  sheet.value = true
+}
 </script>
 
 <template>
-  <UCard :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-role>
-    <template #header>
-      <SettingsCardTitle title="In the background" description="Woken by events and briefing times, a batch a turn, then a cooldown; its turns page no one." />
-    </template>
-    <div class="flex flex-col gap-4 text-sm">
-      <p v-if="!props.background" class="text-muted" data-role-off>
-        Brakeman runs only when asked. Turn on "Wake on events" in <NuxtLink to="/settings" class="underline">Settings</NuxtLink> to let a failed task, a waiting question or a briefing time wake it.
-      </p>
-      <UAlert v-if="problem" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="problem" />
-      <div v-if="role" class="flex flex-wrap items-center gap-3" :data-role-state="role.state">
-        <UBadge :label="role.state" :color="tone" variant="subtle" />
-        <span class="text-muted" data-role-words>{{ roleWords(role, props.windowSeconds) }}</span>
-        <UButton
-          v-if="action"
-          :label="action === 'pause' ? 'Pause' : 'Resume'"
-          :icon="action === 'pause' ? 'i-lucide-pause' : 'i-lucide-play'"
-          size="sm"
-          color="neutral"
-          variant="outline"
-          class="ml-auto"
-          :loading="busy"
-          :data-role-action="action"
-          @click="toggle"
-        />
-      </div>
-      <p v-if="role && retryWords(role)" class="text-xs text-muted" data-role-retry>{{ retryWords(role) }}</p>
-
-      <section class="flex flex-col gap-2" data-role-notes>
-        <div class="flex items-center gap-2">
-          <h3 class="text-xs font-semibold text-highlighted">Notes</h3>
-          <span class="text-xs text-muted">What you kept from briefs, given to every turn.</span>
-          <UButton v-if="role?.notes?.length" label="Clear" size="xs" color="neutral" variant="ghost" class="ml-auto" :loading="busy" data-role-clear-notes @click="clear" />
+  <div class="flex min-w-0 flex-col gap-5">
+    <UCard :ui="{ header: 'px-4 py-3', body: 'p-4' }" data-brakeman-role>
+      <template #header><SettingsCardTitle title="In the background" /></template>
+      <div class="flex flex-col gap-3 text-sm">
+        <p v-if="!props.background" class="text-muted" data-role-off>
+          Runs only when asked. Turn on "Wake on events" in <NuxtLink to="/settings" class="underline">Settings</NuxtLink> to let a failed task, a waiting question or a briefing time wake it.
+        </p>
+        <UAlert v-if="problem" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="problem" />
+        <p v-if="role && props.background" class="text-default" :data-role-state="role.state" data-role-words>{{ sentence }}</p>
+        <p v-if="role && retryWords(role)" class="text-xs text-muted" data-role-retry>{{ retryWords(role) }}</p>
+        <p v-if="budget" class="text-xs text-muted" data-role-budget data-turns-today>
+          <template v-if="woken">{{ woken }} </template>{{ budget }}.
+        </p>
+        <div v-if="role && props.background" class="flex flex-wrap items-center gap-2">
+          <UTooltip :text="action === 'pause' ? 'Wakes nothing new; a turn under way goes on.' : 'Lets events and briefing times wake it again.'">
+            <UButton
+              v-if="action"
+              :label="action === 'pause' ? 'Pause' : 'Resume'"
+              :icon="action === 'pause' ? 'i-lucide-pause' : 'i-lucide-play'"
+              size="sm"
+              color="neutral"
+              variant="outline"
+              class="max-sm:min-h-11"
+              :loading="busy"
+              :data-role-action="action"
+              @click="toggle"
+            />
+          </UTooltip>
+          <UButton label="Activity" icon="i-lucide-list" size="sm" color="neutral" variant="ghost" class="max-sm:min-h-11" data-role-activity @click="show('wakes')" />
         </div>
-        <p v-if="!role?.notes?.length" class="text-xs text-muted">None kept.</p>
-        <ul v-else class="flex flex-col gap-1">
-          <li v-for="(n, i) in role.notes" :key="i" class="text-xs" data-role-note>
-            {{ n.text }} <span v-if="n.from" class="text-muted">({{ n.from }})</span>
-          </li>
-        </ul>
-      </section>
+      </div>
+    </UCard>
 
-      <section class="flex flex-col gap-2" data-role-log>
-        <h3 class="text-xs font-semibold text-highlighted">Wakes</h3>
-        <p v-if="!log.length" class="text-xs text-muted">Nothing has woken it yet.</p>
-        <ul v-else class="flex flex-col gap-1">
-          <li v-for="(row, i) in log" :key="`${row.at}-${i}`" class="flex flex-wrap gap-x-3 text-xs" :data-role-row="row.source" :data-role-batch="row.batch" :data-role-request="row.request" :data-role-held="row.held">
-            <span class="text-muted tabular-nums">{{ clockTime(row.at) }}</span>
-            <span>{{ rowWords(row).what }}</span>
-            <span v-if="rowWords(row).fate" class="text-muted">{{ rowWords(row).fate }}</span>
-          </li>
-        </ul>
-      </section>
-    </div>
-  </UCard>
+    <UCard :ui="{ body: 'p-4' }" data-brakeman-notes>
+      <div class="flex flex-wrap items-center gap-2 text-sm">
+        <h2 class="font-semibold text-highlighted">Notes</h2>
+        <span class="text-xs text-muted" data-notes-count>{{ notes ? `${notes} kept, given to every turn` : 'None kept' }}</span>
+        <UButton label="Open" size="sm" color="neutral" variant="ghost" class="ml-auto max-sm:min-h-11" data-notes-open @click="show('notes')" />
+      </div>
+    </UCard>
+
+    <BrakemanActivity v-model:open="sheet" :role="role" :log="log" :busy="busy" :at="sheetAt" @clear="clear" />
+  </div>
 </template>

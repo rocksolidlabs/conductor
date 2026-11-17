@@ -7,11 +7,12 @@ import { Api, expect, test, type Run } from './fixtures'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
 // Brakeman's background role on the app's pages (docs/plans/brakeman.md, BK3, PR-15), on a server of its own (as brakeman.spec.ts:
-// its turns and records meet no other spec's). Settings turns the role on with its window, cooldown, briefing times and the day's
-// minutes. A managed run whose check always fails (tasks.spec.ts's fixture) wakes it: past the window one turn of kind wake runs,
+// its turns and records meet no other spec's). The role is turned on through the API with its window, cooldown and the day's minutes
+// (Settings' own steps are brakeman-settings.spec.ts's). A managed run whose check always fails (tasks.spec.ts's fixture) wakes it: past the window one turn of kind wake runs,
 // whose stub asks a question first, listed in Needs you and raising no browser notification (the page's Notification is a stub that
 // records what it is asked; a person's session asking after it is the one notified), then submits its brief once the spec opens its
-// gate; the role cools, and the Brakeman page shows its state and its log, the wake leading to the batch and its request. Paused
+// gate; the role cools, and the Brakeman page shows its state in one sentence and, behind Activity, its log, the wake leading to its
+// turn's brief. Paused
 // from the page, the next run's failure joins no batch and starts no turn.
 test.describe.configure({ mode: 'serial' })
 
@@ -82,7 +83,14 @@ test.beforeAll(async () => {
   server = await startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: serverLog })
   api = new Api(server)
   const { config: c } = await api.ok<{ config: Record<string, unknown> & { rev: number } }>('GET', '/api/brakeman')
-  await api.ok('PUT', '/api/brakeman/config', { rev: c.rev, config: { ...c, enabled: true, agentId: 'brakeman-stub' } })
+  const wake = c.wake as Record<string, unknown>
+  const budget = c.budget as Record<string, unknown>
+  // In the background: a 10 s window, a 30 min cooldown, no briefing time (one that fell due while the spec runs would wake a turn of
+  // its own), 240 minutes a day.
+  await api.ok('PUT', '/api/brakeman/config', {
+    rev: c.rev,
+    config: { ...c, enabled: true, agentId: 'brakeman-stub', wake: { ...wake, mode: 'background', windowSeconds: 10, cooldownMinutes: 30, briefings: [] }, budget: { ...budget, minutesPerDay: 240 } },
+  })
   crewId = (await api.ok<{ crew: { id: string } }>('POST', '/api/crews', failCrew)).crew.id
 })
 
@@ -129,33 +137,15 @@ const roleLog = () => api.ok<{ role: { state: string }; log: RoleRow[] }>('GET',
 const requests = () => api.ok<{ requests: Request[] }>('GET', '/api/brakeman/requests').then((r) => r.requests)
 const runOf = (id: string) => api.ok<{ run: Run }>('GET', `/api/runs/${encodeURIComponent(id)}`).then((r) => r.run)
 
-test('Settings turns the background role on with its window, cooldown, briefing times and the day\'s minutes', async ({ page }) => {
-  test.setTimeout(2 * DRAW_MS + 10 * STEP_MS + 60_000)
-  await open(page, '/settings')
-  const card = page.locator('[data-brakeman-settings]')
-  await expect(card.locator('[data-brakeman-role-settings]')).toBeVisible({ timeout: DRAW_MS })
-  await card.getByRole('switch', { name: 'Wake on events' }).click()
-  await card.locator('[data-brakeman-window] input, input[data-brakeman-window]').first().fill('10')
-  await card.locator('[data-brakeman-cooldown] input, input[data-brakeman-cooldown]').first().fill('30')
-  await card.locator('[data-brakeman-briefings] input, input[data-brakeman-briefings]').first().fill('07:00, 18:30')
-  // A time the server would refuse is said before the save.
-  await card.locator('[data-brakeman-minutes] input, input[data-brakeman-minutes]').first().fill('5')
-  await expect(card).toContainText('Minutes a day are 10 to 1440.')
-  await expect(page.locator('[data-save-settings]')).toBeDisabled()
-  await card.locator('[data-brakeman-minutes] input, input[data-brakeman-minutes]').first().fill('240')
-  await page.locator('[data-save-settings]').click()
-  await expect
-    .poll(async () => {
-      const c = (await api.ok<{ config: { wake: Record<string, unknown>; budget: { minutesPerDay: number } } }>('GET', '/api/brakeman')).config
-      return [c.wake.mode, c.wake.windowSeconds, c.wake.cooldownMinutes, c.wake.briefings, c.budget.minutesPerDay]
-    }, { timeout: STEP_MS })
-    .toEqual(['background', 10, 30, ['07:00', '18:30'], 240])
-  // No briefing time from here on: one that fell due while the spec runs would wake a turn of its own.
-  const { config: saved } = await api.ok<{ config: Record<string, unknown> & { rev: number; wake: Record<string, unknown> } }>('GET', '/api/brakeman')
-  await api.ok('PUT', '/api/brakeman/config', { rev: saved.rev, config: { ...saved, wake: { ...saved.wake, briefings: [] } } })
-  // The Brakeman page shows the role, idle.
-  await page.goto(`${server!.baseURL}/brakeman`)
-  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: DRAW_MS })
+test('the Brakeman page shows the role in the background, idle, in one sentence with the day\'s budget under it', async ({ page }) => {
+  test.setTimeout(DRAW_MS + 4 * STEP_MS)
+  await open(page, '/brakeman')
+  const card = page.locator('[data-brakeman-role]')
+  await expect(card.locator('[data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: DRAW_MS })
+  await expect(card.locator('[data-role-words]')).toHaveText('Idle: nothing has woken it.')
+  await expect(card.locator('[data-role-budget]')).toContainText('Woken 0 times today, 0 briefs.')
+  await expect(card.locator('[data-role-budget]')).toContainText('of 240 minutes today')
+  await expect(page.locator('[data-brakeman-notes] [data-notes-count]')).toHaveText('None kept')
 })
 
 // The run's failure (its check's three attempts, 120 s), the window (10 s) and the wake request's start (60 s), the question shown in
@@ -190,11 +180,16 @@ test('a task failing wakes Brakeman once: its question is listed in Needs you an
   writeFileSync(gate, 'open\n')
   await expect.poll(async () => (await requests()).find((r) => r.id === wake)?.state ?? '', { timeout: WAKE_CAPS[5] }).toBe('briefed')
   await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'cooling', { timeout: WAKE_CAPS[6] })
-  await expect(page.locator('[data-brakeman-role] [data-role-words]')).toContainText('cooling until')
-  // The log: the wake, its batch and the request it made.
-  const row = page.locator(`[data-brakeman-role] [data-role-row="task_failed"][data-role-request="${wake}"]`)
+  await expect(page.locator('[data-brakeman-role] [data-role-words]')).toContainText('Cooling until')
+  // The log, behind Activity: the wake, and the turn it was taken in, whose brief it links.
+  await page.locator('[data-brakeman-role] [data-role-activity]').click()
+  const row = page.locator(`[data-role-sheet] [data-role-row="task_failed"][data-role-request="${wake}"]`)
   await expect(row).toBeVisible()
   await expect(row).toContainText('A task failed: task build')
+  await expect(row.locator('[data-role-fate]')).toHaveAttribute('href', `/brakeman?request=${wake}`)
+  await expect(row).not.toContainText('wb-')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-role-sheet]')).toHaveCount(0)
   // One turn of kind wake, whatever else changed in the window (the run's end joined the same batch).
   const wakes = (await requests()).filter((r) => r.kind === 'wake')
   expect(wakes.map((r) => r.id)).toEqual([wake])
@@ -220,7 +215,10 @@ test('paused from the page, nothing wakes it: the next failure joins no batch an
   const log = await roleLog()
   expect(log.role.state).toBe('paused')
   expect(log.log.filter((r) => r.subject === `task:${runId}/build`).every((r) => !r.batch)).toBe(true)
-  await expect(card.locator(`[data-role-row="task_failed"][data-role-held="paused"]`).first()).toContainText('not gathered: the role was paused', { timeout: STEP_MS })
+  await card.locator('[data-role-activity]').click()
+  await expect(page.locator(`[data-role-sheet] [data-role-row="task_failed"][data-role-held="paused"]`).first()).toContainText('not gathered: the role was paused', { timeout: STEP_MS })
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-role-sheet]')).toHaveCount(0)
   expect((await requests()).filter((r) => r.kind === 'wake').map((r) => r.id)).toEqual([wake])
   // Resumed, it takes wakes again (nothing is due: the failure while paused stays held).
   await card.locator('[data-role-action="resume"]').click()

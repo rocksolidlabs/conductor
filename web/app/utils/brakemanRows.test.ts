@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BrakemanDigest, BrakemanRequest, BrakemanRow } from './brakeman'
 import { KINDS } from './brakeman'
-import { MAX_COUNTS, askAgain, askedWords, briefHeadWords, clockOfDay, countsWords, kindLine, madeCount, noBriefWords, rowAge, rowMeta, rowTitle, shortKind, subjectWords } from './brakemanRows'
+import { EARLIER_FILTERS, MAX_COUNTS, MAX_SEARCH, askAgain, localMatch, searchProblem, askedWords, briefHeadWords, clockOfDay, countsWords, kindLine, madeCount, noBriefWords, rowAge, rowMeta, rowTitle, shortKind, subjectWords } from './brakemanRows'
 
 // A Brakeman request as a row says it (issue 993, F7): the kinds' own words, the subjects by name, at most three counts in their
 // order, "no decision" for a brief with none, the age, who asked, and when Ask again is offered.
@@ -134,5 +134,34 @@ describe("a brief's head line", () => {
     const now = Date.parse('2026-11-17T11:12:00Z')
     expect(briefHeadWords(req('br-14', 'briefed', { kind: 'wake', briefAt: '2026-11-17T11:00:00Z' }), true, now)).toBe('Latest brief · 12m ago · woken by events')
     expect(briefHeadWords(req('br-9', 'briefed', { by: 'Nate', briefAt: '2026-11-17T09:12:00Z' }), false, now)).toBe('br-9 · 2h ago · asked by Nate')
+  })
+})
+
+describe("Earlier's filters and search", () => {
+  it('are the list route\'s queries', () => {
+    expect(EARLIER_FILTERS.map((f) => [f.key, f.label, f.query])).toEqual([
+      ['all', 'All', undefined],
+      ['decision', 'With a decision', { has: 'decision' }],
+      ['briefings', 'Briefings', { kind: ['briefing', 'wake'] }],
+      ['drafts', 'Drafts', { has: 'draft' }],
+    ])
+  })
+
+  it('send one line of at most 200 bytes', () => {
+    expect(searchProblem('')).toBe('')
+    expect(searchProblem('  cache test  ')).toBe('')
+    expect(searchProblem('a'.repeat(MAX_SEARCH))).toBe('')
+    expect(searchProblem('a'.repeat(MAX_SEARCH + 1))).toBe('A search is at most 200 bytes.')
+    // Bytes, not characters: 67 three-byte characters are 201 bytes.
+    expect(searchProblem('é'.repeat(100))).toBe('')
+    expect(searchProblem('€'.repeat(67))).toBe('A search is at most 200 bytes.')
+    expect(searchProblem('a\nb')).toBe('A search is one line.')
+  })
+
+  it("search the pages read on an older server, by title, note, subjects and their names, kind and id", () => {
+    const r = req('br-12', 'briefed', { hasBrief: true, note: 'Why is the CACHE slow?', subjects: ['task:fix-login-1a2b3c4d/build'], digest: { ...digest({}), title: 'Build is out of attempts' } })
+    for (const q of ['out of attempts', 'cache', 'fix-login-1a2b3c4d', 'build of fix-login', 'explain this', 'br-12', '']) expect(localMatch(r, q, names)).toBe(true)
+    expect(localMatch(r, 'deploy', names)).toBe(false)
+    expect(localMatch(req('br-1', 'briefed'), 'cache')).toBe(false)
   })
 })

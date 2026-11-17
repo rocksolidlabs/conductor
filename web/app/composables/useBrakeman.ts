@@ -133,6 +133,23 @@ export interface BrakemanReads {
   request: (id: string) => Promise<{ request: BrakemanRequest; brief: BrakemanBrief | null; digest?: BrakemanDigest }>
   /** GET /api/brakeman/since: null where the server has no such route (an older one's 404). */
   since?: () => Promise<BrakemanSince | null>
+  /**
+   * GET /api/brakeman/opened (no ids) or POST it (the ids marked opened): the caller's unread briefs as the server keeps them, or null
+   * where it keeps none (an older server's 404, a read-only store's 503): the browser's own marks count then.
+   */
+  opened?: (ids?: string[]) => Promise<BrakemanOpened | null>
+}
+
+/** The most ids an opened read answers, and a mark sends at once (docs/protocol.md). */
+export const MAX_UNREAD = 500
+export const MAX_MARKS = 100
+
+/** An opened read's answer as the page keeps it, or null for what is not one: at most MAX_UNREAD request ids, newest first. */
+export function asOpenedReply(v: unknown): BrakemanOpened | null {
+  if (v === null || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (!Array.isArray(o.unread) || o.unread.length > MAX_UNREAD || !o.unread.every((id) => typeof id === 'string' && REQUEST_ID.test(id))) return null
+  return { unread: [...o.unread] as string[], begun: typeof o.begun === 'string' ? o.begun : '' }
 }
 
 /**
@@ -209,6 +226,11 @@ export class BrakemanLive {
     this.requests.clear()
     this.state = null
     this.progress = {}
+    this.openedMode = 'unknown'
+    this.unread = []
+    this.openedBusy = false
+    this.openedAgain = false
+    this.marksWaiting.clear()
     this.sinceNow = null
     this.sinceAt = 0
     this.sinceBusy = false
@@ -273,11 +295,106 @@ export class BrakemanLive {
 
   /** How many `brakeman_opened` events came: the server's unread count is read again on each. */
   openedSeq = 0
+  /**
+   * Whose count of unread briefs the page shows: the server's, kept per credential (`server`, its ids in `unread`), the browser's own
+   * marks (`local`: an older server, a read-only store), or not known yet.
+   */
+  openedMode: 'unknown' | 'server' | 'local' = 'unknown'
+  /** The server's unread briefs, newest first, while openedMode is `server`. */
+  unread: string[] = []
+  private openedBusy = false
+  private openedAgain = false
+  /** Ids marked opened while the server's count was not known yet: sent once it answers. */
+  private marksWaiting = new Set<string>()
 
   /** A `brakeman_opened` event: a brief was marked opened under some credential, which the count read again says. */
   openedEvent() {
     this.openedSeq++
     this.changed()
+    void this.readOpened()
+  }
+
+  /** Whether the server keeps no marks here (an older server, a read-only store): the browser's count stands. */
+  private keepsNoMarks(): boolean {
+    return this.openedMode === 'local'
+  }
+
+  /** Takes an opened read's or mark's answer (null: the server keeps no marks here, and the browser's count stands). */
+  private takeOpened(out: BrakemanOpened | null) {
+    if (out === null) {
+      this.openedMode = 'local'
+      this.unread = []
+      this.marksWaiting.clear()
+    } else {
+      this.openedMode = 'server'
+      this.unread = out.unread.filter((id) => !this.marksWaiting.has(id))
+    }
+    this.changed()
+  }
+
+  /** Reads the server's unread briefs (one read at a time: what is asked meanwhile is one read after); a failure leaves the count shown. */
+  async readOpened(): Promise<void> {
+    const read = this.reads?.opened
+    if (!read || this.openedMode === 'local') return
+    if (this.openedBusy) {
+      this.openedAgain = true
+      return
+    }
+    this.openedBusy = true
+    const at = this.gen
+    try {
+      do {
+        this.openedAgain = false
+        try {
+          const out = await read()
+          if (at !== this.gen) return
+          this.takeOpened(out)
+          if (out && this.marksWaiting.size) {
+            const ids = [...this.marksWaiting]
+            this.marksWaiting.clear()
+            await this.sendMarks(ids, at)
+          }
+        } catch {
+          /* the count shown stands; the next event reads again */
+        }
+      } while (this.openedAgain && at === this.gen && !this.keepsNoMarks())
+    } finally {
+      if (at === this.gen) this.openedBusy = false
+    }
+  }
+
+  /**
+   * Marks briefs opened with the server, which keeps them for this credential: they leave the count at once, and the answer says what
+   * stays unread. While the server's count is not known yet they wait for its first answer; where it keeps none, it is not asked.
+   * Whether it took them or not, the browser's own marks are the caller's.
+   */
+  markOpened(ids: string[]) {
+    if (!this.reads?.opened || this.openedMode === 'local' || !ids.length) return
+    if (this.openedMode === 'unknown') {
+      for (const id of ids) this.marksWaiting.add(id)
+      this.changed()
+      return
+    }
+    if (ids.every((id) => !this.unread.includes(id))) return
+    this.unread = this.unread.filter((id) => !ids.includes(id))
+    this.changed()
+    void this.sendMarks(ids, this.gen)
+  }
+
+  private async sendMarks(ids: string[], at: number) {
+    const send = this.reads?.opened
+    if (!send) return
+    for (let i = 0; i < ids.length; i += MAX_MARKS) {
+      try {
+        const out = await send(ids.slice(i, i + MAX_MARKS))
+        if (at !== this.gen) return
+        this.takeOpened(out)
+      } catch {
+        // Not taken (the network, a refusal): the server's count is read again, so the page shows what it holds.
+        if (at === this.gen) void this.readOpened()
+        return
+      }
+    }
   }
 
   private seen(id: string, state: string) {
@@ -306,6 +423,7 @@ export class BrakemanLive {
     }
     void this.readRequest(e.id)
     void this.readState()
+    if (e.state === 'briefed') void this.readOpened()
   }
 
   /** The stream started again: what changed meanwhile is read, the role's too (a page showing its log reads it again). */
@@ -315,6 +433,7 @@ export class BrakemanLive {
     this.nudgeSince()
     this.changed()
     void this.readFirst()
+    void this.readOpened()
   }
 
   /** Reads the first page of requests and the state. */
@@ -337,6 +456,7 @@ export class BrakemanLive {
       this.changed()
       return
     }
+    if (this.openedMode === 'unknown') void this.readOpened()
     await this.readState()
   }
 
@@ -679,6 +799,18 @@ export function useBrakeman() {
     page: (after) => request<{ requests: BrakemanRow[]; next: string }>('/api/brakeman/requests', { query: after ? { after } : undefined }),
     request: (id) => request<{ request: BrakemanRequest; brief: BrakemanBrief | null; digest?: BrakemanDigest }>(`/api/brakeman/requests/${encodeURIComponent(id)}`),
     since: () => since(),
+    opened: async (ids) => {
+      try {
+        const out = await request<unknown>('/api/brakeman/opened', ids ? { method: 'POST', body: { ids } } : {})
+        const got = asOpenedReply(out)
+        if (!got) throw new Error('The unread briefs could not be read.')
+        return got
+      } catch (e) {
+        // An older server has no such route; a read-only store keeps no marks: the browser's own count stands.
+        if (e instanceof ApiError && (e.status === 404 || (e.status === 503 && e.code === 'brakeman_not_owner'))) return null
+        throw e
+      }
+    },
   }
   store.attach(reads)
   // The store tells the pages it changed through one counter.
@@ -705,8 +837,15 @@ export function useBrakeman() {
     return store.next !== ''
   })
 
-  /** The briefs not yet opened in this browser, newest first. The first read ever in a browser takes the briefs there are as opened. */
-  const unopenedIds = computed(() => unopened(requests.value, new Set(opened.value ?? [])))
+  /**
+   * The briefs not yet opened, newest first: the server's count for this credential (the same on every browser that holds it) while
+   * the server keeps one; else this browser's, whose first read ever takes the briefs there are as opened.
+   */
+  const unopenedIds = computed(() => {
+    void version.value
+    if (store.openedMode === 'server') return store.unread
+    return unopened(requests.value, new Set(opened.value ?? []))
+  })
   watch(
     requests,
     (list) => {
@@ -722,6 +861,7 @@ export function useBrakeman() {
    * same id (a new token's br-3 is not this one).
    */
   function markOpened(r: Pick<BrakemanRequest, 'id' | 'createdAt'>) {
+    store.markOpened([r.id])
     const mark = openedMark(r)
     if (opened.value?.includes(mark)) return
     opened.value = [...new Set([...(opened.value ?? []), ...keepOpened([mark])])]
