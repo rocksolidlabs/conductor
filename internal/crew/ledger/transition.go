@@ -1127,6 +1127,26 @@ func (l *Ledger) Events(ctx context.Context, runID string, after int64, limit in
 	return out, rows.Err()
 }
 
+// NewestEvent reads a run's newest event of the kind: ok false when it
+// has none.
+func (l *Ledger) NewestEvent(ctx context.Context, runID, kind string) (EventRow, bool, error) {
+	db, err := l.conn()
+	if err != nil {
+		return EventRow{}, false, err
+	}
+	r := EventRow{RunID: runID, Kind: kind}
+	var at string
+	err = db.QueryRowContext(ctx, "SELECT seq, at, payload FROM events WHERE run_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1", runID, kind).Scan(&r.Seq, &at, &r.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EventRow{}, false, nil
+	}
+	if err != nil {
+		return EventRow{}, false, err
+	}
+	r.At = unstamp(at)
+	return r, true, nil
+}
+
 // Recovered is what Recover concluded for one run.
 type Recovered struct {
 	RunID         string

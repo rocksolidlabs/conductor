@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, OpReceipt, ResponseReceipt } from '~/utils/decisions'
-import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsOf, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
+import { answerAsk, answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionSubject, optionsOf, rationaleRequired, recommended, refusalOf, respondDecision, responseBody } from '~/utils/decisions'
 
 /**
  * The operator's answer to a durable decision (Program item DR1, docs/plans/decisions.md, "web/app"): the controls by its type (a
@@ -11,6 +11,11 @@ import { answerAsWords, askForMore, commentDecision, confirmAuthorizes, optionsO
  * answered first, what changed), with Read again. A choice picked stays to be confirmed even when the record moves meanwhile: the
  * server judges it, and its refusal says what happened. A write's reply goes to what `begin` answered when the write started
  * (useDecisionRecord's), so a reply from before the stream came back is dropped (Codex's round 3 on #719).
+ *
+ * A comparison's selection (origin `compare`, Program item CP1) is the same act wherever it is drawn (the comparison, the card, the
+ * ticket's Decisions, Needs you, a phone): nothing preselected or marked recommended, each candidate's commit on its line under the
+ * buttons, linked to its comparison; the rationale required, Confirm held until it holds text; the confirm step saying the answer is
+ * final, its button naming the candidate ("Select approach-b (final)"). The server refuses a selection without a rationale too.
  */
 const props = defineProps<{ decision: Decision; begin: () => (decision: Decision) => void }>()
 const emit = defineEmits<{ read: []; controls: [shown: boolean] }>()
@@ -24,6 +29,8 @@ const options = computed(() => optionsOf(d.value))
 const best = computed(() => recommended(d.value))
 const confirms = computed(() => d.value.type === 'approval' || d.value.type === 'assignment')
 const more = computed(() => askForMore(d.value))
+const ticket = useDecisionRunInfo(() => d.value.run).ticket
+const rationaleNeeded = computed(() => rationaleRequired(d.value))
 
 /** The choice picked and the rev the card showed then, waiting for Confirm. */
 const pending = ref<{ choice: number; rev: number } | null>(null)
@@ -44,8 +51,13 @@ const moved = computed(() => !!pending.value && (d.value.state !== 'open' || d.v
 // Whether the buttons are drawn, said to the card above (UX1 PR-20): while they are, they are the one list of choices.
 watch(answering, (shown) => emit('controls', shown), { immediate: true })
 onBeforeUnmount(() => emit('controls', false))
-/** The options that say what they cost, in order: one muted line each under the buttons. */
-const tradeoffs = computed(() => options.value.flatMap((o, i) => (o.tradeoffs ? [{ i, label: o.label, tradeoffs: o.tradeoffs }] : [])))
+/** The options that say what they cost or what they continue (a selection's candidate), in order: one muted line each under the buttons. */
+const tradeoffs = computed(() => options.value.flatMap((o, i) => {
+  const subject = optionSubject(o, ticket.value)
+  return o.tradeoffs || subject ? [{ i, label: o.label, tradeoffs: o.tradeoffs ?? '', subject }] : []
+}))
+/** How the answer is asked for with the choice picked: the confirm's label, the finality words, the rationale's words, and whether it may go. */
+const ask = computed(() => answerAsk(d.value, pending.value?.choice ?? picked.value, rationale.value))
 
 function pick(i: number) {
   refusal.value = ''
@@ -54,7 +66,8 @@ function pick(i: number) {
 }
 
 async function send(choice: number | undefined, rev: number) {
-  if (busy.value) return
+  // A selection is never sent without its rationale (the server refuses one too).
+  if (busy.value || !ask.value.ready) return
   busy.value = true
   refusal.value = ''
   const take = props.begin()
@@ -76,7 +89,7 @@ async function send(choice: number | undefined, rev: number) {
   }
 }
 
-const canSend = computed(() => !busy.value && (picked.value !== undefined || !!text.value.trim()))
+const canSend = computed(() => !busy.value && ask.value.ready && (picked.value !== undefined || !!text.value.trim()))
 
 async function opSend(kind: 'comment' | 'more_info') {
   if (commentBusy.value || !comment.value.trim()) return
@@ -146,21 +159,25 @@ watch(
       </div>
       <!-- Each choice's tradeoffs, one muted line each under the buttons. -->
       <ul v-if="tradeoffs.length" class="flex flex-col gap-0.5 text-xs text-muted" data-decision-tradeoffs>
-        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i"><span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}</li>
+        <li v-for="t in tradeoffs" :key="t.i" class="break-words" :data-decision-tradeoff="t.i">
+          <span class="font-medium">{{ t.label }}:</span> {{ t.tradeoffs }}<template v-if="t.subject"><template v-if="t.tradeoffs"> · </template><span :data-decision-option-subject="t.i"><NuxtLink v-if="t.subject.to" :to="t.subject.to" class="hover:underline">{{ t.subject.text }}</NuxtLink><template v-else>{{ t.subject.text }}</template></span></template>
+        </li>
       </ul>
       <UTextarea v-if="decision.type === 'clarification'" v-model="text" :rows="2" autoresize placeholder="Or answer in words…" :maxlength="4096" :disabled="busy" data-decision-text />
-      <UTextarea v-model="rationale" :rows="1" autoresize placeholder="Why (optional, kept with the answer)…" :maxlength="2000" :disabled="busy" data-decision-rationale />
+      <UTextarea v-model="rationale" :rows="1" autoresize :placeholder="ask.placeholder" :maxlength="2000" :disabled="busy" :required="rationaleNeeded" :aria-required="rationaleNeeded" data-decision-rationale :data-rationale-required="rationaleNeeded ? '' : undefined" />
 
       <div v-if="pending" class="flex flex-col gap-2 rounded-md bg-warning/10 p-2 ring ring-warning/30" data-decision-confirm-step>
         <p class="text-sm wrap-anywhere">
           Answer {{ decision.id }} <span class="font-semibold" data-decision-confirm-choice>{{ options[pending.choice]?.label }}</span>?
           <template v-if="confirmAuthorizes(decision, pending.choice)"> <span data-decision-confirm-authorizes>{{ confirmAuthorizes(decision, pending.choice) }}</span></template>
         </p>
+        <p v-if="ask.final" class="text-sm text-default" data-decision-final>{{ ask.final }}</p>
         <p v-if="answerAsWords(decision)" class="text-xs text-muted" data-decision-answer-as>{{ answerAsWords(decision) }}.</p>
+        <p v-if="!ask.ready" class="text-xs text-muted" data-decision-rationale-needed>Say why first: the rationale is the record of this selection.</p>
         <p v-if="moved" class="text-xs text-warning" data-decision-moved>{{ decision.id }} changed since you picked it: it is {{ decision.state }} now. Confirm sends it anyway, and the answer says what happened.</p>
         <div class="flex justify-end gap-2">
           <UButton label="Back" color="neutral" variant="ghost" size="sm" class="max-lg:min-h-11 max-lg:min-w-11" :disabled="busy" data-decision-back @click="pending = null" />
-          <UButton :label="`Answer ${options[pending.choice]?.label ?? ''}`" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }" :loading="busy" data-decision-confirm @click="send(pending.choice, pending.rev)" />
+          <UButton :label="ask.confirm" color="primary" size="sm" class="max-w-full max-lg:min-h-11 max-lg:min-w-11" :ui="{ label: 'min-w-0 text-clip whitespace-normal wrap-anywhere text-start' }" :loading="busy" :disabled="!ask.ready" data-decision-confirm @click="send(pending.choice, pending.rev)" />
         </div>
       </div>
       <div v-else-if="!confirms" class="flex items-center justify-end gap-2">

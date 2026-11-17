@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +82,85 @@ func TestOpenMakesTheSchema(t *testing.T) {
 	again := openLedger(t, dir)
 	if r, ok, err := again.Run(context.Background(), "team-00000001"); err != nil || !ok || r.Revision != 1 || r.State != RunRunning || r.Base != "abc123" {
 		t.Fatalf("after reopen: %+v %v %v", r, ok, err)
+	}
+}
+
+// The ledger's version 12 is a barrier against a binary before comparisons:
+// 11 to 12 changes no table and rewrites no row, and a ledger of a version
+// later than the binary's (as 12 is to a binary that writes 11) opens
+// read-only, written by a newer Conductor, its writes and its recovery
+// refused and its rows as they were.
+func TestTheLedgerVersionFencesComparisons(t *testing.T) {
+	if Version != 12 {
+		t.Fatalf("Version %d: the comparisons' barrier is 12", Version)
+	}
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	const run = "team-00000001"
+	newRun(t, l, run)
+	tasksOf(t, l, run, "build")
+	open(t, l, agentDecision(run, "build", 1, "q1"))
+	snapshot := func(l *Ledger) map[string][]string {
+		t.Helper()
+		out := map[string][]string{}
+		for _, table := range schemaNames(t, l, "table") {
+			if table != "schema_version" {
+				out[table] = tableRows(t, l, table)
+			}
+		}
+		rows, err := l.db.Query("SELECT type, name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var typ, name, text string
+			if err := rows.Scan(&typ, &name, &text); err != nil {
+				t.Fatal(err)
+			}
+			out["sqlite_master"] = append(out["sqlite_master"], typ+" "+name+" "+text)
+		}
+		return out
+	}
+	before := snapshot(l)
+	if len(before["decisions"]) != 1 || len(before["runs"]) != 1 {
+		t.Fatalf("the ledger holds %d runs and %d decisions", len(before["runs"]), len(before["decisions"]))
+	}
+	l.Close()
+
+	// 11 to 12: the same tables, every row as it was.
+	rawExec(t, dir, "UPDATE schema_version SET version = 11")
+	migrated := openLedger(t, dir)
+	if ro, why := migrated.ReadOnly(); ro {
+		t.Fatalf("read-only after 11 to 12: %s", why)
+	}
+	if v := dbVersion(t, migrated); v != Version {
+		t.Fatalf("version %d after the migration, Version %d", v, Version)
+	}
+	if got := snapshot(migrated); !maps.EqualFunc(got, before, slices.Equal) {
+		t.Fatalf("after 11 to 12:\n%v\nwere:\n%v", got, before)
+	}
+	migrated.Close()
+
+	// A later version's ledger, as 12 is to a binary that writes 11:
+	// read-only in the words of a newer version, nothing written.
+	rawExec(t, dir, fmt.Sprintf("UPDATE schema_version SET version = %d", Version+1))
+	later := openLedger(t, dir)
+	ro, why := later.ReadOnly()
+	if !ro || !strings.Contains(why, fmt.Sprintf("the database is version %d, written by a newer Conductor; this one writes version %d", Version+1, Version)) {
+		t.Fatalf("a later version's ledger: read-only %v: %s", ro, why)
+	}
+	if _, err := later.Transition(context.Background(), run, func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write to a later version's ledger: %v", err)
+	}
+	if _, err := later.Recover(context.Background()); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a recovery of a later version's ledger: %v", err)
+	}
+	if got := snapshot(later); !maps.EqualFunc(got, before, slices.Equal) {
+		t.Fatalf("a later version's ledger after the refusals:\n%v\nwere:\n%v", got, before)
+	}
+	if v := dbVersion(t, later); v != Version+1 {
+		t.Fatalf("the later version's ledger is version %d now", v)
 	}
 }
 

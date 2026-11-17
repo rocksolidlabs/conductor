@@ -70,6 +70,18 @@ type fakeLedger struct {
 	// the one its hash names, once.
 	failCheckLog error
 	corruptLog   bool
+	// revs are each run's revision, moved by each of its transitions and
+	// by a continuation's mark; commits every transaction committed, in
+	// order, with its events and its task rows (a comparison's tests).
+	revs    map[string]int64
+	commits []fakeCommit
+}
+
+// fakeCommit is one committed transaction of the fake ledger.
+type fakeCommit struct {
+	runID  string
+	events []fakeEvent
+	tasks  []ledger.TaskRow
 }
 
 // matches reports whether an event is named by spec.
@@ -357,6 +369,14 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		return 0, fmt.Errorf("ledger: %w", err)
 	}
 	l.rev++
+	if l.revs == nil {
+		l.revs = map[string]int64{}
+	}
+	l.revs[runID] = l.rev
+	if tx.continued != "" {
+		l.revs[tx.continued] = l.rev
+	}
+	l.commits = append(l.commits, fakeCommit{runID: runID, events: slices.Clone(tx.events), tasks: slices.Clone(tx.tasks)})
 	for _, r := range tx.runs {
 		l.runs[r.ID] = r
 	}
@@ -805,7 +825,13 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 
 	// The review's verdict and test's commit end the run: every task
 	// terminal, the outcome succeeded, the state finished while sessions
-	// still run.
+	// still run. The engine shows the end inside the change and commits
+	// its rows and events after it, so the end's commit is held (blockOn)
+	// until the run reads as finished, and the events are read once the
+	// ledger holds the end, never on the view's word (#281).
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "run.finished", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
 	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictApproved, Summary: "fine"})
 	if got := waitTask(t, e, run.ID, "review", ledger.TaskSucceeded, 1); got.Result.Verdict != VerdictApproved {
 		t.Fatalf("review: %+v", got.Result)
@@ -818,6 +844,13 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded
 	})
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run's end did not reach its commit")
+	}
+	close(l.release)
+	waitFake(t, "the run's end committed", func() bool { return slices.Contains(l.kinds(run.ID), "run.finished") })
 	kinds := l.kinds(run.ID)
 	for _, k := range []string{"run.created", "attempt.reserved", "attempt.workspace", "attempt.launched", "attempt.prompted", "result.submitted", "task.succeeded", "run.finished"} {
 		if !slices.Contains(kinds, k) {
@@ -2300,3 +2333,112 @@ func TestACancelledChecksProcessRunsUntilTheCancelIsDurable(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// The reads a comparison makes (compareLedger), as the ledger answers them.
+
+func (l *fakeLedger) RunRow(ctx context.Context, id string) (ledger.RunRow, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.runs[id]
+	if ok {
+		r.Revision = l.revs[id]
+	}
+	return r, ok, nil
+}
+
+func (l *fakeLedger) Pointer(ctx context.Context, id string) (ledger.RunPointer, bool, error) {
+	r, ok, _ := l.RunRow(ctx, id)
+	if !ok {
+		return ledger.RunPointer{}, false, nil
+	}
+	return ledger.RunPointer{ID: r.ID, CrewID: r.CrewID, State: r.State, Outcome: r.Outcome, Paused: r.Paused, Revision: r.Revision,
+		ContinuedFrom: r.ContinuedFrom, ContinuedBy: r.ContinuedBy, CreatedAt: r.CreatedAt, ClosedAt: r.ClosedAt}, true, nil
+}
+
+func (l *fakeLedger) Tasks(ctx context.Context, runID string) ([]ledger.TaskRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ledger.TaskRow
+	for _, t := range l.tasks {
+		if t.RunID == runID {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b ledger.TaskRow) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+func (l *fakeLedger) Attempts(ctx context.Context, runID string) ([]ledger.AttemptRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ledger.AttemptRow
+	for _, a := range l.attempts {
+		if a.RunID == runID {
+			out = append(out, a)
+		}
+	}
+	slices.SortFunc(out, func(a, b ledger.AttemptRow) int {
+		if c := strings.Compare(a.TaskID, b.TaskID); c != 0 {
+			return c
+		}
+		return a.N - b.N
+	})
+	return out, nil
+}
+
+func (l *fakeLedger) Checks(ctx context.Context, runID, taskID string, n int, withLog bool) ([]ledger.CheckRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	last := map[string]ledger.CheckRow{}
+	var keys []string
+	for _, c := range l.checks {
+		if c.RunID != runID || (taskID != "" && c.TaskID != taskID) || (n != 0 && c.N != n) {
+			continue
+		}
+		key := fmt.Sprintf("%s/%d/%s/%d", c.TaskID, c.N, c.ID, c.K)
+		if _, ok := last[key]; !ok {
+			keys = append(keys, key)
+		}
+		if !withLog {
+			c.Log = nil
+		}
+		last[key] = c
+	}
+	out := make([]ledger.CheckRow, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, last[k])
+	}
+	return out, nil
+}
+
+func (l *fakeLedger) Trees(ctx context.Context, runID string) ([]ledger.TreeRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ledger.TreeRow
+	for _, tr := range l.trees {
+		if tr.RunID == runID {
+			out = append(out, tr)
+		}
+	}
+	return out, nil
+}
+
+func (l *fakeLedger) NewestEvent(ctx context.Context, runID, kind string) (ledger.EventRow, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.events) - 1; i >= 0; i-- {
+		ev := l.events[i]
+		if ev.runID != runID || ev.kind != kind {
+			continue
+		}
+		b, err := json.Marshal(ev.payload)
+		if err != nil {
+			return ledger.EventRow{}, false, err
+		}
+		return ledger.EventRow{RunID: runID, Seq: int64(i + 1), Kind: kind, Payload: string(b)}, true, nil
+	}
+	return ledger.EventRow{}, false, nil
+}
+
+var _ compareLedger = (*fakeLedger)(nil)
+var _ compareLedger = sqlLedger{}

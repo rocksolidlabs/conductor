@@ -35,7 +35,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 11
+const Version = 12
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -121,6 +121,17 @@ var migrations = map[int][]string{
 	// (previews.go). No preview existed before this version, so a version
 	// 10 database's rows are all true as they are: nothing is derived.
 	10: {previewsTable},
+	// Version 12 (CP1, comparing candidates, #807 and #810): no table
+	// changes and no row is rewritten. Two shapes are written from this
+	// version on: a run whose crew compares candidates (members of the
+	// crew's JSON in runs.crew, which a binary before them drops as it
+	// decodes the run, and so would continue a comparison as an ordinary
+	// crew), and decision requests of origin compare (which a binary
+	// before them does not know, and could cancel). The version is a
+	// barrier: such a binary opens a version 12 ledger read-only. Every
+	// row a version 11 database holds has neither shape and reads as it
+	// did.
+	11: {},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
