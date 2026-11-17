@@ -11,6 +11,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -286,4 +287,62 @@ func TestPreviewCommandRoutesAreAdminOnly(t *testing.T) {
 			t.Errorf("%s %s on a switchyard: %d %s", r[0], r[1], status, data)
 		}
 	}
+}
+
+// The candidate is the checkout's at the save, by the engine's own
+// comparison: an intact checkout's capture names it; a tracked file
+// changed under skip-worktree, which git status does not show, is a
+// change all the same, and the capture names no candidate. Both are of
+// origin candidate, tree preview; the second is mutable.
+func TestAHiddenTrackedChangeIsNoCandidate(t *testing.T) {
+	c := candidateEnv(t)
+	seq, label := c.open(t)
+	p := c.previewed(t, label)
+	b := p.body(t, label, button())
+	b.From.Seq = seq
+	first := originOf(created(t, c.e, b, nil))
+	if first["kind"] != "candidate" || first["tree"] != "preview" || first["candidate"] != fmt.Sprintf("%s/build/1@%s", c.run, c.commit) || first["mutable"] != false {
+		t.Fatalf("the intact checkout's capture: %v", first)
+	}
+	gitIn(t, c.dir, "update-index", "--skip-worktree", "README")
+	writeIn(t, c.dir, "README", "changed where git status does not look\n")
+	if st := gitIn(t, c.dir, "status", "--porcelain", "--untracked-files=no"); strings.TrimSpace(st) != "" {
+		t.Fatalf("git status shows the hidden change: %q", st)
+	}
+	label = c.ready(t, seq)
+	b = p.body(t, label, button())
+	b.From.Seq = seq
+	second := originOf(created(t, c.e, b, nil))
+	if second["kind"] != "candidate" || second["tree"] != "preview" || second["candidate"] != nil || second["mutable"] != true {
+		t.Fatalf("the capture of a hidden change: %v", second)
+	}
+}
+
+// A capture names a checkout by its run, task, attempt and seq together:
+// another attempt's, or a seq not open, is no preview; the checkout's
+// secret, held while it is open, is kept nowhere in the store.
+func TestACaptureReachesItsOwnCheckoutAlone(t *testing.T) {
+	c := candidateEnv(t)
+	seq, label := c.open(t)
+	p := c.previewed(t, label)
+	for name, from := range map[string]captureFrom{
+		"another attempt": {Run: c.run, Task: "build", Attempt: 2, Seq: seq},
+		"another task":    {Run: c.run, Task: "docs", Attempt: 1, Seq: seq},
+		"another seq":     {Run: c.run, Task: "build", Attempt: 1, Seq: seq + 1},
+		"the worktree":    {Run: c.run, Task: "build", Attempt: 1},
+	} {
+		b := p.body(t, label, button())
+		b.From = from
+		if got, out := postCapture(t, c.e, b, nil); got != http.StatusNotFound || codeOf(out) != "no_preview" {
+			t.Errorf("%s: %d %v", name, got, out)
+		}
+	}
+	if !slices.Contains(c.e.srv.runs.TreeSecrets(), p.secret) {
+		t.Fatal("the checkout's secret is not among the secrets held")
+	}
+	b := p.body(t, label, button())
+	b.From.Seq = seq
+	b.Annotations[0].Note = "see " + p.page + "#token=" + p.secret
+	created(t, c.e, b, nil)
+	p.keptNowhere(t, p.secret)
 }
