@@ -614,6 +614,18 @@ var operationsTable = sync.OnceValue(func() []Operation {
 			CLI:     []string{"conductor", "up", "CREW"},
 			Input:   bodySchema(launchBody{}),
 			Bounds:  map[string]int{"body": maxLaunchBody}},
+		// A comparison's crew and its read (compare.go, Program item CP1):
+		// no MCP tool, so tools/list is as it was.
+		{Name: "crew_compare", Scope: "admin", Method: http.MethodPost, Path: "/api/crews/templates/compare", needs: needLauncher,
+			Summary: "Save a comparison's crew from its template: 2 to 4 candidates, each an agent with an approach, the same instructions, checks and criteria, each reviewed or not. Saving launches nothing: a comparison is launched from a ticket's approved plan revision, repeating the count it starts.",
+			CLI:     []string{"conductor", "crews", "compare", "SPEC.json"},
+			Input:   bodySchema(crew.CompareSpec{}),
+			Bounds:  map[string]int{"body": maxCompareSpecBody}},
+		{Name: "comparison", Scope: "admin", Method: http.MethodGet, Path: "/api/runs/{run}/comparison", needs: needLauncher,
+			Summary: "A comparison as measured, from any run of its chain: the base, the criteria, each candidate's result, size, dependency changes and commits shared with another, each check's cells with its verdict and why, and what independence is not observed.",
+			CLI:     []string{"conductor", "dispatch", "comparison", "KEY-n", "--run", "RUN"},
+			Input:   map[string]any{"type": "object", "description": "no body"},
+			Bounds:  map[string]int{"reply": crew.MaxComparison}},
 		// The history, the admin's (docs/plans/history.md: history_*.go):
 		// no MCP tool, so tools/list is as it was.
 		{Name: "history_search", Scope: "admin", Method: http.MethodGet, Path: "/api/history", needs: needLauncher,

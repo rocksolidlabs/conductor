@@ -115,7 +115,7 @@ func (e *Engine) LaunchPlanned(ctx context.Context, c Crew, label string, p Plan
 			return nil, noop, err
 		}
 	}
-	prep, err := e.prepare(ctx, c, p.Base)
+	prep, err := e.prepare(ctx, c, p.Base, pkg)
 	if err != nil {
 		return nil, noop, err
 	}

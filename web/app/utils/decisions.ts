@@ -1,7 +1,7 @@
 import { mintCommandId } from './tasks'
 import type { RefState } from './brakeman'
 import { RESPONSIBILITY_WORDS } from './crews'
-import { ticketPath } from './dispatch'
+import { comparisonLink } from './compare'
 
 // Durable decisions (Program item DR1, docs/plans/decisions.md, "web/app"; docs/protocol.md, "Decisions"): the record as the operator's
 // routes give it, its four states in words (asked, the answer, checked by Yardmaster, applied or why not), and the operator's
@@ -261,10 +261,10 @@ export function askedWhere(d: Pick<Decision, 'origin' | 'gate' | 'asker'>): stri
 
 const short = (c?: string) => (c ? c.slice(0, 7) : '')
 
-/** A comparison on its ticket's page (the compare view, any run of its chain): '' when the ticket's key is not known. */
+/** A comparison on its ticket's page (the compare view, any run of its chain, compare.ts's comparisonLink): '' when the ticket's key is not known. */
 export function comparisonPath(ticketKey: string | undefined, run: string | undefined): string {
-  const t = ticketKey ? ticketPath(ticketKey) : ''
-  return t && run ? `${t}?view=compare&run=${encodeURIComponent(run)}` : ''
+  const l = run ? comparisonLink(ticketKey, run) : null
+  return l ? `${l.path}?view=compare&run=${encodeURIComponent(l.query.run)}` : ''
 }
 
 /**

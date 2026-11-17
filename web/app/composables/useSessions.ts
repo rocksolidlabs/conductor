@@ -771,6 +771,11 @@ export interface RunTicket {
   digest: string
 }
 
+/** A comparison's run as its reads give it: its lanes, each candidate task with the review that reviews it (none without reviews), at most 4. */
+export interface RunCompare {
+  candidates: Array<{ task: string; review?: string }>
+}
+
 /** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
 export interface RunInfo {
   /** `<crew id>-<8 hex>`. */
@@ -822,6 +827,8 @@ export interface RunInfo {
   tasks?: RunTask[]
   /** The crew's people as launched, fixed for the run; absent for a crew without (and for the record of a run without tasks). */
   people?: CrewPerson[]
+  /** A comparison's lanes (Program item CP1): each candidate task with the review task that reviews it, in the block's order; absent for a run of no comparison. */
+  compare?: RunCompare
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running

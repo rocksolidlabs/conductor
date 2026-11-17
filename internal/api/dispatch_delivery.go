@@ -76,6 +76,21 @@ func (s *Server) addDelivery(ctx context.Context, w http.ResponseWriter, ds *dis
 		s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
 		return
 	}
+	// A comparison's candidate is delivered once it is selected
+	// (compareDeliveryRefusal): refused before anything else is read or
+	// kept.
+	code, words, err := s.compareDeliveryRefusal(ctx, c)
+	if (err != nil || code != "") && replayed() {
+		return
+	}
+	switch {
+	case err != nil:
+		s.receiptError(w, "a delivery's candidate", c.Run, err)
+		return
+	case code != "":
+		writeError(w, http.StatusConflict, code, words)
+		return
+	}
 	var refusal *dispatch.Refusal
 	err = ds.CandidateRefusal(ctx, key, c.Run)
 	if err != nil && replayed() {
@@ -111,6 +126,24 @@ func (s *Server) addDelivery(ctx context.Context, w http.ResponseWriter, ds *dis
 	rc, err = ds.AddLink(ctx, op, key, l, v)
 	s.readAddedLink(ds, key, l, rc, err)
 	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
+}
+
+// compareDeliveryRefusal is the refusal of a delivery naming the
+// candidate c when its run is of a comparison's chain (its crew as
+// launched, which every run of the chain carries, has a compare block):
+// 409 not_selected, nothing kept. Before a selection is a record of its
+// own no candidate of a comparison is delivered. "" for a candidate of any
+// other run, and for one the ledger cannot tell (no ledger, no such run),
+// which candidateVerified refuses; an error is the ledger's.
+func (s *Server) compareDeliveryRefusal(ctx context.Context, c dispatch.Candidate) (code, words string, err error) {
+	if s.ledger == nil {
+		return "", "", nil
+	}
+	row, found, err := s.ledger.Run(ctx, c.Run)
+	if err != nil || !found || !rowIsComparison(row) {
+		return "", "", err
+	}
+	return "not_selected", "a comparison's candidate is delivered once it is selected", nil
 }
 
 // attemptEnded is the states of an attempt that has ended: any other is

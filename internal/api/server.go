@@ -1032,6 +1032,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}", s.launching(s.handleGetCrew))
 	mux.HandleFunc("POST /api/crews", s.launching(s.handleCreateCrew))
 	mux.HandleFunc("POST /api/crews/examples", s.launching(s.handleSeedExamples))
+	// A comparison's crew from its template, and a comparison's read
+	// (compare.go, Program item CP1).
+	mux.HandleFunc("POST /api/crews/templates/compare", s.launching(s.handleCompareTemplate))
+	mux.HandleFunc(comparisonPattern, s.readable(comparisonPattern, s.launchingAny(s.handleRunComparison)))
 	mux.HandleFunc("PUT /api/crews/{id}", s.launching(s.handleUpdateCrew))
 	mux.HandleFunc("DELETE /api/crews/{id}", s.launching(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.launching(s.handleDuplicateCrew))
