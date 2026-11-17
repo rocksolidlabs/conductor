@@ -84,6 +84,13 @@ func newDispatchAPI(t *testing.T) *dispatchAPI {
 // newDispatchAPIWith is newDispatchAPI with more agents in its catalog.
 func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
 	t.Helper()
+	return newDispatchAPIConfig(t, nil, more...)
+}
+
+// newDispatchAPIConfig is newDispatchAPIWith with mutate applied to the
+// configuration before it is checked.
+func newDispatchAPIConfig(t *testing.T, mutate func(*config.Config), more ...catalog.Agent) *dispatchAPI {
+	t.Helper()
 	clearConductorEnv(t)
 	root := realTempDir(t)
 	cfg := config.Defaults()
@@ -91,6 +98,9 @@ func newDispatchAPIWith(t *testing.T, more ...catalog.Agent) *dispatchAPI {
 	cfg.AllowedRoots = []string{root}
 	cfg.DefaultCwd = root
 	cfg.DataDir = filepath.Join(t.TempDir(), "data")
+	if mutate != nil {
+		mutate(cfg)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
