@@ -63,9 +63,12 @@ func previewCommand(w http.ResponseWriter, r *http.Request, close bool) (runID, 
 
 // handlePreviewOpen opens a preview of the candidate as the admin's
 // command: 202 {receipt, seq, state} (resolved: its readiness to come;
-// 200 the same for a repeat, the preview's state now); a refusal once the
-// command is taken with its receipt, {error, receipt} (previewRefused);
-// one before it with none (previewError).
+// 200 the same for a repeat, the preview's state now; a repeat of an open
+// still under way before its preview has a seq, 409 preview_opening with
+// the receipt, to be asked again); a refusal once the command is taken
+// with its receipt, {error, receipt} (previewRefused), run_stopped once
+// the server's shutdown has begun; one before it with none
+// (previewError).
 func (s *Server) handlePreviewOpen(w http.ResponseWriter, r *http.Request) {
 	runID, taskID, n, _, cmd, ok := previewCommand(w, r, false)
 	if !ok {
@@ -76,6 +79,12 @@ func (s *Server) handlePreviewOpen(w http.ResponseWriter, r *http.Request) {
 	rc, ps, err := s.runs.PreviewCandidate(ctx, runID, taskID, n, actorOf(r), cmd)
 	if rc.CommandID != "" && rc.Status == ledger.CommandFailed {
 		s.previewRefused(w, rc, err)
+		return
+	}
+	if rc.CommandID != "" && errors.Is(err, crew.ErrPreviewOpening) {
+		// A repeat of an open still under way, before its preview has a
+		// seq: the asker asks again with the same commandId.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": apiError{Code: crew.RefusalPreviewOpening, Message: "the preview is still opening: ask again"}, "receipt": rc})
 		return
 	}
 	if err != nil {
@@ -143,7 +152,9 @@ func (s *Server) previewRefused(w http.ResponseWriter, rc crew.Receipt, err erro
 // previewError answers a preview command refused before it was taken, with
 // no receipt: 404 no_preview for a Close of a preview the engine does not
 // hold (and no repeat of one), 409 for a run continued (run_continued) or
-// stopped (run_stopped) as the ledger has it, a command id used before
+// stopped (run_stopped) as the ledger has it, or whose records cannot make
+// a preview now (run_unreadable: its folder moved, its crew as launched
+// unreadable), a command id used before
 // with other content (command_conflict) or a run whose commands are
 // spent (too_many_commands); 404 for a run the engine and the ledger have
 // not; 503 ledger_unavailable.
@@ -153,6 +164,8 @@ func (s *Server) previewError(w http.ResponseWriter, runID string, err error) {
 		writeError(w, http.StatusNotFound, crew.RefusalNoPreview, err.Error())
 	case errors.Is(err, crew.ErrRunStopped):
 		writeError(w, http.StatusConflict, crew.RefusalRunStopped, err.Error())
+	case errors.Is(err, crew.ErrRunUnreadable):
+		writeError(w, http.StatusConflict, crew.RefusalRunUnreadable, err.Error())
 	default:
 		s.taskError(w, "preview command", runID, err)
 	}

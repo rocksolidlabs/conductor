@@ -28,6 +28,24 @@ export const MAX_ANCHOR_LINES = 12
 export const MAX_ANCHOR_LINE = 200
 /** What the run keeps of a repair at most (the ledger's MaxPayload): a request past it is refused whole. */
 export const MAX_REPAIR_PAYLOAD = 64 << 10
+/** The most evidence files a repair is handed (crew's maxEvidence): a capture revision's document, and its screenshot when it has one. */
+export const MAX_EVIDENCE = 8
+
+/**
+ * The evidence files a request of the batch hands a repair: each capture revision's once, whichever sends carried its notes (the server
+ * hands two sends of one revision's files over once), two for a note that does not say how many its send holds.
+ */
+export function evidenceFiles(body: ReviewBody, notes: readonly Pick<DraftNote, 'captureRev' | 'captureFiles'>[] = []): number {
+  const seen = new Map<string, number>()
+  body.findings.forEach((f, i) => {
+    if (f.kind !== 'capture' || !f.capture) return
+    const n = notes[i]
+    const key = n?.captureRev !== undefined ? `${f.capture.capture}@${n.captureRev}` : `send ${f.capture.send}`
+    seen.set(key, Math.max(seen.get(key) ?? 0, n?.captureFiles ?? 2))
+  })
+  return [...seen.values()].reduce((a, b) => a + b, 0)
+}
+
 /** A Dispatch id's length: the request is measured with ids of it. */
 const ID_LEN = 16
 
@@ -63,6 +81,13 @@ export interface DraftNote {
   capture?: CaptureChoice
   /** A capture note's capture in words ("capture 0123abcd r2, annotation 1"), for the draft alone; never sent. */
   captureName?: string
+  /**
+   * A capture note's capture revision and how many files its send holds (the document, and the screenshot when there is one), for the
+   * draft alone, never sent: two sends of one revision hold the same files, which a repair is handed once, and a repair takes at most
+   * MAX_EVIDENCE files.
+   */
+  captureRev?: number
+  captureFiles?: number
 }
 
 /** What a capture finding names (dispatch.CaptureRef): the capture, its send to a review, and the annotation's place from 1. */
@@ -373,7 +398,7 @@ export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' |
  * fifty notes, a request with a change in it, each text within its bound, and a request within what the run keeps (64 KiB). Empty when
  * it may be sent; the server checks all of it again, and the task file's size, which only it can measure.
  */
-export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): string[] {
+export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured' | 'captureRev' | 'captureFiles'>[] = []): string[] {
   const out: string[] = []
   if (!body.findings.length && !body.summary) out.push('Add a note or a summary first.')
   if (body.findings.length > MAX_REVIEW_FINDINGS) out.push(`A review holds at most ${MAX_REVIEW_FINDINGS} notes: this one has ${body.findings.length}.`)
@@ -390,6 +415,8 @@ export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick
   if (body.verdict === 'request_changes') {
     const n = repairBytes(changeRequestOf(body, by, notes))
     if (n > MAX_REPAIR_PAYLOAD) out.push(`The notes are ${kib(n)} KiB as the run keeps them, more than ${MAX_REPAIR_PAYLOAD >> 10} KiB: shorten them.`)
+    const files = evidenceFiles(body, notes)
+    if (files > MAX_EVIDENCE) out.push(`The captures' notes hand the repair ${files} files (each capture revision's document, and its screenshot), more than ${MAX_EVIDENCE}: send the notes of fewer captures, or send them as a comment.`)
   }
   return out
 }

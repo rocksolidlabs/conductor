@@ -60,6 +60,12 @@ func (s sqlLedger) Previews(ctx context.Context, runID string) ([]ledger.Preview
 	return s.l.Previews(ctx, runID)
 }
 
+// ErrRunUnreadable refuses a preview of a run the engine does not hold
+// whose records the server cannot make a context of now: its crew as
+// launched not readable, or its folder no longer a git work tree (moved,
+// removed). The words name the folder, never git's own message.
+var ErrRunUnreadable = errors.New("the run cannot be previewed from its records")
+
 // runRowTx is a transaction that reads its run's row (ledger.Tx.Run).
 type runRowTx interface {
 	Run() (ledger.RunRow, bool, error)
@@ -177,7 +183,7 @@ func (e *Engine) loadForPreview(ctx context.Context, runID string) (*run, error)
 	}
 	var c Crew
 	if err := json.Unmarshal([]byte(row.Crew), &c); err != nil {
-		return nil, fmt.Errorf("the run's crew as launched cannot be read: %w", err)
+		return nil, fmt.Errorf("%w: its crew as launched is not one the server reads", ErrRunUnreadable)
 	}
 	if !c.Managed() {
 		return nil, ErrRunNotFound
@@ -188,7 +194,8 @@ func (e *Engine) loadForPreview(ctx context.Context, runID string) (*run, error)
 			return nil, err
 		}
 		if prefix, err = repoPrefix(ctx, c.Cwd); err != nil {
-			return nil, fmt.Errorf("the run's repository %s: %w", c.Cwd, err)
+			// In fixed words: git's own are not the refusal's.
+			return nil, fmt.Errorf("%w: its folder %s is not a git work tree now", ErrRunUnreadable, c.Cwd)
 		}
 	}
 	r := &run{managed: true, created: true, previewOnly: true, id: runID, crewID: c.ID, name: c.Name, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,

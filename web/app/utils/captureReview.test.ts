@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { annotationKs, captureNotes, reviewOffered, reviewSendProblems, reviewSendTo, reviewSendWords, type CaptureForReview } from './captureReview'
-import { batchProblems, changeRequestOf, findingOf, noteWhere, repairBytes, reviewBody, MAX_REPAIR_PAYLOAD, type DraftNote } from './review'
+import { annotationKs, captureNotes, retakeCandidate, reviewOffered, reviewSendProblems, reviewSendTo, reviewSendWords, type CaptureForReview } from './captureReview'
+import { batchProblems, changeRequestOf, evidenceFiles, findingOf, noteWhere, repairBytes, reviewBody, MAX_REPAIR_PAYLOAD, type DraftNote } from './review'
 
 // A capture sent to a review (PR-10): offered on a candidate's capture alone, its body as the send route takes it, the draft's notes
 // Add to a review makes, and the review's batch with capture findings, whose words are the server's.
@@ -63,6 +63,8 @@ describe('a send to a review', () => {
         message: 'Save is covered.',
         capture: { capture: capture.id, send: SEND, k: 1 },
         captureName: 'capture 01234567 r2, annotation 1 (button “Save”)',
+        captureRev: 2,
+        captureFiles: 1,
       },
     ])
     expect(captureNotes(capture, SEND, []).map((n) => n.capture?.k)).toEqual([1, 2])
@@ -112,5 +114,46 @@ describe('a capture finding in the review', () => {
     expect(noteWhere(note)).toBe('capture 01234567, annotation 1')
     expect(noteWhere({ ...note, captureName: 'capture 01234567 r2, annotation 1' })).toBe('capture 01234567 r2, annotation 1')
     expect(noteWhere({ kind: 'capture', path: 'web/a.vue', from: 12, capture: note.capture })).toBe('capture 01234567, annotation 1, drawn by web/a.vue:12')
+  })
+})
+
+describe('the evidence files a draft hands a repair', () => {
+  const note = (capture: string, send: string, rev: number, files: number, k = 1): DraftNote => ({
+    key: `${capture}${send}${k}`,
+    kind: 'capture',
+    intent: 'change',
+    severity: 'major',
+    message: '',
+    capture: { capture, send, k },
+    captureRev: rev,
+    captureFiles: files,
+  })
+  const id = (n: number) => n.toString(16).padStart(16, '0')
+
+  it("counts one capture revision's files once, whichever sends carried its notes", () => {
+    const notes = [note(id(1), id(10), 1, 2), note(id(1), id(11), 1, 2, 2), note(id(1), id(12), 2, 1)]
+    expect(evidenceFiles(reviewBody(CAND, 'b'.repeat(40), 'request_changes', '', notes), notes)).toBe(3)
+  })
+
+  it('says, before the send, a request past the repair\'s eight files', () => {
+    const notes = [1, 2, 3, 4, 5].map((n) => note(id(n), id(100 + n), 1, 2))
+    const body = reviewBody(CAND, 'b'.repeat(40), 'request_changes', '', notes)
+    expect(batchProblems(body, 'Nate', notes).some((p) => p.includes('10 files') && p.includes('more than 8'))).toBe(true)
+    expect(batchProblems({ ...body, verdict: 'comment' }, 'Nate', notes)).toEqual([])
+    expect(batchProblems(reviewBody(CAND, 'b'.repeat(40), 'request_changes', '', notes.slice(0, 4)), 'Nate', notes.slice(0, 4))).toEqual([])
+  })
+})
+
+describe('the candidate Capture again opens', () => {
+  const cand = (attempt: number, standing: boolean, commit = 'c'.repeat(40)) => ({ attempt, commit, standing, kind: 'work' })
+  it("is the newest run's standing candidate of the capture's task, never the capture's own attempt", () => {
+    const runs = [
+      { run: 'b', candidates: [{ task: 'docs', kind: 'work', candidates: [cand(1, true)] }, { task: 'build', kind: 'work', candidates: [cand(3, false), cand(2, true)] }] },
+      { run: 'a', candidates: [{ task: 'build', kind: 'work', candidates: [cand(1, true)] }] },
+    ]
+    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 1 }, runs)).toEqual({ run: 'b', task: 'build', attempt: 2, commit: 'c'.repeat(40) })
+    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 1 }, runs.slice(1))).toBeNull()
+    expect(retakeCandidate({ run: 'a', task: 'build', attempt: 2 }, runs.slice(1))).toEqual({ run: 'a', task: 'build', attempt: 1, commit: 'c'.repeat(40) })
+    expect(retakeCandidate({}, runs)).toBeNull()
   })
 })

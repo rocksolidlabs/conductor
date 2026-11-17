@@ -163,6 +163,9 @@ type reviewGate struct {
 	// process takes now, by their operation (sendKey): the worker leaves
 	// them to it (capture_review.go).
 	sending map[string]chan struct{}
+	// sendSteps, a test's seam, is called with the context a send to a
+	// review's steps are taken under, before they are.
+	sendSteps func(ctx context.Context)
 }
 
 // reviewHint is what this process knows of one try of a pending review
@@ -1056,15 +1059,16 @@ func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, c dispa
 // with their evidence (before it, its ids placeholders of an id's length,
 // so the request is measured at the size it will have; a capture
 // finding's words, path and line its projection, proj by its place), and
-// the evidence files its capture findings stand on.
+// the evidence files its capture findings stand on, each once, a capture
+// finding naming the send that holds its files (captureFiles.holderOf).
 func changeRequestOf(rv dispatch.NewReview, ev dispatch.ReviewEvidence, id, by string, kept []dispatch.Finding, proj map[int]dispatch.CaptureProjection,
-	evidence []crew.EvidenceRef) crew.ChangeRequest {
-	cr := crew.ChangeRequest{Review: id, By: by, Via: rv.Via, Base: rv.Base, Summary: rv.Summary, Changes: []crew.RequestedChange{}, Evidence: evidence}
+	files captureFiles) crew.ChangeRequest {
+	cr := crew.ChangeRequest{Review: id, By: by, Via: rv.Via, Base: rv.Base, Summary: rv.Summary, Changes: []crew.RequestedChange{}, Evidence: files.refs}
 	if kept != nil {
 		for _, f := range kept {
 			cr.Changes = append(cr.Changes, requestedChange(f.ID, f.Kind, f.Intent, f.Severity, f.Path, f.Side, f.From, f.To, f.Lines, f.Message, f.Resolution, f.Check, f.Capture))
 		}
-		return cr
+		return heldBy(cr, files)
 	}
 	for i, f := range rv.Findings {
 		var ref *dispatch.CheckRef
@@ -1079,6 +1083,17 @@ func changeRequestOf(rv dispatch.NewReview, ev dispatch.ReviewEvidence, id, by s
 		}
 		cr.Changes = append(cr.Changes, requestedChange(fmt.Sprintf("%0*x", dispatch.IDLen, i+1), f.Kind, f.Intent, f.Severity, path, f.Side, from, to, f.Lines,
 			message, f.Resolution, ref, f.Capture))
+	}
+	return heldBy(cr, files)
+}
+
+// heldBy is cr with each capture change naming the send that holds its
+// files (captureFiles.holderOf).
+func heldBy(cr crew.ChangeRequest, files captureFiles) crew.ChangeRequest {
+	for i := range cr.Changes {
+		if c := cr.Changes[i].Capture; c != nil {
+			c.Send = files.holderOf(c.Send)
+		}
 	}
 	return cr
 }

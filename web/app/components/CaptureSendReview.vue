@@ -33,6 +33,8 @@ const answer = ref<ReviewSendAnswer | null>(null)
 const continuation = ref<ContinuationNeeded | null>(null)
 /** The op of the send under way, kept until it is answered, so a send whose answer was lost goes again under the same id. */
 const opId = ref('')
+/** Add to a review found every annotation chosen in the draft already, in words. */
+const inDraft = ref('')
 
 const form = computed(() => ({ draft: draft.value, ks: ks.value, severity: severity.value, summary: summary.value }))
 const problems = computed(() => reviewSendProblems(props.capture, form.value))
@@ -64,7 +66,8 @@ async function send(continueRun = false) {
     answer.value = out
     opId.value = ''
     if (draft.value && out.send.state === 'sent' && out.key) {
-      const { kept } = addCaptureNotes(out.key, candidate.value, captureNotes(props.capture, out.send.id, ks.value))
+      const { added, kept } = addCaptureNotes(out.key, candidate.value, captureNotes(props.capture, out.send.id, ks.value))
+      inDraft.value = added === 0 ? 'Your review draft holds these annotations of this revision already: nothing was added.' : ''
       if (!kept) failure.value = 'This browser did not keep the draft: it lasts as long as this page.'
     }
     emit('sent')
@@ -116,6 +119,7 @@ async function send(continueRun = false) {
         <UButton label="Open the review" size="xs" color="neutral" variant="outline" :to="reviewLink" data-capture-review-open />
       </template>
     </UAlert>
+    <p v-if="inDraft" class="text-xs text-muted" data-capture-review-in-draft>{{ inDraft }}</p>
     <UAlert v-if="failure" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not sent" :description="failure" data-capture-review-failure />
   </section>
 </template>

@@ -384,8 +384,16 @@ type Engine struct {
 	checkoutMade    func(dir string)
 	beforeIdleEnd   func()
 	previewFinished func()
-	life            context.Context
-	endLife         context.CancelFunc
+	// drained says the shutdown's Drain has begun, under mu: no preview is
+	// reserved from then on (reservePreview). opens counts the previews
+	// reserved whose open is under way (preview.go), which Drain waits
+	// for. afterReserve, when a test sets it, runs once an open has
+	// reserved its preview, before anything of it is read or made.
+	drained      bool
+	opens        flight
+	afterReserve func()
+	life         context.Context
+	endLife      context.CancelFunc
 	// previewBridge is the bridge's URL a tree with a preview is named
 	// (SetPreviewBridge), "" for none. Under mu.
 	previewBridge string

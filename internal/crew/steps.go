@@ -2381,18 +2381,25 @@ func (e *Engine) Drain(ctx context.Context) {
 	// that stop (run_stopped): what ends here, why shutdown, is a preview
 	// whose run was not stopped first.
 	defer e.endLife()
+	// From here no preview is reserved (reservePreview); one reserved
+	// before is ended now, and its open, under way, is waited for below
+	// (e.opens): it ends refused, or hands its end to its tree's, which the
+	// trees' wait takes.
 	e.mu.Lock()
+	e.drained = true
 	e.endPreviews(nil, whyShutdown)
 	e.mu.Unlock()
 	for {
 		e.mu.Lock()
-		var idle <-chan struct{}
+		idle := e.opens.idle()
+		if e.opens.n == 0 {
+			idle = nil
+		}
 		// The runs it holds, and the preview-only contexts of runs it does
 		// not (preview_context.go), whose previews' teardowns count there.
 		for _, r := range e.runs {
-			if r.trees.n > 0 {
+			if idle == nil && r.trees.n > 0 {
 				idle = r.trees.idle()
-				break
 			}
 		}
 		for _, r := range e.previewRuns {
