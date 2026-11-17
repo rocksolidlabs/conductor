@@ -223,8 +223,9 @@ const prefill = computed(() => {
       </UDashboardNavbar>
     </template>
     <template #body>
-      <div class="@container mx-auto w-full max-w-[65rem]" data-brakeman-page>
-        <div class="flex flex-col gap-5">
+      <!-- The container queries' root is the body's own width, at a whole pixel: the page itself is centred in it. -->
+      <div class="@container w-full">
+      <div class="mx-auto flex w-full max-w-[65rem] flex-col gap-5" data-brakeman-page>
           <UAlert v-if="unavailable" color="neutral" variant="subtle" icon="i-lucide-info" title="Brakeman is not here" :description="bk.problem.value" data-brakeman-unavailable />
           <template v-else>
             <p v-if="briefsState !== 'content'" class="text-sm text-muted" data-brakeman-about>{{ ABOUT }}</p>
@@ -241,7 +242,7 @@ const prefill = computed(() => {
             <!-- Wide, two columns: the latest brief and Earlier; In progress, In the background and Notes at the side. Narrower than
                  both side by side, one column: In progress between Now and the latest brief (on a phone, after it). -->
             <div class="flex flex-col gap-5 @min-[53.75rem]:flex-row @min-[53.75rem]:items-start">
-              <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[999_1_560px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-main>
+              <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[1_1_560px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-main>
                 <section class="order-2 flex min-w-0 flex-col gap-2 max-sm:order-1" data-brakeman-latest :data-request="cardId || undefined" :data-latest-named="openId ? '' : undefined">
                   <div v-if="newerShown" class="flex flex-wrap items-center gap-2 text-sm" data-brief-newer>
                     <span class="min-w-0 text-muted">A newer brief: {{ newerShown.digest?.title || newerShown.id }}</span>
@@ -266,7 +267,7 @@ const prefill = computed(() => {
                 </div>
               </div>
 
-              <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[1_1_280px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-side>
+              <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[0_0_280px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-side>
                 <div v-if="current || queue.length" class="order-1 min-w-0 max-sm:order-2" data-brakeman-progress>
                   <BrakemanInProgress :current="current" :queue="queue" />
                 </div>

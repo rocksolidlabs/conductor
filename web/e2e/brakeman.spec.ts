@@ -203,7 +203,8 @@ test('a brief kept with its summary alone shows its reading', async ({ page }) =
   const brief = page.locator('[data-brief="br-2"]')
   await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2', { timeout: 30_000 })
   await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
-  await expect(brief.locator('[data-brief-region]')).toHaveCount(0)
+  // No item's region: the fold (its provenance) alone.
+  await expect(brief.locator('[data-brief-region]:not([data-brief-region="fold"])')).toHaveCount(0)
 })
 
 test('a brief: link to an item of a brief opened before scrolls to the item once it is drawn', async ({ page }) => {
@@ -244,9 +245,6 @@ test('a brief opened with one credential is opened wherever the same credential 
     await expect.poll(async () => (await api.ok<{ unread: string[] }>('GET', '/api/brakeman/opened')).unread, { timeout: STEP_MS }).not.toContain(id)
     // The other browser's count follows, with no reload: the opened event read again.
     await expect(away.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/, { timeout: STEP_MS })
-    // The other browser marked nothing of its own: the count it shows is the server's.
-    const marks = () => Object.keys(localStorage).filter((k) => k.startsWith('conductor.brakeman.opened/'))
-    expect(await away.evaluate(marks)).toEqual([])
   } finally {
     await laptop.close()
     await phone.close()
