@@ -274,7 +274,7 @@ that order.
   Roundhouse, Agents · Reporting, History · Feed and Paste invite.
   `web/e2e/destinations.spec.ts` holds every list as drawn.
 
-## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-9; 2026-11-16)
+## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-10; 2026-11-16)
 
 `docs/plans/tracker-linking.md`. A person's own GitHub token, and nothing
 said on GitHub but what a person publishes.
@@ -325,12 +325,33 @@ said on GitHub but what a person publishes.
   Publications, the error tone for a send that failed and neutral ink
   otherwise. It is not yet among the one list of what needs you, so it is
   never amber: a later row joins it to that list.
+- **A delivery's CI job as a failed-check request (PR-10).** The Review
+  view lists, beside a candidate's own checks, the CI jobs on GitHub of
+  each live delivery link that delivers its commit as a pull request, read
+  at the pull request's head commit, failed first; a read that was cut
+  says "incomplete: N checks not read, see them on GitHub" and is never
+  shown as passing, and a head that moved on offers no job. **Prepare a
+  repair** on a failed Actions job or another app's check run opens the
+  failed-check panel with the job as GitHub's (its name, how it ended, the
+  commit it tested, its page, the end of its log, Check again never
+  offered), read fresh with the person's token
+  (`GET /api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair`, the
+  admin's alone); a job at another commit than the delivered candidate's
+  is refused, and a commit status is no job. A review naming it keeps a
+  check finding of source `external`, read fresh again by the server; the
+  repair attempt's `task.md` quotes the job's name, app and log through
+  `internal/quoted`, never as the ledger's. A Brakeman turn names no such
+  job. A log's tail comes only from an Actions job, fetched behind
+  GitHub's redirect from a host the log rule admits, without the token.
 - **By hand, after merge.** The plan's Acceptance against github.com with
   the owner's token (a fine-grained and a classic token, a private
   repository's screenshot imported, a renamed repository followed, a merge
   read, one comment posted and the issue closed, the server's log holding
   no token, `jwt=` or `X-Amz-`, and the same from the Windows app's own
-  server) is recorded here with the build, with PR-10's part.
+  server) is recorded here with the build, with PR-10's part: a delivery
+  pull request's checks read with a fine-grained token (its incomplete
+  words) and a classic one, and a failed Actions job's log fetched by its
+  prepared request.
 
 ## Future features
 
