@@ -156,7 +156,7 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "completion", ""); !slices.Equal(got, []string{"zsh", "bash", "install"}) {
 				t.Fatalf("completion words: %v", got)
 			}
-			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"}) {
+			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "comparison", "review", "reviews", "findings", "finding"}) {
 				t.Fatalf("dispatch words: %v", got)
 			}
 			// The reviews' (RV1 PR-5): review's and finding's verbs, the
@@ -277,7 +277,7 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 		"capacity": {{"capacity", "-h"}},
 		"brakeman": {{"brakeman", "request", "-h"}, {"brakeman", "brief", "-h"}, {"brakeman", "ask", "-h"}, {"brakeman", "status", "-h"}, {"brakeman", "list", "-h"}, {"brakeman", "show", "-h"}},
 		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"},
-			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"},
+			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"}, {"dispatch", "comparison", "-h"},
 			{"dispatch", "review", "CND-1", "-h"}, {"dispatch", "review", "show", "-h"}, {"dispatch", "review", "retry", "-h"}, {"dispatch", "reviews", "-h"}, {"dispatch", "findings", "-h"}, {"dispatch", "finding", "marks", "-h"}, {"dispatch", "finding", "mark", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)

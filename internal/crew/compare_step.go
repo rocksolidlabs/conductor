@@ -51,9 +51,8 @@ func (e *Engine) compareStep(r *run) {
 // settleLanes is the settling of compareStep: compare.settled written
 // once for each settled set. The caller holds e.mu, inside a change.
 func (e *Engine) settleLanes(r *run) {
-	doomed := r.doomed()
 	for _, cd := range r.compare.Candidates {
-		if !r.laneEndedIn(cd.Task, doomed) {
+		if !r.laneEnded(cd.Task) {
 			r.cmp.settled = nil
 			return
 		}
@@ -68,14 +67,12 @@ func (e *Engine) settleLanes(r *run) {
 
 // laneEnded reports whether the lane of the candidate task cand has ended.
 // The caller holds e.mu.
-func (r *run) laneEnded(cand string) bool { return r.laneEndedIn(cand, r.doomed()) }
-
-// laneEndedIn is laneEnded with the run's doomed tasks read once.
-func (r *run) laneEndedIn(cand string, doomed map[*task]bool) bool {
+func (r *run) laneEnded(cand string) bool {
 	t := r.task(cand)
 	if t == nil || !terminalTask(t.state) {
 		return false
 	}
+	doomed := r.doomed()
 	for _, rv := range r.tasks {
 		if rv == t || r.lanes[rv.def.ID] != cand {
 			continue

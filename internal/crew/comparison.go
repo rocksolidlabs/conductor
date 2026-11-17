@@ -683,6 +683,19 @@ func (e *Engine) measureComparison(ctx context.Context, cr chainRead) Comparison
 	return out
 }
 
+// columnsOf is cr's candidates as columns: each lane's shown candidate.
+func (e *Engine) columnsOf(cr chainRead) []ComparedCandidate {
+	var out []ComparedCandidate
+	for _, cd := range cr.crew.Compare.Candidates {
+		cc := ComparedCandidate{Task: cd.Task}
+		if sh, ok := cr.shown(cd.Task); ok {
+			cc.Run, cc.Attempt, cc.Commit = sh.run, sh.attempt.N, submittedCommit(sh.attempt)
+		}
+		out = append(out, cc)
+	}
+	return out
+}
+
 // laneEnded reports, from the rows, whether the lane of the candidate
 // task has ended: its task terminal, and every review of it terminal or
 // waiting behind a need that failed or was cancelled.
@@ -1075,23 +1088,33 @@ func sharedOf(ctx context.Context, git gitFunc, dir, base string, cands []Compar
 		sinces[cc.Task] = s
 		return s
 	}
+	// The candidates measured whole so far: one whose commit git could
+	// not read is paired with none, so its failure is its own alone.
+	whole := map[string]bool{}
+	for _, cc := range cands {
+		if cm, ok := m.cands[cc.Task]; ok && cc.Commit != "" && cm.unavailable == "" {
+			whole[cc.Task] = true
+		}
+	}
 	for _, a := range cands {
-		cm, ok := m.cands[a.Task]
-		if a.Commit == "" || !ok || cm.unavailable != "" {
+		cm := m.cands[a.Task]
+		if !whole[a.Task] {
 			continue
 		}
 		cm.shared, cm.equivalent = []SharedCommits{}, []SharedCommits{}
 		sa := of(a)
+		if sa.err != nil {
+			cm.unavailable = gitWords(sa.err)
+			m.cands[a.Task] = cm
+			continue
+		}
 		for _, b := range cands {
-			if b.Task == a.Task || b.Commit == "" {
+			if b.Task == a.Task || !whole[b.Task] {
 				continue
 			}
 			sb := of(b)
-			if err := cmpOr(sa.err, sb.err); err != nil {
-				if cm.unavailable == "" {
-					cm.unavailable = gitWords(err)
-				}
-				continue
+			if sb.err != nil {
+				continue // b's own failure, said in its column
 			}
 			if sa.more || sb.more {
 				cm.shared = append(cm.shared, SharedCommits{With: b.Task, Commits: []string{}, Note: moreThanShared})

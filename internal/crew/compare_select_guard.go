@@ -22,13 +22,9 @@ const (
 	selectNoCancel     = "a selection is not cancelled: answer None of these, with a rationale, to end the comparison with no candidate"
 )
 
-// ErrNotSelected matches every refusal of a comparison's candidate that
-// the chain's applied selection did not select (NotSelectedError): the
-// API answers it 409 not_selected. Nothing is written before it.
-var ErrNotSelected = errors.New("a comparison's candidate that is not selected")
-
 // NotSelectedError is the refusal of a lane not selected, in words that
-// say what a person does next.
+// say what a person does next: an ErrNotSelected (compare.go), which the
+// API answers 409 not_selected. Nothing is written before it.
 type NotSelectedError struct{ Words string }
 
 func (e *NotSelectedError) Error() string        { return e.Words }

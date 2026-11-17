@@ -825,7 +825,13 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 
 	// The review's verdict and test's commit end the run: every task
 	// terminal, the outcome succeeded, the state finished while sessions
-	// still run.
+	// still run. The engine shows the end inside the change and commits
+	// its rows and events after it, so the end's commit is held (blockOn)
+	// until the run reads as finished, and the events are read once the
+	// ledger holds the end, never on the view's word (#281).
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "run.finished", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
 	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictApproved, Summary: "fine"})
 	if got := waitTask(t, e, run.ID, "review", ledger.TaskSucceeded, 1); got.Result.Verdict != VerdictApproved {
 		t.Fatalf("review: %+v", got.Result)
@@ -838,6 +844,13 @@ func TestAManagedRunDispatchesTasksAsTheirNeedsAreMet(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded
 	})
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run's end did not reach its commit")
+	}
+	close(l.release)
+	waitFake(t, "the run's end committed", func() bool { return slices.Contains(l.kinds(run.ID), "run.finished") })
 	kinds := l.kinds(run.ID)
 	for _, k := range []string{"run.created", "attempt.reserved", "attempt.workspace", "attempt.launched", "attempt.prompted", "result.submitted", "task.succeeded", "run.finished"} {
 		if !slices.Contains(kinds, k) {

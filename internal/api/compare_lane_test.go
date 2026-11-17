@@ -397,11 +397,12 @@ func TestALanesTicketReplyHasNoStatus(t *testing.T) {
 }
 
 // A lane is listed ticket_read when its run was launched from a ticket,
-// and only then: the lane of a comparison launched without one is not
+// and only then: the lane of a comparison launched without one (through
+// the engine's test seam: no launch outside a ticket's takes one) is not
 // listed it once a person links its run to the ticket, and its read
 // answers 409 lane; the launched lane is listed it.
 func TestALaneIsListedTicketReadForItsLaunchAlone(t *testing.T) {
-	ce := newCompareEnv(t, compareOpts{})
+	ce := newCompareEnv(t, compareOpts{unticketed: true})
 	c := compareCrewIn(t, filepath.Join(ce.root, "repo"))
 	c.ID = "unlaunched"
 	run, release, err := ce.srv.runs.LaunchNamed(t.Context(), c, "")

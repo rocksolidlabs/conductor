@@ -140,10 +140,9 @@ func (r *run) selectionLanes() (ended bool, opts []SettledCandidate) {
 	}
 	// The lanes as the settling reads them (compare_step.go): one rule of
 	// a lane's end and of its shown candidate.
-	doomed := r.doomed()
 	ended = true
 	for _, cd := range r.compare.Candidates {
-		if !r.laneEndedIn(cd.Task, doomed) {
+		if !r.laneEnded(cd.Task) {
 			ended = false
 		}
 	}
