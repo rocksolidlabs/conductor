@@ -64,7 +64,9 @@ async function read() {
   }
 }
 
-useDispatchLive({ later: (e) => e.entity === 'capture' || e.entity === 'capture_send' || (e.entity === 'ticket' && e.ticket !== ''), read }, () => void read())
+// A send's events name no ticket: every capture's and send's change is read again (the page's own ticket events are its comments'
+// and fields', which change nothing here).
+useDispatchLive({ later: (e) => e.entity === 'capture' || e.entity === 'capture_send', read }, () => void read())
 watch(
   () => props.ticketKey,
   () => void read(),
