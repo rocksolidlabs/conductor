@@ -147,6 +147,10 @@ type Store struct {
 	// window is how many op ids that are not pinned the state keeps
 	// (MaxOps; a test makes it smaller with SetOpsWindow). Under mu.
 	window int
+	// digests are the briefed requests' digests read or made, by id, so a
+	// list reads each sibling (or derives each from its brief) once; a
+	// prune drops the ones it removes. Under mu.
+	digests map[string]Digest
 }
 
 // SetOpsWindow makes the store keep the newest n op ids that are not
@@ -428,12 +432,12 @@ func (s *Store) concludeLocked() error {
 	return nil
 }
 
-// names reports whether the request names its sibling: its brief and
-// refs once it has a brief, its read log once it began, a make's input
-// while it holds the item's entry.
+// names reports whether the request names its sibling: its brief, refs
+// and digest once it has a brief, its read log once it began, a make's
+// input while it holds the item's entry.
 func (r *Request) names(sib string) bool {
 	switch {
-	case sib == "brief" || sib == "refs":
+	case sib == "brief" || sib == "refs" || sib == "digest":
 		return r.HasBrief
 	case sib == "reads":
 		return r.State != StateQueued
@@ -446,7 +450,7 @@ func (r *Request) names(sib string) bool {
 
 var (
 	requestFile = regexp.MustCompile(`^(br-[1-9][0-9]{0,17})\.json$`)
-	siblingFile = regexp.MustCompile(`^(br-[1-9][0-9]{0,17})-(brief|refs|reads|make-(?:0|[1-9][0-9]?))\.json$`)
+	siblingFile = regexp.MustCompile(`^(br-[1-9][0-9]{0,17})-(brief|refs|reads|digest|make-(?:0|[1-9][0-9]?))\.json$`)
 )
 
 // requestName is the request id of a request's document name.
@@ -477,6 +481,7 @@ func requestDoc(id string) string     { return id + ".json" }
 func briefDoc(id string) string       { return id + "-brief.json" }
 func refsDoc(id string) string        { return id + "-refs.json" }
 func readsDoc(id string) string       { return id + "-reads.json" }
+func digestDoc(id string) string      { return id + "-digest.json" }
 func makeDoc(id string, i int) string { return id + "-make-" + strconv.Itoa(i) + ".json" }
 func requestNumber(id string) int64 {
 	n, _ := strconv.ParseInt(strings.TrimPrefix(id, "br-"), 10, 64)
@@ -1092,6 +1097,133 @@ func (s *Store) List(after string, limit int) (page []Request, next string, err 
 	return page, "", nil
 }
 
+// Listed is a request as ListWhere answers it: with its digest (nil for
+// a request with no brief, or one whose brief cannot be read) and the
+// word its filter answered.
+type Listed struct {
+	Request Request
+	Digest  *Digest
+	Match   string
+}
+
+// ListWhere is List through a filter: the requests keep answers true for
+// with its digest, newest first, after the request after ("" for the
+// newest), up to limit of them (at most MaxPage), and the word keep
+// answers beside. The walk reads every request the store keeps until the
+// page is full: Keep closed ones, the open and the pinned. nil keeps
+// every one. next is the last id answered when the page filled and an id
+// is left to look at, "" otherwise.
+func (s *Store) ListWhere(after string, limit int, keep func(Request, *Digest) (bool, string)) (page []Listed, next string, err error) {
+	if limit <= 0 || limit > MaxPage {
+		limit = MaxPage
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids, err := s.ids()
+	if err != nil {
+		return nil, "", err
+	}
+	s.trimDigestsLocked(ids)
+	if after != "" {
+		n := requestNumber(after)
+		ids = slices.DeleteFunc(ids, func(id string) bool { return requestNumber(id) >= n })
+	}
+	for _, id := range ids {
+		if len(page) == limit {
+			return page, page[len(page)-1].Request.ID, nil
+		}
+		r, err := s.loadLocked(id)
+		if skippable(err) {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		d := s.digestLocked(r)
+		match := ""
+		if keep != nil {
+			var ok bool
+			if ok, match = keep(r, d); !ok {
+				continue
+			}
+		}
+		page = append(page, Listed{Request: r, Digest: d, Match: match})
+	}
+	return page, "", nil
+}
+
+// Digest answers a request's digest: nil for a request with no brief, or
+// one whose brief cannot be read.
+func (s *Store) Digest(id string) (*Digest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.digestLocked(r), nil
+}
+
+// digestLocked is a briefed request's digest: the one read or made
+// before, else its sibling, else one made from its brief (a brief kept
+// before digests were) and written back as its sibling when the store
+// may write and no sibling is there; a sibling there that does not read
+// is kept as it is and the digest made from the brief is answered. nil
+// with no brief, or a brief that cannot be read. The caller holds mu.
+func (s *Store) digestLocked(r Request) *Digest {
+	if !r.HasBrief {
+		return nil
+	}
+	if d, ok := s.digests[r.ID]; ok {
+		return &d
+	}
+	var d Digest
+	ok, err := s.reqs.LoadLimit(digestDoc(r.ID), &d, MaxDigestDoc)
+	if err == nil && ok && d.Schema == DigestSchema {
+		s.keepDigestLocked(r.ID, d)
+		return &d
+	}
+	var b Brief
+	if found, berr := s.reqs.LoadLimit(briefDoc(r.ID), &b, MaxBrief); berr != nil || !found {
+		return nil
+	}
+	d = DigestOf(b)
+	if err == nil && !ok && s.writable() == nil {
+		if werr := s.write(s.reqs, digestDoc(r.ID), d, MaxDigestDoc); werr != nil {
+			s.log.Warn("a brief's digest could not be written", "request", r.ID, "err", werr)
+		}
+	}
+	s.keepDigestLocked(r.ID, d)
+	return &d
+}
+
+// keepDigestLocked notes a request's digest. The caller holds mu.
+func (s *Store) keepDigestLocked(id string, d Digest) {
+	if s.digests == nil {
+		s.digests = map[string]Digest{}
+	}
+	s.digests[id] = d
+}
+
+// trimDigestsLocked drops the digests of requests no longer listed once
+// they outnumber the listed ones: a store that does not own the records
+// never prunes, and the owner's prunes would leave its digests behind.
+// The caller holds mu.
+func (s *Store) trimDigestsLocked(ids []string) {
+	if len(s.digests) <= len(ids)+MaxPage {
+		return
+	}
+	listed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		listed[id] = true
+	}
+	for id := range s.digests {
+		if !listed[id] {
+			delete(s.digests, id)
+		}
+	}
+}
+
 // Update reads the request id, changes it with fn and writes it, under
 // the store's one mutex, so each change is atomic. A change of state goes
 // through Request.To; a closed request changes only in its made list, its
@@ -1282,6 +1414,25 @@ func chargeOf(st state, id string) (day string, c Charge, ok bool) {
 	return "", Charge{}, false
 }
 
+// Reserved answers the minutes a request's turn reserved as it started,
+// from the charge any day state.json keeps holds for it: its deadline
+// less them is when its turn began. ok is false for a request with no
+// charge (one never started, or one whose day is no longer kept) and
+// when state.json cannot be read.
+func (s *Store) Reserved(id string) (minutes int, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadState()
+	if err != nil {
+		return 0, false
+	}
+	_, c, ok := chargeOf(st, id)
+	if !ok {
+		return 0, false
+	}
+	return c.Reserved, true
+}
+
 // settleLocked writes the minutes a closed turn ran, rounded up and never
 // more than its reservation, into its charge. The caller holds mu.
 func (s *Store) settleLocked(r Request) error {
@@ -1412,6 +1563,7 @@ func (s *Store) PruneKeeping(keep int) (int, error) {
 		if err := s.removeLocked(requestDoc(id)); err != nil {
 			return removed, err
 		}
+		delete(s.digests, id)
 		for _, e := range entries {
 			if sid, _, ok := siblingName(e.Name); ok && sid == id {
 				if err := s.removeLocked(e.Name); err != nil {
@@ -1606,6 +1758,12 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	if len(rb) > MaxRefsDoc {
 		return Request{}, fmt.Errorf("%w: the brief's resolutions would be %d bytes, at most %d", ErrBound, len(rb), MaxRefsDoc)
 	}
+	digest := DigestOf(k.Brief)
+	if db, err := encode(digest); err != nil {
+		return Request{}, err
+	} else if len(db) > MaxDigestDoc {
+		return Request{}, fmt.Errorf("%w: the brief's digest would be %d bytes, at most %d", ErrBound, len(db), MaxDigestDoc)
+	}
 	var log ReadLog
 	if _, err := s.reqs.LoadLimit(readsDoc(id), &log, MaxReadsDoc); err != nil {
 		return Request{}, err
@@ -1637,9 +1795,13 @@ func (s *Store) KeepBrief(id string, k Kept) (Request, error) {
 	if err := s.write(s.reqs, refsDoc(id), refs, MaxRefsDoc); err != nil {
 		return Request{}, err
 	}
+	if err := s.write(s.reqs, digestDoc(id), digest, MaxDigestDoc); err != nil {
+		return Request{}, err
+	}
 	if err := s.saveRequestLocked(next); err != nil {
 		return Request{}, err
 	}
+	s.keepDigestLocked(id, digest)
 	if err := s.settleLocked(next); err != nil {
 		return next, err
 	}

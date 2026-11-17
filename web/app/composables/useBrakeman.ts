@@ -1,8 +1,9 @@
-import type { BrakemanBrief, BrakemanConfig, BrakemanFolders, BrakemanRequest, BrakemanRole, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
+import type { BrakemanBrief, BrakemanConfig, BrakemanDigest, BrakemanFolders, BrakemanOpened, BrakemanProgress, BrakemanRequest, BrakemanRole, BrakemanRow, BrakemanSince, BrakemanState, RefResolution, RoleLogRow } from '../utils/brakeman'
 import { closed, keptBrief, openedMark, requestNumber, stateRank, stopAction, unopened } from '../utils/brakeman'
 import { dropKeptMake, readKeptMakes, reconcileActs, reconcileMade, sendKept, storeKeptMake, type KeptMake } from '../utils/brakemanCards'
 import { newer } from '../utils/settingsSave'
 import { mintCommandId } from '../utils/tasks'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { ApiError } from './useApi'
 import type { DispatchWatch } from './useDispatchLive'
 import type { PlanSummary } from './useDispatch'
@@ -25,6 +26,91 @@ export function asBrakemanEvent(v: unknown): { id: string; state: string } | nul
 /** The `brakeman` event's id for a change of the background role. */
 export const ROLE_EVENT = 'role'
 
+/** The most bytes a `brakeman_progress` event's data takes (docs/protocol.md): one past it is not one. */
+export const MAX_PROGRESS_EVENT = 768
+/** The most bytes a `brakeman_opened` event's data takes: it is `{}`, naming no one. */
+export const MAX_OPENED_EVENT = 32
+/** The longest `what` of a read in progress (one of the guide's observe words). */
+const MAX_WHAT = 16
+/** A request's id as the server mints it. */
+const REQUEST_ID = /^br-[1-9][0-9]{0,17}$/
+
+/** The bytes a value takes as JSON, as the stream sent it (the server writes no spaces). */
+function jsonBytes(v: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(v)).length
+}
+
+const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const optionalText = (v: unknown) => v === undefined || typeof v === 'string'
+
+/**
+ * A `brakeman_progress` event's data, or the state's `progress`, as the page keeps it, or null for what is not one: a request's id,
+ * its reads of its budget, its start and deadline when known, and the last read it was admitted to (`reading`, its ref left out when
+ * the server's bound would not hold it). Past MAX_PROGRESS_EVENT bytes it is refused whole.
+ */
+export function asBrakemanProgress(v: unknown): BrakemanProgress | null {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
+  const e = v as Record<string, unknown>
+  if (typeof e.id !== 'string' || !REQUEST_ID.test(e.id) || !count(e.reads) || !count(e.readsPerTurn)) return null
+  if (!optionalText(e.startedAt) || !optionalText(e.deadline)) return null
+  let reading: BrakemanProgress['reading']
+  if (e.reading !== undefined) {
+    const r = e.reading as Record<string, unknown> | null
+    if (r === null || typeof r !== 'object' || typeof r.what !== 'string' || r.what.length > MAX_WHAT || !optionalText(r.ref)) return null
+    reading = { what: r.what, ...(typeof r.ref === 'string' ? { ref: r.ref } : {}) }
+  }
+  if (jsonBytes(v) > MAX_PROGRESS_EVENT) return null
+  const out: BrakemanProgress = { id: e.id, reads: e.reads, readsPerTurn: e.readsPerTurn }
+  if (typeof e.startedAt === 'string') out.startedAt = e.startedAt
+  if (typeof e.deadline === 'string') out.deadline = e.deadline
+  if (reading) out.reading = reading
+  return out
+}
+
+/** A `brakeman_opened` event's data (`{}`: some brief was marked opened, by whom it never says), or null for what is not one. */
+export function asBrakemanOpened(v: unknown): Record<string, never> | null {
+  if (v === null || typeof v !== 'object' || Array.isArray(v) || jsonBytes(v) > MAX_OPENED_EVENT) return null
+  return {}
+}
+
+/** The last `brakeman` event the store took, for a page that reads something of its own again on each (`seq` moves every time). */
+export interface BrakemanEventSeen {
+  /** The request's id, ROLE_EVENT for the background role, or "" when the stream started again (anything may have changed). */
+  id: string
+  state: string
+  seq: number
+}
+
+/** How long the since read waits after one before the next (GET /api/brakeman/since, which the server keeps for as long). */
+export const SINCE_EVERY_MS = 5_000
+
+/** Whether an answer is an older server's to a query it does not take: every parameter but `after` and `limit` is refused so. */
+function olderServer(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 400 && e.message.startsWith('this route takes no parameter')
+}
+
+/** What the list route is asked (useBrakeman().list): each filter optional, combined with AND by the server. */
+export interface BrakemanListQuery {
+  kind?: string[]
+  has?: 'decision' | 'proposal' | 'draft' | 'brief'
+  about?: string
+  q?: string
+  after?: string
+  limit?: number
+}
+
+/** A query's parameters as the list route takes them, each given once and only when set. */
+export function listParams(q: BrakemanListQuery): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (q.after) out.after = q.after
+  if (q.limit !== undefined) out.limit = String(q.limit)
+  if (q.kind?.length) out.kind = [...new Set(q.kind)].join(',')
+  if (q.has) out.has = q.has
+  if (q.about) out.about = q.about
+  if (q.q) out.q = q.q
+  return out
+}
+
 /**
  * Sends a write once, and once more with the same body (so the same id) when the reply was lost to the network (status 0); a second
  * loss, and any answer of the server, is the caller's.
@@ -43,8 +129,10 @@ export async function sendTwice<B, R>(send: (body: B) => Promise<R>, body: B): P
 /** What the live store reads from the server. */
 export interface BrakemanReads {
   state: () => Promise<BrakemanState>
-  page: (after?: string) => Promise<{ requests: BrakemanRequest[]; next: string }>
-  request: (id: string) => Promise<{ request: BrakemanRequest; brief: BrakemanBrief | null }>
+  page: (after?: string) => Promise<{ requests: BrakemanRow[]; next: string }>
+  request: (id: string) => Promise<{ request: BrakemanRequest; brief: BrakemanBrief | null; digest?: BrakemanDigest }>
+  /** GET /api/brakeman/since: null where the server has no such route (an older one's 404). */
+  since?: () => Promise<BrakemanSince | null>
 }
 
 /**
@@ -57,8 +145,27 @@ export interface BrakemanReads {
  * A new token (reset) may be another server's: what the store holds is dropped, and so is every reply to a read sent before it.
  */
 export class BrakemanLive {
-  readonly requests = new Map<string, BrakemanRequest>()
+  /** The requests, each with its brief's digest once a read gave one (kept across reads that give none: `apply`). */
+  readonly requests = new Map<string, BrakemanRow>()
   state: BrakemanState | null = null
+  /**
+   * The progress of each turn under way, by request: from the state's `progress` and the `brakeman_progress` events, the one with
+   * the most reads taken (reads only grow in a turn), dropped once its request closes.
+   */
+  progress: Record<string, BrakemanProgress> = {}
+  /** The last `brakeman` event taken (or the stream's start again, id ""), for pages that read something of their own on each. */
+  lastEvent: BrakemanEventSeen = { id: '', state: '', seq: 0 }
+  /** What changed since the last briefing (GET /api/brakeman/since), while a page follows it; null before a read or on an older server. */
+  sinceNow: BrakemanSince | null = null
+  /** How many pages follow the since read: it is read again on events only while one does. */
+  private sinceFollowers = 0
+  private sinceBusy = false
+  private sinceAgain = false
+  /** When the last since read was sent (the clock's ms), 0 before one. */
+  private sinceAt = 0
+  private sinceTimer: ReturnType<typeof setTimeout> | undefined
+  /** The clock the since read is spaced by (a test's own). */
+  now: () => number = () => Date.now()
   /** Whether the server has Brakeman (a data directory, and no switchyard); undefined until it has answered once. */
   available: boolean | undefined = undefined
   /** Why Brakeman cannot be read here, in the server's words. */
@@ -101,6 +208,13 @@ export class BrakemanLive {
     this.gen++
     this.requests.clear()
     this.state = null
+    this.progress = {}
+    this.sinceNow = null
+    this.sinceAt = 0
+    this.sinceBusy = false
+    this.sinceAgain = false
+    if (this.sinceTimer !== undefined) clearTimeout(this.sinceTimer)
+    this.sinceTimer = undefined
     this.available = undefined
     this.problem = ''
     this.next = ''
@@ -112,7 +226,7 @@ export class BrakemanLive {
   }
 
   /** The requests, newest first. */
-  list(): BrakemanRequest[] {
+  list(): BrakemanRow[] {
     return [...this.requests.values()].sort((a, b) => requestNumber(b.id) - requestNumber(a.id))
   }
 
@@ -120,18 +234,60 @@ export class BrakemanLive {
    * Takes a request as a reply gave it, unless the page has it further along already or the reply was sent before a reset (`at`); its
    * makes and edges are reconciled with the page's (reconcileMade), since replies to two cards' makes of one request can arrive in
    * either order, and so are its acts (reconcileActs), whose outcome may come after its brief, so that two reads of one briefed
-   * request answered out of order never take a done act back to pending.
+   * request answered out of order never take a done act back to pending. A row's digest is kept when a later read gives none (the
+   * request's own read, the state's), and a list's `match` is that query's, never the store's. A request closed drops its progress.
    */
-  apply(r: BrakemanRequest, at = this.gen) {
+  apply(r: BrakemanRow, at = this.gen) {
     if (at !== this.gen) return
     const had = this.requests.get(r.id)
     if (had && stateRank(r.state) < stateRank(had.state)) return
-    this.requests.set(r.id, had ? { ...r, ...reconcileMade(had, r), ...reconcileActs(had, r) } : r)
+    const { match: _match, ...row } = r
+    const next: BrakemanRow = had ? { ...row, ...reconcileMade(had, row), ...reconcileActs(had, row) } : row
+    if (!next.digest && had?.digest) next.digest = had.digest
+    this.requests.set(r.id, next)
+    if (closed(next.state)) this.dropProgress(r.id)
     this.changed()
+  }
+
+  /** Takes a turn's progress, unless the page holds one of more reads for it already, or its request is closed. */
+  takeProgress(p: BrakemanProgress) {
+    const had = this.progress[p.id]
+    if (had && p.reads < had.reads) return
+    const r = this.requests.get(p.id)
+    if (r && closed(r.state)) return
+    this.progress = { ...this.progress, [p.id]: p }
+    this.changed()
+  }
+
+  private dropProgress(id: string) {
+    if (!(id in this.progress)) return
+    const rest = { ...this.progress }
+    delete rest[id]
+    this.progress = rest
+  }
+
+  /** A `brakeman_progress` event: the turn's reads as they stand now. */
+  progressEvent(p: BrakemanProgress) {
+    this.takeProgress(p)
+  }
+
+  /** How many `brakeman_opened` events came: the server's unread count is read again on each. */
+  openedSeq = 0
+
+  /** A `brakeman_opened` event: a brief was marked opened under some credential, which the count read again says. */
+  openedEvent() {
+    this.openedSeq++
+    this.changed()
+  }
+
+  private seen(id: string, state: string) {
+    this.lastEvent = { id, state, seq: this.lastEvent.seq + 1 }
   }
 
   /** A `brakeman` event: the request's state now, and a read of the rest; for the role, the state read again. */
   event(e: { id: string; state: string }) {
+    this.seen(e.id, e.state)
+    this.nudgeSince()
     if (e.id === ROLE_EVENT) {
       this.roleSeq++
       if (this.state?.role && this.state.role.state !== e.state) this.state = { ...this.state, role: { ...this.state.role, state: e.state } }
@@ -142,6 +298,10 @@ export class BrakemanLive {
     const had = this.requests.get(e.id)
     if (had && stateRank(e.state) >= stateRank(had.state) && had.state !== e.state) {
       this.requests.set(e.id, { ...had, state: e.state })
+      if (closed(e.state)) this.dropProgress(e.id)
+      this.changed()
+    } else if (closed(e.state) && e.id in this.progress) {
+      this.dropProgress(e.id)
       this.changed()
     }
     void this.readRequest(e.id)
@@ -151,6 +311,8 @@ export class BrakemanLive {
   /** The stream started again: what changed meanwhile is read, the role's too (a page showing its log reads it again). */
   snapshot() {
     this.roleSeq++
+    this.seen('', 'snapshot')
+    this.nudgeSince()
     this.changed()
     void this.readFirst()
   }
@@ -221,9 +383,9 @@ export class BrakemanLive {
     if (!this.reads) return undefined
     const at = this.gen
     try {
-      const { request } = await this.reads.request(id)
+      const { request, digest } = await this.reads.request(id)
       if (at !== this.gen) return undefined
-      this.apply(request)
+      this.apply(digest ? { ...request, digest } : request)
       return request
     } catch {
       return undefined
@@ -239,8 +401,8 @@ export class BrakemanLive {
     if (!this.reads || this.requests.has(id)) return ''
     const at = this.gen
     try {
-      const { request } = await this.reads.request(id)
-      this.apply(request, at)
+      const { request, digest } = await this.reads.request(id)
+      this.apply(digest ? { ...request, digest } : request, at)
       return ''
     } catch (e) {
       const status = (e as { status?: number }).status
@@ -290,6 +452,71 @@ export class BrakemanLive {
     this.problem = ''
     if (s.current) this.apply(s.current)
     for (const q of s.queue) this.apply(q)
+    const p = s.progress && asBrakemanProgress(s.progress)
+    if (p) this.takeProgress(p)
+  }
+
+  /**
+   * A page follows what changed since the last briefing: the first follower reads it at once (unless a read is fresh), and while any
+   * follows it is read again on the events that may change it (nudgeSince). Returns the unfollow.
+   */
+  followSince(): () => void {
+    this.sinceFollowers++
+    if (this.sinceFollowers === 1) this.nudgeSince()
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      this.sinceFollowers--
+      if (this.sinceFollowers === 0 && this.sinceTimer !== undefined) {
+        clearTimeout(this.sinceTimer)
+        this.sinceTimer = undefined
+      }
+    }
+  }
+
+  /**
+   * Something that may change the since read happened (a run's, Dispatch's or Brakeman's event, the stream's start again): while a page
+   * follows it, it is read again, at most once every SINCE_EVERY_MS and one read at a time; what is asked meanwhile is one read after.
+   */
+  nudgeSince() {
+    if (this.sinceFollowers === 0 || !this.reads?.since) return
+    if (this.sinceBusy) {
+      this.sinceAgain = true
+      return
+    }
+    if (this.sinceTimer !== undefined) return
+    const wait = this.sinceAt ? this.sinceAt + SINCE_EVERY_MS - this.now() : 0
+    if (wait > 0) {
+      this.sinceTimer = setTimeout(() => {
+        this.sinceTimer = undefined
+        this.nudgeSince()
+      }, wait)
+      return
+    }
+    void this.readSince()
+  }
+
+  private async readSince() {
+    const read = this.reads?.since
+    if (!read) return
+    this.sinceBusy = true
+    this.sinceAgain = false
+    this.sinceAt = this.now()
+    const at = this.gen
+    try {
+      const out = await read()
+      if (at !== this.gen) return
+      this.sinceNow = out
+      this.changed()
+    } catch {
+      /* the line keeps what it showed; the next event reads again */
+    } finally {
+      if (at === this.gen) {
+        this.sinceBusy = false
+        if (this.sinceAgain) this.nudgeSince()
+      }
+    }
   }
 
   /** Takes a state read made on its own (the composable's readConfig, whose caller checked the generation), as readState does. */
@@ -449,8 +676,9 @@ export function useBrakeman() {
   const store = brakemanLive()
   const reads: BrakemanReads = {
     state: () => request<BrakemanState>('/api/brakeman'),
-    page: (after) => request<{ requests: BrakemanRequest[]; next: string }>('/api/brakeman/requests', { query: after ? { after } : undefined }),
-    request: (id) => request<{ request: BrakemanRequest; brief: BrakemanBrief | null }>(`/api/brakeman/requests/${encodeURIComponent(id)}`),
+    page: (after) => request<{ requests: BrakemanRow[]; next: string }>('/api/brakeman/requests', { query: after ? { after } : undefined }),
+    request: (id) => request<{ request: BrakemanRequest; brief: BrakemanBrief | null; digest?: BrakemanDigest }>(`/api/brakeman/requests/${encodeURIComponent(id)}`),
+    since: () => since(),
   }
   store.attach(reads)
   // The store tells the pages it changed through one counter.
@@ -687,12 +915,62 @@ export function useBrakeman() {
     return make(r, item, k.body, k.opId)
   }
 
-  /** A request whole, with its brief (null until one is kept; its items a list, none for a brief of its summary alone). */
+  /**
+   * A request whole, with its brief (null until one is kept; its items a list, none for a brief of its summary alone) and its digest
+   * (none on an older server).
+   */
   async function brief(id: string) {
     const at = store.generation
     const out = await reads.request(id)
-    store.apply(out.request, at)
-    return { request: out.request, brief: keptBrief(out.brief) }
+    store.apply(out.digest ? { ...out.request, digest: out.digest } : out.request, at)
+    return { request: out.request, brief: keptBrief(out.brief), digest: out.digest }
+  }
+
+  /**
+   * A page of requests, newest first, filtered as `q` asks (GET /api/brakeman/requests): `filtered` says the server applied the
+   * filters. An older server refuses every filter (400, "this route takes no parameter"): a query `about` a subject then answers no
+   * rows (paging every request to match them here would read them all), and any other is read again without its filters, for the
+   * page to filter what it holds. Every row is applied into the live store (its digest kept there), unless a reset came between.
+   */
+  async function list(q: BrakemanListQuery = {}): Promise<{ requests: BrakemanRow[]; next: string; filtered: boolean }> {
+    const at = store.generation
+    const params = listParams(q)
+    const filters = q.kind?.length || q.has || q.about || q.q
+    let out: { requests: BrakemanRow[]; next: string }
+    let filtered = true
+    try {
+      out = await request<{ requests: BrakemanRow[]; next: string }>('/api/brakeman/requests', { query: Object.keys(params).length ? params : undefined })
+    } catch (e) {
+      if (!filters || !olderServer(e)) throw e
+      if (q.about) return { requests: [], next: '', filtered: false }
+      filtered = false
+      const plain = listParams({ after: q.after, limit: q.limit })
+      out = await request<{ requests: BrakemanRow[]; next: string }>('/api/brakeman/requests', { query: Object.keys(plain).length ? plain : undefined })
+    }
+    if (store.generation !== at) throw new Error("The token changed before the list was answered: the requests shown are this server's.")
+    const rows = out.requests ?? []
+    for (const r of rows) store.apply(r, at)
+    return { requests: rows, next: out.next ?? '', filtered }
+  }
+
+  /** What changed in Conductor since the last briefing, or since `at` (RFC 3339): null where the server has no such route (404). */
+  async function since(at?: string): Promise<BrakemanSince | null> {
+    try {
+      return await request<BrakemanSince>('/api/brakeman/since', { query: at ? { since: at } : undefined })
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null
+      throw e
+    }
+  }
+
+  /**
+   * Follows what changed since the last briefing for a component (its setup): read on mount, again on the run, Dispatch and Brakeman
+   * events while mounted (BrakemanLive.nudgeSince), at most once every five seconds; `sinceNow` holds the answer.
+   */
+  function followSince() {
+    let stop: (() => void) | undefined
+    onMounted(() => (stop = store.followSince()))
+    onBeforeUnmount(() => stop?.())
   }
 
   /** A brief's refs as resolved when it was kept, by ref. */
@@ -744,5 +1022,23 @@ export function useBrakeman() {
     return store.generation
   })
 
-  return { state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, readConfig, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
+  /** What changed since the last briefing, while a page follows it (followSince); null before its read and on an older server. */
+  const sinceNow = computed(() => {
+    void version.value
+    return store.sinceNow
+  })
+
+  /** Each turn under way's progress, by request id (the state's `progress`, then the `brakeman_progress` events). */
+  const progress = computed(() => {
+    void version.value
+    return store.progress
+  })
+
+  /** The last `brakeman` event the store took, `seq` moving on each (id "" when the stream started again): a page's own reads follow it. */
+  const events = computed(() => {
+    void version.value
+    return store.lastEvent
+  })
+
+  return { list, since, sinceNow, followSince, progress, events, state, requests, available, problem, hasMore, generation, unopened: unopenedIds, markOpened, load, readConfig, reset, more: () => store.readMore(), readRequest: (id: string) => store.readRequest(id), readNamed: (id: string) => store.readNamed(id), saveConfig, ask, cancel, stop, make, keptMake, forgetMake, finishMake, readTicketTitle, ticketTitle, ticketTitlesWatch, brief, refs, closed, role, roleAction, keepNote, clearNotes, roleSeq }
 }
