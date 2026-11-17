@@ -8,6 +8,8 @@ import { ApiError } from './useApi'
 import { dispatchLive } from './useDispatchLive'
 import { decisionsLive } from './useDecisions'
 import { useComparison } from './useComparison'
+import { RUN_CHANGING_RETRY_MS } from '~/utils/dispatchEvidence'
+import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 
 // The comparison's reads (Program item CP1, docs/plans/compare-crew.md, PR-4), wired to an API whose every request the test holds and
 // lets go: read again on the run's change, on a `brakeman` event naming its request while the run is idle, on a `dispatch` event naming
@@ -163,6 +165,38 @@ describe('useComparison', () => {
     expect(sent).toHaveLength(2)
     sent[1]!.ok(reply())
     await settle()
+  })
+
+  it('asks a read refused while the chain moved again after the second, and a failure of that read again after the window', async () => {
+    vi.useFakeTimers()
+    try {
+      const step = (ms = 0) => vi.advanceTimersByTimeAsync(ms)
+      const c = useComparison({ run: () => RUN, ticket: () => TICKET })
+      await step()
+      sent[0]!.ok(reply())
+      await step()
+      dispatchLive().snapshot()
+      await step()
+      expect(sent).toHaveLength(2)
+      sent[1]!.fail(new ApiError(503, 'run_changing', 'the run changed through every read of its comparison; ask again'))
+      await step()
+      expect(c.changing.value).toBe(true)
+      await step(RUN_CHANGING_RETRY_MS)
+      expect(sent).toHaveLength(3)
+      // That read fails another way: said, the chain no longer said to be moving, and asked again after the live store's window.
+      sent[2]!.fail(new ApiError(500, 'internal', 'the comparison could not be read'))
+      await step()
+      expect(c.error.value).toBe('the comparison could not be read')
+      expect(c.changing.value).toBe(false)
+      await step(RUN_EVENT_WINDOW_MS)
+      expect(sent).toHaveLength(4)
+      sent[3]!.ok(reply())
+      await step()
+      expect(c.error.value).toBe('')
+      expect(c.comparison.value).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('says a run of no comparison, and keeps what it shows while the chain moves', async () => {

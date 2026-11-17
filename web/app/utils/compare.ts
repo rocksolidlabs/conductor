@@ -119,7 +119,7 @@ export interface CheckCell {
   /** `check:<run>/<task>/<n>/<id>/<k>`. */
   receipt: string
   logSha256?: string
-  /** Why it did not run: earlier_failed, or no_such_step. */
+  /** Why it did not run: earlier_failed, no_such_step, pending, or ended (its attempt ended before this check). */
   notRun?: string
 }
 
@@ -249,7 +249,7 @@ export interface CellWords {
   /** "4.2 s · native": how long it took and where it ran; '' for a cell that did not run. */
   detail: string
   /** passed, failed, running, interrupted, not_run: what the cell's hook says. */
-  state: 'passed' | 'failed' | 'running' | 'interrupted' | 'not_run' | 'other'
+  state: 'passed' | 'failed' | 'running' | 'interrupted' | 'not_run' | 'none' | 'other'
 }
 
 const CELL_LEGEND = {
@@ -259,17 +259,22 @@ const CELL_LEGEND = {
   interrupted: 'interrupted: the check was cut short and has no outcome',
   cancelled: 'cancelled: the check was ended before it finished',
   notRun: 'not run: the candidate has no receipt of this check',
+  none: 'no result: the lane has no commit for the check to run on',
 }
 
 function cellMark(key: MarkKey, word: string, legend: string): MarkView {
   return { key, word, legend }
 }
 
-/** Why a cell did not run, in words: an earlier check failed (a tree stops at its first failure), or its manifest has no such step. */
+/**
+ * Why a cell did not run, in words: an earlier check failed (a tree stops at its first failure), its manifest has no such step, its
+ * checks are under way, or its attempt ended before this check (stopped, interrupted, or failed before its checks ran).
+ */
 export function notRunWords(why: string | undefined): string {
   if (why === 'earlier_failed') return 'not run: an earlier check failed'
   if (why === 'no_such_step' || why === 'no_step') return 'not run: its manifest has no such step'
   if (why === 'pending') return 'not run yet: its checks are under way'
+  if (why === 'ended') return 'not run: its attempt ended before this check'
   return 'not run'
 }
 
@@ -280,6 +285,7 @@ export function notRunWords(why: string | undefined): string {
  */
 export function cellWords(c: CheckCell): CellWords {
   const detail = c.state === 'not_run' ? '' : [durationWords(c.durationMs > 0 || c.state === 'finished' ? c.durationMs : undefined), c.where].filter(Boolean).join(' · ')
+  if (c.state === NO_CELL) return { mark: cellMark('waiting', 'no result', CELL_LEGEND.none), word: 'no result to check', detail: '', state: 'none' }
   if (c.state === 'not_run') {
     const word = notRunWords(c.notRun)
     return { mark: cellMark('waiting', 'not run', CELL_LEGEND.notRun), word, detail, state: 'not_run' }
@@ -298,6 +304,22 @@ export function cellWords(c: CheckCell): CellWords {
   return { mark: cellMark('waiting', c.state || 'unknown', CELL_LEGEND.notRun), word: c.state || 'unknown', detail, state: 'other' }
 }
 
+/** The state of the cell drawn for a candidate a row has none for: the server sends no cell for a lane with no commit. */
+export const NO_CELL = 'no_cell'
+
+/** A row's cells in the columns' order, one for each candidate: the server's, else a cell saying there is no result to check. */
+export function cellsInColumns(check: Pick<ComparedCheck, 'cells'>, candidates: ReadonlyArray<Pick<ComparedCandidate, 'task' | 'attempt'>>): CheckCell[] {
+  return candidates.map(
+    (c) =>
+      check.cells.find((x) => x.task === c.task) ?? { task: c.task, attempt: c.attempt, k: 0, state: NO_CELL, exit: null, signal: '', timedOut: false, durationMs: 0, where: '', manifest: '', stable: false, receipt: '' },
+  )
+}
+
+/** Whether a cell opens a receipt: it ran (not "not run", and not a lane with no result). */
+export function cellOpens(c: Pick<CheckCell, 'state'>): boolean {
+  return c.state !== 'not_run' && c.state !== NO_CELL
+}
+
 /** A cell's receipt ref read: `check:<run>/<task>/<n>/<id>/<k>`; null for none or another shape. */
 export function parseCheckRef(ref: string | undefined): { run: string; task: string; attempt: number; id: string; k: number } | null {
   const m = /^check:([^/]+)\/([^/]+)\/([1-9][0-9]*)\/([^/]+)\/([1-9][0-9]*)$/.exec(ref ?? '')
@@ -310,7 +332,7 @@ export function parseCheckRef(ref: string | undefined): { run: string; task: str
  * the attempt's own receipts. Null for a cell with no receipt (not run).
  */
 export function cellReceipt(check: Pick<ComparedCheck, 'phase' | 'id'>, cell: CheckCell, candidate: Pick<ComparedCandidate, 'run' | 'commit'> | undefined): { run: string; task: string; attempt: number; commit: string; receipt: CandidateReceipt } | null {
-  if (cell.state === 'not_run') return null
+  if (!cellOpens(cell)) return null
   const ref = parseCheckRef(cell.receipt)
   const run = ref?.run ?? candidate?.run ?? ''
   if (!run) return null
@@ -369,11 +391,52 @@ export function candidateMark(c: Pick<ComparedCandidate, 'state' | 'commit' | 's
   return { key: 'waiting', word: c.state || 'unknown', legend: markLook('waiting').legend }
 }
 
-/** A candidate's commit in words: "4b825dc0e3f1 (standing result)", "… failed: not selectable", "no result yet". */
+/**
+ * A candidate's commit in words, by its lane's state: a standing result; for a commit that is not one, the lane's last submitted
+ * commit, "not a result yet" while the lane is worked (its checks under way, or a further attempt), "cancelled" or "failed" once it
+ * ended, each not selectable; "no result yet" or "no result" with no commit.
+ */
 export function candidateCommitWords(c: Pick<ComparedCandidate, 'commit' | 'selectable' | 'state' | 'acceptedAnyway'>): string {
   if (!c.commit) return c.state === 'running' ? 'no result yet' : 'no result'
-  if (!c.selectable) return 'last submitted commit · failed: not selectable'
+  if (!c.selectable) {
+    if (c.state === 'running') return 'last submitted commit · not a result yet: its checks or a further attempt are under way'
+    if (c.state === 'cancelled') return 'last submitted commit · cancelled: not selectable'
+    return 'last submitted commit · failed: not selectable'
+  }
   return c.acceptedAnyway ? 'standing result · accepted anyway' : 'standing result'
+}
+
+/**
+ * Why each measured row says nothing of a candidate, '' for a row that holds what was measured: a candidate with no commit has
+ * nothing to measure; git that could not be read for it (`unavailable`), or a diff past its bound (`size.notMeasured`), leaves out
+ * what was not read. A part the reply carries stands beside the server's words (a size read before a later git call failed). Its
+ * independence is not measured when git could not be read for it: the server compares only the candidates it read whole.
+ */
+export interface NotMeasured {
+  size: string
+  deps: string
+  verify: string
+  independence: string
+}
+export function notMeasured(c: Pick<ComparedCandidate, 'commit' | 'unavailable' | 'size' | 'deps' | 'verifyFiles'>): NotMeasured {
+  if (!c.commit) {
+    const why = 'it has no commit'
+    return { size: why, deps: why, verify: why, independence: why }
+  }
+  const why = c.unavailable || c.size?.notMeasured || (c.size ? '' : 'its change was not read')
+  return {
+    size: c.size && !c.size.notMeasured ? '' : why,
+    deps: c.deps || !why ? '' : why,
+    verify: c.verifyFiles || !why ? '' : why,
+    independence: c.unavailable ?? '',
+  }
+}
+
+/** A row's words for a candidate it says nothing of: "Not measured: <why>", the server's own words when they say it already. */
+export function notMeasuredLine(why: string): string {
+  const w = why.trim()
+  if (/not measured/i.test(w)) return `${w.charAt(0).toUpperCase()}${w.slice(1)}${/[.:]$/.test(w) ? '' : '.'}`
+  return `Not measured: ${w}${/[.:]$/.test(w) ? '' : '.'}`
 }
 
 /** "attempt 2 of 3 made", the candidate's attempts along the chain. */

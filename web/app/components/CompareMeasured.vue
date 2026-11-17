@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MEASURED_BY, depsWords, notObservedWords, fileLines, fileStatusWord, independenceWords, diffSizeWords, verifyFilesWords, type ComparedCandidate } from '~/utils/compare'
+import { MEASURED_BY, depsWords, notMeasured, notMeasuredLine, notObservedWords, fileLines, fileStatusWord, independenceWords, diffSizeWords, verifyFilesWords, type ComparedCandidate } from '~/utils/compare'
 
 /**
  * What a comparison measured of each candidate against the base (Program item CP1, docs/plans/compare-crew.md, PR-4), one row each,
@@ -10,6 +10,11 @@ import { MEASURED_BY, depsWords, notObservedWords, fileLines, fileStatusWord, in
  */
 const props = defineProps<{ candidates: ComparedCandidate[]; notObserved?: string }>()
 
+/** By task: why each row says nothing of it ('' where the row holds what was measured), the server's words. */
+const unread = computed(() => new Map(props.candidates.map((c) => [c.task, notMeasured(c)])))
+const why = (c: ComparedCandidate, row: 'size' | 'deps' | 'verify' | 'independence') => unread.value.get(c.task)?.[row] ?? ''
+/** The other lanes a candidate's independence was not compared with: those git could not be read for, or with no commit. */
+const notComparedWith = (c: ComparedCandidate) => props.candidates.filter((x) => x.task !== c.task && why(x, 'independence')).map((x) => x.task)
 const cols = computed(() => (props.candidates.length >= 4 ? 'sm:grid-cols-2 xl:grid-cols-4' : props.candidates.length === 3 ? 'sm:grid-cols-2 lg:grid-cols-3' : 'sm:grid-cols-2'))
 const rows = [
   { key: 'size', title: 'Size', words: 'against the base' },
@@ -31,7 +36,8 @@ const rows = [
           <!-- Size: the counts, then the files. -->
           <div v-if="row.key === 'size'" class="flex min-w-0 flex-col gap-1 rounded-md bg-elevated/40 px-2.5 py-1.5 text-xs" :data-compare-size="c.task">
             <span class="font-mono text-muted" data-mono="id">{{ c.task }}</span>
-            <template v-if="diffSizeWords(c.size)">
+            <span v-if="why(c, 'size')" class="text-muted" data-compare-not-measured>{{ notMeasuredLine(why(c, 'size')) }}</span>
+            <template v-else-if="diffSizeWords(c.size)">
               <span class="text-default" data-compare-size-lines>{{ diffSizeWords(c.size)!.lines }}</span>
               <span v-if="diffSizeWords(c.size)!.files" class="text-muted" data-compare-size-files>{{ diffSizeWords(c.size)!.files }}</span>
               <UCollapsible v-if="c.size?.list?.length" :ui="{ content: 'pt-1' }">
@@ -48,12 +54,12 @@ const rows = [
                 </template>
               </UCollapsible>
             </template>
-            <span v-else class="text-muted">Not measured: it has no commit.</span>
           </div>
           <!-- Dependency changes. -->
           <div v-else-if="row.key === 'deps'" class="flex min-w-0 flex-col gap-1 rounded-md bg-elevated/40 px-2.5 py-1.5 text-xs" :data-compare-deps="c.task">
             <span class="font-mono text-muted" data-mono="id">{{ c.task }}</span>
-            <span class="text-default" data-compare-deps-summary>{{ c.commit ? depsWords(c.deps).summary : 'Not measured: it has no commit.' }}</span>
+            <span v-if="why(c, 'deps')" class="text-muted" data-compare-deps-summary data-compare-not-measured>{{ notMeasuredLine(why(c, 'deps')) }}</span>
+            <span v-else class="text-default" data-compare-deps-summary>{{ depsWords(c.deps).summary }}</span>
             <ul v-if="depsWords(c.deps).files.length" class="flex flex-col gap-0.5">
               <li v-for="f in depsWords(c.deps).files" :key="f" class="break-all font-mono" data-mono="path" data-compare-deps-file>{{ f }}</li>
             </ul>
@@ -65,7 +71,8 @@ const rows = [
           <!-- Test and build files. -->
           <div v-else-if="row.key === 'verify'" class="flex min-w-0 flex-col gap-1 rounded-md bg-elevated/40 px-2.5 py-1.5 text-xs" :data-compare-verify="c.task">
             <span class="font-mono text-muted" data-mono="id">{{ c.task }}</span>
-            <span class="text-default">{{ verifyFilesWords(c.task, c.verifyFiles).summary }}</span>
+            <span v-if="why(c, 'verify')" class="text-muted" data-compare-not-measured>{{ notMeasuredLine(why(c, 'verify')) }}</span>
+            <span v-else class="text-default">{{ verifyFilesWords(c.task, c.verifyFiles).summary }}</span>
             <ul v-if="verifyFilesWords(c.task, c.verifyFiles).files.length" class="flex flex-col gap-0.5">
               <li v-for="f in verifyFilesWords(c.task, c.verifyFiles).files" :key="f" class="break-all">{{ f }}</li>
             </ul>
@@ -74,7 +81,11 @@ const rows = [
           <!-- Independence. -->
           <div v-else class="flex min-w-0 flex-col gap-1 rounded-md bg-elevated/40 px-2.5 py-1.5 text-xs" :data-compare-independence="c.task">
             <span class="font-mono text-muted" data-mono="id">{{ c.task }}</span>
-            <span v-for="(w, i) in independenceWords(c)" :key="i" class="break-words text-default" data-compare-independence-words>{{ w }}</span>
+            <span v-if="why(c, 'independence')" class="text-muted" data-compare-not-measured>{{ notMeasuredLine(why(c, 'independence')) }}</span>
+            <template v-else>
+              <span v-for="(w, i) in independenceWords(c)" :key="i" class="break-words text-default" data-compare-independence-words>{{ w }}</span>
+              <span v-if="notComparedWith(c).length" class="break-words text-muted" data-compare-not-compared>not compared with {{ notComparedWith(c).join(', ') }}: not measured</span>
+            </template>
           </div>
         </template>
       </div>
