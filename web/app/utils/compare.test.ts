@@ -12,6 +12,7 @@ import {
   depsWords,
   independenceWords,
   lanesOf,
+  notObservedWords,
   notRunWords,
   parseCheckRef,
   runCompare,
@@ -73,9 +74,10 @@ describe('a check row', () => {
       lead: 'because',
       why: ["approach-b's commit changes conductor.manifest.json: its checkout ran another manifest"],
     })
-    const unknown = verdictWords({ verdict: 'unknown', why: ['approach-a changed internal/cache/cache_test.go, a test file'] })
+    const unknown = verdictWords({ verdict: 'unknown', why: ['comparable only if their test changes are fair: approach-a changed internal/cache/cache_test.go, a test file and 1 more; approach-b changed none'] })
     expect(unknown.label).toBe('comparable only if their test changes are fair')
-    expect(unknown.why).toEqual(['approach-a changed internal/cache/cache_test.go, a test file'])
+    expect(unknown.why).toEqual(['approach-a changed internal/cache/cache_test.go, a test file and 1 more', 'approach-b changed none'])
+    expect(verdictWords({ verdict: 'unknown', why: ['another reason'] }).why).toEqual(['another reason'])
     // The server's null reasons are none.
     expect(verdictWords({ verdict: 'comparable', why: null }).why).toEqual([])
   })
@@ -100,7 +102,9 @@ describe('a cell', () => {
   it('says why a cell did not run', () => {
     expect(cellWords(cell({ state: 'not_run', notRun: 'earlier_failed', receipt: '' }))).toMatchObject({ word: 'not run: an earlier check failed', detail: '', state: 'not_run', mark: { key: 'waiting' } })
     expect(notRunWords('no_such_step')).toBe('not run: its manifest has no such step')
+    expect(notRunWords('pending')).toBe('not run yet: its checks are under way')
     expect(notRunWords(undefined)).toBe('not run')
+    expect(cellWords(cell({ state: 'cancelled', exit: null }))).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
   })
 
   it("draws a task's own marks, never a green one: a passed check is neutral ink", () => {
@@ -151,11 +155,13 @@ describe('the measured rows', () => {
         { file: 'go.mod', name: 'github.com/old/dep', from: 'v1.0.0', to: '' },
         { file: 'web/package.json', name: 'vue', from: '3.4.0', to: '3.5.1' },
       ],
-      total: 6,
+      total: 3,
+      modulesTotal: 5,
     })
-    expect(w.summary).toBe('2 dependency files changed')
+    expect(w.summary).toBe('3 dependency files changed')
     expect(w.modules.map((m) => m.words)).toEqual(['added golang.org/x/text v0.3.0', 'removed github.com/old/dep (was v1.0.0)', 'moved vue from 3.4.0 to 3.5.1'])
-    expect(w.more).toBe('and 1 more not listed')
+    expect(w.more).toBe('and 1 more file and 2 more modules not listed')
+    expect(depsWords({ files: ['go.mod'], modules: [], total: 1, modulesTotal: 0 }).more).toBe('')
   })
 
   it("says each candidate's test and build files, and none", () => {
@@ -171,10 +177,14 @@ describe('the measured rows', () => {
     expect(independenceWords(candidate({ shared: null, equivalent: null }))).toEqual(['no shared commit and no same patch'])
     expect(independenceWords(candidate({ shared: [{ with: 'approach-b', count: 2, commits: ['a'.repeat(40), 'b'.repeat(40)] }] }))).toEqual(['shares 2 commits with approach-b'])
     expect(independenceWords(candidate({ equivalent: [{ with: 'approach-b', count: 1, commits: ['c'.repeat(40)] }] }))).toEqual(["1 commit carries the same change as one of approach-b's"])
-    expect(independenceWords(candidate({ shared: [{ with: 'approach-c', count: 10001, commits: [], note: 'more than 10,000' }] }))).toEqual(['shares 10001 commits with approach-c (more than 10,000)'])
+    expect(independenceWords(candidate({ shared: [{ with: 'approach-c', count: 0, commits: [], note: 'more than 10,000' }] }))).toEqual(['shares more than 10,000 commits with approach-c'])
+    // The same-patch check's own words are the row's, said once beside it, not on each lane.
+    expect(independenceWords(candidate({ equivalent: [{ with: 'approach-b', count: 2, commits: [], note: SAME_PATCHES }] }))).toEqual(["2 commits carry the same change as one of approach-b's"])
     expect(independenceWords(candidate({ equivalent: [{ with: 'approach-c', count: 0, commits: [], note: 'not checked: more than 200 commits' }] }))).toEqual(['same patches as approach-c: not checked: more than 200 commits'])
     expect(NOT_OBSERVED).toBe("a read of another lane's folder, or of what an agent keeps for itself under its HOME, is not observed")
     expect(SAME_PATCHES).toBe('same patches: checked; a change rewritten by hand is not detected')
+    expect(notObservedWords()).toBe("Same patches: checked; a change rewritten by hand is not detected; a read of another lane's folder, or of what an agent keeps for itself under its HOME, is not observed.")
+    expect(notObservedWords(' A read of another candidate\'s folder is not observed. ')).toBe("Same patches: checked. A read of another candidate's folder is not observed.")
   })
 })
 
