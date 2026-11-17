@@ -105,13 +105,40 @@ export async function stepIn(api: Api, run: string, n: number, key: string, stat
     .toBe(state)
 }
 
+/** A frame the pane asked the seam for: its rect, and the points of it where the page's hit test found anything but the frame. */
+export interface SeamShot {
+  rect: { x: number; y: number; width: number; height: number }
+  /** What the workbench drew over the frame there (an element's tag and hooks), one entry per point covered; empty when clear. */
+  covered: string[]
+}
+
 /**
  * The pane's screenshots through the seam: each frame Playwright's own screenshot of the frame's box (the rect the pane asks for, in
- * the page's CSS pixels), as a base64 PNG. Set before the page's first script runs, as the app reads it once, as it loads.
+ * the page's CSS pixels), as a base64 PNG. Set before the page's first script runs, as the app reads it once, as it loads. Before each
+ * screenshot it reads, at a grid of 25 points of the rect, its edges among them, what the workbench's own hit test finds there: the frame, or anything of
+ * the workbench drawn over it, which would be in the pixels (the shell's and the tab's capture take whatever is drawn in the box).
+ * Returns the frames asked for, in order.
  */
-export async function previewSeam(page: Page): Promise<void> {
+export async function previewSeam(page: Page): Promise<SeamShot[]> {
+  const shots: SeamShot[] = []
   await page.exposeFunction('conductorPreviewShot', async (r: { x: number; y: number; width: number; height: number }) => {
     if (!(r.width > 0 && r.height > 0)) return ''
+    const covered = await page.evaluate((r) => {
+      const out: string[] = []
+      // Its edges as well as its inside: what overlaps a rect's side by a little is in the pixels as much as what covers its middle.
+      const at = [0.01, 0.25, 0.5, 0.75, 0.99]
+      for (const fx of at)
+        for (const fy of at) {
+          const x = r.x + fx * r.width
+          const y = r.y + fy * r.height
+          const el = document.elementFromPoint(x, y)
+          if (el?.tagName === 'IFRAME' && el.hasAttribute('data-preview-frame')) continue
+          const hook = el ? Array.from(el.closest('[data-capture-editor]') ? ['data-capture-editor'] : el.getAttributeNames().filter((n) => n.startsWith('data-'))).join(',') : ''
+          out.push(`${el?.tagName.toLowerCase() ?? 'nothing'}${hook ? `[${hook}]` : ''} at ${Math.round(x)},${Math.round(y)}`)
+        }
+      return out
+    }, r)
+    shots.push({ rect: r, covered })
     return (await page.screenshot({ clip: r, animations: 'allow', caret: 'initial' })).toString('base64')
   })
   await page.addInitScript(() => {
@@ -120,6 +147,7 @@ export async function previewSeam(page: Page): Promise<void> {
       frame: (r: unknown) => (window as unknown as { conductorPreviewShot(r: unknown): Promise<string> }).conductorPreviewShot(r),
     }
   })
+  return shots
 }
 
 /** The previewed page's frame once the pane has framed it at `origin`. */

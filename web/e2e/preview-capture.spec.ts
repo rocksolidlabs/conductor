@@ -1,10 +1,13 @@
-import { writeFileSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { walk, worst } from './contrast'
-import { expect, git, stopStrays, task, test, useTheme } from './fixtures'
+import { expect, git, stopStrays, task, test, useTheme, type Session } from './fixtures'
 import { noSideways } from './layout'
-import { endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn } from './preview-fixtures'
+import { PREVIEW_SERVICE, endMade, launch, made, pick, previewCrew, previewFrame, previewSeam, scratchDir, stepIn, type SeamShot } from './preview-fixtures'
 
 // A preview in Conductor and a capture saved (docs/plans/browser-evidence.md, PR-4, #792), against a managed crew of the stub worker
 // whose project manifest serves the fixture (web/e2e/fixtures/preview/) in the attempt's worktree, its page loading the bridge the
@@ -55,9 +58,12 @@ test.afterAll(async ({ api }) => {
   await endMade(api, m)
 })
 
+/** The frames the pane asked the seam for on the last page opened by previewPage. */
+let shots: SeamShot[] = []
+
 /** The preview page of the attempt, its bridge ready, its frame. */
 async function previewPage(page: Page) {
-  await previewSeam(page)
+  shots = await previewSeam(page)
   await page.goto(`/preview?run=${encodeURIComponent(runId)}&task=build&attempt=1`)
   await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
   return previewFrame(page, origin)
@@ -245,4 +251,216 @@ test('on a phone the editor is the page over the frame, out of the way while sel
   expect(Math.abs(drawn.x - pane.x)).toBeLessThan(1)
   expect(Math.abs(drawn.width - pane.width)).toBeLessThan(1)
   await noSideways(page)
+})
+
+/** A saved capture's tab in the editor, or the capture shown when it is the editor's only one. */
+const savedIn = (page: Page, id: string) => editorOf(page).locator(`[data-capture-saved-tab="${id}"], [data-capture-saved="${id}"]`).first()
+
+test('a saved capture is listed again after the editor was closed and after a reload, edited there and deleted', async ({ page, api }) => {
+  const frame = await previewPage(page)
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+  await editorOf(page).locator('[data-capture-save]').click()
+  const c = await savedNow(page, api)
+  // Closed and opened again: still there.
+  await editorOf(page).locator('[data-capture-close]').click()
+  await expect(editorOf(page)).toBeHidden()
+  await page.locator('[data-preview-captures]').click()
+  await expect(savedIn(page, c.id)).toBeVisible()
+  // After a reload, listed from the server.
+  await page.reload()
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+  await page.locator('[data-preview-captures]').click()
+  const tab = editorOf(page).locator(`[data-capture-saved-tab="${c.id}"]`)
+  await expect(tab).toBeVisible()
+  await tab.click()
+  const shown = editorOf(page).locator(`[data-capture-saved="${c.id}"]`)
+  await expect(shown).toBeVisible()
+  await expect(editorOf(page).locator('[data-capture-shot] img')).toBeVisible()
+  // Edited there: a new revision.
+  await editorOf(page).locator('[data-annotation="1"] textarea').fill('found again')
+  await editorOf(page).locator('[data-capture-save-changes]').click()
+  await expect.poll(async () => (await api.ok<Capture>('GET', `/api/captures/${c.id}`)).annotations[0]?.note).toBe('found again')
+  // Deleted there, asked once more: gone from the editor, a tombstone on the server.
+  await editorOf(page).locator('[data-capture-delete]').click()
+  await editorOf(page).locator('[data-capture-delete]').click()
+  await expect(tab).toHaveCount(0)
+  await expect.poll(async () => !!(await api.ok<{ deletedAt?: string }>('GET', `/api/captures/${c.id}`)).deletedAt).toBe(true)
+})
+
+test("Capture again loads the capture's page again though the frame went elsewhere inside itself", async ({ page, api }) => {
+  const frame = await previewPage(page)
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+  await editorOf(page).locator('[data-capture-save]').click()
+  const first = await savedNow(page, api)
+  expect(first.url).toBe(`${origin}/`)
+  // The page moves on by itself: the pane's address for the frame is unchanged.
+  await frame.evaluate(() => history.pushState({}, '', '/next'))
+  await editorOf(page).locator('[data-capture-again]').click()
+  const retake = editorOf(page).locator('[data-capture-draft]')
+  await expect(retake).toHaveAttribute('data-capture-url', `${origin}/`, { timeout: BOOT_MS })
+  await expect(editorOf(page).locator('[data-annotation="1"] [data-capture-element-summary]')).toContainText('button#second')
+})
+
+test('on a phone nothing of the workbench is over the frame while its pixels are taken: a selection, by selector, Capture again, a page without the bridge', async ({ page, api }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const frame = await previewPage(page)
+  await page.locator('[data-preview-capture]').click()
+  await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+  const editor = editorOf(page)
+  await expect(editor.locator('[data-annotation="1"]')).toBeVisible()
+  // By selector, from the editor over the frame.
+  await editor.locator('[data-capture-selector] input, input[data-capture-selector]').first().fill('#inside')
+  await editor.locator('[data-capture-describe]').click()
+  await expect(editor.locator('[data-annotation="2"]')).toBeVisible()
+  await editor.locator('[data-capture-save]').click()
+  await savedNow(page, api)
+  // Capture again, from the editor over the frame.
+  await editor.locator('[data-capture-again]').click()
+  await expect(editor.locator('[data-capture-draft]')).toBeVisible({ timeout: BOOT_MS })
+  await expect(editor.locator('[data-annotation="2"]')).toBeVisible()
+  // A page without the bridge: the screenshot alone, taken as the editor opens over the frame.
+  const now = await previewFrame(page, origin)
+  await now.goto(`${origin}/no-bridge`)
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
+  await editor.locator('[data-capture-close]').click()
+  await page.locator('[data-preview-capture]').click()
+  await expect.poll(() => editor.locator('[data-capture-draft-tab]').count()).toBeGreaterThan(1)
+  expect(shots.length).toBeGreaterThanOrEqual(7)
+  expect(shots.flatMap((x) => x.covered)).toEqual([])
+})
+
+test('in a device mode the pixels taken are the frame\'s alone: the editor opening beside it is never in them', async ({ page }) => {
+  const frame = await previewPage(page)
+  await page.locator('[data-preview-mode="desktop"]').click()
+  await frame.goto(`${origin}/no-bridge`)
+  await expect(page.locator('[data-preview-pane]')).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
+  // The editor closed: Capture opens it beside the stage, then takes the screenshot.
+  await page.locator('[data-preview-capture]').click()
+  await expect(editorOf(page).locator('[data-capture-shot]')).toBeVisible()
+  const stage = (await page.locator('[data-preview-stage]').boundingBox())!
+  expect(shots.length).toBeGreaterThan(0)
+  for (const x of shots) {
+    expect(x.covered).toEqual([])
+    expect(x.rect.x + x.rect.width).toBeLessThanOrEqual(stage.x + stage.width + 1)
+  }
+})
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } })
+
+  test('a region is drawn with a finger', async ({ page }) => {
+    const frame = await previewPage(page)
+    await page.locator('[data-preview-capture]').click()
+    await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+    const editor = editorOf(page)
+    await expect(editor.locator('[data-annotation="1"]')).toBeVisible()
+    await editor.locator('[data-capture-region]').tap()
+    await expect(editor.locator('[data-capture-shot][data-capture-drawing]')).toBeVisible()
+    await editor.locator('[data-capture-shot]').scrollIntoViewIfNeeded()
+    const shot = (await editor.locator('[data-capture-shot]').boundingBox())!
+    const cdp = await page.context().newCDPSession(page)
+    const at = (x: number, y: number) => [{ x: shot.x + x, y: shot.y + y }]
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(10, 10) })
+    for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: at(10 + i * 10, 10 + i * 8) })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await expect(editor.locator('[data-annotation="2"]')).toHaveAttribute('data-annotation-kind', 'region')
+  })
+})
+
+/** A port no one listens on now. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const p = (srv.address() as { port: number }).port
+      srv.close(() => resolve(p))
+    })
+  })
+}
+
+/** A link the session's terminal shows, followed as a person does: typed at the prompt, then clicked, then Preview in pane. */
+async function previewInPane(page: Page, url: string) {
+  const host = page.locator('.terminal-host').first()
+  await host.click()
+  await page.keyboard.type(url)
+  const box = (await host.boundingBox())!
+  const rows = Number(await host.getAttribute('data-rows'))
+  const cols = Number(await host.getAttribute('data-cols'))
+  const ch = box.height / rows
+  const cw = box.width / cols
+  // xterm marks the element the pointer is over with this class while it is over a link.
+  const pointer = host.locator('.xterm-cursor-pointer')
+  // The row the link is on: the one where the pointer turns into a link's.
+  for (let r = 0; r < rows; r++) {
+    const x = box.x + cw * 6.5
+    const y = box.y + ch * (r + 0.5)
+    await page.mouse.move(x, y)
+    const over = await expect
+      .poll(() => pointer.count().then((n) => n > 0), { timeout: 600, intervals: [100] })
+      .toBe(true)
+      .then(
+        () => true,
+        () => false,
+      )
+    if (!over) continue
+    await page.mouse.click(x, y)
+    await page.getByRole('button', { name: 'Preview in pane' }).last().click()
+    // The line typed is cleared, so the next link is the only one on it.
+    await host.click()
+    await page.keyboard.press('Control+U')
+    return
+  }
+  throw new Error(`no link to ${url} in the terminal`)
+}
+
+test("a session's link tab keeps its capture drafts and notes across its Refresh and a switch of tabs", async ({ page, api, state }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'conductor-e2e-link-pane-'))
+  const port = await freePort()
+  const svc: ChildProcess = spawn('python3', [PREVIEW_SERVICE, String(port)], { cwd: dir, env: { ...process.env, CONDUCTOR_PREVIEW_BRIDGE: `${state.baseURL}/preview-bridge.js` }, stdio: 'ignore' })
+  const link = `http://127.0.0.1:${port}/`
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'plain', name: 'link-pane', cwd: state.root })
+  try {
+    await expect.poll(() => fetch(`${link}ready`).then((r) => r.status, () => 0), { timeout: 30_000 }).toBe(200)
+    const seam = await previewSeam(page)
+    await page.goto(`/sessions/${s.id}`)
+    await expect(page.locator('.terminal-host').first()).toBeVisible({ timeout: BOOT_MS })
+    await previewInPane(page, link)
+    const pane = page.locator(`[data-editor-link-pane="url:${link}"]`)
+    await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+    const frame = await previewFrame(page, `http://127.0.0.1:${port}`)
+    await pane.locator('[data-preview-capture]').click()
+    await pick(page, frame, '#second', 'button#second.second', { downs: 1 })
+    await pane.locator('[data-annotation="1"] textarea').fill('kept across Refresh')
+    // The tab's Refresh loads the frame again; the draft and its note stay.
+    await page.locator('[data-editor-area]').getByRole('button', { name: 'Refresh', exact: true }).click()
+    await expect(pane).toHaveAttribute('data-preview-bridge', 'ready', { timeout: BOOT_MS })
+    await expect(pane.locator('[data-annotation="1"] textarea')).toHaveValue('kept across Refresh')
+    // Another link's tab, in a device mode: its screenshot alone, taken with nothing of the workbench over its frame.
+    const other = `http://127.0.0.1:${port}/no-bridge`
+    await previewInPane(page, other)
+    const second = page.locator(`[data-editor-link-pane="url:${other}"]`)
+    await expect(second).toHaveAttribute('data-preview-bridge', 'absent', { timeout: BOOT_MS })
+    await expect(pane).toBeHidden()
+    // A tall window: the Desktop mode's scale is set by the pane's width, which the editor's opening beside the frame changes.
+    await page.setViewportSize({ width: 1100, height: 1600 })
+    await second.locator('[data-preview-mode="desktop"]').click()
+    const before = seam.length
+    await second.locator('[data-preview-capture]').click()
+    await expect(second.locator('[data-capture-shot]')).toBeVisible()
+    expect(seam.length).toBeGreaterThan(before)
+    expect(seam.slice(before).flatMap((x) => x.covered)).toEqual([])
+    // And the rect is inside the frame's stage: the editor that opened beside it is outside it.
+    const stage = (await second.locator('[data-preview-stage]').boundingBox())!
+    for (const x of seam.slice(before)) expect(x.rect.x + x.rect.width).toBeLessThanOrEqual(stage.x + stage.width + 1)
+    // Back to the first link's tab: its draft and note.
+    await page.locator(`[data-editor-tab="url:${link}"] button`).first().click()
+    await expect(pane.locator('[data-annotation="1"] textarea')).toHaveValue('kept across Refresh')
+  } finally {
+    await api.stopSession(s.id)
+    svc.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
