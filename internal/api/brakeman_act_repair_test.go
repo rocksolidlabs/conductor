@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"strings"
@@ -130,14 +131,18 @@ func TestARepairRequestsChangesAsBrakeman(t *testing.T) {
 }
 
 // TestARepairRefusesACaptureFinding: a granted request_repair holding a
-// finding of kind capture, alone or beside a change, is refused 400 as
-// its body is read: no act written into the request, no review, no
-// receipt; the same opId then takes a request without it (#798).
+// finding of kind capture, alone or beside a change, or a finding of
+// another kind naming a capture, is refused 400 as its body is read (the
+// plan gives a turn no capture finding, whatever RV1's route takes from
+// the person): no act written into the request, no review, no receipt;
+// the same opId then takes a request without it (#798).
 func TestARepairRefusesACaptureFinding(t *testing.T) {
 	f := newRepairFixture(t, []string{brakeman.ActRequestRepair}, nil)
-	for _, findings := range [][]any{{captureOf()}, {changeOf("Handle the error."), captureOf()}} {
+	general := changeOf("Handle the error.")
+	general["capture"] = captureOf()["capture"]
+	for _, findings := range [][]any{{captureOf()}, {changeOf("Handle the error."), captureOf()}, {general}} {
 		status, out := f.repair(t, "q-1", map[string]any{"findings": findings})
-		if status != http.StatusBadRequest || codeOf(out) != "invalid_request" {
+		if status != http.StatusBadRequest || codeOf(out) != "invalid_request" || !strings.Contains(fmt.Sprint(out), "request_repair sends none") {
 			t.Fatalf("a capture finding: %d %v", status, out)
 		}
 	}

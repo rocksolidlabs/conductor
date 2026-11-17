@@ -674,7 +674,11 @@ func TestReviewsReconciledAtStart(t *testing.T) {
 	done, failed, accepted, uncertain, none := submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head),
 		submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head)
 	rq := func(v dispatch.Review) crew.RepairRequest {
-		return crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: reviewRequest(v)}
+		cr, err := l.srv.reviewRequest(t.Context(), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: cr}
 	}
 	if rc, err := l.srv.runs.RequestChanges(t.Context(), run, adminActor, crew.Command{ID: reviewCommandID(done.ID, 1)}, rq(done)); err != nil || rc.Status != ledger.CommandDone {
 		t.Fatalf("the done command: %+v %v", rc, err)
@@ -871,37 +875,8 @@ func TestReviewViaIsTheServers(t *testing.T) {
 
 // captureOf is a finding of kind capture as a body would name it.
 func captureOf() map[string]any {
-	return map[string]any{"kind": dispatch.FindingKindCapture, "intent": "change", "severity": "major", "message": "Save is covered."}
-}
-
-// A review holding a finding of kind capture is refused 400 by RV1's
-// route before anything is read or recorded, whatever its verdict and
-// wherever the finding stands among the others: no review, no receipt,
-// so the same opId is free for a review without it; the store keeps that
-// kind (schema version 7), and no route takes one yet (#798).
-func TestTheReviewRouteRefusesACaptureFinding(t *testing.T) {
-	l := newLaunchTest(t, nil, nil)
-	run, c1 := succeededCandidate(t, l, func(dir string) string { return commitFile(t, dir, "a.txt", "a\n") })
-	cand := candName(run, "build", 1, c1)
-	for _, body := range []map[string]any{
-		reviewOf(cand, l.head, "request_changes", captureOf()),
-		reviewOf(cand, l.head, "request_changes", changeOf("Handle the error."), captureOf()),
-		reviewOf(cand, l.head, "comment", captureOf()),
-	} {
-		out := sendReview(t, l.testEnv, "CND-1", body, http.StatusBadRequest, "invalid_request")
-		if msg := out["error"].(map[string]any)["message"].(string); !strings.Contains(msg, "a finding of kind capture is not taken yet") {
-			t.Fatalf("the refusal: %v", out)
-		}
-		if _, found, err := l.srv.dispatch.Receipt(t.Context(), adminActor, body["opId"].(string)); err != nil || found {
-			t.Fatalf("a receipt kept: %v %v", found, err)
-		}
-	}
-	if n := reviewsOn(t, l.srv, "CND-1"); n != 0 {
-		t.Fatalf("%d reviews kept", n)
-	}
-	body := reviewOf(cand, l.head, "comment", captureOf())
-	body["findings"] = []map[string]any{changeOf("Handle the error.")}
-	sendReview(t, l.testEnv, "CND-1", body, http.StatusCreated, "")
+	return map[string]any{"kind": dispatch.FindingKindCapture, "intent": "change", "severity": "major",
+		"capture": map[string]any{"capture": "0123456789abcdef", "send": "fedcba9876543210", "k": 1}}
 }
 
 // retryReview sends Request again of the review, failing t unless it
@@ -1532,7 +1507,11 @@ func TestReconcileThatCouldNotReadLeavesItPending(t *testing.T) {
 	let := holdWorkerOff(l.srv)
 	v := submitPending(t, l.srv, candName(run, "build", 1, c1), l.head)
 	l.expect(t, "POST", "/api/runs/"+run+"/stop", nil, http.StatusOK, "")
-	rq := crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: reviewRequest(v)}
+	cr, err := l.srv.reviewRequest(t.Context(), v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rq := crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: cr}
 	cont, err := l.srv.runs.ContinueRunWith(t.Context(), run, "", crew.ContinueOptions{Repair: &rq, Actor: adminActor, Command: crew.Command{ID: reviewCommandID(v.ID, 1)}})
 	if err != nil {
 		t.Fatal(err)

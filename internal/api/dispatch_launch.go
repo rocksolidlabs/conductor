@@ -187,6 +187,8 @@ type ticketLaunchBody struct {
 // the records (chainRuns).
 func (s *Server) wireLaunches() {
 	s.runs.UsePackageFiles(s.openLaunchFile)
+	// A change request's evidence files, a capture send's (#798).
+	s.runs.UseEvidenceFiles(s.openEvidenceFile)
 	if s.dispatch != nil {
 		s.dispatch.SetRunTicket(s.runTicket)
 		// A run's chain, for the store's chain rule (dispatch_evidence.go).
