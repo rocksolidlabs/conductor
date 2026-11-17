@@ -175,6 +175,23 @@ func listenReportsIn(base, token string, log *slog.Logger) (*reportListener, err
 	return l, nil
 }
 
+// startReports starts the host's socket for its agent's reports, checked
+// against the session's agent token, and names it in env, the variables
+// the agent's process is given. A socket that cannot be made is logged and
+// named nowhere: the agent's sender then reports to the server, as it does
+// under a host of an earlier release. The listener it returns, nil then, is
+// handed the session once it is made (setSession) and closed as the host
+// ends (Close); both take a nil one.
+func (a *agent) startReports(env map[string]string) *reportListener {
+	l, err := listenReports(reportBases(), a.agentToken, a.log)
+	if err != nil {
+		a.log.Warn("the agent's reports go to the server alone: the host's socket could not be made", "err", err)
+		return nil
+	}
+	env[notify.EnvHostSocket] = l.path
+	return l
+}
+
 // sweepReportDirs removes from base the socket folders of hosts that ended
 // without removing their own (a host killed, a machine that lost power): a
 // folder of this user's own, only this user's to enter (the sender's own
@@ -215,6 +232,9 @@ func sweepReportDirs(base string, log *slog.Logger) {
 // setSession hands the reports the host's session: those waiting for it
 // are applied, in the order the session takes them.
 func (l *reportListener) setSession(local *session.Local) {
+	if l == nil {
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.local != nil {
@@ -252,6 +272,9 @@ func (l *reportListener) session(ctx context.Context) *session.Local {
 // Close stops taking reports, ends those under way and removes the socket
 // and its folder.
 func (l *reportListener) Close() {
+	if l == nil {
+		return
+	}
 	l.closeOnce.Do(func() {
 		close(l.closed)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

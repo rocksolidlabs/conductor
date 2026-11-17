@@ -395,6 +395,10 @@ func TestTheSocketsBodyIsBoundedAndStrict(t *testing.T) {
 			t.Errorf("%s: %d %s", name, code, reply)
 		}
 	}
+	// A body past 64 KiB that is otherwise a report: refused for its size.
+	if code, reply := postSocket(t, h.l.path, notify.HostReportPath, tok, `{"state":"done"`+strings.Repeat(" ", 64<<10)+`}`); code != http.StatusBadRequest || !strings.Contains(reply, "too large") {
+		t.Errorf("a padded body past 64 KiB: %d %s", code, reply)
+	}
 	if code, _ := requestSocket(t, h.l.path, http.MethodGet, notify.HostReportPath, tok, nil); code != http.StatusMethodNotAllowed {
 		t.Errorf("GET: %d", code)
 	}
@@ -463,8 +467,10 @@ func TestTheSocketsFolderIsTheUsersAlone(t *testing.T) {
 	if _, err := os.Lstat(l.dir); !os.IsNotExist(err) {
 		t.Fatalf("the folder is left: %v", err)
 	}
-	// A base whose path leaves no room for the socket's is passed over.
-	deep := filepath.Join(base, strings.Repeat("d", 90))
+	// A base whose path leaves no room for the socket's is passed over: one
+	// that makes it 104 bytes, which Linux would bind and macOS would not.
+	room := len(filepath.Join(base, "x", reportDirPrefix+"0123456789", reportSocketName)) - 1
+	deep := filepath.Join(base, strings.Repeat("d", 104-room))
 	if err := os.Mkdir(deep, 0o700); err != nil {
 		t.Fatal(err)
 	}
