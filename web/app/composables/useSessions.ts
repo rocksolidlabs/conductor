@@ -4,6 +4,7 @@ import type { Receipt } from '~/utils/tasks'
 import type { DecisionSummary, TaskHold } from '~/utils/decisions'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
+import type { CompareSpec } from '~/utils/compareTemplate'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -658,6 +659,12 @@ export interface RunAttempt {
    * before the server kept it has none. Not a crew's `where` (`server` or `host`).
    */
   where?: string
+  /**
+   * The candidate's preview checkout while one is open (docs/plans/browser-evidence.md, "A candidate's preview"): its number (`seq`,
+   * the preview page's `&seq=`), its state (resolved while its setup and services start, ready once its preview answers, ending once
+   * its end began) and, ready, its preview's address.
+   */
+  previewing?: { seq: number; state: 'resolved' | 'ready' | 'ending'; preview?: string }
 }
 
 /**
@@ -770,6 +777,11 @@ export interface RunTicket {
   digest: string
 }
 
+/** A comparison's run as its reads give it: its lanes, each candidate task with the review that reviews it (none without reviews), at most 4. */
+export interface RunCompare {
+  candidates: Array<{ task: string; review?: string }>
+}
+
 /** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
 export interface RunInfo {
   /** `<crew id>-<8 hex>`. */
@@ -821,6 +833,8 @@ export interface RunInfo {
   tasks?: RunTask[]
   /** The crew's people as launched, fixed for the run; absent for a crew without (and for the record of a run without tasks). */
   people?: CrewPerson[]
+  /** A comparison's lanes (Program item CP1): each candidate task with the review task that reviews it, in the block's order; absent for a run of no comparison. */
+  compare?: RunCompare
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
@@ -966,6 +980,11 @@ export function useSessions() {
         : request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: revision ? { ...toCrewInput(crew), revision } : toCrewInput(crew) })
       ).then(crewOfReply),
     deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /**
+     * Saves a comparison's crew made from its template (CP1, POST /api/crews/templates/compare): an ordinary crew with tasks approach-a,
+     * approach-b… and a `compare` block, its id derived from the name as a crew's is. 400 `invalid_crew` in the rule's words.
+     */
+    createCompareCrew: (spec: CompareSpec) => request<CrewReply>('/api/crews/templates/compare', { method: 'POST', body: spec }).then(crewOfReply),
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
     duplicateCrew: (id: string) =>
       request<CrewReply>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then(crewOfReply),

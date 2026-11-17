@@ -1170,7 +1170,8 @@ func TestEveryTrackerRouteUsesCredentialFor(t *testing.T) {
 	}
 	drivePublications(t, e, g, "github.com", do)
 	drivePublications(t, e, g, gheHost, doOn(gheHost, plantedToken2))
-	for _, p := range slices.Concat(externalTouching, publicationTouching) {
+	driveExternalJobs(t, e, g.f, do)
+	for _, p := range slices.Concat(externalTouching, publicationTouching, []string{"GET /api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair", "POST /api/dispatch/tickets/{key}/reviews"}) {
 		if !served[p] {
 			t.Errorf("%s was not driven", p)
 		}
@@ -1199,6 +1200,7 @@ func TestGuideRowsTrackers(t *testing.T) {
 		"link_read":             "POST /api/dispatch/tickets/{key}/links/{id}/read",
 		"tracker_status":        "GET /api/trackers",
 		"tracker_set":           "POST /api/trackers/github",
+		"tracker_remove":        "POST /api/trackers/github/remove",
 	}
 	seen := map[string]bool{}
 	for _, op := range Operations() {
@@ -1210,7 +1212,7 @@ func TestGuideRowsTrackers(t *testing.T) {
 		if op.Method+" "+op.Path != route || op.Scope != "admin" || op.MCP != "" {
 			t.Errorf("%s: %s %s, scope %s, tool %q", op.Name, op.Method, op.Path, op.Scope, op.MCP)
 		}
-		if op.Method == http.MethodPost && op.Name != "tracker_set" && op.Bounds["body"] != maxBody {
+		if op.Method == http.MethodPost && op.Name != "tracker_set" && op.Name != "tracker_remove" && op.Bounds["body"] != maxBody {
 			t.Errorf("%s: body bound %d", op.Name, op.Bounds["body"])
 		}
 	}

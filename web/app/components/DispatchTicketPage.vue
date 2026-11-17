@@ -3,7 +3,7 @@ import type { DispatchChange, DispatchReceipt, DispatchTicket, Horizon, LaunchSu
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { DISPATCH_RETRY_MAX_MS, ticketWatch } from '~/composables/useDispatchLive'
-import { refusalWords } from '~/composables/useDispatchOps'
+import { dispatchFailureWords, refusalWords } from '~/composables/useDispatchOps'
 import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, acceptChangedWords, candidateOptions, closeCard, candidateWithdrawn, parseCandidate, ticketDecisions, ticketPeople, historyEntries, horizonWord, parseTicketKey, priorityWord, projectPath, relationAdd, statusWord, ticketPath, ticketWords, validProjectKey, type AcceptSeen, type ChangeNames, type RelationChoice, type UploadOutcome } from '~/utils/dispatch'
 import { RUN_EVENT_WINDOW_MS } from '~/utils/runs'
 import { relativeTime } from '~/utils/sessions'
@@ -17,6 +17,9 @@ import { firstReviewCandidate, latestReviewable } from '~/utils/review'
 import { entryRunId } from '~/utils/dispatchEvidence'
 import { ticketSections, ticketWaits } from '~/utils/ticketSections'
 import { summaryStatusLine } from '~/utils/status'
+import { GITHUB_OWNED_WORDS, parseGitHubRef, readIsStale, snapshotOf, trackerRefusalWords } from '~/utils/tracker'
+import type { RefreshReply } from '~/composables/useDispatch'
+import { publicationsStripWords } from '~/utils/publication'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -44,12 +47,16 @@ import { summaryStatusLine } from '~/utils/status'
  * the plan's agents and each launch's with their versions). The runs' candidates they read are read once for all three (useTicketCandidates).
  * Under the title (UX1 PR-16) a strip names the sections (DispatchTicketStrip, ticketSections), each with its state where it has one,
  * staying at the top as the page scrolls; a press brings its section up under it. The properties aside stays under the strip.
+ * Its GitHub panel (Program item IN1a, DispatchExternal) is the strip's first section for a ticket with a linked item: GitHub's state,
+ * its reads, the field owners, the import's images, Link and Unlink; a field GitHub owns has no editor here, and says so. A page that
+ * opens on a linked item read more than ten minutes ago reads it again, once; a `dispatch_read` event reads the page again.
  * Its Review view (Program item RV1, DispatchReview), `?view=review&candidate=…`, shows in place of the sections and the strip: the criteria and the
  * plan, a candidate's lineage, diff, checks and findings, the notes of a draft and the review sent, and the ticket's decisions and
  * delivery; `&repair=<id>/<k>` prepares a repair from a failed receipt of the candidate, `&focus=findings` shows the findings. Each
  * standing candidate under Runs offers Review, with the open findings of its task, counted from the ticket's reviews (every page), read
  * with the ticket, and each failed receipt Prepare a repair; the palette's page group gains Review the latest candidate, Send review (n
- * notes) and Open findings.
+ * notes) and Open findings. Its compare view (Program item CP1, DispatchComparison), `?view=compare&run=…`, shows a comparison of the
+ * ticket's in place of the sections and the strip, as the Review view does.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -87,6 +94,8 @@ const runs = useTicketRuns({ gate, key: () => (parseTicketKey(props.ticketKey) ?
 /** The durable decisions of the ticket's runs (Program item DR1): its gates and its agents' requests, live. */
 const decisionRecords = useTicketDecisions(() => (parseTicketKey(props.ticketKey) ? props.ticketKey : ''))
 const attention = useAttention()
+/** The GitHub tokens kept (IN1a): Link a GitHub issue is offered when one is. */
+const tracker = useTracker()
 /**
  * The candidates of the ticket's runs (DS2, PR-12): what a delivery may name, a delivered one withdrawn since, the Accept anyway receipts.
  * A delivery's run is read whether or not Runs has read the page it is on.
@@ -214,6 +223,7 @@ function load(): void {
 
 let tick: number | undefined
 onMounted(() => {
+  void tracker.load()
   sessions
     .catalog()
     .then((a) => (agents.value = a))
@@ -239,7 +249,9 @@ watch(
     historyPages.value = 1
     historyNext.value = 0
     missing.value = false
-    // The title being edited and the assignees being picked were the other ticket's.
+    // The title being edited and the assignees being picked were the other ticket's, and so was the read of its GitHub item.
+    githubReading.value = false
+    githubReadFailure.value = ''
     leaveTitle()
     picks.clear()
     labelPicks.clear()
@@ -266,6 +278,21 @@ const archived = computed(() => !!projectRow.value?.archivedAt)
 const deleted = computed(() => !!ticket.value?.deletedAt)
 /** Nothing is edited on a deleted ticket or in an archived project: the store would refuse it. */
 const locked = computed(() => !ticket.value || deleted.value || archived.value)
+
+// Its publications to GitHub (IN1a, PR-9): the newest ten and the older ones that need a person, from the ticket's read; Publish to GitHub
+// opens the composer, from the Publications, from a GitHub link's row, or from a publication (sent again, or published as new).
+const publications = computed(() => ticket.value?.publications ?? [])
+const publicationsNeedYou = computed(() => ticket.value?.publicationsNeedYou ?? 0)
+/** Somewhere on GitHub to publish to: a linked item, or a live delivery or external link to a GitHub item. */
+const canPublish = computed(() => !!ticket.value?.externalId || (ticket.value?.links ?? []).some((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external') && readableLink(l.url)))
+const publishOpen = ref(false)
+const publishTarget = ref<string | undefined>(undefined)
+const publishFrom = ref<{ id: string; mode: 'resend' | 'new' } | null>(null)
+function openPublish(from: { id: string; mode: 'resend' | 'new' } | null, target?: string) {
+  publishFrom.value = from
+  publishTarget.value = target
+  publishOpen.value = true
+}
 
 const words = computed(() => (ticket.value ? ticketWords(ticket.value) : null))
 const labelsById = computed(() => new Map((projectRead.value?.labels ?? []).map((l) => [l.id, l])))
@@ -317,7 +344,9 @@ const newestRun = computed(() => runs.entries.value.find((e) => e.run)?.run ?? n
 const strip = computed(() => {
   const t = ticket.value
   if (!t) return []
+  const snap = t.externalId ? snapshotOf(t.externalSnapshot) : null
   return ticketSections({
+    github: snap,
     plan: plan.featured.value,
     waits: ticketWaits(needs.items.value, { key: t.key, runs: runIds.value }),
     runs: runIds.value.length,
@@ -326,6 +355,8 @@ const strip = computed(() => {
     decisions: decisionRecords.decisions.value ?? [],
     close: closeCard(t),
     comments: t.comments ?? [],
+    // The publications a person can act on, in words, in the GitHub section (IN1a PR-9): never amber, not in the one list.
+    publications: publicationsStripWords(t.publications ?? [], t.publicationsNeedYou ?? 0),
   })
 })
 /** Brings a section up under the strip and gives it the focus, as the strip's own press does (People's "in the plan"). */
@@ -385,6 +416,8 @@ interface Act {
   send: (body: OpBody) => Promise<ActReply>
   /** Made on a deleted ticket: an undelete alone; every other operation is made on a live one. */
   deleted?: boolean
+  /** Sent with no expected revision: a refresh of the linked item, which follows GitHub whatever the page shows. */
+  noRev?: boolean
   /** The operation in the toasts' words: the key, a file's name. */
   what?: string
   /** A toast's title once it is done. */
@@ -419,7 +452,7 @@ const operate = serially(async (key: string, make: () => Act | null | false): Pr
   const reply = await ops.run<ActReply>(act.send, {
     thing: `ticket:${on}`,
     what: act.what ?? on,
-    expectedRev: own ? t.rev : undefined,
+    expectedRev: own && !act.noRev ? t.rev : undefined,
     apply: (r) => {
       if (own && r.ticket && key === props.ticketKey) ticket.value = r.ticket
     },
@@ -474,7 +507,7 @@ const titleSaving = ref(false)
 let titleOpened = 0
 const titleInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('titleInput')
 function editTitle() {
-  if (!ticket.value || locked.value) return
+  if (!ticket.value || locked.value || ownedByGitHub('title')) return
   titleDraft.value = ticket.value.title
   titleBase.value = ticket.value.title
   titleTheirs.value = null
@@ -700,6 +733,129 @@ async function removeLink(l: TicketLink): Promise<boolean> {
   return !(await attempt((key) => (locked.value ? false : { send: (body: OpBody) => api.removeLink(key, l.id, body) })))
 }
 
+// The linked GitHub item (IN1a): each act one operation of the page's queue, made on the ticket as the one before left it. A failure the
+// store did not answer (GitHub's, the token's) is said in place in the tracker's words, and in a toast as any operation's.
+
+/** Why a tracker act failed, in the tracker's words: '' for a refusal the store answered (`attempt` says those). */
+function trackerFailure(e: unknown): string {
+  return e instanceof ApiError && !(e.body as { receipt?: unknown } | undefined)?.receipt ? trackerRefusalWords(e.code, e.message) : ''
+}
+
+/** One act on the linked item: '' once done, else why not. */
+async function githubAct(make: (key: string) => Act | null | false): Promise<string> {
+  let failed = ''
+  const words = await attempt((key) => {
+    const act = make(key)
+    if (!act) return act
+    return {
+      ...act,
+      send: (body: OpBody) =>
+        act.send(body).catch((e: unknown) => {
+          failed = trackerFailure(e)
+          throw e
+        }),
+    }
+  })
+  return words && (failed || words)
+}
+
+/** The linked item read again: the fields GitHub owns follow it; the status never moves. */
+async function refreshGitHub(): Promise<{ words: string; changed: boolean }> {
+  let changed = false
+  // A Refresh pressed reads again: what the page's own read on opening said is the past.
+  githubReadFailure.value = ''
+  const words = await githubAct((key) =>
+    locked.value || !ticket.value?.externalId
+      ? false
+      : {
+          noRev: true,
+          send: async (body: OpBody) => {
+            const r: RefreshReply = await api.refreshExternal(key, body)
+            changed = r.changed
+            return { receipt: r.receipt ?? { opId: body.opId, intent: 'ticket.refresh', status: 'done' }, ticket: r.ticket }
+          },
+        },
+  )
+  return { words, changed }
+}
+function authorityGitHub(field: 'title' | 'description', owner: 'dispatch' | 'github'): Promise<string> {
+  return githubAct((key) => (locked.value || !ticket.value?.externalId ? false : { send: (body: OpBody) => api.externalAuthority(key, { ...body, field, owner }) }))
+}
+function linkGitHub(url: string): Promise<string> {
+  return githubAct((key) => (locked.value || ticket.value?.externalId ? false : { send: (body: OpBody) => api.linkExternal(key, { ...body, url }) }))
+}
+function unlinkGitHub(): Promise<string> {
+  return githubAct((key) => (locked.value || !ticket.value?.externalId ? false : { send: (body: OpBody) => api.unlinkExternal(key, body) }))
+}
+/** Whether a link's URL names a GitHub item on a host a token is kept for: it can be read. */
+const readableLink = (url: string) => !!parseGitHubRef(url, '', tracker.refOptions.value)
+/**
+ * A link's item read again from GitHub (no operation: a read is recorded apart, and its `dispatch_read` event reads the page again); the
+ * page is read now too. '' once read, else why not in the tracker's words.
+ */
+async function readLinkAgain(l: TicketLink): Promise<string> {
+  const key = props.ticketKey
+  try {
+    await api.readLink(key, l.id)
+    void reload().catch(() => {})
+    return ''
+  } catch (e) {
+    void reload().catch(() => {})
+    return e instanceof ApiError ? trackerRefusalWords(e.code, e.message) : (e as Error).message
+  }
+}
+function readLinkWhole(l: TicketLink) {
+  return api.linkRead(props.ticketKey, l.id)
+}
+/** Who owns a field when GitHub does: the words its editor says in place of Edit. */
+const ownedByGitHub = (field: 'title' | 'description') => !!ticket.value?.externalId && ticket.value.owners?.[field] === 'github'
+
+// A page that opens on a linked item read more than ten minutes ago reads it again, once per ticket it shows (Owner decision 5): nothing
+// else reads GitHub by itself.
+// That read is the page's, not the person's: it goes outside the queue of the ticket's edits, so no edit waits for it; the panel says
+// "reading GitHub…" while it runs and keeps its failure in its own words, with Refresh to read again, never in a toast; and it is asked
+// only once the tokens are listed, for an item on a host a token is kept for (with none, there is nothing to ask GitHub).
+let staleAsked = ''
+/** The page's own read of the linked item on opening is under way, and why it failed ('' for none). */
+const githubReading = ref(false)
+const githubReadFailure = ref('')
+async function readOnOpen(key: string): Promise<void> {
+  githubReading.value = true
+  githubReadFailure.value = ''
+  try {
+    await ops.run<ActReply>(
+      async (body: OpBody) => {
+        const r: RefreshReply = await api.refreshExternal(key, body)
+        return { receipt: r.receipt ?? { opId: body.opId, intent: 'ticket.refresh', status: 'done' }, ticket: r.ticket }
+      },
+      {
+        thing: `ticket:${key}`,
+        what: key,
+        raise: true,
+        apply: (r) => {
+          if (r.ticket && key === props.ticketKey) ticket.value = r.ticket
+        },
+        rev: (r) => r.ticket?.rev,
+      },
+    )
+    if (key === props.ticketKey) void readHistory().catch(() => {})
+  } catch (e) {
+    if (key === props.ticketKey) githubReadFailure.value = trackerFailure(e) || dispatchFailureWords(e)
+  } finally {
+    if (key === props.ticketKey) githubReading.value = false
+  }
+}
+watch(
+  () => [ticket.value?.key, ticket.value?.externalRead?.readAt, !!ticket.value?.externalId, locked.value, tracker.available.value, tracker.entries.value] as const,
+  ([key, readAt, linked, isLocked, listed, kept]) => {
+    if (!key || !linked || isLocked || listed === null || staleAsked === key || key !== props.ticketKey) return
+    staleAsked = key
+    const host = snapshotOf(ticket.value?.externalSnapshot)?.host
+    if (!host || !kept.some((e) => e.host === host)) return
+    if (readIsStale(readAt, Date.now())) void readOnOpen(key)
+  },
+)
+
 /** The ticket deleted: a tombstone, its key kept, every reference to it kept, inactive, until its undelete. */
 function deleteTicket() {
   deleteOpen.value = false
@@ -729,6 +885,9 @@ const router = useRouter()
 
 // The Review view (RV1): ?view=review, at the candidate ?candidate= names (the first standing one when none).
 const reviewView = computed(() => route.query.view === 'review')
+// The compare view (Program item CP1, PR-4): ?view=compare&run=<any run of the chain>, drawn in place of the sections as the Review view is.
+const compareView = computed(() => route.query.view === 'compare')
+const compareRun = computed(() => (typeof route.query.run === 'string' ? route.query.run : ''))
 const reviewCandidate = computed(() => (typeof route.query.candidate === 'string' ? route.query.candidate : ''))
 function pickReviewCandidate(c: string) {
   // Another candidate: a receipt the link named was the last one's.
@@ -930,8 +1089,9 @@ const askBrakeman = computed(() =>
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
             <span class="min-w-0 break-words" data-ticket-title>{{ ticket.title }}</span>
-            <IconButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
+            <IconButton v-if="!locked && !ownedByGitHub('title')" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
           </h1>
+          <p v-if="!editingTitle && ownedByGitHub('title')" class="text-xs text-muted" data-owned-by="github" data-title-owned>The title: {{ GITHUB_OWNED_WORDS }}</p>
           <p v-if="editingTitle && titleTheirs !== null" class="flex items-start gap-1.5 text-xs text-warning" data-title-theirs>
             <UIcon name="i-lucide-triangle-alert" class="mt-px size-3.5 flex-none" />
             <span class="min-w-0 break-words">The title was changed to “{{ titleTheirs }}” while you edited it. Save again to replace it with yours, or Cancel to keep it.</span>
@@ -968,25 +1128,62 @@ const askBrakeman = computed(() =>
         >
           <template #decisions>
             <DispatchDecisions :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
-            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" :reads="ticket.linkReads" :readable="readableLink" :read-again="readLinkAgain" :read-whole="readLinkWhole" />
           </template>
         </DispatchReview>
 
-        <!-- The strip of sections, staying at the top as the page scrolls (not in the Review view). -->
-        <DispatchTicketStrip v-if="!reviewView" :sections="strip" />
+        <!-- The compare view (CP1) in place of the sections. -->
+        <DispatchComparison v-if="compareView" :ticket-key="ticket.key" :ticket-id="ticket.id" :run="compareRun" :agents="agents" />
+
+        <!-- The strip of sections, staying at the top as the page scrolls (not in the Review view, nor the compare view). -->
+        <DispatchTicketStrip v-if="!reviewView && !compareView" :sections="strip" />
 
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
-        <div v-if="!reviewView" class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div v-if="!reviewView && !compareView" class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
-            <TicketMarkdown id="ticket-description" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" :attachment-url="files.resolver.value" />
+            <DispatchExternal
+              id="ticket-github"
+              tabindex="-1"
+              class="scroll-mt-14 outline-none"
+              :ticket="ticket"
+              :locked="locked"
+              :now="now"
+              :can-link="tracker.entries.value.length > 0"
+              :image="files.image"
+              :refresh="refreshGitHub"
+              :reading="githubReading"
+              :read-failure="githubReadFailure"
+              :authority="authorityGitHub"
+              :link="linkGitHub"
+              :unlink="unlinkGitHub"
+              :publish="() => openPublish(null, 'linked')"
+            />
+            <TicketMarkdown
+              id="ticket-description"
+              tabindex="-1"
+              class="scroll-mt-14 outline-none"
+              :text="ticket.description"
+              label="Description"
+              empty="Add a description…"
+              :max-bytes="MAX_DESCRIPTION"
+              :save="(text, base) => saveText('description', text, base)"
+              :disabled="locked || ownedByGitHub('description')"
+              :owned="ownedByGitHub('description') ? GITHUB_OWNED_WORDS : undefined"
+              :data-owned-by="ownedByGitHub('description') ? 'github' : undefined"
+              name="description"
+              :attachment-url="files.resolver.value"
+            />
             <TicketMarkdown id="ticket-acceptance" tabindex="-1" class="scroll-mt-14 outline-none" :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" :attachment-url="files.resolver.value" />
             <DispatchPlan id="ticket-plan" ref="planSection" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :plans="plan" :project="project" :archived="archived" :locked="locked" :agents="agents" :now="now" />
             <DispatchRuns id="ticket-runs" tabindex="-1" class="scroll-mt-14 outline-none" :links="ticket.links ?? []" :runs="runs" :changes="changes" :names="historyNames" :history-more="!!historyNext" :locked="locked" :status="ticket.status" :now="now" :add="linkRun" :remove="removeLink" @revise="reviseFrom" @follow-up="planSection?.launch()" />
+            <DispatchCaptures id="ticket-captures" tabindex="-1" class="scroll-mt-14 outline-none" :ticket-key="ticket.key" :attachments="ticket.attachments ?? []" :image="files.image" :now="now" />
 
             <DispatchDecisions id="ticket-decisions" tabindex="-1" class="scroll-mt-14 outline-none" :rows="decisions" :records="decisionRecords.decisions.value" :required="approvedPlan?.body.decisions" :revision="approvedPlan ? revisionTag(approvedPlan.n) : ''" :plan-id="approvedPlan?.id" :now="now" />
 
             <DispatchClosePolicy id="ticket-close" tabindex="-1" class="scroll-mt-14 outline-none" :ticket="ticket" :locked="locked" :now="now" :accept="accept" :unaccept="unaccept" :close="closeTicket" />
-            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" />
+            <DispatchLinks :links="ticket.links ?? []" :locked="locked" :now="now" :add="addLink" :remove="removeLink" :candidates="deliveryChoices" :candidates-loading="candidates.loading.value" :candidates-error="candidates.error.value" :withdrawn="withdrawn" :reads="ticket.linkReads" :readable="readableLink" :read-again="readLinkAgain" :read-whole="readLinkWhole" :publish="(l) => openPublish(null, `link:${l.id}`)" />
+            <DispatchPublications v-if="canPublish || publications.length || publicationsNeedYou" :ticket-key="ticket.key" :publications="publications" :need-you="publicationsNeedYou" :locked="locked" :now="now" :can-publish="canPublish" @publish="(from) => openPublish(from)" @changed="readTicket" />
+            <DispatchPublish v-model:open="publishOpen" :ticket="ticket" :target="publishTarget" :from="publishFrom" @changed="readTicket" />
             <DispatchPeople id="ticket-people" tabindex="-1" class="scroll-mt-14 outline-none" :people="people" :plan="approvedPlan" :launches="knownLaunches" :agents="agents" @plan="goSection('plan')" />
 
             <DispatchRelations :ticket="ticket" :project="project" :locked="locked" :add="addRelation" :remove="removeRelation" />

@@ -2,7 +2,8 @@
 import type { DispatchTicket, NewPlan, NewPlanReference, PlanBody, PlanDecision, PlanSummary } from '~/composables/useDispatch'
 import type { CrewPerson, CrewSummary } from '~/composables/useSessions'
 import type { TicketPlans } from '~/composables/useTicketPlans'
-import { commentAuthor } from '~/utils/dispatch'
+import { commentAuthor, linkLabel, sizeWords } from '~/utils/dispatch'
+import { captureAttachments } from '~/utils/captureSend'
 import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDecisionId, parseReference, planDecisionsOut, referenceText, revisionTag, shortCommit } from '~/utils/dispatchPlans'
 
 /**
@@ -15,6 +16,9 @@ import { FOR_NONE, PLAN_BOUNDS, decisionsProblem, forItems, keptComments, nextDe
  * being out of sight. Nothing is proposed from a revision before its body is read: what it holds is carried over, never dropped for
  * being unread, so until it is the dialog says why (with Read it again) and asks nothing, and the form is filled from it once it is. The
  * server reads the crew, the commit and the references and refuses, in words, what does not hold; the refusal is said in place.
+ * For a ticket linked to a GitHub item (Program item IN1a, PR-9): its Steps to reproduce, on by default when the item has them, sent
+ * pinned to the item and the steps' SHA-256 as shown (the approval covers that very text, and a change of the steps since refuses it),
+ * and its delivery and external links as evidence, at most 8; the imported images are among the attachments above.
  */
 const props = defineProps<{
   ticket: DispatchTicket
@@ -41,6 +45,10 @@ const comments = ref<string[]>([])
 const constraints = ref('')
 const decisions = ref<PlanDecision[]>([])
 const note = ref('')
+/** The linked item's steps to reproduce handed over (IN1a): on by default when it has them. */
+const repro = ref(false)
+/** The links named as evidence, by id. */
+const evidence = ref<string[]>([])
 const error = ref('')
 const sending = ref(false)
 
@@ -55,6 +63,18 @@ const crewItems = computed(() =>
     .map((c) => ({ label: c.name, value: c.id, description: crewWhy(c) || `${c.members.length} ${c.members.length === 1 ? 'member' : 'members'} · ${c.cwd || 'the server’s folder'}`, disabled: !!crewWhy(c) }))
     .sort((a, b) => Number(a.disabled) - Number(b.disabled) || a.label.localeCompare(b.label)),
 )
+
+/** The steps the linked item has, with their pin: none for a ticket not linked, or an item with no Steps to reproduce. */
+const reproOffer = computed(() => {
+  const sn = props.ticket.externalSnapshot
+  const id = props.ticket.externalId
+  if (!id || !sn?.repro || !sn.reproSha256) return null
+  return { identity: id, sha256: sn.reproSha256, steps: sn.repro, ref: sn.space && sn.id ? `${sn.space}#${sn.id}` : 'the linked item' }
+})
+/** The links a revision may name as evidence: the live delivery and external ones. */
+const evidenceLinks = computed(() => (props.ticket.links ?? []).filter((l) => !l.deletedAt && (l.kind === 'delivery' || l.kind === 'external')))
+/** The bound of evidence links a revision names (dispatch.MaxPackageEvidence). */
+const MAX_EVIDENCE = 8
 
 const liveAttachments = computed(() => (props.ticket.attachments ?? []).filter((a) => !a.deletedAt))
 /** The recent comments offered: the newest live ones the ticket's read carries, at most the bound. */
@@ -92,13 +112,20 @@ function fill() {
   base.value = f ? f.revision.base : ''
   refs.value = (b?.references ?? []).map((r) => referenceText(r))
   const live = new Set(liveAttachments.value.map((a) => a.id))
-  attachments.value = (b?.attachments ?? []).filter((id) => live.has(id))
+  // A revision based on none hands over the ticket's captures (PV1: the screenshot and the document a send attached), ticked at first.
+  const picked = captureAttachments(liveAttachments.value, PLAN_BOUNDS.attachments, PLAN_BOUNDS.attachmentBytes)
+  attachments.value = f ? (b?.attachments ?? []).filter((id) => live.has(id)) : picked.ids
+  capturesLeft.value = f ? 0 : picked.left
   comments.value = keptComments((b?.comments ?? []).map((c) => c.id), props.ticket.comments ?? [])
   const offered = new Set(recentComments.value.map((c) => c.id))
   earlierComments.value = comments.value.filter((id) => !offered.has(id))
   constraints.value = b?.constraints ?? ''
   decisions.value = (b?.decisions ?? []).map((d) => ({ ...d, before: [...d.before] }))
   note.value = ''
+  // A revision revised hands over what it handed over, as far as the ticket still holds it; a new one the steps when the item has them.
+  repro.value = !!reproOffer.value && (f ? !!b?.source?.repro : true)
+  const links = new Set(evidenceLinks.value.map((l) => l.id))
+  evidence.value = (b?.source?.evidence ?? []).filter((id) => links.has(id))
   error.value = ''
 }
 
@@ -155,8 +182,8 @@ function addDecision() {
 function removeDecision(i: number) {
   decisions.value = decisions.value.filter((_, j) => j !== i)
 }
-function toggle(which: 'attachments' | 'comments', id: string, on: boolean | 'indeterminate') {
-  const list = which === 'attachments' ? attachments : comments
+function toggle(which: 'attachments' | 'comments' | 'evidence', id: string, on: boolean | 'indeterminate') {
+  const list = which === 'attachments' ? attachments : which === 'comments' ? comments : evidence
   list.value = on === true ? [...new Set([...list.value, id])] : list.value.filter((x) => x !== id)
 }
 
@@ -172,12 +199,19 @@ function setFor(d: PlanDecision, v: string) {
   else d.for = v
 }
 
+/** How many of the ticket's capture files a new revision left unticked for the bytes (captureAttachments). */
+const capturesLeft = ref(0)
+/** The ticked attachments' bytes in all. */
+const attachmentBytes = computed(() => liveAttachments.value.filter((a) => attachments.value.includes(a.id)).reduce((n, a) => n + (a.size ?? 0), 0))
+
 const blocked = computed(() => {
   if (waiting.value) return `Revision ${props.from!.revision.n} is not read yet`
   if (!crew.value) return 'Pick a crew with tasks'
   if (refErrors.value.some((e) => e)) return 'A reference is not one'
   if (attachments.value.length > PLAN_BOUNDS.attachments) return `At most ${PLAN_BOUNDS.attachments} attachments`
+  if (attachmentBytes.value > PLAN_BOUNDS.attachmentBytes) return `The attachments ticked are ${sizeWords(attachmentBytes.value)}, at most ${sizeWords(PLAN_BOUNDS.attachmentBytes)}`
   if (comments.value.length > PLAN_BOUNDS.comments) return `At most ${PLAN_BOUNDS.comments} comments`
+  if (evidence.value.length > MAX_EVIDENCE) return `At most ${MAX_EVIDENCE} evidence links`
   return decisionsProblem(decisions.value, crewPeople.value, crew.value)
 })
 
@@ -193,6 +227,8 @@ async function submit() {
   if (constraints.value.trim()) req.constraints = constraints.value
   if (decisions.value.length) req.decisions = planDecisionsOut(decisions.value)
   if (note.value.trim()) req.note = note.value
+  const r = repro.value ? reproOffer.value : null
+  if (r || evidence.value.length) req.source = { ...(r ? { repro: { identity: r.identity, sha256: r.sha256 } } : {}), ...(evidence.value.length ? { evidence: [...evidence.value] } : {}) }
   sending.value = true
   error.value = ''
   try {
@@ -243,6 +279,9 @@ async function submit() {
         <div v-if="liveAttachments.length" class="flex flex-col gap-1.5">
           <span class="text-xs font-medium text-muted">Attachments to hand over <span class="text-dimmed">(at most {{ PLAN_BOUNDS.attachments }})</span></span>
           <UCheckbox v-for="a in liveAttachments" :key="a.id" :model-value="attachments.includes(a.id)" :label="a.name" :data-plan-propose-attachment="a.name" @update:model-value="(v) => toggle('attachments', a.id, v)" />
+          <p v-if="capturesLeft" class="text-xs text-muted" data-plan-propose-captures-left>
+            {{ capturesLeft }} older capture {{ capturesLeft === 1 ? 'file is' : 'files are' }} left unticked: ticked, the attachments would pass {{ sizeWords(PLAN_BOUNDS.attachmentBytes) }} in all.
+          </p>
         </div>
         <div v-if="recentComments.length" class="flex flex-col gap-1.5">
           <span class="text-xs font-medium text-muted">Comments to hand over <span class="text-dimmed">(their words now; an edit after makes the approval stale)</span></span>
@@ -264,6 +303,22 @@ async function submit() {
             :label="commentLabel(id, i)"
             :data-plan-propose-earlier-comment="id"
             @update:model-value="(v) => toggle('comments', id, v)"
+          />
+        </div>
+
+        <div v-if="reproOffer" class="flex flex-col gap-1.5">
+          <UCheckbox v-model="repro" :label="`Steps to reproduce, from ${reproOffer.ref}`" description="As they are now: a change of them on GitHub before the launch makes the approval ask again." data-propose-repro />
+          <pre class="ml-6 max-h-32 overflow-auto rounded-md bg-elevated px-2 py-1 font-mono text-xs whitespace-pre-wrap break-words text-muted" data-propose-repro-text>{{ reproOffer.steps }}</pre>
+        </div>
+        <div v-if="evidenceLinks.length" class="flex flex-col gap-1.5">
+          <span class="text-xs font-medium text-muted">Links to hand over as evidence <span class="text-dimmed">(at most {{ MAX_EVIDENCE }})</span></span>
+          <UCheckbox
+            v-for="l in evidenceLinks"
+            :key="l.id"
+            :model-value="evidence.includes(l.id)"
+            :label="`${l.kind === 'delivery' ? 'Delivery' : 'External'}: ${linkLabel(l.url)}`"
+            :data-propose-evidence="l.id"
+            @update:model-value="(v) => toggle('evidence', l.id, v)"
           />
         </div>
 

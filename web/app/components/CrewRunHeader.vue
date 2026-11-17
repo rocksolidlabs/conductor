@@ -13,6 +13,8 @@ import { ticketPath } from '~/utils/dispatch'
 import { revisionTag } from '~/utils/dispatchPlans'
 import { ACCOUNT_UNREAD, accountUnreadable, addMemberProblem, boundWords, readNamedAccounts } from '~/utils/crewLaunch'
 import { runOffer } from '~/utils/runs'
+import { comparisonLink, runCompare } from '~/utils/compare'
+import { packageSourceWords } from '~/utils/publication'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
@@ -34,7 +36,8 @@ import { runOffer } from '~/utils/runs'
  * their page: never started, they own its decisions and its tasks' outcomes. Under them, each member's
  * login and model as the launch bound them (docs/plans/capacity.md, PR-7): an account by its label (the
  * accounts are the admin's), any other login by where it comes from; for a run launched from a ticket's
- * revision that named no account for a member, that it took the default at the launch.
+ * revision that named no account for a member, that it took the default at the launch. A comparison's run (Program item CP1) links to
+ * its ticket's compare view after the sentence, and from the run's menu.
  */
 const props = withDefaults(
   defineProps<{
@@ -61,14 +64,20 @@ const router = useRouter()
 // Who launched a run from a ticket, from the launch it names (GET /api/dispatch/launches/{id}): once, a launch never changes who made it.
 const dispatchApi = useDispatchApi()
 const launchBy = ref('')
+// The linked item the launch's package names as its source (IN1a): "GitHub acme/api#612" in the launched-from chip; '' for none.
+const launchSource = ref('')
 watch(
   () => props.run?.ticket?.launch,
   async (id) => {
     launchBy.value = ''
+    launchSource.value = ''
     if (!id) return
     try {
       const l = await dispatchApi.launchRead(id)
-      if (props.run?.ticket?.launch === id) launchBy.value = l.createdBy
+      if (props.run?.ticket?.launch === id) {
+        launchBy.value = l.createdBy
+        launchSource.value = packageSourceWords(l.package)
+      }
     } catch {
       /* the launch's chip reads it when opened */
     }
@@ -239,11 +248,15 @@ async function stopAll() {
   }
 }
 
-// Add agent and Share, in the run's one menu: each disabled where its button was.
+// A comparison's run (Program item CP1): its ticket's compare view, linked in row two and in the menu, never in row one.
+const comparison = computed(() => (runCompare(props.run) ? comparisonLink(props.run?.ticket?.key ?? props.ticket?.key, props.runId) : null))
+
+// Add agent and Share, in the run's one menu: each disabled where its button was; Comparison for a comparison's run.
 const menu = computed(() => [
   [
     { label: 'Add agent', icon: 'i-lucide-user-plus', disabled: !runOffer(props.run).add, onSelect: () => void openAdd(), 'data-run-add': '' },
     { label: 'Share', icon: 'i-lucide-share-2', disabled: !props.run, onSelect: () => (shareOpen.value = true), 'data-run-share': '' },
+    ...(comparison.value ? [{ label: 'Comparison', icon: 'i-lucide-columns-3', to: comparison.value, 'data-run-comparison-menu': '' }] : []),
   ],
 ])
 
@@ -270,17 +283,18 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
           <UButton
             v-if="chips.launched"
             :to="ticketPath(chips.launched.key)"
-            :label="`Launched from ${chips.launched.key} · plan ${revisionTag(chips.launched.planN)}`"
             icon="i-lucide-ticket"
             size="xs"
             color="neutral"
             variant="soft"
             class="min-w-0 shrink-[2] self-center"
             :ui="{ label: 'truncate' }"
-            :title="`Launched from ${chips.launched.key} at its revision ${chips.launched.rev}, by plan revision ${chips.launched.planN}: the run follows the ticket as launched`"
+            :title="`Launched from ${chips.launched.key} at its revision ${chips.launched.rev}, by plan revision ${chips.launched.planN}${launchSource ? `, its source ${launchSource}` : ''}: the run follows the ticket as launched`"
             data-run-launched-from
             :data-run-launched-key="chips.launched.key"
-          />
+          >
+            <span class="truncate">Launched from {{ chips.launched.key }} · plan {{ revisionTag(chips.launched.planN) }}<span v-if="launchSource" data-run-source> · {{ launchSource }}</span></span>
+          </UButton>
           <UButton
             v-if="chips.linked"
             :to="ticketPath(chips.linked.key)"
@@ -329,6 +343,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <span v-for="b in bar" :key="b.part" class="h-full" :class="SEGMENT[b.part]" :style="{ flexGrow: b.count, flexBasis: 0 }" :title="b.words" :data-part="b.part" :data-count="b.count" />
       </span>
       <span v-if="statusLine?.text" class="min-w-0 text-default" :data-needs="statusLine.needs" data-run-progress data-run-state>{{ statusLine.text }}</span>
+      <UButton v-if="comparison" :to="comparison" label="Comparison" icon="i-lucide-columns-3" size="xs" color="neutral" variant="ghost" class="flex-none" :title="`The comparison of this run's candidates, on ${run.ticket?.key ?? ticket?.key}`" data-run-comparison />
       <span v-if="run.paused" class="inline-flex min-w-0 max-w-full items-center gap-1 text-warning" :title="run.pausedWhy ? `Paused: ${run.pausedWhy}` : 'Paused by a person'" data-run-paused-note>
         <UIcon name="i-lucide-pause" class="size-3.5 flex-none" />
         <span class="flex-none">scheduling paused</span>

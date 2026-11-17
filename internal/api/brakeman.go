@@ -350,6 +350,8 @@ func (s *Server) openBrakemanDesk(st *store.Store) *brakemanDesk {
 		d.admit.Unlock()
 		d.poke()
 		d.role.Poke()
+		// The capture sends wait for the desk to hold its records.
+		d.s.pokeCaptureSends()
 	})
 	d.loadQueue()
 	if ownedAtOpen {
@@ -1814,6 +1816,8 @@ func (s *Server) brakemanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "turn_over", err.Error())
 	case errors.Is(err, brakeman.ErrBound):
 		writeError(w, http.StatusRequestEntityTooLarge, "bound", err.Error())
+	case errors.Is(err, brakeman.ErrPinsFull):
+		writeError(w, http.StatusServiceUnavailable, "pins_full", err.Error())
 	case errors.Is(err, errDeskClosing):
 		writeError(w, http.StatusServiceUnavailable, "shutting_down", err.Error())
 	default:
@@ -2152,6 +2156,49 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
+	if strings.HasPrefix(body.OpID, compareOpPrefix) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+compareOpPrefix+" is a comparison's own request: choose another")
+		return
+	}
+	if err := s.compareAskRefusal(r.Context(), in); err != nil {
+		var refused *apiError
+		if errors.As(err, &refused) {
+			writeAPIError(w, refused)
+			return
+		}
+		s.brakemanError(w, err)
+		return
+	}
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		s.brakemanError(w, a.err)
+	case a.code != "":
+		writeError(w, a.status, a.code, a.words)
+	default:
+		writeJSON(w, a.status, map[string]any{"request": a.req})
+	}
+}
+
+// askAnswer is what admitAsk made of a request: the request kept, 200
+// for a repeat or 201 for a new one; or a refusal of the desk's, its
+// status, code and words; or a store's error, as brakemanError answers it.
+type askAnswer struct {
+	req    brakeman.Request
+	status int
+	code   string
+	words  string
+	err    error
+}
+
+// admitAsk keeps the request in, as a person's ask is kept: a repeat of
+// its opId answers its request whatever stands since; else Brakeman on,
+// not stuck, the queue's bound and (unless spare) the day's budget, those
+// queued counted, then the request created, queued and told to the
+// background role. spare is the comparison's own request (compare_drafts.go):
+// past the day's budget it is queued all the same, and its start closes
+// it over_budget, recorded, as any request's start does past the budget.
+func (s *Server) admitAsk(d *brakemanDesk, in brakeman.Request, spare bool) askAnswer {
 	if f := d.beforeAdmit.Load(); f != nil {
 		(*f)()
 	}
@@ -2174,33 +2221,33 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	// is refused, or after it, and cancels it with the queue.
 	d.admit.Lock()
 	defer d.admit.Unlock()
+	// A pinned ask (a capture's send, settled from its stored request) is
+	// refused once the desk closes, so no request is pinned past the stop.
+	if in.Pin && d.closing.Load() {
+		return askAnswer{err: errDeskClosing}
+	}
 	// A repeat answers its request whatever stands since. It is looked up
 	// in admission's order, so of two asks with one opId at once the
 	// second finds the first's request, never a slot the first just took.
-	if _, found, err := d.st.ByOp(body.OpID); err == nil && found {
+	if _, found, err := d.st.ByOp(in.OpID); err == nil && found {
 		req, _, err := d.st.Create(in)
 		if err != nil {
-			s.brakemanError(w, err)
-			return
+			return askAnswer{err: err}
 		}
 		if req.Open() && d.recovered.Load() {
 			asked = req.ID
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"request": req})
-		return
+		return askAnswer{req: req, status: http.StatusOK}
 	}
 	if !d.recovered.Load() {
-		s.brakemanError(w, d.notOwner())
-		return
+		return askAnswer{err: d.notOwner()}
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		s.brakemanError(w, err)
-		return
+		return askAnswer{err: err}
 	}
 	if !cfg.Enabled {
-		writeError(w, http.StatusConflict, "brakeman_off", "Brakeman is off: turn it on in Settings")
-		return
+		return askAnswer{status: http.StatusConflict, code: "brakeman_off", words: "Brakeman is off: turn it on in Settings"}
 	}
 	// The request keeps its agent's capacity view as it is queued, made
 	// for the configuration it is admitted under.
@@ -2212,26 +2259,23 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stuck {
-		writeError(w, http.StatusServiceUnavailable, "brakeman_stuck", "the last turn's run did not stop: stop it from its run page")
-		return
+		return askAnswer{status: http.StatusServiceUnavailable, code: "brakeman_stuck", words: "the last turn's run did not stop: stop it from its run page"}
 	}
 	if len(d.queue) >= brakemanQueue {
-		writeError(w, http.StatusTooManyRequests, "queue_full", fmt.Sprintf("%d requests wait already", brakemanQueue))
-		return
+		return askAnswer{status: http.StatusTooManyRequests, code: "queue_full", words: fmt.Sprintf("%d requests wait already", brakemanQueue)}
 	}
-	turns, err := d.st.TurnsToday(d.now())
-	if err != nil {
-		s.brakemanError(w, err)
-		return
-	}
-	if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
-		writeError(w, http.StatusTooManyRequests, "budget_spent", fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay))
-		return
+	if !spare {
+		turns, err := d.st.TurnsToday(d.now())
+		if err != nil {
+			return askAnswer{err: err}
+		}
+		if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
+			return askAnswer{status: http.StatusTooManyRequests, code: "budget_spent", words: fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay)}
+		}
 	}
 	req, created, err := d.st.Create(in)
 	if err != nil {
-		s.brakemanError(w, err)
-		return
+		return askAnswer{err: err}
 	}
 	status := http.StatusOK
 	if created {
@@ -2240,8 +2284,32 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		d.publish(req.ID)
 		d.poke()
 		asked = req.ID
+		if req.Kind == brakeman.KindCompare {
+			s.drafts.asked(req)
+		}
 	}
-	writeJSON(w, status, map[string]any{"request": req})
+	return askAnswer{req: req, status: status}
+}
+
+// askBrakeman is the desk's admission of a request in for a caller that
+// is not the ask route: a capture's send (capture_sends.go). It is
+// admitAsk, the day's budget counted, in that caller's terms: a repeat of
+// in's op id answers its request whatever stands since (created false); a
+// new one is kept and queued under admission's order, unless the desk
+// refuses it in its own words (aerr): brakeman_off, brakeman_stuck,
+// queue_full, budget_spent. err is the store's (brakemanError answers
+// it): brakeman_not_owner before the desk holds the records' queue, an
+// invalid ask, pins_full for a pinned one past the store's pins, and
+// shutting_down for a pinned ask once the desk closes.
+func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman.Request, created bool, aerr *apiError, err error) {
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		return brakeman.Request{}, false, nil, a.err
+	case a.code != "":
+		return brakeman.Request{}, false, newAPIError(a.status, a.code, a.words), nil
+	}
+	return a.req, a.status == http.StatusCreated, nil, nil
 }
 
 // handleBrakemanRequests answers a page of requests, newest first:
@@ -2383,19 +2451,27 @@ func (s *Server) handleBrakemanCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "opId is 1 to 32 of A-Z, a-z, 0-9, . _ ~ -")
 		return
 	}
-	req, err := d.st.Get(id)
+	req, _, err := d.cancelBrakeman(id)
 	if err != nil {
 		s.brakemanError(w, err)
 		return
 	}
-	if req.Open() {
-		by := "a person cancelled it"
-		if req, err = d.closeTurn(id, brakeman.StateCancelled, by); err != nil {
-			s.brakemanError(w, err)
-			return
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"request": req})
+}
+
+// cancelBrakeman cancels the request id, the cancel route's and a
+// capture's send's cancel (capture_sends.go): an open one is closed
+// cancelled (closeTurn: a queued one leaves the queue, a starting or
+// running one has its run stopped after the write), closed true; a closed
+// one answers as it stands. The store's error otherwise (ErrNotFound for a
+// request not kept, a pruned one among them).
+func (d *brakemanDesk) cancelBrakeman(id string) (brakeman.Request, bool, error) {
+	req, err := d.st.Get(id)
+	if err != nil || !req.Open() {
+		return req, false, err
+	}
+	req, err = d.closeTurn(id, brakeman.StateCancelled, "a person cancelled it")
+	return req, err == nil, err
 }
 
 // brakemanRun answers 409 brakeman_run for a Brakeman turn's run, which

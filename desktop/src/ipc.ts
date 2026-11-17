@@ -6,6 +6,7 @@ import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
 import { zoomStatus, type ZoomStatus } from './zoom'
 import { asBrowserChoice, installedBrowsers, openUrl, systemBrowserDeps, type BrowserDeps } from './browsers'
+import { capturePreview, injectBridge, sameFrame, type BridgeDeps, type CaptureDeps, type PreviewContents, type PreviewFrame } from './preview'
 
 export interface IpcDeps {
   origin: () => string
@@ -42,6 +43,10 @@ export interface IpcDeps {
   zoom?: () => ZoomStatus & { announce: boolean }
   /** What finding and starting a browser takes of the computer (#436): the system's own when not given. */
   browsers?: BrowserDeps
+  /** Fetches the server's preview bridge (preview.ts injectBridge); without it the shell puts no bridge into a frame. */
+  previewFetch?: BridgeDeps['fetch']
+  /** The size of a window's content (preview.ts capturePreview); without it the shell takes no screenshot. */
+  contentSize?: CaptureDeps['contentSize']
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -56,6 +61,24 @@ export function trusted(senderUrl: string, origin: string): boolean {
   }
 }
 
+/**
+ * workbenchFrame says whether an IPC call came from the workbench's own main frame: the top frame of the window that sent it (no
+ * other frame of it, which the preload is never put in anyway), whose page and whose origin are the server's, over http(s). A page
+ * of the app's own (a file: page), which trusted lets through for the other channels, is refused here.
+ */
+export function workbenchFrame(e: { sender?: { mainFrame?: PreviewFrame } | null; senderFrame?: PreviewFrame | null }, origin: string): boolean {
+  const f = e.senderFrame
+  const main = e.sender?.mainFrame
+  if (!f || !main || f.parent !== null || !sameFrame(f, main)) return false
+  try {
+    const u = new URL(f.url)
+    const o = new URL(origin)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.protocol === o.protocol && u.origin === o.origin && f.origin === o.origin
+  } catch {
+    return false
+  }
+}
+
 /** registerIpc wires the handlers the preload bridge calls; each checks its sender first. */
 export function registerIpc(d: IpcDeps): void {
   const saver = new SettingsSaver()
@@ -63,7 +86,27 @@ export function registerIpc(d: IpcDeps): void {
     if (!trusted(e.senderFrame?.url ?? '', d.origin())) throw new Error('refused: not the workbench')
     return f(e, ...args)
   }
+  // The preview's two (docs/architecture.md, Previews and captures): they run script in the asking window's frames and read its
+  // pixels, so they answer the workbench's main frame alone, and act on that window alone.
+  const mainFrameOnly = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
+    if (!workbenchFrame(e as never, d.origin())) throw new Error("refused: not the workbench's main frame")
+    return f(e, ...args)
+  }
   ipcMain.handle('conductor:token', guard(() => d.token()))
+  ipcMain.handle(
+    'conductor:previewBridge',
+    mainFrameOnly(async (e, origin) => {
+      if (!d.previewFetch) return { refused: 'refused: this app puts no bridge into a preview' }
+      return injectBridge(e.sender as unknown as PreviewContents, origin, { origin: d.origin, fetch: d.previewFetch })
+    }),
+  )
+  ipcMain.handle(
+    'conductor:capturePreview',
+    mainFrameOnly(async (e, rect) => {
+      if (!d.contentSize) return { refused: 'refused: this app takes no screenshot' }
+      return capturePreview(e.sender as unknown as PreviewContents, rect, { contentSize: d.contentSize })
+    }),
+  )
   ipcMain.handle(
     'conductor:openExternal',
     guard(async (_e, url) => {

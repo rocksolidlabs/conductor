@@ -1,5 +1,7 @@
+import type { LinkRead } from '~/composables/useDispatch'
 import { cutBytes } from './quote'
 import { shortCommit } from './dispatchPlans'
+import { checksWords } from './tracker'
 
 /**
  * A person's review of one candidate (Program item RV1, docs/plans/review-repair.md, "web/app"): a note made from a selection in the
@@ -8,7 +10,7 @@ import { shortCommit } from './dispatchPlans'
  * of where a finding's lines are, a finding's state from its marks, and the bases a candidate's diff may be read against. Pure.
  */
 
-export type NoteKind = 'line' | 'file' | 'general' | 'check'
+export type NoteKind = 'line' | 'file' | 'general' | 'check' | 'capture'
 export type NoteIntent = 'change' | 'question' | 'note'
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit'
 export type Side = 'candidate' | 'base'
@@ -28,6 +30,24 @@ export const MAX_ANCHOR_LINES = 12
 export const MAX_ANCHOR_LINE = 200
 /** What the run keeps of a repair at most (the ledger's MaxPayload): a request past it is refused whole. */
 export const MAX_REPAIR_PAYLOAD = 64 << 10
+/** The most evidence files a repair is handed (crew's maxEvidence): a capture revision's document, and its screenshot when it has one. */
+export const MAX_EVIDENCE = 8
+
+/**
+ * The evidence files a request of the batch hands a repair: each capture revision's once, whichever sends carried its notes (the server
+ * hands two sends of one revision's files over once), two for a note that does not say how many its send holds.
+ */
+export function evidenceFiles(body: ReviewBody, notes: readonly Pick<DraftNote, 'captureRev' | 'captureFiles'>[] = []): number {
+  const seen = new Map<string, number>()
+  body.findings.forEach((f, i) => {
+    if (f.kind !== 'capture' || !f.capture) return
+    const n = notes[i]
+    const key = n?.captureRev !== undefined ? `${f.capture.capture}@${n.captureRev}` : `send ${f.capture.send}`
+    seen.set(key, Math.max(seen.get(key) ?? 0, n?.captureFiles ?? 2))
+  })
+  return [...seen.values()].reduce((a, b) => a + b, 0)
+}
+
 /** A Dispatch id's length: the request is measured with ids of it. */
 const ID_LEN = 16
 
@@ -56,16 +76,41 @@ export interface DraftNote {
    * request: the batch's size counts it (changeRequestOf). For the draft alone; never sent.
    */
   measured?: RequestedCheck
+  /**
+   * A capture note's capture (kind `capture`, Add to a review): the capture, its send to a review and the annotation. The server makes
+   * its words, path and line from the annotation; `message` is the note as the person wrote it, shown in the draft and never sent.
+   */
+  capture?: CaptureChoice
+  /** A capture note's capture in words ("capture 0123abcd r2, annotation 1"), for the draft alone; never sent. */
+  captureName?: string
+  /**
+   * A capture note's capture revision and how many files its send holds (the document, and the screenshot when there is one), for the
+   * draft alone, never sent: two sends of one revision hold the same files, which a repair is handed once, and a repair takes at most
+   * MAX_EVIDENCE files.
+   */
+  captureRev?: number
+  captureFiles?: number
+}
+
+/** What a capture finding names (dispatch.CaptureRef): the capture, its send to a review, and the annotation's place from 1. */
+export interface CaptureChoice {
+  capture: string
+  send: string
+  k: number
 }
 
 /** The classes of a failed check (crew's ClassifyFailure): the server's hint, which a person may change. */
 export type FailureClass = 'code' | 'infrastructure' | 'flaky' | 'cancelled' | 'unavailable'
 export const FAILURE_CLASSES: readonly FailureClass[] = ['code', 'infrastructure', 'flaky', 'cancelled', 'unavailable']
 
-/** What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. */
+/**
+ * What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. A receipt of
+ * the ledger is Yardmaster's; an external one is a CI job on GitHub of a delivery's pull request (IN1a PR-10), which the server reads
+ * fresh again when the review is sent.
+ */
 export interface CheckChoice {
-  source: 'ledger'
-  /** `<run>/<task>/<n>/<phase>/<id>/<k>`. */
+  source: 'ledger' | 'external'
+  /** `<run>/<task>/<n>/<phase>/<id>/<k>`, or `github:<host>/<owner>/<repo>/check-runs/<n>` for an external one. */
   receipt: string
   chosen?: FailureClass
   quote?: string
@@ -84,6 +129,7 @@ export interface NewFinding {
   message?: string
   resolution?: string
   check?: CheckChoice
+  capture?: CaptureChoice
 }
 
 /** A selection in the diff (DiffEditor's `select`): the side, the lines from..to (1-based, whole lines), their text, and where to put the bar. */
@@ -132,6 +178,13 @@ export function noteFromSelection(path: string, side: Side, fileLines: readonly 
 export function findingOf(n: DraftNote): NewFinding {
   const f: NewFinding = { kind: n.kind, intent: n.intent }
   if (n.intent === 'change' && n.severity) f.severity = n.severity
+  if (n.kind === 'capture') {
+    // Its words, path and line are the server's, made from the annotation: the route refuses them from a body.
+    const resolution = n.intent === 'change' ? (n.resolution ?? '').trim() : ''
+    if (resolution) f.resolution = resolution
+    if (n.capture) f.capture = { capture: n.capture.capture, send: n.capture.send, k: n.capture.k }
+    return f
+  }
   if (n.kind !== 'general' && n.kind !== 'check') {
     if (n.path) f.path = n.path
     if (n.side) f.side = n.side
@@ -177,6 +230,22 @@ export interface ChangeRequest {
   base?: string
   summary?: string
   changes: Array<Omit<NewFinding, 'check'> & { id: string; check?: RequestedCheck }>
+  /** The evidence files its capture findings stand on (crew.EvidenceRef): each send's document and screenshot. */
+  evidence?: EvidenceRef[]
+}
+
+/** An evidence file a request names (crew.EvidenceRef): its name, SHA-256, size and the send that holds it. */
+export interface EvidenceRef {
+  name: string
+  sha256: string
+  bytes: number
+  send: string
+}
+
+/** A capture send's two files at their widest, as the server names them in a request: the request's measure counts them. */
+function worstEvidence(send: string): EvidenceRef[] {
+  const name = (ext: string) => `capture-${'f'.repeat(ID_LEN)}-r${'9'.repeat(18)}.${ext}`
+  return ['json', 'png'].map((ext) => ({ name: name(ext), sha256: 'f'.repeat(64), bytes: 16 << 20, send }))
 }
 
 /**
@@ -185,6 +254,12 @@ export interface ChangeRequest {
  * person's class and quote. The members Go's omitempty leaves out are optional here; `stable` is always written.
  */
 export interface RequestedCheck {
+  /** An external receipt's: its source, the job's name, conclusion, page and app. */
+  source?: string
+  name?: string
+  conclusion?: string
+  url?: string
+  app?: string
   receipt: string
   run?: string
   task?: string
@@ -228,16 +303,41 @@ export function requestedCheckOf(c: CheckRef): RequestedCheck {
   if (c.logBytes) r.logBytes = c.logBytes
   if (c.tail) r.tail = c.tail
   if (c.class) r.class = c.class
+  if (c.source === 'external') {
+    r.source = c.source
+    if (c.name) r.name = c.name
+    if (c.conclusion) r.conclusion = c.conclusion
+    if (c.url) r.url = c.url
+    if (c.app) r.app = c.app
+  }
   return r
 }
+
+/** The bounds of an external job's texts as the store keeps them (dispatch.MaxCheckName, a page's MaxExternalURL). */
+const MAX_JOB_NAME = 200
+const MAX_JOB_PAGE = 2048
 
 /**
  * A check note's receipt at its largest, for a note whose receipt the draft does not hold (a draft kept before it did): the parts its
  * identity names, a 64-hex subject and log hash, an exit, a signal, the failure's words and the output's tail at their bounds, the class.
  */
 function worstCheck(receipt: string): RequestedCheck {
-  const [run, task, n, phase, id, k] = receipt.split('/')
   const hex = 'f'.repeat(64)
+  if (receipt.startsWith('github:')) {
+    return {
+      source: 'external',
+      name: 'x'.repeat(MAX_JOB_NAME),
+      conclusion: 'action_required',
+      url: 'x'.repeat(MAX_JOB_PAGE),
+      app: 'x'.repeat(MAX_JOB_NAME),
+      receipt,
+      subject: hex,
+      stable: false,
+      tail: 'x'.repeat(MAX_CHECK_EXCERPT),
+      class: 'infrastructure',
+    }
+  }
+  const [run, task, n, phase, id, k] = receipt.split('/')
   return {
     receipt,
     run,
@@ -265,6 +365,7 @@ function worstCheck(receipt: string): RequestedCheck {
  * receipt at its largest), with the class chosen and the quote.
  */
 export function changeRequestOf(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): ChangeRequest {
+  const sends = [...new Set(body.findings.flatMap((f) => (f.kind === 'capture' && f.capture ? [f.capture.send] : [])))]
   return {
     review: '0'.repeat(ID_LEN),
     by,
@@ -274,12 +375,15 @@ export function changeRequestOf(body: ReviewBody, by: string, notes: readonly Pi
     changes: body.findings.map((f, i) => {
       const { check, ...rest } = f
       const id = (i + 1).toString(16).padStart(ID_LEN, '0')
+      // A capture finding's words, path and line at their largest: the server makes them from the annotation.
+      if (f.kind === 'capture') return { id, ...rest, path: 'p'.repeat(MAX_FINDING_PATH), from: 1e7, to: 1e7, message: 'x'.repeat(MAX_FINDING_MESSAGE) }
       if (!check) return { id, ...rest }
       const filled = { ...(notes[i]?.measured ?? worstCheck(check.receipt)), receipt: check.receipt }
       delete filled.chosen
       delete filled.quote
       return { id, ...rest, check: { ...filled, ...(check.chosen ? { chosen: check.chosen } : {}), ...(check.quote ? { quote: check.quote } : {}) } }
     }),
+    ...(sends.length ? { evidence: sends.flatMap(worstEvidence) } : {}),
   }
 }
 
@@ -312,8 +416,14 @@ export function repairBytes(cr: ChangeRequest): number {
 export const kib = (n: number) => Math.ceil(n / 1024)
 
 /** Where a note is, in words: "stub.txt:3–4 (base)", "stub.txt (the whole file)", "the candidate as a whole". */
-export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName'>): string {
+export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName' | 'capture' | 'captureName'>): string {
   if (n.kind === 'general') return 'the candidate as a whole'
+  if (n.kind === 'capture') {
+    const what = n.captureName || (n.capture ? `capture ${n.capture.capture.slice(0, 8)}, annotation ${n.capture.k}` : 'a capture')
+    if (!n.path) return what
+    return `${what}, drawn by ${n.path}${n.from ? `:${n.from}` : ''}`
+  }
+  if (n.kind === 'check' && n.check?.source === 'external') return `${n.checkName || 'a CI job'} failed on GitHub`
   if (n.kind === 'check') return `${n.checkName || 'the check'} failed (${n.check?.receipt ?? 'its receipt'})`
   const side = n.side === 'base' ? ' (base)' : ''
   if (n.kind === 'file') return `${n.path} (the whole file)${side}`
@@ -326,7 +436,7 @@ export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' |
  * fifty notes, a request with a change in it, each text within its bound, and a request within what the run keeps (64 KiB). Empty when
  * it may be sent; the server checks all of it again, and the task file's size, which only it can measure.
  */
-export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured'>[] = []): string[] {
+export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick<DraftNote, 'measured' | 'captureRev' | 'captureFiles'>[] = []): string[] {
   const out: string[] = []
   if (!body.findings.length && !body.summary) out.push('Add a note or a summary first.')
   if (body.findings.length > MAX_REVIEW_FINDINGS) out.push(`A review holds at most ${MAX_REVIEW_FINDINGS} notes: this one has ${body.findings.length}.`)
@@ -334,7 +444,8 @@ export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick
   if (body.summary && chars(body.summary) > MAX_REVIEW_SUMMARY) out.push(`The summary is more than ${MAX_REVIEW_SUMMARY} characters.`)
   body.findings.forEach((f, i) => {
     const what = `Note ${i + 1}`
-    if (!f.message) out.push(`${what} has no words.`)
+    if (!f.message && f.kind !== 'capture') out.push(`${what} has no words.`)
+    if (f.kind === 'capture' && !f.capture) out.push(`${what} names no capture.`)
     if (f.message && chars(f.message) > MAX_FINDING_MESSAGE) out.push(`${what}'s words are more than ${MAX_FINDING_MESSAGE} characters.`)
     if (f.resolution && chars(f.resolution) > MAX_FINDING_RESOLUTION) out.push(`${what}'s resolution is more than ${MAX_FINDING_RESOLUTION} characters.`)
     if (f.path && bytes(f.path) > MAX_FINDING_PATH) out.push(`${what}'s path is more than ${MAX_FINDING_PATH} bytes.`)
@@ -342,6 +453,8 @@ export function batchProblems(body: ReviewBody, by: string, notes: readonly Pick
   if (body.verdict === 'request_changes') {
     const n = repairBytes(changeRequestOf(body, by, notes))
     if (n > MAX_REPAIR_PAYLOAD) out.push(`The notes are ${kib(n)} KiB as the run keeps them, more than ${MAX_REPAIR_PAYLOAD >> 10} KiB: shorten them.`)
+    const files = evidenceFiles(body, notes)
+    if (files > MAX_EVIDENCE) out.push(`The captures' notes hand the repair ${files} files (each capture revision's document, and its screenshot), more than ${MAX_EVIDENCE}: send the notes of fewer captures, or send them as a comment.`)
   }
   return out
 }
@@ -414,6 +527,14 @@ export interface ReviewCandidateOption {
   value: string
   label: string
   standing: boolean
+  /** A comparison's candidate, once its selection is applied (Program item CP1, PR-8b): selected, or not selected. */
+  selection?: 'selected' | 'not-selected'
+}
+
+/** A picker item's label: the candidate, " · result" when it stands as its task's, then a comparison's " · selected" or " · not selected". */
+export function pickerLabel(o: ReviewCandidateOption): string {
+  const sel = o.selection === 'selected' ? ' · selected' : o.selection === 'not-selected' ? ' · not selected' : ''
+  return `${o.label}${o.standing ? ' · result' : ''}${sel}`
 }
 
 /** A base a candidate's diff may be read against: the commit, and what it is in words. */
@@ -579,6 +700,12 @@ export interface CheckRef extends CheckChoice {
   tail: string
   class: FailureClass
   previous?: { attempt: number; state: string; stage?: string; commit?: string }
+  /** An external receipt's (a CI job on GitHub): the job's name, conclusion, page and app, and the commit it tested. */
+  name?: string
+  conclusion?: string
+  url?: string
+  headSha?: string
+  app?: string
 }
 
 /**
@@ -662,8 +789,8 @@ export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string
     intent: 'change',
     severity: 'major',
     message: message.trim() || p.finding.message,
-    check: { source: 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
-    checkName: `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
+    check: { source: ch.source === 'external' ? 'external' : 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
+    checkName: ch.source === 'external' ? `CI job ${ch.name || ''}`.trim() : `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
     measured: requestedCheckOf(ch),
   }
 }
@@ -908,10 +1035,84 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
 }
 
 /**
+ * The candidate the Review view opens when the route names none, on a ticket whose runs hold a comparison (Program item CP1, PR-8b):
+ * its applied selection's candidate (`<run>/<task>/<n>@<commit>`); while the comparison is being read (`selected` undefined) none yet,
+ * so the view does not settle on another first; with no selection applied, or None of these, the view's own first. A ticket with no
+ * comparison (`compare` false) opens as it always has; while whether one of its runs is a comparison is not known yet (`compare`
+ * undefined: a run neither the live store holds nor its own read has answered), none yet either.
+ */
+export function reviewDefault(runs: readonly ReviewableRun[], compare: boolean | undefined, selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined): string {
+  if (compare === undefined) return ''
+  if (!compare) return firstReviewCandidate(runs)
+  if (selected === undefined) return ''
+  if (selected && selected !== 'none') return `${selected.run}/${selected.task}/${selected.attempt}@${selected.commit}`
+  return firstReviewCandidate(runs)
+}
+
+/**
  * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): the newest by
  * rankCandidates, the one ordering, its label saying so when that candidate has no time of its own (untimedWords). Null for none.
  */
 export function latestReviewable(runs: readonly ReviewableRun[]): { value: string; label: string } | null {
   const b = rankCandidates(runs).find((x) => !x.c.withdrawn)
   return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}${untimedWords(b)}` } : null
+}
+
+/** The conclusions of a CI job on GitHub that are a failure (the tracker's Check.Failed): only such a job is prepared for a repair. */
+const JOB_FAILED = ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'error']
+
+/** A delivery's CI job as the failed-check panel lists it: its id, name, state in words, whether a repair can be prepared from it. */
+export interface ExternalJob {
+  id: string
+  name: string
+  /** "failed (failure)", "passed", "running", "a commit status". */
+  state: string
+  failed: boolean
+  /** Prepare a repair is offered: a failed GitHub Actions job or check run (a commit status is no job a repair can name). */
+  preparable: boolean
+}
+
+/**
+ * The CI jobs of a delivery's pull request at its head commit, from the link's read, as the failed-check panel lists them (IN1a PR-10):
+ * failed first, then the rest in the read's order; a job is preparable when it failed and is a GitHub Actions job or another app's check
+ * run. `incomplete` is the read's own words when it was cut ("incomplete: N checks not read, see them on GitHub", utils/tracker's
+ * checksWords), and `allPassed` is never true for a cut read, nor for a read with no job.
+ */
+export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>): { jobs: ExternalJob[]; incomplete: string; allPassed: boolean } {
+  const jobs = read.checks.map((c): ExternalJob => {
+    const failed = JOB_FAILED.includes(c.conclusion ?? '')
+    const kind = c.id.split(':')[0]
+    const done = c.status === 'completed'
+    const state = failed ? `failed (${c.conclusion})` : !done ? (c.status === 'pending' || c.status === 'queued' ? 'waiting' : 'running') : c.conclusion === 'success' ? 'passed' : c.conclusion || 'done'
+    return { id: c.id, name: c.name, state: kind === 'status' ? `${state}, a commit status` : state, failed, preparable: failed && (kind === 'job' || kind === 'run') }
+  })
+  jobs.sort((a, b) => Number(b.failed) - Number(a.failed))
+  const counts = {
+    passed: read.checks.filter((c) => c.status === 'completed' && ['success', 'neutral', 'skipped'].includes(c.conclusion ?? '')).length,
+    failed: jobs.filter((j) => j.failed).length,
+    pending: read.checks.filter((c) => c.status !== 'completed').length,
+    other: 0,
+    incomplete: !!read.incomplete,
+    omitted: read.incomplete?.omitted ?? 0,
+  }
+  counts.other = read.checks.length - counts.passed - counts.failed - counts.pending
+  const w = checksWords(counts)
+  return { jobs, incomplete: w.incomplete, allPassed: w.allPassed }
+}
+
+/** The host an external receipt's job is on (`github:<host>/<owner>/<repo>/check-runs/<n>`), '' for a receipt of the ledger. */
+export function externalHost(receipt: string): string {
+  const m = /^github:([^/]+)\//.exec(receipt)
+  return m ? m[1]! : ''
+}
+
+/**
+ * Where a sent check finding is, in words, as the Findings list names it: a CI job on GitHub by its name ("CI job test (ubuntu) failed on
+ * GitHub", "a CI job failed on GitHub" with none), the ledger's by its step ("check test failed"), "a check failed" with no receipt. Text,
+ * never markup.
+ */
+export function checkFindingWhere(c: Pick<CheckRef, 'source' | 'phase' | 'id' | 'name'> | null | undefined): string {
+  if (!c) return 'a check failed'
+  if (c.source === 'external') return `${c.name ? `CI job ${c.name}` : 'a CI job'} failed on GitHub`
+  return `${c.phase} ${c.id} failed`
 }

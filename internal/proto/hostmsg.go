@@ -179,6 +179,18 @@ type Registered struct {
 	// only then does the host send it. Absent from an older server, from a
 	// switchyard and on a desk's registered.
 	SessionInfo bool `json:"sessionInfo,omitempty"`
+	// AgentSessions says the server takes agent_session
+	// (HostAgentSessionMsg) and keeps the id as the attention route keeps
+	// one: only then does the host send it, and only then does it name its
+	// socket to its agent (docs/protocol.md, The host's socket). Absent
+	// from an older server and on a desk's registered.
+	AgentSessions bool `json:"agentSessions,omitempty"`
+	// ActivitySeq says the server takes activity's Seq and LeftOut
+	// (HostActivityMsg): only then does the host keep the entries its
+	// session records while its connection is down and send them as the
+	// next connection starts. Absent from an older server, from a
+	// switchyard (which keeps no activity) and on a desk's registered.
+	ActivitySeq bool `json:"activitySeq,omitempty"`
 	// Renews says the switchyard rechecks this connection's credential and
 	// takes host_token on it (HostTokenMsg): only on a connection admitted
 	// through an identity provider's principal; absent from an older
@@ -626,6 +638,13 @@ type HostAttentionMsg struct {
 	// and an older server ignores it. A bool: the message's bound
 	// (MaxHostMessage) does not change.
 	Turns bool `json:"turns,omitempty"`
+	// Retold, host to server only and only to a server whose registered
+	// said ActivitySeq, says the message is the host's retell as its
+	// connection began, of a question (needs_input) its session was asked
+	// before that connection began: its entries come late (activity's Late)
+	// and page no one, so the server offers the question to its sinks once,
+	// as a live event, when its copy does not hold that question already.
+	Retold bool `json:"retold,omitempty"`
 	// TurnID goes server to host only: the agent's own name for the turn
 	// the report belongs to, as the attention route took it (its
 	// turnId), so that the host's session tells a turn's end told twice
@@ -742,12 +761,34 @@ func oneLineName(s string, max int) bool {
 // state the entry records (needs_input, working or done), which the host's
 // session hands on with the entry, set with the entry's stamp. The server
 // keeps it only on an attention entry and only as one of those three.
+//
+// Seq and LeftOut go host to server only, to a server whose registered said
+// ActivitySeq (docs/protocol.md, The host's activity while away). Seq
+// numbers the host's entries, from 1 and one more for each, for the life of
+// the host's process: an entry the host sends again (one it sent as its
+// connection ended, sent again on the next, which resumes the session) has
+// the same Seq, and the server takes one Seq of a session once (a Seq at or
+// below the last it took is dropped), so no entry is shown twice. LeftOut,
+// at most MaxActivityLeftOut, is how many entries before this one the host
+// did not send (more than it keeps while away, or sent as a connection
+// ended to a server that then did not resume the session): the server
+// records that some were left out, before the entry. Late says the entry
+// was recorded before the connection that carries it began, or is sent
+// again: the server records it and shows it in its order, and offers it
+// to no notification, webhook or other sink as a live event.
 type HostActivityMsg struct {
 	T         string   `json:"t"`
 	SessionID string   `json:"sessionId,omitempty"`
 	Entry     Activity `json:"entry"`
 	State     string   `json:"state,omitempty"`
+	Seq       uint64   `json:"seq,omitempty"`
+	LeftOut   uint32   `json:"leftOut,omitempty"`
+	Late      bool     `json:"late,omitempty"`
 }
+
+// MaxActivityLeftOut bounds HostActivityMsg.LeftOut: a larger count is
+// taken as this one.
+const MaxActivityLeftOut = 1 << 20
 
 // HostChatMsg carries a chat message the host's session kept, as `chat`
 // carries it to a viewer. The server ignores SessionID and takes the

@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="conductor-revision" content="__REVISION__" />
+    <title>Preview fixture</title>
+    <script>
+      // The spec reads the bridge's outline through the shadow roots the page makes (the bridge's is the last made).
+      const roots = []
+      const attach = Element.prototype.attachShadow
+      Element.prototype.attachShadow = function (o) {
+        const r = attach.call(this, o)
+        roots.push(r)
+        return r
+      }
+      window.outlined = () => {
+        const box = roots.at(-1)?.firstElementChild
+        return box?.isConnected && box.style.display === 'block' ? box.firstElementChild.textContent : 'none'
+      }
+      window.selecting = () => !!roots.at(-1)?.host?.isConnected
+    </script>
+    <!--BRIDGE-->
+    <style>
+      body { margin: 0; font: 16px/1.4 sans-serif; background: #fff; color: #111; }
+      main { padding: 24px; }
+      #row { display: flex; gap: 16px; margin: 16px 0; }
+      button { font: inherit; padding: 8px 14px; border: 1px solid #333; background: #eee; }
+      .overlay { position: fixed; inset: 0; z-index: 10; background: transparent; }
+      section { margin-top: 16px; padding: 8px; border: 1px dashed #999; }
+    </style>
+  </head>
+  <body>
+    <main id="app">
+      <h1 id="title">Preview fixture</h1>
+      <div id="row">
+        <button id="under" class="under">Under the overlay</button>
+        <button id="second" class="second">Second</button>
+        <button id="nopointer" class="nopointer" style="pointer-events: none">No pointer</button>
+      </div>
+      <section id="inert" inert><button id="inside">Inside the inert section</button></section>
+    </main>
+    <div id="overlay" class="overlay"></div>
+  </body>
+</html>

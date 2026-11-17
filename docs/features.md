@@ -208,6 +208,157 @@ that order.
   link grants. Content appears only after the guest joins.
 - **No Runs nav item** until there is something behind it.
 
+## Browser evidence: an element selected in a preview, captured for a ticket (PV1; 2026-11-17)
+
+The Program's PV1 (`docs/plans/browser-evidence.md`): a person picks out a
+control in an agent's preview, and what is picked (the screenshot, the
+element, what a click at it really reaches, the file that drew it, the
+revision the server read) goes to a ticket, to Brakeman, to a decision
+or to a candidate's review, and another agent repairs from it. Earlier
+rows are on main already: Dispatch's captures and their sends (schema 5),
+the bridge and its protocol, the label and the capture routes, and a
+candidate's preview checkout. This entry covers the bundle that finished
+the item, newest row first.
+
+- **Conductor's own app (PR-9, #797).** `conductor.manifest.json` at the
+  repository's root serves Conductor in a tree: a server of the tree's own
+  on the loopback (`go run ./cmd/conductor serve --dev --token-env
+  CONDUCTOR_TREE_SECRET`, its data under the tree's state directory,
+  publishing nothing) and the web app's dev server proxying to it
+  (`CONDUCTOR_DEV_API`), ready probes of 900 s; the preview names the
+  tree's secret as `${CONDUCTOR_TREE_SECRET}`, which the label puts in for
+  the admin alone. `serve --token-env NAME` takes the workbench token from
+  the variable, in the place of a configured one; it refuses a value that
+  is no variable's name (the empty one included) and a variable unset or
+  empty (never falling back to another token), takes it out of the
+  server's environment, and prints, logs and keeps it nowhere: no error
+  repeats what the flag was given. The dev build alone loads the bridge the tree is told
+  of (`plugins/previewBridge.client.ts`); the built app never does.
+  `TestTheRepositorysManifestIsValid` holds the file to the manifest's
+  rules; `capture-repair.spec.ts` walks the loop on stubs: a covered Save
+  captured with the note "Broken", the overlay named by the hit test and
+  the page's own file first among its sources; Create a ticket; a plan
+  revision with the capture's attachments ticked at first, approved and
+  launched; the stub worker (`STUB_CAPTURE_FIX`) reading the capture's
+  document in its package and removing the overlay from the file its
+  first source names; Preview this candidate; Capture again, its
+  `retakeOf` the first capture across the two runs (`retakeVia` ticket);
+  the ticket's Captures with the first alone, then Attach to a ticket with
+  the run's ticket offered first, and both. A package numbers its files
+  (`.conductor/attachments/01-capture-<id>-r1.json`), which the plan wrote
+  as `capture-*.json`.
+- **A capture as a review finding (PR-10, #798).** On a candidate's
+  capture the Send offers Request a change and Add to a review; a capture
+  of a worktree still being worked goes to a ticket. Request a change is
+  RV1's Request changes of that candidate, one finding of kind `capture`
+  per annotation chosen, applied by Yardmaster as a repair: the repair
+  attempt finds the send's document and screenshot in
+  `.conductor/evidence/`, copied from the store and checked by size and
+  hash, and its `task.md` names them under each finding. Add to a review
+  puts the same findings into the person's review draft of the
+  candidate, sent with the rest. A capture finding's words, path and line
+  are the server's, made from the annotation the send froze (the note's
+  first 600 characters, the element and what covers it, the source that
+  drew it), and the store binds a finding only to a send to a review of
+  that candidate's own capture. Brakeman's `request_repair` sends none.
+- **A capture attached to a decision (PR-11, #799).** The Send offers
+  Attach to a decision while the capture's run has an open decision. The
+  send is a comment on that decision in the store's words, naming the
+  capture, its revision and its ref `capture:<id>/<send>`, never the
+  page's text; DR1's receipt for the send's id makes a resend one comment.
+  The decision's card lists the captures sent to it, and keeps them once
+  it is answered. Only the admin sends; a decision DR1 refuses (gone, its
+  32 operations spent) refuses the send in DR1's words.
+- **A candidate's preview opened, labelled and captured again (PR-8,
+  #796).** Preview this candidate on a task's row, the palette and a
+  ticket's candidates makes a checkout of the candidate's commit (two a
+  server, ended idle after 30 minutes, closed, or with its run) through
+  admin command routes with receipts in the run's ledger, and opens
+  `/preview?…&seq=N`: "candidate a1b2c3d of build · attempt 1 · as
+  committed". A capture there is of origin `candidate`, tree `preview`,
+  and names the candidate only when the checkout is at its commit with no
+  tracked change. Capture again opens the earlier capture's page on the
+  preview's own origin, describes each element again by its selector and
+  saves a new capture whose `retakeOf` is the first's.
+- **Sends to a ticket and to Brakeman; the ticket's captures (PR-6,
+  #794).** A saved capture's Send: Create a ticket, Attach to a ticket
+  (the run's own ticket first) and Ask Brakeman. Each send is frozen at
+  the capture's revision (the screenshot and `conductor.capture/1`
+  attached), listed with its state and what changed since it, and a
+  Brakeman send can be cancelled while it may still run. A ticket's page
+  gains Captures, each capture as each send froze it. A Brakeman turn
+  reads a capture (`observe_capture`) and a send's frozen document
+  (`observe_capture_send`), never the screenshot's bytes, admitted by
+  what the capture is of. The sends still open are kept in a table of the
+  store's own (Dispatch schema 6, shipped alone); schema 7 keeps a review
+  finding's capture for PR-10.
+- **A preview of a run the engine no longer holds (PR-7b, #897).** A
+  candidate's preview opens for a run evicted, or finished under an
+  earlier server of the ledger, in a preview-only context read from the
+  ledger that schedules nothing and writes no row of the run.
+- **The bridge in any frame and the frame's pixels, in the desktop app
+  (PR-5, #793).** The shell puts the server's bridge into the preview
+  frame whatever page it shows, and takes the frame's pixels with no
+  prompt (at most 2,048 px on the long side; past 4 MiB taken again at
+  half its size once, as in a browser; one at a time per window). Its two channels answer the workbench's main frame alone: a
+  frame inside the workbench, the app's own file pages and any other
+  origin are refused.
+- **The preview in the pane, selection, annotations, a capture saved
+  (PR-4, #792).** Open in Conductor frames an attempt's preview with its
+  label ("attempt 2 of build · worktree at a1b2c3d with 3 changed files ·
+  changes as the agent works"), device modes, Refresh, New tab and
+  Capture. Selecting steps through what is stacked under the pointer,
+  walks the DOM or takes a selector; the editor shows the screenshot with
+  numbered boxes, each element's hit test, state, sources and HTML as
+  text, regions, and Save. One capture is one moment: a selection after a
+  navigation, a scroll, a mode change, a mutation or a pixel change starts
+  a new capture; a moving element is kept `stable: false`. A page without
+  the bridge is said after 3 s, and captured with the screenshot alone.
+
+Owed by hand, none of it done: the real tab-capture prompt in Chromium and
+its crop to the frame; the desktop app's pixels on Linux, macOS and
+Windows; the Windows app framing a preview served inside WSL with no step
+by the person; Firefox and Safari framing a loopback preview (recorded,
+not required); and the plan's Acceptance, a real agent repairing a
+control of Conductor's own app from a capture alone, on the owner's
+subscription, with what was missing, slow or wrong written here. PR-10's
+"a capture sent as Request changes and repaired" and PR-11's "a capture
+on a pending decision answered" are each to be seen once.
+
+## Compare approaches (CP1, `docs/plans/compare-crew.md`; 2026-11-16)
+
+- **A comparison is a crew shape.** New comparison on the Crews page makes
+  a crew whose `compare` block names two to four candidates of one base,
+  each an agent with its approach, the criteria and the checks they are
+  held to alike, and, when asked, a review of each and Brakeman's draft.
+  It is launched only from a ticket's approved plan revision: the launch
+  states what it starts and sends the count of candidates the person read.
+  Each candidate works in a lane of its own; a lane's session reaches no
+  other lane's work (`409 lane`).
+- **Measured and said are two panels.** The ticket page's comparison
+  (`?view=compare&run=`, any run of the chain) shows what the server
+  measured from git and the ledger alone, and the server's verdict per
+  check; the agents' summaries, their reviews and Brakeman's draft are
+  "Supporting information, not evidence", in a panel of their own that
+  never colours the measured part.
+- **The selection.** When every lane has ended Yardmaster opens a DR1
+  record of origin `compare`: the candidates with a standing result, each
+  at its exact commit, and None of these, nothing recommended. The operator
+  answers it with a rationale, on the comparison, the card, Needs you or a
+  phone; the confirm says the answer is final and names the candidate
+  ("Select approach-b (final)"). A change to a lane before it is applied
+  closes it and a new one opens; a stop or a restart keeps it. The decide
+  grant, a decision link, an agent, Brakeman and a share link never answer
+  it. Once applied, the others are labelled not selected on the comparison,
+  the run page and the ticket's candidates, and refuse their commands.
+- **After the selection.** Review the selected candidate opens RV1's Review
+  view on it (the picker says selected and not selected and opens on the
+  selected one); a repair and a delivery are taken for it alone.
+- **Not observed yet.** The owner's observation with real agents (Claude
+  Code for one candidate, Codex for the other) and Brakeman's real draft
+  are recorded here by a later docs pull request of the stream; the phone
+  layout was measured at 390 x 844 in the tests, not on a device.
+
 ## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
 
 What the item shipped, row by row (each row's issue says what it verified):
@@ -344,6 +495,85 @@ logins, which no test reaches. The issue stays open for them (#788).
   More Dispatch, Brakeman, Agents, History; the palette's Go to adds the
   Roundhouse, Agents · Reporting, History · Feed and Paste invite.
   `web/e2e/destinations.spec.ts` holds every list as drawn.
+
+## Tracker linking: GitHub issues and pull requests on tickets (IN1a PR-1 to PR-10; 2026-11-16)
+
+`docs/plans/tracker-linking.md`. A person's own GitHub token, and nothing
+said on GitHub but what a person publishes.
+
+- **The token (PR-3).** One per host, at most four hosts, kept in
+  `credentials/github.json` in the data directory or given to the server
+  as `CONDUCTOR_GITHUB_TOKEN`; checked with GitHub before it is kept;
+  shown as its account and a fingerprint that changes at a restart, never
+  served, printed or logged; left out of every export. Remove stops
+  Conductor's use of it; revoking it is done on GitHub.
+- **The adapter (PR-2).** `internal/tracker` and `internal/tracker/github`:
+  an issue's or a pull request's read, its images, a pull request's checks
+  at its head commit, a comment posted and an issue closed by the item's
+  node id, each answer read to its bound.
+- **A linked item (PR-1, PR-4, PR-4b).** Import a ticket from an issue or a
+  pull request, or link one later; its snapshot, read on demand and on
+  opening a ticket page whose read is older than ten minutes; GitHub owns
+  the title and the description until a person takes them over; the
+  ticket's status never moves because GitHub's did. A delivery or external
+  link to a GitHub item is read for its state and checks, and a close
+  policy may ask for `merged`.
+- **Publications (PR-5, PR-5b).** One comment a publication, prepared,
+  previewed as the exact bytes with GitHub's hidden marker, sent by the
+  person's Send alone, once: a try is committed before its post and a
+  later try decides by the marker, a send whose comment GitHub does not
+  show is `unconfirmed` and is never sent again, the issue's close is made
+  only when asked for, and a restored data directory sends none of what
+  it was exported with.
+- **The package (PR-6).** A launch's package names its source (the item,
+  its state at the launch, the snapshot's digest) and, when the revision
+  hands them over, the steps to reproduce and the evidence links; every
+  text a GitHub read wrote reaches an agent inside `internal/quoted`'s
+  mark.
+- **The commands (PR-7) and the pages (PR-8, PR-9).** `conductor trackers`
+  and the dispatch commands; Settings' GitHub card, Import, the ticket's
+  GitHub panel and its links' reads; on the ticket page **Publish to
+  GitHub** (the target, the person's own words, the offered parts and
+  Close the issue as completed, all off to start; **Preview** draws the
+  server's bytes as text and checks them against the SHA-256 Publish
+  names; one op id for every press of Publish) and **Publications** (the
+  newest ten, older ones a page at a time, "N older publications need
+  you"; Check, Send again for a failed one only, Close now, Publish as new
+  with its warning, Discard). A plan revision's proposal offers Steps to
+  reproduce (on when the issue has them) and the links as evidence, and
+  the run page's launched-from chip adds "· GitHub owner/repo#612".
+- **What needs you.** A publication a person can act on (not confirmed,
+  failed, a close not finished) is named in words on the ticket's
+  Publications, the error tone for a send that failed and neutral ink
+  otherwise. It is not yet among the one list of what needs you, so it is
+  never amber: a later row joins it to that list.
+- **A delivery's CI job as a failed-check request (PR-10).** The Review
+  view lists, beside a candidate's own checks, the CI jobs on GitHub of
+  each live delivery link that delivers its commit as a pull request, read
+  at the pull request's head commit, failed first; a read that was cut
+  says "incomplete: N checks not read, see them on GitHub" and is never
+  shown as passing, and a head that moved on offers no job. **Prepare a
+  repair** on a failed Actions job or another app's check run opens the
+  failed-check panel with the job as GitHub's (its name, how it ended, the
+  commit it tested, its page, the end of its log, Check again never
+  offered), read fresh with the person's token
+  (`GET /api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair`, the
+  admin's alone); a job at another commit than the delivered candidate's
+  is refused, and a commit status is no job. A review naming it keeps a
+  check finding of source `external`, read fresh again by the server; the
+  repair attempt's `task.md` quotes the job's name, app and log through
+  `internal/quoted`, never as the ledger's. A Brakeman turn names no such
+  job. A log's tail comes only from an Actions job, fetched behind
+  GitHub's redirect from a host the log rule admits, without the token.
+- **By hand, after merge.** The plan's Acceptance against github.com with
+  the owner's token (a fine-grained and a classic token, a private
+  repository's screenshot imported, a renamed repository followed, a merge
+  read, one comment posted and the issue closed, the server's log holding
+  no token, `jwt=` or `X-Amz-`, and the same from the Windows app's own
+  server) is recorded here with the build, with PR-10's part: a delivery
+  pull request's checks read with a fine-grained token (its incomplete
+  words) and a classic one, and a failed Actions job's log fetched by its
+  prepared request.
 
 ## Future features
 

@@ -1980,6 +1980,8 @@ func (e *Engine) failUnusable(r *run, a *attempt, stage, errText string) []event
 		why = fmt.Sprintf("attempt %d could not be handed the receipt of the check that failed the attempt before: %s", a.n, errText)
 	case decisionsStage:
 		why = fmt.Sprintf("attempt %d could not be handed its task's decisions: %s", a.n, errText)
+	case evidenceStage:
+		why = fmt.Sprintf("attempt %d could not be handed the evidence files of the changes asked for: %s", a.n, errText)
 	}
 	if atCheckpoint {
 		u.checkpoint, u.branch, u.checkpointN, u.next = cp.commit, cp.branch, cp.n, cp.start
@@ -2379,16 +2381,30 @@ func (e *Engine) Drain(ctx context.Context) {
 	// that stop (run_stopped): what ends here, why shutdown, is a preview
 	// whose run was not stopped first.
 	defer e.endLife()
+	// From here no preview is reserved (reservePreview); one reserved
+	// before is ended now, and its open, under way, is waited for below
+	// (e.opens): it ends refused, or hands its end to its tree's, which the
+	// trees' wait takes.
 	e.mu.Lock()
+	e.drained = true
 	e.endPreviews(nil, whyShutdown)
 	e.mu.Unlock()
 	for {
 		e.mu.Lock()
-		var idle <-chan struct{}
+		idle := e.opens.idle()
+		if e.opens.n == 0 {
+			idle = nil
+		}
+		// The runs it holds, and the preview-only contexts of runs it does
+		// not (preview_context.go), whose previews' teardowns count there.
 		for _, r := range e.runs {
-			if r.trees.n > 0 {
+			if idle == nil && r.trees.n > 0 {
 				idle = r.trees.idle()
-				break
+			}
+		}
+		for _, r := range e.previewRuns {
+			if idle == nil && r.trees.n > 0 {
+				idle = r.trees.idle()
 			}
 		}
 		e.mu.Unlock()

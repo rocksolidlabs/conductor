@@ -3,6 +3,7 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,8 +24,8 @@ import (
 // the screenshot's content file when there is one; the send holds both
 // (capture_files, holder its id) while something can still use them: a
 // send of a live capture, and a sent one for as long as the store keeps
-// the send (nothing removes a send; what a sent send of a deleted capture
-// keeps is the settlement's to say, #794); a send of a deleted capture
+// the send (nothing removes a send, and the settlement keeps what a sent
+// send of a deleted capture holds, #794); a send of a deleted capture
 // that ended refused or cancelled lets them go (releaseEnded). A
 // send to a ticket writes, in its one transaction, the ticket when it is
 // new (its description ticketText), an attachment row naming each of the
@@ -48,14 +49,24 @@ import (
 // anything acts on it and never an outcome: a pending send is cancelled
 // (CancelSend) only once a cancel was asked, and one the desk admitted
 // first is settled sent with its cancel still asked (AskedCancels), for the
-// settlement to close its request at the desk. A capture's delete leaves
+// settlement to close its request at the desk and say so (CloseCancel).
+// The sends still open, pending or with a cancel not closed, are kept in a
+// table of this database's own (capture_sends_open, version 6), written
+// again from the send's rows by every write that opens or closes one, so
+// the settlement's reads walk the open sends and never the settled ones.
+// A capture's delete leaves
 // its sends whole, each readable as a row: what was sent stays. Locally a
 // send that ended is ended: a sent outcome a replica brings later for one
 // whose files went makes it sent, and this store holds no file of it.
 
-// A send's kind and its state. SendReview and SendDecision are reserved:
-// the store refuses them until the items that own reviews and decisions
-// lift it (the plan's PR-10 and PR-11).
+// A send's kind and its state. A send to a review (SendReview) freezes the
+// capture for findings of kind capture: Request a change, pending with the
+// review it asks for until the API records that review and its sent names
+// it, or Add to a review, sent at once (its target ReviewDraft) for the
+// person's draft to cite (the plan's PR-10). A send to a decision (PR-11)
+// is a comment on a decision record of DR1's, made by the API with the
+// send's id as its operation's id: pending with the comment's text as its
+// request until the decision's receipt answers.
 const (
 	SendTicket    = "ticket"
 	SendBrakeman  = "brakeman"
@@ -65,6 +76,9 @@ const (
 	SendSent      = "sent"
 	SendRefused   = "refused"
 	SendCancelled = "cancelled"
+	// ReviewDraft is the target of a send to a review that Add to a review
+	// made: the person's draft cites it, and no review is asked for.
+	ReviewDraft = "draft"
 )
 
 // The intents of a send's outcomes and of a cancel, beside
@@ -83,14 +97,25 @@ const (
 // the copy to that source.
 var brakemanTarget = regexp.MustCompile(`^br-[1-9][0-9]{0,17}$`)
 
+// decisionTarget is a decision record's id, dr-<n> of at most 18 digits: a
+// copy of the ledger's form (ledger.DecisionID), which this package does
+// not import; TestADecisionsIDIsTheLedgers holds the copy to it.
+var decisionTarget = regexp.MustCompile(`^dr-[1-9][0-9]{0,17}$`)
+
 // Destination is where a send goes as the person named it, kept as its
 // asked: a new ticket (Project, a project's key, and Title), an existing
-// one (Key), or Brakeman (Kind alone).
+// one (Key), Brakeman (Kind alone), a review of the candidate the capture
+// shows (Candidate, its annotations Ks, all when none, and Draft for Add to
+// a review), or a decision record (Decision, its dr-<n>).
 type Destination struct {
-	Kind    string `json:"kind"`
-	Project string `json:"project,omitempty"`
-	Title   string `json:"title,omitempty"`
-	Key     string `json:"key,omitempty"`
+	Kind      string `json:"kind"`
+	Project   string `json:"project,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
+	Ks        []int  `json:"ks,omitempty"`
+	Draft     bool   `json:"draft,omitempty"`
+	Decision  string `json:"decision,omitempty"`
 }
 
 // SendFacts is what the API made of a send: for Brakeman the request as
@@ -227,16 +252,25 @@ func sentTo(send, target string) string {
 // the screenshot's and the document's content (the document alone with no
 // screenshot), the comment, and the sent outcome, the ticket's rev bumped
 // once; for Brakeman it leaves the send pending with its request. At most
-// MaxCaptureSends a capture and MaxAttachments a ticket (bound). review
-// and decision are refused invalid until their items lift it. The
-// receipt's id is the send's, its key the ticket's; the operation's
-// expected revision is none (the capture's is rev).
+// MaxCaptureSends a capture and MaxAttachments a ticket (bound). A send to
+// a review names the candidate the capture shows (a capture of that
+// candidate's preview checkout: a capture of a worktree being worked goes
+// to a ticket) and annotations it has: Add to a review (Draft) is sent in
+// its one transaction, to ReviewDraft, with no request; Request a change
+// carries the review the API asks for (its request) and is pending until
+// MarkSent names that review. decision is refused invalid until its item
+// lifts it. The receipt's id is the send's, its key the ticket's; the
+// operation's expected revision is none (the capture's is rev).
 func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev int64, to Destination, f SendFacts) (Receipt, error) {
 	doc := bytes.NewReader(nil)
 	var request []byte
 	pre := func() error {
 		c := &checker{}
 		c.must(op.ExpectedRev == 0, RefusalInvalid, "a send names the capture's revision it sends, and the operation none")
+		if to.Kind != SendReview {
+			c.must(to.Candidate == "" && len(to.Ks) == 0 && !to.Draft, RefusalInvalid, "only a send to a review names a candidate, annotations or a draft")
+		}
+		c.must(to.Kind == SendDecision || to.Decision == "", RefusalInvalid, "only a send to a decision names a decision")
 		switch to.Kind {
 		case SendTicket:
 			_, _, isKey := ParseKey(to.Key)
@@ -252,10 +286,29 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to Brakeman names no ticket")
 			c.field("send.request", "the request", string(f.Request))
 			c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
-		case SendReview, SendDecision:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket or to Brakeman; a send to a %s comes with its item", to.Kind)
+		case SendReview:
+			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to a review names no ticket: the candidate's is the review's")
+			_, err := ParseCandidate(to.Candidate)
+			c.must(err == nil, RefusalInvalid, "the candidate %q is not <run>/<task>/<n>@<commit>", to.Candidate)
+			c.count("annotations sent", len(to.Ks), MaxCaptureAnnotations)
+			seen := map[int]bool{}
+			for _, k := range to.Ks {
+				c.must(k >= 1 && k <= MaxCaptureAnnotations && !seen[k], RefusalInvalid, "the annotations sent are each 1 to %d, once", MaxCaptureAnnotations)
+				seen[k] = true
+			}
+			if to.Draft {
+				c.must(len(f.Request) == 0, RefusalInvalid, "Add to a review asks for no review: it carries no request")
+			} else {
+				c.field("send.request", "the review asked for", string(f.Request))
+				c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
+			}
+		case SendDecision:
+			c.must(to.Key == "" && to.Project == "" && to.Title == "", RefusalInvalid, "a send to a decision names no ticket")
+			c.must(decisionTarget.MatchString(to.Decision), RefusalInvalid, "the decision %q is no decision's id (dr-<n>)", to.Decision)
+			c.field("send.request", "the request", string(f.Request))
+			c.must(bytes.HasPrefix(bytes.TrimLeft(f.Request, " \t\r\n"), []byte("{")), RefusalInvalid, "the request is not a JSON object")
 		default:
-			c.must(false, RefusalInvalid, "a capture is sent to a ticket or to Brakeman, not to %q", to.Kind)
+			c.must(false, RefusalInvalid, "a capture is sent to a ticket, to Brakeman, to a review or to a decision, not to %q", to.Kind)
 		}
 		if c.err != nil {
 			return c.err
@@ -290,6 +343,11 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 		}
 		if c.Rev != rev || sha256Hex(body) != u.sum {
 			return refuse(RefusalStaleRevision, "the capture changed while its document was made, to r%d: send what you see", c.Rev)
+		}
+		if to.Kind == SendReview {
+			if err := reviewable(c, to); err != nil {
+				return err
+			}
 		}
 		var sends int
 		if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM capture_sends WHERE capture_id = ?", id).Scan(&sends); err != nil {
@@ -331,7 +389,8 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			}
 		}
 		key := ""
-		if to.Kind == SendTicket {
+		switch {
+		case to.Kind == SendTicket:
 			var files []string
 			if key, files, err = t.sendToTicket(c, to, u); err != nil {
 				return err
@@ -339,10 +398,46 @@ func (s *Store) SendCapture(ctx context.Context, op Op, digest, id string, rev i
 			if err := t.outcome(in.ID, SendSent, key, files, ""); err != nil {
 				return err
 			}
+		case to.Kind == SendReview && to.Draft:
+			if err := t.outcome(in.ID, SendSent, ReviewDraft, nil, ""); err != nil {
+				return err
+			}
 		}
 		t.created(in.ID, key)
-		return nil
+		return t.reopenSend(in.ID)
 	})
+}
+
+// reviewable refuses a send of the capture c to the review to names
+// unless the capture is of that candidate's preview checkout (Decision 9:
+// Request a change is RV1's Request changes, only on a candidate) and has
+// every annotation named.
+func reviewable(c Capture, to Destination) error {
+	o := c.Origin
+	if o.Kind != OriginCandidate || o.Candidate != to.Candidate {
+		return refuse(RefusalInvalid, "the capture is not of the candidate %s's preview: a review asks changes of the candidate it shows, and a capture of a worktree being worked goes to a ticket", to.Candidate)
+	}
+	for _, k := range to.Ks {
+		if k > len(c.Annotations) {
+			return refuse(RefusalInvalid, "the capture has %d annotations, not an annotation %d", len(c.Annotations), k)
+		}
+	}
+	if len(c.Annotations) == 0 {
+		return refuse(RefusalInvalid, "the capture has no annotation to make a finding of")
+	}
+	return nil
+}
+
+// reopenSend writes the open row of the send with the id again from its
+// rows (openSendsFill), in the caller's transaction: what every write that
+// opens or closes a send does after its rows. A cancel CloseCancel closed
+// is opened again only by a cancel asked after it.
+func (t *tx) reopenSend(id string) error {
+	if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM capture_sends_open WHERE send_id = ?", id); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(t.ctx, openSendsFill("s.id = ?"), id)
+	return err
 }
 
 // sendToTicket makes a ticket send's rows on its ticket: the ticket (new,
@@ -493,8 +588,22 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			if err := checkField("send.target", "the target", args.Target); err != nil {
 				return err
 			}
-			if sv.Kind != SendBrakeman || !brakemanTarget.MatchString(args.Target) {
-				return refuse(RefusalInvalid, "a send to Brakeman is sent as its request's id, br-<n>")
+			switch sv.Kind {
+			case SendBrakeman:
+				if !brakemanTarget.MatchString(args.Target) {
+					return refuse(RefusalInvalid, "a send to Brakeman is sent as its request's id, br-<n>")
+				}
+			case SendReview:
+				if err := t.reviewCites(args.Target, args.ID); err != nil {
+					return err
+				}
+			case SendDecision:
+				var to Destination
+				if err := json.Unmarshal(sv.Asked, &to); err != nil || to.Decision != args.Target {
+					return refuse(RefusalInvalid, "a send to a decision is sent as the decision it names")
+				}
+			default:
+				return refuse(RefusalInvalid, "a send to a %s is sent in its one step", sv.Kind)
 			}
 		case SendRefused:
 			if err := checkField("send.why", "why", args.Why); err != nil {
@@ -507,7 +616,10 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 			}
 		}
 		t.created(args.ID, "")
-		if err := t.outcome(args.ID, kind, args.Target, nil, why); err != nil || kind == SendSent {
+		if err := t.outcome(args.ID, kind, args.Target, nil, why); err != nil {
+			return err
+		}
+		if err := t.reopenSend(args.ID); err != nil || kind == SendSent {
 			return err
 		}
 		var gone bool
@@ -519,6 +631,24 @@ func (s *Store) settleSend(ctx context.Context, op Op, intent, kind string, args
 	})
 	s.collectAll(ctx, rc, err, released)
 	return rc, err
+}
+
+// reviewCites refuses the review with the id as the target of the send
+// with the id send unless one of its findings is a capture finding
+// standing on that send.
+func (t *tx) reviewCites(review, send string) error {
+	var cites bool
+	if !ValidID(review) {
+		return refuse(RefusalInvalid, "a send to a review is sent as the review's id")
+	}
+	if err := t.tx.QueryRowContext(t.ctx, `SELECT EXISTS (SELECT 1 FROM review_findings WHERE review_id = ? AND kind = ? AND capture_ref != ''
+		AND json_extract(capture_ref, '$.send') = ?)`, review, FindingKindCapture, send).Scan(&cites); err != nil {
+		return err
+	}
+	if !cites {
+		return refuse(RefusalInvalid, "the review %s has no finding of the send %s", review, send)
+	}
+	return nil
 }
 
 // collectAll collects the files an operation done released, once it is
@@ -606,6 +736,8 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 			return err
 		case sv.Kind == SendTicket:
 			return refuse(RefusalStaleRevision, "a send to a ticket is made in its one step: nothing of it is under way")
+		case sv.Kind == SendReview:
+			return refuse(RefusalStaleRevision, "a send to a review is the server's to finish: withdraw its findings on the review instead")
 		case sv.State == SendRefused, sv.State == SendCancelled:
 			return refuse(RefusalStaleRevision, "the send was %s: nothing of it is under way", sv.State)
 		}
@@ -628,7 +760,39 @@ func (s *Store) AskCancel(ctx context.Context, op Op, id string) (Receipt, error
 		if err != nil {
 			return err
 		}
-		return t.record(ChangeRow{Entity: EntityCaptureSend, EntityID: id, Field: "cancels", Op: OpAdd, Value: value})
+		if err := t.record(ChangeRow{Entity: EntityCaptureSend, EntityID: id, Field: "cancels", Op: OpAdd, Value: value}); err != nil {
+			return err
+		}
+		return t.reopenSend(id)
+	})
+}
+
+// CloseCancel records that the cancel asked of the send with the id is
+// closed at its target (its request closed, or pruned, at the desk): the
+// send is no longer listed by AskedCancels. It is the open sends' table's
+// write alone, in a transaction of its own outside Apply (no changes row,
+// no receipt), derived and local as that table is, and idempotent: a
+// cancel closed already, or one of a send refused or cancelled (nothing of
+// it is under way), is closed. Refused (a *Refusal): not_found for no
+// such send, invalid for one with no cancel asked, and stale_revision for
+// a pending send, whose cancel ends with its outcome (CancelSend; or
+// MarkSent, then its request closed and this). A cancel asked after the
+// close opens it again (reopenSend).
+func (s *Store) CloseCancel(ctx context.Context, id string) error {
+	return s.derived(ctx, func(dbtx *sql.Tx, _ time.Time) error {
+		sv, err := readSend(ctx, dbtx, id, false)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return refuse(RefusalNotFound, "no send %s", id)
+		case err != nil:
+			return err
+		case len(sv.Cancels) == 0:
+			return refuse(RefusalInvalid, "no cancel was asked of the send %s", id)
+		case sv.State == SendPending:
+			return refuse(RefusalStaleRevision, "the send is pending: its cancel ends with its outcome")
+		}
+		_, err = dbtx.ExecContext(ctx, "DELETE FROM capture_sends_open WHERE send_id = ?", id)
+		return err
 	})
 }
 
@@ -639,11 +803,17 @@ const sendColumns = "s.id, s.capture_id, s.rev, s.kind, s.asked, s.digest, s.cre
 // capture_sends s) with their outcomes, cancels and state, without their
 // requests: none on a database older than captureSchema.
 func readSends(ctx context.Context, q queryer, clause string, args ...any) ([]CaptureSend, error) {
+	return readSendsFrom(ctx, q, "capture_sends s", clause, args...)
+}
+
+// readSendsFrom is readSends of the sends from (a FROM clause naming
+// capture_sends s) and the clause pick.
+func readSendsFrom(ctx context.Context, q queryer, from, clause string, args ...any) ([]CaptureSend, error) {
 	if schemaOf(q) < captureSchema {
 		return []CaptureSend{}, nil
 	}
 	out, err := func() ([]CaptureSend, error) {
-		rows, err := q.QueryContext(ctx, "SELECT "+sendColumns+" FROM capture_sends s "+clause, args...)
+		rows, err := q.QueryContext(ctx, "SELECT "+sendColumns+" FROM "+from+" "+clause, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -764,8 +934,12 @@ func (s *Store) CaptureSend(ctx context.Context, id string) (CaptureSend, error)
 // sendsPage is a page of the sends where picks (a condition on
 // capture_sends s), oldest first or newest, after the send with the id
 // after (a page's Next), at most limit, 1 to MaxCapturePage: ErrBadQuery
-// for a limit out of range or an after that names no send.
-func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest bool, after string, limit int) (SendsPage, error) {
+// for a limit out of range or an after that names no send. open, when not
+// "", is a column of the open sends' table (pending, cancel) that picks
+// the same sends as where: on a database that has the table the page is
+// read through its index on that column, oldest first, and reads the open
+// sends it gives and no other; where picks them on an older one.
+func (s *Store) sendsPage(ctx context.Context, where string, args []any, open string, newest bool, after string, limit int) (SendsPage, error) {
 	if limit < 1 || limit > MaxCapturePage {
 		return SendsPage{}, badQuery("a page of sends is 1 to %d, not %d", MaxCapturePage, limit)
 	}
@@ -775,8 +949,13 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 	}
 	page := SendsPage{Sends: []CaptureSend{}}
 	err := s.read(ctx, func(q queryer) error {
-		clause := "WHERE " + where
-		all := append([]any{}, args...)
+		from, clause, all, key := "capture_sends s", "WHERE "+where, append([]any{}, args...), [2]string{"s.created_at", "s.id"}
+		if open != "" && schemaOf(q) >= openSendsSchema {
+			// The open sends' table first, by its index (CROSS JOIN keeps
+			// the order of the tables), each send then read by its id.
+			from, clause, all, key = "capture_sends_open o CROSS JOIN capture_sends s", "WHERE o."+open+" = 1 AND s.id = o.send_id", nil,
+				[2]string{"o.created_at", "o.send_id"}
+		}
 		if after != "" {
 			var there bool
 			if schemaOf(q) >= captureSchema {
@@ -787,10 +966,10 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 			if !there {
 				return badQuery("the page's cursor names no send")
 			}
-			clause += " AND (s.created_at, s.id) " + cmp + " (SELECT created_at, id FROM capture_sends WHERE id = ?)"
+			clause += " AND (" + key[0] + ", " + key[1] + ") " + cmp + " (SELECT created_at, id FROM capture_sends WHERE id = ?)"
 			all = append(all, after)
 		}
-		sends, err := readSends(ctx, q, clause+" ORDER BY s.created_at "+order+", s.id "+order+" LIMIT ?", append(all, limit+1)...)
+		sends, err := readSendsFrom(ctx, q, from, clause+" ORDER BY "+key[0]+" "+order+", "+key[1]+" "+order+" LIMIT ?", append(all, limit+1)...)
 		if err != nil {
 			return err
 		}
@@ -810,32 +989,34 @@ func (s *Store) sendsPage(ctx context.Context, where string, args []any, newest 
 // page.
 func (s *Store) CaptureSends(ctx context.Context, kind, target, after string, limit int) (SendsPage, error) {
 	_, _, isKey := ParseKey(target)
-	if !(kind == SendTicket && isKey) && !(kind == SendBrakeman && brakemanTarget.MatchString(target)) {
-		return SendsPage{}, badQuery("the sends named are a ticket's, by its key, or Brakeman's, by br-<n>")
+	if !(kind == SendTicket && isKey) && !(kind == SendBrakeman && brakemanTarget.MatchString(target)) && !(kind == SendDecision && decisionTarget.MatchString(target)) {
+		return SendsPage{}, badQuery("the sends named are a ticket's, by its key, Brakeman's, by br-<n>, or a decision's, by dr-<n>")
 	}
 	return s.sendsPage(ctx, `s.kind = ? AND s.id IN (SELECT send_id FROM capture_send_outcomes WHERE kind = 'sent' AND target = ?) AND `+sentTo("s.id", "?"),
-		[]any{kind, target, target}, true, after, limit)
+		[]any{kind, target, target}, "", true, after, limit)
 }
 
 // PendingSends lists every pending send by sendState, oldest first, by
 // pages (sendsPage), without their requests (CaptureSend reads one whole):
-// what a settlement asks its target for again. Its answer is a page; the
-// work of a page is not bounded by it, since version 5 keeps nothing a read
-// finds a send by its state with: it reads the sends the store keeps. The
-// row that first calls it (issue #794) brings what bounds that.
+// what a settlement asks its target for again. A page reads the open
+// sends' table by its index (version 6): its work is the open sends it
+// gives, whatever number of sends were settled; a read-only store on an
+// older database picks them by sendState, reading every send.
 func (s *Store) PendingSends(ctx context.Context, after string, limit int) (SendsPage, error) {
-	return s.sendsPage(ctx, sendStateSQL("s.id")+" = 'pending'", nil, false, after, limit)
+	return s.sendsPage(ctx, sendStateSQL("s.id")+" = 'pending'", nil, "pending", false, after, limit)
 }
 
-// AskedCancels lists every send with a cancel asked whose state is not
-// cancelled, oldest first, by pages (sendsPage): what a settlement
-// finishes (a pending one cancelled, a sent one's request closed at the
-// desk), whether a cancel is done at the desk being the desk's to say. A
-// send sent and a send refused with its cancel asked stay listed, since
-// nothing records its cancel closed; its answer is a page and its work, as
-// PendingSends', is not bounded by it. Issue #794 brings both.
+// AskedCancels lists every send whose cancel is open, oldest first, by
+// pages (sendsPage): a cancel asked of a pending send, or of a sent one
+// and not yet closed at the desk (CloseCancel); what a settlement finishes
+// (a pending one cancelled, a sent one's request closed at the desk). A
+// send refused or cancelled has nothing under way, and is not listed. A
+// page's work is the open sends it gives, as PendingSends'; a read-only
+// store on an older database, which recorded no close, lists every
+// pending or sent send with a cancel asked.
 func (s *Store) AskedCancels(ctx context.Context, after string, limit int) (SendsPage, error) {
-	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" != 'cancelled'", nil, false, after, limit)
+	return s.sendsPage(ctx, "s.id IN (SELECT send_id FROM capture_send_cancels) AND "+sendStateSQL("s.id")+" IN ('pending', 'sent')", nil, "cancel", false,
+		after, limit)
 }
 
 // OpenSendFile opens the content with the hash that the send with the id

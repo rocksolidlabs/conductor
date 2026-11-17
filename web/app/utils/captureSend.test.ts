@@ -1,0 +1,138 @@
+import { describe, expect, it } from 'vitest'
+import { MAX_SEND_QUESTION, MAX_TICKET_TITLE, SEND_KINDS, cancelWords, cancellable, captureAttachments, sendBody, sendState, titleFrom } from './captureSend'
+
+// A capture's sends in the app (PV1 PR-6, utils/captureSend.ts): each destination's body, a send's state in words and marks, and
+// the attachments a new plan hands over (what changed since a send is utils/capture.ts's diffSinceSent).
+
+describe('sendBody', () => {
+  it('makes each destination’s `to`, its text trimmed', () => {
+    expect(sendBody('ticket-new', { project: 'CND', title: '  The save button is hidden ' })).toEqual({ to: { kind: 'ticket', project: 'CND', title: 'The save button is hidden' } })
+    expect(sendBody('ticket', { key: 'CND-14' })).toEqual({ to: { kind: 'ticket', key: 'CND-14' } })
+    expect(sendBody('brakeman', { question: ' Why? ' })).toEqual({ to: { kind: 'brakeman', question: 'Why?' } })
+  })
+
+  it('says what is missing, and what is past its bound', () => {
+    expect(sendBody('ticket-new', { project: '', title: 'x' })).toEqual({ problem: 'Choose a project' })
+    expect(sendBody('ticket-new', { project: 'CND', title: '  ' })).toEqual({ problem: 'Give the ticket a title' })
+    expect(sendBody('ticket-new', { project: 'CND', title: 'é'.repeat(MAX_TICKET_TITLE + 1) })).toEqual({ problem: `A title is at most ${MAX_TICKET_TITLE} characters` })
+    expect(sendBody('ticket-new', { project: 'CND', title: 'é'.repeat(MAX_TICKET_TITLE) })).toHaveProperty('to')
+    expect(sendBody('ticket', { key: 'cnd-14' })).toEqual({ problem: 'Choose a ticket' })
+    expect(sendBody('brakeman', { question: '' })).toEqual({ problem: 'Ask a question' })
+    expect(sendBody('brakeman', { question: 'é'.repeat(MAX_SEND_QUESTION + 1) })).toEqual({ problem: `A question is at most ${MAX_SEND_QUESTION} characters` })
+    expect(sendBody('decision', {})).toEqual({ problem: 'Choose a decision' })
+    expect(sendBody('decision', { decision: 'dr-0' })).toEqual({ problem: 'Choose a decision' })
+    expect(sendBody('decision', { decision: 'dr-7' })).toEqual({ to: { kind: 'decision', decision: 'dr-7' } })
+    expect(sendBody('review', {})).toEqual({ problem: 'This destination is not offered here' })
+  })
+
+  it('offers the four destinations of today, in the editor’s order', () => {
+    expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman', 'decision', 'review', 'review-draft'])
+  })
+})
+
+describe('the form’s bound and the route’s', () => {
+  // The route's body bound (dispatch.MaxSendRequest, 32 KiB): what the form allows it takes, in any script.
+  const ROUTE_BYTES = 32 << 10
+  it('takes 4,000 characters in any script, and the body they make fits the route', () => {
+    for (const q of ['中'.repeat(MAX_SEND_QUESTION), '\u{1F600}'.repeat(MAX_SEND_QUESTION), '<\u2028'.repeat(MAX_SEND_QUESTION / 2)]) {
+      const b = sendBody('brakeman', { question: q })
+      expect('problem' in b).toBe(false)
+      const bytes = new TextEncoder().encode(JSON.stringify({ opId: 'x'.repeat(64), rev: 1, ...b })).length
+      expect(bytes).toBeLessThan(ROUTE_BYTES)
+    }
+  })
+})
+
+describe('titleFrom', () => {
+  it('takes the first note’s first line, its Markdown marks off', () => {
+    expect(titleFrom('\n## The save button is hidden\nunder the banner')).toBe('The save button is hidden')
+    expect(titleFrom('> - quoted')).toBe('quoted')
+    expect(titleFrom('')).toBe('')
+  })
+
+  it('cuts a long one on a word, within the title’s bound', () => {
+    const t = titleFrom(`${'word '.repeat(80)}end`)
+    expect([...t].length).toBeLessThanOrEqual(MAX_TICKET_TITLE)
+    expect(t.endsWith('word…')).toBe(true)
+  })
+})
+
+describe('sendState', () => {
+  const base = { rev: 2, kind: 'ticket' as const, target: 'CND-14' }
+  it('says each state in words, with a task’s own mark', () => {
+    expect(sendState({ ...base, state: 'sent' })).toMatchObject({ word: 'sent as r2 to CND-14', tone: 'neutral', mark: { key: 'done' } })
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7' }).word).toBe('sent as r1 to Brakeman (br-7)')
+    expect(sendState({ rev: 1, kind: 'decision', state: 'sent', target: 'dr-3' }).word).toBe('sent as r1 to decision dr-3')
+    expect(sendState({ rev: 1, kind: 'review', state: 'sent', target: 'draft' }).word).toBe('sent as r1 to your review draft')
+    expect(sendState({ rev: 2, kind: 'review', state: 'sent', target: '0123456789abcdef' }).word).toBe('sent as r2 to a review requesting changes')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending', waiting: '8 requests wait already' })).toMatchObject({
+      word: 'waiting for Brakeman: 8 requests wait already',
+      mark: { key: 'waiting' },
+    })
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending' }).word).toBe('waiting for Brakeman')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'refused', why: 'Brakeman is off: turn it on in Settings' })).toMatchObject({
+      word: 'refused: Brakeman is off: turn it on in Settings',
+      tone: 'error',
+      mark: { key: 'failed' },
+    })
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'cancelled' })).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
+    // A send to a decision says why it waits.
+    expect(sendState({ rev: 1, kind: 'decision', state: 'pending', waiting: 'no engine holds the decisions here' }).word).toBe('sending: no engine holds the decisions here')
+    expect(sendState({ rev: 1, kind: 'decision', state: 'pending' }).word).toBe('sending')
+  })
+
+  it('says a cancel was asked of a send to Brakeman', () => {
+    const asked = [{ opId: 'c1', at: '2026-11-16T10:00:00Z', actor: 'admin' }]
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7', cancels: asked }).word).toBe('sent as r1 to Brakeman (br-7) · cancel asked')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending', cancels: asked }).word).toBe('waiting for Brakeman · cancel asked')
+    expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7', cancels: [] }).word).toBe('sent as r1 to Brakeman (br-7)')
+  })
+
+  it('names its mark by its own words, the legend the task mark’s', () => {
+    const v = sendState({ ...base, state: 'sent' })
+    expect(v.mark.word).toBe(v.word)
+    expect(v.mark.legend).toMatch(/^done:/)
+  })
+
+  it('offers Cancel on a send to Brakeman that may still run alone', () => {
+    expect([cancellable({ kind: 'brakeman', state: 'pending' }), cancellable({ kind: 'brakeman', state: 'sent' })]).toEqual([true, true])
+    expect([cancellable({ kind: 'brakeman', state: 'refused' }), cancellable({ kind: 'brakeman', state: 'cancelled' }), cancellable({ kind: 'ticket', state: 'sent' })]).toEqual([
+      false,
+      false,
+      false,
+    ])
+    // Asked once, never again.
+    expect(cancellable({ kind: 'brakeman', state: 'sent', cancels: [{ opId: 'c1', at: '', actor: 'admin' }] })).toBe(false)
+  })
+
+  it('says what a cancel did', () => {
+    expect(cancelWords({ done: true })).toBe('Cancelled.')
+    expect(cancelWords({ done: false })).toBe('Cancel asked: it is finished once Brakeman holds its records again.')
+    expect(cancelWords({ done: false, words: 'the request had finished' })).toBe('The request had finished.')
+  })
+})
+
+describe('captureAttachments', () => {
+  it('ticks the live attachments a capture’s send made, newest first, within the bound', () => {
+    const a = (id: string, name: string, createdAt: string, deletedAt?: string) => ({ id, name, createdAt, deletedAt })
+    const attachments = [
+      a('1', 'capture-0123456789abcdef-r1.png', '2026-11-16T10:00:00Z'),
+      a('2', 'capture-0123456789abcdef-r1.json', '2026-11-16T10:00:01Z'),
+      a('3', 'notes.txt', '2026-11-16T11:00:00Z'),
+      a('4', 'capture-0123456789abcdef-r2.json', '2026-11-16T12:00:00Z', '2026-11-16T12:30:00Z'),
+      a('5', 'capture-0123456789ABCDEF-r1.json', '2026-11-16T13:00:00Z'),
+      a('6', 'capture-0123456789abcdef-r0.json', '2026-11-16T13:00:00Z'),
+    ]
+    expect(captureAttachments(attachments, 10)).toEqual({ ids: ['2', '1'], left: 0 })
+    expect(captureAttachments(attachments, 1)).toEqual({ ids: ['2'], left: 0 })
+  })
+
+  it('ticks only what fits the bytes, and counts what it left', () => {
+    const MiB = 1 << 20
+    const f = (id: string, size: number, at: string) => ({ id, name: `capture-0123456789abcdef-r${id}.png`, size, createdAt: `2026-11-16T${at}:00:00Z` })
+    // Newest first: 10 MiB, then 9 MiB (would pass 16), then 5 MiB (fits), then 2 MiB (would pass).
+    const files = [f('1', 2 * MiB, '10'), f('2', 5 * MiB, '11'), f('3', 9 * MiB, '12'), f('4', 10 * MiB, '13')]
+    expect(captureAttachments(files, 8, 16 * MiB)).toEqual({ ids: ['4', '2'], left: 2 })
+    expect(captureAttachments(files, 8)).toEqual({ ids: ['4', '3', '2', '1'], left: 0 })
+  })
+})

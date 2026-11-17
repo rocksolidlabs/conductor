@@ -4,12 +4,16 @@ import { AGENT_ICONS } from './app/utils/agentIcons'
 import { bundledPackages } from './build/bundledPackages'
 import { PREVIEW_BRIDGE, buildPreviewBridge, devPreviewBridge, previewBridgeBuild } from './build/previewBridge'
 import { MERMAID_RENDERER_DEV_PATH } from './app/utils/mermaidRules'
+import { devApi, devPreviewBridgeSrc } from './build/devConfig'
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
 // Nuxt configuration for the Conductor workbench. The app is a client-only
 // SPA generated into internal/web/dist and embedded in the Go binary.
 const bundled = bundledPackages(webRoot, `${webRoot}.nuxt/bundled-packages.json`)
+// The Conductor server the dev server proxies to: CONDUCTOR_DEV_API (a tree of this repository names its own, conductor.manifest.json),
+// else the default port.
+const api = devApi(process.env.CONDUCTOR_DEV_API)
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-09-01',
@@ -51,14 +55,19 @@ export default defineNuxtConfig({
       // Empty means same origin (the embedded UI). Set NUXT_PUBLIC_API_BASE
       // to http://localhost:8080 when the dev proxy cannot upgrade WebSockets.
       apiBase: '',
+      // The preview bridge the dev build loads (plugins/previewBridge.client.ts); the built app's is always empty ($development).
+      previewBridge: '',
     },
+  },
+  $development: {
+    runtimeConfig: { public: { previewBridge: devPreviewBridgeSrc(process.env.CONDUCTOR_PREVIEW_BRIDGE) } },
   },
   nitro: {
     // Output stays in web/.output/public; `make web-build` copies it into
     // internal/web/dist so Nuxt's own cleanup never empties the embed directory.
     devProxy: {
-      '/api': { target: 'http://127.0.0.1:8080/api', changeOrigin: true },
-      '/ws': { target: 'ws://127.0.0.1:8080/ws', ws: true, changeOrigin: true },
+      '/api': { target: `http://${api}/api`, changeOrigin: true },
+      '/ws': { target: `ws://${api}/ws`, ws: true, changeOrigin: true },
     },
   },
   vite: {

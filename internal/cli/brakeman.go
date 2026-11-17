@@ -61,8 +61,9 @@ In a Brakeman turn's session (CONDUCTOR_BRAKEMAN is set), with the session's tok
 With the workbench token (--server, --token and --insecure as conductor dispatch takes them):
   conductor brakeman ask KIND [--subject REF]... [--note-file F] [--since T]
                                             ask Brakeman: KIND is briefing, explain, decision,
-                                            draft_tickets, propose_crew, handoff, locate, overlaps or
-                                            ask; REF a ref such as run:<run> or ticket:CND-4; F a
+                                            draft_tickets, propose_crew, handoff, locate, overlaps,
+                                            ask or compare (one run:<run> of a comparison); REF a
+                                            ref such as run:<run> or ticket:CND-4; F a
                                             Markdown file, - for stdin; T a time (2026-11-02T09:00:00Z,
                                             or 18:00 for the last one), or a duration back (12h)
   conductor brakeman status [--json]        whether Brakeman is on, the turn in progress, the queue and

@@ -294,6 +294,21 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			env[k] = v
 		}
 	}
+	// The socket the agent's hooks report to on this machine, listening
+	// before its process starts (localreport.go), when the server takes
+	// the agent session ids it is told of (agentsession.go): handed the
+	// session once it is made, closed and removed as the host ends or a
+	// later server takes none (dropReports).
+	var reports *reportListener
+	if registered.AgentSessions {
+		reports = a.startReports(env)
+	} else {
+		opts.Log.Info("the server keeps no agent session a host carries: the agent's reports go to the server")
+	}
+	a.mu.Lock()
+	a.reports = reports
+	a.mu.Unlock()
+	defer a.dropReportsAtEnd()
 	dirFile, err := folder.Dir()
 	if err != nil {
 		folder.Close()
@@ -364,6 +379,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	})
 	a.mu.Lock()
 	a.local = local
+	a.mu.Unlock()
+	a.mu.Lock()
+	if a.reports != nil {
+		a.reports.setSession(local)
+	}
 	a.mu.Unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -442,6 +462,14 @@ type agent struct {
 	attentionUntold bool
 	attentionRetry  bool
 	attentionOf     string
+	// retellPending says the next attention told is a connection's retell
+	// (retellAttention), connStart when that connection began; lastRetold
+	// says the attention last told was the retell of a question asked
+	// before it (proto.HostAttentionMsg.Retold), sent again with a retry.
+	// Guarded by mu.
+	retellPending bool
+	connStart     time.Time
+	lastRetold    bool
 	// changeNext is the session's latest change not yet handed to
 	// onLocalChange, nil for none; forwarding says forwardChanges runs;
 	// retell says a connection started since (retellAttention): the next
@@ -484,6 +512,50 @@ type agent struct {
 	// (Options.Switchyard): the Uplink's, which leaves the session running
 	// here. Set before the control loop starts; nil ignores the stop.
 	unpublish func()
+
+	// reports is the host's socket while it listens (localreport.go), nil
+	// otherwise; asLog is what its reports said of the agent's own session,
+	// asSeq the last entry's number, asSent the last sent on the current
+	// connection, asTaken the last the server is known to have taken,
+	// asFlushing that a sender runs (agentsession.go). Guarded by mu.
+	// agentSessions is what the server's last registered said of
+	// agent_session (proto.Registered.AgentSessions). asSend and asConfirm
+	// replace the send and its confirmation in tests.
+	reports                *reportListener
+	asLog                  []agentSessionReport
+	asSeq, asSent, asTaken uint64
+	asFlushing             bool
+	// activitySeq is what the server's last registered said of activity's
+	// Seq (proto.Registered.ActivitySeq). actKept are the entries kept for
+	// the server until it took them, actSeq the last entry's number,
+	// actLeftOut how many went untold, actConfirming that a confirmation
+	// runs, up to actConfirmTo; guarded by actMu. actSendMu makes one
+	// sender of them at a time (activitykeep.go). actBound and actConfirm
+	// replace the bound and the confirmation in tests.
+	activitySeq   atomic.Bool
+	actMu         sync.Mutex
+	actSendMu     sync.Mutex
+	actSeq        uint64
+	actKept       []keptActivity
+	actLeftOut    uint32
+	actConfirming bool
+	actConfirmTo  uint64
+	// actEpoch numbers the registrations (registeredActivity), the last
+	// one's resumed in actResumed; actConfirmOn and actConfirmW are the
+	// registration and the writer the confirmation asked last is of.
+	// Guarded by actMu.
+	actEpoch     uint64
+	actResumed   bool
+	actConfirmOn uint64
+	actConfirmW  *controlWriter
+	actBound     int
+	actConfirm   func() bool
+	// asDropped says the socket was dropped for a server that takes no
+	// ids (dropReports): no id is logged after it. Guarded by mu.
+	asDropped     bool
+	agentSessions atomic.Bool
+	asSend        func(proto.HostAgentSessionMsg) error
+	asConfirm     func() bool
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -814,6 +886,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.ice = registered.ICEServers
 	a.decisions.Store(registered.Decisions)
 	a.sessionInfo.Store(registered.SessionInfo)
+	a.agentSessions.Store(registered.AgentSessions)
+	a.registeredActivity(registered.ActivitySeq, registered.Resumed)
 	unnamed := a.takeHeldLocked(registered.Links)
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
@@ -821,6 +895,9 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	a.mu.Unlock()
 	for _, id := range unnamed {
 		a.linkWent(id, false, true)
+	}
+	if !registered.AgentSessions {
+		a.dropReports()
 	}
 	w := a.useConnHearing(c, pc, live)
 	w.presented, w.renews = token, registered.Renews
@@ -976,13 +1053,26 @@ func (a *agent) onLocalChange(info session.Info) {
 	// change tell, at worst the same attention once more.
 	a.attentionUntold = false
 	a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf = att, kept, info.Turns, info.ID
+	// The connection's retell of a question asked before the connection
+	// began, to a server that takes activity's Late: it pages the question
+	// once if it is not one its copy holds (its entry comes late, paging no
+	// one). A retry sends the same.
+	if a.retellPending {
+		a.retellPending = false
+		a.lastRetold = a.activitySeq.Load() && att.State == session.AttentionNeedsInput && att.Since != nil && att.Since.Before(a.connStart)
+	} else if changed {
+		a.lastRetold = false
+	}
+	retold := a.lastRetold
 	retrying := a.attentionRetry
 	a.mu.Unlock()
 	if !changed || retrying {
 		// A retry under way sends the latest when its turn comes.
 		return
 	}
-	err := a.send(hostAttentionMsg(info.ID, att, kept, info.Turns))
+	m := hostAttentionMsg(info.ID, att, kept, info.Turns)
+	m.Retold = retold
+	err := a.send(m)
 	switch {
 	case err == nil:
 	case errors.Is(err, errConnDown):
@@ -1010,6 +1100,7 @@ func (a *agent) retellAttention() {
 	a.mu.Lock()
 	a.attentionUntold = true
 	a.retell = true
+	a.retellPending, a.connStart = true, time.Now()
 	running := a.forwarding
 	a.forwarding = true
 	a.mu.Unlock()
@@ -1038,9 +1129,11 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, kept, turns, id, on := a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf, a.out
+			att, kept, turns, id, on, retold := a.lastAttention, a.lastKept, a.lastTurns, a.attentionOf, a.out, a.lastRetold
 			a.mu.Unlock()
-			err := a.tell(hostAttentionMsg(id, att, kept, turns), nil)
+			m := hostAttentionMsg(id, att, kept, turns)
+			m.Retold = retold
+			err := a.tell(m, nil)
 			a.mu.Lock()
 			if a.out != on {
 				// The connection the attention went on is not the host's
@@ -1154,6 +1247,12 @@ func (a *agent) sendActivity(e session.ActivityEntry, state session.AttentionSta
 	}
 	m := hostActivityMsg(a.sessionID(), e)
 	m.State = string(state)
+	if a.activitySeq.Load() {
+		// Kept until the server took it (activitykeep.go).
+		a.keepActivity(m)
+		a.sendKeptActivity()
+		return
+	}
 	a.send(m)
 }
 
@@ -1329,6 +1428,13 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 		// The server is told the session's attention as the connection
 		// starts, the empty state included (retellAttention).
 		a.retellAttention()
+		// And the agent session ids its reports to the host's socket named,
+		// to a server that takes them (agentsession.go).
+		a.replayAgentSessions()
+		// And the activity entries kept for it (activitykeep.go).
+		if a.activitySeq.Load() {
+			go a.sendKeptActivity()
+		}
 		// Report the current status in case the process ended while disconnected.
 		go a.watchStatus(ctx, w)
 	}

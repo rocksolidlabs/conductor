@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CandidateReceipt, LaunchSummary, PlanBody, PlanSummary, RunCandidate, TicketLink } from '~/composables/useDispatch'
+import type { CandidateReceipt, LaunchSummary, LinkRead, PlanBody, PlanSummary, RunCandidate, TicketLink } from '~/composables/useDispatch'
 import { ApiError } from '~/composables/useApi'
 import { ContinuationNeeded, useCandidateDiff, useFileSides, useLaunchedCriteria, useNamedCandidate, usePreparedRepair, useReview, useSentReviews, useShowWhenReady, useTaskFindings, type ReviewFinding, type ReviewSummary, type SideText } from '~/composables/useReview'
 import { useReviewDraft } from '~/composables/useReviewDraft'
@@ -10,16 +10,19 @@ import { shortCommit } from '~/utils/dispatchPlans'
 import { CommandRefused } from '~/utils/tasks'
 import { receiptChips, receiptFailed, receiptKey, receiptName } from '~/utils/dispatchEvidence'
 import { lineageOf, type LineageAttempt, type LineageReviewTask } from '~/utils/reviewLineage'
+import type { RunInfo } from '~/composables/useSessions'
+import { appliedSelection, candidateSelection, compareRunOf } from '~/utils/compareSelect'
 import {
   latest,
   barTop,
   findingAt,
   findingMarks,
-  firstReviewCandidate,
+  reviewDefault,
   openFindingsPerFile,
   batchProblems,
   changeRequestOf,
   composerOnFileMove,
+  externalJobs,
   noteFromSelection,
   noteIsOn,
   notesPerFile,
@@ -53,7 +56,11 @@ import {
  * candidates, located on the one shown, with the agent's addressed notes and the marks a person makes (ReviewFindings); and the ticket's
  * decisions and delivery (the page's own sections, in the `decisions` slot). One column on a phone, where a note on lines is made by
  * typing them (Note on lines), since Monaco's selection is a desktop gesture. A check of the candidate, and the failed-check panel's
- * receipt, open DS2's receipt dialog (DispatchReceipt: the argv, the whole log, the served SHA-256 against the recorded one).
+ * receipt, open DS2's receipt dialog (DispatchReceipt: the argv, the whole log, the served SHA-256 against the recorded one). Beside the
+ * candidate's own checks, the CI jobs on GitHub of each live delivery link that delivers its commit as a pull request (IN1a PR-10): the
+ * link's last read of them at the pull request's head commit, Read again a fresh one, a read that was cut saying so ("incomplete: N
+ * checks not read, see them on GitHub") and never shown as passing, and a failed job's Prepare a repair (the failed-check panel, its
+ * receipt external) offered only while the head commit read is the candidate's.
  *
  * Two rules hold the view's candidates. The candidate shown is read by its id from its own run (useNamedCandidate), never looked for
  * among the ticket's pages of runs and candidates: whatever run and attempt the route names, its receipts, its state, its run's base and
@@ -68,6 +75,10 @@ import {
  * hand; any other run's launch is said to be not read, and its plan revision, criteria as launched and expected checks are not shown
  * (never another launch's, never today's criteria in their place). A candidate with no receipt of its own has no time the page reads:
  * rankCandidates ranks it at the latest time known before it, and the picker and the palette say "time not known" beside it.
+ *
+ * A ticket whose runs hold a comparison (Program item CP1, PR-8b; a run whose read carries its `compare` part): the picker labels each
+ * of its candidates "selected" or "not selected" once the selection is applied, and a route that names no candidate opens on the
+ * selected one, waiting for the comparison's read rather than settling on another first. Every other ticket's view is as RV1 made it.
  */
 const props = defineProps<{
   ticketKey: string
@@ -105,7 +116,38 @@ interface Option extends ReviewCandidateOption {
   task: string
   c: RunCandidate
 }
-const chosen = computed(() => props.candidate || firstReviewCandidate(props.candidates.runs.value))
+const attention = useAttention()
+/** The ticket's runs the live store does not hold (a record after a restart or an eviction), each read once through its own route. */
+const readRuns = ref(new Map<string, RunInfo | null>())
+const asked = new Set<string>()
+const ticketRuns = computed(() => props.candidates.runs.value.map((r) => r.run))
+watch(
+  () => [...ticketRuns.value, parseCandidate(props.candidate)?.run ?? ''].filter((id) => id && !attention.runOf(id) && !asked.has(id)),
+  (ids) => {
+    for (const id of ids) {
+      asked.add(id)
+      void attention.refreshRun(id).then(
+        (r) => readRuns.value.set(id, r),
+        () => readRuns.value.set(id, null),
+      )
+    }
+  },
+  { immediate: true },
+)
+/** A run as the live store holds it, else as its own read answered; undefined while neither has. */
+const runInfo = (id: string) => attention.runOf(id) ?? readRuns.value.get(id)
+/** The run of a comparison among the ticket's runs, and whether every run is known yet (compareRunOf). */
+const compareOf = computed(() => compareRunOf(ticketRuns.value, parseCandidate(props.candidate)?.run, runInfo))
+const compareRun = computed(() => compareOf.value.run)
+const comparing = useComparison({ run: () => compareRun.value })
+/** The comparison's applied selection: undefined while it is read, null when none applies (none applied, a read that failed or found none). */
+const selected = computed(() => {
+  if (!compareRun.value) return null
+  if (comparing.error.value || comparing.missing.value) return null
+  return comparing.loaded.value ? appliedSelection(comparing.comparison.value?.selection) : undefined
+})
+const selectionOf = (task: string, attempt: number, commit: string | undefined) => candidateSelection(comparing.comparison.value, { task, attempt, commit })
+const chosen = computed(() => props.candidate || reviewDefault(props.candidates.runs.value, compareRun.value ? true : compareOf.value.known ? false : undefined, selected.value))
 const cref = computed(() => parseCandidate(chosen.value))
 const dispatchApi = useDispatchApi()
 /** What moves what the view reads of the candidate and its findings: the ticket read again, the stream's reset, the runs' candidates read again (a run's change). */
@@ -133,14 +175,14 @@ const runsShown = computed(() => {
 })
 /** Every candidate the view knows, in the one ordering (rankCandidates, newest first): the picker's, the lineage's, whether the task failed. */
 const ranked = computed(() => rankCandidates(runsShown.value))
-const options = computed<Option[]>(() => ranked.value.map((x) => ({ value: x.value, label: `${x.task} · attempt ${x.c.attempt} · ${shortCommit(x.c.commit!)} · ${x.label}${untimedWords(x)}`, standing: x.c.standing, run: x.run, task: x.task, c: x.c })))
+const options = computed<Option[]>(() => ranked.value.map((x) => ({ value: x.value, label: `${x.task} · attempt ${x.c.attempt} · ${shortCommit(x.c.commit!)} · ${x.label}${untimedWords(x)}`, standing: x.c.standing, selection: selectionOf(x.task, x.c.attempt, x.c.commit), run: x.run, task: x.task, c: x.c })))
 /** The candidate shown, as its own read gives it: null until that read answers. */
 const entry = computed<Option | null>(() => {
   const w = cref.value
   const c = named.candidate.value
   if (!w || !c) return null
   const label = props.candidates.runs.value.find((r) => r.run === w.run)?.label || w.run
-  return { value: chosen.value, label: `${w.task} · attempt ${c.attempt} · ${shortCommit(w.commit)} · ${label}`, standing: c.standing, run: w.run, task: w.task, c }
+  return { value: chosen.value, label: `${w.task} · attempt ${c.attempt} · ${shortCommit(w.commit)} · ${label}`, standing: c.standing, selection: selectionOf(w.task, c.attempt, w.commit), run: w.run, task: w.task, c }
 })
 // The candidate resolved for a route that names none goes into the route: the view stays on it when another comes to stand (a request
 // applied makes the repair's), and with it the draft being edited and a send's answer.
@@ -485,6 +527,47 @@ function prepare(id: string, k: number) {
   const c = cref.value
   if (c) void prep.prepare(c, id, k)
 }
+// A delivery's CI jobs on GitHub (IN1a PR-10): the live delivery links to a pull request whose candidate's commit is the one shown, each
+// link's last read (its jobs at the pull request's head commit), Read again its fresh read; a failed job's repair prepared.
+const deliveries = computed(() => {
+  const c = cref.value
+  if (!c) return []
+  return (props.links ?? []).filter((l) => l.kind === 'delivery' && !l.deletedAt && /\/pull\/[1-9][0-9]*\/?$/.test(l.url) && parseCandidate(l.candidate)?.commit === c.commit)
+})
+const jobReads = ref<Record<string, LinkRead | null>>({})
+const jobErrors = ref<Record<string, string>>({})
+const jobReading = ref<Record<string, boolean>>({})
+/** A link's last read (fresh: a read of GitHub, recorded), applied while the link is still one of the candidate's deliveries. */
+async function readJobs(id: string, fresh: boolean) {
+  jobReading.value = { ...jobReading.value, [id]: true }
+  try {
+    const r = fresh ? await dispatchApi.readLink(props.ticketKey, id) : await dispatchApi.linkRead(props.ticketKey, id)
+    if (!deliveries.value.some((l) => l.id === id)) return
+    jobReads.value = { ...jobReads.value, [id]: r }
+    jobErrors.value = { ...jobErrors.value, [id]: '' }
+  } catch (e) {
+    jobErrors.value = { ...jobErrors.value, [id]: (e as Error).message }
+  } finally {
+    jobReading.value = { ...jobReading.value, [id]: false }
+  }
+}
+watch(
+  () => [deliveries.value.map((l) => l.id).join(','), props.reads] as const,
+  () => {
+    for (const l of deliveries.value) void readJobs(l.id, false)
+  },
+  { immediate: true },
+)
+/** A delivery's jobs as the panel lists them, and whether its read is at the candidate's commit. */
+function jobsOf(id: string) {
+  const r = jobReads.value[id]
+  if (!r) return null
+  const listed = externalJobs(r)
+  return { ...listed, headSha: r.headSha ?? '', atCandidate: !!r.headSha && r.headSha === cref.value?.commit, readAt: r.readAt, error: r.error }
+}
+function prepareJob(link: string, check: string) {
+  void prep.prepareJob(props.ticketKey, link, check)
+}
 function addCheckNote(n: Omit<DraftNote, 'key'>) {
   drafts.add(n)
 }
@@ -702,6 +785,35 @@ defineExpose({
             <UButton v-if="receiptFailed(r)" label="Prepare a repair" icon="i-lucide-wrench" size="xs" color="neutral" variant="outline" :data-review-prepare="`${r.id}/${r.k}`" @click="prepare(r.id, r.k)" />
           </li>
         </ul>
+      </section>
+
+      <!-- The CI jobs on GitHub of the candidate's deliveries: a failed job's repair prepared. -->
+      <section v-if="deliveries.length" class="flex flex-col gap-2" data-review-external>
+        <h3 class="text-sm font-semibold text-highlighted">CI jobs on GitHub</h3>
+        <div v-for="l in deliveries" :key="l.id" class="flex flex-col gap-1" :data-review-delivery="l.id">
+          <div class="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <span class="min-w-0 break-all text-muted">{{ l.url }}</span>
+            <UButton label="Read again" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="!!jobReading[l.id]" :data-review-delivery-read="l.id" @click="readJobs(l.id, true)" />
+          </div>
+          <p v-if="jobErrors[l.id]" class="text-xs text-muted" data-review-delivery-error>Its read could not be had: {{ jobErrors[l.id] }}</p>
+          <p v-else-if="!jobsOf(l.id)" class="text-xs text-dimmed">Not read from GitHub yet: Read again reads its jobs.</p>
+          <template v-else>
+            <p v-if="jobsOf(l.id)!.error" class="text-xs text-muted">The last read failed: {{ jobsOf(l.id)!.error }}</p>
+            <p v-if="jobsOf(l.id)!.incomplete" class="text-xs text-muted" data-external-incomplete>{{ jobsOf(l.id)!.incomplete }}</p>
+            <p v-if="jobsOf(l.id)!.headSha && !jobsOf(l.id)!.atCandidate" class="text-xs text-muted" data-external-moved>
+              The pull request's head is {{ shortCommit(jobsOf(l.id)!.headSha) }}, not this candidate's commit: its jobs tested another commit.
+            </p>
+            <p v-if="!jobsOf(l.id)!.jobs.length" class="text-xs text-dimmed">No CI job at the pull request's head commit.</p>
+            <p v-else-if="jobsOf(l.id)!.allPassed" class="text-xs text-muted" data-external-all-passed>Every job read passed.</p>
+            <ul v-if="jobsOf(l.id)!.jobs.length" class="flex flex-col gap-1">
+              <li v-for="j in jobsOf(l.id)!.jobs" :key="j.id" class="flex min-w-0 flex-wrap items-center gap-2 rounded border border-default/60 px-1.5 py-0.5 text-xs" :data-external-job="j.id" :data-external-job-failed="j.failed ? 'true' : 'false'">
+                <span class="min-w-0 break-words">{{ j.name }}</span>
+                <span class="text-muted">{{ j.state }}</span>
+                <UButton v-if="j.preparable && jobsOf(l.id)!.atCandidate" label="Prepare a repair" icon="i-lucide-wrench" size="xs" color="neutral" variant="outline" :data-external-prepare="j.id" @click="prepareJob(l.id, j.id)" />
+              </li>
+            </ul>
+          </template>
+        </div>
       </section>
 
       <section ref="findingsSection" class="flex flex-col gap-2">

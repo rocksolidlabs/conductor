@@ -159,6 +159,13 @@ type reviewGate struct {
 	workerSkips      func(review string) bool
 	ticks            chan time.Time
 	settleWait       time.Duration
+	// sending is the sends to a review whose steps a route of this
+	// process takes now, by their operation (sendKey): the worker leaves
+	// them to it (capture_review.go).
+	sending map[string]chan struct{}
+	// sendSteps, a test's seam, is called with the context a send to a
+	// review's steps are taken under, before they are.
+	sendSteps func(ctx context.Context)
 }
 
 // reviewHint is what this process knows of one try of a pending review
@@ -368,6 +375,9 @@ func (s *Server) startReviews() {
 				continue
 			}
 			_ = s.passReviews(ctx, s.ledger, true)
+			// The sends to a review whose steps a stop cut short
+			// (capture_review.go).
+			s.settleReviewSends(ctx)
 		}
 	}()
 }
@@ -713,6 +723,23 @@ func viaRefused(w http.ResponseWriter, via string) bool {
 	return true
 }
 
+// captureFindingRefused refuses a review holding a finding of kind
+// capture, or a finding naming a capture, with 400 invalid_request, nil
+// for any other. RV1's route takes a capture finding from the person
+// (reviewEvidence binds it, docs/plans/browser-evidence.md, PR-10, #798);
+// a Brakeman turn is given none (the plan gives a turn no capture
+// finding), so request_repair asks this as its body is read (repairArgs),
+// before the act is written into its request, and the act's guide entry
+// names no capture field (NewFinding.Capture is the guide's "-").
+func captureFindingRefused(rv dispatch.NewReview) *apiError {
+	for i, f := range rv.Findings {
+		if f.Kind == dispatch.FindingKindCapture || f.Capture != nil {
+			return newAPIError(http.StatusBadRequest, "invalid_request", fmt.Sprintf("finding %d: a finding of kind capture is the person's, sent from a capture's editor: request_repair sends none", i+1))
+		}
+	}
+	return nil
+}
+
 // runRevisionRefused refuses the run's revision a request's application
 // is held to (expectedRevision) when it is none: a revision is 1 or
 // more, 0 for none. RV1's route and Brakeman's request_repair (repairArgs)
@@ -750,9 +777,9 @@ func (s *Server) handleDispatchSubmitReview(w http.ResponseWriter, r *http.Reque
 	}
 	// A review runs to its end when the client goes away: its store
 	// operations and its application, each within its own bound.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ReviewTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewTimeoutOf(body.NewReview))
 	defer cancel()
-	s.submitReview(ctx, w, ds, body.op(r), key, body)
+	s.submitReview(ctx, w, ds, body.op(r), key, body, s.externalEvidence)
 }
 
 // answerReview answers an operation on a review that is done: {receipt,
@@ -767,8 +794,14 @@ func (s *Server) answerReview(w http.ResponseWriter, ctx context.Context, ds *di
 	})
 }
 
-// submitReview is the review's order (this file's comment).
-func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody) {
+// externalFill fills a review's external check finding k from a fresh read
+// of GitHub (Server.externalEvidence): the person's route gives it, and a
+// Brakeman turn's request_repair none, so no turn's review reads GitHub.
+type externalFill func(ctx context.Context, ds *dispatch.Store, key string, k int, c dispatch.Candidate, req dispatch.CheckRequest) (*dispatch.CheckRef, *apiError)
+
+// submitReview is the review's order (this file's comment), an external
+// check finding filled by external (nil: refused, nothing read).
+func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody, external externalFill) {
 	rv := body.NewReview
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentReviewSubmit, dispatch.ReviewSubmitArgs{Key: key, Review: rv})
 	switch {
@@ -810,6 +843,18 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeAPIError(w, aerr)
 		return
 	}
+	// A comparison's candidate is repaired once it is selected
+	// (compareReviewRefusal), refused before Dispatch keeps anything.
+	if request {
+		switch aerr, err := s.compareReviewRefusal(ctx, c); {
+		case err != nil:
+			s.chainReadError(w, c.Run, err)
+			return
+		case aerr != nil:
+			writeAPIError(w, aerr)
+			return
+		}
+	}
 	switch ok, err := s.allowedBase(ctx, row, a, rv.Base); {
 	case err != nil:
 		s.chainReadError(w, c.Run, err)
@@ -818,10 +863,13 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeError(w, http.StatusConflict, dispatch.RefusalInvalid, "the base "+shortCommit(rv.Base)+" is none the run names: its base, the attempt's start, or a result of the task in the run's chain")
 		return
 	}
-	ev, aerr, err := s.reviewEvidence(ctx, c, rv)
+	ev, proj, aerr, err := s.reviewEvidence(ctx, ds, key, c, rv, external)
 	switch {
 	case err != nil && errors.Is(err, errRunContinuing):
 		s.chainReadError(w, c.Run, err)
+		return
+	case err != nil && errors.Is(err, errCaptureRead):
+		s.dispatchError(w, "review", err)
 		return
 	case err != nil:
 		s.receiptError(w, "review: a check finding's receipt", c.Run, err)
@@ -831,7 +879,12 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		return
 	}
 	if request {
-		cr := changeRequestOf(rv, ev, strings.Repeat("0", dispatch.IDLen), cmp.Or(op.By, op.Actor), nil)
+		evidence, err := s.captureEvidence(ctx, ds, capturesOf(rv.Findings))
+		if err != nil {
+			s.dispatchError(w, "review", err)
+			return
+		}
+		cr := changeRequestOf(rv, ev, strings.Repeat("0", dispatch.IDLen), cmp.Or(op.By, op.Actor), nil, proj, evidence)
 		if aerr := fitRequest(row, c.Task, cr); aerr != nil {
 			writeAPIError(w, aerr)
 			return
@@ -952,21 +1005,63 @@ func receiptOfID(s string) (run, task string, n int, phase, id string, k int, ok
 // its side candidate, the review's base for its side base (never taken
 // from the body); a check finding's receipt read from the ledger
 // (failedReceipt), refused 409 invalid when it is not of the candidate's
-// attempt, when the ledger has no such receipt, or when it did not fail.
-// A finding whose shape is not one is given no evidence: the store
-// refuses its shape first, its receipt kept.
-func (s *Server) reviewEvidence(ctx context.Context, c dispatch.Candidate, rv dispatch.NewReview) (dispatch.ReviewEvidence, *apiError, error) {
+// attempt, when the ledger has no such receipt, or when it did not fail;
+// an external one (a CI job on GitHub) read fresh from the pull request of
+// the ticket's delivery link that delivers the candidate
+// (external, the person's route's externalEvidence; without it, 403
+// not_granted and nothing read); a capture finding's capture, read from
+// Dispatch's store as the review's transaction binds it
+// (Store.CaptureFinding: a send to a review of that capture, of the
+// candidate's own preview, with that annotation), refused 409 invalid
+// otherwise, its projection given by its place for the request's measure.
+// A finding whose shape is not one is given no evidence: the store refuses
+// its shape first, its receipt kept.
+func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, key string, c dispatch.Candidate, rv dispatch.NewReview, external externalFill) (dispatch.ReviewEvidence, map[int]dispatch.CaptureProjection, *apiError, error) {
 	ev := dispatch.ReviewEvidence{Findings: make([]dispatch.FindingEvidence, len(rv.Findings))}
+	proj := map[int]dispatch.CaptureProjection{}
+	// One budget for every external job's fresh read (externalBudget),
+	// begun at the first: the review's own bound stays for its store steps.
+	var ectx context.Context
 	for i, f := range rv.Findings {
 		k := i + 1
 		e := dispatch.FindingEvidence{K: k}
 		switch f.Kind {
+		case dispatch.FindingKindCapture:
+			if f.Capture == nil {
+				break
+			}
+			p, err := ds.CaptureFinding(ctx, rv.Candidate, *f.Capture)
+			var refusal *dispatch.Refusal
+			switch {
+			case errors.As(err, &refusal):
+				return ev, nil, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: %s", k, refusal.Words)), nil
+			case err != nil:
+				return ev, nil, nil, fmt.Errorf("%w: %v", errCaptureRead, err)
+			}
+			ref := *f.Capture
+			e.Capture, proj[k] = &ref, p
 		case dispatch.FindingKindLine, dispatch.FindingKindFile:
 			e.AnchorCommit = c.Commit
 			if f.Side == dispatch.SideBase {
 				e.AnchorCommit = rv.Base
 			}
 		case dispatch.FindingKindCheck:
+			if f.Check != nil && f.Check.Source == dispatch.CheckSourceExternal {
+				if external == nil {
+					return ev, nil, newAPIError(http.StatusForbidden, "not_granted", "a CI job on GitHub is read with the person's token: only the person names one in a request for changes"), nil
+				}
+				if ectx == nil {
+					var cancel context.CancelFunc
+					ectx, cancel = context.WithTimeout(ctx, s.externalBudget())
+					defer cancel()
+				}
+				ref, aerr := external(ectx, ds, key, k, c, *f.Check)
+				if aerr != nil {
+					return ev, nil, aerr, nil
+				}
+				e.Check = ref
+				break
+			}
 			if f.Check == nil || f.Check.Source != dispatch.CheckSourceLedger {
 				break
 			}
@@ -975,21 +1070,21 @@ func (s *Server) reviewEvidence(ctx context.Context, c dispatch.Candidate, rv di
 				break
 			}
 			if run != c.Run || task != c.Task || n != c.Attempt {
-				return ev, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s is of %s/%s attempt %d, not of the candidate reviewed (%s)",
+				return ev, nil, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s is of %s/%s attempt %d, not of the candidate reviewed (%s)",
 					k, f.Check.Receipt, run, task, n, c.String())), nil
 			}
 			fr, aerr, err := s.failedReceipt(ctx, s.ledger, run, task, n, id, rk)
 			if err != nil {
-				return ev, nil, err
+				return ev, nil, nil, err
 			}
 			if aerr != nil {
-				return ev, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s: %s", k, f.Check.Receipt, aerr.Message)), nil
+				return ev, nil, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s: %s", k, f.Check.Receipt, aerr.Message)), nil
 			}
 			if fr.ref.Phase != phase {
-				return ev, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s is a %s step's", k, f.Check.Receipt, fr.ref.Phase)), nil
+				return ev, nil, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s is a %s step's", k, f.Check.Receipt, fr.ref.Phase)), nil
 			}
 			if fr.ref.Subject != c.Commit {
-				return ev, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s tested %s, not the candidate reviewed (%s)",
+				return ev, nil, newAPIError(http.StatusConflict, dispatch.RefusalInvalid, fmt.Sprintf("finding %d: the receipt %s tested %s, not the candidate reviewed (%s)",
 					k, f.Check.Receipt, shortCommit(fr.ref.Subject), shortCommit(c.Commit))), nil
 			}
 			ref := fr.ref
@@ -997,20 +1092,24 @@ func (s *Server) reviewEvidence(ctx context.Context, c dispatch.Candidate, rv di
 		}
 		ev.Findings[i] = e
 	}
-	return ev, nil, nil
+	return ev, proj, nil, nil
 }
 
 // changeRequestOf is the request the review makes of the engine, its
 // findings as the store keeps them (kept, after its commit) or as sent
 // with their evidence (before it, its ids placeholders of an id's length,
-// so the request is measured at the size it will have).
-func changeRequestOf(rv dispatch.NewReview, ev dispatch.ReviewEvidence, id, by string, kept []dispatch.Finding) crew.ChangeRequest {
-	cr := crew.ChangeRequest{Review: id, By: by, Via: rv.Via, Base: rv.Base, Summary: rv.Summary, Changes: []crew.RequestedChange{}}
+// so the request is measured at the size it will have; a capture
+// finding's words, path and line its projection, proj by its place), and
+// the evidence files its capture findings stand on, each once, a capture
+// finding naming the send that holds its files (captureFiles.holderOf).
+func changeRequestOf(rv dispatch.NewReview, ev dispatch.ReviewEvidence, id, by string, kept []dispatch.Finding, proj map[int]dispatch.CaptureProjection,
+	files captureFiles) crew.ChangeRequest {
+	cr := crew.ChangeRequest{Review: id, By: by, Via: rv.Via, Base: rv.Base, Summary: rv.Summary, Changes: []crew.RequestedChange{}, Evidence: files.refs}
 	if kept != nil {
 		for _, f := range kept {
-			cr.Changes = append(cr.Changes, requestedChange(f.ID, f.Kind, f.Intent, f.Severity, f.Path, f.Side, f.From, f.To, f.Lines, f.Message, f.Resolution, f.Check))
+			cr.Changes = append(cr.Changes, requestedChange(f.ID, f.Kind, f.Intent, f.Severity, f.Path, f.Side, f.From, f.To, f.Lines, f.Message, f.Resolution, f.Check, f.Capture))
 		}
-		return cr
+		return heldBy(cr, files)
 	}
 	for i, f := range rv.Findings {
 		var ref *dispatch.CheckRef
@@ -1019,35 +1118,72 @@ func changeRequestOf(rv dispatch.NewReview, ev dispatch.ReviewEvidence, id, by s
 			c.Chosen, c.Quote = f.Check.Chosen, f.Check.Quote
 			ref = &c
 		}
-		cr.Changes = append(cr.Changes, requestedChange(fmt.Sprintf("%0*x", dispatch.IDLen, i+1), f.Kind, f.Intent, f.Severity, f.Path, f.Side, f.From, f.To, f.Lines,
-			f.Message, f.Resolution, ref))
+		path, from, to, message := f.Path, f.From, f.To, f.Message
+		if p, ok := proj[i+1]; ok && f.Kind == dispatch.FindingKindCapture {
+			path, from, to, message = p.Path, p.Line, p.Line, p.Message
+		}
+		cr.Changes = append(cr.Changes, requestedChange(fmt.Sprintf("%0*x", dispatch.IDLen, i+1), f.Kind, f.Intent, f.Severity, path, f.Side, from, to, f.Lines,
+			message, f.Resolution, ref, f.Capture))
+	}
+	return heldBy(cr, files)
+}
+
+// heldBy is cr with each capture change naming the send that holds its
+// files (captureFiles.holderOf).
+func heldBy(cr crew.ChangeRequest, files captureFiles) crew.ChangeRequest {
+	for i := range cr.Changes {
+		if c := cr.Changes[i].Capture; c != nil {
+			c.Send = files.holderOf(c.Send)
+		}
 	}
 	return cr
 }
 
 // requestedChange is one finding as the engine's request carries it.
-func requestedChange(id, kind, intent, severity, path, side string, from, to int, lines []string, message, resolution string, ref *dispatch.CheckRef) crew.RequestedChange {
+func requestedChange(id, kind, intent, severity, path, side string, from, to int, lines []string, message, resolution string, ref *dispatch.CheckRef,
+	capture *dispatch.CaptureRef) crew.RequestedChange {
 	ch := crew.RequestedChange{ID: id, Kind: kind, Intent: intent, Severity: severity, Path: path, Side: side, From: from, To: to,
 		Lines: slices.Clone(lines), Message: message, Resolution: resolution}
 	if len(ch.Lines) == 0 {
 		ch.Lines = nil
 	}
+	if capture != nil {
+		ch.Capture = &crew.RequestedCapture{Capture: capture.Capture, Send: capture.Send, K: capture.K}
+	}
 	if ref != nil {
 		ch.Check = &crew.RequestedCheck{Receipt: ref.Receipt, Run: ref.Run, Task: ref.Task, Attempt: ref.Attempt, Phase: ref.Phase, ID: ref.ID, K: ref.K,
 			Subject: ref.Subject, Exit: ref.Exit, Signal: ref.Signal, TimedOut: ref.TimedOut, Stable: ref.Stable, Error: ref.Error, LogSHA256: ref.LogSHA256,
 			LogBytes: ref.LogBytes, Tail: ref.Tail, Class: ref.Class, Chosen: ref.Chosen, Quote: ref.Quote}
+		if ref.Source == dispatch.CheckSourceExternal {
+			// A CI job on GitHub: its name, conclusion, page and app, which
+			// task.md quotes (internal/crew).
+			ch.Check.Source, ch.Check.Name, ch.Check.Conclusion, ch.Check.URL, ch.Check.App = ref.Source, ref.Name, ref.Conclusion, ref.URL, ref.App
+		}
 	}
 	return ch
 }
 
-// reviewRequest is the request a kept review makes of the engine.
-func reviewRequest(v dispatch.Review) crew.ChangeRequest {
+// reviewRequest is the request a kept review makes of the engine, its
+// capture findings' evidence files read from Dispatch's store each time
+// (captureEvidence): a request made again, by a try or a pass after a
+// restart, names the same files the sends hold.
+func (s *Server) reviewRequest(ctx context.Context, v dispatch.Review) (crew.ChangeRequest, error) {
 	rv := dispatch.NewReview{Candidate: v.Candidate, Base: v.Base, Verdict: v.Verdict, Summary: v.Summary, Via: v.Via}
 	kept := v.Findings
 	if kept == nil {
 		kept = []dispatch.Finding{}
 	}
-	return changeRequestOf(rv, dispatch.ReviewEvidence{}, v.ID, v.CreatedBy, kept)
+	var refs []dispatch.CaptureRef
+	for _, f := range kept {
+		if f.Capture != nil {
+			refs = append(refs, *f.Capture)
+		}
+	}
+	evidence, err := s.captureEvidence(ctx, s.dispatch, refs)
+	if err != nil {
+		return crew.ChangeRequest{}, err
+	}
+	return changeRequestOf(rv, dispatch.ReviewEvidence{}, v.ID, v.CreatedBy, kept, nil, evidence), nil
 }
 
 // fitRequest measures the request with the run's crew as launched and its
@@ -1261,7 +1397,11 @@ func (s *Server) applyTry(ctx context.Context, v dispatch.Review, e reviewSettle
 		return applyOutcome{why: fmt.Sprintf("run %s was continued as %s since the request was admitted, so nothing was sent: request changes of a candidate there", admitted, newest)}
 	}
 	cmd := crew.Command{ID: e.command, ExpectedRevision: expected}
-	rq := crew.RepairRequest{Task: c.Task, Attempt: c.Attempt, Commit: c.Commit, Request: reviewRequest(v)}
+	cr, err := s.reviewRequest(ctx, v)
+	if err != nil {
+		return applyOutcome{why: "the evidence files of the review's captures could not be read from the store (" + err.Error() + "): send it again"}
+	}
+	rq := crew.RepairRequest{Task: c.Task, Attempt: c.Attempt, Commit: c.Commit, Request: cr}
 	if newest != c.Run {
 		rq.Imported = fmt.Sprintf("%s/%s/%d", c.Run, c.Task, c.Attempt)
 	}
@@ -1442,6 +1582,16 @@ func (s *Server) handleDispatchRetryReview(w http.ResponseWriter, r *http.Reques
 			// The candidate's run is still the ticket's alone, as at the
 			// review (the store holds the retry's transaction to it too).
 			if !s.ticketHoldsRun(w, ctx, ds, v.TicketKey, c.Run) {
+				return
+			}
+			// A comparison's candidate is repaired once it is selected
+			// (compareReviewRefusal), the try unchanged.
+			switch aerr, err := s.compareReviewRefusal(ctx, c); {
+			case err != nil:
+				s.chainReadError(w, c.Run, err)
+				return
+			case aerr != nil:
+				writeAPIError(w, aerr)
 				return
 			}
 			newest, live, err := s.newestOf(ctx, c.Run)

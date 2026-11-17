@@ -260,6 +260,7 @@ const REQUIREMENT_WORDS: Record<CloseRequirement, string> = {
   acceptance: "the owner's acceptance",
   delivery: 'a delivery link',
   verified: 'a verified delivery',
+  merged: 'a delivery GitHub says is merged',
 }
 
 /** What a close policy requires, in words: "the owner's acceptance". */
@@ -303,14 +304,18 @@ export function runLinkedWords(holder?: string): string {
   return holder ? `The run is linked to ${holder} already: a run belongs to one ticket.` : 'The run is linked to another ticket already: a run belongs to one ticket.'
 }
 
-/** What a project's close policy may require, in the order a policy is kept and said: `verified` is DS2's (PR-9), and implies a delivery. */
+/**
+ * What a project's close policy may require, in the order a policy is kept and said: `verified` is DS2's (PR-9), and implies a delivery;
+ * `merged` IN1a's, a live delivery link whose pull request GitHub says is merged, read again as the ticket closes.
+ */
 export const CLOSE_REQUIREMENTS: ReadonlyArray<{ value: CloseRequirement; label: string; description: string }> = [
   { value: 'acceptance', label: "The owner's acceptance", description: 'Recorded by a button of its own, for the owner and against the criteria as they stand' },
   { value: 'delivery', label: 'A delivery link', description: "The merged pull request's or the release's URL" },
   { value: 'verified', label: 'A verified delivery', description: 'A delivery link naming a candidate of its runs whose checks all passed on its commit' },
+  { value: 'merged', label: 'Merged on GitHub', description: 'A delivery pull request GitHub says is merged: read again when the ticket is closed' },
 ]
 
-/** A close policy as the person ticked it, in the order the policy keeps (acceptance, delivery, then verified), each once. */
+/** A close policy as the person ticked it, in the order the policy keeps (acceptance, delivery, verified, then merged), each once. */
 export function closeRequiresOf(picked: readonly string[]): CloseRequirement[] {
   return CLOSE_REQUIREMENTS.map((r) => r.value).filter((r) => picked.includes(r))
 }
@@ -430,6 +435,7 @@ export function closeCard(t: ClosingTicket): CloseCard {
   const items = policy.items.map((i): CloseCardItem => {
     if (i.requirement === 'acceptance') return { ...i, state: acceptance.text }
     if (i.requirement === 'verified') return { ...i, state: verifiedState(t.close, deliveries) }
+    if (i.requirement === 'merged') return { ...i, state: t.close.met.merged ? 'Merged: a delivery pull request GitHub says is merged' : t.close.mergedWhy || 'No delivery pull request GitHub says is merged yet' }
     return { ...i, state: delivered ? `Delivered: ${delivered === 1 ? 'one link' : `${delivered} links`}` : 'No delivery link yet' }
   })
   return {
@@ -620,6 +626,12 @@ function textChange(what: string, c: DispatchChange): string {
 /** One change of a ticket's own fields or sets, in words: "set the priority to High", "assigned Alice". */
 function ticketChange(c: DispatchChange, names: ChangeNames): string {
   if (c.op === 'create') return 'made the ticket'
+  // A linked GitHub item's rows (IN1a): a field set from a read of it, and a field taken over from it, each by its own kind.
+  if (c.op === 'observe' || c.op === 'adopt') {
+    const what = c.field === 'title' ? 'the title' : c.field === 'description' ? 'the description' : (c.field ?? 'a field')
+    if (c.op === 'adopt') return `${what}, taken over from ${systemWord(c.prior)}`
+    return c.field === 'title' ? `${what}, from GitHub: "${c.value}"` : `${what}, from GitHub`
+  }
   if (c.op === 'add' || c.op === 'remove') {
     const adds = c.op === 'add'
     switch (c.field) {
@@ -694,6 +706,11 @@ export function changeWords(c: DispatchChange, names: ChangeNames = {}): string 
   const words = c.entity === 'comment' ? commentChange(c) : c.entity === 'plan' ? planChange(c, names) : c.entity === 'launch' ? launchChange(c, names) : ticketChange(c, names)
   if (!words) return ''
   return c.op === 'reconcile' ? `${words} (a merge's repair)` : c.op === 'migrate' ? `${words} (an upgrade's)` : words
+}
+
+/** A linked item's system in words: GitHub for `github`. */
+function systemWord(system: string | undefined): string {
+  return !system || system === 'github' ? 'GitHub' : system
 }
 
 /** One change of a comment in words: its add (the create row; the body's row beside it says nothing more), its edit, its delete. */

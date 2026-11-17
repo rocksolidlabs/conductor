@@ -51,8 +51,9 @@ import (
 // reservation until then, so nothing but the preview's own end stops its
 // services.
 //
-// This row opens a preview of a run the engine holds; a run it no longer
-// holds (evicted, or an earlier server's) is refused as not found.
+// A run the engine holds is previewed as it is; one it no longer holds
+// (evicted, or an earlier server's) in a preview-only context built from
+// the ledger (preview_context.go), which schedules nothing.
 
 // The bounds of the previews: at most maxPreviews open on the server, one
 // per candidate at a time, ledger.MaxPreviews opens of a candidate, and
@@ -137,12 +138,13 @@ type Previewing struct {
 // PreviewState is a preview as the engine gives it to the server's
 // routes: its name, its state and URL as Previewing says them, its
 // checkout (Dir, under the run's working directory Root), its commit, who
-// opened it, where it runs, and its tree's secret, which only the label
-// route puts into the admin's URL.
+// opened it, where it runs, its run's crew, and its tree's secret, which
+// only the label route puts into the admin's URL.
 type PreviewState struct {
 	PreviewRef
 	State, Preview               string
 	Root, Dir, Commit, By, Where string
+	Crew                         string
 	Secret                       string
 }
 
@@ -194,7 +196,7 @@ func (p *preview) closed() bool { return p.state == previewEnding || p.state == 
 // run continued or being so (as a command's change reads it), stopping, or
 // the attempt's result no longer the commit the reservation took.
 func (p *preview) refused() error {
-	switch err := p.e.continued(p.r); {
+	switch err := p.e.previewHeld(p.r); {
 	case err != nil:
 		return err
 	case p.r.stopping:
@@ -228,6 +230,16 @@ func (p *preview) putRow(row ledger.TreeRow) func(LedgerTx) error {
 		Preview: row.Preview, Why: row.Why, Interrupted: row.Interrupted, EndedAt: row.EndedAt, OpenedBy: p.by, Where: string(p.r.rt.Where())}
 	switch row.State {
 	case ledger.TreeResolved:
+		if p.r.previewOnly {
+			// The run's row judged again in this transaction: a run the
+			// engine does not hold is continued by no mark of its own.
+			return func(ltx LedgerTx) error {
+				if err := judgeLedgerRun(ltx); err != nil {
+					return err
+				}
+				return ltx.OpenPreview(pr)
+			}
+		}
 		return func(ltx LedgerTx) error { return ltx.OpenPreview(pr) }
 	case ledger.TreeReady:
 		return func(ltx LedgerTx) error { return ltx.PreviewReady(pr) }
@@ -284,7 +296,7 @@ func (p *preview) previewing() *Previewing {
 
 // stateOf is p as the routes read it. The caller holds e.mu.
 func (p *preview) stateOf() PreviewState {
-	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.commit, By: p.by, Where: string(p.r.rt.Where())}
+	ps := PreviewState{PreviewRef: PreviewRef{Run: p.key.run, Task: p.key.task, N: p.key.n, Seq: p.seq}, Root: p.r.cwd, Dir: p.dir, Commit: p.commit, By: p.by, Where: string(p.r.rt.Where()), Crew: p.r.crewID}
 	if pv := p.previewing(); pv != nil {
 		ps.State, ps.Preview = pv.State, pv.Preview
 	}
@@ -295,9 +307,12 @@ func (p *preview) stateOf() PreviewState {
 }
 
 // OpenPreview opens a preview checkout of attempt n of the task, which
-// submitted a result whose commit is known, in a managed run the engine
-// holds and that is not stopped or continued (ErrRunContinued), whose
-// project manifest serves it. In order: the candidate reserved, under the
+// submitted a result whose commit is known, in a managed run that is not
+// stopped or continued (ErrRunContinued), whose project manifest serves
+// it: one the engine holds, or one the ledger has, finished or interrupted,
+// in a preview-only context (previewRun; its attempt's receipt numbers and
+// last seq read from the ledger once reserved, seedPreview). In order: the
+// candidate reserved, under the
 // run's txMu, so a change under way commits or is undone first, within the
 // bounds (one per candidate, ErrPreviewOpen; maxPreviews on the server, a
 // PreviewsBusyError naming the open ones; ledger.MaxPreviews opens of it,
@@ -322,22 +337,37 @@ func (p *preview) stateOf() PreviewState {
 // run's stop waits for. It returns the preview as it is once its checkout
 // is made: resolved, its readiness to come.
 func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, by string) (PreviewState, error) {
-	e.mu.Lock()
-	r := e.runs[runID]
-	e.mu.Unlock()
-	if r == nil || !r.managed {
-		return PreviewState{}, ErrRunNotFound
+	var r *run
+	var p *preview
+	// A run evicted, or a preview-only context dropped, between its lookup
+	// and the reservation is looked up again: from the ledger, the second
+	// time.
+	for try := 1; ; try++ {
+		var err error
+		if r, err = e.previewRun(ctx, runID); err != nil {
+			return PreviewState{}, err
+		}
+		if e.afterLookup != nil {
+			e.afterLookup(runID)
+		}
+		r.txMu.Lock()
+		e.mu.Lock()
+		p, err = e.reservePreview(r, taskID, n, by)
+		if err != nil {
+			e.forgetPreviewRun(r)
+		}
+		e.mu.Unlock()
+		r.txMu.Unlock()
+		if errors.Is(err, ErrRunNotFound) && try < 3 {
+			continue
+		}
+		if err != nil {
+			return PreviewState{}, err
+		}
+		break
 	}
-	if e.afterLookup != nil {
-		e.afterLookup(runID)
-	}
-	r.txMu.Lock()
-	e.mu.Lock()
-	p, err := e.reservePreview(r, taskID, n, by)
-	e.mu.Unlock()
-	r.txMu.Unlock()
-	if err != nil {
-		return PreviewState{}, err
+	if e.afterReserve != nil {
+		e.afterReserve()
 	}
 	a := p.a
 	unreserve := func(err error) (PreviewState, error) {
@@ -345,10 +375,16 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 		if p.handoff != nil {
 			r.trees.done() // counted by an end begun as its first transaction was refused
 		}
+		e.opened(p)
 		e.dropPreview(p)
 		e.mu.Unlock()
 		p.cancel()
 		return PreviewState{}, err
+	}
+	if r.previewOnly {
+		if err := e.seedPreview(ctx, p); err != nil {
+			return unreserve(err)
+		}
 	}
 	if err := checkWorktreesDir(r.cwd); err != nil {
 		return unreserve(err)
@@ -388,7 +424,7 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 	} else {
 		tr.unmade = false
 	}
-	p.opening = false
+	e.opened(p)
 	if p.handoff != nil {
 		go e.finishPreview(p, p.handoff) // an end that came during the open
 	}
@@ -415,7 +451,12 @@ func (e *Engine) OpenPreview(ctx context.Context, runID, taskID string, n int, b
 // and counts it on its run (r.previews), which holds the run against
 // eviction until the preview is dropped. The caller holds r.txMu and e.mu.
 func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*preview, error) {
-	if err := e.continued(r); err != nil {
+	if e.drained {
+		// The shutdown's Drain has begun: nothing is opened after it, of a
+		// run the engine holds or of one it does not.
+		return nil, errShuttingDown
+	}
+	if err := e.previewHeld(r); err != nil {
 		return nil, err
 	}
 	if r.stopping || r.stoppedAt != nil {
@@ -446,7 +487,10 @@ func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*previ
 	if len(e.previews) >= maxPreviews {
 		busy := &PreviewsBusyError{}
 		for _, o := range e.previews {
-			busy.Open = append(busy.Open, PreviewRef{Run: o.key.run, Task: o.key.task, N: o.key.n, Seq: o.seq})
+			// One still opening has no seq yet: counted, not named.
+			if o.seq > 0 {
+				busy.Open = append(busy.Open, PreviewRef{Run: o.key.run, Task: o.key.task, N: o.key.n, Seq: o.seq})
+			}
 		}
 		return nil, busy
 	}
@@ -462,8 +506,22 @@ func (e *Engine) reservePreview(r *run, taskID string, n int, by string) (*previ
 	e.previews[key] = p
 	r.previews++
 	a.previewing = p
+	e.opens.add()
 	r.touch()
 	return p, nil
+}
+
+// errShuttingDown refuses a preview once the shutdown's Drain has begun,
+// as a stopped run's preview is refused (run_stopped).
+var errShuttingDown = fmt.Errorf("%w: the server is shutting down", ErrRunStopped)
+
+// opened ends p's open: no longer opening, and no longer counted in
+// e.opens, which Drain waits for. Once only. The caller holds e.mu.
+func (e *Engine) opened(p *preview) {
+	if p.opening {
+		p.opening = false
+		e.opens.done()
+	}
 }
 
 // dropPreview lets go of p: out of the engine's previews and its run's
@@ -478,6 +536,7 @@ func (e *Engine) dropPreview(p *preview) {
 	}
 	p.state = previewEnded
 	p.r.touch()
+	e.forgetPreviewRun(p.r)
 }
 
 // previewReusable reports whether a checkout at dir is there to be taken

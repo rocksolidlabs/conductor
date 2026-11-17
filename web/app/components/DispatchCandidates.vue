@@ -5,6 +5,10 @@ import { type ReceiptPick, candidateWords, findingsCount, findingsWords, followP
 import { shortCommit } from '~/utils/dispatchPlans'
 import { REVIEW_ENTRY } from '~/composables/useReview'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
+import { previewPath } from '~/utils/capture'
+import { checkoutOfAttempt } from '~/composables/useCandidatePreview'
+import { runCompare } from '~/utils/compare'
+import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -17,17 +21,66 @@ import { candidateRef, parseCandidate } from '~/utils/dispatch'
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
  * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
  * offers Review, the ticket's Review view at it, with the open findings of its task counted; a failed receipt opened offers Prepare a
- * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7).
+ * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A comparison's
+ * run (its `compare` part, as the page read the run or the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
+ * applied (Program item CP1, PR-7), read from the comparison alone, in neutral ink.
+ * A candidate whose attempt's preview is offered now offers Open in Conductor, the preview page (PV1).
  */
 const props = defineProps<{
   runId: string
   /** The run's revision in the ledger as the live store holds it: a move reads the candidates again. Absent for a record. */
   revision?: number
+  /** The run is a comparison's, as the page that draws it read the run (a record the live store leaves out among them). */
+  compare?: boolean
 }>()
 
 const copy = useCopy()
-const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError } = useRunCandidates({ runId: () => props.runId, revision: () => props.revision })
+// Open in Conductor (docs/plans/browser-evidence.md): a candidate whose attempt's preview the live run offers now, framed on the
+// preview page.
+const live = useAttention()
+function previewOf(c: RunCandidate): string {
+  const t = live.runOf(props.runId)?.tasks?.find((x) => x.id === c.task)
+  return t?.attempt?.n === c.attempt && t.attempt.preview ? previewPath({ run: props.runId, task: c.task, attempt: c.attempt }) : ''
+}
+// A candidate's preview (PV1 PR-8): Preview this candidate on a work candidate with its commit; the live run's attempt names its
+// checkout while one is open, and then Open and Close are offered.
+const previews = useCandidatePreview(() => props.runId)
+const router = useRouter()
+// The checkout open of any candidate: the live run's current attempt's, else the task route's read of the attempt, which is read for every
+// task with a candidate the live run does not name as current (an older attempt, a run the server no longer holds), and again after
+// each command, so an open checkout is offered Open and Close wherever it was opened from.
+function checkoutOf(c: RunCandidate): { seq: number; state: string } | null {
+  const a = live.runOf(props.runId)?.tasks?.find((x) => x.id === c.task)?.attempt
+  return checkoutOfAttempt(c.attempt, a, details.get(c.task)?.attempts)
+}
+async function previewCandidate(c: RunCandidate) {
+  const opened = await previews.open(c.task, c.attempt)
+  // Its checkout as the task route says it, before the page moves, so the card offers Open and Close on the way back; a refusal (open
+  // already, or two open) is read the same way, and offers them for what is open.
+  await readTask(c.task)
+  if (opened) await router.push(previewPath({ run: props.runId, task: c.task, attempt: c.attempt, seq: opened.seq }))
+}
+async function closeCandidate(task: string, attempt: number, seq: number, run = props.runId, on?: string) {
+  await previews.close(task, attempt, seq, run === props.runId ? undefined : run, on)
+  if (run === props.runId) await readTask(task)
+}
+const { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask } = useRunCandidates({
+  runId: () => props.runId,
+  revision: () => props.revision,
+})
+watch(
+  tasks,
+  (ts) => {
+    const current = (task: string) => live.runOf(props.runId)?.tasks?.find((x) => x.id === task)?.attempt?.n
+    for (const t of ts) if (!details.has(t.task) && t.candidates.some((c) => c.kind === 'work' && c.commit && c.attempt !== current(t.task))) void readTask(t.task)
+  },
+  { immediate: true },
+)
 const fixes = computed(() => repairs(tasks.value, details))
+const attention = useAttention()
+/** The comparison of a compare run (the page's word for it, else the live store's), read only for one: its applied selection labels the candidates. */
+const comparison = useComparison({ run: () => (props.compare || runCompare(attention.runOf(props.runId)) ? props.runId : '') }).comparison
+const selectionOf = (c: RunCandidate) => (c.kind === 'work' ? candidateSelection(comparison.value, { task: c.task, attempt: c.attempt, commit: c.commit ?? '' }) : undefined)
 const ckey = candidateKey
 /** The ticket page's Review entry: absent anywhere else. */
 const review = inject(REVIEW_ENTRY, null)
@@ -92,6 +145,15 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
               </template>
               <span v-else-if="c.kind === 'review' && c.start" class="text-muted">reviewed <code class="font-mono" :title="c.start">{{ shortCommit(c.start) }}</code></span>
               <UBadge v-if="c.standing" label="result" color="primary" variant="subtle" size="sm" title="The task's result now" data-candidate-standing />
+              <UBadge
+                v-if="selectionOf(c)"
+                :label="SELECTION_WORDS[selectionOf(c)!]"
+                color="neutral"
+                :variant="selectionOf(c) === 'selected' ? 'outline' : 'subtle'"
+                size="sm"
+                :class="selectionOf(c) === 'selected' ? 'text-default' : 'text-muted'"
+                :data-candidate-selection="selectionOf(c)"
+              />
               <UBadge v-if="c.withdrawn" label="withdrawn" color="neutral" variant="subtle" size="sm" title="A withdrawal took this result back" data-candidate-withdrawn />
               <UBadge
                 v-if="c.acceptedAnyway"
@@ -103,6 +165,19 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
                 data-candidate-accepted-anyway
               />
               <span :class="tone[candidateWords(c).tone]" data-candidate-words>{{ candidateWords(c).text }}</span>
+              <UButton v-if="previewOf(c)" label="Open in Conductor" icon="i-lucide-scan" size="xs" color="neutral" variant="ghost" :to="previewOf(c)" :data-candidate-preview-open="ckey(c)" />
+              <template v-if="c.kind === 'work' && c.commit">
+                <template v-if="checkoutOf(c)">
+                  <UButton label="Open the candidate's preview" icon="i-lucide-scan" size="xs" color="neutral" variant="ghost" :to="previewPath({ run: runId, task: c.task, attempt: c.attempt, seq: checkoutOf(c)!.seq })" :data-candidate-checkout-open="ckey(c)" />
+                  <UButton label="Close" icon="i-lucide-circle-stop" size="xs" color="neutral" variant="ghost" :loading="previews.busy.value === `${c.task}:${c.attempt}:close`" :data-candidate-checkout-close="ckey(c)" @click="closeCandidate(c.task, c.attempt, checkoutOf(c)!.seq)" />
+                </template>
+                <UButton v-else label="Preview this candidate" icon="i-lucide-git-commit-horizontal" size="xs" color="neutral" variant="ghost" :loading="previews.busy.value === `${c.task}:${c.attempt}:open`" :data-candidate-preview="ckey(c)" @click="previewCandidate(c)" />
+              </template>
+              <span v-if="previews.refused.value[`${c.task}:${c.attempt}`]" class="text-muted" :data-candidate-preview-refused="ckey(c)">{{ previews.refused.value[`${c.task}:${c.attempt}`] }}</span>
+              <template v-for="o in previews.busyOpen.value[`${c.task}:${c.attempt}`] ?? []" :key="`${o.run}/${o.task}/${o.attempt}/${o.seq}`">
+                <UButton :label="`Open ${o.task} attempt ${o.attempt}'s preview`" icon="i-lucide-scan" size="xs" color="neutral" variant="ghost" :to="previewPath(o)" :data-candidate-busy-open="`${o.run}/${o.task}/${o.attempt}`" />
+                <UButton label="Close it" icon="i-lucide-circle-stop" size="xs" color="neutral" variant="ghost" :loading="previews.busy.value === `${o.task}:${o.attempt}:close`" :data-candidate-busy-close="`${o.run}/${o.task}/${o.attempt}`" @click="closeCandidate(o.task, o.attempt, o.seq, o.run, `${c.task}:${c.attempt}`)" />
+              </template>
               <span v-if="review && c.kind === 'work' && c.commit && c.standing" class="ml-auto flex flex-none items-center gap-1">
                 <UBadge
                   v-if="review.openFindings(runId, t.task)"

@@ -481,9 +481,11 @@ func (h *extHost) LaunchTurn(ctx context.Context, r ext.TurnLaunch) (ext.RunRef,
 // revision not approved, an approval that no longer holds, a ticket that
 // moved, managed runs off) ext.ErrRefused with the route's words; a
 // switchyard, or a server without a writable Dispatch store,
-// ext.ErrUnsupported. A launch whose try is given up before the store
-// keeps it, at the call or while it waited, answers context.Canceled and
-// launches nothing. When ctx carries a reply sink (withReplySink), the
+// ext.ErrUnsupported. A revision whose crew is a comparison is refused
+// ext.ErrRefused before anything is written ("a comparison is launched by
+// a person, who reads what it starts"; comparisonRevisionRefused). A
+// launch whose try is given up before the store keeps it, at the call or
+// while it waited, answers context.Canceled and launches nothing. When ctx carries a reply sink (withReplySink), the
 // route's own answer is written there too.
 func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext.RunRef, error) {
 	if err := h.gone(); err != nil {
@@ -526,7 +528,13 @@ func (h *extHost) LaunchApproved(ctx context.Context, r ext.ApprovedLaunch) (ext
 	}
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), LaunchTimeout)
 	defer cancel()
-	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label, admit)
+	// A comparison is a person's to launch, who read what it starts: a
+	// provider's launch of one is refused before anything is written, and
+	// carries no count, which the launch of one also needs.
+	if h.s.comparisonRevisionRefused(lctx, rec, ds, r.Plan) {
+		return h.s.launchedRef(rec)
+	}
+	h.s.ticketLaunch(lctx, rec, ds, op, r.Ticket, r.Plan, r.Label, 0, admit)
 	if withdrawn {
 		rec = newReplyRecorder()
 		writeError(rec, http.StatusServiceUnavailable, "withdrawn", "the provider's start was given up before the launch was kept: nothing was launched")

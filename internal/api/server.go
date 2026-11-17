@@ -391,6 +391,10 @@ type Server struct {
 	bgMu   sync.Mutex
 	bgDone bool
 
+	// sends is a capture's sends' gates and their settlement
+	// (capture_sends.go), ended at the start of Shutdown.
+	sends captureSends
+
 	// firstCtx bounds the launches' first messages waiting to be typed
 	// (typeFirstMessage, on track): firstStop ends it at the start of
 	// Shutdown and WaitBackground, so that both wait for none. firstWait is
@@ -448,6 +452,9 @@ type Server struct {
 	// reviews applies the reviews' requests for changes and settles those
 	// left to its worker (dispatch_reviews.go).
 	reviews reviewGate
+	// drafts queues a comparison's Brakeman request once its lanes settle
+	// (compare_drafts.go).
+	drafts compareDrafts
 }
 
 // New wires the server. cat is the configured catalog; when st holds a
@@ -633,6 +640,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// What a session change does not carry of a run reaches the browsers as
 	// a run event, which they read the run again for.
+	// A comparison settled before this server started asks nothing of it
+	// (compare_drafts.go).
+	s.drafts.since = time.Now()
 	s.runs.OnRunChange = func(runID string) {
 		s.events.run(runID, false)
 		// Its desk at the switchyard lives while the engine takes its
@@ -651,6 +661,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// A review waiting on its command's receipt is looked at by the
 		// reviews' worker, never here (dispatch_reviews.go).
 		s.reviews.runChanged(runID)
+		// A comparison whose lanes settled asks Brakeman for its draft,
+		// read off the engine's call (compare_drafts.go).
+		s.drafts.runChanged(s, runID)
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
@@ -772,6 +785,12 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.activity(id, e, st)
 		s.recordHostedActivity(id, e)
 	}
+	// An entry a host sends late is recorded and shown in its order, and
+	// offered to no sink: nobody is paged for what the session moved past.
+	s.hosts.OnLateActivity = func(id string, e session.ActivityEntry, st session.AttentionState) {
+		s.events.activityLate(id, e, st)
+		s.recordHostedActivity(id, e)
+	}
 	// A hosted session's chat reaches the browsers' unread counts as a server session's does.
 	s.hosts.OnChat = func(id string, m session.ChatMessage) {
 		s.events.chat(id, "", m)
@@ -850,6 +869,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	// The reviews' worker, ended before the stores close (stopReviews).
 	s.startReviews()
+	// The capture sends' settlement, ended before the desk quiesces.
+	s.startCaptureSends()
 	return s, nil
 }
 
@@ -935,6 +956,18 @@ func (s *Server) walk(f func(), inline bool) {
 	}
 }
 
+// trackWhileOpen is track before the server's background wait begins
+// (WaitBackground), and nothing after it: false when f was not started.
+func (s *Server) trackWhileOpen(f func()) bool {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgDone {
+		return false
+	}
+	s.bg.Go(f)
+	return true
+}
+
 // track runs f on a goroutine of its own that Shutdown waits for.
 func (s *Server) track(f func()) {
 	s.bgMu.Lock()
@@ -952,6 +985,8 @@ func (s *Server) track(f func()) {
 // probes as Shutdown does. Shutdown does the same at its end; tests call it
 // before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// No capture's send is tried or cancel finished from now on.
+	s.stopCaptureSends()
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, waited for with the usage reads below (#961).
 	s.probes.stop()
@@ -1037,6 +1072,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/crews/{id}", s.launching(s.handleGetCrew))
 	mux.HandleFunc("POST /api/crews", s.launching(s.handleCreateCrew))
 	mux.HandleFunc("POST /api/crews/examples", s.launching(s.handleSeedExamples))
+	// A comparison's crew from its template, and a comparison's read
+	// (compare.go, Program item CP1).
+	mux.HandleFunc("POST /api/crews/templates/compare", s.launching(s.handleCompareTemplate))
+	mux.HandleFunc(comparisonPattern, s.readable(comparisonPattern, s.launchingAny(s.handleRunComparison)))
 	mux.HandleFunc("PUT /api/crews/{id}", s.launching(s.handleUpdateCrew))
 	mux.HandleFunc("DELETE /api/crews/{id}", s.launching(s.handleDeleteCrew))
 	mux.HandleFunc("POST /api/crews/{id}/duplicate", s.launching(s.handleDuplicateCrew))
@@ -1101,8 +1140,9 @@ func (s *Server) Handler() http.Handler {
 	s.routeDispatch(mux)
 	// An attempt's preview label (preview_label.go), the admin's alone.
 	s.routePreviewLabel(mux)
-	s.routeCaptures(mux) // a preview's captures (captures.go), the admin's alone
-	s.routeTrackers(mux) // the GitHub token (trackers.go)
+	s.routeCaptures(mux)     // a preview's captures (captures.go), the admin's alone
+	s.routeCaptureSends(mux) // a capture's sends (capture_sends.go)
+	s.routeTrackers(mux)     // the GitHub token (trackers.go)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.readable("GET /api/sessions", s.handleListSessions))
@@ -1419,6 +1459,10 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// The capture sends' settlement first: its pass in progress ends, and
+	// no send is tried at the desk, or cancel finished, from now on (the
+	// next start's settlement finishes them).
+	s.stopCaptureSends()
 	// No identity probe starts from now on, and every one under way is
 	// sent its end, before any wait (#961); they are waited for below.
 	s.probes.stop()
@@ -1437,6 +1481,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// the runs and sessions they make are among those stopped below.
 	// Its records, and their owner lock, are let go once the sessions are
 	// stopped (release, below).
+	// A comparison's drafts read nothing more: the run stops below would
+	// start reads of a desk about to be let go.
+	s.drafts.close()
 	if s.brakeman != nil {
 		s.brakeman.quiesce(ctx)
 	}

@@ -1743,6 +1743,25 @@ decisions a person makes; **People** the owner, the assignees, who approved,
 launched and commented, the approved revision's agents with the commands they
 run, and each launch's agents with the version each reported.
 
+**GitHub.** With your own token saved in Settings, GitHub (or given to the
+server as `CONDUCTOR_GITHUB_TOKEN`), a ticket can be imported from a GitHub
+issue or pull request, or linked to one: GitHub's title and state show beside
+the ticket's own, and a link to a pull request shows whether it is merged and
+its checks. A plan revision can hand over the issue's **Steps to reproduce**
+(on when the issue has them) and the ticket's links as evidence, and the run
+page's header then says "Launched from CND-12 · plan r2 · GitHub
+acme/api#612". **Publish to GitHub** on the ticket composes one comment: your
+own words, the parts you tick (the delivery links, the delivered candidate's
+checks, the ticket's key and title; none to start), and "Close the issue as
+completed" for an issue, off unless ticked; **Preview** shows the exact text
+GitHub gets with its hidden marker said, and **Publish** posts it once, as the
+token's account, however often it is pressed. The ticket's **Publications**
+then say "Published to acme/api#612 by @alice at 14:02" with the comment's
+link; one GitHub has not shown is "not confirmed" and is never sent again
+(**Check** looks for it, **Publish as new** says the first may still appear).
+Nothing else Conductor does says anything on GitHub. Remove in Settings stops
+Conductor's use of the token; revoke it on GitHub.
+
 **The keys.** On a project's page: **J** **K** (or the arrows) move, **Enter**
 opens, **X** selects, **C** makes a ticket, and **S** **P** **A** **L** **M**
 **O** set the status, priority, assignees, labels, milestone or owner of the
@@ -1811,6 +1830,25 @@ say first what it was launched at ("As launched: CND-12 at revision 7, plan
 revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
+
+**Compare approaches.** A ticket's plan revision can be a comparison: **New
+comparison** on the Crews page makes its crew from a goal, the criteria, the
+checks and two to four candidates (each an agent and its approach), and the
+launch from the approved revision says what it starts and asks you to send
+the count of candidates you read. Each candidate works from the same base in
+a lane of its own, and no lane reaches another's work. The ticket page's
+**Comparison** (also linked from the run's header and its card) shows what
+Conductor measured from git and the ledger alone (each candidate's commit,
+size, dependency changes, test and build files, whether it shares commits
+with another, and every check per candidate with whether the results are
+comparable), and apart from it, under "Supporting information, not
+evidence", what the agents, their reviews and Brakeman said (**Ask Brakeman
+to compare** asks for a draft by hand). Once every lane has ended you select
+a candidate, or None of these, with a rationale: nothing is preselected, and
+the answer is final. It is the same decision on the card, Needs you and a
+phone, and only you, the operator, answer it. The selected candidate then
+goes on to review, repair and delivery (**Review the selected candidate**);
+the others keep their branches and receipts and are labelled not selected.
 
 ## Accounts and capacity
 
@@ -2266,6 +2304,7 @@ file must run `compinit` before that line.
 | `catalog` / `catalogPath` | `CONDUCTOR_CATALOG_PATH` | built-ins | launchable agents |
 | `dataDir` | `CONDUCTOR_DATA_DIR` | `~/.conductor` (an older `conductor.d` next to the config, or in the current directory, is kept while `~/.conductor` holds no server data, when it is a real directory owned by the server's user) | UI-managed state; must be writable, best outside `allowedRoots` |
 | `webhooks` | `CONDUCTOR_WEBHOOKS` (a JSON array) | none | where the server POSTs events, see [Webhooks](#webhooks) |
+| — | `conductor serve --token-env NAME` | off | the workbench token is the value of the environment variable `NAME`: it takes the place of a configured token (`workbenchToken`, `CONDUCTOR_WORKBENCH_TOKEN`) and of a generated one. Refused at start, with nothing written or bound and no other token taken instead, when the flag's value is not a variable's name (an empty one included) or the variable is unset or empty; no error or log line repeats what the flag was given. The variable is taken out of the environment the server hands on, so no process it starts inherits it, and its value is printed, logged and kept nowhere (not in the `--print-listen` line, not in a token file). For a server started by a program that holds a token an argument should not carry, such as a tree of this repository's own manifest |
 | — | `conductor serve --print-listen`, `--exit-on-stdin-close` | off | for a parent process (the desktop app): once listening, print one JSON line to stdout, `{listen, publicUrl, pid, version, workbenchToken?, tlsListen?}` (the token only when generated for this run); and shut down when stdin closes, so a parent that dies takes the server with it. A `publicUrl` that names this machine follows the port the listener got (`--listen 127.0.0.1:0`) |
 | — | `CONDUCTOR_DESKTOP_DIR` | none | the desktop app's own directory, named by the app for the server it starts (on Windows, its folder in the Windows profile as WSL mounts it): no session's file read reaches it; an absolute path, not a config-file key |
 | — | `CONDUCTOR_EXAMPLES` | off | `1` or `true` seeds the example crews once at startup, as `conductor serve --examples` does; not a config-file key |
@@ -2614,6 +2653,17 @@ runs only with `CONDUCTOR_E2E_LIVE=1` and both on the `PATH`.
 
 If the Nuxt dev proxy does not upgrade WebSockets in your setup, run the dev
 server with `NUXT_PUBLIC_API_BASE=http://localhost:8080`.
+`make web-dev` proxies to `CONDUCTOR_DEV_API` (a loopback host and port)
+when it is set, and the dev build loads the preview bridge named in
+`CONDUCTOR_PREVIEW_BRIDGE`; the built app never does.
+
+The repository's own `conductor.manifest.json` serves Conductor in a tree of
+a managed run whose crew reads its manifest from the file: a server of the
+tree's own on the loopback (`go run ./cmd/conductor serve --dev --token-env
+CONDUCTOR_TREE_SECRET`, its data under the tree's state directory,
+publishing nothing) and the web app's dev server proxying to it, so Open in
+Conductor previews the app as the agent changes it, and a capture of it
+names the Vue component's file.
 
 The wire protocol is documented in [docs/protocol.md](docs/protocol.md), the
 architecture in [docs/architecture.md](docs/architecture.md), and the brand in

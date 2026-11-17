@@ -573,8 +573,9 @@ async function oneSaveStandIn(page: Page, state: E2EState) {
   await page.addInitScript(
     ({ token, form, url }) => {
       const settings: Record<string, unknown> = { ...form }
-      const w = window as unknown as { conductorDesktop: unknown; e2eSets: AppSet[] }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: AppSet[]; e2eSent: string[] }
       w.e2eSets = []
+      w.e2eSent = []
       let outcome = ''
       w.conductorDesktop = {
         version: 'e2e',
@@ -584,6 +585,7 @@ async function oneSaveStandIn(page: Page, state: E2EState) {
         settings: {
           get: async () => ({ ...settings }),
           set: async (p: Record<string, unknown>) => {
+            w.e2eSent.push(JSON.stringify(p))
             const r = await fetch('/api/brakeman', { headers: { Authorization: `Bearer ${token}` } }).then((x) => x.json())
             w.e2eSets.push({ reads: r.config.budget.readsPerTurn, yolo: p.yolo as boolean, closeToTray: p.closeToTray as boolean })
             const fail = sessionStorage.getItem('e2e.fail')
@@ -614,6 +616,8 @@ async function oneSaveStandIn(page: Page, state: E2EState) {
   )
   return {
     sets: () => page.evaluate(() => (window as unknown as { e2eSets: AppSet[] }).e2eSets),
+    /** Each set's settings as the app was handed them, whole. */
+    sent: () => page.evaluate(() => (window as unknown as { e2eSent: string[] }).e2eSent),
   }
 }
 
@@ -622,7 +626,7 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
   test.setTimeout(42 * 15_000)
   const start = await brakemanConf(api)
   const reads = start.budget.readsPerTurn === 400 ? 500 : 400
-  const { sets } = await oneSaveStandIn(page, state)
+  const { sets, sent } = await oneSaveStandIn(page, state)
   const readsOf = async () => (await sets()).map((s) => s.reads)
   const savedReads = () => brakemanConf(api).then((c) => c.budget.readsPerTurn)
   try {
@@ -643,6 +647,17 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     await expect(save).toBeDisabled()
     expect(await sets()).toEqual([])
 
+    // The GitHub card (IN1a) is not the page's Save's: it has its own Check and save. A token typed in it makes nothing for the page's
+    // Save to save, and the Save below, which sends the app's settings and Brakeman's, sends nothing of the card.
+    const ghToken = page.locator('[data-settings-section="github"] input[data-github-token]')
+    const typed = 'ghp_settingsSpecNotTheSaves0123456789'
+    const carried: string[] = []
+    page.on('request', (r) => {
+      if (r.url().includes('/api/trackers/github') || (r.postData() ?? '').includes(typed)) carried.push(`${r.method()} ${new URL(r.url()).pathname}`)
+    })
+    await ghToken.fill(typed)
+    await expect(save).toBeDisabled()
+
     // Both: Brakeman's is on the server by the time the app's are set (and the server restarts).
     await page.locator('[data-yolo-switch]').click()
     await readsField(page).fill(String(reads + 1))
@@ -651,6 +666,11 @@ test("the page's one Save saves Brakeman's section with the app's settings, and 
     await expect(toast('Saved; the server restarted')).toBeVisible()
     await expect(save).toBeDisabled()
     expect(await readsOf()).toEqual([reads + 1])
+    expect(carried).toEqual([])
+    expect((await sent()).join('\n')).not.toContain(typed)
+    // The card's field is left as it was: its own Check and save sends it, or nothing does.
+    await expect(ghToken).toHaveValue(typed)
+    await ghToken.fill('')
 
     // The app's part refused after Brakeman's was saved: the page says which, and the app's edit stays for the next Save.
     await page.evaluate(() => sessionStorage.setItem('e2e.fail', 'refuse'))
@@ -940,7 +960,7 @@ async function standIn(page: Page, state: E2EState, platform: Platform) {
 
 /** The sections this machine shows, in page order: what the navigation must list. */
 function expectedSections(platform: Platform) {
-  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'accounts', 'brakeman', 'app']
+  return [...(platform === 'win32' ? ['webrtc'] : []), 'switchyard', 'folders', 'running', 'agents', 'accounts', 'github', 'brakeman', 'app']
 }
 
 const body = (page: Page) => page.locator('[data-slot="body"]:has([data-settings-sections])')

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vue from 'vue'
-import { SEND_UNDER_WAY, draftKey, readDraft, useReviewDraft, writeDraft, type DraftStorage, type Sending } from './useReviewDraft'
+import { SEND_UNDER_WAY, addCaptureNotes, draftKey, readDraft, useReviewDraft, writeDraft, type DraftStorage, type Sending } from './useReviewDraft'
 import type { DraftNote } from '~/utils/review'
 
 // The draft of a review (Program item RV1, PR-6): kept per ticket and candidate in this browser's storage, every access in try/catch;
@@ -314,5 +314,32 @@ describe("the draft's base", () => {
     expect(d.draft.value).toMatchObject({ base: RUN_BASE, notes: [] })
     expect(d.stale.value).toBe(false)
     expect(d.setBase(RUN_BASE)).toBe('')
+  })
+})
+
+describe('Add to a review', () => {
+  const note = (k: number): Omit<DraftNote, 'key'> => ({ kind: 'capture', intent: 'change', severity: 'major', message: 'Covered.', capture: { capture: '0123456789abcdef', send: 'fedcba9876543210', k } })
+
+  it("puts a capture's notes into the candidate's draft once, the page's draft and the storage's alike", () => {
+    const storage = memory()
+    const { d } = open(storage)
+    d.add(candidateLine)
+    expect(addCaptureNotes('CND-12', C1, [note(1), note(2)], storage)).toEqual({ added: 2, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [note(1)], storage)).toEqual({ added: 0, kept: true })
+    // Another send of the same revision carries the same annotation: one note, whichever send.
+    const again = { ...note(1), capture: { ...note(1).capture!, send: '0000000000000abc' }, captureRev: 1 }
+    expect(addCaptureNotes('CND-12', C1, [{ ...note(2), captureRev: 1 }], storage)).toEqual({ added: 0, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...note(3), captureRev: 1 }], storage)).toEqual({ added: 1, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...again, capture: { ...again.capture, k: 3 } }], storage)).toEqual({ added: 0, kept: true })
+    expect(addCaptureNotes('CND-12', C1, [{ ...again, capture: { ...again.capture, k: 3 }, captureRev: 2 }], storage)).toEqual({ added: 1, kept: true })
+    expect(d.draft.value.notes.map((n) => n.kind)).toEqual(['line', 'capture', 'capture', 'capture', 'capture'])
+    expect(readDraft(storage, draftKey('CND-12', C1))!.notes).toHaveLength(5)
+  })
+
+  it('keeps them in the page where the storage refuses, and reads none of a shape it does not know', () => {
+    expect(addCaptureNotes('CND-12', C2, [note(1)], throwing)).toEqual({ added: 1, kept: false })
+    const storage = memory()
+    storage.setItem(draftKey('CND-12', C1), JSON.stringify({ v: 1, base: '', verdict: 'request_changes', summary: '', notes: [{ ...note(1), key: 'x', capture: { capture: 'c1', send: 's', k: 1 } }] }))
+    expect(readDraft(storage, draftKey('CND-12', C1))).toBeNull()
   })
 })

@@ -208,5 +208,5 @@ export function useRunCandidates(o: { runId: () => string; revision: () => numbe
     },
   )
 
-  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError }
+  return { pages, tasks, managed, next, error, loading, more, opened, findings, findingsError, toggleFindings, details, detailsError, readTask }
 }

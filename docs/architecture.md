@@ -203,6 +203,30 @@ server holds more than 512 KiB for, unwritten, is behind (`viewer_behind`):
 the host holds its frames until it catches up, as it holds a WebRTC viewer's
 while the data channel is full, so the shared connection carries what each
 relayed viewer takes.
+The hosted agent's hooks report its attention to the host on its own
+machine (`hostagent/localreport.go`): `conductor host` listens on a
+unix-domain socket in a folder of mode 0700 of the user's own, made before
+the agent's process starts and named to it in `CONDUCTOR_HOST_SOCKET`.
+`conductor notify` posts the attention route's request there with the
+session's agent token, which the host minted and checks; the host applies
+the report to its session through the calls that spend the session's
+bucket and tells the server on its control connection, now or as its next
+connection starts, so a report made while that connection is down is not
+lost; the agent's own session id a report names goes to the server on
+`agent_session`, which keeps it in the record as its attention route does
+(`hostagent/agentsession.go`), and a host whose server does not say it
+takes that names no socket. The sender posts to the server's route only
+when the socket cannot be reached; a host's refusal is a refusal. The agent's events go to the socket too (`CONDUCTOR_HOST_EVENTS`), and
+the host records them in its session; the entries its session records
+reach the server on its connection, and, to a server that says it takes
+their numbers (`registered.activitySeq`), are kept until the server took
+them (`hostagent/activitykeep.go`): those recorded while the connection
+is down are sent as the next one starts, in order, each once, and when
+more than the host keeps were left out the server records that entries
+may be missing. Every process of the user can
+reach the socket, other sessions' agents among them: the per-session token
+tells one session's agent from another's, as on the server's route (see
+docs/protocol.md, The host's socket).
 The server never sees terminal bytes on the WebRTC path and never runs the
 command. On the relay path it carries them and can read them; and since it
 carries the signalling and tells the host each viewer's role, a host trusts
@@ -485,6 +509,89 @@ continuation's attempts take the Runtime the continuation was given. The
 task read, the steps route and the prerequisites route report it; the run
 page shows nothing of it while `native` is its one value.
 
+### A comparison beside a run
+
+A comparison (Program item CP1, `docs/plans/compare-crew.md`) is a crew
+shape, not a run type: a crew whose `compare` block names two to four
+candidate tasks of one base, each with its approach and, when the
+template asks, a review of it, each in a lane of its own
+(`internal/crew/compare.go`: the block, its bounds, `Engine.LaneOf`; which
+of an agent's routes a lane's session reaches is `compareDoors`, in
+`internal/api/compare_doors.go`). It is launched only from a ticket's
+approved plan revision, the launch repeating the count of candidates the
+person read. When every lane has ended, the run's change that ends the
+last one settles the comparison (`compare.settled`) and opens the
+selection in the same transaction: a DR1 record of origin `compare`
+whose options are the candidates with a standing result, each bound to
+its exact commit, then None of these; its recommendation is always none.
+A change to a lane before the selection is applied (a Retry, a Check
+again, an Accept anyway) closes it, and a new one opens once every lane
+has ended again; a stop, a shutdown and a restart leave it as it was.
+
+`GET /api/runs/{run}/comparison` (`Engine.Comparison`,
+`internal/crew/comparison.go`; any run of the chain, read in one revision,
+at most 1 MiB) gives the measured part from git and the ledger alone: each
+candidate's commit, its size, its dependency changes, its test and build
+files and its independence from the others, and each expected check per
+candidate with the server's verdict (comparable, unknown, not comparable)
+and its reasons. Beside it, apart, `supporting` (the candidates' own
+summaries, their reviews, Brakeman's draft, asked once when the comparison
+settles or by hand) and `selection`. The ticket page's comparison
+(`?view=compare&run=`) draws the two as two panels, never one coloured by
+the other, and answers the selection through DR1's own card, the same act
+as on Needs you or a phone. Only the operator answers it, with a rationale
+on every path; the decide grant, a decision link, an agent, Brakeman and a
+share link are refused. Once it is applied, only the selected candidate is
+continued, reviewed, repaired and delivered; the others keep their
+branches, worktrees and receipts, labelled not selected, and refuse their
+commands with `409 not_selected`.
+
+## Previews and captures
+
+A preview is served on the server's loopback by the tree's own services
+and framed by the workbench, which reads the page through one script, the
+preview bridge (`docs/protocol.md`, Preview bridge): `GET
+/preview-bridge.js` serves it with the server's own workbench origins
+written in, and it answers a parent window at those origins alone. A page
+in a browser has the bridge only when it loads it itself (a tree names its
+URL as `CONDUCTOR_PREVIEW_BRIDGE`); in the desktop app the shell puts the
+same script into the preview frame, whatever page it shows
+(`desktop/src/preview.ts`: `WebFrameMain.executeJavaScript` in the main
+frame's own children at the preview's origin, a page on the loopback that
+is not the workbench under any of its names, the script fetched from the
+server's origin alone; a frame that has a bridge already keeps it, the
+second idle). The screenshot has two paths, chosen in that order: in the
+desktop app the shell takes the pixels of the frame's box in the
+workbench's own window with no prompt (`webContents.capturePage`, the box
+in whole CSS pixels inside the content, at most 2,048 pixels on the long
+side as taken, a PNG of at most 4 MiB (one past it taken again at half
+its size, once, as the workbench's own encoding does, then dropped with
+words), one at a time per window,
+`web/app/utils/screenshotDesktop.ts`); in a browser that can, the tab
+cropped to the frame, with the person's permission; else none, which the
+capture says. The shell's two channels for these, `conductor:previewBridge`
+and `conductor:capturePreview`, answer the workbench's main frame alone
+(its top frame, at the server's origin over http(s)): a frame inside the
+workbench, the app's own file pages and any other origin are refused, and
+each acts on the asking window only. The preload is never put into a
+frame, and the shell adds no permission and no webview.
+
+Conductor's own app is previewed the same way, from the repository's
+`conductor.manifest.json`: a tree's services are a Conductor server of the
+tree's own (`serve --dev --token-env CONDUCTOR_TREE_SECRET` on the
+loopback, its data under the tree's state directory, publishing nothing)
+and the web app's dev server, which proxies to it (`CONDUCTOR_DEV_API`) and,
+in the dev build alone, loads the bridge the tree is told of
+(`CONDUCTOR_PREVIEW_BRIDGE`, `web/app/plugins/previewBridge.client.ts`).
+The inner server's token is the tree's secret, minted for that tree and
+given only in its environment, so no argv and no file of the repository
+holds it; the preview names it as `${CONDUCTOR_TREE_SECRET}`, which the
+label puts in for the admin alone, and another page on the loopback, which
+`--dev`'s CORS lets reach the inner server, cannot know it. A capture's
+record (the revision the server read at the save, the sources checked in
+the tree) is the server's, never the client's (`docs/protocol.md`,
+Captures).
+
 ## Dispatch
 
 Dispatch is a component, Conductor's own work tracking: projects, tickets
@@ -684,6 +791,68 @@ every check. The ticket page's Review view (`DispatchReview.vue`) puts
 the criteria and the plan, the candidate's lineage, its diff, its checks,
 the findings, the draft, the reviews sent, the decisions and the
 delivery side by side; nothing in it merges, pushes or closes.
+
+### Dispatch: GitHub linking
+
+A ticket can be linked to one GitHub issue or pull request (Program item
+IN1a, `docs/plans/tracker-linking.md`), imported from it or linked to it
+later, and its delivery and external links to GitHub items are read for
+their state and, for a pull request, its checks. Everything is read with
+the person's own token and nothing else: `internal/tracker` is the
+system-neutral contract and `internal/tracker/github` its GitHub adapter;
+the API (`api/trackers.go`, `api/dispatch_external.go`,
+`api/dispatch_publish.go`) joins them to Dispatch's store, which keeps a
+linked item's last read as a snapshot beside the ticket and never calls
+GitHub itself.
+
+**The token.** One token per host, for at most four hosts (github.com or
+a GitHub Enterprise Server address), saved from Settings or
+`conductor trackers set` into `credentials/github.json` in the data
+directory, the one file that holds it, or given to the server as
+`CONDUCTOR_GITHUB_TOKEN`, which no file holds. A save is checked with
+GitHub first. The token is carried to the API host of its own host
+alone, never served by a route, never printed and never logged: a page
+and the CLI see the account it belongs to and a fingerprint, an HMAC
+under a key the process makes at start, so it tells this server's
+tokens apart and changes at a restart. Remove deletes the server's copy
+and so stops Conductor's use of the token; it does not revoke it.
+Revoking a token is done on GitHub, which the Settings card links to. An
+export never carries `credentials/`, and a restore refuses an archive
+that holds it.
+
+**Reads and owners.** A linked item is read when a person asks (import,
+link, Refresh, a link's Read again) and when a ticket page opens on a
+snapshot older than ten minutes; nothing polls. GitHub owns the title and
+the description of an imported ticket until a person takes either over;
+the ticket's status never moves because GitHub's state did. GitHub's text
+reaches an agent only inside `internal/quoted`'s mark, which names where
+it was written and that it is not Conductor's.
+
+**Publishing.** A publication is one comment, a person's own act:
+composed on the ticket page (the person's text and the parts the server
+offers, each off until ticked: the delivery links, the delivered
+candidate's checks, the ticket's key and title; "Close the issue as
+completed" for an issue alone, off until ticked), previewed as the exact
+bytes the server will post with GitHub's hidden marker
+(`<!-- conductor-publication:<id> -->`, the publication's random id),
+and sent by Publish, which names those bytes by their SHA-256. The store
+commits each try before its one request to post and decides a later try
+by the marker on the item, so a double click, a reload, a lost reply or
+a restart posts once; a send whose answer never came and whose comment
+GitHub does not show is `unconfirmed` and is never sent again, by the
+server or by a button. No Brakeman grant, MCP tool or agent route posts
+to GitHub.
+
+**A restored data directory.** A restore makes the store a new instance
+(`dispatch.Reissue`), and a publication is sent only from the instance it
+was prepared in: a restored data directory sends none of the
+publications it was exported with (Check still finds a comment the
+original posted, and Publish as new prepares a new publication, the
+composer saying that the first may already be on GitHub). A copy of the
+data directory made by hand rather than exported and restored keeps its
+instance and does not know it is one: two servers over two such copies
+can each send the same drafts, so export and restore is the way to move
+one.
 
 ## Brakeman
 
@@ -1461,6 +1630,9 @@ still resolved. A switchyard routes and answers none.
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events, each attempt, check and prerequisite row saying where it ran (`where_ran`, schema version 7); recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, the server may not write the database file, or the database is damaged or newer |
 | `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
+| `internal/tracker` | an external tracker's contract for Dispatch (IN1a): the adapter, the records a read gives, the person's token as a `Credential` carried to one API address, GitHub references, the steps to reproduce, the hosts an image or a log may come from; standard library only |
+| `internal/tracker/github` | the GitHub adapter: REST over `net/http` and GraphQL for the calls that address an item by its node id, every answer read to its bound, nothing retried; `githubtest` is its fake GitHub |
+| `internal/quoted` | the one writer of the mark on text written outside Conductor (a GitHub title, description or steps to reproduce) wherever an agent is handed it |
 | `internal/journal` | the session records (History): one JSON document per server session in `dataDir/history/sessions/` under the owner lock `history/owner.lock`, its evidence folded from the session's activity and chat, bounded, settled from the session's state, its resume receipts; standard library and `internal/store` only |
 | `internal/history` | the index of history (History): `dataDir/history/index.sqlite`, a cache rebuilt from the stores; entries and links per source, the class from the kind alone, the budget, the search, `Similar`, `Check`; the third importer of `modernc.org/sqlite` |
 | `internal/brakeman` | Brakeman's records: its configuration, the requests people make of it, the briefs its turns hand back and their evidence refs, as JSON documents in `dataDir/brakeman/` under its own owner lock; no HTTP, no session, no process |
@@ -1555,6 +1727,14 @@ still resolved. A switchyard routes and answers none.
   `workbench-token.lock` beside it, so a second server started on the same
   data directory leaves it alone, and one of those that generates its own
   token stops unless it has `--print-listen`.
+  `serve --token-env NAME` makes the variable `NAME`'s value the token, in
+  the place of a configured one: refused at start when the flag's value is
+  not a variable's name (the empty one included) or the variable is unset
+  or empty (never falling back to a configured or generated one), taken
+  out of the server's environment, so nothing it starts inherits it, and
+  printed, logged and kept nowhere: no handshake field, no token file, no
+  error or log line that repeats what the flag was given (a token given
+  by mistake as the name included).
 
 ## Persistence
 

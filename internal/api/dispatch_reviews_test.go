@@ -674,7 +674,11 @@ func TestReviewsReconciledAtStart(t *testing.T) {
 	done, failed, accepted, uncertain, none := submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head),
 		submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head), submitPending(t, l.srv, cand, l.head)
 	rq := func(v dispatch.Review) crew.RepairRequest {
-		return crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: reviewRequest(v)}
+		cr, err := l.srv.reviewRequest(t.Context(), v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: cr}
 	}
 	if rc, err := l.srv.runs.RequestChanges(t.Context(), run, adminActor, crew.Command{ID: reviewCommandID(done.ID, 1)}, rq(done)); err != nil || rc.Status != ledger.CommandDone {
 		t.Fatalf("the done command: %+v %v", rc, err)
@@ -867,6 +871,12 @@ func TestReviewViaIsTheServers(t *testing.T) {
 			t.Fatalf("via %s: %v", via, rv)
 		}
 	}
+}
+
+// captureOf is a finding of kind capture as a body would name it.
+func captureOf() map[string]any {
+	return map[string]any{"kind": dispatch.FindingKindCapture, "intent": "change", "severity": "major",
+		"capture": map[string]any{"capture": "0123456789abcdef", "send": "fedcba9876543210", "k": 1}}
 }
 
 // retryReview sends Request again of the review, failing t unless it
@@ -1497,7 +1507,11 @@ func TestReconcileThatCouldNotReadLeavesItPending(t *testing.T) {
 	let := holdWorkerOff(l.srv)
 	v := submitPending(t, l.srv, candName(run, "build", 1, c1), l.head)
 	l.expect(t, "POST", "/api/runs/"+run+"/stop", nil, http.StatusOK, "")
-	rq := crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: reviewRequest(v)}
+	cr, err := l.srv.reviewRequest(t.Context(), v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rq := crew.RepairRequest{Task: "build", Attempt: 1, Commit: c1, Request: cr}
 	cont, err := l.srv.runs.ContinueRunWith(t.Context(), run, "", crew.ContinueOptions{Repair: &rq, Actor: adminActor, Command: crew.Command{ID: reviewCommandID(v.ID, 1)}})
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'running', title: 'How agents run', icon: 'i-lucide-square-terminal' },
   { id: 'agents', title: 'Agents on this machine', icon: 'i-lucide-bot' },
   { id: 'accounts', title: 'Accounts', icon: 'i-lucide-key-round' },
+  { id: 'github', title: 'GitHub', icon: 'i-lucide-github' },
   { id: 'brakeman', title: 'Brakeman', icon: 'i-lucide-notebook-pen' },
   { id: 'app', title: 'The app', icon: 'i-lucide-info' },
 ] as const
@@ -26,7 +27,7 @@ export type SettingsSectionId = SettingsSection['id']
 
 /** What decides the sections shown: the desktop app's page or the browser's, and what the bridge, the catalog and Brakeman said. */
 export interface SettingsShown {
-  /** The desktop app's page; false for a browser's, which shows Accounts, Brakeman and The app alone. */
+  /** The desktop app's page; false for a browser's, which shows Accounts, GitHub, Brakeman and The app alone. */
   desktop: boolean
   /** The bridge's platform ('win32' on Windows). */
   platform?: string
@@ -38,6 +39,8 @@ export interface SettingsShown {
   brakeman: boolean
   /** Whether the server offers accounts (useAccounts' available is not false); absent counts as offered. */
   accounts?: boolean
+  /** Whether the server keeps GitHub tokens (useTracker's available is not false: a switchyard keeps none); absent counts as kept. */
+  github?: boolean
 }
 
 /** The sections shown, in page order. */
@@ -49,6 +52,8 @@ export function shownSections(s: SettingsShown): SettingsSection[] {
     running: s.desktop,
     agents: s.desktop && s.agents > 0,
     accounts: s.accounts !== false,
+    // The token is the server's, not the app's: shown in a browser too.
+    github: s.github !== false,
     brakeman: s.brakeman,
     app: true,
   }

@@ -19,7 +19,7 @@ import (
 // as by its route (actArgs, turnRoute).
 var actBodies = map[string]reflect.Type{
 	brakeman.ActLaunchApprovedPlan: reflect.TypeOf(ticketLaunchBody{}),
-	brakeman.ActPrepareFollowup:    reflect.TypeOf(planProposeBody{}),
+	brakeman.ActPrepareFollowup:    reflect.TypeOf(followupActBody{}),
 	brakeman.ActRequestRepair:      reflect.TypeOf(reviewSubmitBody{}),
 	brakeman.ActRouteDecision:      reflect.TypeOf(decisionRouteBody{}),
 }
@@ -40,6 +40,11 @@ var actWords = map[string]map[string]string{
 		"constraints": "planted", "decisions[].id": "planted", "decisions[].question": "planted", "decisions[].kind": "one of the decision kinds",
 		"decisions[].before[]": "the plan's tasks", "decisions[].for": "a person or a responsibility of the crew's",
 		"note": "planted",
+		// The propose route's source, which a turn's follow-up may not
+		// send (followupActBody): the history keeps none of it.
+		"source.repro.identity": "a turn's follow-up hands over no source (refused when sent)",
+		"source.repro.sha256":   "a turn's follow-up hands over no source (refused when sent)",
+		"source.evidence[]":     "a turn's follow-up hands over no source (refused when sent)",
 	},
 	brakeman.ActRequestRepair: {
 		"opId": "the act's op id", "byName": "planted", "candidate": "a candidate the operation resolves", "base": "a commit the operation resolves",
@@ -49,6 +54,8 @@ var actWords = map[string]map[string]string{
 		"findings[].message": "planted", "findings[].resolution": "planted", "findings[].check.source": "the ledger alone",
 		"findings[].check.receipt": "a receipt the operation resolves", "findings[].check.chosen": "one of the classes",
 		"findings[].check.quote": "planted",
+		// A capture finding, and a finding naming a capture, are refused as the act's body is read (captureFindingRefused).
+		"findings[].capture.capture": "refused: never an act's", "findings[].capture.send": "refused: never an act's",
 	},
 	brakeman.ActRouteDecision: {
 		"opId": "the act's op id", "to.kind": "operator, person or role", "to.name": "a person or a responsibility of the crew's", "to.grant": "a turn's route to a grant is refused (decide-grant.md)", "note": "planted",

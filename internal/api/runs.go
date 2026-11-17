@@ -453,7 +453,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("run record", "run", id, "err", err)
 		}
 		if ok {
-			// Its decisions are the ledger's, and outlast the engine's hold.
+			// Its decisions are the ledger's, and outlast the engine's hold;
+			// a preview of its candidates the engine's (PV1).
+			s.withPreviewing(&run)
 			reply := map[string]any{"run": run, "record": true}
 			s.addRunDecisions(r, reply, id, "", after)
 			writeJSON(w, http.StatusOK, reply)
@@ -712,6 +714,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "managed_run", err.Error())
 	case errors.Is(err, crew.ErrChainTooLong):
 		writeError(w, http.StatusConflict, "chain_too_long", err.Error())
+	case errors.Is(err, crew.ErrNotSelected):
+		writeError(w, http.StatusConflict, "not_selected", err.Error())
 	case errors.Is(err, crew.ErrLoginNotKept):
 		writeError(w, http.StatusConflict, "login_not_kept", err.Error())
 	case errors.Is(err, crew.ErrBrakemanRun):

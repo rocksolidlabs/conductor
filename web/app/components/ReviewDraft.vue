@@ -113,7 +113,7 @@ async function go(continueRun: boolean) {
       <li v-for="n in notes" :key="n.key" class="flex flex-col gap-1 rounded border border-default/60 bg-elevated/20 px-2 py-1.5 text-xs" data-review-draft-note :data-review-note-kind="n.kind" :data-review-note-side="n.side ?? ''" :data-review-note-path="n.path ?? ''">
         <div class="flex min-w-0 flex-wrap items-center gap-1.5">
           <UBadge :label="intentWords(n)" :color="intentColor(n)" variant="subtle" size="sm" />
-          <button v-if="n.kind !== 'general' && n.kind !== 'check'" type="button" class="min-w-0 break-all text-left font-mono text-muted hover:underline" data-review-draft-open @click="emit('open', n)">{{ noteWhere(n) }}</button>
+          <button v-if="n.kind !== 'general' && n.kind !== 'check' && n.kind !== 'capture'" type="button" class="min-w-0 break-all text-left font-mono text-muted hover:underline" data-review-draft-open @click="emit('open', n)">{{ noteWhere(n) }}</button>
           <span v-else class="text-muted">{{ noteWhere(n) }}</span>
           <span class="ml-auto flex flex-none items-center">
             <IconButton icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" label="Edit the note" data-review-draft-edit @click="emit('edit', n)" />
@@ -121,6 +121,7 @@ async function go(continueRun: boolean) {
           </span>
         </div>
         <p class="whitespace-pre-wrap break-words" data-review-draft-message>{{ n.message }}</p>
+        <p v-if="n.kind === 'capture'" class="text-[11px] text-dimmed" data-review-draft-capture :data-capture-send="n.capture?.send ?? ''">From a capture of this candidate's preview: the server words the finding from its annotation, and the repair attempt gets the capture's document and screenshot.</p>
         <p v-if="n.resolution" class="text-muted">Asked: {{ n.resolution }}</p>
       </li>
     </ol>

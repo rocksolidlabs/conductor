@@ -2,7 +2,8 @@
 import type { PlanDecision } from '~/composables/useDispatch'
 import type { DecisionRow } from '~/utils/dispatch'
 import type { Decision } from '~/utils/decisions'
-import { decisionWords, requiredRecord } from '~/utils/decisions'
+import { askedWhere, decisionWords, requiredRecord } from '~/utils/decisions'
+import { selectedReview } from '~/utils/compareSelect'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -13,7 +14,8 @@ import { relativeTime } from '~/utils/sessions'
  * ticket's runs (Program item DR1: a gate of the approved revision, an agent's request), each with its state and its receipts in words,
  * and Answer (or Show) opening its card, and a link to its item on the decision page (Needs you, MB0's PR-4). Below them, the decisions the approved revision says a person will make, each with its latest
  * record's state: Conductor holds the tasks they name until the operator answers. Read from what the page reads (the revisions, the
- * ticket, the runs' candidates, the ticket's decisions), never a copy of its own. One column on a phone.
+ * ticket, the runs' candidates, the ticket's decisions), never a copy of its own. One column on a phone. A comparison's selection
+ * applied with a candidate offers Review the selected candidate, the ticket's Review view at it (Program item CP1, PR-8b).
  */
 const props = defineProps<{
   rows: readonly DecisionRow[]
@@ -38,6 +40,7 @@ const decisionModal = useDecisionModal()
 const recordOf = (gate: string) => requiredRecord(props.records, gate, props.planId)
 /** A record's item on the decision page (Program item MB0), by its ref. */
 const decisionPage = (id: string) => `/decisions?item=${encodeURIComponent(`decision:${id}`)}`
+const reviewOf = selectedReview
 </script>
 
 <template>
@@ -76,12 +79,13 @@ const decisionPage = (id: string) => `/decisions?item=${encodeURIComponent(`deci
           <p class="break-words text-xs" :class="tones[decisionWords(r).tone]" data-ticket-decision-state>{{ decisionWords(r).state }}</p>
           <p v-if="r.answer" class="break-words text-xs text-muted">answered: {{ r.answer }}</p>
           <p class="text-xs text-dimmed">
-            {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
+            {{ r.origin === 'plan' ? `the plan's gate ${r.gate ?? ''}` : r.origin === 'compare' ? `asked by ${askedWhere(r)}` : `asked by ${r.asker?.task ?? 'an agent'}` }} {{ relativeTime(r.createdAt, now, { suffix: true }) }} ·
             <NuxtLink :to="`/runs/${encodeURIComponent(r.run)}?view=tasks`" class="hover:underline">open the run</NuxtLink>
             ·
             <NuxtLink :to="decisionPage(r.id)" class="hover:underline" :data-ticket-decision-item="r.id">on Needs you</NuxtLink>
           </p>
         </div>
+        <UButton v-if="reviewOf(r)" label="Review the selected candidate" icon="i-lucide-scan-eye" size="xs" color="neutral" variant="outline" class="flex-none" :to="reviewOf(r)!" :data-ticket-decision-review="r.id" />
         <UButton :label="r.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="r.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="flex-none" :data-ticket-decision-open="r.id" @click="decisionModal.open(r.id)" />
       </li>
     </ul>

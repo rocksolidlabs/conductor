@@ -57,11 +57,14 @@ const ActorServer = "server"
 
 // LaunchArgs is ticket.launch's content, its fingerprint: the ticket's
 // key, the revision's id and the label as the client sent them (empty for
-// the default). Replay takes it.
+// the default), and for a comparison's revision the count of candidates
+// the person confirmed (Program item CP1), omitted when 0, so a
+// fingerprint made before it is unchanged. Replay takes it.
 type LaunchArgs struct {
-	Key   string `json:"key"`
-	Plan  string `json:"plan"`
-	Label string `json:"label,omitempty"`
+	Key        string `json:"key"`
+	Plan       string `json:"plan"`
+	Label      string `json:"label,omitempty"`
+	Candidates int    `json:"candidates,omitempty"`
 }
 
 // LaunchAgent is a member of a launched run with its agent and the
@@ -161,19 +164,26 @@ var memberPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 // per attachment it names (which the sweep keeps), and one create row
 // whose value is the launch's summary without the package. Nothing is
 // started: the receipt's id is the launch's, which the caller reads it by
-// (LaunchByID), and the API starts the run after the commit.
+// (LaunchByID), and the API starts the run after the commit. A revision
+// whose crew is a comparison is refused (confirm_candidates): its launch
+// is LaunchAdmitted's, with the count.
 func (s *Store) Launch(ctx context.Context, op Op, key, planID, label string) (Receipt, error) {
-	return s.LaunchAdmitted(ctx, op, key, planID, label, nil)
+	return s.LaunchAdmitted(ctx, op, key, planID, label, 0, nil)
 }
 
-// LaunchAdmitted is Launch with admit, when set, asked first in the
+// LaunchAdmitted is Launch with the count of candidates the person
+// confirmed (0 for none) and admit, when set, asked first in the
 // transaction, under the store's lock, after a resend of the operation was
 // answered: its error ends the operation with that error, nothing kept,
 // no receipt (a caller whose authority ended while it waited for the
 // store, ext.Host's LaunchApproved for a provider given up), so the same
-// op id may be sent again once it holds.
-func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label string, admit func() error) (Receipt, error) {
-	return s.Apply(ctx, op, IntentTicketLaunch, LaunchArgs{Key: key, Plan: planID, Label: label}, func(t *tx) error {
+// op id may be sent again once it holds. The count is the operation's
+// content with the key, the revision and the label, so a resend with
+// another is op_conflict; it must be the revision's own for a comparison's
+// revision (confirm_candidates, in words that say the count) and 0 for any
+// other (invalid), refused with the receipt kept.
+func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label string, candidates int, admit func() error) (Receipt, error) {
+	return s.Apply(ctx, op, IntentTicketLaunch, LaunchArgs{Key: key, Plan: planID, Label: label, Candidates: candidates}, func(t *tx) error {
 		if admit != nil {
 			if err := admit(); err != nil {
 				return err
@@ -218,6 +228,9 @@ func (s *Store) LaunchAdmitted(ctx context.Context, op Op, key, planID, label st
 		}
 		crew, err := readPlanCrew(body.Crew, p.CrewID)
 		if err != nil {
+			return err
+		}
+		if err := crew.launchCount(p.N, candidates); err != nil {
 			return err
 		}
 		attachments, err := t.launchAttachments(tk, p, body.Attachments)
@@ -798,7 +811,9 @@ type LaunchComment struct {
 // AtLaunch reads the ticket of the launch with the id as a run launched
 // from it reads it, in one read transaction, by the launch's mark (the
 // seq of its create row, the mark ChangedSince counts from): its title,
-// description and acceptance criteria from the launch's package; each
+// description and acceptance criteria from the launch's package, the
+// title and the description as an agent reads them (launchedForAgent:
+// quoted when a read wrote them); each
 // link and attachment whose add row is below the mark and that is not
 // removed now, by the fields its add row records; each comment that is
 // not deleted, whose create row is below the mark and no other row of
@@ -826,7 +841,8 @@ func (s *Store) AtLaunch(ctx context.Context, id string, lim LaunchLimits) (AtLa
 			return err
 		}
 		var launched struct {
-			Ticket PackageTicket `json:"ticket"`
+			Ticket PackageTicket  `json:"ticket"`
+			Source *PackageSource `json:"source"`
 		}
 		if err := json.Unmarshal([]byte(pkg), &launched); err != nil {
 			return fmt.Errorf("dispatch: the package of launch %s: %w", id, err)
@@ -838,8 +854,11 @@ func (s *Store) AtLaunch(ctx context.Context, id string, lim LaunchLimits) (AtLa
 		if !tk.DeletedAt.IsZero() {
 			return ErrLaunchTicketGone
 		}
-		out = AtLaunch{ID: tk.ID, Key: tk.Key, Number: tk.Number, Title: launched.Ticket.Title, Description: launched.Ticket.Description,
-			Acceptance: launched.Ticket.Acceptance}
+		title, description, err := launchedForAgent(ctx, q, tk, launched.Ticket, launched.Source)
+		if err != nil {
+			return err
+		}
+		out = AtLaunch{ID: tk.ID, Key: tk.Key, Number: tk.Number, Title: title, Description: description, Acceptance: launched.Ticket.Acceptance}
 		var mark int64
 		if err := q.QueryRowContext(ctx, "SELECT COALESCE(MIN(seq), 0) FROM changes WHERE entity = ? AND entity_id = ? AND op = ?",
 			EntityLaunch, id, OpCreate).Scan(&mark); err != nil {

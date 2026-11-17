@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { shortCommit } from '~/utils/dispatchPlans'
 import { useRecheckAsk } from '~/composables/useReview'
-import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, quotable, type DraftNote, type FailureClass, type PreparedRepair } from '~/utils/review'
+import { FAILURE_CLASSES, checkNote, classWords, externalHost, failedReceiptActions, quotable, type DraftNote, type FailureClass, type PreparedRepair } from '~/utils/review'
+import { githubHref } from '~/utils/tracker'
 
 /**
  * A failed check prepared for its repair (Program item RV1, docs/plans/review-repair.md, PR-7), from the server's prepared request
@@ -11,6 +12,10 @@ import { FAILURE_CLASSES, checkNote, classWords, failedReceiptActions, quotable,
  * the served hash compared with the recorded one. Its actions are failedReceiptActions': Check again exactly when the prepared request
  * says Yardmaster takes it (first for an infrastructure failure or a possibly flaky check), its why in its place otherwise; Add to the
  * draft, a check note the review sends as Request changes; Retry on the run's page when the task failed.
+ *
+ * A CI job on GitHub of a delivery's pull request (IN1a PR-10: its receipt `external`) is shown as GitHub's: the job's name, how it ended,
+ * the commit it tested, its page (a link only on the job's own host, utils/tracker's githubHref) and the end of its log, all drawn as
+ * text; no argv, runtime or ledger log, and Check again never offered (GitHub runs the job).
  */
 const props = defineProps<{
   prepared: PreparedRepair | null
@@ -47,6 +52,15 @@ watch(
   { immediate: true },
 )
 const ch = computed(() => props.prepared?.finding.check ?? null)
+/** The receipt is a CI job on GitHub, not one of the ledger's. */
+const external = computed(() => ch.value?.source === 'external')
+/** The job's page as a link, only on the job's own host; null draws it as text. */
+const jobPage = computed(() => (ch.value?.url ? githubHref(ch.value.url, externalHost(ch.value.receipt)) : null))
+const title = computed(() => {
+  const c = ch.value
+  if (!c) return 'Prepare a repair'
+  return external.value ? `Prepare a repair: the CI job ${c.name ?? ''} on GitHub` : `Prepare a repair: ${c.phase} ${c.id} of ${c.task} attempt ${c.attempt}`
+})
 const acts = computed(() => (props.prepared ? failedReceiptActions(props.prepared.recheck, chosen.value, props.taskFailed) : { actions: [], why: '' }))
 const classes = FAILURE_CLASSES.map((c) => ({ label: classWords(c).label, value: c }))
 const ended = computed(() => {
@@ -68,12 +82,27 @@ function add() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="ch ? `Prepare a repair: ${ch.phase} ${ch.id} of ${ch.task} attempt ${ch.attempt}` : 'Prepare a repair'" :ui="{ content: 'sm:max-w-3xl' }">
+  <UModal v-model:open="open" :title="title" :ui="{ content: 'sm:max-w-3xl' }">
     <template #body>
       <p v-if="loading" class="text-sm text-muted">Reading the receipt…</p>
       <UAlert v-else-if="error" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-repair-error />
       <div v-else-if="prepared && ch" class="flex flex-col gap-3 text-sm" data-repair-panel :data-repair-receipt="ch.receipt" :data-repair-class="ch.class" :data-repair-recheck-allowed="prepared.recheck.allowed ? 'true' : 'false'">
-        <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+        <dl v-if="external" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs" data-external-repair>
+          <dt class="text-muted">CI job on GitHub</dt>
+          <dd class="break-words" data-repair-job-name>{{ ch.name }}<template v-if="ch.app && ch.app !== 'github-actions'"> · {{ ch.app }}</template></dd>
+          <dt class="text-muted">Receipt</dt>
+          <dd class="break-all font-mono" data-mono="id" data-repair-identity>{{ ch.receipt }}</dd>
+          <dt class="text-muted">Tested commit</dt>
+          <dd class="break-all font-mono" data-mono="commit" data-repair-subject>{{ ch.headSha || ch.subject }}</dd>
+          <dt class="text-muted">Ended</dt>
+          <dd data-repair-ended>{{ ch.conclusion || 'not known' }}</dd>
+          <dt class="text-muted">Its page</dt>
+          <dd class="break-all" data-repair-job-page>
+            <a v-if="jobPage" :href="jobPage" target="_blank" rel="noopener noreferrer" class="text-primary underline">{{ jobPage }}</a>
+            <span v-else class="text-muted">{{ ch.url || 'none given' }}</span>
+          </dd>
+        </dl>
+        <dl v-else class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
           <dt class="text-muted">Receipt</dt>
           <dd class="break-all font-mono" data-repair-identity>{{ ch.receipt }}</dd>
           <dt class="text-muted">Tested commit</dt>
@@ -93,8 +122,8 @@ function add() {
           </template>
         </dl>
         <div class="flex flex-col gap-1">
-          <span class="text-xs font-medium text-muted">The last of its output</span>
-          <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-mono text-xs" data-repair-tail>{{ ch.tail || '(no output)' }}</pre>
+          <span class="text-xs font-medium text-muted">{{ external ? 'The end of its log, as GitHub keeps it' : 'The last of its output' }}</span>
+          <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-elevated/40 p-2 font-mono text-xs" data-mono="log" data-repair-tail>{{ ch.tail || (external ? '(no log read: only a GitHub Actions job has one here; see the job on GitHub)' : '(no output)') }}</pre>
         </div>
         <div class="flex flex-col gap-1" data-repair-criteria :data-repair-criteria-source="prepared.criteria.source">
           <span class="text-xs font-medium text-muted">
@@ -128,7 +157,7 @@ function add() {
         <template v-for="a in acts.actions" :key="a">
           <UButton v-if="a === 'recheck'" label="Check again" icon="i-lucide-refresh-cw" color="neutral" variant="outline" :loading="busy" :disabled="!!rechecked" data-repair-recheck @click="again" />
           <UButton v-else-if="a === 'request'" label="Add to the draft" icon="i-lucide-message-square-plus" data-repair-add @click="add" />
-          <UButton v-else-if="a === 'retry' && ch" label="Retry on the run's page" icon="i-lucide-rotate-ccw" color="neutral" variant="ghost" :to="`/runs/${encodeURIComponent(ch.run)}`" data-repair-retry />
+          <UButton v-else-if="a === 'retry' && ch" label="Retry on the run's page" icon="i-lucide-rotate-ccw" color="neutral" variant="ghost" :to="`/runs/${encodeURIComponent(ch.run || prepared?.recheck.run || '')}`" data-repair-retry />
         </template>
       </div>
     </template>

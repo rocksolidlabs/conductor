@@ -156,8 +156,34 @@ func TestCompletionCompletes(t *testing.T) {
 			if got := complete(t, sh, script, dir, bin, "completion", ""); !slices.Equal(got, []string{"zsh", "bash", "install"}) {
 				t.Fatalf("completion words: %v", got)
 			}
-			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"}) {
+			if got := complete(t, sh, script, dir, bin, "dispatch", ""); !slices.Equal(got, []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "comparison", "review", "reviews", "findings", "finding",
+				"import", "link-issue", "unlink-issue", "refresh", "authority", "read", "publish"}) {
 				t.Fatalf("dispatch words: %v", got)
+			}
+			// A ticket's GitHub item: publish's verbs, --close's values, the
+			// text's file; the tokens' commands.
+			if got := complete(t, sh, script, dir, bin, "dispatch", "publish", ""); !slices.Equal(got, []string{"send", "check", "close"}) {
+				t.Fatalf("publish's verbs: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "dispatch", "publish", "CND-1", "--close", ""); !slices.Equal(got, []string{"completed", "not_planned"}) {
+				t.Fatalf("--close's values: %v", got)
+			}
+			if got := complete(t, sh, script, dir, bin, "trackers", ""); !slices.Equal(got, []string{"set", "remove"}) {
+				t.Fatalf("trackers words: %v", got)
+			}
+			// Each verb's own flags: set takes no --token, the list no
+			// --host.
+			for _, c := range []struct {
+				words []string
+				want  []string
+			}{
+				{[]string{"trackers", "--"}, []string{"--server", "--token", "--insecure"}},
+				{[]string{"trackers", "set", "--"}, []string{"--server", "--insecure", "--host"}},
+				{[]string{"trackers", "remove", "--"}, []string{"--server", "--token", "--insecure", "--host"}},
+			} {
+				if got := complete(t, sh, script, dir, append([]string{bin}, c.words...)...); !slices.Equal(got, c.want) {
+					t.Fatalf("%q: %v", c.words, got)
+				}
 			}
 			// The reviews' (RV1 PR-5): review's and finding's verbs, the
 			// verdicts of a review and of a mark, a finding's states, the
@@ -277,8 +303,11 @@ func TestCompletionSpecMatchesEveryFlag(t *testing.T) {
 		"capacity": {{"capacity", "-h"}},
 		"brakeman": {{"brakeman", "request", "-h"}, {"brakeman", "brief", "-h"}, {"brakeman", "ask", "-h"}, {"brakeman", "status", "-h"}, {"brakeman", "list", "-h"}, {"brakeman", "show", "-h"}},
 		"dispatch": {{"dispatch", "projects", "-h"}, {"dispatch", "tickets", "-h"}, {"dispatch", "show", "-h"}, {"dispatch", "create", "-h"}, {"dispatch", "edit", "-h"}, {"dispatch", "comment", "-h"}, {"dispatch", "accept", "-h"}, {"dispatch", "link", "-h"},
-			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"},
-			{"dispatch", "review", "CND-1", "-h"}, {"dispatch", "review", "show", "-h"}, {"dispatch", "review", "retry", "-h"}, {"dispatch", "reviews", "-h"}, {"dispatch", "findings", "-h"}, {"dispatch", "finding", "marks", "-h"}, {"dispatch", "finding", "mark", "-h"}},
+			{"dispatch", "plans", "-h"}, {"dispatch", "plan", "show", "-h"}, {"dispatch", "plan", "propose", "-h"}, {"dispatch", "plan", "approve", "-h"}, {"dispatch", "plan", "withdraw", "-h"}, {"dispatch", "launch", "-h"}, {"dispatch", "runs", "-h"}, {"dispatch", "comparison", "-h"},
+			{"dispatch", "review", "CND-1", "-h"}, {"dispatch", "review", "show", "-h"}, {"dispatch", "review", "retry", "-h"}, {"dispatch", "reviews", "-h"}, {"dispatch", "findings", "-h"}, {"dispatch", "finding", "marks", "-h"}, {"dispatch", "finding", "mark", "-h"},
+			{"dispatch", "import", "-h"}, {"dispatch", "link-issue", "-h"}, {"dispatch", "unlink-issue", "-h"}, {"dispatch", "refresh", "-h"}, {"dispatch", "authority", "-h"}, {"dispatch", "read", "-h"},
+			{"dispatch", "publish", "-h"}, {"dispatch", "publish", "send", "-h"}, {"dispatch", "publish", "check", "-h"}, {"dispatch", "publish", "close", "-h"}},
+		"trackers": {{"trackers", "-h"}, {"trackers", "set", "-h"}, {"trackers", "remove", "-h"}},
 	}
 	flagLine := regexp.MustCompile(`(?m)^  -([a-z][a-z0-9-]*)`)
 	for _, c := range completionSpec() {

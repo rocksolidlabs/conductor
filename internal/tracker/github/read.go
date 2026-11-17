@@ -313,7 +313,7 @@ func (a *Adapter) item(r tracker.Ref, issue issueJSON, etag string) tracker.Item
 	if issue.ClosedAt != nil {
 		it.ClosedAt = *issue.ClosedAt
 	}
-	it.Images, it.ImagesLeftOut = imagesOf(place.Host, issue.BodyHTML)
+	it.Images, it.ImagesLeftOut = imagesOf(func(u *url.URL) bool { return a.imageAdmitted(place.Host, u) }, issue.BodyHTML)
 	return it
 }
 

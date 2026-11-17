@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,12 +66,16 @@ type flagSpec struct {
 // second may be after each first, and whether its argument is a crew id or a
 // file.
 type commandSpec struct {
-	name   string
-	flags  []flagSpec
-	words  []string
-	after  map[string][]string
-	crewID bool
-	file   bool
+	name  string
+	flags []flagSpec
+	// verbFlags, when set, are the flags each first word takes ("" for
+	// none, or one not among them), where the verbs take different flags:
+	// flags stays every one of them, for their values.
+	verbFlags map[string][]flagSpec
+	words     []string
+	after     map[string][]string
+	crewID    bool
+	file      bool
 }
 
 // completionSpec lists the subcommands of root.go with the flags their run
@@ -81,7 +86,7 @@ func completionSpec() []commandSpec {
 	api := func(more ...flagSpec) []flagSpec {
 		return append([]flagSpec{{name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--insecure"}}, more...)
 	}
-	serveFlags := []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}, {name: "--switchyard"}}
+	serveFlags := []flagSpec{{name: "--config", kind: flagFile}, {name: "--listen", kind: flagValue}, {name: "--dev"}, {name: "--log-level", kind: flagEnum, values: levels}, {name: "--examples"}, {name: "--yolo"}, {name: "--print-listen"}, {name: "--exit-on-stdin-close"}, {name: "--switchyard"}, {name: "--token-env", kind: flagValue}}
 	notifyFlags := []flagSpec{
 		{name: "--state", kind: flagEnum, values: []string{"needs_input", "working", "done", "clear"}},
 		{name: "--message", kind: flagValue},
@@ -130,7 +135,7 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--body-file", kind: flagFile}, flagSpec{name: "--op-id", kind: flagValue}))),
 			words: []string{"request", "observe", "act", "brief", "ask", "status", "list", "show", "role"}, after: map[string][]string{"ask": brakeman.Kinds, "observe": observeWhats(), "act": actOperations(), "role": roleActions}},
 		{name: "up", flags: api(flagSpec{name: "--name", kind: flagValue}, flagSpec{name: "--resume", kind: flagValue}, flagSpec{name: "--open"}), crewID: true},
-		{name: "crews", flags: api(flagSpec{name: "--ids"})},
+		{name: "crews", flags: api(flagSpec{name: "--ids"}), words: []string{"compare"}},
 		// Every flag of every dispatch command (each takes its own), and the
 		// store's vocabularies as their values.
 		{name: "dispatch", flags: api(flagSpec{name: "--project", kind: flagValue}, flagSpec{name: "--status", kind: flagEnum, values: dispatch.Statuses}, flagSpec{name: "--q", kind: flagValue}, flagSpec{name: "--json"},
@@ -139,12 +144,25 @@ func completionSpec() []commandSpec {
 			flagSpec{name: "--kind", kind: flagEnum, values: dispatch.LinkKinds}, flagSpec{name: "--url", kind: flagValue}, flagSpec{name: "--ref", kind: flagValue}, flagSpec{name: "--candidate", kind: flagValue},
 			flagSpec{name: "--crew", kind: flagValue}, flagSpec{name: "--base", kind: flagValue}, flagSpec{name: "--based-on", kind: flagValue}, flagSpec{name: "--reference", kind: flagValue}, flagSpec{name: "--attachment", kind: flagValue},
 			flagSpec{name: "--comment", kind: flagValue}, flagSpec{name: "--constraints-file", kind: flagFile}, flagSpec{name: "--decision", kind: flagValue}, flagSpec{name: "--decision-for", kind: flagValue}, flagSpec{name: "--plan", kind: flagValue}, flagSpec{name: "--label", kind: flagValue},
+			// A comparison's (compare.go): the launch's count, the run.
+			flagSpec{name: "--candidates", kind: flagValue}, flagSpec{name: "--run", kind: flagValue},
 			// The reviews' (dispatch_reviews.go): --verdict is a review's or
 			// a mark's, --state a finding's.
 			flagSpec{name: "--verdict", kind: flagEnum, values: append(slices.Clone(dispatch.ReviewVerdicts), dispatch.FindingStates...)}, flagSpec{name: "--summary", kind: flagValue}, flagSpec{name: "--continue"},
-			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")}),
-			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "review", "reviews", "findings", "finding"},
-			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs}},
+			flagSpec{name: "--file", kind: flagFile}, flagSpec{name: "--state", kind: flagEnum, values: append(slices.Clone(dispatch.FindingStates), "all")},
+			// A ticket's GitHub item and its publications
+			// (dispatch_tracker.go), and a proposal's source.
+			flagSpec{name: "--no-images"}, flagSpec{name: "--preview"}, flagSpec{name: "--target", kind: flagValue}, flagSpec{name: "--body-file", kind: flagFile},
+			flagSpec{name: "--with", kind: flagValue}, flagSpec{name: "--close", kind: flagEnum, values: []string{"completed", "not_planned"}}, flagSpec{name: "--digest", kind: flagValue},
+			flagSpec{name: "--repro"}, flagSpec{name: "--evidence", kind: flagValue}),
+			words: []string{"projects", "tickets", "show", "create", "edit", "comment", "accept", "link", "plans", "plan", "launch", "runs", "comparison", "review", "reviews", "findings", "finding",
+				"import", "link-issue", "unlink-issue", "refresh", "authority", "read", "publish"},
+			after: map[string][]string{"plan": planVerbs, "review": reviewVerbs, "finding": findingVerbs, "publish": publishVerbs}},
+		// The GitHub tokens (trackers.go): set takes no --token, the rest
+		// the server's flags.
+		{name: "trackers", flags: api(flagSpec{name: "--host", kind: flagValue}), words: []string{"set", "remove"},
+			verbFlags: map[string][]flagSpec{"": api(), "remove": api(flagSpec{name: "--host", kind: flagValue}),
+				"set": {{name: "--server", kind: flagValue}, {name: "--insecure"}, {name: "--host", kind: flagValue}}}},
 		// Every flag of every decision command, the states as --state's values.
 		{name: "decision", flags: api(flagSpec{name: "--state", kind: flagEnum, values: decisionStates}, flagSpec{name: "--run", kind: flagValue}, flagSpec{name: "--ticket", kind: flagValue}, flagSpec{name: "--json"},
 			flagSpec{name: "--choice", kind: flagValue}, flagSpec{name: "--text", kind: flagValue}, flagSpec{name: "--why", kind: flagValue}, flagSpec{name: "--release"}),
@@ -195,6 +213,16 @@ func zshScript(spec []commandSpec) string {
 	fmt.Fprintf(&b, "  if (( CURRENT == 2 )); then compadd -- %s; return; fi\n", commandNames(spec))
 	b.WriteString("  if [[ $cur == -* ]]; then\n    case $cmd in\n")
 	for _, c := range spec {
+		if len(c.verbFlags) > 0 {
+			fmt.Fprintf(&b, "      %s) case $sub in\n", c.name)
+			for _, v := range slices.Sorted(maps.Keys(c.verbFlags)) {
+				if v != "" {
+					fmt.Fprintf(&b, "        %s) compadd -- %s ;;\n", v, flagNames(c.verbFlags[v]))
+				}
+			}
+			fmt.Fprintf(&b, "        *) compadd -- %s ;;\n      esac ;;\n", flagNames(c.verbFlags[""]))
+			continue
+		}
 		if len(c.flags) > 0 {
 			fmt.Fprintf(&b, "      %s) compadd -- %s ;;\n", c.name, flagNames(c.flags))
 		}
@@ -248,6 +276,16 @@ func bashScript(spec []commandSpec) string {
 	fmt.Fprintf(&b, "  if (( COMP_CWORD == 1 )); then COMPREPLY=($(compgen -W %q -- \"$cur\")); return; fi\n", commandNames(spec))
 	b.WriteString("  if [[ $cur == -* ]]; then\n    case $cmd in\n")
 	for _, c := range spec {
+		if len(c.verbFlags) > 0 {
+			fmt.Fprintf(&b, "      %s) case $sub in\n", c.name)
+			for _, v := range slices.Sorted(maps.Keys(c.verbFlags)) {
+				if v != "" {
+					fmt.Fprintf(&b, "        %s) COMPREPLY=($(compgen -W %q -- \"$cur\")) ;;\n", v, flagNames(c.verbFlags[v]))
+				}
+			}
+			fmt.Fprintf(&b, "        *) COMPREPLY=($(compgen -W %q -- \"$cur\")) ;;\n      esac ;;\n", flagNames(c.verbFlags[""]))
+			continue
+		}
 		if len(c.flags) > 0 {
 			fmt.Fprintf(&b, "      %s) COMPREPLY=($(compgen -W %q -- \"$cur\")) ;;\n", c.name, flagNames(c.flags))
 		}

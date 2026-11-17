@@ -223,6 +223,10 @@ const (
 	HowReleased  = "released"
 	HowCancelled = "cancelled"
 	HowNoted     = "noted"
+	// HowSelected is a comparison's selection applied (origin compare):
+	// the selected candidate (Application.Selected), or None of these
+	// (Application.None).
+	HowSelected = "selected"
 )
 
 // Application is Yardmaster's receipt of an answer applied.
@@ -237,6 +241,10 @@ type Application struct {
 	How       string    `json:"how"`
 	Tasks     []string  `json:"tasks,omitempty"`
 	Words     string    `json:"words"`
+	// Selected is a selection's chosen candidate, None its None of these
+	// (how selected): omitted for every other application.
+	Selected *SettledCandidate `json:"selected,omitempty"`
+	None     bool              `json:"none,omitempty"`
 }
 
 // DecisionAsker is an agent's decision's asking attempt, and whether it is
@@ -316,6 +324,9 @@ type decision struct {
 	delivery  string
 	withdrawn chan struct{}
 	taskFiled bool
+	// cands are a comparison's selection's options' candidates, in order,
+	// nil for None of these (origin compare alone).
+	cands []*SettledCandidate
 }
 
 // accepted is a decision's accepted response, for its application.
@@ -1938,6 +1949,11 @@ func (e *Engine) RespondDecision(ctx context.Context, id string, resp Response, 
 		if !ok {
 			return ResponseReceipt{}, refuse(CodeNotFound, "no decision %s", id)
 		}
+		if prior.Origin == ledger.OriginCompare && strings.TrimSpace(resp.Rationale) == "" {
+			// A selection's rationale is its record (I7): every path meets
+			// this, the route, the CLI and the card, before any row.
+			return ResponseReceipt{}, refuse(CodeInvalid, "%s", selectRationaleSay)
+		}
 		// A response sent before is answered from its saved row whatever
 		// holds the decision now, a run not held after a restart included
 		// (replayed).
@@ -2220,6 +2236,9 @@ func (e *Engine) applyDecisions(r *run) {
 // writes the application, this one or the next (a refused commit's change
 // is carried), and never one that did not.
 func (e *Engine) applyOne(r *run, d *decision) {
+	if e.beforeApply != nil {
+		e.beforeApply(d.n)
+	}
 	var err error
 	for try := 0; ; try++ {
 		// Under no request's context: nothing cuts the recheck short.
@@ -2274,6 +2293,7 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 		return t
 	}
 	var line *answerLine
+	var selected *AppliedSelection
 	app := Application{At: time.Now().UTC(), By: "yardmaster", Run: r.id, Response: ans.k, Validated: true}
 	words := answerWords(d, ans)
 	var events []event
@@ -2292,6 +2312,11 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 			app.Attempt = d.a.n
 		}
 		app.Words = fmt.Sprintf("%s's next attempt reads the answer in its task file", d.t.def.ID)
+	case d.origin == ledger.OriginCompare:
+		// A comparison's selection: the chosen candidate, or None of these
+		// (compare_select.go), never a gate's release or rejection.
+		sel := selectionApplication(d, ans, &app)
+		selected = &sel
 	case len(held) == 0:
 		app.How, app.Words = HowNoted, "noted: the plan's decision holds no task"
 	case rejects(d, ans):
@@ -2348,6 +2373,25 @@ func (e *Engine) applyTx(r *run, d *decision) tx {
 				}
 			}
 		}
+		if was == "" && r.outcome != "" {
+			events = append(events, event{"run.finished", map[string]any{"outcome": r.outcome}})
+		}
+	}
+	if selected != nil {
+		// The chain's selection, from this change on: the lanes not
+		// selected take no command, and the run settles as it does once
+		// selected (O5: compare.selected and the run's end in the
+		// application's transaction).
+		r.sel.applied = selected
+		payload := map[string]any{"decision": selected.Decision}
+		if selected.None {
+			payload["none"] = true
+		} else {
+			payload["task"], payload["run"], payload["attempt"], payload["commit"] = selected.Task, selected.Run, selected.Attempt, selected.Commit
+		}
+		events = append(events, event{"compare.selected", payload})
+		was := r.outcome
+		e.settleRun(r)
 		if was == "" && r.outcome != "" {
 			events = append(events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 		}
@@ -2443,7 +2487,12 @@ func answerWords(d *decision, ans *accepted) string {
 // (decisionsHeld), as the place it takes over did. The caller holds e.mu,
 // in that transaction's change, which has no undo.
 func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx) {
-	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject}
+	// A comparison's selection keeps its options' candidates: the
+	// replacement lists the same ones, and its answer selects one of them.
+	fresh := &decision{origin: d.origin, typ: d.typ, gate: d.gate, t: d.t, a: d.a, question: d.question, options: slices.Clone(d.options), state: ledger.DecisionOpen, rev: 1, subject: d.subject, cands: slices.Clone(d.cands)}
+	if d.origin == ledger.OriginCompare {
+		r.sel.last = d.id()
+	}
 	held := slices.Clone(d.holds)
 	d.state = ledger.DecisionSuperseded
 	r.dropDecision(d)
@@ -2480,6 +2529,12 @@ func (e *Engine) replaceDecision(r *run, d *decision, why string) (*decision, tx
 			// The replacement is the operator's alone: the operator routes it
 			// again if a holder of the decide grant should answer it.
 			if row.Request, err = withFor(row.Request, nil); err != nil {
+				return err
+			}
+		}
+		if d.origin == ledger.OriginCompare {
+			// A selection's replacement names the record it replaces.
+			if row.Request, err = withSupersedes(row.Request, old.ID()); err != nil {
 				return err
 			}
 		}

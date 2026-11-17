@@ -29,9 +29,14 @@ export interface StubItem {
   stale?: boolean
   /** A failed task's Check again of its last attempt's commit: true when not given. */
   recheck?: boolean
-  /** A decision's type and who asked it: an agent's attempt (approval when not given), or a plan's gate. */
+  /**
+   * A decision's type and who asked it: an agent's attempt (approval when not given), a plan's gate, or a comparison's selection
+   * (`compare`: Yardmaster's approval whose options are the candidates, `candidates`, then None of these; compareRecord).
+   */
   type?: 'approval' | 'clarification'
-  origin?: 'agent' | 'plan'
+  origin?: 'agent' | 'plan' | 'compare'
+  /** A selection's candidates, in the block's order: each its task, attempt and commit (two when not given). */
+  candidates?: StubCandidate[]
   /** A task's or a decision's run (a run runInfo makes; one of six tasks, made once, when not given) and its task there. */
   run?: StubRun
   task?: string
@@ -40,6 +45,22 @@ export interface StubItem {
   /** Fields over a decision's record, as GET /api/decisions and /api/decisions/{id} give it. */
   decision?: Record<string, unknown>
 }
+
+/** A selection's candidate (a comparison's lane with a standing result): its task, its attempt and its commit. */
+export interface StubCandidate {
+  task: string
+  n: number
+  commit: string
+}
+
+/** The candidates a selection names when the spec gives none: approach-a and approach-b, each at a commit of its own. */
+const CANDIDATES: StubCandidate[] = [
+  { task: 'approach-a', n: 1, commit: '1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e' },
+  { task: 'approach-b', n: 2, commit: '4b825dc642cb6eb9a060e54bf8d69288fbee4904' },
+]
+
+/** What a selection's `authorizes` says (docs/plans/compare-crew.md, PR-6a, "Which record"). */
+export const SELECTION_AUTHORIZES = 'Continuing the selected candidate into review and repair, and delivering it. Final: the candidates not selected are kept and cannot be continued; a new comparison tries them again.'
 
 /** The fields a spec sets on an item: what the list derives (its actions, its count of blocked work, tracking) it does not. */
 export type ItemOver = Partial<Omit<StubItem, 'kind'>>
@@ -115,6 +136,14 @@ export function inboxItem(kind: InboxKind, over: ItemOver = {}): StubItem {
     }
     case 'decision': {
       const run = over.run ?? defaultRun()
+      if (over.origin === 'compare') {
+        // Yardmaster's selection, titled by its question and briefed from the run (inbox_decisions.go names no task or gate for it).
+        const id = `dr-${900 + n}`
+        const cands = over.candidates ?? CANDIDATES
+        const question = `Which approach does STB-${n} continue with?`
+        base = { ref: `decision:${id}`, kind, since, title: question, brief: `A decision for you, from the comparison of run ${run.name}`, question, answerer: ANSWERER, choices: [...cands.map((c) => `${c.task} at ${c.commit.slice(0, 7)}`), 'None of these'], state: 'open', type: 'approval', origin: 'compare', run, candidates: cands }
+        break
+      }
       const plan = over.origin === 'plan'
       const t = taskOf(run, over.task, plan ? 'ready' : 'running')
       const id = `dr-${900 + n}`
@@ -213,6 +242,10 @@ export function wholeItem(it: StubItem): Record<string, unknown> {
     case 'decision': {
       const run = it.run ?? defaultRun()
       const id = it.ref.slice('decision:'.length)
+      if (it.origin === 'compare') {
+        out = compareItem(it, run, id, common, head)
+        break
+      }
       const t = taskOf(run, it.task, it.origin === 'plan' ? 'ready' : 'running')
       const agent = it.origin !== 'plan'
       const n = t.attempt?.n ?? 1
@@ -288,8 +321,60 @@ export function summary(it: StubItem): Record<string, unknown> {
   }
 }
 
+/**
+ * A selection's item as inbox_decisions.go makes an approval with no task held: an action per option at its rev (the first two named
+ * approve and reject, as the server names an approval's), each confirmed, then a comment; nothing held but the run.
+ */
+function compareItem(it: StubItem, run: StubRun, id: string, common: Record<string, unknown>, head: Record<string, unknown>): Record<string, unknown> {
+  const respond = `POST /api/decisions/${id}/respond`
+  const commentAction = { name: 'comment', label: 'Comment', text: true, expect: '1', scope: `Keeps your comment on ${id}'s record at its rev 1; nothing else changes, and its rev moves on`, route: `POST /api/decisions/${id}/comment` }
+  const actions: Array<Record<string, unknown>> = []
+  if (it.state !== 'answered')
+    it.choices.forEach((label, i) => actions.push({ name: i < 2 ? ['approve', 'reject'][i]! : 'answer', label, choice: i, expect: '1', confirm: true, route: respond, scope: `Answers ${id} '${label}' at its rev 1, as the operator: Yardmaster then notes it; nothing is held for it; what it authorizes: ${SELECTION_AUTHORIZES}` }))
+  actions.push(commentAction)
+  return {
+    ...common,
+    state: it.state ?? 'open',
+    ...head,
+    revision: '1',
+    blocking: { words: `Nothing is held for ${id}`, refs: [`run:${run.id}`] },
+    actions,
+    recommended: -1,
+    evidence: [{ ref: `run:${run.id}`, label: `the run ${run.name}` }],
+  }
+}
+
+/** A selection's record (docs/plans/compare-crew.md, PR-6a): its options the candidates with their subjects, then None of these. */
+function compareRecord(it: StubItem, whole: boolean): Record<string, unknown> {
+  const id = it.ref.slice('decision:'.length)
+  const run = it.run ?? defaultRun()
+  const cands = it.candidates ?? CANDIDATES
+  const options = [
+    ...cands.map((c) => ({ label: `${c.task} at ${c.commit.slice(0, 7)}`, tradeoffs: 'checks 2/2 passed, comparable; 12 files, +340 −90; no dependency change; independent', subject: { kind: 'candidate', run: run.id, task: c.task, n: c.n, commit: c.commit } })),
+    { label: 'None of these', tradeoffs: 'Ends the comparison with no candidate selected.' },
+  ]
+  const request = { question: it.question, context: 'Two candidates from one base, checked alike.', options, recommendation: -1, authorizes: SELECTION_AUTHORIZES, subject: { kind: 'comparison', run: run.id, base: 'c'.repeat(40), digest: 'd'.repeat(64) } }
+  const opened = { seq: 1, at: it.since, kind: 'opened', by: 'yardmaster' }
+  const routed = { seq: 2, at: it.since, kind: 'routed', by: 'local/1', detail: { by: 'policy', rule: 'local/1: the operator answers', to: [{ kind: 'operator' }] } }
+  return {
+    id,
+    run: run.id,
+    openedIn: run.id,
+    origin: 'compare',
+    type: 'approval',
+    request,
+    policy: { revision: 'local/1', approver: 'operator', quorum: 1, authority: [{ kind: 'operator' }] },
+    state: it.state ?? 'open',
+    rev: 1,
+    ...(whole ? { history: [opened, routed] } : {}),
+    createdAt: it.since,
+    ...it.decision,
+  }
+}
+
 /** A decision item's record, as GET /api/decisions lists it (and /api/decisions/{id} gives it, with its history): its run the item's. */
 export function decisionRecord(it: StubItem, whole = false): Record<string, unknown> {
+  if (it.origin === 'compare') return compareRecord(it, whole)
   const id = it.ref.slice('decision:'.length)
   const run = it.run ?? defaultRun()
   const t = taskOf(run, it.task, it.origin === 'plan' ? 'ready' : 'running')

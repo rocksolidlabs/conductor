@@ -78,6 +78,10 @@ const (
 	// trackerCheckTimeout bounds a save's check of the token with GitHub
 	// (Whoami): the adapter's own request's bound.
 	trackerCheckTimeout = github.RequestTimeout
+	// TrackerSaveTimeout bounds a save: the wait for the file's lock and
+	// the token's check with GitHub (the CLI's conductor trackers set waits
+	// it and a request's time beside it).
+	TrackerSaveTimeout = trackerLockWait + trackerCheckTimeout
 )
 
 // trackerEntry is one host's token as the file keeps it, in memory: the
@@ -149,8 +153,17 @@ type trackerKeep struct {
 	lockFile     func(*os.File) error
 }
 
+// trackerLoopbackWords is the start's one line when the tracker test seam
+// is on (CONDUCTOR_TRACKER_LOOPBACK=1, config.TrackerLoopback).
+const trackerLoopbackWords = "the tracker test seam is on (CONDUCTOR_TRACKER_LOOPBACK): plain http is admitted for a loopback tracker host only; it is for tests, never for use with a real token"
+
 func newTrackers(cfg *config.Config, st *store.Store, log *slog.Logger) *trackerKeep {
 	k := &trackerKeep{cfg: cfg, st: st, log: log, checking: map[string]int{}, seen: map[string]trackerSeen{}, now: time.Now, lockFile: lockTrackerFile}
+	if cfg.TrackerLoopback {
+		// The test seam, said once at the start: its words name no token,
+		// host or address.
+		log.Warn(trackerLoopbackWords)
+	}
 	k.gh = k.adapter(nil)
 	k.sweep()
 	return k

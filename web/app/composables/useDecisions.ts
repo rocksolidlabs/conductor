@@ -1,4 +1,4 @@
-import { hasInjectionContext, inject } from 'vue'
+import { hasInjectionContext, inject, type ComputedRef } from 'vue'
 import type { DecisionEvent } from '~/utils/protocol'
 import { REF_ACCESS } from '~/utils/refAccess'
 import type { Decision, DecisionRef } from '~/utils/decisions'
@@ -441,9 +441,18 @@ export function useDecisionRecord(id: () => string) {
  * answers it instead, and nothing is read here.
  */
 export function useDecisionRun(run: () => string) {
+  return useDecisionRunInfo(run).held
+}
+
+/**
+ * The run that holds a decision, for its card: whether it runs here now (`held`, as useDecisionRun says) and the key of the ticket it
+ * was launched from (`ticket`, '' when not known), which a selection's options link to the ticket's comparison by. A page that
+ * provides its own access (a decision link's) knows no ticket: nothing is read here.
+ */
+export function useDecisionRunInfo(run: () => string): { held: ComputedRef<boolean | undefined>; ticket: ComputedRef<string> } {
   const given = hasInjectionContext() ? inject(REF_ACCESS, null) : null
   const held = given?.runHeld
-  if (held) return computed(() => held(run()))
+  if (held) return { held: computed(() => held(run())), ticket: computed(() => '') }
   const live = useAttention()
   const read = ref<{ id: string; run: RunInfo | null } | null>(null)
   let asked = 0
@@ -462,5 +471,6 @@ export function useDecisionRun(run: () => string) {
     },
     { immediate: true },
   )
-  return computed(() => runHeldOf(live.runOf(run()) ?? (read.value?.id === run() ? read.value.run : undefined)))
+  const info = computed(() => live.runOf(run()) ?? (read.value?.id === run() ? read.value.run : undefined))
+  return { held: computed(() => runHeldOf(info.value)), ticket: computed(() => info.value?.ticket?.key ?? '') }
 }

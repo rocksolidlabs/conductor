@@ -203,12 +203,16 @@ test("the close policy ticked in the New project dialog, and edited on the proje
   await dialog.locator('[data-new-project-key]').fill(key)
   await dialog.locator('[data-new-project-name]').fill(`E2E project ${key}`)
   // A project of Dispatch's own asks for the owner's acceptance by default; ticked otherwise, both. A verified delivery (DS2) is offered
-  // too, unticked.
+  // too, unticked, and so is merged (IN1a: a delivery pull request GitHub says is merged), offered wherever a policy is chosen and never
+  // a default (the tracker-linking plan's Owner decision 9).
   const policy = dialog.locator('[data-new-project-policy]')
   await expect(policy.locator('[data-close-requirement="acceptance"]')).toHaveAttribute('aria-checked', 'true')
   await expect(policy.locator('[data-close-requirement="delivery"]')).toHaveAttribute('aria-checked', 'false')
   await expect(policy.locator('[data-close-requirement="verified"]')).toHaveAttribute('aria-checked', 'false')
-  await expect(policy.locator('[data-close-requirement]')).toHaveCount(3)
+  await expect(policy.locator('[data-close-requirement="merged"]')).toHaveAttribute('aria-checked', 'false')
+  await expect(policy).toContainText('Merged on GitHub')
+  await expect(policy).toContainText('A delivery pull request GitHub says is merged')
+  await expect(policy.locator('[data-close-requirement]')).toHaveCount(4)
   await policy.locator('[data-close-requirement="delivery"]').click()
   await page.locator('[data-new-project-submit]').click()
   await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))

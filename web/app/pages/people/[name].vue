@@ -203,7 +203,7 @@ const taskPath = (run: string, task: string) => `/runs/${encodeURIComponent(run)
             <p class="text-xs text-dimmed">The operator answers each for them; the answer's receipt keeps who answered and for whom.</p>
             <ul v-if="work.decisions.length" class="flex flex-col gap-3">
               <li v-for="d in work.decisions" :key="d.id" class="flex min-w-0 flex-col gap-2 rounded-md border border-default p-3" :data-person-decision="d.id">
-                <DecisionCard :decision="d" :now="now" />
+                <DecisionCard :decision="d" :now="now" captures />
                 <UButton :label="d.state === 'open' ? 'Answer' : 'Show'" size="xs" :color="d.state === 'open' ? 'warning' : 'neutral'" variant="soft" class="w-fit" :data-person-decision-open="d.id" @click="decisionModal.open(d.id)" />
               </li>
               <li v-if="work.decisionsMore" class="text-xs text-dimmed">The newest 100 are shown.</li>

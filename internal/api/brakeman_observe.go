@@ -671,6 +671,72 @@ func admitRunPath(r *http.Request, o *observer) (bool, error) {
 	return ok, err
 }
 
+// admitChainPath admits a route whose path names a run of a chain every
+// run of which is in the grant: a comparison is read over its whole
+// chain (its continuations and the runs it continues), so a scope that
+// names some of the chain's runs and not the others is refused the read
+// (outside_scope), as one naming none is.
+func admitChainPath(r *http.Request, o *observer) (bool, error) {
+	id := r.PathValue("run")
+	if !crew.ValidRunID(id) {
+		return true, nil // the handler answers it
+	}
+	chain, err := o.chainOf(r.Context(), id)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range chain {
+		if _, ok, err := o.runAdmitted(r.Context(), run); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// maxObservedChain bounds the runs of a chain admitChainPath reads, a
+// comparison's own bound (crew's maxCompareChain).
+const maxObservedChain = 256
+
+// chainOf is the runs of the chain the run belongs to (ledgerChain).
+func (o *observer) chainOf(ctx context.Context, id string) ([]string, error) {
+	return o.rr.s.ledgerChain(ctx, id)
+}
+
+// ledgerChain is the runs of the chain the run belongs to, as the ledger
+// links them: the run, then back along continued_from, then on along
+// continued_by, each way at most maxObservedChain; the run alone without
+// a ledger or a row.
+func (s *Server) ledgerChain(ctx context.Context, id string) ([]string, error) {
+	ld := s.ledger
+	if ld == nil {
+		return []string{id}, nil
+	}
+	row, ok, err := ld.Run(ctx, id)
+	if err != nil || !ok {
+		return []string{id}, err
+	}
+	chain := []string{id}
+	seen := map[string]bool{id: true}
+	for _, way := range []func(r ledger.RunRow) string{
+		func(r ledger.RunRow) string { return r.ContinuedFrom },
+		func(r ledger.RunRow) string { return r.ContinuedBy },
+	} {
+		for next, n := way(row), 0; next != "" && !seen[next] && n < maxObservedChain; n++ {
+			seen[next] = true
+			chain = append(chain, next)
+			r, ok, err := ld.Run(ctx, next)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				break
+			}
+			next = way(r)
+		}
+	}
+	return chain, nil
+}
+
 // admitTicketPath admits a route whose path names a ticket in the grant.
 func admitTicketPath(r *http.Request, o *observer) (bool, error) {
 	key := r.PathValue("key")
@@ -1354,8 +1420,9 @@ func filterProjects(r *http.Request, o *observer, body []byte) ([]byte, error) {
 }
 
 // filterTickets is GET /api/dispatch/tickets for a turn: the tickets in
-// the grant, each with its ref and noted at its rev. The page's total
-// counts the store's.
+// the grant, each with its ref and noted at its rev, and its title as an
+// agent reads it (dispatch.TitlesForAgent: a quoted line when a read of a
+// linked item wrote it). The page's total counts the store's.
 func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	var in struct {
 		Tickets []json.RawMessage `json:"tickets"`
@@ -1363,22 +1430,34 @@ func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	out := []json.RawMessage{}
-	for _, t := range in.Tickets {
-		var head struct {
-			Key    string `json:"key"`
-			Status string `json:"status"`
-			Rev    int64  `json:"rev"`
-		}
-		if err := json.Unmarshal(t, &head); err != nil {
+	heads := make([]dispatch.TicketSummary, len(in.Tickets))
+	for i, t := range in.Tickets {
+		if err := json.Unmarshal(t, &heads[i]); err != nil {
 			return nil, err
 		}
+	}
+	ds, err := agentStore(o)
+	if err != nil {
+		return nil, err
+	}
+	titles, err := ds.TitlesForAgent(r.Context(), heads)
+	if err != nil {
+		return nil, err
+	}
+	out := []json.RawMessage{}
+	for i, t := range in.Tickets {
+		head := heads[i]
 		ok, err := o.ticketAdmitted(r.Context(), head.Key)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
+		}
+		if titles[i].Title != head.Title {
+			if t, err = withField(t, "title", titles[i].Title); err != nil {
+				return nil, err
+			}
 		}
 		ref := "ticket:" + head.Key
 		o.noteRef(ref, brakeman.ClassDispatch, head.Status, strconv.FormatInt(head.Rev, 10))
@@ -1390,26 +1469,63 @@ func filterTickets(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	return refreshed(body, "tickets", out)
 }
 
+// agentStore is the Dispatch store a turn's read of Dispatch's records is
+// made as an agent reads them through: an error when there is none, so a
+// filter that needs it never hands the route's answer on unfiltered.
+func agentStore(o *observer) (*dispatch.Store, error) {
+	ds, err := o.rr.dispatch()
+	if err == nil && ds == nil {
+		err = errors.New("no Dispatch store")
+	}
+	return ds, err
+}
+
+// withField is the JSON object raw with the field name set to the string
+// value.
+func withField(raw json.RawMessage, name, value string) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	b, err := marshalNoEscape(value)
+	if err != nil {
+		return nil, err
+	}
+	m[name] = b
+	return marshalNoEscape(m)
+}
+
 // filterTicket is GET /api/dispatch/tickets/{key} for a turn: the ticket
-// and its comments, each with its ref and noted at its rev.
+// as an agent reads it (dispatch.ForAgent: a title or a description a read
+// of a linked item wrote quoted, a related ticket's such title withheld,
+// the snapshot without what was written on the item but its steps to
+// reproduce, quoted) and its comments, each with its ref and noted at its
+// rev.
 func filterTicket(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	key := r.PathValue("key")
 	var in struct {
-		Ticket json.RawMessage `json:"ticket"`
+		Ticket dispatch.TicketView `json:"ticket"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(in.Ticket, &m); err != nil {
+	ds, err := agentStore(o)
+	if err != nil {
 		return nil, err
 	}
-	var head struct {
-		Status string `json:"status"`
-		Rev    int64  `json:"rev"`
+	v, err := ds.ForAgent(r.Context(), in.Ticket)
+	if err != nil {
+		return nil, err
 	}
-	_ = json.Unmarshal(in.Ticket, &head)
-	o.noteRef("ticket:"+key, brakeman.ClassDispatch, head.Status, strconv.FormatInt(head.Rev, 10))
+	raw, err := marshalNoEscape(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	o.noteRef("ticket:"+key, brakeman.ClassDispatch, v.Status, strconv.FormatInt(v.Rev, 10))
 	if err := filterRelated(r.Context(), o, m); err != nil {
 		return nil, err
 	}
@@ -1642,6 +1758,125 @@ func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error)
 	return refreshed(body, "candidates", tasks)
 }
 
+// filterComparison is GET /api/runs/{run}/comparison for a turn: each
+// column's candidate with its candidate: ref, noted at the state and
+// commit its ref resolves to now, and each check cell's receipt with its
+// check: ref, noted at its state, the commit it checked and its log's
+// SHA-256, so a brief citing them after this read alone cites what it
+// observed. The read is admitted only when every run of the chain is in
+// the grant (admitChainPath), and the chain is held to it again once
+// the reply is made, so a continuation made meanwhile outside the grant
+// refuses the read (outside_scope) rather than showing its runs. The
+// selection and the state it gives the comparison are left out: the
+// person's answer is never Brakeman's input.
+func filterComparison(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	switch ok, err := admitChainPath(r, o); {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, &apiError{Code: "outside_scope", Message: "outside the request's scope", status: http.StatusForbidden}
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "selection")
+	delete(m, "state")
+	// noted resolves ref as a brief's would and notes it when it is found
+	// in the grant: its state, its revision and its SHA-256.
+	noted := func(ref string) (bool, error) {
+		parsed, err := brakeman.ParseRef(ref)
+		if err != nil {
+			return false, nil
+		}
+		f, err := o.rr.lookup(r.Context(), parsed)
+		if err != nil {
+			return false, err
+		}
+		if !f.found || !o.grant.admits(f.item) {
+			return false, nil
+		}
+		o.noteRead(brakeman.Read{Ref: parsed, Class: brakeman.ClassRuns, State: f.now.State, Rev: f.now.Rev, SHA256: f.now.SHA256})
+		return true, nil
+	}
+	var cands []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["candidates"]), &cands); err != nil {
+		return nil, fmt.Errorf("the comparison's candidates: %w", err)
+	}
+	for _, c := range cands {
+		var head struct {
+			Task    string
+			Run     string
+			Attempt int
+		}
+		for k, v := range map[string]any{"task": &head.Task, "run": &head.Run, "attempt": &head.Attempt} {
+			if raw, ok := c[k]; ok {
+				if err := json.Unmarshal(raw, v); err != nil {
+					return nil, fmt.Errorf("the comparison's candidate's %s: %w", k, err)
+				}
+			}
+		}
+		if head.Attempt == 0 || head.Run == "" {
+			continue
+		}
+		ref := fmt.Sprintf("candidate:%s/%s/%d", head.Run, head.Task, head.Attempt)
+		ok, err := noted(ref)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c["ref"], _ = json.Marshal(ref)
+		}
+	}
+	var checks []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["checks"]), &checks); err != nil {
+		return nil, fmt.Errorf("the comparison's checks: %w", err)
+	}
+	for _, ch := range checks {
+		var cells []map[string]json.RawMessage
+		if err := json.Unmarshal(orNull(ch["cells"]), &cells); err != nil {
+			return nil, err
+		}
+		for _, cell := range cells {
+			var receipt string
+			if raw, ok := cell["receipt"]; !ok || json.Unmarshal(raw, &receipt) != nil || receipt == "" {
+				continue
+			}
+			ok, err := noted(receipt)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				cell["ref"], _ = json.Marshal(receipt)
+			}
+		}
+		var err error
+		if ch["cells"], err = marshalNoEscape(cells); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	if m["candidates"], err = marshalNoEscape(cands); err != nil {
+		return nil, err
+	}
+	if m["checks"], err = marshalNoEscape(checks); err != nil {
+		return nil, err
+	}
+	out, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// orNull is raw, or JSON's null for none.
+func orNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
+}
+
 // withheldTicket is a related ticket outside the grant as a ticket's read
 // shows it: its id and key, no title and no status.
 type withheldTicket struct {
@@ -1735,8 +1970,9 @@ func filterRelated(ctx context.Context, o *observer, m map[string]json.RawMessag
 }
 
 // filterHistory is GET /api/dispatch/tickets/{key}/history for a turn:
-// each change with the ref of the operation that made it, the ticket
-// noted as read, and each operation once.
+// each change as an agent reads it (dispatch.ChangesForAgent: a value a
+// read of a linked item wrote WithheldText) with the ref of the operation
+// that made it, the ticket noted as read, and each operation once.
 func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	key := r.PathValue("key")
 	var in struct {
@@ -1745,17 +1981,32 @@ func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, err
 	}
+	rows := make([]dispatch.ChangeRow, len(in.Changes))
+	for i, c := range in.Changes {
+		if err := json.Unmarshal(c, &rows[i]); err != nil {
+			return nil, err
+		}
+	}
+	ds, err := agentStore(o)
+	if err != nil {
+		return nil, err
+	}
+	held, err := ds.ChangesForAgent(r.Context(), key, rows)
+	if err != nil {
+		return nil, err
+	}
 	o.noteRef("ticket:"+key, brakeman.ClassDispatch, "history", "")
 	noted := map[string]bool{}
 	for i, c := range in.Changes {
-		var head struct {
-			Actor string `json:"actor"`
-			OpID  string `json:"opId"`
-			Op    string `json:"op"`
+		head := rows[i]
+		for _, f := range []struct{ name, was, now string }{{"value", head.Value, held[i].Value}, {"prior", head.Prior, held[i].Prior}} {
+			if f.now != f.was {
+				if c, err = withField(c, f.name, f.now); err != nil {
+					return nil, err
+				}
+			}
 		}
-		if err := json.Unmarshal(c, &head); err != nil {
-			return nil, err
-		}
+		in.Changes[i] = c
 		ref := "op:" + head.Actor + "/" + head.OpID
 		if rf, err := brakeman.ParseRef(ref); err != nil || rf.Valid() != nil {
 			continue
@@ -1764,7 +2015,6 @@ func filterHistory(r *http.Request, o *observer, body []byte) ([]byte, error) {
 			noted[ref] = true
 			o.noteRef(ref, brakeman.ClassDispatch, head.Op, "")
 		}
-		var err error
 		if in.Changes[i], err = withRef(c, ref); err != nil {
 			return nil, err
 		}
@@ -2615,11 +2865,20 @@ var brakemanReads = []sharedRead{
 	// the refs a turn's answer gains is under the turn's (maxTurnReply).
 	{"GET /api/dispatch/tickets/{key}/plans", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterPlans}, 0},
 	{"GET /api/runs/{run}/candidates", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCandidates}, 0},
+	// A comparison as the page measures it (docs/plans/compare-crew.md,
+	// PR-5): runs data alone (the crew as launched, the ledger's rows, git
+	// of the run's repository), nothing of the touched index.
+	{"GET /api/runs/{run}/comparison", readSpec{class: brakeman.ClassRuns, admit: admitChainPath, filter: filterComparison}, crew.MaxComparison},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
 	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers
 	// a turn each view as brakeman.CapacityOf makes it (capacityReply).
 	{"GET /api/capacity", readSpec{class: brakeman.ClassCapacity, filter: filterCapacity}, maxCapacityPage},
+	// PV1's captures (capture_sends.go): a capture as it is now, and what a
+	// send of it froze, each admitted as what the capture is of; neither
+	// carries the screenshot's bytes.
+	{"GET /api/captures/{id}", readSpec{class: brakeman.ClassDispatch, admit: admitCapturePath, filter: filterCapture}, 0},
+	{captureSendRead, readSpec{class: brakeman.ClassDispatch, admit: admitCapturePath, filter: filterCaptureSend}, 0},
 }
 
 // filterCapacity notes a turn's read of the capacity view: each view that

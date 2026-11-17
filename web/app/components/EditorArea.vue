@@ -262,8 +262,16 @@ function openFileOfDiff() {
 
 const refused = refusedWords
 
+/**
+ * A link tab's Refresh loads its frame again, in its pane (a frame's address set again with a fragment would not reload it): the pane
+ * and its capture drafts stay. Each link tab has its pane for as long as the tab is open, shown while it is the active one.
+ */
+const urlReloads = ref<Record<string, number>>({})
+const urlTabs = computed(() => tabs.value.tabs.filter((t) => t.kind === 'url'))
 function reload() {
-  if (active.value) load(active.value)
+  const a = active.value
+  if (a?.kind === 'url') urlReloads.value = { ...urlReloads.value, [a.id]: (urlReloads.value[a.id] ?? 0) + 1 }
+  else if (a) load(a)
 }
 
 // The keymap (design round 12, F8): Monaco's keys, or the real Neovim on the
@@ -943,7 +951,8 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="max-w-md text-muted">Files, changes and saves come from that machine. They return when it does; the terminal's scrollback stays.</span>
         </div>
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
-        <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
+        <!-- A link's preview: its pane, below, kept while its tab is open. -->
+        <template v-else-if="view.state === 'url'" />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
         <template v-else-if="view.state === 'text'">
           <MarkdownPreview v-if="previewing" ref="previewRef" :key="`${active!.id}:preview`" :text="previewText" :dir="dirOf(active!.path)" :raw-url="rawUrl" @open="tabs = openTab(tabs, 'file', $event)" />
@@ -965,6 +974,18 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="max-w-md text-muted">{{ refused(view.error || '').words }}</span>
         </div>
         <UAlert v-else color="error" variant="subtle" icon="i-lucide-triangle-alert" class="m-3" :title="view.error || 'Cannot read this path'" />
+        <!-- Each link tab's preview (PV1): framed by the pane, its label "a link · no revision", with the device mode and Capture; kept,
+             with its drafts and notes, while another tab is shown and across Refresh, gone with its tab. -->
+        <PreviewPane
+          v-for="t in urlTabs"
+          v-show="!hostAway && active?.id === t.id"
+          :key="t.id"
+          :link="t.path"
+          :reloads="urlReloads[t.id] ?? 0"
+          compact
+          class="absolute inset-0"
+          :data-editor-link-pane="t.id"
+        />
         <!-- Over a selection (F7): Comment, Ask the agent, Copy; the composer under the lines. -->
         <div v-if="commentable && selection && !composer && !activeCompare" class="absolute z-10 flex items-center gap-0.5 rounded-md border border-default bg-default p-0.5 shadow-md" :style="{ top: `${selection.top + 4}px`, left: `${Math.max(8, selection.left)}px` }" data-editor-selection-bar>
           <UButton label="Comment" icon="i-lucide-message-square-plus" size="xs" color="neutral" variant="ghost" data-editor-comment @mousedown.prevent @click="openComposer(false)" />

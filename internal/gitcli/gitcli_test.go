@@ -868,3 +868,71 @@ func TestRunInReadsTheOpenedFolder(t *testing.T) {
 		t.Fatalf("a commit only the link's repository holds is found: %q", out)
 	}
 }
+
+// RunBounded keeps at most its limit of git's output: a blob past it ends
+// git with ErrOutputLimit and the first limit bytes; one within it comes
+// back whole, as Run gives it.
+func TestRunBoundedStopsAtItsLimit(t *testing.T) {
+	dir := repo(t)
+	big := bytes.Repeat([]byte("0123456789abcdef"), 1<<16) // 1 MiB
+	if err := os.WriteFile(filepath.Join(dir, "big.txt"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	id, err := Run(ctx, dir, "hash-object", "-w", "big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = strings.TrimSpace(id)
+	out, err := RunBounded(ctx, dir, 1000, "cat-file", "blob", id)
+	if !errors.Is(err, ErrOutputLimit) || out != string(big[:1000]) {
+		t.Fatalf("past the limit: %d bytes, %v", len(out), err)
+	}
+	out, err = RunBounded(ctx, dir, len(big), "cat-file", "blob", id)
+	if err != nil || out != string(big) {
+		t.Fatalf("at the limit: %d bytes, %v", len(out), err)
+	}
+	whole, err := Run(ctx, dir, "cat-file", "-s", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := RunBounded(ctx, dir, 64, "cat-file", "-s", id); err != nil || out != whole {
+		t.Fatalf("a small output: %q %v, Run gave %q", out, err, whole)
+	}
+	// A git that fails says why, its error stream kept to its head.
+	if _, err := RunBounded(ctx, dir, 64, "cat-file", "blob", strings.Repeat("0", 40)); err == nil || errors.Is(err, ErrOutputLimit) || !strings.Contains(err.Error(), "git cat-file") {
+		t.Fatalf("a missing object: %v", err)
+	}
+}
+
+// RunBounded's git ends with its context: one waiting on a pipe no one
+// writes is ended when the context is cancelled, and the context's error
+// is the answer; a context ended before it starts starts none.
+func TestRunBoundedEndsWithItsContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no named pipe")
+	}
+	dir := repo(t)
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunBounded(ctx, dir, 1<<10, "hash-object", "--", "pipe")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("git ended before its context: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled: %v", err)
+	}
+	if _, err := RunBounded(ctx, dir, 1<<10, "rev-parse", "HEAD"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an ended context: %v", err)
+	}
+}

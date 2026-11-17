@@ -9,6 +9,9 @@ import {
   FAILURE_CLASSES,
   MAX_CHECK_EXCERPT,
   checkNote,
+  checkFindingWhere,
+  externalHost,
+  externalJobs,
   findingAt,
   findingMarks,
   firstReviewCandidate,
@@ -611,5 +614,69 @@ describe("what launched a candidate's run", () => {
     // An older launch past the Runs pages read and the Plan's recent launches: the page holds other launches, none of this run.
     expect(runLaunch('rOld', { launches: [l('L9', 'rNew')], links: [], continues: new Map() })).toEqual({ state: 'unread' })
     expect(runLaunch('rX', { launches: [], links: [], continues: new Map([['rX', 'rY'], ['rY', 'rX']]) })).toEqual({ state: 'unread' })
+  })
+})
+
+describe('a CI job on GitHub (IN1a PR-10)', () => {
+  const receipt = 'github:github.com/octo/app/check-runs/2000001'
+  const tail = '--- FAIL: TestEmptyList\nFAIL\n'
+  const ref: CheckRef = {
+    source: 'external', receipt, run: '', task: '', attempt: 0, phase: '', id: '', k: 0, subject: C, argv: [], timedOut: false, killed: false, stable: false, state: '',
+    where: '', logBytes: 0, tail, class: 'code', name: 'test (ubuntu)', conclusion: 'failure', url: 'https://github.com/octo/app/actions/runs/7/job/2000001', headSha: C, app: 'github-actions',
+  }
+  const p: PreparedRepair = { finding: { kind: 'check', intent: 'change', message: 'A CI job on GitHub failed.', check: ref }, criteria: { source: 'checks' }, recheck: { allowed: false, run: 'run-1', revision: 0, attempt: 1, commit: C, why: 'GitHub runs this job: run it again there' } }
+
+  it("makes a check note of source external, named as GitHub's job, never the ledger's", () => {
+    const n = checkNote(p, 'code', tail, '')
+    expect(findingOf({ ...n, key: 'k' }).check).toEqual({ source: 'external', receipt, chosen: 'code', quote: tail })
+    expect(noteWhere(n)).toBe('CI job test (ubuntu) failed on GitHub')
+    expect(failedReceiptActions(p.recheck, 'infrastructure', false)).toEqual({ actions: ['request'], why: 'GitHub runs this job: run it again there' })
+  })
+
+  it("carries the job's fields into the request as the server fills it, and counts one the draft does not hold at its largest", () => {
+    const n = note(checkNote(p, 'code', '', ''))
+    const filled = changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'Nate', [n]).changes[0]!.check
+    expect(filled).toEqual({ source: 'external', name: 'test (ubuntu)', conclusion: 'failure', url: ref.url, app: 'github-actions', receipt, subject: C, stable: false, tail, class: 'code', chosen: 'code' })
+    // A ledger receipt carries none of them.
+    expect(requestedCheckOf({ ...ref, source: 'ledger' })).not.toHaveProperty('name')
+    const { measured: _m, ...bare } = n
+    const worst = repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [bare]), 'admin', [{}]))
+    expect(worst).toBeGreaterThanOrEqual(repairBytes(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [n]), 'admin', [n])))
+    expect(changeRequestOf(reviewBody(cand, B, 'request_changes', '', [bare]), 'admin', [{}]).changes[0]!.check).toMatchObject({ source: 'external', receipt })
+  })
+
+  it("lists a delivery's jobs failed first, a commit status never prepared, and a cut read said and never shown as passing", () => {
+    const check = (id: string, conclusion: string | undefined, status = 'completed') => ({ id, name: id, status, ...(conclusion ? { conclusion } : {}) })
+    const read = { checks: [check('job:2', 'success'), check('status:31', 'failure'), check('job:1', 'failure'), check('run:5', 'cancelled'), check('job:3', undefined, 'in_progress')] }
+    const got = externalJobs(read)
+    expect(got.jobs.map((j) => j.id)).toEqual(['status:31', 'job:1', 'run:5', 'job:2', 'job:3'])
+    expect(got.jobs.filter((j) => j.preparable).map((j) => j.id)).toEqual(['job:1', 'run:5'])
+    expect(got.jobs.find((j) => j.id === 'status:31')!.state).toBe('failed (failure), a commit status')
+    expect(got.jobs.find((j) => j.id === 'job:3')!.state).toBe('running')
+    expect(got.incomplete).toBe('')
+    expect(got.allPassed).toBe(false)
+    // Every job passed, and the read whole: passed; the same read cut: never passed, its words said.
+    const passing = { checks: [check('job:2', 'success'), check('run:4', 'success')] }
+    expect(externalJobs(passing)).toMatchObject({ incomplete: '', allPassed: true })
+    expect(externalJobs({ ...passing, incomplete: { words: ['101 check runs at this commit; the first 100 read'], omitted: 3 } })).toMatchObject({
+      incomplete: 'incomplete: 3 checks not read, see them on GitHub',
+      allPassed: false,
+    })
+    expect(externalJobs({ checks: [] })).toMatchObject({ jobs: [], allPassed: false })
+  })
+
+  it("names the host of an external receipt, none of the ledger's", () => {
+    expect(externalHost(receipt)).toBe('github.com')
+    expect(externalHost('github:127.0.0.1:8099/o/r/check-runs/1')).toBe('127.0.0.1:8099')
+    expect(externalHost('run-1/build/1/check/test/1')).toBe('')
+  })
+})
+
+describe("a sent check finding's place in the Findings list", () => {
+  it('names a CI job on GitHub by its name, never by the ledger\'s empty step, and the ledger\'s by its step', () => {
+    expect(checkFindingWhere({ source: 'external', phase: '', id: '', name: 'test (ubuntu)' })).toBe('CI job test (ubuntu) failed on GitHub')
+    expect(checkFindingWhere({ source: 'external', phase: '', id: '' })).toBe('a CI job failed on GitHub')
+    expect(checkFindingWhere({ source: 'ledger', phase: 'check', id: 'test' })).toBe('check test failed')
+    expect(checkFindingWhere(undefined)).toBe('a check failed')
   })
 })
