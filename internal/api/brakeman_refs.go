@@ -161,7 +161,7 @@ func refClass(kind string) string {
 	switch kind {
 	case brakeman.RefSession, brakeman.RefQuestion:
 		return brakeman.ClassSessions
-	case brakeman.RefTicket, brakeman.RefComment, brakeman.RefOp, brakeman.RefPlan, brakeman.RefLaunch:
+	case brakeman.RefTicket, brakeman.RefComment, brakeman.RefOp, brakeman.RefPlan, brakeman.RefLaunch, brakeman.RefCapture:
 		return brakeman.ClassDispatch
 	case brakeman.RefFile:
 		return brakeman.ClassTouched
@@ -556,8 +556,97 @@ func (rr *refResolver) lookup(ctx context.Context, ref brakeman.Ref) (refFound, 
 		return rr.lookupDecision(ctx, ref)
 	case brakeman.RefCapacity:
 		return rr.lookupCapacity(ref), nil
+	case brakeman.RefCapture:
+		return rr.lookupCapture(ctx, ref)
 	}
 	return refFound{}, nil
+}
+
+// lookupCapture reads a capture: ref from Dispatch's store: the live
+// capture (capture:<id>) at its revision and its document's digest, a
+// deleted one deleted; a send's frozen document (capture:<id>/<send>) at
+// the revision and digest it froze, its state the send's, the same after
+// the capture's edit or delete. Either is admitted as what the capture is
+// of (captureItem), never as its sends' targets.
+func (rr *refResolver) lookupCapture(ctx context.Context, ref brakeman.Ref) (refFound, error) {
+	ds, err := rr.dispatch()
+	if err != nil {
+		return refFound{}, fmt.Errorf("%s: %w", ref, err)
+	}
+	if ds == nil {
+		return refFound{}, nil
+	}
+	item, found, err := rr.captureItem(ctx, ds, ref.Capture)
+	if err != nil || !found {
+		return refFound{}, err
+	}
+	f := refFound{item: item}
+	if ref.Send != "" {
+		sv, err := ds.CaptureSend(ctx, ref.Send)
+		switch {
+		case errors.Is(err, dispatch.ErrNotFound):
+			return f, nil
+		case err != nil:
+			return f, fmt.Errorf("the send %s: %w", ref, err)
+		case sv.Capture != ref.Capture:
+			return f, nil
+		}
+		f.found, f.now = true, brakeman.RefState{State: sv.State, Rev: strconv.FormatInt(sv.Rev, 10), SHA256: sv.Digest, At: sv.CreatedAt}
+		return f, nil
+	}
+	c, err := ds.Capture(ctx, ref.Capture)
+	if err != nil {
+		return f, fmt.Errorf("the capture %s: %w", ref.Capture, err)
+	}
+	if !c.DeletedAt.IsZero() {
+		f.deleted, f.now = true, brakeman.RefState{At: c.DeletedAt}
+		return f, nil
+	}
+	doc, err := ds.Document(ctx, c.ID, c.Rev)
+	if err != nil {
+		return f, fmt.Errorf("the capture %s: %w", ref.Capture, err)
+	}
+	sum := sha256.Sum256(doc)
+	f.found, f.now = true, brakeman.RefState{State: captureLive, Rev: strconv.FormatInt(c.Rev, 10), SHA256: hex.EncodeToString(sum[:]), At: c.SavedAt}
+	return f, nil
+}
+
+// captureLive is a live capture's state as a ref of it reads.
+const captureLive = "live"
+
+// captureItem is the scope item a capture is admitted as, read from what
+// it recorded at its save (dispatch.CaptureOf), deleted or not: an
+// attempt's capture as its run, with the crew, repository and project the
+// capture recorded; a link's (url) as nothing, so only a grant that scopes
+// no run, crew, repository or project admits it. While the run is still
+// held or in the ledger, the run as it is now must be admitted too: the
+// item given is then the run's own when the grant refuses it, so neither
+// a run moved out of the grant nor a capture recorded outside it is
+// admitted. found false for no such capture.
+func (rr *refResolver) captureItem(ctx context.Context, ds *dispatch.Store, id string) (brakeman.ScopeItem, bool, error) {
+	of, err := ds.CaptureOf(ctx, id)
+	switch {
+	case errors.Is(err, dispatch.ErrNotFound):
+		return brakeman.ScopeItem{}, false, nil
+	case err != nil:
+		return brakeman.ScopeItem{}, false, fmt.Errorf("the capture %s: %w", id, err)
+	}
+	item := brakeman.ScopeItem{Kind: brakeman.ItemRun}
+	if of.Kind != dispatch.OriginAttempt {
+		return item, true, nil
+	}
+	item.Run, item.Crew, item.Repo, item.Project = of.Run, cmpOr(of.Scope.Crew, crewOfRun(of.Run)), of.Scope.Repo, of.Scope.Project
+	if !rr.grant.admits(item) {
+		return item, true, nil
+	}
+	r, err := rr.run(ctx, of.Run)
+	if err != nil {
+		return brakeman.ScopeItem{}, false, err
+	}
+	if r.found && !rr.grant.admits(r.item) {
+		return r.item, true, nil
+	}
+	return item, true, nil
 }
 
 // lookupCapacity finds a capacity: ref's reading in the readings the
@@ -1603,6 +1692,13 @@ func refURL(ref brakeman.Ref) string {
 	case brakeman.RefDecision:
 		// Served by DR1's route; the app opens it in its card.
 		return "/api/decisions/" + esc(ref.Decision)
+	case brakeman.RefCapture:
+		// Served by the capture routes: the live capture, or the send with
+		// the document it froze.
+		if ref.Send != "" {
+			return "/api/captures/" + esc(ref.Capture) + "/sends/" + esc(ref.Send)
+		}
+		return "/api/captures/" + esc(ref.Capture)
 	case brakeman.RefCapacity:
 		// The admin's view of the key now; the reading cited is the
 		// resolution's own snapshot.

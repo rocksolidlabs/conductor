@@ -67,7 +67,8 @@ const (
 func (s *Server) routeCaptures(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/captures", s.requireAdmin(s.launchingAny(s.handleCaptureCreate)))
 	mux.HandleFunc("GET /api/captures", s.requireAdmin(s.launchingAny(s.handleCaptures)))
-	mux.HandleFunc("GET /api/captures/{id}", s.requireAdmin(s.launchingAny(s.handleCapture)))
+	// A Brakeman turn's shared read too (brakemanReads, capture_sends.go).
+	mux.HandleFunc("GET /api/captures/{id}", s.readable("GET /api/captures/{id}", s.launchingAny(s.handleCapture)))
 	mux.HandleFunc("GET /api/captures/{id}/image", s.requireAdmin(s.launchingAny(s.handleCaptureImage)))
 	mux.HandleFunc("POST /api/captures/{id}/edit", s.requireAdmin(s.launchingAny(s.handleCaptureEdit)))
 	mux.HandleFunc("POST /api/captures/{id}/delete", s.requireAdmin(s.launchingAny(s.handleCaptureDelete)))

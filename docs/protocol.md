@@ -6516,7 +6516,12 @@ revision: its state and `rev`) and `candidate:<run>/<task>/<n>` (an
 attempt that submitted something: `standing`, `withdrawn` or its
 attempt's state, at the commit it submitted), and DR1's
 `decision:<dr-n>` (a decision record: its state and `rev`, as its run's
-read lists it), and AC1's `capacity:<agent>/<account>@<readAt>` (a
+read lists it), PV1's `capture:<id>` (a capture as it is now: `live` at
+its revision and its document's SHA-256, `deleted` for a tombstone) and
+`capture:<id>/<send>` (what that send froze: the send's state, the
+revision and the digest it froze, the same after an edit or a delete),
+each 16 hex digits and admitted as the capture is (Captures, Brakeman),
+and AC1's `capacity:<agent>/<account>@<readAt>` (a
 reading of an agent's usage on an account, `readAt` in UTC as RFC 3339
 with its nanoseconds, as the view gives it: the reading's own state;
 the readings the server holds are asked first and at once: one they no
