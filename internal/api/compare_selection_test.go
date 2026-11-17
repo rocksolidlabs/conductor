@@ -13,6 +13,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext/exttest"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -669,5 +670,29 @@ func TestSelectFirstNamesOnlyAStandingRecord(t *testing.T) {
 		if got := selectFirstWords(tc.st); got != tc.want {
 			t.Errorf("%+v: %q, want %q", tc.st, got, tc.want)
 		}
+	}
+}
+
+// The comparison's own queue asks nothing once its selection is applied:
+// a compare.settled committed after the application (a lane's
+// continuation settling again) makes no request.
+func TestTheDraftsQueueNothingAfterTheSelection(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{draft: true})
+	de.bk.enable(t, "bk", nil)
+	did := de.selecting(t)
+	waitUntil(t, "the settling's request", func() bool { return len(de.compareRequests(t)) == 1 })
+	de.selectB(t, did)
+	made := 0
+	de.srv.drafts.mu.Lock()
+	de.srv.drafts.madeSeam = func(brakeman.Request) { made++ }
+	de.srv.drafts.mu.Unlock()
+	if _, err := de.srv.ledger.Transition(t.Context(), de.run, func(tx *ledger.Tx) error {
+		return tx.Event(eventCompareSettled, map[string]any{"candidates": []any{}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	de.wake(t, de.run)
+	if n := len(de.compareRequests(t)); n != 1 || made != 0 {
+		t.Fatalf("after the selection: %d compare requests, %d made", n, made)
 	}
 }

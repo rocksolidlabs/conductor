@@ -796,3 +796,31 @@ func TestBrakemanReadsAComparisonWhoseWholeChainIsInScope(t *testing.T) {
 		t.Fatalf("the whole chain in scope: %d %s", status, raw)
 	}
 }
+
+// The chain is held to the turn's scope again once the reply is made: a
+// continuation made after the read was admitted, outside the scope,
+// refuses the read 403 outside_scope, nothing noted.
+func TestAContinuationMadeDuringTheReadIsHeldToTheScope(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	de.bk.enable(t, "bk", func(c map[string]any) {
+		c["visibility"].(map[string]any)["runs"] = true
+		c["scope"] = map[string]any{"runs": []string{de.run}}
+	})
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	id := req["id"].(string)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	atObserve(t, "admitted", func() {
+		de.expect(t, "POST", "/api/runs/"+de.run+"/stop", nil, http.StatusOK, "")
+		de.expect(t, "POST", "/api/runs/"+de.run+"/resume", nil, http.StatusCreated, "")
+	})
+	status, raw, out := de.readComparison(t, tok, sid, de.run)
+	if status != http.StatusForbidden || errorCode(out) != "outside_scope" || strings.Contains(string(raw), "approach-") {
+		t.Fatalf("a continuation made during the read: %d %s", status, raw)
+	}
+	if log, err := de.bk.desk.st.Reads(id); err != nil || len(log.Reads) != 0 {
+		t.Fatalf("noted %v %v", log.Reads, err)
+	}
+}
