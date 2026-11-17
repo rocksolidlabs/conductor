@@ -171,7 +171,7 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
 function supportingOf(o: ComparisonShape, lanes: readonly string[]): Record<string, unknown> {
   return {
     claims: lanes.map((task) => ({ task, attempt: 1, summary: `${task}: the stub's own summary of its change.`, favours: task })),
-    reviews: lanes.map((task, i) => ({ task: `review-${task.slice(-1)}`, attempt: 1, verdict: i === 0 ? 'approved' : 'needs_changes', findings: i === 0 ? [] : ['the bench script was changed'], ...(i === 0 ? { favours: task } : {}) })),
+    reviews: lanes.map((task, i) => ({ task: `review-${task.slice(-1)}`, attempt: 1, verdict: i === 0 ? 'approved' : 'needs_changes', findings: i === 0 ? [] : ['the bench script was changed'], findingsTotal: i === 0 ? 0 : 1, ...(i === 0 ? { favours: task } : {}) })),
     brakeman: o.brakemanRequest ? { request: o.brakemanRequest, state: 'queued' } : { why: 'Brakeman is not set up' },
   }
 }
