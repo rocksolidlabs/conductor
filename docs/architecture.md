@@ -1054,7 +1054,11 @@ the last briefing starts, writes nothing and is kept 5 s. The opened marks
 credential's actor (`actorOf`: the workbench token's `admin`, an identity's
 `user:<subject>`) has not yet opened, counted from its first read; a mark
 is a set union, the change sends `brakeman_opened` with `{}`, and people who
-share one token share one count.
+share one token share one count. Only the owner keeps marks: a read-only
+server answers `503 brakeman_not_owner` and the app counts in the browser
+there. An actor keeps its newest 500 marks; past that the oldest goes, and
+a brief whose mark went that is still kept and briefed after the count
+began shows as not opened again (only pinned requests keep more than 500).
 
 **The records** are JSON documents under the data directory's `brakeman/`
 (0700; `internal/brakeman`, which has no HTTP, no session, no process and

@@ -1919,16 +1919,35 @@ your exec-policy allow rules (a matching command runs outside it without
 asking), and no flag isolates them, so a Codex turn is read-only only for an
 account with neither.
 
-**Asking.** **Brakeman**'s tile in the sidebar's foot (under More on a phone) opens `/brakeman`: pick **Brief
-me since…**, **Explain this**, **Prepare a decision**, **Draft tickets**,
-**Propose a crew**, **Prepare a handoff**, **Find…**, **Overlapping changes**
-or **A question**, the runs, tasks, sessions or ticket it is about, a note and
-a time. The request shows queued, then running with its session and its run
-(watch the terminal, or Stop), then briefed; one turn runs at a time and 8
-wait. The palette's Brakeman rows, a task's **Ask Brakeman why** on the run
-page and a ticket's **Ask Brakeman** menu open the same form, filled in. A
-brief arriving adds a count to the sidebar's Brakeman tile and nothing else: no dialog,
-no toast, no change of page.
+**Asking.** **Brakeman**'s tile in the sidebar's foot (under More on a phone,
+or G then B) opens `/brakeman`, whose ask bar is one line and a row of chips:
+**Brief me since HH:MM** (since the last briefing kept; its caret takes
+another time), **Explain this…**, **Prepare a decision…**, **Draft
+tickets…**, **Propose a crew…** and **Prepare a handoff…** (each opens the
+`@` list to name the runs, tasks, sessions, questions or tickets it is
+about), **Overlapping changes** and **Find…**; a line typed alone is a
+question, and `@` names what it is about. The same bar stands in a panel,
+**Brakeman on this run** beside a managed run's tasks (in its Tasks view:
+Explain this run, a handoff for the task selected, Overlapping changes) and
+**Brakeman on this ticket** under a ticket's properties (Explain this
+ticket, Prepare a decision, Draft tickets, Propose a crew), where it asks
+about that run or ticket; the panel shows the latest brief about it (its
+title and counts, linking to the brief), the request being read now, or
+that Brakeman has said nothing about it, and is drawn only while Brakeman is
+on or has said something about it. The palette's Brakeman rows (on a run,
+**Ask Brakeman…** with a line, which switches to its Tasks view), Needs
+you's **Ask Brakeman** and a task's **Ask Brakeman why** ask at once from
+where you are; the task's answer stands under its row (its reading, its
+evidence, Open the brief and Ask again), and the others say "Asked as br-n"
+with Open. The
+request shows queued, then running, with its progress (reads used of its
+budget, time used of its deadline, what it read last) and its session and
+run (watch the terminal, or Stop), then briefed; one turn runs at a time
+and 8 wait. A brief arriving adds a count to the sidebar's Brakeman tile and
+nothing else: no dialog, no toast, no change of page. The count is the
+server's, of the briefs not yet opened under your credential: people who
+share one workbench token share one count, and a second server reading the
+same records keeps no marks, so its pages count in the browser as before.
 
 **A brief** leads with what needs you. Its head says its kind, its age and
 what it is about, with **Copy as Markdown** and **Comment on a ticket…**;
