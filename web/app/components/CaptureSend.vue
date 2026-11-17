@@ -50,6 +50,16 @@ const waiting = reactive(new Map<string, string>())
 
 const deleted = computed(() => !!props.capture.deletedAt)
 const firstNote = computed(() => props.capture.annotations?.find((a) => a.note.trim())?.note ?? '')
+// The new ticket's title follows the capture's first note (its annotations may come after the panel is drawn, and change with a
+// save) until the person writes one of their own.
+let filledTitle = ''
+watch(
+  firstNote,
+  (n) => {
+    if (form.title === filledTitle) form.title = filledTitle = titleFrom(n)
+  },
+  { immediate: true },
+)
 
 function projectOfKey(key: string | undefined): string {
   return key?.slice(0, key.lastIndexOf('-')) ?? ''
@@ -101,7 +111,6 @@ onMounted(() => {
   stopDecisions = decisionsLive().subscribe((e) => {
     if (!e || e.run === props.capture.origin?.run) void loadDecisions()
   })
-  form.title = titleFrom(firstNote.value)
   if (props.runTicket) form.key = props.runTicket
   void loadProjects()
   void readSends()

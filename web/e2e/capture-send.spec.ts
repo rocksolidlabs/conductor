@@ -67,12 +67,14 @@ async function captured(page: Page, note: string, shots = true): Promise<string>
 /** Another capture in the preview page already open, saved: its id. */
 async function capturedIn(page: Page, frame: Frame, note: string): Promise<string> {
   const editor = page.locator('[data-capture-editor]')
-  const before = await editor.locator('[data-capture-saved-tab]').count()
   await page.locator('[data-preview-capture]').click()
   await pick(page, frame, '#under', 'button#under.under', { downs: 1 })
-  await editor.locator('[data-annotation="1"] textarea').fill(note)
+  // The new draft shown before its note is typed: an editor showing a saved capture still would take the note.
+  await expect(editor.locator('[data-capture-draft]')).toBeVisible()
+  const field = editor.locator('[data-annotation="1"] textarea')
+  await field.fill(note)
+  await expect(field).toHaveValue(note)
   await editor.locator('[data-capture-save]').click()
-  await expect(editor.locator('[data-capture-saved-tab]')).toHaveCount(before + 1)
   const saved = editor.locator('[data-capture-saved]')
   await expect(saved).toBeVisible()
   await expect(page.locator('[data-capture-send]')).toBeVisible()
