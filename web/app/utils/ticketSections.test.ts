@@ -41,7 +41,7 @@ describe("a ticket's strip of sections", () => {
     expect(ticketSections(input()).map((s) => s.id)).not.toContain('github')
     expect(ticketSections(input({ github: null })).map((s) => s.id)).not.toContain('github')
     const linked = ticketSections(input({ github: { state: 'open' } }))
-    expect(linked.map((s) => s.id)).toEqual(['github', 'description', 'acceptance', 'plan', 'runs', 'decisions', 'close', 'people', 'comments', 'history'])
+    expect(linked.map((s) => s.id)).toEqual(['github', 'description', 'acceptance', 'plan', 'runs', 'captures', 'decisions', 'close', 'people', 'comments', 'history'])
     expect([linked[0]!.label, linked[0]!.words, linked[0]!.tone]).toEqual(['GitHub', 'open', 'neutral'])
     expect(words(input({ github: { state: 'closed', stateReason: 'completed' } }), 'github').words).toBe('closed')
     expect(words(input({ github: { state: 'closed', merged: true } }), 'github').words).toBe('merged')
