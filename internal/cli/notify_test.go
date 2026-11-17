@@ -38,6 +38,7 @@ func startNotifyServer(t *testing.T) *notifyServer {
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-token")
 	// A test run inside a hosted session reports to no host of its own.
 	t.Setenv("CONDUCTOR_HOST_SOCKET", "")
+	t.Setenv("CONDUCTOR_HOST_EVENTS", "")
 	return ns
 }
 

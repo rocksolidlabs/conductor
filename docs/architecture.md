@@ -156,7 +156,14 @@ lost; the agent's own session id a report names goes to the server on
 `agent_session`, which keeps it in the record as its attention route does
 (`hostagent/agentsession.go`), and a host whose server does not say it
 takes that names no socket. The sender posts to the server's route only
-when the socket cannot be reached; a host's refusal is a refusal. Every process of the user can
+when the socket cannot be reached; a host's refusal is a refusal. The agent's events go to the socket too (`CONDUCTOR_HOST_EVENTS`), and
+the host records them in its session; the entries its session records
+reach the server on its connection, and, to a server that says it takes
+their numbers (`registered.activitySeq`), are kept until the server took
+them (`hostagent/activitykeep.go`): those recorded while the connection
+is down are sent as the next one starts, in order, each once, and when
+more than the host keeps were left out the server records that entries
+may be missing. Every process of the user can
 reach the socket, other sessions' agents among them: the per-session token
 tells one session's agent from another's, as on the server's route (see
 docs/protocol.md, The host's socket).
