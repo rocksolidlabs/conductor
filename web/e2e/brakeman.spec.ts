@@ -6,14 +6,15 @@ import { Api, expect, test, type Run } from './fixtures'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
 // Brakeman on the app's pages (docs/plans/brakeman.md, PR-6), on a server of its own and its own data, so that its turns (runs and
-// sessions of their own) meet no other spec and a restart finds the same records: Settings saves Brakeman with the stub as its
-// agent and terminal screens off (None among the agents, and chosen); a request asked from the page waits in the queue behind the
+// sessions of their own) meet no other spec and a restart finds the same records: Brakeman is turned on with the stub as its agent
+// through the API (Settings' own steps are brakeman-settings.spec.ts's); a request asked from the page's bar waits in the queue behind the
 // one in progress, then runs with its session's link; the stub's brief, held by a gate until the spec opens it, arrives while a
 // terminal has the focus and takes neither the focus nor the page, and counts in the sidebar; the brief shows its provenance,
 // Brakeman's reading, the fact with its evidence linking to the run and the session, and the interpretation naming the fact; the
 // turn's run is stopped after it and the request leaves In progress; the page links Settings while Brakeman is on; the server
 // started again on the same data shows the same brief; a brief kept with its summary alone shows its reading; a `brief:` link to an
-// item of a brief opened before scrolls to the item once it is drawn; a brief opened in one tab is opened in the others; and
+// item of a brief opened before scrolls to the item once it is drawn; a brief opened with one credential is opened wherever the same
+// credential is held (the server keeps the count); and
 // Settings says where a turn runs and what it reads besides: the configured folder, and with the home folder configured, the desk's
 // own folder, reading the home folder (#705); the brief's provenance names the folder its turn ran in.
 test.describe.configure({ mode: 'serial' })
@@ -73,6 +74,10 @@ test.beforeAll(async () => {
   start = () => startServer({ config, home, data, allowedRoot: root, defaultCwd: repo, log: serverLog })
   server = await start()
   api = new Api(server)
+  // Brakeman on, with the stub, terminal screens off as a fresh configuration has them.
+  const { config: c } = await api.ok<{ config: Record<string, unknown> & { rev: number; visibility: { terminals: boolean } } }>('GET', '/api/brakeman')
+  expect(c.visibility.terminals).toBe(false)
+  await api.ok('PUT', '/api/brakeman/config', { rev: c.rev, config: { ...c, enabled: true, agentId: 'brakeman-stub' } })
 })
 
 test.afterAll(async () => {
@@ -92,60 +97,18 @@ async function open(page: import('@playwright/test').Page, path: string) {
 
 const request = (id: string) => api.ok<{ request: Request }>('GET', `/api/brakeman/requests/${id}`).then((r) => r.request)
 
-test('Settings saves Brakeman with the stub as its agent and terminal screens off', async ({ page }) => {
-  // The defaults, written on the first read, at the revision the save names.
-  const before = (await api.ok<{ config: { enabled: boolean; rev: number } }>('GET', '/api/brakeman')).config
-  expect(before.enabled).toBe(false)
-  await open(page, '/settings')
-  const card = page.locator('[data-brakeman-settings]')
-  await expect(card).toBeVisible()
-  // Terminal screens are off until a person turns them on, and say what they would let Brakeman read.
-  const terminals = card.getByRole('switch', { name: 'Terminal screens' })
-  await expect(terminals).toHaveAttribute('aria-checked', 'false')
-  await expect(card).toContainText("Lets Brakeman read what a session's screen shows")
-  await card.getByRole('switch', { name: 'Brakeman on' }).click()
-  // No agent yet: the select says None, which is an item of its own.
-  const agent = card.locator('[data-brakeman-agent]')
-  await expect(agent).toContainText('None')
-  await agent.click()
-  await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
-  // The stub's adapter is Claude Code's: it takes a model, and can be told to allow Conductor's tools.
-  await expect(card.locator('[data-brakeman-model]')).toBeVisible()
-  // None is chosen like any agent, and takes the agent's fields away; the stub chosen again for the save.
-  await agent.click()
-  await page.getByRole('option', { name: 'None', exact: true }).click()
-  await expect(agent).toContainText('None')
-  await expect(card.locator('[data-brakeman-model]')).toHaveCount(0)
-  await agent.click()
-  await page.getByRole('option', { name: 'Brakeman (e2e stub)' }).click()
-  await expect(card.locator('[data-brakeman-model]')).toBeVisible()
-  await page.locator('[data-save-settings]').click()
-  await expect.poll(async () => {
-    const c = (await api.ok<{ config: { enabled: boolean; agentId: string; visibility: { terminals: boolean; runs: boolean }; rev: number } }>('GET', '/api/brakeman')).config
-    return [c.enabled, c.agentId, c.visibility.terminals, c.visibility.runs, c.rev]
-  }, { timeout: 15_000 }).toEqual([true, 'brakeman-stub', false, true, before.rev + 1])
-  await expect(page.locator('[data-save-settings]')).toBeDisabled()
-  // Where its turns run (#705): the configured folder, which is not the home folder, reading nothing else.
-  const { config } = await api.ok<{ config: { cwd: string } }>('GET', '/api/brakeman')
-  await expect(card.locator('[data-brakeman-folders]')).toHaveText(`Its turns run in ${config.cwd}.`)
-})
-
 test('a briefing waits behind the turn in progress, then runs in its session, and its brief takes neither the focus nor the page', async ({ page }) => {
   test.setTimeout(TURN_BOUND + 120_000)
   await open(page, '/brakeman')
   // Settings stays a link away while Brakeman is on, for a browser with no other way there.
   await expect(page.locator('[data-brakeman-settings-link]')).toHaveAttribute('href', '/settings')
   const ask = page.locator('[data-brakeman-ask]')
-  // The first request holds the slot (the stub waits at its gate).
-  await ask.locator('[data-ask-kind]').click()
-  await page.getByRole('option', { name: 'Overlapping changes' }).click()
-  await ask.locator('[data-ask-send]').click()
+  // The first request holds the slot (the stub waits at its gate): its chip sends at once.
+  await ask.locator('[data-ask-chip="overlaps"]').click()
   const current = page.locator('[data-brakeman-current]')
   await expect(current.locator('[data-request="br-1"]')).toHaveAttribute('data-request-state', 'running', { timeout: 30_000 })
   // The briefing waits in the queue.
-  await ask.locator('[data-ask-kind]').click()
-  await page.getByRole('option', { name: 'Brief me since…' }).click()
-  await ask.locator('[data-ask-send]').click()
+  await ask.locator('[data-ask-chip="briefing"]').click()
   const queued = page.locator('[data-brakeman-queue] [data-request="br-2"]')
   await expect(queued).toHaveAttribute('data-request-state', 'queued')
   await expect(queued.locator('[data-request-words]')).toHaveText('queued')
@@ -154,9 +117,10 @@ test('a briefing waits behind the turn in progress, then runs in its session, an
   await current.locator('[data-request="br-1"] [data-request-stop]').click()
   await expect.poll(async () => (await request('br-1')).state, { timeout: 15_000 }).toBe('cancelled')
   await expect(current.locator('[data-request="br-2"]')).toHaveAttribute('data-request-state', 'running', { timeout: 60_000 })
-  await expect(current.locator('[data-request="br-2"] [data-request-words]')).toHaveText('running in Brakeman · br-2')
+  await expect(current.locator('[data-request="br-2"] [data-request-title]')).toContainText('Brief me since')
   const running = await request('br-2')
   expect(running.sessionId).toMatch(/^[0-9a-f]{16}$/)
+  await expect(current.locator('[data-request="br-2"] [data-request-session]')).toHaveAttribute('href', `/sessions/${running.sessionId}`)
   await expect(page.locator('[data-brakeman-briefs] [data-request="br-1"] [data-request-words]')).toHaveText('cancelled: a person cancelled it')
   // Its terminal, from the page's link, with the focus in it.
   await current.locator('[data-request="br-2"] [data-request-session]').click()
@@ -239,17 +203,13 @@ test('a brief kept with its summary alone shows its reading', async ({ page }) =
   const brief = page.locator('[data-brief="br-2"]')
   await expect(brief.locator('[data-brief-title]')).toHaveText('Stub brief for br-2', { timeout: 30_000 })
   await expect(brief.locator('[data-brief-reading]')).toContainText('The stub read its request and what changed, and found its own turn.')
-  await expect(brief.locator('[data-brief-group]')).toHaveCount(0)
+  await expect(brief.locator('[data-brief-region]')).toHaveCount(0)
 })
 
 test('a brief: link to an item of a brief opened before scrolls to the item once it is drawn', async ({ page }) => {
-  // br-2 opened in this browser before (its mark: its id and when this server wrote it), and every element the page scrolls to noted.
-  const { request } = await api.ok<{ request: { createdAt: string } }>('GET', '/api/brakeman/requests/br-2')
-  await page.addInitScript((mark) => {
-    if (localStorage.getItem('conductor.brakeman.opened-begun') === null) {
-      localStorage.setItem('conductor.brakeman.opened-begun', '1')
-      localStorage.setItem(`conductor.brakeman.opened/${mark}`, '1')
-    }
+  // br-2 opened before with this credential (marked through the server's route), and every element the page scrolls to noted.
+  await api.ok('POST', '/api/brakeman/opened', { ids: ['br-2'] })
+  await page.addInitScript(() => {
     const w = window as Window & { __scrolled?: string[] }
     w.__scrolled = []
     const into = Element.prototype.scrollIntoView
@@ -257,38 +217,40 @@ test('a brief: link to an item of a brief opened before scrolls to the item once
       w.__scrolled!.push(this.id)
       return into.call(this, arg)
     }
-  }, `br-2@${request.createdAt}`)
+  })
   await open(page, '/brakeman?request=br-2#item-1')
   await expect(page.locator('[data-brief="br-2"] #item-1')).toContainText('Nothing else happened that the stub was asked about.', { timeout: 30_000 })
   await expect.poll(() => page.evaluate(() => (window as Window & { __scrolled?: string[] }).__scrolled)).toContain('item-1')
 })
 
-test('a brief opened in one tab is opened in the others, and stays opened', async ({ context, page }) => {
-  // The browser has opened none: br-2 is new in every tab.
-  await context.addInitScript(() => {
-    if (localStorage.getItem('conductor.brakeman.opened-begun') === null) localStorage.setItem('conductor.brakeman.opened-begun', '1')
-  })
-  await open(page, '/brakeman')
-  const other = await context.newPage()
-  await open(other, '/brakeman')
-  for (const p of [page, other]) {
-    await expect(p.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toBeVisible()
-    await expect(p.locator('[data-sidebar-brakeman]')).toContainText('1')
+test('a brief opened with one credential is opened wherever the same credential is held: another browser\'s count drops', async ({ browser }) => {
+  test.setTimeout(TURN_CAPS[4] + 12 * STEP_MS)
+  // A brief kept now, after the credential's count began: unread for it everywhere.
+  const asked = await api.ok<{ request: { id: string } }>('POST', '/api/brakeman/requests', { opId: 'bk-opened-elsewhere', kind: 'overlaps' })
+  const id = asked.request.id
+  await expect.poll(async () => (await request(id)).state, { timeout: TURN_CAPS[4] }).toBe('briefed')
+  await expect.poll(async () => (await api.ok<{ unread: string[] }>('GET', '/api/brakeman/opened')).unread, { timeout: STEP_MS }).toContain(id)
+  // Two browsers of their own (no storage shared), one token.
+  const laptop = await browser.newContext()
+  const phone = await browser.newContext()
+  try {
+    const away = await phone.newPage()
+    await open(away, '/yard')
+    await expect(away.locator('[data-sidebar-brakeman]')).toContainText(/\d/)
+    // The laptop opens the Brakeman page: the card draws the newest brief, which marks it opened with the server.
+    const here = await laptop.newPage()
+    await open(here, '/brakeman')
+    await expect(here.locator(`[data-brakeman-latest] [data-brief="${id}"] [data-brief-title]`)).toHaveText(`Stub brief for ${id}`)
+    await expect.poll(async () => (await api.ok<{ unread: string[] }>('GET', '/api/brakeman/opened')).unread, { timeout: STEP_MS }).not.toContain(id)
+    // The other browser's count follows, with no reload: the opened event read again.
+    await expect(away.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/, { timeout: STEP_MS })
+    // The other browser marked nothing of its own: the count it shows is the server's.
+    const marks = () => Object.keys(localStorage).filter((k) => k.startsWith('conductor.brakeman.opened/'))
+    expect(await away.evaluate(marks)).toEqual([])
+  } finally {
+    await laptop.close()
+    await phone.close()
   }
-  await page.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-open]').click()
-  await expect(page.locator('[data-brief="br-2"] [data-brief-title]')).toHaveText('Stub brief for br-2')
-  await expect(page.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
-  // The other tab follows without a reload, and a reload of it finds br-2 opened.
-  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
-  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
-  await other.reload()
-  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"]')).toBeVisible()
-  await expect(other.locator('[data-brakeman-briefs] [data-request="br-2"] [data-request-new]')).toHaveCount(0)
-  await expect(other.locator('[data-sidebar-brakeman]')).not.toContainText(/\d/)
-  const { request } = await api.ok<{ request: { createdAt: string } }>('GET', '/api/brakeman/requests/br-2')
-  const marks = () => Object.keys(localStorage).filter((k) => k.startsWith('conductor.brakeman.opened/'))
-  expect(await other.evaluate(marks)).toEqual([`conductor.brakeman.opened/br-2@${request.createdAt}`])
-  await other.close()
 })
 
 test('with the home folder as its folder, its turns run in a folder of their own, which Settings names, and read the home folder', async ({ page }) => {

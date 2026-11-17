@@ -516,7 +516,8 @@ test('About this page: Agents and Crews fold their paragraphs once they have con
 
 /**
  * Brakeman's header on a phone with a brief done (About this page drawn beside Settings): the title whole, Settings still named and
- * a link to Settings, nothing in the header over anything else or past the window, and the day's budget line read in the body.
+ * a link to Settings, nothing in the header over anything else or past the window, and the day's budget line read in the body, in
+ * the role's card.
  */
 async function brakemanPhoneHeader(browser: Browser, srv: OwnServer, theme: 'dark' | 'light') {
   const page = await dayPage(browser, { ...PHONE, theme, path: '/brakeman', server: srv.started })
@@ -530,8 +531,8 @@ async function brakemanPhoneHeader(browser: Browser, srv: OwnServer, theme: 'dar
   await expect(header.locator('[data-slot="title"]'), `${at}: the title`).toHaveText('Brakeman')
   await noOverlap(header)
   await noSideways(page)
-  await expect(page.locator('[data-brakeman-page] [data-turns-today]'), `${at}: the budget line in the body`).toContainText('turns,')
-  await uncut(page.locator('[data-brakeman-page] [data-turns-today]'))
+  await expect(page.locator('[data-brakeman-page] [data-brakeman-role] [data-turns-today]'), `${at}: the budget line in the role's card`).toContainText('turns,')
+  await uncut(page.locator('[data-brakeman-page] [data-brakeman-role] [data-turns-today]'))
   await page.context().close()
 }
 
