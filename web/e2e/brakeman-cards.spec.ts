@@ -14,8 +14,8 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // no Retry); once the run has moved, the card's Retry and the pause proposal carry the revision Brakeman read and their routes refuse
 // them, said in words; a stop and a resume are text with the run page's link; a ticket's edit shows every field it sends and asks
 // with them first. The drafts are made work as edited, once, and a make that did not finish is finished as it was sent; the crew is
-// saved and opened in the editor, never launched; the handoff copies and comments on its ticket. The run page's tasks and the
-// palette ask Brakeman about the run and the task.
+// saved and opened in the editor, never launched; the handoff copies and comments on its ticket through the shared comment dialog.
+// (Asking Brakeman from the run page's tasks and the palette is brakeman-where.spec.ts's and brakeman-ask.spec.ts's.)
 test.describe.configure({ mode: 'serial' })
 
 interface Request {
@@ -526,32 +526,3 @@ test("a handoff longer than a ticket's comment holds is commented as the person 
   expect(Buffer.byteLength(sent.body, 'utf8')).toBe(16384)
 })
 
-test("the run page's Ask Brakeman why and the palette's Brakeman rows open the composer about the task and the run", async ({ page }) => {
-  await open(page, `/runs/${encodeURIComponent(runId)}?view=tasks`)
-  // Ask Brakeman why is behind each row's menu (UX1 PR-11), which draws in a portal outside the row.
-  await page.locator('[data-task-menu="docs"]').click({ timeout: 30_000 })
-  // docs, blocked, is asked about too (a failed, cancelled or blocked task, or one whose attempt reports a blocker).
-  await expect(page.locator('[data-task-ask-brakeman="docs"]')).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('menu')).toHaveCount(0)
-  await page.locator('[data-task-menu="build"]').click()
-  const ask = page.locator('[data-task-ask-brakeman="build"]')
-  await expect(ask).toBeVisible()
-  await ask.click()
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=explain&subject=${encodeURIComponent(`task:${runId}/build`)}$`))
-  await expect(page.locator('[data-ask-kind]')).toContainText('Explain this')
-  await expect(page.locator('[data-ask-subjects]')).toContainText('build')
-
-  // The palette on the run page, the task selected: brief me since…, explain this run, explain this task, Open Brakeman.
-  await page.goto(`${server!.baseURL}/runs/${encodeURIComponent(runId)}?view=tasks&task=build`)
-  await expect(page.locator('#dashboard-sidebar-main')).toBeAttached()
-  await expect(page.locator('[data-task-row="build"]')).toBeVisible({ timeout: 30_000 })
-  await page.keyboard.press('Alt+/')
-  const palette = page.locator('[data-palette]')
-  await expect(palette).toBeVisible()
-  await palette.locator('input[data-palette-input]').fill('ask brakeman')
-  for (const key of ['briefing', 'explain-run', 'explain-task']) await expect(palette.locator(`[data-palette-row="brakeman:${key}"]`)).toBeVisible()
-  await palette.locator('[data-palette-row="brakeman:explain-run"]').click()
-  await expect(page).toHaveURL(new RegExp(`/brakeman\\?kind=explain&subject=${encodeURIComponent(`run:${runId}`)}$`))
-  await expect(page.locator('[data-ask-subjects]')).toContainText(runId)
-})
