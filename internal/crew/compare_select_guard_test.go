@@ -647,3 +647,26 @@ func TestAReplacedSelectionKeepsItsCandidates(t *testing.T) {
 		t.Fatalf("the comparison: %+v", st)
 	}
 }
+
+// A selection a lane's change superseded is named by the one that follows
+// it in a continuation: Retry of a lane, Stop before it ends, Continue,
+// the lane ends there, and the new record's request supersedes the old.
+func TestAContinuationsSelectionNamesTheOneItFollows(t *testing.T) {
+	se := launchSelect(t, 2)
+	se.pass(t, se.run.ID, "approach-a", 1)
+	se.cancel(t, se.run.ID, "approach-b", "c1")
+	first := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+	if rc, err := se.e.Retry(t.Context(), se.run.ID, "admin", Command{ID: "r1"}, "approach-b"); err != nil || rc.Status != ledger.CommandDone {
+		t.Fatalf("retry: %+v %v", rc, err)
+	}
+	decisionWhen(t, se.ld, first.ID(), "superseded", inState(ledger.DecisionSuperseded))
+	waitAttempt(t, se.e, se.run.ID, "approach-b", ledger.AttemptRunning)
+	stopRun(t, se.e, se.run.ID)
+	next := continueRun(t, se.e, se.run.ID)
+	defer stopRun(t, se.e, next.ID)
+	se.pass(t, next.ID, "approach-b", 3)
+	row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), next.ID)
+	if b := selectBody(t, row); b.Supersedes != first.ID() {
+		t.Fatalf("the continuation's selection supersedes %q, not %s", b.Supersedes, first.ID())
+	}
+}
