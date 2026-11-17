@@ -5,6 +5,7 @@ import type { AgentInfo } from '~/composables/useSessions'
 import { PLAN_BOUNDS, revisionTag, shortCommit, yoloWords, type LaunchOutcome } from '~/utils/dispatchPlans'
 import { launchLines } from '~/utils/crewLaunch'
 import { compareLaunch, launchButtonWords } from '~/utils/compareLaunch'
+import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
 
 /**
  * Launching a managed run from a ticket's approved plan revision (Program item DS2, docs/plans/dispatch-evidence.md, "web/app"). It asks
@@ -22,7 +23,8 @@ import { compareLaunch, launchButtonWords } from '~/utils/compareLaunch'
  * revision's own `compare` part: the candidates and their sessions, the reviews' as "up to", the multiplier with its refunds, the checks at
  * the base, the Brakeman turn, no total), and its button says the count, "Launch 3 candidates". That count is sent with the launch, and only
  * from here: taken from the statement drawn when the person presses, kept with the operation so a resend sends the same, and never
- * worked out from the saved crew. A comparison whose statement cannot be drawn is not launched from here.
+ * worked out from the saved crew. A comparison whose statement cannot be drawn is not launched from here. Beside the lines, the sessions
+ * this launch starts on each login (launchAccounts, CP1 PR-9): the first tasks' (a comparison's candidates), then up to its reviews'.
  */
 const props = defineProps<{
   revision: PlanSummary | null
@@ -73,6 +75,22 @@ watch(
 )
 const cap = useCapacity()
 const lines = computed(() => (props.body ? launchLines(props.body.crew.members ?? [], { agents: agents.value, doc: accounts.doc.value, managed: true, yolo: !!props.body.crew.yolo, view: (q) => cap.entry(q).view }) : []))
+/** The sessions this launch starts on each login, each member's login as its line resolves it (memberLogin: never a default of the page's). */
+const perAccount = computed(() => {
+  const crew = props.body?.crew
+  if (!crew) return []
+  const members = crew.members ?? []
+  return launchAccounts({
+    members,
+    tasks: crew.tasks,
+    compare: crew.compare,
+    accountOf: (name) => {
+      const m = members.find((x) => x.name === name) ?? { name, agentId: '' }
+      const l = lines.value.find((x) => x.name === name)
+      return memberLogin(m, { doc: accounts.doc.value, view: l ? cap.entry(l.query).view : null, agent: l?.agent ?? m.agentId })
+    },
+  })
+})
 const bodyError = computed(() => (props.revision && !props.body ? (props.plans.bodyErrors.get(props.revision.id) ?? '') : ''))
 function readBodyAgain() {
   if (props.revision) void props.plans.readBody(props.revision.id).catch(() => {})
@@ -134,6 +152,9 @@ async function send() {
             <span>{{ comparison.words }}</span>
             <UButton label="Read it again" size="xs" color="neutral" variant="outline" data-launch-compare-retry @click="plans.read().catch(() => {})" />
           </p>
+          <ul v-if="perAccount.length" class="flex flex-col gap-0.5 text-xs text-muted" data-launch-accounts>
+            <li v-for="a in perAccount" :key="a.key" :data-launch-account="a.key" :data-launch-account-first="a.first" :data-launch-account-later="a.later">{{ accountCountWords(a) }}</li>
+          </ul>
           <ul v-if="lines.length" class="flex flex-col gap-2" data-launch-members>
             <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1" :data-launch-member="l.name">
               <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
