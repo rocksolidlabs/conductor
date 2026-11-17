@@ -261,7 +261,14 @@ add its rule here.
   writes to (2026-11-08: the history's indexer, opening its index on a
   goroutine of its own, made `data/history` again during the catalog
   test's removal of the data directory, `directory not empty`, or just
-  after it, so the saves meant to fail succeeded; #281).
+  after it, so the saves meant to fail succeeded; #281). A server's stop
+  ends the agent probes it started (their process groups; a helper that
+  left the group is not reached) and waits for them within its bound, and
+  a test server's PATH holds no real agent CLI: an identity probe of an
+  agent CLI on the caller's PATH outlived its e2e server's stop and wrote
+  into the HOME its test had removed (`agent-path.spec.ts`,
+  `TestShutdownEndsTheProbesUnderWay`,
+  `TestWaitBackgroundEndsTheProbesUnderWay`, #961).
 - Servers over one data directory hand its owner lock on: a later one
   waits for it and takes it when the first ends. End the later ones first
   (cleanups run last in, first out, so `serve` registers each one's end
