@@ -204,7 +204,7 @@ function openRow(e: MouseEvent, id: string) {
           size="sm"
           :color="filter === f.key ? 'primary' : 'neutral'"
           :variant="filter === f.key ? 'soft' : 'ghost'"
-          class="max-sm:min-h-11"
+          class="max-sm:min-h-11 max-sm:min-w-11 max-sm:justify-center"
           :aria-pressed="filter === f.key"
           :data-briefs-filter="f.key"
           @click="filter = f.key"
@@ -244,7 +244,7 @@ function openRow(e: MouseEvent, id: string) {
           <NuxtLink
             v-if="r.hasBrief"
             :to="`/brakeman?request=${encodeURIComponent(r.id)}`"
-            class="min-w-0 truncate text-sm font-medium text-highlighted hover:underline max-sm:py-2.5"
+            class="min-w-0 truncate text-sm font-medium text-highlighted hover:underline max-sm:py-3"
             :title="title(r)"
             :aria-current="shown === r.id && !folded ? 'true' : undefined"
             data-request-open
@@ -257,12 +257,7 @@ function openRow(e: MouseEvent, id: string) {
         </div>
         <span class="row-span-2 text-right text-xs text-muted tabular-nums" data-request-age>{{ rowAge(r, now) }}</span>
         <p class="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted" data-request-meta>
-          <template v-if="r.hasBrief">
-            <template v-for="(part, i) in rowMeta(r, names, sessionName(r.sessionId))" :key="i">
-              <span v-if="i" aria-hidden="true">·</span>
-              <span class="min-w-0 break-words">{{ part }}</span>
-            </template>
-          </template>
+          <span v-if="r.hasBrief" class="min-w-0 break-words">{{ rowMeta(r, names, sessionName(r.sessionId)).join(' · ') }}</span>
           <template v-else>
             <span>no brief: <span data-request-words>{{ stateWords(r, sessionName(r.sessionId)) }}</span></span>
             <UButton
