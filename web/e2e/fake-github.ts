@@ -96,6 +96,8 @@ export interface FakeGitHub {
   comments(n: number): Array<{ id: number; body: string; author: string }>
   /** A token GET /user (and every other route) answers 401 for. */
   refuse(token: string): void
+  /** A token refused before is accepted again. */
+  allow(token: string): void
   stop(): Promise<void>
 }
 
@@ -121,7 +123,9 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
   const gates = new Map<FakeRoute, { open: Promise<void>; release: () => void; reached: Promise<void>; arrive: () => void }>()
   let nextComment = 7_000_000_001
   let host = ''
-  let clock = Date.parse('2026-11-01T09:00:00Z')
+  // GitHub's times follow the real clock, an hour behind it, so the minutes each change moves them stay in the past: a comment's time is
+  // then in the window a server lists from (a day before its first send), whatever day the spec runs.
+  let clock = Math.floor(Date.now() / 1000) * 1000 - 3_600_000
 
   const pageURL = (n: number, kind: 'issue' | 'pull' = 'issue') => `http://${host}/${owner}/${repo}/${kind === 'pull' ? 'pull' : 'issues'}/${n}`
   const tick = () => new Date((clock += 60_000)).toISOString().replace(/\.\d{3}Z$/, 'Z')
@@ -402,7 +406,7 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
       const given = item.updatedAt && (!was || item.updatedAt > was.updatedAt) ? item.updatedAt : undefined
       const updatedAt = given ?? tick()
       if (given) clock = Math.max(clock, Date.parse(given))
-      items.set(item.n, { ...item, node: item.node ?? was?.node ?? `${item.kind === 'pull' ? 'PR' : 'I'}_fake${item.n}`, updatedAt, createdAt: was?.createdAt ?? '2026-11-01T08:00:00Z', closedAt: item.state === 'closed' ? (was?.closedAt ?? updatedAt) : undefined })
+      items.set(item.n, { ...item, node: item.node ?? was?.node ?? `${item.kind === 'pull' ? 'PR' : 'I'}_fake${item.n}`, updatedAt, createdAt: was?.createdAt ?? new Date(clock - 3_600_000).toISOString().replace(/\.\d{3}Z$/, 'Z'), closedAt: item.state === 'closed' ? (was?.closedAt ?? updatedAt) : undefined })
     },
     item: (n) => items.get(n),
     checks(sha, list) {
@@ -428,6 +432,9 @@ export async function fakeGitHub(o: { owner?: string; repo?: string; login?: str
     comments: (n) => (posted.get(n) ?? []).map(({ id, body, author }) => ({ id, body, author })),
     refuse(token) {
       refused.add(token)
+    },
+    allow(token) {
+      refused.delete(token)
     },
     async stop() {
       for (const g of gates.values()) g.release()

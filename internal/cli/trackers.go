@@ -134,7 +134,10 @@ func runTrackers(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 	switch verb {
 	case "set":
-		tok, err := readTrackerToken(stdin, stderr)
+		tok, err := readTrackerToken(ctx, stdin, stderr)
+		if errors.Is(err, errInterrupted) {
+			return 1, err
+		}
 		if err != nil {
 			return 2, err
 		}
@@ -145,21 +148,54 @@ func runTrackers(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	return trackersList(ctx, c, stdout)
 }
 
+// errInterrupted is a token's read ended by the command's context (a
+// Ctrl-C at the prompt): nothing was read, and nothing is sent.
+var errInterrupted = errors.New("interrupted: no token was read, and nothing was sent")
+
 // readTrackerToken reads the token from stdin: from a terminal with its
 // echo off, the prompt on stderr; from anything else, one line, its
 // line's end ("\n" or "\r\n") not the token's. Empty, more than one line
 // or out of a token's form (config.TrackerTokenForm) is refused before
-// anything is sent, in words that never hold what was read.
-func readTrackerToken(stdin io.Reader, stderr io.Writer) (string, error) {
+// anything is sent, in words that never hold what was read. A terminal's
+// read ends when ctx does (the process catches Ctrl-C, which only ends
+// ctx, while the read would wait for Enter): the terminal's state is put
+// back and errInterrupted answered, and a line typed after ctx ended is
+// never the token.
+func readTrackerToken(ctx context.Context, stdin io.Reader, stderr io.Writer) (string, error) {
 	var b []byte
 	if f, ok := stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		fmt.Fprint(stderr, "GitHub token (not shown as you type): ")
-		read, err := term.ReadPassword(int(f.Fd()))
-		fmt.Fprintln(stderr)
+		fd := int(f.Fd())
+		state, err := term.GetState(fd)
 		if err != nil {
 			return "", errors.New("could not read the token from the terminal")
 		}
-		b = read
+		fmt.Fprint(stderr, "GitHub token (not shown as you type): ")
+		type result struct {
+			b   []byte
+			err error
+		}
+		got := make(chan result, 1)
+		go func() {
+			read, err := term.ReadPassword(fd)
+			got <- result{read, err}
+		}()
+		var r result
+		select {
+		case <-ctx.Done():
+			_ = term.Restore(fd, state)
+			fmt.Fprintln(stderr)
+			return "", errInterrupted
+		case r = <-got:
+		}
+		fmt.Fprintln(stderr)
+		if ctx.Err() != nil {
+			clear(r.b)
+			return "", errInterrupted
+		}
+		if r.err != nil {
+			return "", errors.New("could not read the token from the terminal")
+		}
+		b = r.b
 	} else {
 		read, err := io.ReadAll(io.LimitReader(stdin, maxTrackerInput+1))
 		if err != nil {
@@ -218,8 +254,12 @@ func trackerSet(ctx context.Context, c *apiClient, host, tok string, stdout io.W
 	return 0, nil
 }
 
-// trackerRemove drops host's token and prints what the server said: for
-// the environment's host, that its token is still the one used.
+// trackerRemove drops host's token and prints what the server said: that
+// it was removed, or that none was kept for host (a mistyped or defaulted
+// host) with the hosts the server does keep a token for; and for the
+// environment's host, that its token is still the one used. Nothing
+// removed is no failure (exit 0), as a set of the token already kept is
+// not.
 func trackerRemove(ctx context.Context, c *apiClient, host string, stdout io.Writer) (int, error) {
 	host = cmpOrHost(host)
 	var out struct {
@@ -230,11 +270,34 @@ func trackerRemove(ctx context.Context, c *apiClient, host string, stdout io.Wri
 	if err := c.doLimit(ctx, http.MethodPost, "/api/trackers/github/remove", map[string]string{"host": host}, &out, maxReply); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(stdout, "%s: removed; the token stays valid on GitHub until it is revoked there\n", oneLine(host))
+	if out.Removed {
+		fmt.Fprintf(stdout, "%s: removed; the token stays valid on GitHub until it is revoked there\n", oneLine(host))
+	} else {
+		fmt.Fprintf(stdout, "%s: no token was kept for it; nothing removed%s\n", oneLine(host), keptHostsWords(ctx, c))
+	}
 	if out.InUse != "" {
 		fmt.Fprintf(stdout, "%s\n", oneLine(out.Message))
 	}
 	return 0, nil
+}
+
+// keptHostsWords names the hosts the server keeps a token for, as words
+// to follow "nothing removed"; nothing when the list cannot be read.
+func keptHostsWords(ctx context.Context, c *apiClient) string {
+	var out struct {
+		GitHub []trackerView `json:"github"`
+	}
+	if c.doLimit(ctx, http.MethodGet, "/api/trackers", nil, &out, maxReply) != nil {
+		return ""
+	}
+	var hosts []string
+	for _, v := range out.GitHub {
+		hosts = append(hosts, v.Host)
+	}
+	if len(hosts) == 0 {
+		return " (no token is kept for any host)"
+	}
+	return oneLine(" (a token is kept for " + strings.Join(hosts, ", ") + ")")
 }
 
 // cmpOrHost is host, github.com when empty.

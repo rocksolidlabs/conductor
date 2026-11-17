@@ -181,12 +181,27 @@ func TestTrackersSetReadsStdin(t *testing.T) {
 	if code, _, _, err := a.trackersCmd(t, ghToken+"\n", "set", "--host", g.host); code != 2 || err == nil || !strings.Contains(err.Error(), "CONDUCTOR_WORKBENCH_TOKEN") {
 		t.Fatalf("set with no workbench token in the environment: %d %v", code, err)
 	}
+	// A host with no token kept (a mistyped one, the github.com default)
+	// removes nothing and says so, naming the hosts that are kept.
+	for _, args := range [][]string{{"remove", "--host", "other.example"}, {"remove"}} {
+		code, out, _, err = a.trackersCmd(t, "", append(args, "--token", dispatchToken)...)
+		if code != 0 || err != nil || strings.Contains(out, ": removed") || !strings.Contains(out, ": no token was kept for it; nothing removed (a token is kept for "+g.host+")") {
+			t.Fatalf("%q: %d %v\n%s", args, code, err, out)
+		}
+	}
+	if _, out, _, _ = a.trackersCmd(t, "", "--token", dispatchToken); !strings.HasPrefix(out, g.host+"  @") {
+		t.Fatalf("the list after removing nothing:\n%s", out)
+	}
 	code, out, _, err = a.trackersCmd(t, "", "remove", "--host", g.host, "--token", dispatchToken)
 	if code != 0 || err != nil || !strings.Contains(out, g.host+": removed") {
 		t.Fatalf("remove: %d %v\n%s", code, err, out)
 	}
 	if _, out, _, _ = a.trackersCmd(t, "", "--token", dispatchToken); !strings.HasPrefix(out, "no GitHub token is kept") {
 		t.Fatalf("the list after the remove:\n%s", out)
+	}
+	code, out, _, err = a.trackersCmd(t, "", "remove", "--host", g.host, "--token", dispatchToken)
+	if code != 0 || err != nil || strings.Contains(out, ": removed") || !strings.Contains(out, g.host+": no token was kept for it; nothing removed (no token is kept for any host)") {
+		t.Fatalf("a second remove: %d %v\n%s", code, err, out)
 	}
 }
 

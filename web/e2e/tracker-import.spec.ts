@@ -3,7 +3,7 @@ import { budget, dayPage, expect, test } from './fixtures'
 import { fakeGitHub, type FakeGitHub } from './fake-github'
 import { freeProjectKey, makeProject, opOf } from './dispatch-helpers'
 import { walk, worst } from './contrast'
-import { MEASURE_WAIT_MS, noSideways } from './layout'
+import { MEASURE_WAIT_MS, ageBy, noSideways } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { START_WAIT_MS } from './server'
 
@@ -54,8 +54,15 @@ test('a GitHub token is saved in Settings by its own Check and save, and never s
   await expect(card).toBeVisible()
   await expect(card.locator('[data-github-none]')).toBeVisible()
   const field = card.locator('input[data-github-token]')
-  await expect(field).toHaveAttribute('type', 'password')
-  await expect(field).toHaveAttribute('autocomplete', 'new-password')
+  // No password manager offers to save or fill it: a text field drawn masked, marked for each manager to leave alone.
+  await expect(field).toHaveAttribute('type', 'text')
+  await expect(field).toHaveAttribute('autocomplete', 'off')
+  await expect(field).toHaveAttribute('data-1p-ignore', '')
+  await expect(field).toHaveAttribute('data-lpignore', 'true')
+  await expect(field).toHaveAttribute('data-bwignore', '')
+  await expect(field).toHaveAttribute('data-form-type', 'other')
+  expect(await card.locator('input[type="password"]').count()).toBe(0)
+  expect(await field.evaluate((e) => getComputedStyle(e).getPropertyValue('-webkit-text-security'))).toBe('disc')
   await card.locator('input[data-github-host]').fill(gh.host)
   await field.fill(TOKEN)
   // The card is out of the page's one Save: a token typed makes nothing for the save bar to save.
@@ -141,7 +148,15 @@ test('an issue with two images and steps to reproduce, imported from the palette
   await expect(preview.locator('[data-import-owners]')).toContainText('Title: GitHub · Description: GitHub')
   // The preview reads; it downloads nothing.
   expect(gh.count('image')).toBe(0)
-  await page.locator('[data-import-submit]').click()
+  // Another address typed after the preview: Import waits for its own preview, and never sends the item read before.
+  const submit = page.locator('[data-import-submit]')
+  await expect(submit).toBeEnabled()
+  await dialog.locator('input[data-import-url]').fill(gh.url(13))
+  await expect(submit).toBeDisabled()
+  await expect(page.locator('[data-import-stale]')).toContainText('Read it again')
+  await dialog.locator('input[data-import-url]').fill(gh.url(12))
+  await expect(submit).toBeEnabled()
+  await submit.click()
 
   // The ticket's page, its GitHub panel first in the strip.
   await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
@@ -194,7 +209,12 @@ test('an issue with two images and steps to reproduce, imported from the palette
   await expect(panel.locator('[data-github-owner="title"]')).toHaveAttribute('data-owner', 'dispatch')
   await expect(page.locator('[data-title-edit]')).toBeVisible()
   await expect(page.locator('[data-ticket-history]')).toContainText('the title, taken over from GitHub')
-  await expect(panel.locator('[data-github-give-back="title"]')).toBeVisible()
+  // Give back to GitHub asks first: the text here would be replaced by GitHub's. Keep it keeps it Dispatch's.
+  await panel.locator('[data-github-give-back="title"]').click()
+  await expect(panel.locator('[data-github-give-back-ask]')).toContainText("replaced by GitHub's")
+  await panel.locator('[data-github-give-back-keep]').click()
+  await expect(panel.locator('[data-github-give-back-ask]')).toHaveCount(0)
+  await expect(panel.locator('[data-github-owner="title"]')).toHaveAttribute('data-owner', 'dispatch')
 
   // GitHub's issue closed, then Refresh: GitHub's chip says so, and the ticket's status has not moved.
   const status = await page.locator('[data-ticket-status]').textContent()
@@ -239,4 +259,109 @@ test('the GitHub panel and the Settings card, in both themes, on a desk and a ph
       await page.context().close()
     }
   }
+})
+
+test("Remove's question shows under the row it was asked for, never under the environment's token for the same host", async ({ browser }) => {
+  budget(4 * STEP_MS)
+  const page = await dayPage(browser, { path: '/', server: srv.started })
+  // The server lists a host the environment gives a token for twice: the file's entry (unused) and the environment's.
+  await page.route('**/api/trackers', (r) =>
+    r.fulfill({
+      json: {
+        github: [
+          { host: 'github.com', login: 'mona-example', fingerprint: 'a1b2c3d4e5f6', scopes: ['repo'], savedAt: '2026-11-16T12:00:00Z', source: 'settings', state: 'unused' },
+          { host: 'github.com', login: 'hubot-example', fingerprint: 'f6e5d4c3b2a1', scopes: [], source: 'environment', state: 'unchecked' },
+        ],
+      },
+    }),
+  )
+  await page.goto('/settings?section=github')
+  const card = page.locator('[data-settings-section="github"]')
+  const saved = card.locator('[data-github-entry="github.com"][data-github-source="settings"]')
+  const env = card.locator('[data-github-entry="github.com"][data-github-source="environment"]')
+  await expect(env).toContainText('from the environment')
+  await expect(env.locator('[data-github-remove]')).toHaveCount(0)
+  await saved.locator('[data-github-remove]').click()
+  await expect(saved.locator('[data-github-remove-ask]')).toBeVisible()
+  await expect(card.locator('[data-github-remove-ask]')).toHaveCount(1)
+  await expect(env.locator('[data-github-remove-ask]')).toHaveCount(0)
+})
+
+test("a description Dispatch owns that differs from GitHub's is said so on a page with no crypto.subtle (plain http's)", async ({ browser }) => {
+  budget(6 * STEP_MS)
+  await srv.api.ok('POST', '/api/trackers/github', { host: gh.host, token: TOKEN })
+  const key = await freeProjectKey(srv.api, 'GHS')
+  await makeProject(srv.api, key)
+  gh.set({ n: 41, kind: 'issue', title: 'The same title', body: 'What GitHub says.', state: 'open' })
+  const ticket = await srv.api.ok<{ ticket: { key: string } }>('POST', '/api/dispatch/tickets', { opId: opOf(key, 't1'), project: key, title: 'The same title', description: 'What Dispatch says.' })
+  await srv.api.ok('POST', `/api/dispatch/tickets/${ticket.ticket.key}/external`, { opId: opOf(key, 'link'), url: gh.url(41) })
+  const page = await dayPage(browser, { path: '/', server: srv.started })
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(e.message))
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text())
+  })
+  // As a page served over plain http from another machine: no crypto.subtle.
+  await page.addInitScript(() => Object.defineProperty(globalThis.crypto, 'subtle', { value: undefined, configurable: true }))
+  await page.goto(`/dispatch/${key}/1`)
+  const panel = page.locator('#ticket-github[data-ticket-github]')
+  await expect(panel.locator('[data-github-owner="description"]')).toHaveAttribute('data-owner', 'dispatch')
+  await expect(panel.locator('[data-github-differs]')).toContainText("GitHub's description differs")
+  await expect(panel.locator('[data-github-differs]')).not.toContainText('title')
+  expect(await page.evaluate(() => globalThis.crypto.subtle)).toBeUndefined()
+  expect(errors.filter((e) => /digest|subtle/.test(e))).toEqual([])
+})
+
+test('a ticket opened on a read older than ten minutes reads GitHub where it shows, holds no edit, and keeps a failure in the panel', async ({ browser }) => {
+  budget(12 * STEP_MS)
+  await srv.api.ok('POST', '/api/trackers/github', { host: gh.host, token: TOKEN })
+  const key = await freeProjectKey(srv.api, 'GHO')
+  await makeProject(srv.api, key)
+  gh.set({ n: 51, kind: 'issue', title: 'Read on opening', body: 'It is read.', state: 'open' })
+  await srv.api.ok('POST', `/api/dispatch/projects/${key}/import`, { opId: opOf(key, 'import'), url: gh.url(51) })
+  // The page's clock eleven minutes on: the import's read is past the ten minutes a page reads again after.
+  const page = await dayPage(browser, { path: '/', server: srv.started })
+  await ageBy(page, 11 * 60_000)
+  const held = gh.hold('read')
+  const reads = gh.count('read')
+  await page.goto(`/dispatch/${key}/1`)
+  const panel = page.locator('#ticket-github[data-ticket-github]')
+  await held.reached
+  await expect(panel.locator('[data-github-read-at]')).toHaveText('reading GitHub…')
+  // An edit made meanwhile is not held behind the read the person did not ask for.
+  await srv.api.ok('GET', `/api/dispatch/tickets/${key}-1`)
+  await page.locator('[data-ticket-priority]').click()
+  await page.getByRole('option', { name: 'High' }).click()
+  await expect.poll(async () => (await srv.api.ok<{ ticket: { priority: number } }>('GET', `/api/dispatch/tickets/${key}-1`)).ticket.priority).toBe(3)
+  held.release()
+  await expect(panel.locator('[data-github-read-at]')).toContainText('read ')
+  expect(gh.count('read')).toBeGreaterThan(reads)
+
+  // GitHub refusing the token on opening: said in the panel with Settings, never in a toast.
+  const refusedAt = gh.count('read')
+  gh.refuse(TOKEN)
+  try {
+    const again = await dayPage(browser, { path: '/', server: srv.started })
+    await ageBy(again, 11 * 60_000)
+    await again.goto(`/dispatch/${key}/1`)
+    const failure = again.locator('#ticket-github [data-github-failure]')
+    await expect(failure).toContainText('GitHub refused the token')
+    await expect(failure.locator('[data-github-settings-link]')).toBeVisible()
+    await expect(again.getByText('not changed')).toHaveCount(0)
+    expect(gh.count('read')).toBe(refusedAt)
+  } finally {
+    gh.allow(TOKEN)
+  }
+
+  // With no token kept for the item's host, nothing is asked on opening.
+  await srv.api.ok('POST', '/api/trackers/github/remove', { host: gh.host })
+  const before = gh.requests().length
+  const none = await dayPage(browser, { path: '/', server: srv.started })
+  await ageBy(none, 11 * 60_000)
+  await none.goto(`/dispatch/${key}/1`)
+  await expect(none.locator('#ticket-github [data-github-read-at]')).toContainText('read ')
+  await expect(none.locator('#ticket-github [data-github-failure]')).toHaveCount(0)
+  await expect(none.getByText('not changed')).toHaveCount(0)
+  expect(gh.requests().length).toBe(before)
+  await srv.api.ok('POST', '/api/trackers/github', { host: gh.host, token: TOKEN })
 })

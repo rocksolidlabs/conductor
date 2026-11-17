@@ -1,4 +1,5 @@
 import type { ExternalSnapshot, LinkReadSummary, TicketOwners } from '~/composables/useDispatch'
+import { MAX_TICKET_EXTERNAL_SEARCH } from './protocol'
 import { relativeTime } from './sessions'
 
 // GitHub on Dispatch's tickets (Program item IN1a, docs/plans/tracker-linking.md, "web/app"): a GitHub item's reference as the server's
@@ -207,6 +208,33 @@ export function ownerWord(owner: string): 'GitHub' | 'Dispatch' {
 /** The field owners in words: "Title: GitHub · Description: GitHub". */
 export function ownersWords(o: TicketOwners): string {
   return `Title: ${ownerWord(o.title)} · Description: ${ownerWord(o.description)}`
+}
+
+/**
+ * Whether a description Dispatch owns differs from GitHub's: its SHA-256 (by `hash`, the page's own: utils/publication.ts' sha256Hex,
+ * which needs no `crypto.subtle`, absent from a page served over plain http) against the snapshot's. Never for one GitHub owns, nor
+ * without a snapshot's digest.
+ */
+export function descriptionDiffersFrom(description: string, want: string | undefined, owner: string, hash: (text: string) => string): boolean {
+  return !!want && owner === 'dispatch' && hash(description) !== want
+}
+
+/**
+ * Whether a pasted text is a GitHub item's address the palette searches the tickets by: one the parse reads, within the server's bound
+ * (MAX_TICKET_EXTERNAL_SEARCH, in UTF-8 bytes; past it the server refuses the search).
+ */
+export function externalSearchable(text: string, o: RefOptions): boolean {
+  const url = text.trim()
+  return url.includes('://') && new TextEncoder().encode(url).length <= MAX_TICKET_EXTERNAL_SEARCH && !!parseGitHubRef(url, '', o)
+}
+
+/**
+ * Whether Import may send: a preview shown, of an item no ticket has yet, read for the address the field holds now and no read under
+ * way. A field changed since its preview (or emptied by the dialog's reopening) needs a new one: Import never sends an item the field no
+ * longer names.
+ */
+export function importReady(s: { preview: { linked?: string } | null; previewed: string; url: string; reading: boolean }): boolean {
+  return !!s.preview && !s.preview.linked && !s.reading && s.url.trim() === s.previewed
 }
 
 /** What a field GitHub owns says where its editor would be. */

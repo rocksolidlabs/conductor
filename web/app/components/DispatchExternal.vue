@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DispatchTicket, SnapshotImage } from '~/composables/useDispatch'
-import { githubHref, githubStateWords, ownerWord, readAge, refWords, snapshotOf } from '~/utils/tracker'
+import { descriptionDiffersFrom, githubHref, githubStateWords, ownerWord, readAge, refWords, snapshotOf } from '~/utils/tracker'
+import { sha256Hex } from '~/utils/publication'
 
 /**
  * A ticket's GitHub panel (Program item IN1a, docs/plans/tracker-linking.md, PR-8), the section the strip names GitHub: the linked issue
@@ -27,6 +28,10 @@ const props = defineProps<{
   authority: (field: 'title' | 'description', owner: 'dispatch' | 'github') => Promise<string>
   link: (url: string) => Promise<string>
   unlink: () => Promise<string>
+  /** A read the page made by itself (a page opened on a read older than ten minutes) is under way: said as a Refresh's is. */
+  reading?: boolean
+  /** Why that read failed, in the tracker's words: said in the panel, never in a toast. */
+  readFailure?: string
   /** Opens Publish to GitHub (IN1a PR-9) with the linked item as its target; absent, the panel offers none. */
   publish?: () => void
 }>()
@@ -50,27 +55,14 @@ const readError = computed(() => {
 /** GitHub closed it while the ticket is open: said, and the person decides. */
 const closedOnGitHub = computed(() => !!state.value && state.value.key !== 'open' && props.ticket.status !== 'done' && props.ticket.status !== 'cancelled')
 
-// Where a field Dispatch owns differs from GitHub's: the title compared as written, the description by its SHA-256 against the snapshot's.
-const descriptionDiffers = ref(false)
-async function sha256(text: string): Promise<string> {
-  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
-}
-watch(
-  () => [props.ticket.description, snap.value?.descriptionSha256, owners.value.description] as const,
-  async ([text, want, owner]) => {
-    if (!want || owner !== 'dispatch') {
-      descriptionDiffers.value = false
-      return
-    }
-    const got = await sha256(text)
-    if (text === props.ticket.description) descriptionDiffers.value = got !== want
-  },
-  { immediate: true },
-)
+// Where a field Dispatch owns differs from GitHub's: the title compared as written, the description by its SHA-256 against the snapshot's,
+// the page's own SHA-256 (utils/publication.ts), which needs no `crypto.subtle`: a page served over plain http has none.
+const descriptionDiffers = computed(() => descriptionDiffersFrom(props.ticket.description, snap.value?.descriptionSha256, owners.value.description, sha256Hex))
 const titleDiffers = computed(() => owners.value.title === 'dispatch' && !!snap.value && snap.value.title.trim() !== props.ticket.title.trim())
 
 const refreshing = ref(false)
+/** Reading GitHub now: a Refresh pressed here, or the page's own read on opening. */
+const busyReading = computed(() => refreshing.value || !!props.reading)
 const notice = ref('')
 const failure = ref('')
 async function doRefresh() {
@@ -87,7 +79,12 @@ async function doRefresh() {
   }
 }
 
+/** What failed last: this panel's own act, else the page's read on opening (Refresh, pressed, reads again). */
+const shownFailure = computed(() => failure.value || (refreshing.value ? '' : (props.readFailure ?? '')))
+
 const moving = ref('')
+/** The field whose Give back to GitHub asks first: its text here is replaced by GitHub's. */
+const givingBack = ref<'' | 'title' | 'description'>('')
 async function move(field: 'title' | 'description', owner: 'dispatch' | 'github') {
   if (moving.value) return
   moving.value = field
@@ -99,6 +96,13 @@ async function move(field: 'title' | 'description', owner: 'dispatch' | 'github'
   } finally {
     moving.value = ''
   }
+}
+
+async function confirmGiveBack() {
+  const field = givingBack.value
+  if (!field) return
+  await move(field, 'github')
+  givingBack.value = ''
 }
 
 const linking = ref(false)
@@ -169,6 +173,7 @@ watch(
     failure.value = ''
     linking.value = false
     unlinkAsk.value = false
+    givingBack.value = ''
   },
 )
 </script>
@@ -185,14 +190,14 @@ watch(
       <div class="flex-1" />
       <template v-if="linked && !locked">
         <UButton v-if="publish" label="Publish to GitHub" icon="i-lucide-send" size="xs" color="neutral" variant="ghost" data-github-publish @click="publish()" />
-        <UButton label="Refresh" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="refreshing" data-github-refresh @click="doRefresh" />
+        <UButton label="Refresh" icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :loading="busyReading" data-github-refresh @click="doRefresh" />
         <UButton v-if="!unlinkAsk" label="Unlink" icon="i-lucide-unlink" size="xs" color="neutral" variant="ghost" data-github-unlink @click="unlinkAsk = true" />
       </template>
       <UButton v-if="!linked && !linking" label="Link a GitHub issue" icon="i-lucide-github" size="xs" color="neutral" variant="ghost" data-github-link-open @click="linking = true" />
     </div>
 
-    <UAlert v-if="failure" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="failure" data-github-failure>
-      <template v-if="/Settings/.test(failure)" #description>
+    <UAlert v-if="shownFailure" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="shownFailure" data-github-failure>
+      <template v-if="/Settings/.test(shownFailure)" #description>
         <NuxtLink to="/settings?section=github" class="underline" data-github-settings-link>Open Settings, GitHub</NuxtLink>
       </template>
     </UAlert>
@@ -201,7 +206,7 @@ watch(
       <p class="text-xs text-muted">
         <template v-if="imported">Imported from {{ ref_ }}</template><template v-else>Linked to {{ ref_ }}</template>, a GitHub {{ kindWord }}
         <span class="mx-1">·</span>
-        <span data-github-read-at>{{ refreshing ? 'reading GitHub…' : readAge(readAt, now) }}</span>
+        <span data-github-read-at>{{ busyReading ? 'reading GitHub…' : readAge(readAt, now) }}</span>
       </p>
       <p v-if="readError" class="text-xs text-warning" data-github-read-error>The last read failed: {{ readError }}</p>
       <p v-if="notice" class="text-xs text-muted" data-github-notice>{{ notice }}</p>
@@ -215,9 +220,16 @@ watch(
           <span class="font-medium text-default">{{ ownerWord(owners[field]) }}</span>
           <template v-if="!locked">
             <UButton v-if="owners[field] === 'github'" label="Take over" size="xs" color="neutral" variant="link" class="px-0" :loading="moving === field" :data-github-take-over="field" @click="move(field, 'dispatch')" />
-            <UButton v-else label="Give back to GitHub" size="xs" color="neutral" variant="link" class="px-0" :loading="moving === field" :data-github-give-back="field" @click="move(field, 'github')" />
+            <UButton v-else label="Give back to GitHub" size="xs" color="neutral" variant="link" class="px-0" :loading="moving === field" :data-github-give-back="field" @click="givingBack = field" />
           </template>
         </span>
+      </div>
+      <div v-if="givingBack && !locked" class="flex flex-col gap-2 rounded-md bg-elevated/60 p-2.5 text-xs" data-github-give-back-ask>
+        <p>Give the {{ givingBack }} back to GitHub? Its text here is replaced by GitHub's, and a Refresh follows GitHub from then on.</p>
+        <div class="flex justify-end gap-2">
+          <UButton label="Keep it" size="xs" color="neutral" variant="ghost" data-github-give-back-keep @click="givingBack = ''" />
+          <UButton label="Give it back" size="xs" color="neutral" variant="outline" :loading="!!moving" data-github-give-back-confirm @click="confirmGiveBack" />
+        </div>
       </div>
       <p v-if="titleDiffers || descriptionDiffers" class="text-xs text-muted" data-github-differs>
         GitHub's {{ titleDiffers && descriptionDiffers ? 'title and description differ' : titleDiffers ? 'title differs' : 'description differs' }}<template v-if="href">: <a :href="href" target="_blank" rel="noopener noreferrer" class="underline">see it on GitHub</a></template>.

@@ -46,7 +46,9 @@ const dispatchUsage = `Usage:
       a ticket or its comments; --json prints them as one JSON array
   conductor dispatch show KEY-n
       a ticket whole: its fields, description, acceptance criteria, close
-      policy, parent, children, relations, links, attachments and last comments
+      policy, parent, children, relations, links (each with its id, which
+      read, publish --target and plan propose --evidence take), attachments
+      and last comments
   conductor dispatch create --project KEY --title T [--description-file F] [--priority P]
                             [--owner NAME] [--label L]...
       make a ticket and print its key; F a file of Markdown, - for stdin
@@ -1069,7 +1071,11 @@ func writeTicket(w io.Writer, v dispatch.TicketView, names ticketNames) {
 			if l.URL != "" && l.URL != l.Ref {
 				fmt.Fprintf(&b, " %s", oneLine(l.URL))
 			}
-			b.WriteString(candidateWords(nil, l.Candidate) + verifiedWords(l.Verified) + "\n")
+			b.WriteString(candidateWords(nil, l.Candidate) + verifiedWords(l.Verified))
+			if l.ID != "" {
+				fmt.Fprintf(&b, " (link %s)", oneLine(l.ID))
+			}
+			b.WriteString("\n")
 			if l.Note != "" {
 				fmt.Fprintf(&b, "  %s\n", strings.ReplaceAll(textBlock(l.Note), "\n", "\n  "))
 			}

@@ -7,7 +7,7 @@ import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/pale
 import type { TicketSummary } from '~/composables/useDispatch'
 import { PICK_WORDS, pickEdit, ticketPath, ticketSummaryOf, type PickField } from '~/utils/dispatch'
 import type { DispatchWatch } from '~/composables/useDispatchLive'
-import { parseGitHubRef } from '~/utils/tracker'
+import { externalSearchable } from '~/utils/tracker'
 
 /**
  * The command palette (#302): one keystroke from any page opens it over
@@ -125,12 +125,13 @@ function ticketImported(t: { key: string; title: string }) {
 // A GitHub item's address pasted into the search (IN1a): the tickets it names are read, a moment after the typing stops, and listed.
 const tracker = useTracker()
 let externalTimer: number | undefined
+// The token list's answer counts too: an Enterprise Server's address pasted before it is read is searched once its host is known.
 watch(
-  () => [palette.query.value, palette.open.value] as const,
-  ([q, isOpen]) => {
+  () => [palette.query.value, palette.open.value, tracker.refOptions.value] as const,
+  ([q, isOpen, refs]) => {
     window.clearTimeout(externalTimer)
     const url = q.trim()
-    if (!isOpen || !url.includes('://') || !parseGitHubRef(url, '', tracker.refOptions.value)) return
+    if (!isOpen || !externalSearchable(url, refs)) return
     if (palette.externalHits.value.url === url) return
     externalTimer = window.setTimeout(() => void palette.findExternal(url), 200)
   },
