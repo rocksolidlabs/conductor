@@ -205,18 +205,19 @@ const KNOWN_WORDS = [
   'Sign in with ChatGPT', 'Sign in with Device Code', 'Use an OpenAI API key', 'Sign in another way', 'Welcome to Codex', 'Agent Command Center', 'Folder access',
   'Trust this folder', 'Do you trust', 'Update available', 'Update now', 'Hooks need review', 'incompatible feature settings', 'Try new model', 'bubblewrap', 'bwrap',
   'Incorrect API key', '401 Unauthorized', 'status 401', 'status 403', '429 Too Many', 'insufficient_quota', 'exceeded your current quota', 'rate limit',
-  'does not exist', 'not supported', 'stream error', 'stream disconnected', 'esc to interrupt', 'Working', 'context left', 'Reply with the single word', 'READY',
+  'does not exist', 'not supported', 'not have access', 'must be verified', 'stream error', 'stream disconnected', 'Reconnecting', 'retrying', 'unexpected status',
+  'usage limit', 'billing', 'interrupted', 'esc to interrupt', 'Working', 'Worked for', 'tokens used', 'context left', 'Reply with the single word',
 ]
 
 /** The test's page, for a row that fails to say what its member's screen holds (screenHolds). */
-let look: ((sessionId: string) => Promise<string[]>) | undefined
+let look: ((sessionId: string, want: string) => Promise<string[]>) | undefined
 
 /**
  * Which of KNOWN_WORDS the session's screen holds: the page opens the session, the terminal's bytes are read off the page's own
  * socket as they arrive (the replay a viewer is sent, then what follows) until a second passes with none, and the words are looked
  * for with the escapes and the spaces taken out (a full-screen program moves the cursor where a line has a space).
  */
-async function screenHolds(page: Page, server: Started, sessionId: string): Promise<string[]> {
+async function screenHolds(page: Page, server: Started, sessionId: string, want: string): Promise<string[]> {
   let bytes = ''
   let last = Date.now()
   page.on('websocket', (ws) => {
@@ -236,7 +237,21 @@ async function screenHolds(page: Page, server: Started, sessionId: string): Prom
   while (Date.now() < until && (bytes === '' || Date.now() - last < 1_000)) await new Promise((done) => setTimeout(done, 200))
   // eslint-disable-next-line no-control-regex
   const plain = bytes.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\x1b[@-Z\\-_]/g, '').replace(/\s+/g, '').toLowerCase()
-  return KNOWN_WORDS.filter((w) => plain.includes(w.replace(/\s+/g, '').toLowerCase()))
+  const words = KNOWN_WORDS.filter((w) => plain.includes(w.replace(/\s+/g, '').toLowerCase()))
+  // What the program itself signalled, as counts and its own state words (a notification's text is the agent's and is not printed):
+  // the status sequence Codex sends (OSC 7501, "state=..."), the notifications (OSC 9) and the bells outside any sequence.
+  const states: string[] = []
+  // eslint-disable-next-line no-control-regex
+  for (const m of bytes.matchAll(/\x1b\]7501;([^\x07\x1b]*)(?:\x07|\x1b\\)/g)) {
+    const s = /state=([a-z_-]+)/.exec(m[1] ?? '')?.[1] ?? '?'
+    if (states[states.length - 1] !== s) states.push(s)
+  }
+  // eslint-disable-next-line no-control-regex
+  const notes = [...bytes.matchAll(/\x1b\]9;[^\x07\x1b]*(?:\x07|\x1b\\)/g)].length
+  // eslint-disable-next-line no-control-regex
+  const bells = (bytes.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').match(/\x07/g) ?? []).length
+  const times = plain.split(want.replace(/\s+/g, '').toLowerCase()).length - 1
+  return [...words, `"${want}" ${times} time(s)`, `program states: ${states.join(' > ') || 'none'}`, `notifications: ${notes}`, `bells: ${bells}`, `${bytes.length} bytes read`]
 }
 
 /**
@@ -262,9 +277,11 @@ async function answerOrExit(api: Api, runId: string, read: () => Promise<string>
     if (Date.now() >= until) {
       // Conductor's own lines about the member, and which known words its screen holds: never the screen itself.
       const log = (await api.run(runId)).log.slice(-5).map((e) => e.message ?? e.type).join(' | ')
-      const holds = m.sessionId && look ? await look(m.sessionId).catch(() => ['(its screen could not be read)']) : []
+      const holds = m.sessionId && look ? await look(m.sessionId, want).catch(() => ['(its screen could not be read)']) : []
+      const s = m.sessionId ? await api.session(m.sessionId) : undefined
       throw new Error(
         `no "${want}" from the agent in ${timeout / 1000} s; its last words: ${JSON.stringify(last.slice(0, 200))}; the run's log ends: ${log}; ` +
+          `the session: attention ${s?.attention?.state ?? 'none'}/${s?.attention?.source ?? '-'}, reports its turns: ${s?.turns ?? false}; ` +
           `of the words this suite knows a screen by, its screen holds: ${holds.join(', ') || 'none'}`,
       )
     }
@@ -293,7 +310,7 @@ for (const agent of ['claude', 'codex']) {
     // In CI nobody is signed in: an agent runs on its key or not at all. On a person's machine its own login may stand in.
     test.skip(!!process.env.CI && !process.env[KEY[agent]!], `${agent}: this run holds no ${KEY[agent]}`)
     test.beforeEach(({ page, server }) => {
-      look = (sessionId) => screenHolds(page, server, sessionId)
+      look = (sessionId, want) => screenHolds(page, server, sessionId, want)
     })
 
     const crewBody = (name: string, cwd: string, prompt: string, yolo: boolean | null, isolation: 'none' | 'worktree') => ({
