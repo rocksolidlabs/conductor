@@ -10,6 +10,7 @@ import { attemptSession, taskStatus } from '~/utils/status'
 import type { DecisionSummary } from '~/utils/decisions'
 import { ownerWords } from '~/utils/crews'
 import { personPath } from '~/utils/people'
+import { lanesOf, tasksByLane, type RunLane } from '~/utils/compare'
 
 /**
  * The tasks of a managed run (#334, row 7), as a table (the UX review's
@@ -33,7 +34,8 @@ import { personPath } from '~/utils/people'
  * under TLS. For a run a ticket holds (RV1), the selected work task offers
  * Review, the ticket's Review view at its candidate, and a failed receipt
  * Prepare a repair there; a run whose ticket the page did not find (no
- * launch, no run link to a run of its chain) says so and to link one.
+ * launch, no run link to a run of its chain) says so and to link one. A comparison's tasks (Program item CP1) are grouped by lane: each
+ * lane's row names its candidate and its approach, over its candidate's row and its review's, in the one grid.
  */
 const props = defineProps<{
   run: RunInfo
@@ -53,6 +55,17 @@ const commands = useTaskCommands(() => props.run.id)
 const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
+/**
+ * The rows in their order: a comparison's tasks by lane (Program item CP1), each lane's header row, then its candidate and its review,
+ * then the tasks of no lane; any other run's tasks in the crew's order.
+ */
+type Row = { key: string; lane: RunLane; task?: undefined } | { key: string; task: RunTask; lane?: undefined }
+const rows = computed<Row[]>(() => {
+  const lanes = lanesOf(props.run)
+  if (!lanes.length) return tasks.value.map((t) => ({ key: `task:${t.id}`, task: t }))
+  const { groups, rest } = tasksByLane(tasks.value, lanes)
+  return [...groups.flatMap((g) => [{ key: `lane:${g.lane.task}`, lane: g.lane } as Row, ...g.tasks.map((t) => ({ key: `task:${t.id}`, task: t }))]), ...rest.map((t) => ({ key: `task:${t.id}`, task: t }))]
+})
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
 /** The ticket's Review view at a candidate (RV1) of `run` (this run's, or the run a continuation's result came from), preparing a repair from a receipt when one is named. */
 function reviewAt(run: string, task: string, attempt: number, commit: string | undefined, repair?: string): RouteLocationRaw | undefined {
@@ -251,7 +264,15 @@ async function confirm() {
         <span class="[grid-area:what]">What</span>
       </div>
       <ol class="flex flex-col gap-1.5" data-task-rows>
-        <li v-for="t in tasks" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
+        <template v-for="row in rows" :key="row.key">
+        <!-- A comparison's lane: its candidate's task and its approach, over the lane's rows. -->
+        <li v-if="row.lane" class="flex min-w-0 flex-wrap items-baseline gap-x-2 px-3 pt-1.5 text-xs" :data-task-lane="row.lane.task">
+          <span class="flex-none font-medium text-muted">Lane</span>
+          <span class="flex-none font-mono font-semibold text-highlighted" data-mono="id">{{ row.lane.task }}</span>
+          <span class="min-w-0 break-words text-muted" data-task-lane-approach>{{ row.lane.approach || 'a candidate of the comparison' }}{{ row.lane.review ? `, reviewed by ${row.lane.review}` : '' }}</span>
+        </li>
+        <template v-else>
+        <li v-for="t in [row.task!]" :key="t.id" :data-task-row="t.id" :data-task-state="t.state">
           <!-- Enter selects the row only when the row has the focus: a control inside it (Answer, Retry, the menu) keeps its own keys. -->
           <div
             class="task-grid rounded-md border px-3 py-2 text-sm"
@@ -288,6 +309,8 @@ async function confirm() {
             </div>
           </div>
         </li>
+        </template>
+        </template>
       </ol>
     </div>
 

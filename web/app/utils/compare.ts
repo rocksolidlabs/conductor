@@ -49,7 +49,10 @@ export interface ModuleChange {
 export interface DepChanges {
   files: string[]
   modules: ModuleChange[]
+  /** The dependency files changed, before the list's cut. */
   total: number
+  /** The modules changed, before the list's cut. */
+  modulesTotal?: number
 }
 
 /** A test or build file a candidate changed. */
@@ -180,6 +183,15 @@ export const MEASURED_BY = 'measured by Conductor'
 export const NOT_OBSERVED = "a read of another lane's folder, or of what an agent keeps for itself under its HOME, is not observed"
 /** What the same-patch check catches and what it cannot. */
 export const SAME_PATCHES = 'same patches: checked; a change rewritten by hand is not detected'
+/**
+ * What independence checks and cannot see, said beside its row always: the server's words when its reply gives them
+ * (`independence.notObserved`), after "Same patches: checked."; else the page's own.
+ */
+export function notObservedWords(server?: string): string {
+  const w = server?.trim()
+  if (w) return `Same patches: checked. ${w}`
+  return `${SAME_PATCHES.charAt(0).toUpperCase()}${SAME_PATCHES.slice(1)}; ${NOT_OBSERVED}.`
+}
 /** Until PR-7's selection, under the columns. */
 export const SELECT_LATER = 'Selecting a candidate arrives with durable decisions'
 
@@ -210,8 +222,12 @@ export function verdictWords(c: Pick<ComparedCheck, 'verdict' | 'why'>): Verdict
       return { label: 'comparable', lead: '', why }
     case 'not_comparable':
       return { label: 'not comparable', lead: why.length ? 'because' : '', why }
-    case 'unknown':
-      return { label: 'comparable only if their test changes are fair', lead: why.length ? 'because' : '', why }
+    case 'unknown': {
+      // The server says the label before each candidate's files ("…fair: approach-a changed x_test.go, a test file; approach-b
+      // changed none"): said once, each candidate's part a reason of its own.
+      const label = 'comparable only if their test changes are fair'
+      return { label, lead: '', why: why.flatMap((w) => (w.startsWith(`${label}: `) ? w.slice(label.length + 2).split('; ') : [w])) }
+    }
   }
   return { label: c.verdict || 'no verdict given', lead: '', why }
 }
@@ -241,6 +257,7 @@ const CELL_LEGEND = {
   failed: 'failed: the check ran on the candidate and did not pass',
   running: 'checking: the check is running on the candidate',
   interrupted: 'interrupted: the check was cut short and has no outcome',
+  cancelled: 'cancelled: the check was ended before it finished',
   notRun: 'not run: the candidate has no receipt of this check',
 }
 
@@ -252,6 +269,7 @@ function cellMark(key: MarkKey, word: string, legend: string): MarkView {
 export function notRunWords(why: string | undefined): string {
   if (why === 'earlier_failed') return 'not run: an earlier check failed'
   if (why === 'no_such_step' || why === 'no_step') return 'not run: its manifest has no such step'
+  if (why === 'pending') return 'not run yet: its checks are under way'
   return 'not run'
 }
 
@@ -268,6 +286,7 @@ export function cellWords(c: CheckCell): CellWords {
   }
   if (c.state === 'started' || c.state === 'running') return { mark: cellMark('working', 'checking', CELL_LEGEND.running), word: 'running', detail, state: 'running' }
   if (c.state === 'interrupted') return { mark: cellMark('cancelled', 'interrupted', CELL_LEGEND.interrupted), word: 'interrupted', detail, state: 'interrupted' }
+  if (c.state === 'cancelled') return { mark: cellMark('cancelled', 'cancelled', CELL_LEGEND.cancelled), word: 'cancelled', detail, state: 'interrupted' }
   if (c.state === 'finished') {
     const failed = (word: string): CellWords => ({ mark: cellMark('failed', 'failed', CELL_LEGEND.failed), word, detail, state: 'failed' })
     if (c.timedOut) return failed('timed out')
@@ -418,8 +437,11 @@ export function depsWords(d: DepChanges | undefined): DepsWords {
   const files = d?.files ?? []
   const modules = (d?.modules ?? []).map((m) => ({ file: m.file, words: moduleWords(m) }))
   if (!files.length && !modules.length) return { summary: 'No dependency file changed', files: [], modules: [], more: '' }
-  const left = Math.max(0, (d?.total ?? 0) - files.length - (d?.modules?.length ?? 0))
-  return { summary: `${plural(files.length, 'dependency file')} changed`, files, modules, more: left ? `and ${left} more not listed` : '' }
+  const total = Math.max(d?.total ?? 0, files.length)
+  const filesLeft = total - files.length
+  const modulesLeft = Math.max(0, (d?.modulesTotal ?? 0) - modules.length)
+  const more = [filesLeft ? plural(filesLeft, 'more file') : '', modulesLeft ? plural(modulesLeft, 'more module') : ''].filter(Boolean).join(' and ')
+  return { summary: `${plural(total, 'dependency file')} changed`, files, modules, more: more ? `and ${more} not listed` : '' }
 }
 
 /** A test or build file in words: "internal/cache/cache_test.go, a test file". */
@@ -443,12 +465,15 @@ export function verifyFilesWords(task: string, l: FileList | undefined): { summa
  */
 export function independenceWords(c: Pick<ComparedCandidate, 'shared' | 'equivalent'>): string[] {
   const out: string[] = []
+  // The server's note, but the same-patch check's own words, which the row says once beside it (notObservedWords).
+  const note = (n: string | undefined) => (n && !n.startsWith('same patches') ? ` (${n})` : '')
   for (const s of c.shared ?? []) {
-    if (s.count > 0) out.push(`shares ${plural(s.count, 'commit')} with ${s.with}${s.note ? ` (${s.note})` : ''}`)
+    if (s.count > 0) out.push(`shares ${plural(s.count, 'commit')} with ${s.with}${note(s.note)}`)
+    else if (s.note?.startsWith('more than')) out.push(`shares ${s.note} commits with ${s.with}`)
     else if (s.note) out.push(`commits shared with ${s.with}: ${s.note}`)
   }
   for (const e of c.equivalent ?? []) {
-    if (e.count > 0) out.push(`${plural(e.count, 'commit')} ${e.count === 1 ? 'carries' : 'carry'} the same change as one of ${e.with}'s${e.note ? ` (${e.note})` : ''}`)
+    if (e.count > 0) out.push(`${plural(e.count, 'commit')} ${e.count === 1 ? 'carries' : 'carry'} the same change as one of ${e.with}'s${note(e.note)}`)
     else if (e.note) out.push(`same patches as ${e.with}: ${e.note}`)
   }
   return out.length ? out : ['no shared commit and no same patch']
