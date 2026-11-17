@@ -20,6 +20,8 @@ export interface SendForm {
   key?: string
   /** The question to Brakeman. */
   question?: string
+  /** A pending decision of the capture's run, its dr-<n>. */
+  decision?: string
 }
 
 /** A send's state as the store gives it. */
@@ -33,6 +35,7 @@ export const SEND_KINDS: ReadonlyArray<{ kind: SendKind; label: string; icon: st
   { kind: 'ticket-new', label: 'Create a ticket', icon: 'i-lucide-ticket-plus' },
   { kind: 'ticket', label: 'Attach to a ticket', icon: 'i-lucide-paperclip' },
   { kind: 'brakeman', label: 'Ask Brakeman', icon: 'i-lucide-notebook-pen' },
+  { kind: 'decision', label: 'Attach to a decision', icon: 'i-lucide-message-square-plus' },
 ]
 
 /** A question's bound, in characters, as the route holds it. */
@@ -44,6 +47,8 @@ export const MAX_TICKET_TITLE = 200
 const KEY = /^[A-Z][A-Z0-9]{1,5}-[1-9][0-9]{0,17}$/
 /** A project's key. */
 const PROJECT = /^[A-Z][A-Z0-9]{1,5}$/
+/** A decision record's id. */
+const DECISION = /^dr-[1-9][0-9]{0,17}$/
 
 /**
  * The `to` of a send of kind, from the form, or why it cannot be sent yet: a new ticket names a project and a title of 1 to 200
@@ -65,6 +70,9 @@ export function sendBody(kind: SendKind, form: SendForm): { to: Record<string, s
       if (!question) return { problem: 'Ask a question' }
       if ([...question].length > MAX_SEND_QUESTION) return { problem: `A question is at most ${MAX_SEND_QUESTION} characters` }
       return { to: { kind: 'brakeman', question } }
+    case 'decision':
+      if (!DECISION.test(form.decision ?? '')) return { problem: 'Choose a decision' }
+      return { to: { kind: 'decision', decision: form.decision! } }
   }
   return { problem: 'This destination is not offered here' }
 }
@@ -79,9 +87,10 @@ export function titleFrom(note: string): string {
   return `${space > MAX_TICKET_TITLE / 2 ? cut.slice(0, space) : cut}…`
 }
 
-/** Where a send went, in words: the ticket's key, or Brakeman and its request. */
+/** Where a send went, in words: the ticket's key, Brakeman and its request, or the decision. */
 export function sendTarget(s: Pick<CaptureSendView, 'kind' | 'target'>): string {
   if (s.kind === 'brakeman') return s.target ? `Brakeman (${s.target})` : 'Brakeman'
+  if (s.kind === 'decision') return s.target ? `decision ${s.target}` : 'a decision'
   return s.target ?? 'a ticket'
 }
 

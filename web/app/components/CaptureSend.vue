@@ -8,7 +8,7 @@ import { SEND_KINDS, type CaptureSendView, type SendForm, type SendKind, cancell
 /**
  * A saved capture's Send (Program item PV1, docs/plans/browser-evidence.md, "Sending"), in the capture editor's Send slot: Create a
  * ticket (a project, the title from the first note), Attach to a ticket (the run's own ticket first, else one picked), Ask Brakeman (a
- * question). Each send freezes the capture at the revision shown, and the sends are listed below with their state ("sent as r2 to
+ * question), Attach to a decision (a pending decision of the capture's run, offered when it has one: a comment naming the capture). Each send freezes the capture at the revision shown, and the sends are listed below with their state ("sent as r2 to
  * CND-14", "waiting for Brakeman: …") and what changed since each ("edited since: annotation 3's note"); a send to Brakeman that may
  * still run can be cancelled. The sends are read again when Dispatch says a capture or a send changed.
  */
@@ -24,7 +24,10 @@ const dispatch = useDispatchApi()
 const identity = useIdentity()
 
 const kind = ref<SendKind>('ticket-new')
-const form = reactive<SendForm>({ project: '', title: '', key: '', question: '' })
+const form = reactive<SendForm>({ project: '', title: '', key: '', question: '', decision: '' })
+const { request } = useApi()
+/** The capture's run's decisions still open: what Attach to a decision offers. */
+const decisions = ref<Array<{ id: string; run: string; request: { question: string } }>>([])
 const sending = ref(false)
 const error = ref('')
 const projects = ref<ProjectSummary[]>([])
@@ -61,7 +64,24 @@ async function loadProjects() {
   if (!pickerProject.value) pickerProject.value = startProject()
 }
 
+async function loadDecisions() {
+  const run = props.capture.origin?.run
+  if (!run) return
+  try {
+    const r = await request<{ decisions?: Array<{ id: string; run: string; request: { question: string } }> }>('/api/decisions', { query: { state: 'open' } })
+    decisions.value = (r.decisions ?? []).filter((d) => d.run === run)
+    if (!form.decision) form.decision = decisions.value[0]?.id ?? ''
+  } catch {
+    decisions.value = []
+  }
+}
+
+/** The destinations offered: Attach to a decision while the run has an open one. */
+const kinds = computed(() => SEND_KINDS.filter((k) => k.kind !== 'decision' || decisions.value.length))
+const decisionItems = computed(() => decisions.value.map((d) => ({ label: `${d.id} · ${d.request.question}`, value: d.id })))
+
 onMounted(() => {
+  void loadDecisions()
   form.title = titleFrom(firstNote.value)
   if (props.runTicket) form.key = props.runTicket
   void loadProjects()
@@ -164,7 +184,7 @@ async function cancel(s: CaptureSendView) {
     <h3 class="text-sm font-semibold">Send r{{ capture.rev }}</h3>
     <div class="flex flex-wrap gap-1" role="radiogroup" aria-label="Where to send it">
       <UButton
-        v-for="k in SEND_KINDS"
+        v-for="k in kinds"
         :key="k.kind"
         :label="k.label"
         :icon="k.icon"
@@ -216,6 +236,13 @@ async function cancel(s: CaptureSendView) {
         <UTextarea v-model="form.question" :maxlength="MAX_SEND_QUESTION" :rows="3" autoresize class="w-full" data-send-question />
       </UFormField>
       <p class="text-xs text-muted">Brakeman reads the capture as it is sent now, never later edits.</p>
+    </div>
+
+    <div v-else-if="kind === 'decision'" class="flex flex-col gap-2">
+      <UFormField label="Decision">
+        <USelect v-model="form.decision" :items="decisionItems" class="w-full" data-send-decision />
+      </UFormField>
+      <p class="text-xs text-muted">A comment on the decision names this capture at r{{ capture.rev }}; whoever answers it reads what was sent.</p>
     </div>
 
     <div class="flex flex-wrap items-center gap-2">

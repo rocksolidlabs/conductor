@@ -2,6 +2,7 @@
 import type { Decision, DecisionRef } from '~/utils/decisions'
 import { acceptedAnswer, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
+import type { CaptureSendView } from '~/utils/captureSend'
 
 /**
  * A durable decision whole (Program item DR1, docs/plans/decisions.md, "web/app"; UX1 PR-20, docs/plans/ux-review.md): the question,
@@ -31,6 +32,26 @@ const receipts = computed(() => words.value.steps.filter((s) => s.receipt))
 const refOf = (ref: string) => props.refs?.find((r) => r.ref === ref)
 const tones = { warning: 'text-warning', muted: 'text-muted', error: 'text-error', default: 'text-default', dimmed: 'text-dimmed' }
 const showHistory = ref(false)
+
+/**
+ * The captures sent to it (PV1 PR-11: a capture attached to a decision is a comment on it, and a send of the capture's), from
+ * capture_sends, the admin's read: a page that holds no workbench token (a decision link's) shows none.
+ */
+const { request } = useApi()
+const captures = ref<CaptureSendView[]>([])
+async function readCaptures() {
+  try {
+    const r = await request<{ sends?: CaptureSendView[] }>(`/api/decisions/${encodeURIComponent(props.decision.id)}/captures`)
+    captures.value = (r.sends ?? []).filter((s) => s.state === 'sent')
+  } catch {
+    captures.value = []
+  }
+}
+watch(
+  () => [props.decision.id, props.decision.rev],
+  () => void readCaptures(),
+  { immediate: true },
+)
 /** Details open or folded: as `detailsOpen` says for the decision, then as the person leaves it, through every new rev of the record. */
 const showDetails = ref(detailsOpen(props.decision))
 watch(
@@ -147,6 +168,16 @@ watch(
         <span v-if="s.at" class="flex-none text-dimmed" :title="s.at">{{ relativeTime(s.at, now, { suffix: true }) }}</span>
       </li>
     </ol>
+
+    <div v-if="captures.length" class="flex flex-col gap-1" data-decision-captures>
+      <span class="text-xs font-medium text-muted">Captures</span>
+      <ul class="flex flex-col gap-0.5 text-xs">
+        <li v-for="c in captures" :key="c.id" class="flex min-w-0 flex-wrap gap-x-2" :data-decision-capture="c.id">
+          <span class="font-mono" data-mono="id">capture:{{ c.capture }}/{{ c.id }}</span>
+          <span class="text-muted">r{{ c.rev }} · {{ c.createdBy || 'admin' }} {{ relativeTime(c.createdAt, now, { suffix: true }) }}</span>
+        </li>
+      </ul>
+    </div>
 
     <div v-if="decision.history?.length" class="flex flex-col gap-1">
       <UButton :label="showHistory ? 'Hide history' : `History (${decision.history.length})`" :icon="showHistory ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" size="xs" color="neutral" variant="ghost" class="self-start" data-decision-history-toggle @click="showHistory = !showHistory" />

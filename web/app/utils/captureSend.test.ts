@@ -19,11 +19,14 @@ describe('sendBody', () => {
     expect(sendBody('ticket', { key: 'cnd-14' })).toEqual({ problem: 'Choose a ticket' })
     expect(sendBody('brakeman', { question: '' })).toEqual({ problem: 'Ask a question' })
     expect(sendBody('brakeman', { question: 'é'.repeat(MAX_SEND_QUESTION + 1) })).toEqual({ problem: `A question is at most ${MAX_SEND_QUESTION} characters` })
-    expect(sendBody('decision', {})).toEqual({ problem: 'This destination is not offered here' })
+    expect(sendBody('decision', {})).toEqual({ problem: 'Choose a decision' })
+    expect(sendBody('decision', { decision: 'dr-0' })).toEqual({ problem: 'Choose a decision' })
+    expect(sendBody('decision', { decision: 'dr-7' })).toEqual({ to: { kind: 'decision', decision: 'dr-7' } })
+    expect(sendBody('review', {})).toEqual({ problem: 'This destination is not offered here' })
   })
 
-  it('offers the three destinations of today, in the editor’s order', () => {
-    expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman'])
+  it('offers the four destinations of today, in the editor’s order', () => {
+    expect(SEND_KINDS.map((k) => k.kind)).toEqual(['ticket-new', 'ticket', 'brakeman', 'decision'])
   })
 })
 
@@ -46,6 +49,7 @@ describe('sendState', () => {
   it('says each state in words, with a task’s own mark', () => {
     expect(sendState({ ...base, state: 'sent' })).toMatchObject({ word: 'sent as r2 to CND-14', tone: 'neutral', mark: { key: 'done' } })
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'sent', target: 'br-7' }).word).toBe('sent as r1 to Brakeman (br-7)')
+    expect(sendState({ rev: 1, kind: 'decision', state: 'sent', target: 'dr-3' }).word).toBe('sent as r1 to decision dr-3')
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'pending', waiting: '8 requests wait already' })).toMatchObject({
       word: 'waiting for Brakeman: 8 requests wait already',
       mark: { key: 'waiting' },
