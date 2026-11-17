@@ -79,6 +79,8 @@ type compareOpts struct {
 	// carries (SetCompareOpenForTest), set before any run launches: a test
 	// of what such a run's lanes are given.
 	unticketed bool
+	// shape changes the comparison's crew before it is saved.
+	shape func(*crew.Crew)
 }
 
 func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
@@ -114,6 +116,9 @@ func newCompareEnv(t *testing.T, o compareOpts) *compareEnv {
 	e.newDispatchTicket(t, "CND", title, tk)
 	in := compareCrewIn(t, repo)
 	in.Compare.Brakeman = o.draft
+	if o.shape != nil {
+		o.shape(&in)
+	}
 	for i := range in.Tasks {
 		if o.checks != nil && in.Tasks[i].Kind == crew.TaskWork {
 			in.Tasks[i].Checks = o.checks

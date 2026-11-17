@@ -164,6 +164,18 @@ func laneGuided(st laneFact, pattern string) bool {
 	return laneServes(st, pattern) && (st == noLane || pattern != laneCommentPattern)
 }
 
+// selectedCandidate reports whether the session d is an attempt at the
+// selected candidate's own task once the selection is applied (door 8):
+// laneSelected, and the session's task is the lane's candidate task, so
+// a review of it is never taken for it, whoever does the review.
+func (s *Server) selectedCandidate(ctx context.Context, d session.Driver) bool {
+	ref := d.Info().Crew
+	if ref == nil || ref.Lane == nil || ref.Task == "" || ref.Task != ref.Lane.Candidate {
+		return false
+	}
+	return s.laneSelected(ctx, d)
+}
+
 // guided is laneGuided for the caller c, whose selected lane's candidate
 // is named the ticket's comment as the route serves it (laneSelected).
 func (c guideCaller) guided(pattern string) bool {
@@ -283,7 +295,7 @@ func (s *Server) laneTicket(w http.ResponseWriter, r *http.Request, ds *dispatch
 // member does (door 8, laneSelected); its reviewer, the other lanes and a
 // lane that cannot be told stay refused.
 func (s *Server) laneComment(ctx context.Context, w http.ResponseWriter, d session.Driver) bool {
-	if _, st := s.laneOf(d); st == noLane || s.laneSelected(ctx, d) {
+	if _, st := s.laneOf(d); st == noLane || s.selectedCandidate(ctx, d) {
 		return false
 	}
 	writeError(w, http.StatusConflict, "lane", "a candidate of a comparison does not comment on its ticket before the selection: say it in your result's summary")

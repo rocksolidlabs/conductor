@@ -1029,7 +1029,7 @@ func (s *Server) sessionCaller(ctx context.Context, d session.Driver) guideCalle
 	c := guideCaller{Kind: "session", Session: id, Scopes: []string{"session"}}
 	_, c.local = d.(*session.Local)
 	_, c.lane = s.laneOf(d)
-	c.selected = c.lane == inLane && s.laneSelected(ctx, d)
+	c.selected = c.lane == inLane && s.selectedCandidate(ctx, d)
 	run, member, inRun := s.runs.MemberOf(id)
 	if !inRun {
 		c.Kinds = append(c.Kinds, "plain")
@@ -1093,7 +1093,12 @@ func (s *Server) turnGrant(id string) ([]string, brakeman.Budget, brakeman.Visib
 	if err != nil {
 		return nil, req.Config.Budget, brakeman.Visibility{}
 	}
-	return grantedActs(req.Config.Permissions, cfg.Permissions), req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
+	acts := grantedActs(req.Config.Permissions, cfg.Permissions)
+	if req.Kind == brakeman.KindCompare {
+		// A compare turn runs no act (compareTurnActs).
+		acts = nil
+	}
+	return acts, req.Config.Budget, bothVisible(req.Config.Visibility, cfg.Visibility)
 }
 
 // admits reports whether the caller c may call op on this server now:

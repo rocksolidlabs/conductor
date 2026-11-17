@@ -11,6 +11,7 @@ import (
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/ext/exttest"
+	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -543,5 +544,108 @@ func TestADraftIsMadeBeforeTheSelectionAlone(t *testing.T) {
 	}
 	if n := len(de.compareRequests(t)); n != before {
 		t.Fatalf("%d compare requests, %d before", n, before)
+	}
+}
+
+// turnAs sends body to path as the Brakeman turn of the session sid.
+func (de *cmpDraftEnv) turnAs(t *testing.T, tok, sid, method, path string, body any) (int, map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	status, _, out := de.callAsTurn(t, tok, sid, method, path, raw)
+	return status, out
+}
+
+// A selection is routed by no Brakeman turn: a turn granted
+// route_decision is refused 409 stale_target before its act is written;
+// and a compare turn runs no act at all, whatever the person granted
+// (403 not_granted, nothing written), its guide naming none.
+func TestABrakemanTurnActsOnNoSelection(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	did := de.selecting(t)
+	de.bk.enable(t, "bk", func(c map[string]any) {
+		c["permissions"].(map[string]any)["act"] = []any{brakeman.ActRouteDecision, brakeman.ActRequestRepair}
+	})
+	id := de.bk.briefing(t)
+	sid, tok, _ := de.bk.turnSession(t, id)
+	de.bk.waitState(t, id, brakeman.StateRunning)
+	route := map[string]any{"opId": "r-1", "expectedRev": de.decisionRev(t, did), "to": map[string]any{"kind": "operator"}}
+	status, out := de.turnAs(t, tok, sid, http.MethodPost, "/api/decisions/"+did+"/route", route)
+	if status != http.StatusConflict || errorCode(out) != "stale_target" {
+		t.Fatalf("a briefing turn's route of the selection: %d %v", status, out)
+	}
+	if r, _ := de.bk.desk.st.Get(id); len(r.Acts) != 0 {
+		t.Fatalf("acts written: %+v", r.Acts)
+	}
+	de.expect(t, "POST", "/api/runs/"+de.bk.runOf(t, sid)+"/stop", nil, http.StatusOK, "")
+	de.bk.slotFree(t)
+
+	status, req := de.bk.ask(t, "compare", map[string]any{"subjects": []string{"run:" + de.run}})
+	if status != http.StatusCreated {
+		t.Fatalf("ask: %d %v", status, req)
+	}
+	id = req["id"].(string)
+	sid, tok, _ = de.bk.turnSession(t, id)
+	de.bk.waitState(t, id, brakeman.StateRunning)
+	route["opId"] = "r-2"
+	repair := map[string]any{"opId": "q-1", "candidate": de.candidate(t, "approach-b"), "base": de.base(t), "verdict": "request_changes", "summary": "Again.", "findings": []map[string]any{changeOf("Name the index.")}}
+	for path, body := range map[string]map[string]any{"/api/decisions/" + did + "/route": route, "/api/dispatch/tickets/CND-1/reviews": repair} {
+		status, out := de.turnAs(t, tok, sid, http.MethodPost, path, body)
+		if status != http.StatusForbidden || errorCode(out) != "not_granted" {
+			t.Fatalf("a compare turn's act on %s: %d %v", path, status, out)
+		}
+	}
+	if r, _ := de.bk.desk.st.Get(id); len(r.Acts) != 0 {
+		t.Fatalf("acts written: %+v", r.Acts)
+	}
+	_, raw, _ := de.callAs(t, tok, "GET", "/api/sessions/"+sid+"/guide?section=operations", nil)
+	for _, op := range []string{brakeman.ActRouteDecision, brakeman.ActRequestRepair} {
+		if strings.Contains(string(raw), `"`+op+`"`) {
+			t.Errorf("a compare turn's guide names %s", op)
+		}
+	}
+}
+
+// Door 8 is the candidate task's: in a crew whose member reviews its own
+// lane's candidate too, the review's session is refused 409 lane after
+// the application while the candidate's own repair session comments.
+func TestTheSelectedCandidatesTaskCommentsNotItsReview(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{shape: func(c *crew.Crew) {
+		for i := range c.Tasks {
+			if c.Tasks[i].ID == "review-b" {
+				c.Tasks[i].Member = "cand-b"
+			}
+		}
+		for i := range c.Members {
+			if c.Members[i].Name == "rev-b" {
+				c.Members = append(c.Members[:i], c.Members[i+1:]...)
+				break
+			}
+		}
+	}})
+	did := de.selecting(t)
+	de.selectB(t, did)
+	out := sendReview(t, de.testEnv, "CND-1", map[string]any{"opId": opID(), "candidate": de.candidate(t, "approach-b"), "base": de.base(t), "verdict": "request_changes", "summary": "Again.", "findings": []map[string]any{changeOf("Name the index.")}, "byName": "Nate", "continueRun": true}, http.StatusCreated, "")
+	run, _ := applicationOf(t, out)["run"].(string)
+	b2 := runningAttempt(t, de.testEnv, run, "approach-b", 2)["sessionId"].(string)
+	de.expectAs(t, de.agentToken(b2), "POST", "/api/sessions/"+b2+"/ticket/comments", map[string]any{"opId": opID(), "body": "mine"}, http.StatusCreated, "")
+	de.expectAs(t, de.agentToken(b2), "POST", "/api/sessions/"+b2+"/task/result", map[string]any{"summary": "named"}, http.StatusCreated, "")
+	rev := runningAttempt(t, de.testEnv, run, "review-b", 2)["sessionId"].(string)
+	de.expectAs(t, de.agentToken(rev), "POST", "/api/sessions/"+rev+"/ticket/comments", map[string]any{"opId": opID(), "body": "the review's"}, http.StatusConflict, "lane")
+}
+
+// Once the server's background wait has begun, a run's change starts no
+// drafts' read: nothing is noted and no drain runs.
+func TestNoDraftIsReadOnceTheServerStops(t *testing.T) {
+	de := newCmpDraftEnv(t, compareOpts{})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	de.srv.WaitBackground(ctx)
+	d := &de.srv.drafts
+	d.runChanged(de.srv, de.run)
+	d.mu.Lock()
+	draining, pending := d.draining, len(d.pending)
+	d.mu.Unlock()
+	if draining || pending != 0 {
+		t.Fatalf("after the background wait: draining %v, %d noted", draining, pending)
 	}
 }
