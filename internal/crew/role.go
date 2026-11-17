@@ -78,7 +78,9 @@ const (
 var RoleStates = []string{RoleIdle, RoleGathering, RoleBriefing, RoleCooling, RolePaused, RoleUnavailable}
 
 // The wake sources: a task that failed with proof, a question open past
-// its threshold, a run that ended or paused, a ticket moved to ready, a
+// its threshold, a run that ended or paused, a ticket moved to ready, an
+// agent's usage reading that warns (docs/plans/capacity.md, PR-8: its
+// subject names the agent and the account by their ids alone), a
 // person's own request, and a configured briefing time.
 const (
 	WakeTaskFailed   = "task_failed"
@@ -86,12 +88,13 @@ const (
 	WakeRunEnded     = "run_ended"
 	WakeRunPaused    = "run_paused"
 	WakeTicketReady  = "ticket_ready"
+	WakeCapacity     = "capacity"
 	WakeRequest      = "request"
 	WakeBriefing     = "briefing"
 )
 
 // WakeSources is every source, in the order the pages list them.
-var WakeSources = []string{WakeTaskFailed, WakeQuestionOpen, WakeRunEnded, WakeRunPaused, WakeTicketReady, WakeRequest, WakeBriefing}
+var WakeSources = []string{WakeTaskFailed, WakeQuestionOpen, WakeRunEnded, WakeRunPaused, WakeTicketReady, WakeCapacity, WakeRequest, WakeBriefing}
 
 // The role's bounds.
 const (

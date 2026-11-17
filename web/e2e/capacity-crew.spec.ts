@@ -599,6 +599,43 @@ test("Brakeman's account is chosen from the accounts of its agent's tool, saved 
   await expect(card.locator('[data-brakeman-account-select]')).toContainText(`${work} (retired)`)
 })
 
+test("a usage reading that warns wakes Brakeman's background role, and the Brakeman page's log names its agent and account", async ({ page, api, state }) => {
+  budget(READ, READ, READ, READ, EXPECT, EXPECT)
+  // Claude Code's Work at the provider's warning, Codex's Team at its rate limit: each panel warns, so each reading wakes the role.
+  const workDir = folder(state.home)
+  writeFileSync(join(workDir, 'stub-usage'), 'warning\n')
+  const workId = await addAccount(api, 'claude', label('wake work'), workDir)
+  const teamDir = folder(state.home)
+  writeFileSync(join(teamDir, 'stub-usage'), 'limit\n')
+  const teamId = await addAccount(api, 'codex', label('wake team'), teamDir)
+  // The role on in the background with its window at its longest: the batch gathers, and no turn starts while the test looks.
+  const saved = (await api.ok<{ config: Record<string, unknown> & { rev: number; wake: Record<string, unknown>; visibility: Record<string, unknown> } }>('GET', '/api/brakeman')).config
+  made.brakeman = saved
+  await api.ok('PUT', '/api/brakeman/config', {
+    rev: saved.rev,
+    config: { ...saved, enabled: true, agentId: 'brakeman-stub', account: '', visibility: { ...saved.visibility, capacity: true }, wake: { ...saved.wake, mode: 'background', windowSeconds: 900 } },
+  })
+  for (const [agent, account] of [
+    ['worker', workId],
+    ['codex', teamId],
+  ] as const) {
+    await api.ok('POST', '/api/capacity/read', { agent, account })
+    await expect
+      .poll(async () => (await api.ok<{ state: string }>('GET', `/api/capacity?agent=${agent}&account=${account}`)).state, { timeout: READ, message: `${agent} on ${account} read` })
+      .toBe('ok')
+  }
+  // Each reading is a wake of the role's log, its subject the key by its ids alone.
+  const roleLog = () => api.ok<{ log: Array<{ source: string; subject?: string; batch?: string }> }>('GET', '/api/brakeman/role?limit=1000').then((r) => r.log)
+  for (const subject of [`capacity:worker/${workId}`, `capacity:codex/${teamId}`]) {
+    await expect.poll(async () => (await roleLog()).find((r) => r.source === 'capacity' && r.subject === subject)?.batch ?? '', { timeout: READ, message: `${subject} woke the role` }).toMatch(/^wb-\d+$/)
+  }
+  await page.goto('/brakeman')
+  const rows = page.locator('[data-brakeman-role] [data-role-row="capacity"]')
+  await expect(rows.filter({ hasText: workId })).toContainText(`An agent neared its usage limit: capacity of worker on ${workId}`, { timeout: EXPECT })
+  await expect(rows.filter({ hasText: workId })).toContainText(/waiting in wb-\d+/)
+  await expect(rows.filter({ hasText: teamId })).toContainText(`An agent neared its usage limit: capacity of codex on ${teamId}`, { timeout: EXPECT })
+})
+
 test("a crew that inherits its yolo setting is drawn with the server's default once it is read, opened from the app-wide palette on a fresh visit", async ({ page, api }) => {
   const crew = await saveCrew(api, label('inherits'), [{ name: 'lead', agentId: 'yolo-login' }], null)
   await page.goto('/agents')

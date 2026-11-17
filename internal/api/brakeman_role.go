@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
+	"github.com/rocksolidlabs/conductor/internal/capacity"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
@@ -29,28 +30,34 @@ import (
 // event-driven: the engine's run changes (a task failed with proof, a run
 // ended or paused), the activity sink (a question open past its
 // threshold), Dispatch's changes (a ticket moved to ready), a person's own
-// request, and the briefing times the loop keeps itself. No source fires
+// request, the capacity readings that warn (docs/plans/capacity.md,
+// PR-8), and the briefing times the loop keeps itself. No source fires
 // for Brakeman's own runs and sessions or for what a turn's request made
-// (its acts, a draft a person made from it). A wake turn is BK1's turn
+// (its acts, a draft a person made from it), nor for a reading of the
+// agent and account Brakeman's own turns launch on. A wake turn is BK1's turn
 // unchanged: a fresh run of a fresh session, which reads its batch
 // through its request, and whose questions page no one (quiet).
 
 // maxRoleLogReply bounds GET /api/brakeman/role's log, in rows.
 const maxRoleLogReply = crew.MaxRoleLog
 
-// maxRoleSources bounds the run ids and question sessions noted between
-// two passes of the role's loop; past it the oldest wait for the next
-// note of theirs (a run's next change, a question's next entry).
+// maxRoleSources bounds the run ids, question sessions and readings
+// noted between two passes of the role's loop; past it the oldest wait
+// for the next note of theirs (a run's next change, a question's next
+// entry, a key's next reading).
 const maxRoleSources = 1000
 
 // roleSources are what the sources noted since the role's last pass:
-// the runs that changed, the sessions whose question opened, and that
-// Dispatch committed a change.
+// the runs that changed, the sessions whose question opened, that
+// Dispatch committed a change, and the capacity readings that warn.
 type roleSources struct {
 	mu        sync.Mutex
 	runs      map[string]bool
 	questions map[string]bool
 	tickets   bool
+	// capacity are the readings that warned (capacityRead), each by its
+	// key and its time alone.
+	capacity map[capacityNote]bool
 	// ticketSeq is how far Dispatch's change feed was read: from its head
 	// as the desk opened (ticketBegun), so what was there before wakes
 	// nothing. ticketTop is the newest commit announced, which the feed is
@@ -78,7 +85,7 @@ type roleSources struct {
 // OnRunChange) and the activity through its sink (activity), which New
 // adds before the engine's.
 func (d *brakemanDesk) openRole() {
-	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, paused: map[string]bool{}, made: map[string]bool{}, asked: map[string]bool{},
+	d.src = &roleSources{runs: map[string]bool{}, questions: map[string]bool{}, capacity: map[capacityNote]bool{}, paused: map[string]bool{}, made: map[string]bool{}, asked: map[string]bool{},
 		ticketPage: 500, ticketPages: 20}
 	d.role = crew.NewRole(brakemanMember, roleRecords{d: d}, d.now)
 	d.role.SetLogger(d.s.log)
@@ -169,6 +176,99 @@ func (d *brakemanDesk) ticketsChanged(changes []dispatch.Change) {
 	d.role.Poke()
 }
 
+// capacityNote is a capacity reading that warned: its key and when it was
+// read, and nothing else of it (no label, folder or figure).
+type capacityNote struct {
+	key capacity.Key
+	at  time.Time
+}
+
+// capacityRead notes a reading of k at at that warns (the capacity desk's
+// onRead, which the cache waits for: nothing here reads or waits).
+func (d *brakemanDesk) capacityRead(k capacity.Key, at time.Time) {
+	d.src.mu.Lock()
+	if len(d.src.capacity) < maxRoleSources {
+		d.src.capacity[capacityNote{key: k, at: at}] = true
+	}
+	d.src.mu.Unlock()
+	d.role.Poke()
+}
+
+// capacityWake is a warning reading's wake: its subject the key by its
+// agent's and account's ids (no reading time, so a key's readings
+// coalesce in a batch), its key the reading's time (each reading fires
+// once).
+func capacityWake(n capacityNote) crew.RoleWake {
+	return crew.RoleWake{Source: crew.WakeCapacity, Subject: brakeman.RefCapacity + ":" + n.key.Agent + "/" + n.key.Account, Key: n.at.UTC().Format(time.RFC3339Nano), At: n.at}
+}
+
+// ownCapacityKey is the key Brakeman's own turns under cfg launch on (the
+// one queuedCapacity makes Brakeman's view of): its configured agent on
+// the account its configured folder is. known is false while the accounts
+// cannot be read for a configured folder.
+func (d *brakemanDesk) ownCapacityKey(cfg brakeman.Config) (k capacity.Key, known bool) {
+	k = capacity.Key{Agent: cfg.AgentID, Account: capacity.DefaultID}
+	if cfg.Account == "" {
+		return k, true
+	}
+	k.Account = session.SourceUnlisted
+	c := d.s.capacity
+	agent, ok := d.s.Catalog().Get(cfg.AgentID)
+	if c == nil || c.st == nil || !ok {
+		return k, true
+	}
+	doc, err := c.st.Accounts()
+	if err != nil {
+		return k, false
+	}
+	k.Account = accountOfFolder(doc, agent, cfg.Account)
+	return k, true
+}
+
+// capacityWakes hands the role a wake for each reading noted that is not
+// of Brakeman's own key (ownCapacityKey) and that the configuration's
+// Capacity class admits (a capacity view is no project's: the class alone
+// admits it). It reports false when a note was kept for the next pass: the
+// accounts could not be read, or a wake could not be written.
+func (d *brakemanDesk) capacityWakes(ctx context.Context, cfg brakeman.Config, adm *refResolver, notes map[capacityNote]bool) bool {
+	if len(notes) == 0 {
+		return true
+	}
+	own, known := d.ownCapacityKey(cfg)
+	if !known {
+		d.s.log.Warn("Brakeman's role could not read the accounts to judge a capacity reading: it tries again")
+		d.keepCapacity(notes)
+		return false
+	}
+	ok := true
+	for n := range notes {
+		if n.key == own {
+			continue
+		}
+		w := capacityWake(n)
+		if !d.admitted(ctx, adm, w.Subject) {
+			continue
+		}
+		if err := d.roleWake(w); err != nil {
+			d.keepCapacity(map[capacityNote]bool{n: true})
+			ok = false
+		}
+	}
+	return ok
+}
+
+// keepCapacity notes again the readings a pass could not take, for the
+// next.
+func (d *brakemanDesk) keepCapacity(notes map[capacityNote]bool) {
+	d.src.mu.Lock()
+	defer d.src.mu.Unlock()
+	for n := range notes {
+		if len(d.src.capacity) < maxRoleSources {
+			d.src.capacity[n] = true
+		}
+	}
+}
+
 // drainSources turns what the sources noted into wakes. What it cannot
 // take now is kept for a later pass, never dropped: a run whose change is
 // not yet committed (settledRun; its commit notes it again), and, with
@@ -177,8 +277,8 @@ func (d *brakemanDesk) ticketsChanged(changes []dispatch.Change) {
 // the configuration's scope or visibility is not taken (admitted).
 func (d *brakemanDesk) drainSources() {
 	d.src.mu.Lock()
-	runs, questions, tickets, asked := d.src.runs, d.src.questions, d.src.tickets, d.src.asked
-	d.src.runs, d.src.questions, d.src.tickets, d.src.asked = map[string]bool{}, map[string]bool{}, false, map[string]bool{}
+	runs, questions, tickets, asked, caps := d.src.runs, d.src.questions, d.src.tickets, d.src.asked, d.src.capacity
+	d.src.runs, d.src.questions, d.src.tickets, d.src.asked, d.src.capacity = map[string]bool{}, map[string]bool{}, false, map[string]bool{}, map[capacityNote]bool{}
 	d.src.mu.Unlock()
 	cfg, err := d.st.Config()
 	if err != nil {
@@ -186,6 +286,7 @@ func (d *brakemanDesk) drainSources() {
 		d.s.log.Warn("Brakeman's role could not read its configuration: it tries again", "err", err)
 		d.keepSources(runs, questions, tickets)
 		d.keepAsked(asked)
+		d.keepCapacity(caps)
 		d.role.Again()
 		return
 	}
@@ -241,6 +342,9 @@ func (d *brakemanDesk) drainSources() {
 	}
 	for sid := range questions {
 		d.holdQuestion(ctx, adm, sid, time.Duration(cfg.Wake.QuestionMinutes)*time.Minute)
+	}
+	if !d.capacityWakes(ctx, cfg, adm, caps) {
+		failed = true
 	}
 	if tickets && !d.readTickets(ctx) {
 		failed = true
@@ -1040,7 +1144,9 @@ func (g refGrant) whole() bool {
 // admitsSubject reports whether the grant admits a wake's subject: its
 // class visible, and, under a scope that narrows, the record it names in
 // the scope as it is now (Scope.Admits); a subject that names nothing (a
-// briefing time's) is admitted. An error when the record cannot be read.
+// briefing time's) is admitted, and so is a capacity reading's under its
+// class alone, as resolveRef admits a capacity: ref (a capacity view is
+// no project's). An error when the record cannot be read.
 func (rr *refResolver) admitsSubject(ctx context.Context, subject string) (bool, error) {
 	if subject == "" {
 		return true, nil
@@ -1049,7 +1155,7 @@ func (rr *refResolver) admitsSubject(ctx context.Context, subject string) (bool,
 	if !rr.grant.sees(refClass(kind)) {
 		return false, nil
 	}
-	if rr.grant.whole() {
+	if rr.grant.whole() || kind == brakeman.RefCapacity {
 		return true, nil
 	}
 	ref, err := brakeman.ParseRef(subject)
@@ -1067,7 +1173,8 @@ func (rr *refResolver) admitsSubject(ctx context.Context, subject string) (bool,
 // scope and visibility its request began under and the configuration's
 // now, together) reads it: the wakes whose subjects the grant admits, a
 // subject that cannot be read now left out; and its overflow, which names
-// no subject, only when the grant narrows nothing a wake is of.
+// no subject, only when the grant narrows nothing a wake is of (a capacity
+// wake's class among them).
 func (rr *refResolver) visibleBatch(ctx context.Context, b crew.Batch) *crew.Batch {
 	out := b
 	// The configuration generation is the role's bookkeeping, not the
@@ -1079,7 +1186,7 @@ func (rr *refResolver) visibleBatch(ctx context.Context, b crew.Batch) *crew.Bat
 			out.Wakes = append(out.Wakes, w)
 		}
 	}
-	if b.Overflow != nil && rr.grant.whole() && rr.grant.sees(brakeman.ClassRuns) && rr.grant.sees(brakeman.ClassSessions) && rr.grant.sees(brakeman.ClassDispatch) {
+	if b.Overflow != nil && rr.grant.whole() && rr.grant.sees(brakeman.ClassRuns) && rr.grant.sees(brakeman.ClassSessions) && rr.grant.sees(brakeman.ClassDispatch) && rr.grant.sees(brakeman.ClassCapacity) {
 		o := *b.Overflow
 		out.Overflow = &o
 	}
