@@ -35,6 +35,22 @@ type compareState struct {
 // is none; once every lane has, and the settled set is not the one last
 // written, compare.settled is written with the set, in this change.
 func (e *Engine) compareStep(r *run) {
+	// The selection kept current first: a lane changed since supersedes it
+	// (compare_select.go).
+	e.selectStep(r)
+	// The lanes settle until a selection of the chain is applied, after
+	// which nothing of the comparison is settled again.
+	if !r.selectionApplied() {
+		e.settleLanes(r)
+	}
+	// Then the selection opened once every lane has ended, and the run
+	// settled (compare_select.go).
+	e.selectEnd(r)
+}
+
+// settleLanes is the settling of compareStep: compare.settled written
+// once for each settled set. The caller holds e.mu, inside a change.
+func (e *Engine) settleLanes(r *run) {
 	for _, cd := range r.compare.Candidates {
 		if !r.laneEnded(cd.Task) {
 			r.cmp.settled = nil

@@ -179,6 +179,9 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
 	case errors.Is(err, crew.ErrRunContinued):
 		writeError(w, http.StatusConflict, crew.RefusalRunContinued, err.Error())
+	case errors.Is(err, crew.ErrNotSelected):
+		// A comparison's lane the applied selection did not select.
+		writeError(w, http.StatusConflict, crew.RefusalNotSelected, err.Error())
 	case errors.Is(err, crew.ErrTaskState):
 		writeError(w, http.StatusConflict, "task_state", err.Error())
 	case errors.Is(err, crew.ErrCommandConflict):
