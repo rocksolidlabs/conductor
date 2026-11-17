@@ -338,12 +338,13 @@ func TestTheLastLaneOpensTheSelectionBeforeTheRunEnds(t *testing.T) {
 		if countKind(evs, "run.finished") != 1 || countKind(evs, "decision.opened") != 0 {
 			t.Fatalf("events: %d run.finished, %d decision.opened", countKind(evs, "run.finished"), countKind(evs, "decision.opened"))
 		}
-		// The end is the cancel's change: its command event comes after it.
+		// The end is the cancel's change: written after its command's event
+		// and its settling's, nothing of another change between.
 		i := slices.IndexFunc(evs, func(ev ledger.EventRow) bool { return ev.Kind == "run.finished" })
 		j := slices.IndexFunc(evs, func(ev ledger.EventRow) bool {
 			return ev.Kind == "command.cancel" && strings.Contains(ev.Payload, `"c2"`)
 		})
-		if j < i || j-i > 3 {
+		if j < 0 || i < j || slices.ContainsFunc(evs[j+1:i], func(ev ledger.EventRow) bool { return ev.Kind != "compare.settled" }) {
 			t.Fatalf("run.finished at %d, the last cancel's command at %d", i, j)
 		}
 	})

@@ -138,35 +138,21 @@ func (r *run) selectionLanes() (ended bool, opts []SettledCandidate) {
 	if r.compare == nil {
 		return false, nil
 	}
+	// The lanes as the settling reads them (compare_step.go): one rule of
+	// a lane's end and of its shown candidate.
 	doomed := r.doomed()
 	ended = true
-	for _, t := range r.tasks {
-		if _, ok := r.lanes[t.def.ID]; ok && !finished(t) && !doomed[t] {
+	for _, cd := range r.compare.Candidates {
+		if !r.laneEndedIn(cd.Task, doomed) {
 			ended = false
 		}
 	}
-	for _, cd := range r.compare.Candidates {
-		t := r.task(cd.Task)
-		if t == nil || t.state != ledger.TaskSucceeded || t.result == nil || t.result.commit == "" {
-			continue
+	for _, c := range r.settledSet() {
+		if c.Commit != "" {
+			opts = append(opts, c)
 		}
-		c := SettledCandidate{Task: t.def.ID, Run: r.id, Attempt: t.result.attempt, Commit: t.result.commit}
-		if run, n, ok := importedRef(t.imported); ok {
-			c.Run, c.Attempt = run, n
-		}
-		opts = append(opts, c)
 	}
 	return ended, opts
-}
-
-// importedRef parses an imported result's reference, "<run>/<task>/<n>".
-func importedRef(ref string) (run string, n int, ok bool) {
-	parts := strings.Split(ref, "/")
-	if len(parts) != 3 || parts[0] == "" {
-		return "", 0, false
-	}
-	n, err := strconv.Atoi(parts[2])
-	return parts[0], n, err == nil && n > 0
 }
 
 // waitingSelection is the run's selection that is open, or answered and
@@ -212,10 +198,8 @@ func sameCands(cands []*SettledCandidate, opts []SettledCandidate) bool {
 func (r *run) laneMoved(d *decision, opts []SettledCandidate) string {
 	doomed := r.doomed()
 	for _, cd := range r.compare.Candidates {
-		for _, t := range r.tasks {
-			if r.lanes[t.def.ID] == cd.Task && !finished(t) && !doomed[t] {
-				return fmt.Sprintf("%s runs again", cd.Task)
-			}
+		if !r.laneEndedIn(cd.Task, doomed) {
+			return fmt.Sprintf("%s runs again", cd.Task)
 		}
 	}
 	for _, cd := range r.compare.Candidates {
@@ -285,10 +269,8 @@ func (e *Engine) selectEnd(r *run) {
 	e.settleRun(r)
 	r.sel.stepping = false
 	if was == "" && r.outcome != "" {
-		outcome := r.outcome
-		r.later(func(ltx LedgerTx) error {
-			return ltx.Event("run.finished", map[string]any{"outcome": outcome})
-		}, nil)
+		// After the change's own events and its settling's.
+		r.cmp.events = append(r.cmp.events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 	}
 }
 
