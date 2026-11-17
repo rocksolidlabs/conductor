@@ -1,5 +1,7 @@
+import type { LinkRead } from '~/composables/useDispatch'
 import { cutBytes } from './quote'
 import { shortCommit } from './dispatchPlans'
+import { checksWords } from './tracker'
 
 /**
  * A person's review of one candidate (Program item RV1, docs/plans/review-repair.md, "web/app"): a note made from a selection in the
@@ -62,10 +64,14 @@ export interface DraftNote {
 export type FailureClass = 'code' | 'infrastructure' | 'flaky' | 'cancelled' | 'unavailable'
 export const FAILURE_CLASSES: readonly FailureClass[] = ['code', 'infrastructure', 'flaky', 'cancelled', 'unavailable']
 
-/** What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. */
+/**
+ * What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. A receipt of
+ * the ledger is Yardmaster's; an external one is a CI job on GitHub of a delivery's pull request (IN1a PR-10), which the server reads
+ * fresh again when the review is sent.
+ */
 export interface CheckChoice {
-  source: 'ledger'
-  /** `<run>/<task>/<n>/<phase>/<id>/<k>`. */
+  source: 'ledger' | 'external'
+  /** `<run>/<task>/<n>/<phase>/<id>/<k>`, or `github:<host>/<owner>/<repo>/check-runs/<n>` for an external one. */
   receipt: string
   chosen?: FailureClass
   quote?: string
@@ -185,6 +191,12 @@ export interface ChangeRequest {
  * person's class and quote. The members Go's omitempty leaves out are optional here; `stable` is always written.
  */
 export interface RequestedCheck {
+  /** An external receipt's: its source, the job's name, conclusion, page and app. */
+  source?: string
+  name?: string
+  conclusion?: string
+  url?: string
+  app?: string
   receipt: string
   run?: string
   task?: string
@@ -228,16 +240,41 @@ export function requestedCheckOf(c: CheckRef): RequestedCheck {
   if (c.logBytes) r.logBytes = c.logBytes
   if (c.tail) r.tail = c.tail
   if (c.class) r.class = c.class
+  if (c.source === 'external') {
+    r.source = c.source
+    if (c.name) r.name = c.name
+    if (c.conclusion) r.conclusion = c.conclusion
+    if (c.url) r.url = c.url
+    if (c.app) r.app = c.app
+  }
   return r
 }
+
+/** The bounds of an external job's texts as the store keeps them (dispatch.MaxCheckName, a page's MaxExternalURL). */
+const MAX_JOB_NAME = 200
+const MAX_JOB_PAGE = 2048
 
 /**
  * A check note's receipt at its largest, for a note whose receipt the draft does not hold (a draft kept before it did): the parts its
  * identity names, a 64-hex subject and log hash, an exit, a signal, the failure's words and the output's tail at their bounds, the class.
  */
 function worstCheck(receipt: string): RequestedCheck {
-  const [run, task, n, phase, id, k] = receipt.split('/')
   const hex = 'f'.repeat(64)
+  if (receipt.startsWith('github:')) {
+    return {
+      source: 'external',
+      name: 'x'.repeat(MAX_JOB_NAME),
+      conclusion: 'action_required',
+      url: 'x'.repeat(MAX_JOB_PAGE),
+      app: 'x'.repeat(MAX_JOB_NAME),
+      receipt,
+      subject: hex,
+      stable: false,
+      tail: 'x'.repeat(MAX_CHECK_EXCERPT),
+      class: 'infrastructure',
+    }
+  }
+  const [run, task, n, phase, id, k] = receipt.split('/')
   return {
     receipt,
     run,
@@ -314,6 +351,7 @@ export const kib = (n: number) => Math.ceil(n / 1024)
 /** Where a note is, in words: "stub.txt:3–4 (base)", "stub.txt (the whole file)", "the candidate as a whole". */
 export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' | 'to' | 'check' | 'checkName'>): string {
   if (n.kind === 'general') return 'the candidate as a whole'
+  if (n.kind === 'check' && n.check?.source === 'external') return `${n.checkName || 'a CI job'} failed on GitHub`
   if (n.kind === 'check') return `${n.checkName || 'the check'} failed (${n.check?.receipt ?? 'its receipt'})`
   const side = n.side === 'base' ? ' (base)' : ''
   if (n.kind === 'file') return `${n.path} (the whole file)${side}`
@@ -579,6 +617,12 @@ export interface CheckRef extends CheckChoice {
   tail: string
   class: FailureClass
   previous?: { attempt: number; state: string; stage?: string; commit?: string }
+  /** An external receipt's (a CI job on GitHub): the job's name, conclusion, page and app, and the commit it tested. */
+  name?: string
+  conclusion?: string
+  url?: string
+  headSha?: string
+  app?: string
 }
 
 /**
@@ -662,8 +706,8 @@ export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string
     intent: 'change',
     severity: 'major',
     message: message.trim() || p.finding.message,
-    check: { source: 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
-    checkName: `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
+    check: { source: ch.source === 'external' ? 'external' : 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
+    checkName: ch.source === 'external' ? `CI job ${ch.name || ''}`.trim() : `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
     measured: requestedCheckOf(ch),
   }
 }
@@ -914,4 +958,52 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
 export function latestReviewable(runs: readonly ReviewableRun[]): { value: string; label: string } | null {
   const b = rankCandidates(runs).find((x) => !x.c.withdrawn)
   return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}${untimedWords(b)}` } : null
+}
+
+/** The conclusions of a CI job on GitHub that are a failure (the tracker's Check.Failed): only such a job is prepared for a repair. */
+const JOB_FAILED = ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'error']
+
+/** A delivery's CI job as the failed-check panel lists it: its id, name, state in words, whether a repair can be prepared from it. */
+export interface ExternalJob {
+  id: string
+  name: string
+  /** "failed (failure)", "passed", "running", "a commit status". */
+  state: string
+  failed: boolean
+  /** Prepare a repair is offered: a failed GitHub Actions job or check run (a commit status is no job a repair can name). */
+  preparable: boolean
+}
+
+/**
+ * The CI jobs of a delivery's pull request at its head commit, from the link's read, as the failed-check panel lists them (IN1a PR-10):
+ * failed first, then the rest in the read's order; a job is preparable when it failed and is a GitHub Actions job or another app's check
+ * run. `incomplete` is the read's own words when it was cut ("incomplete: N checks not read, see them on GitHub", utils/tracker's
+ * checksWords), and `allPassed` is never true for a cut read, nor for a read with no job.
+ */
+export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>): { jobs: ExternalJob[]; incomplete: string; allPassed: boolean } {
+  const jobs = read.checks.map((c): ExternalJob => {
+    const failed = JOB_FAILED.includes(c.conclusion ?? '')
+    const kind = c.id.split(':')[0]
+    const done = c.status === 'completed'
+    const state = failed ? `failed (${c.conclusion})` : !done ? (c.status === 'pending' || c.status === 'queued' ? 'waiting' : 'running') : c.conclusion === 'success' ? 'passed' : c.conclusion || 'done'
+    return { id: c.id, name: c.name, state: kind === 'status' ? `${state}, a commit status` : state, failed, preparable: failed && (kind === 'job' || kind === 'run') }
+  })
+  jobs.sort((a, b) => Number(b.failed) - Number(a.failed))
+  const counts = {
+    passed: read.checks.filter((c) => c.status === 'completed' && ['success', 'neutral', 'skipped'].includes(c.conclusion ?? '')).length,
+    failed: jobs.filter((j) => j.failed).length,
+    pending: read.checks.filter((c) => c.status !== 'completed').length,
+    other: 0,
+    incomplete: !!read.incomplete,
+    omitted: read.incomplete?.omitted ?? 0,
+  }
+  counts.other = read.checks.length - counts.passed - counts.failed - counts.pending
+  const w = checksWords(counts)
+  return { jobs, incomplete: w.incomplete, allPassed: w.allPassed }
+}
+
+/** The host an external receipt's job is on (`github:<host>/<owner>/<repo>/check-runs/<n>`), '' for a receipt of the ledger. */
+export function externalHost(receipt: string): string {
+  const m = /^github:([^/]+)\//.exec(receipt)
+  return m ? m[1]! : ''
 }
