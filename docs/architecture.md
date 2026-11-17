@@ -1021,13 +1021,49 @@ shape (`briefs`: in words and as its JSON Schema). A plain
 session's guide is not an attempt's, and a turn's lists its `observe`
 reads and none of the crew or ticket tools.
 
+**What a page reads without a turn** (#993). A kept brief gets a digest
+(`internal/brakeman/digest.go`): its title, a reading of at most 280
+characters derived from its summary's first paragraph as plain text (cut at
+a word with `…`, the brief itself whole), its items counted by kind, and the
+runs, tasks, sessions and tickets its items cite, at most 20 of each. The
+digest is a sibling document, `requests/br-<n>-digest.json`, written after
+the brief's refs and before the request, so the request's and the brief's
+documents do not change by a byte and an older build neither reads nor
+removes it; a brief kept before it is digested when listed (the owner writes
+it back, a read-only store only derives it), and digests are held in memory
+until a prune. The admin's list (`brakeman_list.go`) filters by `kind`, by
+what a brief holds (`has`: a decision, a proposal, a draft, any brief), by
+`about` (one run, task, session or ticket ref, matched as `subject` when a
+subject is it or under it and as `cited` when the digest cites it, by the one
+table `testdata/about-table.json` that Go and the app's vitest both read;
+`about.go`) and by a word (`q`, over the id, the note, the subjects and the
+digest's title, reading and citations), and answers each row with its
+digest. A turn under way sends `brakeman_progress` on `GET /api/events`
+(`brakeman_progress.go`) after each counted read: the reads used of its
+budget, its start and deadline (from `Store.Reserved`) and what it read
+last, at most one a second with one trailing send, at most 768 bytes, as
+droppable as chat and to no sink, never for a closed request; `GET
+/api/brakeman` carries the same `progress` and `nextBriefing`, the role's
+next briefing time (`crew.NextBriefing`). `GET /api/brakeman/since`
+(`brakeman_since.go`) counts, since the last briefing kept (or the last
+day, or a given time), the runs that ended, the tasks that failed, the
+tickets made ready and the questions open, at most five refs of each,
+leaving Brakeman's own runs out; it reads the configuration only for where
+the last briefing starts, writes nothing and is kept 5 s. The opened marks
+(`brakeman_opened.go`, `internal/brakeman/opened.go`) are the briefs each
+credential's actor (`actorOf`: the workbench token's `admin`, an identity's
+`user:<subject>`) has not yet opened, counted from its first read; a mark
+is a set union, the change sends `brakeman_opened` with `{}`, and people who
+share one token share one count.
+
 **The records** are JSON documents under the data directory's `brakeman/`
 (0700; `internal/brakeman`, which has no HTTP, no session, no process and
 no import of `internal/crew`): `config.json`, `state.json` (the last
 number, the op ids, the day's charges), per request,
-`requests/br-<n>.json` with its brief, the brief's resolutions, the
-turn's read log and a pending make's input beside it, each measured
-before it is written, and `folders/<account>/`, the folder a turn runs in
+`requests/br-<n>.json` with its brief, the brief's resolutions and digest,
+the turn's read log and a pending make's input beside it, each measured
+before it is written, `opened.json` (each actor's opened marks, at most 32
+actors of 500 marks, 512 KiB), and `folders/<account>/`, the folder a turn runs in
 in place of the home folder (`default` for the agent's default login, else
 32 hex characters of the account's SHA-256), kept across turns; the newest
 500 requests are kept, and every open or pinned one. The desk owns them while it holds `brakeman/owner.lock`, taken
