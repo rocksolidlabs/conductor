@@ -392,7 +392,11 @@ What the item shipped, row by row (each row's issue says what it verified):
   agent and account Brakeman's own turns launch on (its configured agent on
   the account its configured folder is) wakes nothing: a warning there would
   spend a turn on the login that is near its limit. A batch's overflow, which
-  names no subject, is read only by a turn that also sees Capacity. Capacity
+  names no subject, is counted by source, and a turn is told of the wakes of
+  the sources whose class it sees: a configuration with Capacity off (every
+  one saved before Capacity was a class) reads its runs', sessions' and
+  Dispatch's part (`TestAnOverflowIsReadBySourceTheGrantSees`,
+  `TestAnOverflowIsCountedBySource`). Capacity
   still acts on nothing. Tests: `TestCapacityWarningWakesRole` (one wake at
   warning, a second reading inside the window coalesced with a count of two,
   none at normal, the turn's batch reading the wake by its ids, and not at

@@ -1172,9 +1172,9 @@ func (rr *refResolver) admitsSubject(ctx context.Context, subject string) (bool,
 // visibleBatch is the batch b as a turn under the resolver's grant (the
 // scope and visibility its request began under and the configuration's
 // now, together) reads it: the wakes whose subjects the grant admits, a
-// subject that cannot be read now left out; and its overflow, which names
-// no subject, only when the grant narrows nothing a wake is of (a capacity
-// wake's class among them).
+// subject that cannot be read now left out; and, under a scope that
+// narrows nothing, the part of its overflow (which names no subject) the
+// grant's classes see (visibleOverflow).
 func (rr *refResolver) visibleBatch(ctx context.Context, b crew.Batch) *crew.Batch {
 	out := b
 	// The configuration generation is the role's bookkeeping, not the
@@ -1186,9 +1186,87 @@ func (rr *refResolver) visibleBatch(ctx context.Context, b crew.Batch) *crew.Bat
 			out.Wakes = append(out.Wakes, w)
 		}
 	}
-	if b.Overflow != nil && rr.grant.whole() && rr.grant.sees(brakeman.ClassRuns) && rr.grant.sees(brakeman.ClassSessions) && rr.grant.sees(brakeman.ClassDispatch) && rr.grant.sees(brakeman.ClassCapacity) {
-		o := *b.Overflow
-		out.Overflow = &o
+	if b.Overflow != nil && rr.grant.whole() {
+		out.Overflow = visibleOverflow(*b.Overflow, rr.grant.sees)
 	}
 	return &out
+}
+
+// overflowClasses are the classes an overflow's wakes may be of, read
+// when it says nothing of its sources.
+var overflowClasses = []string{brakeman.ClassRuns, brakeman.ClassSessions, brakeman.ClassDispatch, brakeman.ClassCapacity}
+
+// wakeClass is the visibility class a wake source's subjects are of: ""
+// for a source whose wakes name no subject (a person's request, a
+// briefing time), ok false for a source this build does not know.
+func wakeClass(source string) (class string, ok bool) {
+	switch source {
+	case crew.WakeTaskFailed, crew.WakeRunEnded, crew.WakeRunPaused:
+		return brakeman.ClassRuns, true
+	case crew.WakeQuestionOpen:
+		return brakeman.ClassSessions, true
+	case crew.WakeTicketReady:
+		return brakeman.ClassDispatch, true
+	case crew.WakeCapacity:
+		return brakeman.ClassCapacity, true
+	case crew.WakeRequest, crew.WakeBriefing:
+		return "", true
+	}
+	return "", false
+}
+
+// overflowBySource reports whether o's tally says which sources its
+// wakes are of: its sources add up to its count, each one this build
+// knows.
+func overflowBySource(o crew.Overflow) bool {
+	if !o.Tallied() {
+		return false
+	}
+	for src := range o.Sources {
+		if _, ok := wakeClass(src); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// visibleOverflow is the part of o a grant whose classes sees admits is
+// told of, nil for none: the wakes of the sources whose class it sees,
+// counted with their own first and last times and kept by source. An
+// overflow with no tally to trust (overflowBySource: one kept by an
+// older server) is read whole or not at all: whole only by a grant that
+// sees every class a wake may be of.
+func visibleOverflow(o crew.Overflow, sees func(class string) bool) *crew.Overflow {
+	if !overflowBySource(o) {
+		for _, c := range overflowClasses {
+			if !sees(c) {
+				return nil
+			}
+		}
+		whole := o
+		whole.Sources = nil
+		return &whole
+	}
+	var out *crew.Overflow
+	for _, src := range crew.WakeSources {
+		p, ok := o.Sources[src]
+		if !ok || p.Count == 0 {
+			continue
+		}
+		if c, _ := wakeClass(src); c != "" && !sees(c) {
+			continue
+		}
+		if out == nil {
+			out = &crew.Overflow{First: p.First, Last: p.Last, Sources: map[string]crew.OverflowPart{}}
+		}
+		out.Count += p.Count
+		if p.First.Before(out.First) {
+			out.First = p.First
+		}
+		if p.Last.After(out.Last) {
+			out.Last = p.Last
+		}
+		out.Sources[src] = p
+	}
+	return out
 }

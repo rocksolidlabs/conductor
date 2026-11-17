@@ -221,8 +221,9 @@ func TestACapacityWarningWakesOnlyWhereCapacityIsSeen(t *testing.T) {
 // TestACapacitySubjectIsAdmittedByItsClassAlone: under a scope that
 // narrows, a capacity wake's subject is admitted by the Capacity class
 // alone and refused without it, and no other kind of subject is admitted
-// so; a batch's overflow, which names no subject, is read only by a grant
-// that sees every class a wake may be of, Capacity among them.
+// so; a batch's overflow with no tally by source (kept by an older
+// server), which names no subject, is read only by a grant that sees
+// every class a wake may be of, Capacity among them.
 func TestACapacitySubjectIsAdmittedByItsClassAlone(t *testing.T) {
 	b := brakemanEnv(t, nil)
 	all := brakeman.Visibility{Runs: true, Dispatch: true, Sessions: true, Capacity: true}
@@ -256,6 +257,84 @@ func TestACapacitySubjectIsAdmittedByItsClassAlone(t *testing.T) {
 	}
 	if got := batchClasses(&overflowed); !slices.Contains(got, brakeman.ClassCapacity) {
 		t.Fatalf("an overflow's classes: %v", got)
+	}
+}
+
+// TestAnOverflowIsReadBySourceTheGrantSees: under a scope that narrows
+// nothing, a turn is told of the overflow's wakes of the sources whose
+// class its grant sees, counted with their own times, and its footprint
+// holds those classes alone; a configuration with Capacity off (every one
+// saved before Capacity was a class) still reads the count of its runs',
+// sessions' and Dispatch's wakes. An overflow whose tally cannot be
+// trusted (none, kept by an older server; one short of its count; a
+// source this build does not know) is read whole by a grant that sees
+// every class a wake may be of, and by no other.
+func TestAnOverflowIsReadBySourceTheGrantSees(t *testing.T) {
+	b := brakemanEnv(t, nil)
+	ctx := context.Background()
+	read := func(vis brakeman.Visibility, sc brakeman.Scope, o crew.Overflow) *crew.Overflow {
+		batch := crew.Batch{ID: "wb-1", Wakes: []crew.BatchWake{}, Overflow: &o}
+		return b.srv.wakeResolver(b.desk.st, brakeman.Config{Visibility: vis, Scope: sc}).visibleBatch(ctx, batch).Overflow
+	}
+	t0 := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	part := func(n, first, last int) crew.OverflowPart {
+		return crew.OverflowPart{Count: n, First: at(first), Last: at(last)}
+	}
+	tallied := crew.Overflow{Count: 7, First: at(1), Last: at(9), Sources: map[string]crew.OverflowPart{
+		crew.WakeTaskFailed:   part(2, 3, 4),
+		crew.WakeQuestionOpen: part(1, 5, 5),
+		crew.WakeCapacity:     part(3, 1, 9),
+		crew.WakeBriefing:     part(1, 6, 6),
+	}}
+	all := brakeman.Visibility{Runs: true, Dispatch: true, Sessions: true, Capacity: true}
+	beforeCapacity := brakeman.Visibility{Runs: true, Dispatch: true, Sessions: true}
+
+	got := read(beforeCapacity, brakeman.Scope{}, tallied)
+	if got == nil || got.Count != 4 || !got.First.Equal(at(3)) || !got.Last.Equal(at(6)) || !got.Tallied() {
+		t.Fatalf("Capacity off: %+v, want the runs', sessions' and the briefing's 4 between 3 s and 6 s", got)
+	}
+	if _, ok := got.Sources[crew.WakeCapacity]; ok {
+		t.Fatalf("Capacity off: the capacity wakes' part is told: %+v", got.Sources)
+	}
+	if classes := batchClasses(&crew.Batch{Overflow: got}); !slices.Equal(classes, []string{brakeman.ClassRuns, brakeman.ClassSessions}) {
+		t.Fatalf("Capacity off, the footprint: %v", classes)
+	}
+	if got := read(all, brakeman.Scope{}, tallied); got == nil || got.Count != 7 || !got.First.Equal(at(1)) || !got.Last.Equal(at(9)) {
+		t.Fatalf("every class seen: %+v", got)
+	} else if classes := batchClasses(&crew.Batch{Overflow: got}); !slices.Equal(classes, []string{brakeman.ClassRuns, brakeman.ClassSessions, brakeman.ClassCapacity}) {
+		t.Fatalf("every class seen, the footprint: %v", classes)
+	}
+	if got := read(brakeman.Visibility{Runs: true}, brakeman.Scope{}, tallied); got == nil || got.Count != 3 {
+		t.Fatalf("runs alone: %+v, want the failures' 2 and the briefing's 1", got)
+	}
+	runsOnly := crew.Overflow{Count: 2, First: at(3), Last: at(4), Sources: map[string]crew.OverflowPart{crew.WakeTaskFailed: part(2, 3, 4)}}
+	if got := read(brakeman.Visibility{Dispatch: true, Capacity: true}, brakeman.Scope{}, runsOnly); got != nil {
+		t.Fatalf("no source's class seen: %+v", got)
+	}
+	if got := read(all, brakeman.Scope{}, runsOnly); got == nil || slices.Contains(batchClasses(&crew.Batch{Overflow: got}), brakeman.ClassCapacity) {
+		t.Fatalf("an overflow of runs alone marks Capacity: %+v", got)
+	}
+	if got := read(all, brakeman.Scope{Crews: []string{brakemanMember}}, tallied); got != nil {
+		t.Fatalf("a narrowed scope: %+v", got)
+	}
+
+	// No tally to trust: whole under every class, nothing under fewer, and the footprint every class.
+	short := tallied
+	short.Count = 8
+	unknown := crew.Overflow{Count: 1, First: at(1), Last: at(1), Sources: map[string]crew.OverflowPart{"later_source": part(1, 1, 1)}}
+	for name, o := range map[string]crew.Overflow{"none": {Count: 3, First: at(1), Last: at(2)}, "short": short, "unknown": unknown} {
+		if got := read(beforeCapacity, brakeman.Scope{}, o); got != nil {
+			t.Errorf("%s: read with Capacity off: %+v", name, got)
+		}
+		got := read(all, brakeman.Scope{}, o)
+		if got == nil || got.Count != o.Count || got.Sources != nil {
+			t.Errorf("%s: under every class: %+v", name, got)
+			continue
+		}
+		if classes := batchClasses(&crew.Batch{Overflow: got}); !slices.Equal(classes, []string{brakeman.ClassRuns, brakeman.ClassDispatch, brakeman.ClassSessions, brakeman.ClassCapacity}) {
+			t.Errorf("%s: the footprint: %v", name, classes)
+		}
 	}
 }
 
