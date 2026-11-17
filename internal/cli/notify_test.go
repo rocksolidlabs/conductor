@@ -36,6 +36,8 @@ func startNotifyServer(t *testing.T) *notifyServer {
 	t.Cleanup(srv.Close)
 	t.Setenv("CONDUCTOR_NOTIFY_URL", srv.URL+"/api/sessions/s1/attention")
 	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "agent-token")
+	// A test run inside a hosted session reports to no host of its own.
+	t.Setenv("CONDUCTOR_HOST_SOCKET", "")
 	return ns
 }
 
