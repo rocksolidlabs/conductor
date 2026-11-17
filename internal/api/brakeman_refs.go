@@ -615,14 +615,17 @@ func (rr *refResolver) lookupCapture(ctx context.Context, ref brakeman.Ref) (ref
 const captureLive = "live"
 
 // captureItem is the scope item a capture is admitted as, read from what
-// it recorded at its save (dispatch.CaptureOf), deleted or not: an
-// attempt's capture as its run, with the crew, repository and project the
-// capture recorded; a link's (url) as nothing, so only a grant that scopes
-// no run, crew, repository or project admits it. While the run is still
-// held or in the ledger, the run as it is now must be admitted too: the
-// item given is then the run's own when the grant refuses it, so neither
-// a run moved out of the grant nor a capture recorded outside it is
-// admitted. found false for no such capture.
+// it recorded at its save (dispatch.CaptureOf): an attempt's capture as
+// its run, with the crew, repository and project the capture recorded; a
+// link's (url) as nothing, so only a grant that scopes no run, crew,
+// repository or project admits it. While the run is still held or in the
+// ledger, the run as it is now must be admitted too: the item given is
+// then the run's own when the grant refuses it, so neither a run moved
+// out of the grant nor a capture recorded outside it is admitted. A
+// deleted capture keeps no scope (its tombstone hides it): it is admitted
+// as its run is now, and once the run is gone as what the run's id says
+// (its crew), which no grant of repositories or projects admits. found
+// false for no such capture.
 func (rr *refResolver) captureItem(ctx context.Context, ds *dispatch.Store, id string) (brakeman.ScopeItem, bool, error) {
 	of, err := ds.CaptureOf(ctx, id)
 	switch {
@@ -636,14 +639,14 @@ func (rr *refResolver) captureItem(ctx context.Context, ds *dispatch.Store, id s
 		return item, true, nil
 	}
 	item.Run, item.Crew, item.Repo, item.Project = of.Run, cmpOr(of.Scope.Crew, crewOfRun(of.Run)), of.Scope.Repo, of.Scope.Project
-	if !rr.grant.admits(item) {
+	if !of.Deleted && !rr.grant.admits(item) {
 		return item, true, nil
 	}
 	r, err := rr.run(ctx, of.Run)
 	if err != nil {
 		return brakeman.ScopeItem{}, false, err
 	}
-	if r.found && !rr.grant.admits(r.item) {
+	if (r.found && !rr.grant.admits(r.item)) || of.Deleted {
 		return r.item, true, nil
 	}
 	return item, true, nil

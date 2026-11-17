@@ -3,11 +3,13 @@ package dispatch
 import "context"
 
 // CaptureOf is what a capture was taken of, as its row recorded it at
-// the save, deleted or not: its origin's kind (OriginAttempt or
-// OriginURL), the run, task and attempt of an attempt's, and its scope
-// (the run's crew, repository and project then). A read that admits a
+// the save: its origin's kind (OriginAttempt or OriginURL), the run, task
+// and attempt of an attempt's, and, while it is live, its scope (the
+// run's crew, repository and project then). A deleted one gives its
+// origin alone, what every send of it froze in its document, and no
+// scope: what the tombstone hides stays hidden. A read that admits a
 // capture by what it is of (a Brakeman turn's) reads this, never its
-// sends' targets, and a delete leaves it as it was.
+// sends' targets.
 type CaptureOf struct {
 	Kind    string
 	Run     string
@@ -34,6 +36,9 @@ func (s *Store) CaptureOf(ctx context.Context, id string) (CaptureOf, error) {
 		}
 		o := c.Origin
 		of = CaptureOf{Kind: o.Kind, Run: o.Run, Task: o.Task, Attempt: o.Attempt, Scope: c.Scope, Deleted: !c.DeletedAt.IsZero()}
+		if of.Deleted {
+			of.Scope = CaptureScope{}
+		}
 		return nil
 	})
 	return answer(of, err)

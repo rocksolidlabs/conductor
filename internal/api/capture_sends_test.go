@@ -838,14 +838,16 @@ func TestBrakemanReadsACaptureUnderItsDispatchClass(t *testing.T) {
 // CND a capture of team's run (CND) is read, one of other's (OTH) refused
 // though it was sent to CND's ticket, a link's capture refused (it is of
 // no project), and a capture of a run gone is admitted by what it
-// recorded; a scope narrowed between two reads refuses the second; an
-// unscoped grant reads the link's.
+// recorded; once that capture is deleted, its tombstone keeps no scope
+// and its frozen send is refused under the project (fail closed); a scope
+// narrowed between two reads refuses the second; an unscoped grant reads
+// the link's and the deleted one's frozen send.
 func TestCaptureAdmissionFollowsTheScope(t *testing.T) {
 	f := newObsFixture(t)
 	team, teamSend := f.obsCapture(t, f.run, "CND")
 	other, otherSend := f.obsCapture(t, f.other, "OTH")
 	link, _ := f.obsCapture(t, "", "")
-	gone, _ := f.obsCapture(t, "gone-0000cccc", "CND")
+	gone, goneSend := f.obsCapture(t, "gone-0000cccc", "CND")
 	goneElsewhere, _ := f.obsCapture(t, "gone-0000dddd", "OTH")
 	f.turn(t, func(c map[string]any) { c["scope"] = map[string]any{"projects": []string{"CND"}} })
 	for path, status := range map[string]int{
@@ -863,6 +865,8 @@ func TestCaptureAdmissionFollowsTheScope(t *testing.T) {
 		}
 		f.expectRead(t, path, status, code)
 	}
+	f.expect(t, "POST", "/api/captures/"+gone+"/delete", map[string]any{"opId": "gone-delete"}, http.StatusOK, "")
+	f.expectRead(t, "/api/captures/"+gone+"/sends/"+goneSend, http.StatusForbidden, "outside_scope")
 	// Narrowed between two reads: a run's scope the capture is not of.
 	f.configure(t, func(c map[string]any) {
 		c["scope"] = map[string]any{"projects": []string{"CND"}, "runs": []string{f.other}}
@@ -871,6 +875,7 @@ func TestCaptureAdmissionFollowsTheScope(t *testing.T) {
 	f.again(t, func(c map[string]any) { c["scope"] = map[string]any{} })
 	f.expectRead(t, "/api/captures/"+link, http.StatusOK, "")
 	f.expectRead(t, "/api/captures/"+other, http.StatusOK, "")
+	f.expectRead(t, "/api/captures/"+gone+"/sends/"+goneSend, http.StatusOK, "")
 }
 
 // The guide carries the two reads of a capture, observe_capture and
