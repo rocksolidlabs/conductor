@@ -12,10 +12,10 @@ import { MEASURED_BY, cellReceipt, cellWords, checkCommand, checkName, verdictWo
 const props = defineProps<{ checks: ComparedCheck[]; candidates: ComparedCandidate[] }>()
 
 const byTask = computed(() => new Map(props.candidates.map((c) => [c.task, c])))
-/** The cells of a row in the columns' order, a candidate the row has no cell for left out. */
-function cellsOf(check: ComparedCheck): CheckCell[] {
-  return props.candidates.map((c) => check.cells.find((x) => x.task === c.task)).filter((x): x is CheckCell => !!x)
-}
+/** The cells of a row under their columns: a candidate the row has no cell for (no commit) draws one saying so. */
+const cellsOf = (check: ComparedCheck): CheckCell[] => cellsInColumns(check, props.candidates)
+/** Why a candidate's test and build files are not said ('' when they were read). */
+const filesUnread = (c: ComparedCandidate) => notMeasured(c).verify
 const cols = computed(() => (props.candidates.length >= 4 ? 'sm:grid-cols-2 xl:grid-cols-4' : props.candidates.length === 3 ? 'sm:grid-cols-2 lg:grid-cols-3' : 'sm:grid-cols-2'))
 
 const opened = ref<{ run: string; task: string; attempt: number; commit: string; receipt: CandidateReceipt } | null>(null)
@@ -53,21 +53,22 @@ function openCell(check: ComparedCheck, cell: CheckCell) {
         <!-- Each candidate's changed test and build files, beside a row that depends on them. -->
         <ul v-if="k.verdict === 'unknown'" class="flex flex-col gap-0.5 text-xs text-muted" data-compare-check-files>
           <li v-for="c in candidates" :key="c.task" class="break-words" :data-compare-check-files-of="c.task">
-            {{ verifyFilesWords(c.task, c.verifyFiles).summary }}<template v-if="verifyFilesWords(c.task, c.verifyFiles).files.length">: <span class="font-mono" data-mono="path">{{ verifyFilesWords(c.task, c.verifyFiles).files.join('; ') }}</span></template>
+            <template v-if="filesUnread(c)">{{ c.task }}: {{ notMeasuredLine(filesUnread(c)) }}</template>
+            <template v-else>{{ verifyFilesWords(c.task, c.verifyFiles).summary }}</template><template v-if="!filesUnread(c) && verifyFilesWords(c.task, c.verifyFiles).files.length">: <span class="font-mono" data-mono="path">{{ verifyFilesWords(c.task, c.verifyFiles).files.join('; ') }}</span></template>
           </li>
         </ul>
         <div class="grid grid-cols-1 gap-2" :class="cols">
           <component
-            :is="c.state === 'not_run' ? 'div' : 'button'"
+            :is="cellOpens(c) ? 'button' : 'div'"
             v-for="c in cellsOf(k)"
             :key="c.task"
-            :type="c.state === 'not_run' ? undefined : 'button'"
+            :type="cellOpens(c) ? 'button' : undefined"
             class="flex min-w-0 flex-col items-stretch gap-0.5 rounded-md bg-elevated/40 px-2.5 py-1.5 text-left text-xs"
-            :class="c.state !== 'not_run' && 'cursor-pointer hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary'"
-            :aria-label="c.state === 'not_run' ? undefined : `${c.task}: ${checkName(k)} ${cellWords(c).word}, open its receipt`"
+            :class="cellOpens(c) && 'cursor-pointer hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary'"
+            :aria-label="cellOpens(c) ? `${c.task}: ${checkName(k)} ${cellWords(c).word}, open its receipt` : undefined"
             :data-compare-cell="c.task"
             :data-cell-state="cellWords(c).state"
-            @click="c.state !== 'not_run' && openCell(k, c)"
+            @click="cellOpens(c) && openCell(k, c)"
           >
             <span class="flex min-w-0 flex-wrap items-center gap-x-2">
               <span class="font-mono text-muted" data-mono="id">{{ c.task }}</span>

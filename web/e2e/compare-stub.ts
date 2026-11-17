@@ -30,8 +30,10 @@ export interface ComparisonShape {
   testChange?: boolean
   /** Git could not be read for the last lane: its words, the rest of the reply standing. */
   unavailable?: boolean
-  /** approach-a still running: no result yet, no cells. */
+  /** approach-a still running: no result yet, no cells (the server sends none), every row not comparable. */
   running?: boolean
+  /** approach-c still worked with its last submitted commit shown (its checks under way): running, not selectable. Four candidates. */
+  checking?: boolean
   /** The supporting part (PR-5) with Brakeman's request, absent when not given (and no `supporting` asked). */
   brakemanRequest?: string
   /**
@@ -79,6 +81,7 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
   const candidates = lanes.map((task, i) => {
     const failed = o.failed && task === 'approach-b'
     const running = o.running && task === 'approach-a'
+    const checking = o.checking && task === 'approach-c'
     const unavailable = o.unavailable && task === last
     const commit = running ? '' : COMMIT('abcd'[i]!)
     const measured = !running && !unavailable
@@ -88,12 +91,12 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
       agent: 'worker-cli',
       args: i % 2 ? ['--model', 'small'] : [],
       approach: i === 0 ? 'Key the cache by locale' : i === 1 ? 'Drop the cache and memoise in the handler' : '',
-      state: running ? 'running' : failed ? 'failed' : 'ready',
+      state: running || checking ? 'running' : failed ? 'failed' : 'ready',
       run: o.run,
       attempt: running ? 0 : failed ? 3 : 1,
       commit,
       start: BASE,
-      selectable: !running && !failed,
+      selectable: !running && !failed && !checking,
       attempts: running ? 1 : failed ? 3 : 1,
       acceptedAnyway: false,
       ...(measured
@@ -116,9 +119,12 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
   // The server's words (internal/crew/comparison.go): each candidate's first test or build file, how many more, or none.
   const changed = lanes.map((t) => (o.unavailable && t === last ? `${t}'s change could not be read` : o.testChange && t === 'approach-a' ? `${t} changed internal/cache/cache_test.go, a test file and 1 more` : `${t} changed none`))
   const tested = o.testChange || o.unavailable ? [`comparable only if their test changes are fair: ${changed.join('; ')}`] : []
-  const ran = (task: string, id: string, x: Partial<{ state: string; exit: number | null; notRun: string }> = {}) => (o.running && task === 'approach-a' ? cell(o.run, task, id, { state: 'not_run', notRun: 'no_such_step' }) : cell(o.run, task, id, x))
+  const ran = (task: string, id: string, x: Partial<{ state: string; exit: number | null; notRun: string }> = {}) => cell(o.run, task, id, x)
+  // A lane with no commit has no cell in any row, and makes every row not comparable (the server's words).
+  const withResult = (cells: Cell[]) => (o.running ? cells.filter((c) => c.task !== 'approach-a') : cells)
+  const noResult = o.running ? ['approach-a has no result'] : []
   const checks = [
-    { phase: 'check', id: 'unit', argv: ['go', 'test', './...'], argvCut: false, argvDigest: SHA('a'), timeoutSeconds: 600, cells: lanes.map((t) => ran(t, 'unit')), verdict: tested.length ? 'unknown' : 'comparable', why: tested },
+    { phase: 'check', id: 'unit', argv: ['go', 'test', './...'], argvCut: false, argvDigest: SHA('a'), timeoutSeconds: 600, cells: withResult(lanes.map((t) => ran(t, 'unit'))), verdict: noResult.length ? 'not_comparable' : tested.length ? 'unknown' : 'comparable', why: noResult.length ? noResult : tested },
     {
       phase: 'check',
       id: 'bench',
@@ -126,9 +132,9 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
       argvCut: false,
       argvDigest: SHA('b'),
       timeoutSeconds: 300,
-      cells: lanes.map((t) => (t === 'approach-b' ? ran(t, 'bench', { exit: 1 }) : ran(t, 'bench'))),
+      cells: withResult(lanes.map((t) => (t === 'approach-b' ? ran(t, 'bench', { exit: 1 }) : ran(t, 'bench')))),
       verdict: 'not_comparable',
-      why: ['approach-b changed scripts/bench.sh, which the check runs'],
+      why: [...noResult, 'approach-b changed scripts/bench.sh, which the check runs'],
     },
     {
       phase: 'verify',
@@ -137,9 +143,9 @@ export function comparisonOf(o: ComparisonShape): Record<string, unknown> {
       argvCut: false,
       argvDigest: SHA('c'),
       timeoutSeconds: 120,
-      cells: lanes.map((t) => (t === 'approach-b' ? cell(o.run, t, 'lint', { state: 'not_run', notRun: 'earlier_failed' }) : ran(t, 'lint'))),
+      cells: withResult(lanes.map((t) => (t === 'approach-b' ? cell(o.run, t, 'lint', { state: 'not_run', notRun: 'earlier_failed' }) : ran(t, 'lint')))),
       verdict: 'not_comparable',
-      why: ['approach-b: not run: an earlier check failed'],
+      why: [...noResult, 'approach-b: not run: an earlier check failed'],
     },
   ]
   return {
