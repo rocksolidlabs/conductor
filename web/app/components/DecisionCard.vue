@@ -17,7 +17,10 @@ import type { CaptureSendView } from '~/utils/captureSend'
  * decision link's, a person's page) or a record no longer answered keeps them: there they are the only list of choices. What it is
  * answered with is DecisionRespond's. Brand palette and Nuxt UI only.
  */
-const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean }>(), { controls: false })
+const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean; captures?: boolean }>(), {
+  controls: false,
+  captures: false,
+})
 
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
 const runHeld = useDecisionRun(() => props.decision.run)
@@ -35,11 +38,13 @@ const showHistory = ref(false)
 
 /**
  * The captures sent to it (PV1 PR-11: a capture attached to a decision is a comment on it, and a send of the capture's), from
- * capture_sends, the admin's read: a page that holds no workbench token (a decision link's) shows none.
+ * capture_sends, the admin's read, made only where the admin's page draws the card and says so (`captures`): a page that draws it for
+ * a link's holder (the join page) reads nothing of the server's API.
  */
 const { request } = useApi()
 const captures = ref<CaptureSendView[]>([])
 async function readCaptures() {
+  if (!props.captures) return
   try {
     const r = await request<{ sends?: CaptureSendView[] }>(`/api/decisions/${encodeURIComponent(props.decision.id)}/captures`)
     captures.value = (r.sends ?? []).filter((s) => s.state === 'sent')

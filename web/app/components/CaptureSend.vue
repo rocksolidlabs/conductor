@@ -5,6 +5,7 @@ import { ApiError } from '~/composables/useApi'
 import { diffSinceSent } from '~/utils/capture'
 import { reviewOffered } from '~/utils/captureReview'
 import { SEND_KINDS, type CaptureSendView, type SendForm, type SendKind, cancellable, cancelWords, sendBody, sendState, titleFrom, MAX_SEND_QUESTION, MAX_TICKET_TITLE } from '~/utils/captureSend'
+import { decisionsLive } from '~/composables/useDecisions'
 
 /**
  * A saved capture's Send (Program item PV1, docs/plans/browser-evidence.md, "Sending"), in the capture editor's Send slot: Create a
@@ -70,17 +71,23 @@ async function loadProjects() {
   if (!pickerProject.value) pickerProject.value = startProject()
 }
 
+/**
+ * The capture's run's open decisions, asked of the server by the run (its newest page of them), and read again whenever a decision of
+ * that run changes or the events stream comes back (decisionsLive), so one asked while the editor is open is offered.
+ */
 async function loadDecisions() {
   const run = props.capture.origin?.run
   if (!run) return
   try {
-    const r = await request<{ decisions?: Array<{ id: string; run: string; request: { question: string } }> }>('/api/decisions', { query: { state: 'open' } })
+    const r = await request<{ decisions?: Array<{ id: string; run: string; request: { question: string } }> }>('/api/decisions', { query: { state: 'open', run } })
     decisions.value = (r.decisions ?? []).filter((d) => d.run === run)
-    if (!form.decision) form.decision = decisions.value[0]?.id ?? ''
+    if (!decisions.value.some((d) => d.id === form.decision)) form.decision = decisions.value[0]?.id ?? ''
   } catch {
     decisions.value = []
   }
 }
+let stopDecisions: (() => void) | undefined
+onBeforeUnmount(() => stopDecisions?.())
 
 /** The destinations offered: Attach to a decision while the run has an open one. */
 /** A review's kinds are offered on a capture of a candidate's preview alone (Decision 9, CaptureSendReview). */
@@ -91,6 +98,9 @@ const decisionItems = computed(() => decisions.value.map((d) => ({ label: `${d.i
 
 onMounted(() => {
   void loadDecisions()
+  stopDecisions = decisionsLive().subscribe((e) => {
+    if (!e || e.run === props.capture.origin?.run) void loadDecisions()
+  })
   form.title = titleFrom(firstNote.value)
   if (props.runTicket) form.key = props.runTicket
   void loadProjects()

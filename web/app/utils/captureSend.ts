@@ -131,7 +131,7 @@ export function sendState(s: Pick<CaptureSendView, 'state' | 'rev' | 'kind' | 't
       break
     default:
       if (s.kind === 'brakeman') word = `${s.waiting ? `waiting for Brakeman: ${s.waiting}` : 'waiting for Brakeman'}${s.cancels?.length ? ' · cancel asked' : ''}`
-      else word = 'sending'
+      else word = s.waiting ? `sending: ${s.waiting}` : 'sending'
   }
   return { word, tone: s.state === 'refused' ? 'error' : 'neutral', mark: { key, word, legend: look.legend } }
 }

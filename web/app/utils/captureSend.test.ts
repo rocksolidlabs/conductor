@@ -74,6 +74,9 @@ describe('sendState', () => {
       mark: { key: 'failed' },
     })
     expect(sendState({ rev: 1, kind: 'brakeman', state: 'cancelled' })).toMatchObject({ word: 'cancelled', mark: { key: 'cancelled' } })
+    // A send to a decision says why it waits.
+    expect(sendState({ rev: 1, kind: 'decision', state: 'pending', waiting: 'no engine holds the decisions here' }).word).toBe('sending: no engine holds the decisions here')
+    expect(sendState({ rev: 1, kind: 'decision', state: 'pending' }).word).toBe('sending')
   })
 
   it('says a cancel was asked of a send to Brakeman', () => {
