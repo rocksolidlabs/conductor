@@ -86,6 +86,24 @@ export function draftComparison(firstAgent = ''): DraftComparison {
   }
 }
 
+/**
+ * A candidate moved to another agent: one that takes no arguments takes none of the arguments typed for the one before (nor the text not
+ * yet a chip), which its form no longer shows, as a crew member's agent change does (CrewMembersTable).
+ */
+export function withCandidateAgent(c: DraftCandidate, agentId: string, agents: ReadonlyArray<{ id: string; allowArgs?: boolean }>): DraftCandidate {
+  return agents.find((a) => a.id === agentId)?.allowArgs === false ? { ...c, agentId, args: [], argsPending: undefined } : { ...c, agentId }
+}
+
+/**
+ * The draft New comparison shows as it opens: the one kept since it was last closed (Escape, a click outside), else a new one; its
+ * candidates with no agent yet (the catalog was not read when it was made) on the catalog's first agent. Only Cancel and a crew created
+ * end a draft.
+ */
+export function draftOnOpen(kept: DraftComparison | null, firstAgent: string): DraftComparison {
+  if (!kept) return draftComparison(firstAgent)
+  return { ...kept, candidates: kept.candidates.map((c) => (c.agentId ? c : { ...c, agentId: firstAgent })) }
+}
+
 const chars = (s: string) => [...s].length
 // A line as the server takes a criterion's text: no control character and no line or paragraph separator.
 const NOT_ONE_LINE = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]')
@@ -159,7 +177,7 @@ export function compareProblems(d: DraftComparison, agents: ReadonlyArray<{ id: 
   d.criteria.forEach((c, i) => {
     if (!c.text.trim()) out.push(`Criterion ${i + 1}: say what is compared`)
     else if (chars(c.text.trim()) > COMPARE_LIMITS.criterionText) out.push(`Criterion ${i + 1}: at most ${COMPARE_LIMITS.criterionText} characters`)
-    else if (NOT_ONE_LINE.test(c.text)) out.push(`Criterion ${i + 1}: one line`)
+    else if (NOT_ONE_LINE.test(c.text.trim())) out.push(`Criterion ${i + 1}: one line`)
   })
   if (!d.checks.length && !d.manifestFile) out.push("Add a check, or use the project's conductor.manifest.json: a comparison with nothing to check compares nothing")
   const ids: string[] = []

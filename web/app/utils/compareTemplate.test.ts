@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compareProblems, compareSpec, criterionId, draftComparison, specCriteria, type DraftComparison } from './compareTemplate'
+import { compareProblems, compareSpec, criterionId, draftComparison, draftOnOpen, specCriteria, withCandidateAgent, type DraftComparison } from './compareTemplate'
 
 const agents = [
   { id: 'claude', name: 'Claude Code', allowArgs: true },
@@ -103,5 +103,45 @@ describe('what stops Create', () => {
     d.candidates[1]!.agentId = 'plain'
     d.reviews = true
     expect(compareProblems(d, agents)).toEqual(['Candidate A: the approach is at most 2000 characters', 'Candidate B: Plain shell takes no arguments', 'Pick the agent that reviews each candidate'])
+  })
+})
+
+describe('a candidate moved to another agent, and the draft across a close', () => {
+  it('drops the arguments, typed or still being typed, when the new agent takes none, so Create is not held by what the form no longer shows', () => {
+    const d = ready()
+    d.candidates[0]!.args = ['--model', 'x']
+    d.candidates[1]!.argsPending = '"half'
+    d.candidates = d.candidates.map((c) => withCandidateAgent(c, 'plain', agents))
+    expect(d.candidates.map((c) => [c.agentId, c.args, c.argsPending])).toEqual([
+      ['plain', [], undefined],
+      ['plain', [], undefined],
+    ])
+    expect(compareProblems(d, agents)).toEqual([])
+  })
+
+  it('keeps the arguments for an agent that takes some', () => {
+    const c = { key: 1, agentId: 'claude', args: ['--model', 'x'], approach: '' }
+    expect(withCandidateAgent(c, 'codex', agents)).toEqual({ ...c, agentId: 'codex' })
+  })
+
+  it('opens again on the draft it kept, a candidate made before the catalog was read on its first agent; a new one once ended', () => {
+    const kept = ready()
+    kept.candidates[1]!.agentId = ''
+    const again = draftOnOpen(kept, 'claude')
+    expect(again.name).toBe('Cache key')
+    expect(again.criteria).toEqual(kept.criteria)
+    expect(again.candidates.map((c) => c.agentId)).toEqual(['claude', 'claude'])
+    const fresh = draftOnOpen(null, 'codex')
+    expect(fresh.name).toBe('')
+    expect(fresh.candidates.map((c) => c.agentId)).toEqual(['codex', 'codex'])
+  })
+
+  it('takes a criterion as it is sent: trimmed, so a tab at its end is no second line', () => {
+    const d = ready()
+    d.criteria[0]!.text = 'no new dependency\t'
+    expect(compareProblems(d, agents)).toEqual([])
+    expect(compareSpec(d).criteria).toEqual([{ id: 'no-new-dependency', text: 'no new dependency' }])
+    d.criteria[0]!.text = 'no new\tdependency'
+    expect(compareProblems(d, agents)).toEqual(['Criterion 1: one line'])
   })
 })

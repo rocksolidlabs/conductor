@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
-import { COMPARE_LIMITS, compareProblems, compareSpec, draftComparison, rowKey, type DraftCandidate, type DraftComparison } from '~/utils/compareTemplate'
+import { COMPARE_LIMITS, compareProblems, compareSpec, draftComparison, draftOnOpen, rowKey, withCandidateAgent, type DraftCandidate, type DraftComparison } from '~/utils/compareTemplate'
 
 /**
  * New comparison (CP1, docs/plans/compare-crew.md, "The template"), opened from Crews: the project folder (the crew's working directory),
@@ -9,7 +9,8 @@ import { COMPARE_LIMITS, compareProblems, compareSpec, draftComparison, rowKey, 
  * chosen, and an optional approach), whether an agent reviews each candidate, and whether Brakeman drafts the comparison. Create posts the
  * template (POST /api/crews/templates/compare), which saves an ordinary crew with tasks approach-a, approach-b… and a `compare` block; the
  * page opens it. The server holds the spec to its rules and its refusal is shown in its words. Nothing launches here: a comparison is
- * launched from a ticket's approved plan revision.
+ * launched from a ticket's approved plan revision. A form closed by Escape or a click outside keeps its draft for its next opening; Cancel
+ * and a crew created end it.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ agents: readonly AgentInfo[] }>()
@@ -20,12 +21,18 @@ const draft = ref<DraftComparison>(draftComparison())
 const creating = ref(false)
 const error = ref('')
 
-// Each opening starts a new draft, its candidates on the catalog's first agent.
+/** Whether `draft` is one being made, kept across a close; false once Cancel or Create ended it. */
+let kept = false
 watch(open, (o) => {
   if (!o) return
-  draft.value = draftComparison(props.agents[0]?.id ?? '')
+  draft.value = draftOnOpen(kept ? draft.value : null, props.agents[0]?.id ?? '')
+  kept = true
   error.value = ''
 })
+function cancel() {
+  kept = false
+  open.value = false
+}
 
 const agentItems = computed(() => props.agents.map((a) => ({ label: a.name, value: a.id })))
 const problems = computed(() => compareProblems(draft.value, props.agents))
@@ -41,6 +48,9 @@ function setCriterion(i: number, text: string) {
 function setCandidate(i: number, p: Partial<DraftCandidate>) {
   patch({ candidates: draft.value.candidates.map((c, j) => (j === i ? { ...c, ...p } : c)) })
 }
+function setAgent(i: number, id: string) {
+  patch({ candidates: draft.value.candidates.map((c, j) => (j === i ? withCandidateAgent(c, id, props.agents) : c)) })
+}
 function addCandidate() {
   const last = draft.value.candidates.at(-1)
   patch({ candidates: [...draft.value.candidates, { key: rowKey(), agentId: last?.agentId ?? props.agents[0]?.id ?? '', args: [], approach: '' }] })
@@ -52,6 +62,7 @@ async function create() {
   error.value = ''
   try {
     const crew = await api.createCompareCrew(compareSpec(draft.value))
+    kept = false
     open.value = false
     emit('created', crew)
   } catch (e) {
@@ -106,7 +117,7 @@ async function create() {
               <IconButton icon="i-lucide-x" color="neutral" variant="ghost" size="xs" class="ml-auto" :label="`Remove candidate ${letter(i).toUpperCase()}`" :disabled="draft.candidates.length <= COMPARE_LIMITS.minCandidates" @click="patch({ candidates: draft.candidates.filter((_, j) => j !== i) })" />
             </div>
             <div class="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
-              <USelect :model-value="c.agentId" :items="agentItems" placeholder="Agent" :aria-label="`Agent of candidate ${letter(i).toUpperCase()}`" class="w-full" data-compare-candidate-agent @update:model-value="setCandidate(i, { agentId: String($event ?? '') })" />
+              <USelect :model-value="c.agentId" :items="agentItems" placeholder="Agent" :aria-label="`Agent of candidate ${letter(i).toUpperCase()}`" class="w-full" data-compare-candidate-agent @update:model-value="setAgent(i, String($event ?? ''))" />
               <ArgvInput v-if="takesArgs(c.agentId)" :model-value="c.args" :pending="c.argsPending ?? ''" placeholder="arguments, such as --model; a quoted argument is one" :aria-label="`Arguments of candidate ${letter(i).toUpperCase()}`" data-compare-candidate-args @update:model-value="setCandidate(i, { args: $event })" @update:pending="setCandidate(i, { argsPending: $event || undefined })" />
               <span v-else class="self-center text-xs text-muted">This agent takes no arguments.</span>
             </div>
@@ -124,7 +135,7 @@ async function create() {
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-x" title="Not created" :description="error" data-compare-template-error />
         <div class="flex flex-wrap items-center justify-end gap-2">
           <span v-if="problems.length" class="mr-auto min-w-0 text-xs text-muted" data-compare-template-problem>{{ problems[0] }}</span>
-          <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" @click="open = false" />
+          <UButton label="Cancel" color="neutral" variant="ghost" :disabled="creating" data-compare-cancel @click="cancel" />
           <UButton type="submit" label="Create" icon="i-lucide-check" :loading="creating" :disabled="!!problems.length" data-compare-create />
         </div>
       </UForm>
