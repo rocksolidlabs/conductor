@@ -460,7 +460,9 @@ second idle). The screenshot has two paths, chosen in that order: in the
 desktop app the shell takes the pixels of the frame's box in the
 workbench's own window with no prompt (`webContents.capturePage`, the box
 in whole CSS pixels inside the content, at most 2,048 pixels on the long
-side as taken, a PNG of at most 4 MiB, one at a time per window,
+side as taken, a PNG of at most 4 MiB (one past it taken again at half
+its size, once, as the workbench's own encoding does, then dropped with
+words), one at a time per window,
 `web/app/utils/screenshotDesktop.ts`); in a browser that can, the tab
 cropped to the frame, with the person's permission; else none, which the
 capture says. The shell's two channels for these, `conductor:previewBridge`
@@ -1556,11 +1558,14 @@ still resolved. A switchyard routes and answers none.
   `workbench-token.lock` beside it, so a second server started on the same
   data directory leaves it alone, and one of those that generates its own
   token stops unless it has `--print-listen`.
-  `serve --token-env NAME` makes the variable `NAME` the token: refused
-  at start when it is unset or empty (never falling back to a configured
-  or generated one), taken out of the server's environment, so nothing it
-  starts inherits it, and printed, logged and kept nowhere: no handshake
-  field, no token file, no error that repeats it.
+  `serve --token-env NAME` makes the variable `NAME`'s value the token, in
+  the place of a configured one: refused at start when the flag's value is
+  not a variable's name (the empty one included) or the variable is unset
+  or empty (never falling back to a configured or generated one), taken
+  out of the server's environment, so nothing it starts inherits it, and
+  printed, logged and kept nowhere: no handshake field, no token file, no
+  error or log line that repeats what the flag was given (a token given
+  by mistake as the name included).
 
 ## Persistence
 

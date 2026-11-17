@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_SHOT_BYTES, TAB_ENDED_WORDS, TAB_FRAME_MS, TOO_LARGE_WORDS, encodeShot, fromDesktop, noneSource, sameIn, scaledSize, screenshotSource, tabSource, type Encoder, type Pixels } from './screenshot'
+import type { DesktopBridge } from './desktop'
+import { MAX_SHOT_BYTES, OLD_DESKTOP_WORDS, TAB_ENDED_WORDS, TAB_FRAME_MS, TOO_LARGE_WORDS, encodeShot, fromDesktop, noneSource, sameIn, scaledSize, screenshotSource, tabSource, type Encoder, type Pixels } from './screenshot'
 
 // The screenshot as it is saved (docs/plans/browser-evidence.md, "The screenshot"): at most 2,048 pixels on its long side, PNG, its
 // scale recorded; past 4 MiB scaled again by half, once, then dropped with words. And the pixels' check a moment rests on.
@@ -95,6 +96,12 @@ describe("the desktop app's source", () => {
     expect((await screenshotSource({} as Element, { desktop: d })).how).toBe('desktop')
     const seam = noneSource('seam')
     expect(await screenshotSource({} as Element, { seam, desktop: d })).toBe(seam)
+  })
+  it('in a desktop app too old to take one is none, with words, never the tab capture its window does not answer', async () => {
+    const old = { version: '0.6.0', token: async () => '' } as unknown as DesktopBridge
+    const s = await screenshotSource({} as Element, { app: old })
+    expect([s.how, s.why]).toEqual(['none', OLD_DESKTOP_WORDS])
+    expect(await s.frame({ x: 0, y: 0, width: 10, height: 10 })).toBeNull()
   })
 })
 

@@ -9,6 +9,8 @@
 export const MAX_PREVIEW_SIDE = 2048
 /** The most bytes of a screenshot's PNG: the store's bound on a capture's image (internal/dispatch MaxCaptureImage). */
 export const MAX_PREVIEW_PNG = 4 << 20
+/** Why a screenshot past MAX_PREVIEW_PNG at half its size is dropped: the workbench's TOO_LARGE_WORDS, as a refusal. */
+export const TOO_LARGE = 'refused: the screenshot was more than 4 MiB even at half its size, so the capture is kept without it'
 /** The most bytes of the bridge's script the shell runs: the built bridge is a small fraction of it. */
 export const MAX_BRIDGE_SCRIPT = 1 << 20
 /** The longest frame origin asked for: the bridge protocol's bound on a URL (internal/proto MaxPreviewURL). */
@@ -180,7 +182,8 @@ const capturing = new Set<number>()
 /**
  * capturePreview takes the pixels of rect (the page's CSS pixels) of wc's own window: at most MAX_PREVIEW_SIDE on the long side,
  * as PNG, with its scale (the image's pixels to one of the rect's). Refused for a rect rectRefusal refuses, while the same window is
- * taking one, for an empty image, and for a PNG past MAX_PREVIEW_PNG.
+ * taking one, and for an empty image; a PNG past MAX_PREVIEW_PNG is taken again at half its size, once, and refused only past it
+ * still, as the workbench's own encoding does.
  */
 export async function capturePreview(wc: PreviewContents, rect: unknown, d: CaptureDeps): Promise<CaptureAnswer> {
   if (capturing.has(wc.id)) return { refused: 'refused: a screenshot is being taken' }
@@ -205,8 +208,14 @@ export async function capturePreview(wc: PreviewContents, rect: unknown, d: Capt
       image = image.resize({ width: Math.max(1, Math.round(width * f)), height: Math.max(1, Math.round(height * f)), quality: 'best' })
       ;({ width, height } = image.getSize())
     }
-    const png = image.toPNG()
-    if (png.byteLength > MAX_PREVIEW_PNG) return { refused: 'refused: the screenshot is larger than 4 MiB' }
+    let png = image.toPNG()
+    if (png.byteLength > MAX_PREVIEW_PNG) {
+      // As the workbench's own encoding does (web/app/utils/screenshot.ts encodeShot): half the size, once, then dropped with words.
+      image = image.resize({ width: Math.max(1, Math.round(width / 2)), height: Math.max(1, Math.round(height / 2)), quality: 'best' })
+      ;({ width, height } = image.getSize())
+      png = image.toPNG()
+      if (png.byteLength > MAX_PREVIEW_PNG) return { refused: TOO_LARGE }
+    }
     return { png: new Uint8Array(png.buffer, png.byteOffset, png.byteLength), width, height, scale: width / r.width }
   } catch {
     return { refused: 'refused: the window gave no pixels' }

@@ -20,37 +20,47 @@ import (
 // serve --token-env NAME makes the named variable's value the workbench
 // token: a tree's own Conductor takes the tree's secret so, since an argv
 // cannot carry it. An unset or empty variable, or a name that is not a
-// variable's, is refused before anything is written or bound, never falling
-// back to a configured or a generated token. The value is printed, logged
-// and kept nowhere: not in the --print-listen line, the log, the terminal,
-// an error, or any file of the data directory; and it leaves the server's
-// own environment, so nothing the server starts inherits it.
+// variable's (the empty one included), is refused before anything is
+// written or bound, never falling back to a configured or a generated
+// token. The value is printed, logged and kept nowhere: not in the
+// --print-listen line, the log, the terminal, an error, or any file of the
+// data directory; no error repeats what the flag was given, a token given
+// by mistake as the name included; and it leaves the server's own
+// environment, so nothing the server starts inherits it.
 func TestServeTakesItsTokenFromTheNamedVariable(t *testing.T) {
 	const name = "CONDUCTOR_TEST_TREE_SECRET"
 	secret := "tree-secret-" + strings.Repeat("5e", 32)
 	other := "configured-token-" + strings.Repeat("c0", 24)
 
+	// A token given by mistake where its variable's name belongs: letters and digits, the form of a name.
+	tokenAsName := "a" + strings.Repeat("5e", 31)
+
 	t.Run("refused when unset, empty or not a name", func(t *testing.T) {
 		for _, c := range []struct {
 			why, flag string
-			set       *string
-			words     string
+			// env is the variable the case sets to set, or unsets when set is nil.
+			env   string
+			set   *string
+			words string
 		}{
-			{"unset", name, nil, name + ": the variable is not set"},
-			{"empty", name, new(string), name + ": the variable is empty"},
-			{"not a name", name + "=" + secret, &secret, "what it was given is not one"},
-			{"a name with a dash", "TREE-SECRET", &secret, "what it was given is not one"},
-			{"a name that starts with a digit", "1SECRET", &secret, "what it was given is not one"},
+			{"unset", name, name, nil, "--token-env: the variable it names is not set"},
+			{"empty", name, name, new(string), "--token-env: the variable it names is empty"},
+			{"the token given as the name", tokenAsName, tokenAsName, nil, "--token-env: the variable it names is not set"},
+			{"the token given as the name, set empty", tokenAsName, tokenAsName, new(string), "--token-env: the variable it names is empty"},
+			{"an empty name", "", name, &secret, "what it was given is not one"},
+			{"not a name", name + "=" + secret, name, &secret, "what it was given is not one"},
+			{"a name with a dash", "TREE-SECRET", name, &secret, "what it was given is not one"},
+			{"a name that starts with a digit", "1SECRET", name, &secret, "what it was given is not one"},
 		} {
 			t.Run(c.why, func(t *testing.T) {
 				clearConductorEnv(t)
 				// A configured token is there to fall back to: the flag refuses rather than take it.
 				t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", other)
 				if c.set != nil {
-					t.Setenv(name, *c.set)
+					t.Setenv(c.env, *c.set)
 				} else {
-					t.Setenv(name, "")
-					if err := os.Unsetenv(name); err != nil {
+					t.Setenv(c.env, "")
+					if err := os.Unsetenv(c.env); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -59,12 +69,15 @@ func TestServeTakesItsTokenFromTheNamedVariable(t *testing.T) {
 				cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
 				t.Cleanup(agents.ForgetBinary())
 				var out, logs bytes.Buffer
-				code, err := runServe(t.Context(), []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen", "--token-env", c.flag}, strings.NewReader(""), &out, &logs)
+				// A refusal returns at once; the bound only ends a server that, wrongly, went on to serve.
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				code, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen", "--token-env", c.flag}, strings.NewReader(""), &out, &logs)
 				if code != 2 || err == nil || !strings.Contains(err.Error(), c.words) {
 					t.Fatalf("serve = %d, %v; want 2 and an error saying %q\n%s", code, err, c.words, logs.String())
 				}
 				for what, text := range map[string]string{"the error": err.Error(), "the log": logs.String(), "stdout": out.String()} {
-					if strings.Contains(text, secret) || strings.Contains(text, other) {
+					if strings.Contains(text, secret) || strings.Contains(text, other) || strings.Contains(text, tokenAsName) {
 						t.Fatalf("%s holds a token: %q", what, text)
 					}
 				}
@@ -149,7 +162,7 @@ func TestServeTakesItsTokenFromTheNamedVariable(t *testing.T) {
 		if err := sv.stop(); err != nil {
 			t.Fatalf("serve: %v\n%s", err, logs.String())
 		}
-		if lines := logLines(logs.String(), "the workbench token is the environment's", "variable="+name); len(lines) != 1 {
+		if lines := logLines(logs.String(), "the workbench token is the value of the variable --token-env names"); len(lines) != 1 {
 			t.Fatalf("no line naming the variable:\n%s", logs.String())
 		}
 		for what, text := range map[string]string{"the log": logs.String(), "stdout": out.String(), "the terminal": tty.String()} {

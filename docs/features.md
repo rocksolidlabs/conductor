@@ -228,9 +228,11 @@ the item, newest row first.
   (`CONDUCTOR_DEV_API`), ready probes of 900 s; the preview names the
   tree's secret as `${CONDUCTOR_TREE_SECRET}`, which the label puts in for
   the admin alone. `serve --token-env NAME` takes the workbench token from
-  the variable, refuses one unset or empty (never falling back to another
-  token), takes it out of the server's environment and prints, logs and
-  keeps it nowhere. The dev build alone loads the bridge the tree is told
+  the variable, in the place of a configured one; it refuses a value that
+  is no variable's name (the empty one included) and a variable unset or
+  empty (never falling back to another token), takes it out of the
+  server's environment, and prints, logs and keeps it nowhere: no error
+  repeats what the flag was given. The dev build alone loads the bridge the tree is told
   of (`plugins/previewBridge.client.ts`); the built app never does.
   `TestTheRepositorysManifestIsValid` holds the file to the manifest's
   rules; `capture-repair.spec.ts` walks the loop on stubs: a covered Save
@@ -297,8 +299,8 @@ the item, newest row first.
 - **The bridge in any frame and the frame's pixels, in the desktop app
   (PR-5, #793).** The shell puts the server's bridge into the preview
   frame whatever page it shows, and takes the frame's pixels with no
-  prompt (at most 2,048 px on the long side, 4 MiB, one at a time per
-  window). Its two channels answer the workbench's main frame alone: a
+  prompt (at most 2,048 px on the long side; past 4 MiB taken again at
+  half its size once, as in a browser; one at a time per window). Its two channels answer the workbench's main frame alone: a
   frame inside the workbench, the app's own file pages and any other
   origin are refused.
 - **The preview in the pane, selection, annotations, a capture saved

@@ -1,4 +1,5 @@
 import type { CaptureRect } from './capture'
+import { desktopBridge, type DesktopBridge } from './desktop'
 import { desktopSource, type DesktopSource } from './screenshotDesktop'
 
 /**
@@ -281,12 +282,19 @@ export function fromDesktop(d: DesktopSource): ScreenshotSource {
   return src
 }
 
+/** The words of a desktop app older than its screenshots: its window offers no tab capture either. */
+export const OLD_DESKTOP_WORDS = 'this desktop app is too old to take a screenshot (update it), so the capture has no screenshot'
+
 /**
  * The source for the frame el, chosen in this order: the test seam's (a spec's own screenshots), the desktop shell's, the tab's, none.
+ * A desktop app too old to take one gives none with words: its window answers no tab capture, and the tab's words would say the person
+ * declined a prompt never shown.
  */
-export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null; desktop?: DesktopSource | null } = {}): Promise<ScreenshotSource> {
+export async function screenshotSource(el: Element, o: { seam?: ScreenshotSource | null; desktop?: DesktopSource | null; app?: DesktopBridge | null } = {}): Promise<ScreenshotSource> {
   if (o.seam) return o.seam
-  const d = o.desktop === undefined ? desktopSource() : o.desktop
+  const app = o.app === undefined ? desktopBridge() : o.app
+  const d = o.desktop === undefined ? desktopSource(app) : o.desktop
   if (d) return fromDesktop(d)
+  if (app) return noneSource(OLD_DESKTOP_WORDS)
   return tabSource(el)
 }
