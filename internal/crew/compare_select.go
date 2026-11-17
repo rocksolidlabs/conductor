@@ -356,6 +356,12 @@ func (r *run) selectionBody(opts []SettledCandidate) (selectionBody, []*SettledC
 	}
 	none := -1
 	body := selectionBody{Question: fmt.Sprintf("Which approach does %s continue with?", what), Recommendation: &none, Authorizes: selectAuthorizes, Supersedes: r.sel.last}
+	// Whom it is for: the block's selector over the crew as launched
+	// (HM1), checked at save; one that names no one now is the
+	// operator's, as every selection is answered by the operator.
+	if f, err := r.resolveFor(r.compare.Selector); err == nil {
+		body.For = f
+	}
 	if utf8.RuneCountInString(body.Question) > ledger.MaxDecisionQuestion {
 		body.Question = string([]rune(body.Question)[:ledger.MaxDecisionQuestion])
 	}

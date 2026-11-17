@@ -3460,7 +3460,12 @@ check unless the crew has a project manifest, whose verify steps are then
 what is compared (one in the crew's form needs a `verify` step). Each
 candidate is a lane with the one review task that may need it; every task
 of the crew is a candidate or such a review, and every member does the
-tasks of one lane. `selector` is refused when set. Each rule is refused
+tasks of one lane. `selector`, when set, is whom the selection is for
+(People in a crew, HM1's labels): `role:<responsibility>` that a person of
+the crew holds, or `person:<name>` of the crew's people; any other form,
+the decide grant's label among them, is refused ("compare: selector: no
+person of crew api holds security"). The operator answers the selection
+for them. Each rule is refused
 `400 invalid_crew` in its words, and the block counts toward the crew's
 1 MiB. A task's comparison part of its task file (Managed runs) is never
 cut, so its goal, role, instructions, people and comparison together take
@@ -4622,7 +4627,7 @@ nothing changes), then acted on and settled in a second (`done` or
 commands (`409 too_many_commands`); `GET /api/runs/{run}/commands/{command}`
 reads a receipt without acting; a legacy run takes no command (`409
 task_state`), a comparison's run takes pause, unpause, cancel, retry,
-accept and Check again alone (any other, Request changes among them, is
+accept, Check again and Request changes alone (any other is
 `409 task_state`, "this command is not open to a comparison's candidates
 yet", with no row and no receipt), and once its selection is applied a
 task command on a lane not selected is `409 not_selected` with no row and
@@ -7205,7 +7210,10 @@ base, and the SHA-256 of the options' subjects in order, as JSON); its
 the selected candidate into review and repair, and delivering it. Final:
 the candidates not selected are kept and cannot be continued; a new
 comparison tries them again."; `context` the comparison in words, at most
-4,000 characters; `supersedes` the selection it follows, if any. Only a
+4,000 characters; `supersedes` the selection it follows, if any; `for`
+the block's `selector` resolved in the run's crew as launched (`{label,
+person, responsibility?}`, its routed row naming the person and an
+accepted response's receipt whom it answered for), absent without one. Only a
 record of origin `compare` takes an option's `subject` (kind `candidate`
 alone) and the subject kind `comparison`: any other request with either
 is `400 invalid`. With no lane standing, or no room for it in the run's
@@ -7236,9 +7244,11 @@ commit}` or `none: true` for None of these, and writes the run event
 `compare.selected` (`{decision, task, run, attempt, commit}` or
 `{decision, none: true}`, at most 1 KiB) before the run settles in the
 same transaction. From then on every task command on a lane not selected
-(`retry`, `accept`, `recheck`, `cancel`; after None of these, every
+(`retry`, `accept`, `recheck`, `request_changes`, `cancel`; after None of these, every
 lane), in every run of the chain, is `409 not_selected` before anything
-is written ("approach-a was not selected in dr-9: launch a new
+is written, and so is a Request changes before the application ("select
+a candidate first: a repair before the selection would make the
+candidates unlike") ("approach-a was not selected in dr-9: launch a new
 comparison to try it again"; "no candidate was selected in dr-9 (None of
 these): launch a new comparison to try approach-a again").
 

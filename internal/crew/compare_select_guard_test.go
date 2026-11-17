@@ -409,3 +409,161 @@ func TestAContinuationRepairsTheSelectedLane(t *testing.T) {
 		t.Fatalf("the repair starts at %s, not the selected %s", a2.Attempt.Start, a.Result.Commit)
 	}
 }
+
+// PR-8a (#813): a comparison's selector names whom the selection is for,
+// HM1's labels over the crew's people, checked at save as a plan
+// decision's for is: a role a person holds and a person of the crew taken;
+// any other form refused, the decide grant's label among them.
+func TestSelectorLabels(t *testing.T) {
+	people := []Person{{Name: "ana", Responsibilities: []string{RespArchitecture}}, {Name: "ben"}}
+	for _, tc := range []struct {
+		selector, words string // "" for taken
+	}{
+		{"role:" + RespArchitecture, ""},
+		{"person:ana", ""},
+		{"person:ben", ""},
+		{"", ""},
+		{"role:" + RespSecurity, "no person of crew api-sweep holds security"},
+		{"role:taste", `"role:taste" is not one of`},
+		{"person:cleo", `no person of crew api-sweep is named "cleo"`},
+		{"ana", "must be role:<responsibility> or person:<name>"},
+		{GrantDecideLabel, "must be role:<responsibility> or person:<name>"},
+	} {
+		c := compareCrew(t, "/work/repo", 2, false)
+		c.People = people
+		c.Compare.Selector = tc.selector
+		err := c.Compare.validate(c)
+		switch {
+		case tc.words == "" && err != nil:
+			t.Errorf("%q refused: %v", tc.selector, err)
+		case tc.words != "" && (err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.words) || !strings.Contains(err.Error(), "compare: selector")):
+			t.Errorf("%q: %v, want %q", tc.selector, err, tc.words)
+		}
+	}
+	// A crew with no people names no one.
+	c := compareCrew(t, "/work/repo", 2, false)
+	c.Compare.Selector = "person:ana"
+	if err := c.Compare.validate(c); err == nil {
+		t.Fatal("a selector over a crew with no people was taken")
+	}
+}
+
+// launchSelectFor is launchSelect with the crew's people and the block's
+// selector.
+func launchSelectFor(t *testing.T, n int, selector string, people ...Person) *selectEnv {
+	t.Helper()
+	se := &selectEnv{dir: newRepo(t), ldir: t.TempDir()}
+	se.e, se.fl, se.ld = decisionEngineAt(t, se.ldir)
+	se.e.compareOpen = true
+	se.c = compareCrew(t, se.dir, n, false)
+	se.c.People, se.c.Compare.Selector = people, selector
+	for i := range se.c.Tasks {
+		se.c.Tasks[i].Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", "test ! -e broken"}}}
+	}
+	se.run = launchPlanned(t, se.e, se.c, planned(t, cmpRunID, head(t, se.dir)))
+	return se
+}
+
+// The selection is for the selector, resolved over the run's crew as
+// launched: the request's for names the label, the person and the
+// responsibility, the routed row the person, and the operator's receipt
+// whom it answered for beside who answered. Who answers does not change:
+// the operator alone, the decide grant refused.
+func TestTheSelectionIsForTheSelector(t *testing.T) {
+	se := launchSelectFor(t, 2, "role:"+RespArchitecture, Person{Name: "ana", Responsibilities: []string{RespArchitecture}})
+	defer stopRun(t, se.e, se.run.ID)
+	se.pass(t, se.run.ID, "approach-a", 1)
+	se.pass(t, se.run.ID, "approach-b", 1)
+	row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+	want := DecisionFor{Label: "role:" + RespArchitecture, Person: "ana", Responsibility: RespArchitecture}
+	if f := selectBody(t, row).For; f == nil || *f != want {
+		t.Fatalf("for: %+v, want %+v", f, want)
+	}
+	rec := decisionWhen(t, se.ld, row.ID(), "open", inState(ledger.DecisionOpen))
+	if !strings.Contains(rec.History[1].Detail, `"ana"`) {
+		t.Fatalf("the routed row: %s", rec.History[1].Detail)
+	}
+	decider := Authority{Grant: string(ext.GrantDecide), Via: ViaIdentity, Subject: "ana", Boot: se.e.Boot()}
+	if _, err := se.e.RespondDecision(t.Context(), row.ID(), Response{ResponseID: "d1", Choice: choice(0), Rationale: "mine", ExpectedRev: row.Rev}, ext.SubjectActor+"ana", decider); err == nil {
+		t.Fatal("the decide grant answered a selection for ana")
+	}
+	rc := selectAs(t, se.e, row.ID(), 1, row.Rev)
+	if rc.For == nil || rc.For.Person != "ana" || rc.For.Responsibility != RespArchitecture || rc.Actor != "admin" {
+		t.Fatalf("the receipt: %+v %+v", rc, rc.For)
+	}
+	decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
+}
+
+// I10: the selected candidate is reviewed and repaired as it is. In the
+// run, Request changes is refused before the selection and on a lane not
+// selected, not_selected with no row, and taken on the selected lane,
+// whose next attempt starts at the selected commit, the selection staying
+// applied; on the finished run RV1's continuation (ContinueRunWith) of the
+// selected candidate reopens it at its commit and carries the block and
+// the selection: a Retry of a lane not selected and a message across lanes
+// are refused there.
+func TestTheSelectedCandidateIsReviewedAsIs(t *testing.T) {
+	t.Run("in the run", func(t *testing.T) {
+		se := launchSelect(t, 2)
+		defer stopRun(t, se.e, se.run.ID)
+		a := se.pass(t, se.run.ID, "approach-a", 1)
+		b := se.pass(t, se.run.ID, "approach-b", 1)
+		row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+		_, err := requestChanges(se.e, se.run.ID, "q1", "approach-a", 1, a.Result.Commit, personsRequest("rv-0001"))
+		refusedUnselected(t, se, se.run.ID, "q1", "select a candidate first: a repair before the selection would make the candidates unlike", err)
+		if rec := decisionWhen(t, se.ld, row.ID(), "open", inState(ledger.DecisionOpen)); rec.Rev != row.Rev {
+			t.Fatalf("the refused request changed the selection: %+v", rec.DecisionRow)
+		}
+		selectAs(t, se.e, row.ID(), 0, row.Rev)
+		decisionWhen(t, se.ld, row.ID(), "applied", inState(ledger.DecisionApplied))
+		_, err = requestChanges(se.e, se.run.ID, "q2", "approach-b", 1, b.Result.Commit, personsRequest("rv-0002"))
+		refusedUnselected(t, se, se.run.ID, "q2", "approach-b was not selected in "+row.ID(), err)
+		rc, err := requestChanges(se.e, se.run.ID, "q3", "approach-a", 1, a.Result.Commit, personsRequest("rv-0003"))
+		if err != nil || rc.Status != ledger.CommandDone {
+			t.Fatalf("Request changes of the selected lane: %+v %v", rc, err)
+		}
+		a2 := waitTaskWhere(t, se.e, se.run.ID, "approach-a", "at attempt 2, running", func(ts TaskState) bool {
+			return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+		})
+		if a2.Attempt.Start != a.Result.Commit {
+			t.Fatalf("the repair starts at %s, not the selected %s", a2.Attempt.Start, a.Result.Commit)
+		}
+		if st := stateOf(t, se.e, se.run.ID); st.State != CompareSelected || st.Selected.Commit != a.Result.Commit {
+			t.Fatalf("the comparison after the repair: %+v", st)
+		}
+		se.pass(t, se.run.ID, "approach-a", 2)
+		waitOutcome(t, se.e, se.run.ID, ledger.OutcomeSucceeded)
+		if rows := selections(t, se.ld, se.run.ID); len(rows) != 1 || rows[0].State != ledger.DecisionApplied {
+			t.Fatalf("the repair reopened the selection: %+v", rows)
+		}
+	})
+	t.Run("RV1's continuation", func(t *testing.T) {
+		se := launchSelect(t, 2)
+		a := se.pass(t, se.run.ID, "approach-a", 1)
+		se.pass(t, se.run.ID, "approach-b", 1)
+		row := selectionWhen(t, se.ld, "open", rowIn(ledger.DecisionOpen), se.run.ID)
+		selectAs(t, se.e, row.ID(), 0, row.Rev)
+		waitOutcome(t, se.e, se.run.ID, ledger.OutcomeSucceeded)
+		se.e.ForgetForTest(se.run.ID)
+		next, err := se.e.ContinueRunWith(t.Context(), se.run.ID, "", ContinueOptions{Actor: "admin", Command: Command{ID: "q1"},
+			Repair: &RepairRequest{Task: "approach-a", Attempt: 1, Commit: a.Result.Commit, Request: personsRequest("rv-0001")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stopRun(t, se.e, next.ID)
+		a2 := waitTaskWhere(t, se.e, next.ID, "approach-a", "at attempt 2, running", func(ts TaskState) bool {
+			return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+		})
+		if a2.Attempt.Start != a.Result.Commit {
+			t.Fatalf("the repair starts at %s, not the selected %s", a2.Attempt.Start, a.Result.Commit)
+		}
+		_, err = se.e.Retry(t.Context(), next.ID, "admin", Command{ID: "r1"}, "approach-b")
+		refusedUnselected(t, se, next.ID, "r1", "approach-b was not selected in "+row.ID(), err)
+		if _, err := se.e.SendMessage(t.Context(), a2.Attempt.SessionID, "cand-b", "look at mine"); !errors.Is(err, ErrLane) {
+			t.Fatalf("a message across lanes: %v", err)
+		}
+		if sel, ok, err := se.e.SelectedLane(t.Context(), next.ID); err != nil || !ok || sel.Task != "approach-a" {
+			t.Fatalf("the continuation's selection: %+v %v %v", sel, ok, err)
+		}
+	})
+}

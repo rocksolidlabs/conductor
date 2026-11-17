@@ -4,6 +4,7 @@ import type { Receipt } from '~/utils/tasks'
 import type { DecisionSummary, TaskHold } from '~/utils/decisions'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
+import type { CompareSpec } from '~/utils/compareTemplate'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -973,6 +974,11 @@ export function useSessions() {
         : request<CrewReply>(`/api/crews/${encodeURIComponent(id)}`, { method: 'PUT', body: revision ? { ...toCrewInput(crew), revision } : toCrewInput(crew) })
       ).then(crewOfReply),
     deleteCrew: (id: string) => request<void>(`/api/crews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /**
+     * Saves a comparison's crew made from its template (CP1, POST /api/crews/templates/compare): an ordinary crew with tasks approach-a,
+     * approach-b… and a `compare` block, its id derived from the name as a crew's is. 400 `invalid_crew` in the rule's words.
+     */
+    createCompareCrew: (spec: CompareSpec) => request<CrewReply>('/api/crews/templates/compare', { method: 'POST', body: spec }).then(crewOfReply),
     /** Saves a copy under `<id>-copy` (then `-copy-2`…), named "<name> copy". 400 `invalid_crew` when one of its agents is no longer in the catalog. */
     duplicateCrew: (id: string) =>
       request<CrewReply>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then(crewOfReply),

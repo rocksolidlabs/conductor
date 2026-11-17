@@ -226,7 +226,7 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		if r.compare == nil || intent == "pause" || intent == "unpause" || len(args) == 0 {
 			return nil
 		}
-		return r.laneSelected(args[0])
+		return r.laneSelected(intent, args[0])
 	}
 	e.mu.Lock()
 	err = selected()

@@ -64,8 +64,12 @@ func TestACompareCrewSavesAndIsNotLaunchedFromTheCrewsPage(t *testing.T) {
 			"members": c.Members, "tasks": c.Tasks, "compare": cmp}
 	}
 	if resp, out := e.do("POST", "/api/crews", adminToken, body(func(cmp *crew.Compare) { cmp.Selector = "person:ana" })); resp.StatusCode != http.StatusBadRequest ||
-		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "selector is not taken yet") {
-		t.Fatalf("a selector: %d %v", resp.StatusCode, out)
+		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "compare: selector: no person of crew") {
+		t.Fatalf("a selector naming no person of the crew: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/crews", adminToken, body(func(cmp *crew.Compare) { cmp.Selector = crew.GrantDecideLabel })); resp.StatusCode != http.StatusBadRequest ||
+		errCodeOf(out) != "invalid_crew" || !strings.Contains(fmt.Sprint(out), "must be role:<responsibility> or person:<name>") {
+		t.Fatalf("a selector of the decide grant: %d %v", resp.StatusCode, out)
 	}
 	saved := e.sendCrew("POST", "/api/crews", body(nil), http.StatusCreated)
 	id := saved["id"].(string)

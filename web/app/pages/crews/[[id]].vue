@@ -234,6 +234,17 @@ function newCrew() {
   router.push(`/crews/${NEW_ROUTE}`)
 }
 
+/** New comparison (CP1): its form, and the crew it saved opened, the list read again so it is listed. */
+const comparisonOpen = ref(false)
+function newComparison() {
+  comparisonOpen.value = true
+}
+async function comparisonCreated(c: CrewInfo) {
+  full.value = { ...full.value, [c.id]: c }
+  await router.push(`/crews/${encodeURIComponent(c.id)}`)
+  void refresh()
+}
+
 const seeding = ref(false)
 
 /**
@@ -629,6 +640,7 @@ usePalette().registerPage(() => ({
   label: 'Crews',
   rows: [
     { key: 'page:new', label: 'New crew', icon: 'i-lucide-plus', run: newCrew },
+    { key: 'page:new-comparison', label: 'New comparison', detail: 'Two to four candidates work one objective apart, checked alike', icon: 'i-lucide-git-compare', run: newComparison },
     { key: 'page:examples', label: 'Load the example crews', detail: EXAMPLES_LINE, icon: 'i-lucide-package-open', run: loadExamples },
     ...crews.value.map((c) => ({
       key: `page:launch:${c.id}`,
@@ -655,6 +667,8 @@ usePalette().registerPage(() => ({
             <p class="mt-2"><b class="font-medium text-default">Saved crews</b>: plans: who, which agent, which prompt, who waits for whom. Nothing runs until you launch one.</p>
           </PageAbout>
           <UButton label="New crew" icon="i-lucide-plus" color="neutral" variant="outline" data-new-crew @click="newCrew" />
+          <UButton label="New comparison" icon="i-lucide-git-compare" color="neutral" variant="outline" data-new-comparison @click="newComparison" />
+          <CrewCompareTemplate v-model:open="comparisonOpen" :agents="agents" @created="comparisonCreated" />
           <FullscreenButton />
         </template>
       </UDashboardNavbar>
