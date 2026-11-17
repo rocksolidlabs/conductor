@@ -15,7 +15,8 @@ export const SETTLE_MS = 240_000
 /** The check every candidate is held to: `sh scripts/check.sh`, which fails once a lane's stub has edited it (STUB_COMPARE_EDIT=script). */
 export function checkScript(repo: string): string {
   mkdirSync(join(repo, 'scripts'), { recursive: true })
-  writeFileSync(join(repo, 'scripts', 'check.sh'), "#!/bin/sh\n# fails once a candidate edited it\ngrep -q 'edited this script' \"$0\" && exit 1\nexit 0\n")
+  // The pattern's [s] keeps the line from matching itself: only the stub's appended line does.
+  writeFileSync(join(repo, 'scripts', 'check.sh'), "#!/bin/sh\n# fails once a candidate's stub has appended its line\ngrep -q 'edited this [s]cript' \"$0\" && exit 1\nexit 0\n")
   git(repo, 'add', 'scripts/check.sh')
   git(repo, 'commit', '-q', '-m', 'the check')
   return git(repo, 'rev-parse', 'HEAD').trim()
@@ -75,14 +76,21 @@ export async function selectionUntil(api: Api, run: string, state: string, o: { 
   const timeout = o.timeout ?? SETTLE_MS
   budget(timeout)
   let last: ServedSelection | null | undefined
-  await expect
-    .poll(
-      async () => {
-        last = (await comparison(api, run)).selection
-        return !!last && last.state === state && last.decision !== o.not
-      },
-      { timeout, intervals: [1000], message: `the comparison's selection is ${state}${o.not ? `, not ${o.not}` : ''}` },
-    )
-    .toBe(true)
+  let seen = ''
+  try {
+    await expect
+      .poll(
+        async () => {
+          const c = await comparison(api, run)
+          last = c.selection
+          seen = JSON.stringify({ settled: c.settled, state: (c as { state?: string }).state, selection: last ? { decision: last.decision, state: last.state } : null, lanes: c.candidates.map((x) => `${x.task}:${x.state}`) })
+          return !!last && last.state === state && last.decision !== o.not
+        },
+        { timeout, intervals: [1000], message: `the comparison's selection is ${state}${o.not ? `, not ${o.not}` : ''}` },
+      )
+      .toBe(true)
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nthe comparison's last read: ${seen}`)
+  }
   return last!
 }

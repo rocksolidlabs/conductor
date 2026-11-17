@@ -7,7 +7,8 @@ import { compareRun, comparisonOf } from './compare-stub'
 import { decisionRecord, inboxItem, stubInbox, SELECTION_AUTHORIZES, type StubItem } from './inbox-stub'
 import { noSideways, tapTarget } from './layout'
 import { serveComparison } from './compare-stub'
-import { SETTLE_MS, checkScript, comparison, launchComparison } from './compare-select-helpers'
+import { SETTLE_MS, checkScript, comparison, launchComparison, selectionUntil } from './compare-select-helpers'
+import { decisionUntil } from './decisions-helpers'
 import { ownServer } from './own-server'
 import { runInfo, serveRun, type StubRun } from './run-fixtures'
 
@@ -384,4 +385,137 @@ test('Brakeman’s stub draft arrives in the supporting panel while the run is i
     await s.stop()
     rmSync(files, { recursive: true, force: true })
   }
+})
+
+// The selection on the real server (PR-6a, PR-6b): two stub candidates of one base launched from a ticket, every lane ended, the
+// selection opened by Yardmaster. Every wait is on the server's own reads (the comparison, DR1's record, the run); what the page
+// shows is checked against them.
+
+test.describe('the selection on the real server', () => {
+  test('answered on the comparison with a rationale, the same act on the card, then labelled; a lane not selected takes no command', async ({ browser }) => {
+    budget(8 * LOAD_MS + 60_000)
+    const s = await ownServer('compare-select')
+    try {
+      checkScript(s.repo)
+      const c = await launchComparison(s.api, s.repo, 'CSEL', [{ agentId: 'worker-cli', approach: 'Key the cache by locale' }, { agentId: 'worker-cli', approach: 'Memoise in the handler' }])
+      const sel = await selectionUntil(s.api, c.run, 'open')
+      expect(sel.options.map((o) => o.label.replace(/ at [0-9a-f]+$/, ''))).toEqual(['approach-a', 'approach-b', 'None of these'])
+      const b = sel.options[1]!.subject!
+      const page = await dayPage(browser, { server: s.started, path: '/agents' })
+
+      // Needs you lists it, by its ref.
+      await page.goto('/decisions')
+      await expect(page.locator(`[data-inbox-row="decision:${sel.decision}"]`)).toBeVisible()
+
+      // The card, from the ticket's Decisions: the options' commits, nothing marked, the rationale required.
+      await page.goto(c.path)
+      await page.locator(`[data-ticket-decision-open="${sel.decision}"]`).click()
+      const modal = page.locator(`[data-decision-modal][data-decision-modal-id="${sel.decision}"]`)
+      await expect(modal.locator('[data-decision-option-subject="1"]')).toHaveText(`the result of approach-b, attempt ${b.n} (${b.commit.slice(0, 7)})`)
+      await expect(modal.locator('[data-decision-recommended]')).toHaveCount(0)
+      await modal.locator('[data-decision-choice="1"]').click()
+      await expect(modal.locator('[data-decision-confirm]')).toHaveText('Select approach-b (final)')
+      await expect(modal.locator('[data-decision-confirm]')).toBeDisabled()
+      await modal.locator('[data-decision-back]').click()
+      await page.keyboard.press('Escape')
+      await expect(modal).toHaveCount(0)
+
+      // The comparison: no choice made; held without a rationale and said final; approach-b selected with one.
+      await page.goto(`${c.path}?view=compare&run=${c.run}`)
+      const select = page.locator('[data-compare-select]')
+      await expect(select).toHaveAttribute('data-compare-selection', sel.decision)
+      await expect(select.locator('[data-compare-select-state]')).toHaveText("Open: waits for the operator's answer")
+      await expect(select.locator('[data-decision-confirm-step]')).toHaveCount(0)
+      await select.locator('[data-decision-choice="1"]').click()
+      const confirm = select.locator('[data-decision-confirm]')
+      await expect(confirm).toBeDisabled()
+      await expect(select.locator('[data-decision-final]')).toHaveText(FINAL)
+      await select.locator('textarea[data-decision-rationale]').fill('approach-b keeps the handler simple')
+      await confirm.click()
+      // Recorded, then applied: the record's own states, the page following them by itself.
+      await decisionUntil(s.api, sel.decision, 'applied')
+      await expect(select.locator('[data-compare-select-state]')).toHaveText(`Applied: approach-b selected at ${b.commit.slice(0, 7)}`)
+      await expect(select.locator('[data-compare-select-rationale]')).toHaveText('approach-b keeps the handler simple')
+      await expect(select.locator('[data-decision-respond]')).toHaveCount(0)
+
+      // The labels, on the columns and the run page's lanes; again after a mode switch and the page's own redraw.
+      const labelled = async () => {
+        await page.goto(`${c.path}?view=compare&run=${c.run}`)
+        await expect(page.locator('[data-compare-candidate="approach-b"] [data-compare-selection]')).toHaveText('selected')
+        await expect(page.locator('[data-compare-candidate="approach-a"] [data-compare-selection]')).toHaveText('not selected')
+        await page.goto(`/runs/${c.run}?view=tasks`)
+        await expect(page.locator('[data-task-lane="approach-b"]')).toHaveAttribute('data-lane-selection', 'selected')
+        await expect(page.locator('[data-task-lane="approach-a"]')).toHaveAttribute('data-lane-selection', 'not-selected')
+        // The ticket's candidates of the run (DispatchCandidates): the applied candidate selected, the other lane's not selected.
+        await page.goto(c.path)
+        const cands = page.locator(`[data-candidates][data-candidates-run="${c.run}"]`)
+        await expect(cands.locator(`[data-candidate-task="approach-b"] [data-candidate="approach-b/${b.n}"] [data-candidate-selection]`)).toHaveText('selected')
+        await expect(cands.locator('[data-candidate-task="approach-a"] [data-candidate-selection]')).toHaveText('not selected')
+      }
+      await labelled()
+      await useTheme(page, 'light')
+      await labelled()
+
+      // Needs you no longer lists it.
+      await page.goto('/decisions')
+      await expect(page.locator('#dashboard-sidebar-main')).toBeVisible()
+      await expect(page.locator(`[data-inbox-row="decision:${sel.decision}"]`)).toHaveCount(0)
+
+      // A Retry of approach-a, a lane not selected, is refused in the server's words and changes nothing.
+      const rev = (await s.api.run(c.run)).managed?.revision ?? 0
+      const r = await s.api.call<{ error: { code: string; message: string } }>('POST', `/api/runs/${c.run}/tasks/approach-a/retry`, { commandId: 'csel-retry-a', expectedRevision: rev })
+      expect(r.status).toBe(409)
+      expect(r.body.error).toEqual({ code: 'not_selected', message: `approach-a was not selected in ${sel.decision}: launch a new comparison to try it again` })
+      expect((await comparison(s.api, c.run)).selection?.state).toBe('applied')
+      await page.context().close()
+    } finally {
+      await s.stop()
+    }
+  })
+
+  test('a Retry of a failed lane closes the selection and a new one opens; a Stop keeps it, its answer applied on Continue', async ({ browser }) => {
+    budget(8 * LOAD_MS + 60_000)
+    // approach-b's stub edits the check's script, which then fails: its lane ends failed, and only approach-a is an option.
+    const s = await ownServer('compare-select-retry', { agents: [{ id: 'cand-fail', from: 'worker-cli', env: { STUB_COMPARE_EDIT: 'script' } }] })
+    try {
+      checkScript(s.repo)
+      const c = await launchComparison(s.api, s.repo, 'CSRT', [{ agentId: 'worker-cli' }, { agentId: 'cand-fail' }])
+      const first = await selectionUntil(s.api, c.run, 'open')
+      expect(first.options.map((o) => o.label.replace(/ at [0-9a-f]+$/, ''))).toEqual(['approach-a', 'None of these'])
+      const page = await dayPage(browser, { server: s.started, path: '/agents' })
+      await page.goto(`${c.path}?view=compare&run=${c.run}`)
+      const select = page.locator('[data-compare-select]')
+      await expect(select).toHaveAttribute('data-compare-selection', first.decision)
+
+      // A Retry of the failed lane while selecting: the selection is closed, the panel says so and offers no answer.
+      const rev = (await s.api.run(c.run)).managed?.revision ?? 0
+      await s.api.ok('POST', `/api/runs/${c.run}/tasks/approach-b/retry`, { commandId: 'csrt-retry-b', expectedRevision: rev })
+      await decisionUntil(s.api, first.decision, 'superseded')
+      await expect(select.locator('[data-compare-select-words]')).toContainText(`${first.decision} is closed`)
+      await expect(select.locator('[data-decision-choice]')).toHaveCount(0)
+      // The lane ends again (failed again): a new selection opens, the one to answer.
+      const second = await selectionUntil(s.api, c.run, 'open', { not: first.decision })
+      await expect(select).toHaveAttribute('data-compare-selection', second.decision)
+      await expect(select.locator('[data-decision-choice]')).toHaveCount(second.options.length)
+
+      // A Stop while selecting: the panel stays open with the same options; the answer is recorded and waits for the run.
+      await s.api.ok('POST', `/api/runs/${c.run}/stop`, {})
+      await expect.poll(async () => !!(await s.api.run(c.run)).stoppedAt, { timeout: 30_000, intervals: [500], message: 'the run is stopped' }).toBe(true)
+      await page.reload()
+      await expect(select.locator('[data-decision-choice]')).toHaveText(second.options.map((o) => o.label))
+      await select.locator('[data-decision-choice="0"]').click()
+      await select.locator('textarea[data-decision-rationale]').fill('the one whose checks pass')
+      await select.locator('[data-decision-confirm]').click()
+      await decisionUntil(s.api, second.decision, 'answered')
+      await expect(select.locator('[data-compare-select-state]')).toHaveText('Recorded: waiting for the run to be continued')
+
+      // Continue: applied in the continuation's first transaction.
+      await s.api.ok('POST', `/api/runs/${c.run}/resume`, {})
+      await decisionUntil(s.api, second.decision, 'applied', SETTLE_MS)
+      await expect(select.locator('[data-compare-select-state]')).toHaveText(/^Applied: approach-a selected at [0-9a-f]{7}$/)
+      await page.context().close()
+    } finally {
+      await s.stop()
+    }
+  })
 })
