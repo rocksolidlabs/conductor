@@ -68,6 +68,8 @@ export interface Draft {
   words: string[]
   /** Whether a later selection may join it: not once the frame said hello again, or once it was saved. */
   open: boolean
+  /** The capture this one retakes (Capture again), '' for none: the create sends it as `retakeOf`. */
+  retakeOf: string
 }
 
 /** What the session needs of the pane. */
@@ -193,6 +195,8 @@ export function createPreviewSession(deps: BridgeDeps) {
     /** The last refusal's words (a page that would not hold still, a selector that matched nothing, a full draft). */
     refusal: '',
     drafts: [] as Draft[],
+    /** The capture a Capture again under way retakes: every draft it starts names it. */
+    retakeOf: '',
   })
   let nonce = ''
   let waiting: Waiting | null = null
@@ -342,7 +346,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     }
     const moment = momentOf(page, label, at)
     const ratio = shot && page.viewport.width > 0 ? shot.width / page.viewport.width : 1
-    const d: Draft = reactive({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio, annotations: [], words, open: true }) as Draft
+    const d: Draft = reactive({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio, annotations: [], words, open: true, retakeOf: state.retakeOf }) as Draft
     let stable: boolean | undefined
     if (shot) {
       const next = await src.frame(deps.rect())
@@ -400,6 +404,38 @@ export function createPreviewSession(deps: BridgeDeps) {
     await take({ ...m, element: m.element })
   }
 
+  /**
+   * Capture again (the plan's "A candidate's preview"): each element of an earlier capture described again by its selector on this
+   * page, in its order, with its note, into a new draft that names the earlier as the capture it retakes; one that is not on this page
+   * is said. Nothing joins a draft from before it. The pane opens the same URL and device mode first.
+   */
+  async function retake(of: string, elements: ReadonlyArray<{ selector: string; note: string }>) {
+    if (state.bridge !== 'ready' || state.busy || waiting) return
+    state.refusal = ''
+    for (const d of state.drafts) d.open = false
+    state.retakeOf = of
+    const missing: string[] = []
+    try {
+      for (const e of elements) {
+        state.busy = 'describe'
+        const m = await ask('describe', { selector: e.selector })
+        state.busy = ''
+        if (m?.t !== 'described' || !m.element) {
+          missing.push(e.selector)
+          continue
+        }
+        await take({ ...m, element: m.element })
+        const d = current()
+        const a = d?.annotations[d.annotations.length - 1]
+        if (d?.retakeOf === of && a && a.element?.selector === m.element.selector && !a.note) a.note = e.note
+      }
+    } finally {
+      state.retakeOf = ''
+      state.busy = ''
+    }
+    if (missing.length) state.refusal = `not on this page now, so not retaken: ${missing.join(', ')}`
+  }
+
   /** Leaves selection mode: the bridge answers cancelled, which ends the selection waiting for it. */
   function cancel() {
     if (waiting?.t === 'select') post({ t: 'cancel' })
@@ -427,7 +463,7 @@ export function createPreviewSession(deps: BridgeDeps) {
         label,
         at: now().toISOString(),
       }
-      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: false })
+      state.drafts.push({ id: ++ids, moment, shot: shot && markRaw(shot), how: shot ? src.how : 'none', why: shot ? '' : src.why || 'no screenshot could be taken', ratio: shot && f.width > 0 ? shot.width / f.width : 1, annotations: [], words: [], open: false, retakeOf: '' })
     } finally {
       state.busy = ''
     }
@@ -453,7 +489,7 @@ export function createPreviewSession(deps: BridgeDeps) {
     void release()
   }
 
-  return { state, hello, select, describe, cancel, snap, addRegion, drop, release, close }
+  return { state, hello, select, describe, cancel, retake, snap, addRegion, drop, release, close }
 }
 
 export type PreviewSession = ReturnType<typeof createPreviewSession>

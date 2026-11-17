@@ -340,3 +340,35 @@ describe('one capture is one moment', () => {
     expect(h.s.state.drafts).toHaveLength(2)
   })
 })
+
+describe('Capture again', () => {
+  it("describes each element of the earlier capture again into a new draft that names it, notes kept, joining nothing before it", async () => {
+    const h = await ready()
+    await selectOf(h, first)
+    await h.s.retake('0123456789abcdef', [
+      { selector: '#save', note: 'covered' },
+      { selector: '#next', note: '' },
+    ])
+    expect(h.s.state.drafts).toHaveLength(2)
+    const d = h.s.state.drafts[1]!
+    expect(d.retakeOf).toBe('0123456789abcdef')
+    expect(d.annotations.map((a) => [a.element?.selector, a.note])).toEqual([
+      ['#save', 'covered'],
+      ['#next', ''],
+    ])
+    expect(h.posts.filter((p) => p.t === 'describe').map((p) => p.selector)).toEqual(['#save', '#next'])
+    // The first draft names nothing, and a selection after the retake is no retake.
+    expect(h.s.state.drafts[0]!.retakeOf).toBe('')
+    expect(h.s.state.retakeOf).toBe('')
+  })
+
+  it('says which elements are not on the page now, and retakes the rest', async () => {
+    const h = await ready()
+    await h.s.retake('0123456789abcdef', [
+      { selector: '#none', note: '' },
+      { selector: '#save', note: '' },
+    ])
+    expect(h.s.state.refusal).toBe('not on this page now, so not retaken: #none')
+    expect(h.s.state.drafts.map((d) => [d.retakeOf, d.annotations.length])).toEqual([['0123456789abcdef', 1]])
+  })
+})

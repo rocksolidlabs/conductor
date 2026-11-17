@@ -50,7 +50,7 @@ export function captureBody(d: Draft, o: { opId: string; from: CaptureFrom; via:
     selectedAt: m.at,
     imageHow: image ? d.how : 'none',
     ...(image ? { imageScale: d.ratio * image.scale } : { imageWhy: 'why' in o.shot ? o.shot.why : d.why || 'no screenshot' }),
-    ...(o.retakeOf ? { retakeOf: o.retakeOf } : {}),
+    ...(o.retakeOf || d.retakeOf ? { retakeOf: o.retakeOf || d.retakeOf } : {}),
     annotations,
   }
 }

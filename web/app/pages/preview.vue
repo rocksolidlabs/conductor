@@ -2,11 +2,13 @@
 import type { RunInfo } from '~/composables/useSessions'
 import type { LabelTarget } from '~/composables/usePreviewLabel'
 import { runTitle } from '~/utils/crewWords'
+import { CAPTURE_ID } from '~/utils/capture'
 
 /**
  * The preview page (docs/plans/browser-evidence.md, "A preview in Conductor"): `/preview?run=&task=&attempt=`, and `&seq=` for a
  * candidate's checkout. It reads the run and the label alone, never the attempt's session, so a candidate whose session the
- * registry has collected opens as a live attempt's does; the pane (PreviewPane) frames the preview, labels it and captures it.
+ * registry has collected opens as a live attempt's does; the pane (PreviewPane) frames the preview, labels it and captures it. A
+ * candidate's checkout says it is being made while it opens and offers Close; `&retake=<capture>` offers Capture again of that capture.
  */
 const route = useRoute()
 const live = useAttention()
@@ -51,6 +53,21 @@ async function load() {
 watch(() => target.value?.run, load, { immediate: true })
 
 const task = computed(() => run.value?.tasks?.find((t) => t.id === target.value?.task))
+/** A capture the address offers Capture again of (`&retake=`), its id alone. */
+const retake = computed(() => (typeof route.query.retake === 'string' && CAPTURE_ID.test(route.query.retake) ? route.query.retake : undefined))
+/** The candidate's checkout this page shows, as the run reads it: its words while it opens, and Close. */
+const checkout = computed(() => {
+  const a = task.value?.attempt
+  const t = target.value
+  return t?.seq && a?.n === t.attempt && a.previewing?.seq === t.seq ? a.previewing.state : ''
+})
+const previews = useCandidatePreview(() => target.value?.run ?? '')
+const router = useRouter()
+async function closeCheckout() {
+  const t = target.value
+  if (t?.seq && (await previews.close(t.task, t.attempt, t.seq))) await router.push(runPath.value)
+}
+const closeRefused = computed(() => (target.value ? (previews.refused.value[`${target.value.task}:${target.value.attempt}`] ?? '') : ''))
 /** The attempt's session while the run's read names it: a source's file opens there. */
 const attemptSession = computed(() => (task.value?.attempt?.n === target.value?.attempt ? task.value?.attempt?.sessionId : undefined))
 const runPath = computed(() => (target.value ? `/runs/${encodeURIComponent(target.value.run)}?view=tasks&task=${encodeURIComponent(target.value.task)}` : '/crews'))
@@ -71,6 +88,9 @@ useHead({ title: computed(() => `${title.value} · preview`) })
             <NuxtLink v-if="run" :to="runPath" class="hidden min-w-0 truncate text-[13px] font-normal text-muted hover:underline sm:inline" data-preview-run>{{ runTitle(run) }}</NuxtLink>
           </span>
         </template>
+        <template #right>
+          <UButton v-if="target?.seq" label="Close the preview" icon="i-lucide-circle-stop" size="sm" color="neutral" variant="outline" :loading="!!previews.busy.value" data-preview-close @click="closeCheckout" />
+        </template>
       </UDashboardNavbar>
     </template>
     <template #body>
@@ -80,7 +100,10 @@ useHead({ title: computed(() => `${title.value} · preview`) })
         <div v-if="error" class="flex-none px-3 pt-3">
           <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
         </div>
-        <PreviewPane :target="target" :revision="run?.managed?.revision" :run-ticket="run?.ticket?.key" :attempt-session="attemptSession" class="min-h-0 flex-1" />
+        <div v-if="closeRefused" class="flex-none px-3 pt-3">
+          <UAlert color="neutral" variant="subtle" icon="i-lucide-circle-alert" :title="closeRefused" data-preview-close-refused />
+        </div>
+        <PreviewPane :retake="retake" :checkout="checkout" :target="target" :revision="run?.managed?.revision" :run-ticket="run?.ticket?.key" :attempt-session="attemptSession" class="min-h-0 flex-1" />
       </template>
     </template>
   </UDashboardPanel>

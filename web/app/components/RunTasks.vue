@@ -89,10 +89,30 @@ const inConductor = (t: RunTask) => previewPath({ run: props.run.id, task: t.id,
 /** A preview that names its tree's secret opens at the label's admin URL, read as it is clicked; any other is a plain link. */
 const opener = usePreviewOpen()
 const secretPreview = (t: RunTask) => acts(t).preview.includes(TREE_SECRET_NAME)
+/**
+ * A candidate's preview (PV1 PR-8): Preview this candidate makes its checkout and opens the preview page at its `seq`; while it is open
+ * the menu offers Open and Close. A refusal is said under the table.
+ */
+const candidates = useCandidatePreview(() => props.run.id)
+const router = useRouter()
+const candidatePath = (t: RunTask) => previewPath({ run: props.run.id, task: t.id, attempt: t.attempt!.n, seq: acts(t).previewing?.seq })
+async function previewCandidate(t: RunTask) {
+  const n = t.attempt!.n
+  const opened = await candidates.open(t.id, n)
+  if (opened) await router.push(previewPath({ run: props.run.id, task: t.id, attempt: n, seq: opened.seq }))
+}
+async function closeCandidate(t: RunTask) {
+  const p = acts(t).previewing
+  if (p) await candidates.close(t.id, t.attempt!.n, p.seq)
+}
+const candidateRefusals = computed(() => Object.entries(candidates.refused.value).filter(([, w]) => w))
 /** The row's menu: Open in Conductor, Cancel… (red inside the menu alone), Copy branch, Ask Brakeman why, each with its hook on its element. */
 function menuOf(t: RunTask) {
   return rowOf(t).menu.map((k) => {
     if (k === 'inConductor') return { label: 'Open in Conductor', icon: 'i-lucide-scan', to: inConductor(t), 'data-task-preview-open': t.id }
+    if (k === 'previewCandidate') return { label: 'Preview this candidate', icon: 'i-lucide-git-commit-horizontal', 'data-task-candidate-preview': t.id, onSelect: () => void previewCandidate(t) }
+    if (k === 'candidateOpen') return { label: "Open the candidate's preview", icon: 'i-lucide-scan', to: candidatePath(t), 'data-task-candidate-open': t.id }
+    if (k === 'candidateClose') return { label: "Close the candidate's preview", icon: 'i-lucide-circle-stop', 'data-task-candidate-close': t.id, onSelect: () => void closeCandidate(t) }
     if (k === 'cancel') return { label: 'Cancel…', icon: 'i-lucide-x', color: 'error' as const, 'data-task-cancel': t.id, onSelect: () => (asking.value = { task: t, command: 'cancel' }) }
     if (k === 'copyBranch') return { label: 'Copy branch', icon: 'i-lucide-git-branch', 'data-task-copy-branch': t.id, onSelect: () => copy(t.attempt!.branch!, 'Branch copied') }
     return { label: 'Ask Brakeman why', icon: 'i-lucide-message-circle-question', to: askWhy(t), 'data-task-ask-brakeman': t.id }
@@ -299,6 +319,8 @@ async function confirm() {
         </li>
       </ol>
     </div>
+
+    <UAlert v-for="[key, w] in candidateRefusals" :key="key" color="neutral" variant="subtle" icon="i-lucide-circle-alert" :title="`${key.replace(':', ' attempt ')}: ${w}`" :data-task-candidate-refused="key" />
 
     <!-- The selected task: its result, then its attempts with what each submitted. -->
     <section v-if="selectedTask" class="flex flex-col gap-2 rounded-md border border-default p-3 text-sm" data-task-detail :data-task-detail-id="selectedTask.id">
