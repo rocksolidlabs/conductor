@@ -50,6 +50,18 @@ func previewContext(e *Engine, runID string) *run {
 	return e.previewRuns[runID]
 }
 
+// waitIdle waits until the engine judges the run idle (e.idle), as evict
+// judges it: its members' ends committed, nothing of it in flight.
+func waitIdle(t *testing.T, e *Engine, runID string) {
+	t.Helper()
+	waitFake(t, "the run idle", func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		r := e.runs[runID]
+		return r != nil && e.idle(r)
+	})
+}
+
 // launches is how many sessions the fake launcher was asked to start.
 func (f *fakeLauncher) launches() int {
 	f.mu.Lock()
@@ -73,6 +85,7 @@ func evicted(t *testing.T, e *Engine, fl *fakeLauncher, l *fakeLedger, dir strin
 		r, _ := e.Get(run.ID)
 		return r.Members[0].Status == MemberEnded
 	})
+	waitIdle(t, e, run.ID)
 	maxRuns = 1
 	if _, err := e.Launch(t.Context(), testCrew(manual("lead", ""))); err != nil {
 		t.Fatal(err)
@@ -262,6 +275,7 @@ func TestPreviewsOfRunsNotHeldCountInTheBound(t *testing.T) {
 		r, _ := e.Get(run.ID)
 		return r.Members[0].Status == MemberEnded && r.Members[1].Status == MemberEnded
 	})
+	waitIdle(t, e, run.ID)
 	maxRuns = 1
 	if _, err := e.Launch(t.Context(), testCrew(manual("lead", ""))); err != nil {
 		t.Fatal(err)
