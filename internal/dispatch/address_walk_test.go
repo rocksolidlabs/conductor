@@ -453,7 +453,10 @@ func TestEveryVersionFourTextHasADecision(t *testing.T) {
 		if !slices.Contains(v4Tables, table) {
 			continue
 		}
-		cols := textColumns(s.db, table)
+		// So is a column of it version 4 does not have (a finding's
+		// capture_ref, version 7's).
+		v4Cols := textColumns(v4, table)
+		cols := slices.DeleteFunc(textColumns(s.db, table), func(c string) bool { return !slices.Contains(v4Cols, c) })
 		if slices.Contains(oldTables, table) {
 			oldCols := textColumns(old, table)
 			var added []string
@@ -533,7 +536,7 @@ const (
 )
 
 // version5Kept is the decision of every text column version 5 adds, and
-// of the later versions' (6, the open sends).
+// of the later versions' (6, the open sends; 7, a finding's capture).
 var version5Kept = map[string]string{
 	"captures.id": keptDerived, "captures.created_at": keptDerived, "captures.created_by": keptOperator, "captures.actor": keptOperator,
 	"captures.via": keptClosed, "captures.fingerprint": keptDerived, "captures.url": keptEvidence, "captures.title": keptEvidence,
@@ -565,6 +568,9 @@ var version5Kept = map[string]string{
 	// Version 6's open sends: a send's id and its time, derived from its
 	// rows.
 	"capture_sends_open.send_id": keptDerived, "capture_sends_open.created_at": keptDerived,
+	// Version 7's capture of a finding: the server's evidence, two of the
+	// store's ids and a number.
+	"review_findings.capture_ref": keptDerived,
 }
 
 // Every text column version 5 adds, and every later version, has a

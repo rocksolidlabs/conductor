@@ -184,7 +184,7 @@ func Class(entity, field string) FieldClass {
 		// stored but read from them, so a merge has no state to reconcile.
 		switch field {
 		case "id", "review_id", "ticket_id", "k", "kind", "intent", "severity", "path", "side", "from_line", "to_line", "anchor_commit",
-			"lines", "message", "resolution", "check_ref", "created_at":
+			"lines", "message", "resolution", "check_ref", "capture_ref", "created_at":
 			return ClassImmutable
 		case "marks", "finding_marks":
 			return ClassLog

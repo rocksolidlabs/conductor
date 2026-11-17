@@ -19,8 +19,10 @@ import (
 // version 5 adds a person's captures of a preview, their annotations and
 // their sends (docs/plans/browser-evidence.md, Program item PV1); version
 // 6 adds the sends still open, a table of this database's own derived
-// from the sends' rows, which the settlement's reads walk (#794).
-const Version = openSendsSchema
+// from the sends' rows, which the settlement's reads walk (#794); version
+// 7 adds a finding's capture, the capture, the send and the annotation a
+// finding of kind capture names (#798).
+const Version = findingCaptureSchema
 
 // captureSchema is the version that made the captures' tables: the one
 // place a later version renumbers them (the migration's key, the reads of
@@ -30,6 +32,10 @@ const captureSchema = 5
 // openSendsSchema is the version that made the open sends' table
 // (openSendsTable): the reads of an older database go without it.
 const openSendsSchema = 6
+
+// findingCaptureSchema is the version that added a finding's capture
+// (findingCaptureColumn): the reads of an older database take it as none.
+const findingCaptureSchema = 7
 
 // migrations bring a database from the version keyed to the next, in the
 // transaction that read the version, with the version's bump. A migration
@@ -69,9 +75,15 @@ const openSendsSchema = 6
 // cancel asked, since version 5 recorded no cancel closed. It changes no
 // other row and writes no migrate row: the table is derived and local,
 // never a changes row.
+//
+// Version 6 to 7 adds a finding's capture_ref, empty on every version 6
+// row, which is true of all of them: a version 6 store took no finding of
+// kind capture. It reads and rewrites no row, so nothing is derived and
+// no migrate row is written.
 var migrations = map[int][]string{
-	captureSchema - 1:   append(slices.Clone(captureTables), captureIndexes...),
-	openSendsSchema - 1: append(append([]string{openSendsTable}, openSendsIndexes...), openSendsFill("1")),
+	captureSchema - 1:        append(slices.Clone(captureTables), captureIndexes...),
+	openSendsSchema - 1:      append(append([]string{openSendsTable}, openSendsIndexes...), openSendsFill("1")),
+	findingCaptureSchema - 1: {findingCaptureColumn},
 	1: append([]string{
 		plansTable,
 		launchesTable,
@@ -222,6 +234,14 @@ const reviewFindingsTable = `CREATE TABLE review_findings (
 		check_ref TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL
 	)`
+
+// findingCaptureColumn is version 7's column of a finding (#798): a
+// finding of kind capture's reference, the JSON of CaptureRef (the
+// capture, the send that froze what the finding names, the annotation's
+// place k), empty for every other kind. It is added after the table's
+// columns, by a fresh store as by the migration, so both read back one
+// shape.
+const findingCaptureColumn = `ALTER TABLE review_findings ADD COLUMN capture_ref TEXT NOT NULL DEFAULT ''`
 
 // findingMarksTable is a finding's marks, a log: each a person's verdict
 // on the finding against a candidate, with what the page showed of its
@@ -541,11 +561,12 @@ var version2Indexes = []string{
 	`CREATE INDEX launch_files_sha256 ON launch_files (sha256)`,
 }
 
-// schema is version 6, whole: every table of docs/plans/dispatch.md's
+// schema is version 7, whole: every table of docs/plans/dispatch.md's
 // schema table, docs/plans/dispatch-evidence.md's (plans, launches,
 // launch_files, and a link's three columns, last of its table as the
 // migration adds them), docs/plans/review-repair.md's (reviews,
-// review_findings, finding_marks) and docs/plans/tracker-linking.md's
+// review_findings, finding_marks, and a finding's capture_ref, #798, last
+// of its columns as the migration adds it) and docs/plans/tracker-linking.md's
 // (link_reads, ticket_reads, store_instance, publications, and a ticket's
 // closed_on, last of its columns as the migration adds it) and
 // docs/plans/browser-evidence.md's (captureTables, and openSendsTable,
@@ -797,6 +818,7 @@ var schema = append([]string{
 	launchFilesTable,
 	reviewsTable,
 	reviewFindingsTable,
+	findingCaptureColumn,
 	findingMarksTable,
 	linkReadsTable,
 	ticketReadsTable,
