@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Decision, DecisionRef } from '~/utils/decisions'
-import { acceptedAnswer, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
+import { acceptedAnswer, approverWords, askedWhere, assignmentWords, authorizesLine, decisionWords, detailsOpen, historyWords, optionSubject, optionsOf, recommended, routedFor, stepLook, subjectWords } from '~/utils/decisions'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -15,17 +15,23 @@ import { relativeTime } from '~/utils/sessions'
  * with the recommendation and the tradeoffs on them, and the card leaves out its option rows. A card drawn where nobody answers (a
  * decision link's, a person's page) or a record no longer answered keeps them: there they are the only list of choices. What it is
  * answered with is DecisionRespond's. Brand palette and Nuxt UI only.
+ *
+ * A comparison's selection (origin `compare`, Program item CP1) says what it authorizes in the server's words, which say the answer is
+ * final, and each option's candidate (its task, attempt and short commit), linked to the ticket's comparison when the run's ticket is
+ * known; nothing is marked recommended.
  */
 const props = withDefaults(defineProps<{ decision: Decision; refs?: readonly DecisionRef[]; now: number; controls?: boolean }>(), { controls: false })
 
 /** Whether the run that holds it runs here now: an answer recorded on a run that does not waits for it to be continued. */
-const runHeld = useDecisionRun(() => props.decision.run)
+const run = useDecisionRunInfo(() => props.decision.run)
+const runHeld = run.held
 const words = computed(() => decisionWords(props.decision, { runHeld: runHeld.value, controls: props.controls }))
 /** The accepted answer, once there is one: the option picked, the words, the rationale and who. */
 const answer = computed(() => acceptedAnswer(props.decision))
 const options = computed(() => optionsOf(props.decision))
 const best = computed(() => recommended(props.decision))
-const subject = computed(() => subjectWords(props.decision.request.subject))
+const subject = computed(() => subjectWords(props.decision.request.subject, { ticket: run.ticket.value }))
+const subjects = computed(() => options.value.map((o) => optionSubject(o, run.ticket.value)))
 const yes = computed(() => authorizesLine(props.decision))
 const receipts = computed(() => words.value.steps.filter((s) => s.receipt))
 const refOf = (ref: string) => props.refs?.find((r) => r.ref === ref)
@@ -65,6 +71,10 @@ watch(
           <UBadge v-if="i === best" label="recommended" color="primary" variant="subtle" size="sm" data-decision-recommended />
         </span>
         <span v-if="o.tradeoffs" class="break-words text-xs text-muted">{{ o.tradeoffs }}</span>
+        <span v-if="subjects[i]" class="break-words text-xs text-muted" :data-decision-option-subject="i">
+          <NuxtLink v-if="subjects[i]!.to" :to="subjects[i]!.to" class="hover:underline">{{ subjects[i]!.text }}</NuxtLink>
+          <template v-else>{{ subjects[i]!.text }}</template>
+        </span>
       </li>
     </ol>
 
@@ -89,7 +99,7 @@ watch(
       />
       <dl v-if="showDetails" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md bg-elevated/40 p-2 text-xs" data-decision-details-list>
         <dt class="text-muted">Decision</dt>
-        <dd class="break-words"><span class="font-mono" data-decision-card-id>{{ decision.id }}</span> · <span data-decision-type>{{ decision.type }}</span><span v-if="decision.origin === 'plan'" data-decision-from-plan> · From the plan</span></dd>
+        <dd class="break-words"><span class="font-mono" data-decision-card-id>{{ decision.id }}</span> · <span data-decision-type>{{ decision.type }}</span><span v-if="decision.origin === 'plan'" data-decision-from-plan> · From the plan</span><span v-else-if="decision.origin === 'compare'" data-decision-from-compare> · A comparison's selection</span></dd>
         <template v-if="subject.text">
           <dt class="text-muted">About</dt>
           <dd class="break-words font-mono" data-decision-subject>

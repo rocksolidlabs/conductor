@@ -183,6 +183,63 @@ func RunToEnv(ctx context.Context, dir string, env map[string]string, w io.Write
 	return nil
 }
 
+// ErrOutputLimit is RunBounded's git whose standard output passed its
+// limit: the process is ended there, and what it printed up to the limit
+// comes back beside the error.
+var ErrOutputLimit = errors.New("git: the output passed its limit")
+
+// maxBoundedStderr is what RunBounded keeps of git's standard error.
+const maxBoundedStderr = 4 << 10
+
+// RunBounded is Run for an output the caller bounds: it keeps at most
+// limit bytes of git's standard output and 4 KiB of its standard error,
+// and past the limit ends the process and answers ErrOutputLimit with the
+// first limit bytes. A context that ends ends the process, and its error
+// is the answer. Run and RunEnv keep all of git's output; a measure of a
+// repository the server does not vouch for (a comparison's diff, its
+// dependency files) runs here.
+func RunBounded(ctx context.Context, dir string, limit int, args ...string) (string, error) {
+	argv, err := argvFor(ctx, "", []string{"-C", dir}, args)
+	if err != nil {
+		return "", err
+	}
+	run, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out := &bounded{n: max(limit, 0), over: cancel}
+	stderr := &Head{N: maxBoundedStderr}
+	err = execGitTo(run, "", argv, nil, out, stderr)
+	if out.past {
+		return string(out.buf), ErrOutputLimit
+	}
+	if err != nil {
+		return "", gitError(ctx, args[0], stderr.String(), err)
+	}
+	return string(out.buf), nil
+}
+
+// bounded keeps the first n bytes written to it and calls over once more
+// come.
+type bounded struct {
+	n    int
+	buf  []byte
+	past bool
+	over func()
+}
+
+func (b *bounded) Write(p []byte) (int, error) {
+	room := b.n - len(b.buf)
+	if len(p) > room {
+		b.buf = append(b.buf, p[:max(room, 0)]...)
+		if !b.past {
+			b.past = true
+			b.over()
+		}
+		return len(p), nil
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
 // RunTree runs git with args in the work tree workTree, with the tree's
 // own .git and the work tree named outright (-C workTree
 // --git-dir=workTree/.git --work-tree=workTree), so that git looks for no
