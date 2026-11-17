@@ -9,6 +9,7 @@ import {
   FAILURE_CLASSES,
   MAX_CHECK_EXCERPT,
   checkNote,
+  checkFindingWhere,
   externalHost,
   externalJobs,
   findingAt,
@@ -668,5 +669,14 @@ describe('a CI job on GitHub (IN1a PR-10)', () => {
     expect(externalHost(receipt)).toBe('github.com')
     expect(externalHost('github:127.0.0.1:8099/o/r/check-runs/1')).toBe('127.0.0.1:8099')
     expect(externalHost('run-1/build/1/check/test/1')).toBe('')
+  })
+})
+
+describe("a sent check finding's place in the Findings list", () => {
+  it('names a CI job on GitHub by its name, never by the ledger\'s empty step, and the ledger\'s by its step', () => {
+    expect(checkFindingWhere({ source: 'external', phase: '', id: '', name: 'test (ubuntu)' })).toBe('CI job test (ubuntu) failed on GitHub')
+    expect(checkFindingWhere({ source: 'external', phase: '', id: '' })).toBe('a CI job failed on GitHub')
+    expect(checkFindingWhere({ source: 'ledger', phase: 'check', id: 'test' })).toBe('check test failed')
+    expect(checkFindingWhere(undefined)).toBe('a check failed')
   })
 })

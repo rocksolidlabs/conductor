@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ReviewFinding } from '~/composables/useReview'
 import { candidateName } from '~/utils/dispatch'
-import { findingsInOrder, locatedWords, markBlocked, noteWhere, findingStateWords } from '~/utils/review'
+import { checkFindingWhere, findingsInOrder, locatedWords, markBlocked, noteWhere, findingStateWords } from '~/utils/review'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -54,7 +54,7 @@ function intentLabel(f: ReviewFinding): string {
   return f.intent === 'change' ? (f.severity ?? 'change') : f.intent
 }
 function where(f: ReviewFinding): string {
-  if (f.kind === 'check') return `${f.check ? `${f.check.phase} ${f.check.id}` : 'a check'} failed`
+  if (f.kind === 'check') return checkFindingWhere(f.check)
   return noteWhere(f)
 }
 </script>
