@@ -58,7 +58,7 @@ var compareCommands = []string{"task_retry", "task_accept", "task_cancel", "task
 // decision card and a proposal of a lane's command are refused; and the
 // kind table's words say so.
 func TestACompareBriefNeedsItsTable(t *testing.T) {
-	shape := CompareShape{Columns: []string{"approach-a", "approach-b", "approach-c"}, Commands: compareCommands}
+	shape := CompareShape{Columns: []string{"approach-a", "approach-b", "approach-c"}, Runs: []string{"team-0000000b", runA}, Commands: compareCommands}
 	good := func() map[string]any { return compareBriefJSON(shape.Columns...) }
 	if err := CheckCompareBrief(decodeCompare(t, good()), shape); err != nil {
 		t.Fatalf("a whole compare brief: %v", err)
@@ -109,7 +109,10 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 	v = good()
 	delete(itemOf(v, 1), "evidence")
 	wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[1].evidence")
-	for _, r := range []string{"candidate:" + runA + "/review-a/1", "check:" + runA + "/build/1/tests/1"} {
+	// Another comparison's candidates, of the same task ids, are not this
+	// one's.
+	other := "other-0000000c"
+	for _, r := range []string{"candidate:" + runA + "/review-a/1", "check:" + runA + "/build/1/tests/1", "candidate:" + other + "/approach-a/1", "check:" + other + "/approach-a/1/tests/1"} {
 		v = good()
 		itemOf(v, 1)["evidence"] = append(itemOf(v, 1)["evidence"].([]any), r)
 		wantInvalid(t, CheckCompareBrief(decodeCompare(t, v), shape), "items[1].evidence[4]")
@@ -137,6 +140,7 @@ func TestACompareBriefNeedsItsTable(t *testing.T) {
 
 	// A comparison the API could not read holds every brief refused.
 	wantInvalid(t, CheckCompareBrief(decodeCompare(t, good()), CompareShape{Commands: compareCommands}), "items")
+	wantInvalid(t, CheckCompareBrief(decodeCompare(t, good()), CompareShape{Columns: shape.Columns, Commands: compareCommands}), "items")
 
 	// The rule is in the words the guide gives and in brief_submit's schema.
 	rule := RequestRules()[0]

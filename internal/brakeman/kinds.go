@@ -488,7 +488,7 @@ var compareRows = []string{"Behaviour", "Complexity", "Dependency changes", "Che
 var requestRules = []RequestRule{
 	{Kind: KindCompare, Rule: "A compare request's brief holds exactly one comparison/1: its columns the candidates' task ids in the comparison's order (one without a standing result included, its cells saying so), its rows labelled " +
 		strings.Join(compareRows[:len(compareRows)-1], ", ") + " and " + compareRows[len(compareRows)-1] +
-		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks) and their receipts (check: refs). " +
+		" (other rows allowed, 20 at most), its evidence citing the candidates (candidate: refs of its columns' tasks, in the comparison's own runs) and their receipts (check: refs). " +
 		"It holds no decision/1: the selection is the person's, on the comparison. It proposes no command of a task, a review or a decision: a lane is the person's to command."},
 }
 
@@ -497,11 +497,14 @@ var requestRules = []RequestRule{
 func RequestRules() []RequestRule { return slices.Clone(requestRules) }
 
 // CompareShape is what a compare request's brief is held to: Columns, the
-// comparison's candidates' task ids in its block's order, and Commands,
-// the operations a proposal may not name in it (every command of a task,
-// a review or a decision, as the API's guide lists them).
+// comparison's candidates' task ids in its block's order; Runs, the runs
+// of its chain, the only runs its candidate: and check: refs may name;
+// and Commands, the operations a proposal may not name in it (every
+// command of a task, a review or a decision, as the API's guide lists
+// them).
 type CompareShape struct {
 	Columns  []string
+	Runs     []string
 	Commands []string
 }
 
@@ -509,12 +512,13 @@ type CompareShape struct {
 // (requestRules): exactly one comparison/1, its columns cmp.Columns in
 // order, its rows holding the five labels (compareRows, matched without
 // regard to case), its evidence citing at least one candidate: ref and
-// naming in its candidate: and check: refs only its columns' tasks; no
+// naming in its candidate: and check: refs only its columns' tasks in
+// the comparison's runs (cmp.Runs); no
 // decision/1; no proposal/1 naming one of cmp.Commands. With no columns
 // given every brief is refused: a comparison the API could not read is
 // no table to hold one to. The error is an *Invalid (invalid_brief).
 func CheckCompareBrief(b Brief, cmp CompareShape) error {
-	if len(cmp.Columns) == 0 {
+	if len(cmp.Columns) == 0 || len(cmp.Runs) == 0 {
 		return invalidBrief("items", "the comparison's candidates could not be read: ask again")
 	}
 	table := -1
@@ -552,7 +556,7 @@ func CheckCompareBrief(b Brief, cmp CompareShape) error {
 		if r.Kind != RefCandidate && r.Kind != RefCheck {
 			continue
 		}
-		if !slices.Contains(cmp.Columns, r.Task) {
+		if !slices.Contains(cmp.Columns, r.Task) || !slices.Contains(cmp.Runs, r.Run) {
 			return invalidBrief(fmt.Sprintf("%s.evidence[%d]", field, j), "%s names no candidate of the comparison (%s)", r, strings.Join(cmp.Columns, ", "))
 		}
 		cited = cited || r.Kind == RefCandidate

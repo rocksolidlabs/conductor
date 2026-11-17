@@ -346,7 +346,8 @@ func (s *Server) compareAskRefusal(ctx context.Context, in brakeman.Request) err
 
 // compareShape is what the brief answering the compare request req is
 // held to: the candidates' task ids of its run's comparison in the
-// block's order, read from the crew as launched; and every operation of
+// block's order, read from the crew as launched; the runs of its chain,
+// the only runs its refs may name; and every operation of
 // the guide a proposal may not name in it (laneCommands). A run the
 // ledger does not hold, or not a comparison's, gives no columns, which
 // refuses every brief.
@@ -365,6 +366,9 @@ func (s *Server) compareShape(ctx context.Context, req brakeman.Request) (brakem
 	}
 	for _, cand := range c.Compare.Candidates {
 		shape.Columns = append(shape.Columns, cand.Task)
+	}
+	if shape.Runs, err = s.ledgerChain(ctx, req.Subjects[0].Run); err != nil {
+		return brakeman.CompareShape{Commands: shape.Commands}, err
 	}
 	return shape, nil
 }

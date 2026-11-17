@@ -697,11 +697,17 @@ func admitChainPath(r *http.Request, o *observer) (bool, error) {
 // comparison's own bound (crew's maxCompareChain).
 const maxObservedChain = 256
 
-// chainOf is the runs of the chain the run belongs to, as the ledger
-// links them: back along continued_from, on along continued_by, each way
-// at most maxObservedChain; the run alone without a ledger or a row.
+// chainOf is the runs of the chain the run belongs to (ledgerChain).
 func (o *observer) chainOf(ctx context.Context, id string) ([]string, error) {
-	ld := o.rr.s.ledger
+	return o.rr.s.ledgerChain(ctx, id)
+}
+
+// ledgerChain is the runs of the chain the run belongs to, as the ledger
+// links them: the run, then back along continued_from, then on along
+// continued_by, each way at most maxObservedChain; the run alone without
+// a ledger or a row.
+func (s *Server) ledgerChain(ctx context.Context, id string) ([]string, error) {
+	ld := s.ledger
 	if ld == nil {
 		return []string{id}, nil
 	}
