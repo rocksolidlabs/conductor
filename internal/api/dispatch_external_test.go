@@ -1170,7 +1170,8 @@ func TestEveryTrackerRouteUsesCredentialFor(t *testing.T) {
 	}
 	drivePublications(t, e, g, "github.com", do)
 	drivePublications(t, e, g, gheHost, doOn(gheHost, plantedToken2))
-	for _, p := range slices.Concat(externalTouching, publicationTouching) {
+	driveExternalJobs(t, e, g.f, do)
+	for _, p := range slices.Concat(externalTouching, publicationTouching, []string{"GET /api/dispatch/tickets/{key}/links/{id}/checks/{check}/repair", "POST /api/dispatch/tickets/{key}/reviews"}) {
 		if !served[p] {
 			t.Errorf("%s was not driven", p)
 		}

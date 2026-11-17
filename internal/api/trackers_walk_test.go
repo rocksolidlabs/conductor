@@ -192,6 +192,9 @@ func TestTrackerTokenSavedNeverServed(t *testing.T) {
 	// A ticket's publications (IN1a PR-5): a prepare, sends, a Check and a
 	// Close now, with the settings token.
 	drivePublications(t, b.testEnv, newGHItems(f), "github.com", admin)
+	// A delivery's CI job as a prepared request (IN1a PR-10): its log
+	// fetched behind a signed redirect, with the settings token.
+	driveExternalJobs(t, b.testEnv, f, admin)
 
 	// Bodies that are not the route's: one fixed sentence, whatever the
 	// body holds of a token (a member's name, a control byte, a bad escape,
