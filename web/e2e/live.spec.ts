@@ -211,6 +211,11 @@ const KNOWN_WORDS = [
 
 /** The test's page, for a row that fails to say what its member's screen holds (screenHolds). */
 let look: ((sessionId: string, want: string) => Promise<string[]>) | undefined
+/** The agent whose row runs, and why an agent's later rows are skipped once one of its turns ended in an error on this run's key. */
+let current = ''
+const gaveUp: Record<string, string> = {}
+/** How long a row waits before it looks once at what the program signalled: an agent that answers does so sooner. */
+const LOOK_MS = 30_000
 
 /**
  * Which of KNOWN_WORDS the session's screen holds: the page opens the session, the terminal's bytes are read off the page's own
@@ -261,6 +266,8 @@ async function screenHolds(page: Page, server: Started, sessionId: string, want:
  */
 async function answerOrExit(api: Api, runId: string, read: () => Promise<string>, want: string, timeout: number) {
   const until = Date.now() + timeout
+  const lookAt = Date.now() + LOOK_MS
+  let looked = false
   let held: { words: string; since: number } | undefined
   let last = ''
   for (;;) {
@@ -274,6 +281,17 @@ async function answerOrExit(api: Api, runId: string, read: () => Promise<string>
     } else held = undefined
     last = await read()
     if (last.includes(want)) return
+    // A turn that ended in an error is never answered, and Conductor's session goes on saying "working" (the program's own status
+    // says error): the row says so once it has waited LOOK_MS, and the agent's other rows are skipped, since the same key runs them.
+    if (!looked && Date.now() >= lookAt && m.sessionId && look) {
+      looked = true
+      const holds = await look(m.sessionId, want).catch(() => [] as string[])
+      if (holds.some((h) => h.startsWith('program states:') && h.endsWith('error'))) {
+        const why = `its turn ended in an error${holds.includes('billing') ? ', and its screen names billing: the provider refuses this key for its quota or its billing' : ''}`
+        if (current) gaveUp[current] = `${current}: an earlier row's turn ended in an error on this run's key${holds.includes('billing') ? ' (its screen named billing)' : ''}`
+        throw new Error(`the agent did not answer: ${why}; of the words this suite knows a screen by, its screen holds: ${holds.join(', ')}`)
+      }
+    }
     if (Date.now() >= until) {
       // Conductor's own lines about the member, and which known words its screen holds: never the screen itself.
       const log = (await api.run(runId)).log.slice(-5).map((e) => e.message ?? e.type).join(' | ')
@@ -310,6 +328,8 @@ for (const agent of ['claude', 'codex']) {
     // In CI nobody is signed in: an agent runs on its key or not at all. On a person's machine its own login may stand in.
     test.skip(!!process.env.CI && !process.env[KEY[agent]!], `${agent}: this run holds no ${KEY[agent]}`)
     test.beforeEach(({ page, server }) => {
+      test.skip(!!gaveUp[agent], gaveUp[agent] ?? '')
+      current = agent
       look = (sessionId, want) => screenHolds(page, server, sessionId, want)
     })
 
