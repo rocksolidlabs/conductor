@@ -223,7 +223,7 @@ func TestMigrationToOpenSendsKeepsEveryRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { older.Close() })
-	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", openSendsSchema)) {
+	if ro, why := older.ReadOnly(); !ro || !strings.Contains(why, fmt.Sprintf("version %d, written by a newer Conductor", Version)) {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
 	rc, err = older.AskCancel(ctx, testOp("older-ask"), sends["fx-pending"])
