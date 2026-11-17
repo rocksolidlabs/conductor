@@ -358,6 +358,22 @@ func TestAReplayCutShortEndsAtTheNewest(t *testing.T) {
 	}
 }
 
+// A send that finds no turn while its connection stays is tried again
+// until it goes, with no report after it.
+func TestAnUnsentAgentSessionIsTriedAgain(t *testing.T) {
+	a, sent, answer := agentSessionSender(t, true)
+	*answer = func(n int) error {
+		if n == 1 {
+			return session.ErrSlowConsumer
+		}
+		return nil
+	}
+	a.noteAgentSession("last", true)
+	if got := drained(t, a, sent); !slices.Equal(got, []string{"last"}) {
+		t.Fatalf("sent %q", got)
+	}
+}
+
 // After the socket was dropped for a server that took no ids, the route
 // recorded a newer id; the host's next connection to a server that takes
 // them sends none of what it logged before, an id it had not sent among

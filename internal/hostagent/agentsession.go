@@ -2,6 +2,8 @@ package hostagent
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
@@ -78,8 +80,9 @@ func (a *agent) clearAgentSessions() {
 // flushAgentSessions sends, in order, the entries not yet sent on the
 // current connection, one sender at a time, then pings the server and,
 // answered on the same connection, holds them taken. A send that fails
-// leaves the rest for the next report or the next connection's start;
-// nothing goes to a server that does not take it.
+// while the connection stays the same is tried again; one whose
+// connection went leaves the rest for the next connection's start; nothing
+// goes to a server that does not take it.
 func (a *agent) flushAgentSessions() {
 	a.mu.Lock()
 	if a.asFlushing {
@@ -131,12 +134,19 @@ func (a *agent) flushAgentSessions() {
 			a.mu.Unlock()
 			err := a.sendAgentSession(m)
 			a.mu.Lock()
-			if err != nil {
+			switch {
+			case err == nil:
+				a.asSent = max(a.asSent, seq)
+				a.mu.Unlock()
+			case a.out == w && !errors.Is(err, errConnDown):
+				// No turn in time on a connection that stays: again.
+				a.mu.Unlock()
+				a.log.Debug("an agent session id is sent again", "err", err)
+				time.Sleep(10 * time.Millisecond)
+			default:
 				stop()
 				return
 			}
-			a.asSent = max(a.asSent, seq)
-			a.mu.Unlock()
 		}
 	}()
 }

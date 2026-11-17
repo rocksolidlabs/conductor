@@ -648,3 +648,23 @@ func TestTheSocketIsMadeOnlyUnderABaseOthersCannotRewrite(t *testing.T) {
 		t.Fatalf("left under the open base: %v", left)
 	}
 }
+
+// A report whose session is set is that session's, also while the listener
+// is closing: the closing never refuses it at random.
+func TestASetSessionIsTheReportsWhileTheListenerCloses(t *testing.T) {
+	tok, _ := share.NewToken()
+	l, err := listenReports([]string{socketBase(t)}, tok, discardLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{Log: discardLog, FileEdit: "off"})
+	l.setSession(local)
+	l.Close()
+	for i := range 200 {
+		if got := l.session(t.Context()); got != local {
+			t.Fatalf("wait %d: %v", i, got)
+		}
+	}
+}

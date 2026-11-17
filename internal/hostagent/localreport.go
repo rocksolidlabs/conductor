@@ -303,10 +303,16 @@ func (l *reportListener) session(ctx context.Context) *session.Local {
 	select {
 	case <-l.ready:
 	case <-l.closed:
-		return nil
 	case <-ctx.Done():
-		return nil
 	case <-t.C:
+	}
+	// A session that is set is the report's, whichever of the waits
+	// ended first: a listener closing as the session is set refuses
+	// nothing the session could take.
+	select {
+	case <-l.ready:
+	default:
+		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
