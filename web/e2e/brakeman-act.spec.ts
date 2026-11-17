@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, test, tokenAsk } from './fixtures'
+import { Api, expect, standingRoute, test, tokenAsk } from './fixtures'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
 // Brakeman's authorized actions on the app's pages (docs/plans/brakeman.md, PR-13), on a server of its own (as brakeman-cards.spec.ts).
@@ -16,6 +16,11 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // ana. Each turn holds at its own gate until this spec has written what it does; the launch and the requests are
 // read by their ids, every wait on what the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 // A test's waits fit in its timeout (AGENTS.md): each step raises the test's timeout by the caps of the waits it is about to make
 // (budget, as palette-rows.spec.ts does), so the timeout is their sum, with the config's 120 s above it for what happens between them

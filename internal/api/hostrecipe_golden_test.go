@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // hostRecipes is the recipe a host is sent (hostRecipe) for each agent of
@@ -23,7 +26,7 @@ func hostRecipes(t *testing.T) []byte {
 	}
 	var out []entry
 	for _, a := range catalog.Default().List() {
-		b, err := json.Marshal(s.hostRecipe(a.ID))
+		b, err := json.Marshal(s.hostRecipe(a.ID, false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,5 +61,37 @@ func TestTheRecipeAHostIsSentIsMains(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("the recipes a host is sent:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A host that reads forms (#970) is sent, for each agent of the built-in
+// catalog, the recipe a server session of the agent is started with
+// (agents.Recipe), whole: within the bounds a host checks (Check) and
+// within proto.MaxHostRecipe, Codex's form among its questions.
+func TestTheRecipeAHostThatReadsFormsIsSentIsTheServers(t *testing.T) {
+	s := &Server{catalog: catalog.Default(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	forms := 0
+	for _, a := range catalog.Default().List() {
+		got, want := s.hostRecipe(a.ID, true), agents.Recipe(a)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: sent %+v, want %+v", a.ID, got, want)
+		}
+		if got == nil {
+			continue
+		}
+		if err := got.Check(); err != nil {
+			t.Fatalf("%s: %v", a.ID, err)
+		}
+		if b, _ := json.Marshal(got); len(b) > proto.MaxHostRecipe {
+			t.Fatalf("%s: %d bytes", a.ID, len(b))
+		}
+		for _, q := range got.Questions {
+			if isForm(q) {
+				forms++
+			}
+		}
+	}
+	if forms == 0 {
+		t.Fatal("no recipe of the built-in catalog has a form")
 	}
 }

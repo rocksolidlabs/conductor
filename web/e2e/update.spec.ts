@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { callAnswer, expect, startCall, test, type Session } from './fixtures'
+import { callAnswer, expect, standingRoute, startCall, test, type Session } from './fixtures'
 
 // The update the desktop app downloaded (#290): never a dialog of the app's
 // own, which every check that found the same download used to open again.
@@ -11,6 +11,11 @@ import { callAnswer, expect, startCall, test, type Session } from './fixtures'
 // once, refuses to install a version it does not hold and puts a restart off
 // while it checks for updates, as the app does.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 type Told = { ready: string; announce: boolean; failed: string; restart?: string; checking?: boolean }
 type Invited = { e2eInvite?: (invite: unknown) => Promise<boolean> }

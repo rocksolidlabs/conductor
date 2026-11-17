@@ -411,7 +411,7 @@ describe('one palette row per decision', () => {
     expect(rowDecision('decision:nope', sessions)).toBeUndefined()
   })
 
-  // The overlap with the decision page (#684): its "Needs your decision" group lists a row per inbox item, the question that mirrors a
+  // The overlap with the decision page (#684): its own group (`decide` here) lists a row per inbox item, the question that mirrors a
   // decision among them; Needs you's "Answer dr-1" stands for it, and the page's row of it goes.
   it("keeps the first row of each decision across the groups and drops every later one, the decision page's among them", () => {
     const groups = [

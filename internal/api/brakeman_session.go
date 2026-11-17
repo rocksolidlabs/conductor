@@ -252,8 +252,9 @@ func (s *Server) handleSessionBrakemanRequest(w http.ResponseWriter, r *http.Req
 }
 
 // batchClasses are the visibility classes a batch's wakes are of, by
-// their subjects' kinds; its overflow, which names none, counts every
-// class a wake may be of.
+// their subjects' kinds; its overflow, which names none, by the class of
+// each source it counts, or every class a wake may be of when it does not
+// say which sources it counts (overflowBySource).
 func batchClasses(b *crew.Batch) []string {
 	used := map[string]bool{}
 	for _, w := range b.Wakes {
@@ -263,8 +264,16 @@ func batchClasses(b *crew.Batch) []string {
 			}
 		}
 	}
-	if b.Overflow != nil {
-		used[brakeman.ClassRuns], used[brakeman.ClassSessions], used[brakeman.ClassDispatch] = true, true, true
+	if o := b.Overflow; o != nil && overflowBySource(*o) {
+		for src, p := range o.Sources {
+			if c, _ := wakeClass(src); c != "" && p.Count > 0 {
+				used[c] = true
+			}
+		}
+	} else if o != nil {
+		for _, c := range overflowClasses {
+			used[c] = true
+		}
 	}
 	var out []string
 	for _, c := range brakeman.Classes {

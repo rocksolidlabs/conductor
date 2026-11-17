@@ -1,17 +1,24 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/agents"
 	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
@@ -118,6 +125,83 @@ fill:
 	b, dropped = registeredMessage(m)
 	if dropped || !strings.Contains(string(b), `"recipe":{`) || len(b) > proto.MaxHostMessage {
 		t.Fatalf("a registered that fits: %d bytes, dropped %v", len(b), dropped)
+	}
+}
+
+// registeredRecipe registers a host saying host of itself, with a session
+// of agentID, and answers the recipe of the registered it is sent, its
+// bytes as they came (nil for none).
+func registeredRecipe(t *testing.T, e *testEnv, host proto.HostInfo, agentID string) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, strings.Replace(e.http.URL, "http://", "ws://", 1)+"/ws/host", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer test-host-token"}}})
+	if err != nil {
+		t.Fatalf("dial host: %v", err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	c.SetReadLimit(proto.MaxHostMessage)
+	reg := proto.Register{T: proto.HostRegister, Proto: proto.ProtoVersion, Host: host, Session: proto.HostSession{Name: "hosted", AgentID: agentID, Command: []string{"x"}, Cwd: e.root, Cols: 80, Rows: 24}}
+	if err := c.Write(ctx, websocket.MessageText, encoded(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		T      string          `json:"t"`
+		Recipe json.RawMessage `json:"recipe"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil || m.T != proto.HostRegistered {
+		t.Fatalf("registered %s: %v", data, err)
+	}
+	return m.Recipe
+}
+
+// isForm is a recipe's question that is a form (agents.HostRecipe).
+func isForm(q proto.RecipeQuestion) bool {
+	return q.Anytime && q.AnswersFromScreen && len(q.Answers) > 0
+}
+
+// Codex's form asking to allow a tool of an MCP server (#716) is in the
+// recipe registered carries only for a host whose register says it reads
+// forms (proto.HostInfo.Forms, #970), and only from the owner's own
+// server: such a host is sent the recipe a server session of the agent
+// is started with (agents.Recipe), byte for byte. A host that does not say
+// it (an earlier release's, or one that says answerAs alone) is sent the
+// recipe without the form, byte for byte what it was sent before; so is a
+// host that says it to a switchyard.
+func TestRegisteredCarriesTheFormsOnlyToAHostThatReadsThem(t *testing.T) {
+	codex, ok := catalog.Default().Get("codex")
+	if !ok {
+		t.Fatal("no codex in the default catalog")
+	}
+	whole, without := encoded(t, agents.Recipe(codex)), encoded(t, agents.HostRecipe(codex))
+	var r proto.HostRecipe
+	if err := json.Unmarshal(whole, &r); err != nil || !slices.ContainsFunc(r.Questions, isForm) {
+		t.Fatalf("Codex's recipe has no form: %s", whole)
+	}
+	if err := json.Unmarshal(without, &r); err != nil || slices.ContainsFunc(r.Questions, isForm) {
+		t.Fatalf("the recipe without forms has one: %s", without)
+	}
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	own := newTestEnvAgents(t, nil, discard, []catalog.Agent{codex})
+	yard := newTestEnvAgents(t, func(c *config.Config) { c.Switchyard.Enabled = true }, discard, []catalog.Agent{codex})
+	for _, c := range []struct {
+		name string
+		e    *testEnv
+		host proto.HostInfo
+		want []byte
+	}{
+		{"a host that reads forms", own, proto.HostInfo{Name: "laptop", AnswerAs: true, Forms: true}, whole},
+		{"a host that says answerAs alone", own, proto.HostInfo{Name: "laptop", AnswerAs: true}, without},
+		{"an earlier release's host", own, proto.HostInfo{Name: "laptop"}, without},
+		{"a host that reads forms, to a switchyard", yard, proto.HostInfo{Name: "laptop", Forms: true}, without},
+	} {
+		if got := registeredRecipe(t, c.e, c.host, "codex"); string(got) != string(c.want) {
+			t.Errorf("%s was sent\n%s\nwant\n%s", c.name, got, c.want)
+		}
 	}
 }
 

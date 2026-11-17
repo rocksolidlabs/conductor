@@ -383,17 +383,38 @@ var walkWriters = []walkWriter{
 	}},
 }
 
-// holding is every place of the store that holds the secret: each table's
-// column ("table.column"), the reads of the walk's tickets and link, and
-// the store's export.
-func holding(t *testing.T, w walkStore, secret string) []string {
+// holding is, for each secret, every place of the store that holds it:
+// each table's column ("table.column"), the reads of the walk's tickets
+// and link, and the store's export. The store is read once for all the
+// secrets: one query a column, one read of each ticket and of the link,
+// one export.
+func holding(t *testing.T, w walkStore, secrets []string) map[string][]string {
 	t.Helper()
 	ctx := context.Background()
-	var out []string
+	out := map[string][]string{}
+	likes := make([]string, len(secrets))
+	args := make([]any, len(secrets))
+	for i, secret := range secrets {
+		args[i] = "%" + secret + "%"
+	}
 	for _, table := range texts(t, w.s, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'tickets_fts%' ORDER BY name") {
 		for _, col := range columnsOf(t, w.s.db, table) {
-			if countOf(t, w.s, fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE CAST("%s" AS TEXT) LIKE ?`, table, col), "%"+secret+"%") > 0 {
-				out = append(out, table+"."+col)
+			for i := range secrets {
+				likes[i] = fmt.Sprintf(`COUNT(*) FILTER (WHERE CAST("%s" AS TEXT) LIKE ?%d)`, col, i+1)
+			}
+			query := fmt.Sprintf(`SELECT %s FROM "%s"`, strings.Join(likes, ", "), table)
+			counts := make([]int, len(secrets))
+			dest := make([]any, len(secrets))
+			for i := range counts {
+				dest[i] = &counts[i]
+			}
+			if err := w.s.db.QueryRow(query, args...).Scan(dest...); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			for i, secret := range secrets {
+				if counts[i] > 0 {
+					out[secret] = append(out[secret], table+"."+col)
+				}
 			}
 		}
 	}
@@ -402,26 +423,48 @@ func holding(t *testing.T, w walkStore, secret string) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b, _ := encodeValue(v); strings.Contains(b, secret) {
-			out = append(out, "the read of "+key)
+		b, _ := encodeValue(v)
+		for _, secret := range secrets {
+			if strings.Contains(b, secret) {
+				out[secret] = append(out[secret], "the read of "+key)
+			}
 		}
 	}
 	r, _, err := w.s.LinkReadOf(ctx, w.link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := encodeValue(r); strings.Contains(b, secret) {
-		out = append(out, "the link's read")
+	b, _ := encodeValue(r)
+	for _, secret := range secrets {
+		if strings.Contains(b, secret) {
+			out[secret] = append(out[secret], "the link's read")
+		}
 	}
 	dst := filepath.Join(t.TempDir(), "export.sqlite")
 	if err := w.s.Snapshot(ctx, dst); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(dst); err != nil || bytes.Contains(b, []byte(secret)) {
-		out = append(out, fmt.Sprintf("the export (%v)", err))
+	export, err := os.ReadFile(dst)
+	for _, secret := range secrets {
+		if err != nil || bytes.Contains(export, []byte(secret)) {
+			out[secret] = append(out[secret], fmt.Sprintf("the export (%v)", err))
+		}
 	}
 	return out
 }
+
+// walkSlots bounds how many of the walk's subtests run at once. Every
+// store of a test process runs through one SQLite library whose memory
+// allocator takes one lock for the whole process (modernc.org/libc's
+// malloc), so the process does about six cores of work however many
+// subtests run: at -parallel's default, GOMAXPROCS (64 on a large
+// machine), each of the walk's 370 subtests had a tenth of a core, and a
+// store's open, a few dozen statements, waited on that lock past the 30 s
+// the store gives its open (dispatch.go) once the machine was loaded; one
+// open alone takes about a second under the race detector. Eight at once
+// keep those six cores busy and give each subtest most of one (a
+// four-core CI runner runs four already, -parallel's default there).
+var walkSlots = make(chan struct{}, 8)
 
 // secretsOf is the secrets a marker carries.
 func secretsOf(marker string) []string {
@@ -643,6 +686,9 @@ func TestEveryVersionFiveTextHasADecision(t *testing.T) {
 // as written (keptContent: the walk asks nothing of them). Every field has
 // a decision; publications stays empty but for a publication's own
 // writers.
+//
+// The walk's subtests, one fresh store each (an operation's writes must
+// meet no other's), take a slot of walkSlots to run.
 func TestNoTextKeepsAnAddressesQuery(t *testing.T) {
 	for _, wr := range walkWriters {
 		// The record as made is a good one: the operation does it.
@@ -659,16 +705,26 @@ func TestNoTextKeepsAnAddressesQuery(t *testing.T) {
 			for _, marker := range markers {
 				t.Run(wr.name+"/"+name+"/"+marker, func(t *testing.T) {
 					t.Parallel()
+					walkSlots <- struct{}{}
+					// Registered first, so run last: the store's close is
+					// inside the slot too.
+					t.Cleanup(func() { <-walkSlots })
 					w := newWalkStore(t)
 					record := wr.record()
 					setPath(reflect.ValueOf(record), path, marker)
 					refused := wr.run(t, w, record)
-					for _, secret := range secretsOf(marker) {
+					carried := secretsOf(marker)
+					for _, secret := range carried {
 						if strings.Contains(refused, secret) {
 							t.Errorf("the refusal's words hold %q: %s", secret, refused)
 						}
-						if held := holding(t, w, secret); kept != keptContent && len(held) > 0 {
-							t.Errorf("%q is held by %v (refused: %q)", secret, held, refused)
+					}
+					if kept != keptContent {
+						held := holding(t, w, carried)
+						for _, secret := range carried {
+							if len(held[secret]) > 0 {
+								t.Errorf("%q is held by %v (refused: %q)", secret, held[secret], refused)
+							}
 						}
 					}
 					if n := countOf(t, w.s, "SELECT COUNT(*) FROM publications"); n != 0 && !strings.HasPrefix(wr.name, "a publication's") {

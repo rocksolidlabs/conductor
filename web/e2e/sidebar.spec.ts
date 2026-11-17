@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Locator, Page } from '@playwright/test'
-import { dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
+import { atRest, dayPage, endHosted, expect, hostedName, hostedSession, rowAnswer, test, type Session } from './fixtures'
 import { inside, noOverlap, tabTo, uncut } from './layout'
 import { ownServer, type OwnServer } from './own-server'
 import { serverBinary, stubBash, stubPath } from './server'
@@ -1158,6 +1158,54 @@ test("a page's tooltip says what it is", async ({ day, browser }) => {
   const row = palette.locator('[data-palette-row="go:yard"]')
   await expect(row).toBeVisible()
   await expect(row.locator('[data-palette-detail]')).toHaveText('Every live terminal on one screen.')
+})
+
+// The tiles' tooltips (#374): each is the page's sentence and its key, a plain tooltip of one line (no wrap of TipButton's). Measured as
+// drawn: at the sidebar's default width (its narrowest) in the desktop app's window and in the narrowest window with a sidebar, and
+// widened as far as a drag takes it, in both themes, each tile's tooltip shows its sentence whole and inside the window.
+test("each sidebar tile's tooltip shows its sentence whole, inside the window, at the sidebar's widths and in both themes", async ({ day, browser }) => {
+  void day
+  const cases = [
+    { width: 1440, height: 900, sidebar: undefined },
+    { width: 1024, height: 768, sidebar: undefined },
+    { width: 1440, height: 900, sidebar: '23.4' },
+  ] as const
+  test.setTimeout(test.info().timeout + 2 * cases.length * 12 * 3 * 15_000)
+  for (const theme of ['dark', 'light'] as const) {
+    for (const c of cases) {
+      const at = `${theme}, ${c.width} × ${c.height}, the sidebar ${c.sidebar ? `at ${c.sidebar} rem` : 'at its default width'}`
+      const page = await dayPage(browser, { width: c.width, height: c.height, theme })
+      if (c.sidebar) {
+        await page.evaluate((w) => localStorage.setItem('conductor.sidebar.width', w), c.sidebar)
+        await page.reload()
+      }
+      const sidebar = page.locator('#dashboard-sidebar-main')
+      await expect(sidebar.locator('[data-sidebar-tiles]')).toBeVisible()
+      const tiles = sidebar.locator('[data-sidebar-tiles] a[data-sidebar-tile]')
+      const n = await tiles.count()
+      expect(n, `${at}: tiles drawn`).toBeGreaterThan(3)
+      for (let i = 0; i < n; i++) {
+        const tile = tiles.nth(i)
+        const name = await tile.getAttribute('data-sidebar-tile')
+        await tile.hover()
+        const content = page.locator('[data-slot="content"]').filter({ has: page.getByRole('tooltip', { includeHidden: true }) })
+        const text = content.locator('[data-slot="text"]')
+        await expect(text, `${at}: ${name}'s tooltip`).toBeVisible()
+        await atRest(text)
+        const m = await text.evaluate((e) => {
+          const box = e.closest('[data-slot="content"]')!.getBoundingClientRect()
+          return { sw: e.scrollWidth, cw: e.clientWidth, sh: e.scrollHeight, ch: e.clientHeight, left: box.left, right: box.right, top: box.top, bottom: box.bottom, vw: innerWidth, vh: innerHeight, words: e.textContent }
+        })
+        expect(m.sw, `${at}: ${name}'s tooltip "${m.words}" is as wide as its box at most`).toBeLessThanOrEqual(m.cw)
+        expect(m.sh, `${at}: ${name}'s tooltip is as tall as its box at most`).toBeLessThanOrEqual(m.ch)
+        expect([m.left >= 0, m.right <= m.vw, m.top >= 0, m.bottom <= m.vh], `${at}: ${name}'s tooltip inside the window`).toEqual([true, true, true, true])
+        await uncut(text)
+        await page.mouse.move(c.width - 2, c.height - 2)
+        await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0)
+      }
+      await page.context().close()
+    }
+  }
 })
 
 // The UX review's P4: Running splits in two. Finished (an agent that ended its turn waits for your next word) sits above Working (an

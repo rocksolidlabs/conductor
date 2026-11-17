@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sha256Hex } from './publication'
 import { MAX_TICKET_EXTERNAL_SEARCH } from './protocol'
-import { descriptionDiffersFrom, externalSearchable, importReady } from './tracker'
+import { descriptionDiffersFrom, externalSearchable, imageCaption, importReady } from './tracker'
 import { checkHost, checksWords, githubHref, githubStateWords, linkStateWords, ownersWords, parseGitHubRef, readAge, readIsStale, refWords, trackerRefusalWords, type GitHubRef } from './tracker'
 
 // A GitHub item's reference as the server's parse reads it (internal/tracker/ref.go): the same table as TestParseGitHubURLs in
@@ -215,5 +215,38 @@ describe('a pasted address the palette searches by', () => {
     const long = `https://github.com/octo-example/${'w'.repeat(100)}/issues/${'9'.repeat(20)}`
     expect(externalSearchable(long, o)).toBe(true)
     expect(externalSearchable(`https://github.com/octo-example/widgets/issues/1${'0'.repeat(MAX_TICKET_EXTERNAL_SEARCH)}`, o)).toBe(false)
+  })
+})
+
+describe('imageCaption', () => {
+  // The ids GitHub serves its images under: a run of hexadecimal digits and an id of 36 characters.
+  const HEX = '4f9a0c3e8b2d7a61c5e0f8b9a3d2c1e07b6a5f4e9d8c7b6a5f4e3d2c1b0a9f8e'
+  const UUID = '0a1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d'
+  const attachments = [
+    { id: 'att-1', name: 'github-1.png' },
+    { id: 'att-2', name: 'github-2.jpg' },
+  ]
+
+  it("is the attachment's name once the import downloaded the image", () => {
+    expect(imageCaption(0, 'att-1', attachments)).toBe('github-1.png')
+    expect(imageCaption(1, 'att-2', attachments)).toBe('github-2.jpg')
+  })
+
+  it('is "image N" by its place where there is no attachment: the preview, a skipped image, one not downloaded yet, one not found', () => {
+    expect([0, 1, 2].map((i) => imageCaption(i))).toEqual(['image 1', 'image 2', 'image 3'])
+    expect(imageCaption(2, undefined, attachments)).toBe('image 3')
+    expect(imageCaption(3, 'att-gone', attachments)).toBe('image 4')
+    expect(imageCaption(0, 'att-3', [{ id: 'att-3', name: '  ' }])).toBe('image 1')
+  })
+
+  it('never shows the identifier GitHub serves an image under', () => {
+    // The image's id is its address; nothing of its last part reaches the caption, whichever case.
+    for (const id of [`https://github.com/user-attachments/assets/${UUID}`, `https://private-user-images.githubusercontent.com/1/${HEX}.png?jwt=x`]) {
+      const last = id.slice(id.lastIndexOf('/') + 1)
+      for (const caption of [imageCaption(0), imageCaption(0, 'att-1', attachments), imageCaption(5, 'none', attachments)]) {
+        expect(caption).not.toContain(last.slice(0, 8))
+        expect(caption).not.toMatch(/[0-9a-f]{8}/)
+      }
+    }
   })
 })

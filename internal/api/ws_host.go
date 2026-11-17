@@ -169,10 +169,12 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// An open host, which presented no token, is handed the configured
 	// servers alone: no media provider is asked for it (iceServersFor).
 	ice := s.iceServersFor(ctx, ext.ICERequest{Purpose: icePurposeHost, Session: info.ID}, open)
-	// A desk is sent no recipe: it watches no screen.
+	// A desk is sent no recipe: it watches no screen. The forms go only to
+	// a host that said it reads them, and only from the owner's own server
+	// (hostRecipe).
 	var recipe *proto.HostRecipe
 	if !isDesk {
-		recipe = s.hostRecipe(reg.Session.AgentID)
+		recipe = s.hostRecipe(reg.Session.AgentID, reg.Host.Forms && !s.cfg.Switchyard.Enabled)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
 		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk, ActivitySeq: !isDesk && !s.cfg.Switchyard.Enabled})
@@ -913,12 +915,15 @@ func registeredMessage(m proto.Registered) (b []byte, dropped bool) {
 
 // hostRecipe is what a hosted session of the agent agentID watches on its
 // screen (#293): the catalog's recipe for it, as a server session of the
-// agent is started with, but its forms (agents.HostRecipe: a hosted
-// session answers Codex's MCP tool approval in its terminal, #716); nil
-// when the catalog has no such agent, when it has nothing to watch, and
-// when its encoding is past proto.MaxHostRecipe, which the built-in
-// entries are far under.
-func (s *Server) hostRecipe(agentID string) *proto.HostRecipe {
+// agent is started with (agents.Recipe), when forms is set (its host said
+// it reads forms, proto.HostInfo.Forms, and this server is no switchyard,
+// #970), and otherwise the same but its forms (agents.HostRecipe: the
+// hosted session answers Codex's MCP tool approval in its terminal, #716),
+// the bytes a host was sent before forms were a question; nil when the
+// catalog has no such agent, when it has nothing to watch, and when its
+// encoding is past proto.MaxHostRecipe, which the built-in entries are far
+// under.
+func (s *Server) hostRecipe(agentID string, forms bool) *proto.HostRecipe {
 	if agentID == "" {
 		return nil
 	}
@@ -927,6 +932,9 @@ func (s *Server) hostRecipe(agentID string) *proto.HostRecipe {
 		return nil
 	}
 	r := agents.HostRecipe(agent)
+	if forms {
+		r = agents.Recipe(agent)
+	}
 	if r == nil {
 		return nil
 	}

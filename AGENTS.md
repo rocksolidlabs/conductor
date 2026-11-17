@@ -188,7 +188,36 @@ add its rule here.
   test's arrays, which then saw a second request or an error not yet
   said (2026-11-11, #281). These composables read their auto-imports when
   they are called, so their static import before the stubs is safe; a
-  module that reads one as it loads is imported after its stubs.
+  module that reads one as it loads is imported after its stubs. A test
+  that needs the module fresh (`vi.resetModules`, a new tab's page) takes
+  an instance the file loaded as it was collected, one per load, each
+  handed out once (`useIdentityPass.test.ts`, 2026-11-16, #281): a load
+  in its body is a request to vitest's module server, which a whole run
+  on a loaded machine keeps busy for seconds.
+- Parallel subtests share what their process has. Go runs GOMAXPROCS of
+  them at once by default, and a lock a library takes for the whole
+  process makes each step of each as slow as all of theirs together:
+  every store goes through one SQLite whose allocator takes one lock per
+  process (`modernc.org/libc`'s malloc), so 64 of the address walk's 370
+  fresh stores at once had a tenth of a core each, the process about six
+  cores, and a store's open ran past the 30 s the store gives it at a load
+  average of 40 (`TestNoTextKeepsAnAddressesQuery`, 2026-11-16, #281).
+  Run at once what the work can use (a channel of slots taken after
+  `t.Parallel` and given back by a cleanup registered first, `walkSlots`
+  in `internal/dispatch`), and do once what every check reads (one export
+  for all the secrets a case carries).
+- A test holds its worker while it runs. A vitest test that never awaits
+  keeps its worker's event loop for its whole run, and the worker waits at
+  most 60 s for the main process to take its report of the test's start:
+  the answer, queued behind the test, is read after that timer has fired,
+  and the run exits 1 with every test passed (`Timeout calling
+  "onTaskUpdate"`). A selector test looked each of 10,000 siblings up in a
+  fake document, a scan of the list each time, and held its worker 50 s
+  alone and past 60 s in a whole run; fewer workers did not help, since
+  one worker is enough (`select.test.ts`, 2026-11-17, #281). Keep a
+  test's synchronous work to seconds: look up a sample that covers every
+  case (each length of index, the ends of a budget), and give the fake a
+  walk that costs what an engine's does.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
@@ -520,8 +549,22 @@ add its rule here.
   GET, asked as `page.unroute` ended, was never answered until the
   store's 30 s deadline aborted it, and the line stayed `never_read`
   (`capacity-crew.spec.ts`, #281). A spec that routes the page while
-  it works keeps a route that lets everything through, set before the
-  page loads (its `beforeEach`), and puts its own on top of it.
+  it works keeps a route set before the page loads (its `beforeEach`,
+  or `dayPage`'s), and puts its own on top of it. Make it one that no
+  request matches (`standingRoute` in `web/e2e/fixtures.ts`): it keeps
+  interception on all the same, and a route that takes every request
+  to let it through hands each one to the test and back, which sends a
+  file the page uploads without its bytes (`dispatch.spec.ts`).
+- A measure a few pixels from its threshold is a coin another change
+  tosses. A session's longest name was 17 px wider than its room in the
+  header at 1440: "cut with an ellipsis" passed on one branch and failed
+  on the next, which had one control fewer in that header
+  (`session-page.spec.ts`, the sweep of 2026-11-17). Assert a cut, a wrap
+  or a fit only where the layout gives the margin (a phone, a narrow
+  window: some 880 px of text in 150 to 300), and where the thing is
+  near its room assert what holds either way (its full text reachable,
+  its room kept, nothing over it). Read the two numbers once before
+  trusting a comparison of them.
 - Measure a thing at rest. A box, a colour or a place read while an
   opening animation or a transition still runs is a state passed through:
   a panel measured 47 ms into its 100 ms opening "moved under the pointer"
@@ -586,6 +629,13 @@ add its rule here.
   let the dial fail through the seam the test gives its transport (its
   dial function), with the error the kernel gives a port nobody listens
   on.
+- A burst a test makes meets the page's answer to each change. A ticket
+  page read the whole ticket again at once for every event naming it:
+  fifty comments in a row were some fifty reads on their way together,
+  each answer applied and drawn in turn, and the last comment showed
+  seconds after the last answer came, past the expect's bound on a loaded
+  box (`dispatch.spec.ts`, #281). Count the page's requests before
+  doubting the bound; the page bounds its own (`DISPATCH_READS_IN_FLIGHT`).
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, standingRoute, test, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
 // Every palette row does what it says (#332): each row run from the
@@ -16,6 +16,11 @@ import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './d
 // each step raises the test's timeout by the caps of its own waits as it takes them (budget below), the way examples.spec.ts
 // adds its handoff's caps: the test's timeout is their sum, and the config's 120 s above it, for the waits between the steps.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 /** The cap of every wait a palette step makes: the config's expect bound, and the actions' (a fill, a click, a read). */
 const STEP_MS = 15_000

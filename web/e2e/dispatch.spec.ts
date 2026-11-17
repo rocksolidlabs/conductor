@@ -1,5 +1,5 @@
 import type { BrowserContext, Page } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import { expect, standingRoute, test, type Api } from './fixtures'
 
 // Dispatch's pages (docs/plans/dispatch.md, PR-8): a project made from the projects page, a ticket made from the project page's New
 // ticket button, the ticket's page editing its title, its description (the preview shown), its priority and its owner, its history
@@ -18,6 +18,11 @@ import { expect, test, type Api } from './fixtures'
 // settings by the first. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
 // earlier ones), and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 let other: BrowserContext | null = null
 

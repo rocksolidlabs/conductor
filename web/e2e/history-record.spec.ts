@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
-import { Api, expect, task, test, type Run, type Session, tokenAsk } from './fixtures'
+import { Api, expect, standingRoute, task, test, tokenAsk, type Run, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
@@ -12,6 +12,11 @@ import { renderConfig, scratchRepo, startServer, stopServer, type Started } from
 // Forget removing the record. The run page at a check's step (its log and the SHA-256 the step log route sends) and at a command's
 // receipt (a pause, its actor and time). A ticket's page at a comment the page's first read does not hold, shown marked.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 interface RecordReply {
   record: { id: string; endedAt?: string; lostAt?: string; resumedFrom?: string; agent: { session?: { id: string; resumable: boolean } }; resumes?: Array<{ commandId: string; state: string; session?: string }> }

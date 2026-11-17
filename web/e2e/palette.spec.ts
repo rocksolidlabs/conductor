@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { expect, standingRoute, test, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
 
 // The command palette (#302): Ctrl+K opens it over the page and Escape
@@ -13,6 +13,11 @@ import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatc
 // editor at the line; / opens the palette
 // and the sidebar's filter box still filters the list.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 const sessions: string[] = []
 const runs: string[] = []

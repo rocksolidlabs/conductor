@@ -19,7 +19,7 @@ import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
  *
  * Another link may answer decisions (docs/plans/decision-inbox.md, PR-7):
  * a control link with Answer decisions from this link on opens on the join
- * page's Decide tab, where its holder answers what the link covers. At a
+ * page's Needs you tab, where its holder answers what the link covers. At a
  * switchyard that carries no decisions the server refuses it
  * (`switchyard_too_old`), and the switch then stays off with the words why.
  */
@@ -325,7 +325,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
             <UIcon v-if="switching" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-muted" />
           </div>
           <p v-if="created.decide" class="flex items-center gap-1.5 text-xs text-muted" data-created-decide>
-            <UIcon name="i-lucide-list-checks" class="size-3.5" /> Answers decisions: the link opens on its Decide tab.
+            <UIcon name="i-lucide-list-checks" class="size-3.5" /> Answers decisions: the link opens on Needs you.
           </p>
           <div v-if="created.invite" class="flex items-center gap-2.5" data-created-invite>
             <span class="flex-1 truncate font-mono text-xs text-muted" :title="created.invite">{{ created.invite }}</span>
@@ -363,7 +363,7 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
               </button>
             </div>
             <div v-if="form.role === 'control'" class="flex flex-col gap-1" data-share-decide>
-              <USwitch v-model="form.decide" :disabled="!!decideRefused" label="Answer decisions from this link" description="It opens on a Decide tab: whoever holds it answers the questions and the tasks' choices it covers, each recorded as the link's." data-share-decide-switch />
+              <USwitch v-model="form.decide" :disabled="!!decideRefused" label="Answer decisions from this link" description="It opens on Needs you: whoever holds it answers the questions and the tasks' choices it covers, each recorded as the link's." data-share-decide-switch />
               <p v-if="decideRefused" class="text-xs text-warning" data-share-decide-refused>{{ decideRefused }}</p>
             </div>
             <div class="grid grid-cols-2 gap-3">

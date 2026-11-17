@@ -753,7 +753,7 @@ usePalette().registerPage(() => ({
             :error="error"
             :actions="[
               { label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew },
-              { label: 'Load the examples', icon: 'i-lucide-package-open', loading: seeding, onClick: loadExamples },
+              { label: 'Load the examples', icon: 'i-lucide-package-open', loading: seeding, onClick: loadExamples, tip: EXAMPLES_LINE },
             ]"
             :data-crews-empty="crewsState === 'empty' ? '' : undefined"
             @again="refresh"

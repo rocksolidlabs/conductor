@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { expect, test, viaMore, type Api } from './fixtures'
+import { expect, standingRoute, test, viaMore, type Api } from './fixtures'
 import type { Locator, Page, Request } from '@playwright/test'
 import type { E2EState } from './state'
 
@@ -9,6 +9,11 @@ import type { E2EState } from './state'
 // as the app's server allows), never a native dialog, so on Windows it is the
 // WSL distribution that is browsed.
 test.skip(process.platform === 'win32', 'POSIX paths')
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 /**
  * A folder of the test's own under the allowed root, holding the one folder it picks. A listing shows a folder's first 50 entries by

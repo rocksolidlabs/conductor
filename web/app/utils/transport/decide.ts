@@ -1,5 +1,5 @@
 // A decision link's lane, the client's side (docs/plans/decision-inbox.md, PR-7; docs/protocol.md, Decision links): over the
-// connection a decision link opens (a session's viewer, or a run's desk), the join page's Decide tab lists the items in the link's
+// connection a decision link opens (a session's viewer, or a run's desk), the join page's Needs you tab lists the items in the link's
 // scope, reads one, unfolds its evidence, reads the four steps of what it did and acts on one. The wire is the transport's
 // (BaseTransport.laneRequest and decide); this client keeps the lane's own bound, at most 4 reads and 4 decides under way, by
 // queueing what passes it rather than having the owner refuse it, and turns each reply into the inbox's own types, so the same

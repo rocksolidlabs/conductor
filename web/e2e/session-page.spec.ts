@@ -1,8 +1,8 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Page } from '@playwright/test'
-import { dayPage, expect, test, useTheme, type Api, type Session } from './fixtures'
-import { noSideways, probeColour, uncut } from './layout'
+import type { Locator, Page } from '@playwright/test'
+import { atRest, dayPage, expect, test, useTheme, type Api, type Session } from './fixtures'
+import { BOX_SLACK, noOverlap, noSideways, probeColour, uncut } from './layout'
 
 // A session's page where the terminal has the room (the UX review, P11, D7, D9): the inspector closed until a person opens it, the
 // line under the name agent · folder · branch with the ids in More, Share an outline button like its neighbours, the connection an
@@ -178,6 +178,9 @@ test("on a phone the name keeps its room: Files and Share are in More, and Share
   await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
   await uncut(title)
   expect((await title.boundingBox())!.width, 'the name has room').toBeGreaterThanOrEqual(100)
+  // A name the header holds is plain text: no button, nothing to open.
+  expect(await title.evaluate((e) => e.tagName), 'a whole name is plain text').toBe('SPAN')
+  await expect(header.getByRole('button', { name: 'e2e phone title' })).toHaveCount(0)
   await expect(header.getByRole('button', { name: 'Share', exact: true })).toBeHidden()
   await expect(header.getByRole('button', { name: 'Files', exact: true })).toBeHidden()
   // The terminal's rows clip by design (its own grid, drawn to its width): what it holds is the terminal's, not the page's.
@@ -198,4 +201,166 @@ test("on a phone the name keeps its room: Files and Share are in More, and Share
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Files', exact: true })).toBeVisible()
+})
+
+/**
+ * A name as long as the server takes (proto.MaxSessionName, 120): far too long for a phone's header and for a narrow window's
+ * (some 880 px of text where the title has 150 to 300). At 1440 it is within a few pixels of its room (17 px over, measured
+ * 2026-11-17), so whether it is cut there turns on what else the header holds: that case asserts what holds either way.
+ */
+const LONG_NAME = 'e2e a session named at length, so that its header cannot hold it: every word of the name a person gave it, to the end'
+
+/**
+ * The session's name in its header cut with an ellipsis, with room of its own, its full text its title, nothing of the header over
+ * it. The measures are read where the answer is made, the page at rest (its fonts loaded). `room: 'may hold it'` is for a
+ * width where the name is near its room: there it is whole or cut, and everything else holds the same.
+ */
+async function cutAndWhole(page: Page, at: string, room: 'too small' | 'may hold it' = 'too small') {
+  const header = page.locator('[data-session-bar]')
+  const title = header.locator('[data-session-title]')
+  await expect(title, at).toHaveText(LONG_NAME)
+  await expect(title, `${at}: the full name is its title`).toHaveAttribute('title', LONG_NAME)
+  await page.evaluate(() => document.fonts.ready.then(() => undefined))
+  const m = await title.evaluate((e) => ({ overflow: getComputedStyle(e).textOverflow, cut: e.scrollWidth > e.clientWidth, width: e.getBoundingClientRect().width }))
+  expect(m.overflow, `${at}: a name past its room is cut with an ellipsis`).toBe('ellipsis')
+  if (room === 'too small') expect(m.cut, `${at}: the name is cut`).toBe(true)
+  expect(m.width, `${at}: the name has room`).toBeGreaterThanOrEqual(100)
+  await noOverlap(header)
+}
+
+/** The page's gutter: what a popover keeps from the window's sides. */
+const GUTTER = 16
+
+/**
+ * The whole of a cut name, shown in its popover: the text whole (its box holds it across and down), the popover inside the window
+ * with the gutter on both sides, nothing of the page sideways, the header's height as it was.
+ */
+async function wholeShown(page: Page, at: string, header: Locator, height: number) {
+  const whole = page.locator('[data-session-title-whole]')
+  await expect(whole, `${at}: the popover shows the whole name`).toHaveText(LONG_NAME)
+  // The popover scales in as it opens: it is measured at rest (in CI its text, measured 0.6 px out of a box still scaled, "ran out").
+  await atRest(whole)
+  const m = await whole.evaluate((e) => {
+    const box = e.closest('[role="dialog"]')!.getBoundingClientRect()
+    return { sw: e.scrollWidth, cw: e.clientWidth, sh: e.scrollHeight, ch: e.clientHeight, left: box.left, right: box.right, top: box.top, bottom: box.bottom, vw: innerWidth, vh: innerHeight }
+  })
+  expect(m.sw, `${at}: the whole name's text is as wide as its box at most`).toBeLessThanOrEqual(m.cw)
+  expect(m.sh, `${at}: the whole name's text is as tall as its box at most`).toBeLessThanOrEqual(m.ch)
+  expect(m.left, `${at}: the popover keeps the gutter on the left`).toBeGreaterThanOrEqual(GUTTER - BOX_SLACK)
+  expect(m.right, `${at}: the popover keeps the gutter on the right`).toBeLessThanOrEqual(m.vw - GUTTER + BOX_SLACK)
+  expect(m.top, `${at}: the popover is in the window`).toBeGreaterThanOrEqual(0)
+  expect(m.bottom, `${at}: the popover is in the window`).toBeLessThanOrEqual(m.vh)
+  await uncut(whole)
+  // The terminal's rows clip by design; the page of a session the server no longer holds has none.
+  const terminal = page.locator('.terminal-host')
+  await noSideways(page, (await terminal.count()) ? { allow: terminal } : {})
+  expect((await header.boundingBox())!.height, `${at}: the header's height is as it was`).toBe(height)
+}
+
+/**
+ * On a touch screen, where a title is never shown: the cut name is a button (its name the session's name, its description what it
+ * does, the heading's text still the name) that opens the whole name at a tap, and closes it at a tap outside (`outside`, a part of
+ * the page that does nothing at a tap), at a second tap and at Escape; Enter and Space open it from the keyboard.
+ */
+async function tapShowsWhole(page: Page, at: string, outside: Locator) {
+  const header = page.locator('[data-session-bar]')
+  const name = header.getByRole('button', { name: LONG_NAME, exact: true })
+  const whole = page.locator('[data-session-title-whole]')
+  await expect(name, `${at}: the cut name is a button`).toHaveAttribute('data-session-title', '')
+  await expect(name, `${at}: the button says what it does`).toHaveAccessibleDescription('Show the whole name')
+  await expect(header.getByRole('heading', { level: 1 }), `${at}: the heading's text is the name`).toHaveAccessibleName(new RegExp(`^${LONG_NAME}`))
+  const height = (await header.boundingBox())!.height
+  await expect(whole).toHaveCount(0)
+
+  await name.tap()
+  await wholeShown(page, `${at}, tapped`, header, height)
+  await outside.tap()
+  await expect(whole, `${at}: a tap outside closes it`).toHaveCount(0)
+
+  await name.tap()
+  await expect(whole).toBeVisible()
+  await name.tap()
+  await expect(whole, `${at}: a second tap closes it`).toHaveCount(0)
+
+  await name.focus()
+  await page.keyboard.press('Enter')
+  await wholeShown(page, `${at}, Enter`, header, height)
+  await page.keyboard.press('Escape')
+  await expect(whole, `${at}: Escape closes it`).toHaveCount(0)
+  await name.focus()
+  await page.keyboard.press(' ')
+  await expect(whole, `${at}: Space opens it`).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(whole).toHaveCount(0)
+}
+
+test('on a phone and in a narrow window a name too long for the header is cut with an ellipsis and its full text is its title, again after the window changes, at 1440 where the header may hold it, and on the page of a session the server no longer holds', async ({ browser, api, state }) => {
+  expect(LONG_NAME.length, 'the longest name the server takes').toBeLessThanOrEqual(120)
+  const s = await launch(api, state.root, LONG_NAME)
+  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Ready to go on?', options: [{ label: 'Yes', input: '1' }, { label: 'No', input: '2' }] })
+  const page = await dayPage(browser, { server: state, path: `/sessions/${s.id}`, width: 390, height: 844, touch: true })
+  await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
+  await cutAndWhole(page, 'at 390 × 844')
+  // Somewhere a tap does nothing, away from the popover: the agent's question in the reply bar.
+  const away = page.locator('[data-quick-reply-message]')
+  await tapShowsWhole(page, 'at 390 × 844', away)
+
+  // Renamed to a name the header holds: plain text, no button, the header's height the same; renamed back, a button again.
+  const bar = page.locator('[data-session-bar]')
+  const title = bar.locator('[data-session-title]')
+  const heights = async () => ({ bar: (await bar.boundingBox())!.height, name: (await title.boundingBox())!.height })
+  const cutHeights = await heights()
+  await api.ok('PATCH', `/api/sessions/${s.id}`, { name: 'e2e short' })
+  await expect(title).toHaveText('e2e short')
+  await expect(bar.getByRole('button', { name: 'e2e short' }), 'a whole name is plain text').toHaveCount(0)
+  await uncut(title)
+  expect(await title.evaluate((e) => e.tagName)).toBe('SPAN')
+  expect(await heights(), 'plain or a button, the name and the header are as tall').toEqual(cutHeights)
+  await api.ok('PATCH', `/api/sessions/${s.id}`, { name: LONG_NAME })
+  await expect(bar.getByRole('button', { name: LONG_NAME, exact: true }), 'renamed long again: a button').toHaveCount(1)
+  await cutAndWhole(page, 'renamed back, at 390 × 844')
+  // The window changes and the header is drawn again: at 1024 and back at 390 the name is still cut, with its title.
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await expect(page.getByRole('button', { name: 'Share', exact: true })).toBeVisible()
+  await cutAndWhole(page, 'resized to 1024 × 768')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('[data-session-bar]').getByRole('button', { name: 'Share', exact: true })).toBeHidden()
+  await cutAndWhole(page, 'back at 390 × 844')
+  // The other theme, the page drawn again.
+  await useTheme(page, 'light')
+  await cutAndWhole(page, 'at 390 × 844, light')
+  await tapShowsWhole(page, 'at 390 × 844, light', away)
+
+  // At the desktop app's width with the sidebar at its default width: the name is whole or cut, its title its full text, and its
+  // whole text reachable either way: plain and uncut, or a button that shows it whole.
+  const wide = await dayPage(browser, { server: state, path: `/sessions/${s.id}` })
+  await expect(wide.locator('#dashboard-sidebar-main')).toBeVisible()
+  await cutAndWhole(wide, 'at 1440 × 900', 'may hold it')
+  const wideName = wide.locator('[data-session-bar] [data-session-title]')
+  // The page measures the name and then draws it as it decided: wait for the drawing to agree with the measure, then read it once.
+  await expect.poll(() => wideName.evaluate((e) => (e.tagName === 'BUTTON') === e.scrollWidth > e.clientWidth), { message: 'at 1440 × 900: a button exactly when cut' }).toBe(true)
+  if (await wideName.evaluate((e) => e.tagName === 'BUTTON')) {
+    await wideName.click()
+    await expect(wide.locator('[data-session-title-whole]')).toHaveText(LONG_NAME)
+    await uncut(wide.locator('[data-session-title-whole]'))
+    await wide.keyboard.press('Escape')
+    await expect(wide.locator('[data-session-title-whole]')).toHaveCount(0)
+  } else await uncut(wideName)
+
+  // Ended and removed: the page of a session the server no longer holds has its name in the head, cut, its full text its title.
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/exited|stopped/)
+  await api.stopSession(s.id)
+  await expect.poll(async () => (await api.call('GET', `/api/sessions/${s.id}`)).status, { timeout: 15_000 }).toBe(404)
+  await page.reload()
+  await expect(page.locator('[data-session-gone]')).toHaveAttribute('data-session-gone', 'record')
+  const awayGone = page.locator('[data-session-gone]').getByText('This session ended, and this server no longer holds it.')
+  await cutAndWhole(page, 'gone, at 390 × 844, light')
+  await tapShowsWhole(page, 'gone, at 390 × 844, light', awayGone)
+  // The theme switched, the page drawn again.
+  await useTheme(page, 'dark', '[data-session-gone]')
+  await cutAndWhole(page, 'gone, at 390 × 844, dark')
+  await tapShowsWhole(page, 'gone, at 390 × 844, dark', awayGone)
+  await page.setViewportSize({ width: 1024, height: 768 })
+  await cutAndWhole(page, 'gone, resized to 1024 × 768')
 })

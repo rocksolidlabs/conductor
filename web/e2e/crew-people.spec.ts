@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, task, test, type Api, type Run, type Session } from './fixtures'
+import { expect, standingRoute, task, test, type Api, type Run, type Session } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helpers'
 
 // People in a crew (docs/plans/decisions.md, HM1, PR-10): the crew editor's People section and Owner column, the run page's people and
@@ -19,6 +19,11 @@ import { freeProjectKey, makeProject, makeTicket, opOf } from './dispatch-helper
 // it is searched for; a live run's Add an agent marks a person's name and holds the button. Every crew, ticket and run is found by its
 // id or key, never by a list's length.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 let crewId = ''
 const crews: string[] = []

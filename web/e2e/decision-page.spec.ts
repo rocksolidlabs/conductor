@@ -3,21 +3,21 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test'
-import { Api, expect, task, test, type Session } from './fixtures'
+import { Api, expect, standingRoute, task, test, type Session } from './fixtures'
 import { holdOne } from './held-helpers'
 import { renderConfig, scratchRepo, startServer, stopServer, type Started } from './server'
 
-// Needs your decision (docs/plans/decision-inbox.md, Program item MB0, PR-2), on a server of its own (as brakeman-cards.spec.ts:
+// Needs you (docs/plans/decision-inbox.md, Program item MB0, PR-2), on a server of its own (as brakeman-cards.spec.ts:
 // its failed task and its plan revision stay open items, which no other spec's phone should land on). On a phone (390 x 844, touch):
 // the first load of / with a question waiting lands on the page and the Sessions tab then stays on the sessions; the question
-// answered from the Decide tab with its four steps; a managed task that failed its check, retried from its card with its steps, and
+// answered from the Needs you tab with its four steps; a managed task that failed its check, retried from its card with its steps, and
 // a retry at a revision the run has left (moved by a retry through the API first) refused with words, nothing done; a failed task's
 // Check again of its standing candidate, refused at a desktop's width once that candidate moved on (in words naming the one that
-// stands now) and taken from the phone's Decide tab with its steps (#713); a plan revision
+// stands now) and taken from the phone's Needs you tab with its steps (#713); a plan revision
 // approved, its yolo words shown first; a turn held for the terminal shown with no choice and no line and its terminal one tap away;
 // the evidence unfolded (a check's log, the session's terminal); a Recent row opening its own action, and one whose item is gone
 // showing its steps; the events stream cut while one question goes and another comes, then let back. At a desktop's width: the
-// sidebar's Decide row, G then N, the palette's item row, Open on your phone (the page's address alone, or from a loopback origin
+// sidebar's Needs you tile, G then N, the palette's item row, Open on your phone (the page's address alone, or from a loopback origin
 // a decision link), and a line typed on one item that never reaches the next. Every item is found by its ref, never by the list's
 // length. Each step raises the test's timeout by its own waits' caps as it takes them (budget).
 test.describe.configure({ mode: 'serial' })
@@ -88,11 +88,15 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true })
 })
 
-/** A browser context on this spec's server, with its token where the workbench keeps it and a display name. */
+/**
+ * A browser context on this spec's server, with its token where the workbench keeps it and a display name, and the standing route
+ * (standingRoute) from before any page loads: its tests route their pages while they work.
+ */
 async function context(browser: Browser, phone: boolean): Promise<BrowserContext> {
   const ctx = await browser.newContext(
     phone ? { baseURL: server!.baseURL, viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } : { baseURL: server!.baseURL, viewport: { width: 1440, height: 900 } },
   )
+  await standingRoute(ctx)
   await ctx.addInitScript((t) => {
     localStorage.setItem('conductor.workbenchToken', t)
     localStorage.setItem('conductor.displayName', 'Nate')
@@ -306,7 +310,7 @@ test("a failed task's Check again names its candidate; refused once the candidat
   await expect.poll(async () => (await stepStates(desk)).validated, { timeout: STEP_MS }).toBe('refused')
   expect(task(await api.run(run.id), 'build').attempts).toBe(4)
 
-  // From the phone's Decide tab: the card names attempt 4 now; its Check again taken, its steps through to attempt 5 checking it.
+  // From the phone's Needs you tab: the card names attempt 4 now; its Check again taken, its steps through to attempt 5 checking it.
   const phone = await (await context(browser, true)).newPage()
   await phoneAt(phone, '/decisions')
   budget(5)
@@ -472,7 +476,7 @@ async function pressInTurn(page: Page, ...keys: string[]) {
   }
 }
 
-test("at a desktop's width: the sidebar's Decide row, G then N, the palette's item row, and Open on your phone's address alone or a decision link", async ({ browser }) => {
+test("at a desktop's width: the sidebar's Needs you tile, G then N, the palette's item row, and Open on your phone's address alone or a decision link", async ({ browser }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'decide desk' })
   sessions.push(s.id)
   const q = await asking(s.id)
@@ -480,7 +484,7 @@ test("at a desktop's width: the sidebar's Decide row, G then N, the palette's it
   const page = await (await context(browser, false)).newPage()
   const sidebar = page.locator('#dashboard-sidebar-main')
 
-  // The sidebar's Decide row, with the count.
+  // The sidebar's Needs you tile, with the count.
   budget(3)
   await page.goto('/yard')
   await expect(sidebar).toBeAttached()

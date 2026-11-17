@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, Page, Request } from '@playwright/test'
-import { expect, test, tokenAsk } from './fixtures'
+import { expect, standingRoute, test, tokenAsk } from './fixtures'
 import { addressHeld, apiSent, fragmentChanged, holdDocuments, recorder, workbenchHeld } from './fragment-helpers'
 
 /** A token shaped as one (16 to 256 of `A-Z a-z 0-9 _ -`) that the server does not know. */
@@ -281,6 +281,8 @@ test("a load with a link's token while the browser keeps another: accepted, the 
 test("a later link in a tab at the gate, after another tab saved another token: the page is signed in with the link's, with no load, and the browser keeps the other", async ({ browser, state }) => {
   const token = state.token
   const ctx = await browser.newContext()
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
@@ -304,6 +306,8 @@ test("a later link in a tab at the gate, after another tab saved another token: 
 test("a later link in a tab at the gate that holds none, carrying the token another tab saved meanwhile: tried with no load; accepted, the gate is gone and the browser keeps it as it was", async ({ browser, state }) => {
   const token = state.token
   const ctx = await browser.newContext()
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const sent: Request[] = []
   page.on('request', (r) => sent.push(r))
@@ -729,6 +733,8 @@ test('a load with a token the server refuses, the browser keeping a good one: th
 
 test('a kept token the server refuses stays kept: the gate asks, a decide address the page opens is the decide page, and a load counts the kept token again', async ({ browser }) => {
   const ctx = await browser.newContext()
+  // The test routes this context, or its page, while the page works (a context made by `keeping` has a route from the start).
+  await standingRoute(ctx)
   const page = await ctx.newPage()
   const gate = tokenAsk(page)
   await page.goto('/')

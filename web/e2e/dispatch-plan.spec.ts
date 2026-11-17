@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import type { BrowserContext } from '@playwright/test'
-import { expect, readAgain, test, type Api } from './fixtures'
+import { expect, readAgain, standingRoute, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, secondBrowser, sideways, storedTicket } from './dispatch-helpers'
 
 // A ticket's Plan (Program item DS2, docs/plans/dispatch-evidence.md, PR-10), only what PR-10 and the PRs before it build: a managed crew
@@ -11,6 +11,11 @@ import { freeProjectKey, makeProject, makeTicket, mark, marked, opOf, secondBrow
 // same launch sent again, a second launch with another run id. The approve, launch and revise dialogs ask nothing before the revision's
 // body is read. The ticket is found by its key and the runs by their ids; every wait is on the state the page or the store must reach.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 /**
  * Raises the running test's timeout by the cap of a long wait as the step is about to make it (AGENTS.md, Tests that do not flake): a

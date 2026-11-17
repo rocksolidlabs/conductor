@@ -4,7 +4,7 @@ import type { DispatchOrder } from '~/utils/dispatchOrder'
 import { ApiError } from '~/composables/useApi'
 import { PRIORITIES, TICKET_STATUSES, statusWord } from '~/utils/dispatch'
 import { dispatchFailureWords } from '~/composables/useDispatchOps'
-import { githubStateWords, importReady, needsSettings, ownersWords, trackerRefusalWords } from '~/utils/tracker'
+import { githubStateWords, imageCaption, importReady, needsSettings, ownersWords, trackerRefusalWords } from '~/utils/tracker'
 
 /**
  * Import from GitHub (Program item IN1a, docs/plans/tracker-linking.md, PR-8): a GitHub issue or pull request made a ticket of the project.
@@ -110,15 +110,6 @@ async function submit() {
 /** The description's bytes the preview shows (its first 2 KiB). */
 const shownBytes = computed(() => (preview.value ? new TextEncoder().encode(preview.value.description).length : 0))
 const kib = (n: number) => `${Math.round((n / 1024) * 10) / 10} KiB`
-/** An image's file name, from its id: the last part of its address's path. */
-function imageName(id: string): string {
-  const last = id.slice(id.lastIndexOf('/') + 1)
-  try {
-    return decodeURIComponent(last) || 'image'
-  } catch {
-    return last || 'image'
-  }
-}
 </script>
 
 <template>
@@ -155,7 +146,7 @@ function imageName(id: string): string {
           <div v-if="preview.images.length" class="flex flex-col gap-1 text-xs">
             <span class="text-muted">{{ preview.images.length }} {{ preview.images.length === 1 ? 'image' : 'images' }} found, downloaded as attachments (PNG, JPEG, GIF or WebP, at most 16 MiB each, eight at most):</span>
             <ul class="flex flex-wrap gap-1.5">
-              <li v-for="id in preview.images" :key="id" data-import-image><UBadge :label="imageName(id)" icon="i-lucide-image" color="neutral" variant="subtle" size="sm" /></li>
+              <li v-for="(id, i) in preview.images" :key="id" data-import-image><UBadge :label="imageCaption(i)" icon="i-lucide-image" color="neutral" variant="subtle" size="sm" /></li>
             </ul>
           </div>
           <details v-if="preview.repro" class="text-xs" data-import-repro open>

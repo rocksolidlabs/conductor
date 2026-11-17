@@ -7,6 +7,15 @@ import type { DispatchEvent, RelatedTicket } from './useDispatch'
 export const DISPATCH_RETRY_MAX_MS = 8000
 
 /**
+ * The most re-reads of one page on their way at once. A re-read asked while that many are on their way is sent once one of them
+ * answers, one for all the events that came meanwhile: fifty comments posted in a row were fifty reads of the whole ticket at once,
+ * each answer applied and drawn in turn, and the newest waited behind every older one. Two, not one, so that one read that hangs
+ * holds nothing back; and when every one of them hangs (a request has no time bound of its own), the re-read waiting behind them is
+ * sent anyway after the longest retry wait, so a page is never left showing what it showed.
+ */
+export const DISPATCH_READS_IN_FLIGHT = 2
+
+/**
  * What a page re-reads on Dispatch's events, and when (docs/plans/dispatch.md, "The SSE event"). What a page shows derives from more
  * than its own entity (a ticket's blocked from its blockers, its children's rows from other tickets, its labels and policy from its
  * project, the projects' counts from every ticket), so the scope a page re-reads on is its project, not its entity.
@@ -139,6 +148,10 @@ interface Watching {
    * that read was sent (the store's commits are ordered by their seq), so the read stands for it. A commit's events arrive together.
    */
   covered: number
+  /** Its re-reads on their way. */
+  flying: number
+  /** A re-read was asked while DISPATCH_READS_IN_FLIGHT were on their way: it is sent once one of them answers. */
+  again: boolean
   gone: boolean
 }
 
@@ -159,11 +172,12 @@ export class DispatchLive {
   constructor(
     private readonly windowMs = RUN_EVENT_WINDOW_MS,
     private readonly maxDelayMs = DISPATCH_RETRY_MAX_MS,
+    private readonly maxInFlight = DISPATCH_READS_IN_FLIGHT,
   ) {}
 
   /** Starts handing events to a page's watch; the function returned stops it. */
   subscribe(watch: DispatchWatch): () => void {
-    const w: Watching = { watch, timer: undefined, delay: this.windowMs, covered: -1, gone: false }
+    const w: Watching = { watch, timer: undefined, delay: this.windowMs, covered: -1, flying: 0, again: false, gone: false }
     this.watching.add(w)
     return () => {
       w.gone = true
@@ -246,10 +260,27 @@ export class DispatchLive {
     this.read(w)
   }
 
-  /** Reads the page again now: the read stands for a window or a retry pending, which goes. A failure is asked again after the delay. */
-  private read(w: Watching): void {
+  /**
+   * Reads the page again now: the read stands for a window or a retry pending, which goes. While DISPATCH_READS_IN_FLIGHT reads are on
+   * their way it is sent once one of them answers instead, standing for every event since (`again`), or after the longest retry wait
+   * when none of them has answered by then (`overdue`): reads that hang do not hold the page back. A failure is asked again after
+   * the delay, or at once when a read was asked meanwhile.
+   */
+  private read(w: Watching, overdue = false): void {
+    if (w.gone) return
+    if (w.flying >= this.maxInFlight && !overdue) {
+      // The first one asked behind them starts the wait; those asked after it join it and do not put it off.
+      if (!w.again) {
+        clearTimeout(w.timer)
+        w.again = true
+        w.timer = setTimeout(() => this.read(w, true), this.maxDelayMs)
+      }
+      return
+    }
     clearTimeout(w.timer)
     w.timer = undefined
+    w.again = false
+    w.flying++
     w.covered = this.seen
     let read: Promise<unknown>
     try {
@@ -259,9 +290,17 @@ export class DispatchLive {
     }
     read.then(
       () => {
-        if (!w.gone) w.delay = this.windowMs
+        w.flying--
+        if (w.gone) return
+        w.delay = this.windowMs
+        if (w.again) this.read(w)
       },
-      () => this.retry(w),
+      () => {
+        w.flying--
+        if (w.gone) return
+        if (w.again) this.read(w)
+        else this.retry(w)
+      },
     )
   }
 

@@ -1,5 +1,5 @@
 import type { BrowserContext, Page } from '@playwright/test'
-import { expect, test, type Api } from './fixtures'
+import { expect, standingRoute, test, type Api } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTicket } from './dispatch-helpers'
 
 // The close policy on a ticket's page (docs/plans/dispatch.md, PR-11): Done refused on the page with the policy's words, by the status
@@ -14,6 +14,11 @@ import { freeProjectKey, makeProject, makeTicket, opOf, secondBrowser, storedTic
 // theirs said and not taken for this page's own. Every test makes a project of its own (CLS, CLS1… when the server holds the earlier ones) and looks at its own tickets by
 // key.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 let other: BrowserContext | null = null
 

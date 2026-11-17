@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,7 +79,9 @@ const (
 var RoleStates = []string{RoleIdle, RoleGathering, RoleBriefing, RoleCooling, RolePaused, RoleUnavailable}
 
 // The wake sources: a task that failed with proof, a question open past
-// its threshold, a run that ended or paused, a ticket moved to ready, a
+// its threshold, a run that ended or paused, a ticket moved to ready, an
+// agent's usage reading that warns (docs/plans/capacity.md, PR-8: its
+// subject names the agent and the account by their ids alone), a
 // person's own request, and a configured briefing time.
 const (
 	WakeTaskFailed   = "task_failed"
@@ -86,12 +89,13 @@ const (
 	WakeRunEnded     = "run_ended"
 	WakeRunPaused    = "run_paused"
 	WakeTicketReady  = "ticket_ready"
+	WakeCapacity     = "capacity"
 	WakeRequest      = "request"
 	WakeBriefing     = "briefing"
 )
 
 // WakeSources is every source, in the order the pages list them.
-var WakeSources = []string{WakeTaskFailed, WakeQuestionOpen, WakeRunEnded, WakeRunPaused, WakeTicketReady, WakeRequest, WakeBriefing}
+var WakeSources = []string{WakeTaskFailed, WakeQuestionOpen, WakeRunEnded, WakeRunPaused, WakeTicketReady, WakeCapacity, WakeRequest, WakeBriefing}
 
 // The role's bounds.
 const (
@@ -230,11 +234,34 @@ type BatchWake struct {
 }
 
 // Overflow counts the wakes a batch had no room for, with the first's
-// and the last's times.
+// and the last's times, and the same by wake source (Sources), so that a
+// turn is told of the wakes it may see and of no other. An overflow whose
+// Sources do not add up to its Count (one kept by a server before the
+// tally, or one such folded into another) has no tally a reader may
+// trust: it reads the overflow as of every source.
 type Overflow struct {
+	Count   int                     `json:"count"`
+	First   time.Time               `json:"first"`
+	Last    time.Time               `json:"last"`
+	Sources map[string]OverflowPart `json:"sources,omitempty"`
+}
+
+// OverflowPart is an overflow's wakes of one source: how many, and the
+// first's and the last's times.
+type OverflowPart struct {
 	Count int       `json:"count"`
 	First time.Time `json:"first"`
 	Last  time.Time `json:"last"`
+}
+
+// Tallied reports whether o's Sources add up to its Count: only then do
+// they say which sources its wakes are of.
+func (o Overflow) Tallied() bool {
+	n := 0
+	for _, p := range o.Sources {
+		n += p.Count
+	}
+	return n == o.Count
 }
 
 // Batch is the wakes one turn reads: those that fired in its window, or
@@ -563,6 +590,7 @@ func cloneBatch(b *Batch) *Batch {
 	c.Wakes = slices.Clone(b.Wakes)
 	if b.Overflow != nil {
 		o := *b.Overflow
+		o.Sources = maps.Clone(b.Overflow.Sources)
 		c.Overflow = &o
 	}
 	return &c
@@ -666,10 +694,13 @@ func (b *Batch) merge(w BatchWake) {
 		b.Wakes = append(b.Wakes, w)
 		return
 	}
-	b.overflow(Overflow{Count: w.Count, First: w.First, Last: w.Last})
+	part := OverflowPart{Count: w.Count, First: w.First, Last: w.Last}
+	b.overflow(Overflow{Count: w.Count, First: w.First, Last: w.Last, Sources: map[string]OverflowPart{w.Source: part}})
 }
 
-// overflow counts o in the batch's overflow.
+// overflow counts o in the batch's overflow, source by source. An
+// overflow without a tally (kept by an older server) adds to the count
+// and to no source, so the sum no longer makes the count (Tallied).
 func (b *Batch) overflow(o Overflow) {
 	if b.Overflow == nil {
 		b.Overflow = &Overflow{First: o.First, Last: o.Last}
@@ -680,6 +711,24 @@ func (b *Batch) overflow(o Overflow) {
 	}
 	if o.Last.After(b.Overflow.Last) {
 		b.Overflow.Last = o.Last
+	}
+	for src, p := range o.Sources {
+		if b.Overflow.Sources == nil {
+			b.Overflow.Sources = map[string]OverflowPart{}
+		}
+		x, ok := b.Overflow.Sources[src]
+		if !ok {
+			b.Overflow.Sources[src] = p
+			continue
+		}
+		x.Count += p.Count
+		if p.First.Before(x.First) {
+			x.First = p.First
+		}
+		if p.Last.After(x.Last) {
+			x.Last = p.Last
+		}
+		b.Overflow.Sources[src] = x
 	}
 }
 

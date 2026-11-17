@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, member, test, type Api, type Run } from './fixtures'
+import { expect, member, standingRoute, test, type Api, type Run } from './fixtures'
 
 // The run page offers a hand's start or resume where the server takes it (memberOffer): Start now on a waiting member of a run
 // without tasks, on its tile and its node of the graph; never on a managed run's waiting member, whose tasks start it (the start
@@ -9,6 +9,11 @@ import { expect, member, test, type Api, type Run } from './fixtures'
 // the test looks. Every wait is on the run's own record or on what the page draws.
 // Each step raises the test's timeout by the caps of its own waits as it takes them (budget), the config's 120 s above their sum.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 /** The cap of one wait the page's steps make: the config's expect bound, and its actions' (a navigation, a click). */
 const STEP_MS = 15_000

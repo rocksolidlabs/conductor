@@ -126,7 +126,7 @@ that order.
 | Agent | Command | Waiting-for-input signal | Turn done | Tool events | Wiring | Verify before shipping | Yolo recipe (what it turns off) | Trust prompt | Session recipe (id; resume) |
 |---|---|---|---|---|---|---|---|---|---|
 | Claude Code | `claude` | `Notification`/`PermissionRequest` hooks (with options); `idle_prompt` (a minute at rest) is done, not a question (round 4) | `Stop` | `PostToolUse`, `PermissionDenied`, `SubagentStop` | launch: `--settings <hooks/claude.json>` | — | `--dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in the `--settings` file (every permission prompt; `.git`, `.claude` writable; deny rules hold; the trust question stays) — live, 2.1.287 | `Is this a project you created or one you trust?` — live; no per-launch trust: trust the repository once (its worktrees follow) | set `--session-id {uuid}`, then hook `session_id` (latest); `--resume {id}` — live |
-| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session (a host is not sent the form), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
+| Codex CLI | `codex` | the bell (`tui.notification_method="bel"`), rung for every notification but `async-question` (`tui.notifications`, 0.161, 2026-10-14: a question Codex asks while its turn goes on rings nothing, #186), and the `PermissionRequest` hook; its window title says it works (`tui.terminal_title=["activity","run-state"]`: "⠋ Working" through a turn, "Ready" at rest, seen with 0.161 on 2026-10-14), read by the catalog's `workingTitle` as `working` (source `title`), and a wait raised while it says so (its own question it goes on from, a bell) gives way a second later (#186); its program status (OSC 7501, 0.163 and later: `working`, `blocked`, from 0.164 with the kind of what blocks it, and `working` while an async question is pending where the title says Action Required) retires the title once read, settles waits as the title did and raises one for a form no pattern knows (source `status`, #197); the end of a turn is done, not a question (round 4), and the bell it rings after its done is that turn's own, not a question, until the next Enter (2026-10-11); its command approval ("Would you like to run the following command?") read off the screen for the session's whole life, with its words and choices `y`, `p`, Esc (0.161, 2026-10-11), and its form asking to allow a tool of an MCP server ("Allow the conductor MCP server to run tool "guide"?", 0.163.0 to 0.169.0 from Codex's source, #716) read off the screen the same way, its choices read off the form (Allow, Allow for this session and Always allow each its digit, the two that remember it mode answers; Cancel Esc, which cancels the call and closes the form with every form Codex had waiting behind it, a server's own among them, not asked again, their calls still waiting, as Esc typed in the terminal does), the four choices from 53 columns wide and the two at 40 too: narrower, on a screen that is not plainly the one form and on a hosted session whose host did not say it reads forms (an earlier release's, or one published to a switchyard: only a host whose register says `forms` is sent the form, #970, and asks it as a server session does), no choices are offered and it is answered in the terminal; the same form shown right behind an answered one is held as answered, answered in the terminal | `notify` (agent-turn-complete) → done; the hidden title thread's turn is ignored | experimental `hooks.json` (`features.hooks`), not on Windows | launch: `-c notify=[…]`, `-c tui.notification_method="bel"`, `-c tui.notifications=[…]`, `-c tui.terminal_title=["activity","run-state"]`; file: `~/.codex/config.toml` + `~/.codex/hooks.json` | `-c` array syntax; PermissionRequest hook shape | `--dangerously-bypass-approvals-and-sandbox` (every approval and the sandbox) and per launch `-c projects={"<repo>"={trust_level="trusted"}}` — live, 0.159.0 | `Trust this folder?` (Enter accepts and saves it) — live; its other answer is Quit in 0.161 (Down, Enter), which ends Codex, labelled "No, quit" | not settable; notify `thread-id` (lowest: the title thread reports too); `resume {id} -c tui.resume_cwd="session"`, same directory — live |
 | Antigravity | `agy` | bell (no notification event) | `Stop` | `PreToolUse` (working; a `toolCall` without the `error` field) / `PostToolUse` (`toolCall.name`) | file: `~/.gemini/config/hooks.json` (global) or `.agents/hooks.json` (project) | exact global path | `--dangerously-skip-permissions` (tool permission requests; its trust dialog stays, trusted per exact path) — help | — | not settable; hook `conversationId` (installed hooks only); `--conversation {id}`, same directory — live (`-p`) |
 | Copilot CLI | `copilot` | `notification` (`permission_prompt`) | `agentStop` | `userPromptSubmitted`/`preToolUse` (working), `postToolUse`, `errorOccurred` | file: `~/.copilot/hooks/conductor.json` (own file, no merge) | permission prompt key bindings for options | `--yolo`, `COPILOT_ALLOW_ALL=true` (every tool, path and URL; the env var also skips its trust question; deny rules win) — live, 1.0.59 | — (the recipe skips it) | set `--session-id {uuid}`, hook `sessionId`; `--session-id {id}` — live (the hook's `sessionId` not live) |
 | Cursor CLI | `cursor-agent` | bell / pattern (CLI fires no waiting event) | `stop` | `beforeSubmitPrompt`/`preToolUse` (working), `postToolUse`, `afterFileEdit` | file: `~/.cursor/hooks.json` (merge) | CLI binary name; which events the CLI fires today | `--yolo --trust` (command and MCP approvals; `--trust` skips workspace trust) — docs | — (the recipe skips it) | not settable; hook `conversation_id` (installed hooks only); `--resume {id}`, same directory — docs |
@@ -358,6 +358,81 @@ on a pending decision answered" are each to be seen once.
   Code for one candidate, Codex for the other) and Brakeman's real draft
   are recorded here by a later docs pull request of the stream; the phone
   layout was measured at 390 x 844 in the tests, not on a device.
+
+## Agent and account capacity (AC1, `docs/plans/capacity.md`; PR-8 2026-11-16)
+
+What the item shipped, row by row (each row's issue says what it verified):
+
+- **PR-1 (#781)**: the usage readers of Claude Code and Codex in
+  `internal/agents`, each through its tool's documented commands and its own
+  output, qualified against the versions read on the planning machine.
+- **PR-2 (#782)**: `internal/capacity`: account references, readings and the
+  cache (a key at most once in 5 minutes, memory only).
+- **PR-3a (#783), PR-3b (#836)**: the accounts and capacity routes, the
+  `capacity` event, and `conductor accounts` and `conductor capacity`.
+- **PR-4 (#784), PR-4b (#856)**: a launch bound to its account and model once,
+  before its process starts, and held from its start by whatever runs in the
+  account's folder.
+- **PR-5 (#785), PR-5b (#872)**: Settings' Accounts, the capacity panel and
+  the session launch dialog; an entry that keeps its own login is said so,
+  and offered no account.
+- **PR-6 (#786)**: Brakeman reads the capacity view under its Capacity class
+  and cites a reading as a `capacity:` ref, and proposes only what owner
+  decision 11 allows.
+- **PR-7 (#787), PR-7b (#957)**: crews, a ticket's launches and Brakeman's
+  account in the app's screens, the launch sheet's lines; a crew's launch
+  names the revision the sheet read, and the server refuses another.
+- **PR-8 (#788)**: a capacity reading that warns, as the panel warns (a
+  window at the provider's warning or critical severity, at 90% used, or a
+  limit the provider says holds), wakes Brakeman's background role. Its row in
+  the role's log on the Brakeman page reads "An agent neared its usage limit:
+  capacity of `<agent>` on `<account>`". The wake names the agent and the
+  account by their ids alone (no label, folder or figure), is admitted by the
+  Capacity class alone (whatever the scope narrows), and a reading of the
+  agent and account Brakeman's own turns launch on (its configured agent on
+  the account its configured folder is) wakes nothing: a warning there would
+  spend a turn on the login that is near its limit. A batch's overflow, which
+  names no subject, is counted by source, and a turn is told of the wakes of
+  the sources whose class it sees: a configuration with Capacity off (every
+  one saved before Capacity was a class) reads its runs', sessions' and
+  Dispatch's part (`TestAnOverflowIsReadBySourceTheGrantSees`,
+  `TestAnOverflowIsCountedBySource`). Capacity
+  still acts on nothing. Tests: `TestCapacityWarningWakesRole` (one wake at
+  warning, a second reading inside the window coalesced with a count of two,
+  none at normal, the turn's batch reading the wake by its ids, and not at
+  all with Capacity off), `TestBrakemansOwnReadingWakesNothing`,
+  `TestACapacityWarningWakesOnlyWhereCapacityIsSeen`,
+  `TestACapacitySubjectIsAdmittedByItsClassAlone` and `TestCapacityWarns` in
+  `internal/api`; the words in `brakemanRole.test.ts`; and
+  `capacity-crew.spec.ts`'s wake, the stub's warning and limit readings
+  listed on the Brakeman page. The docs: `docs/architecture.md` (Accounts and
+  capacity), `docs/repository-map.md`, the README (Accounts and capacity) and
+  `docs/protocol.md` (The background role).
+
+**Owed: the by-hand check and the acceptance observation.** Neither has been
+made; both need the owner's machine, the real tools and the owner's own
+logins, which no test reaches. The issue stays open for them (#788).
+
+- *By hand*: Claude Code and Codex each read with the default login and with a
+  second folder; the windows and resets equal what Claude Code's `/usage` and
+  Codex's `/status` show in their own terminals at the same minute; a folder
+  never logged in shows signed out; a key-paid login, where one is at hand,
+  shows no windows; a session launched on one account and resumed after the
+  default changed resumes its own conversation.
+- *The observation*: on the owner's `conductor serve`, the session dialog for
+  each of the two shows the windows, their share used and their resets, the
+  plan, the provider's credit row, Conductor's count marked as an estimate,
+  and "Read … ago by" with the tool's version, matching the tools' own
+  terminals that minute; an agent with no reader shows unknown with its
+  reason. A managed crew of a Claude Code member and a Codex member, launched
+  from a ticket's approved revision, its launch sheet showing both lines; a
+  second account added and made the default mid-run, the next attempt and a
+  retried one still on the first account, a new session on the second, and a
+  session launched before the change resuming its own conversation. Brakeman,
+  asked for a briefing with Capacity on, cites a `capacity:` ref in a fact and
+  proposes nothing that moves work to another account.
+- What was missing, slow or wrong goes here when they are made, and the
+  owner's word that the panel told the truth about both logins closes AC1.
 
 ## A launch's first message (UX1 PR-35, P19, D11; 2026-11-16)
 
@@ -5173,8 +5248,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   machine that is not WSL or through the desktop app's own forwarding
   (no networking configured by anyone). A defect it finds is fixed in
   the stream.
-- **Needs your decision: the decision inbox, on the desktop and from a
-  phone (MB0, #646 to #650, 2026-11-06 to 2026-11-08).** Program item
+- **Needs you: the decision inbox, on the desktop and from a phone (MB0,
+  #646 to #652, 2026-11-06 to 2026-11-15; the page was Needs your decision
+  until UX1).** Program item
   MB0, planned in `docs/plans/decision-inbox.md` (PR #610). The page is
   one list of what waits on the operator (a member's question, a failed
   or held task, a plan revision, a Brakeman card), each item with its
@@ -5198,8 +5274,32 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   page has a hosted desk's identity it keeps it, joining it again on the
   backoff, until this link itself is refused (4403). The share switch
   learns that a switchyard is too old from the server's `409
-  switchyard_too_old` and stays off with its words. Each PR's checks are
-  in its body.
+  switchyard_too_old` and stays off with its words. PR-3 (#651, PR #750):
+  DR1's records as the inbox's items (`decision:dr-<n>`), every action
+  through DR1's own routes, one answered and not yet applied listed until
+  DR1 gives it a final state, and the records closed in the last day in
+  the first page's `recent`. PR-4 (#652, PR #761): DR1's records on the
+  page, drawn by DR1's card and controls inside the item (a gate answered
+  there, across a restart: `decision-page-durable.spec.ts`), and the
+  ticket page's links to them. PR #912 (2026-11-15, for #653) fixed what
+  the page's live check on the open-source build met, each with a test
+  that fails without it: the page asks for the workbench token at once, as
+  the other pages do; a long title stays inside its row, cut, with the
+  waiting time in view; the run page offers a start, a resume or an added
+  agent by hand only where the engine takes it, and a run's record
+  nothing; a plan revision's member line names its model; the gate's words
+  fit one task and several; a repair's line in a continued run's log names
+  the attempt that takes it up; a card of an item no longer open never
+  says it waits, and its time follows the page's clock; no Resume or
+  Relaunch on a managed run's member or attempt, nor on a Brakeman turn's
+  session or member; a person's page lists a continued run's tasks as its
+  continuation holds them; and a task a continued run did not end says
+  its continuation takes it up. UX1 (PR #956, 2026-11-16) renamed the page
+  and the phone's first tab **Needs you** (UX1 PR-5, #920; the join page's
+  Decide is its Needs you tab), made the page with nothing on it one
+  column that says what shows up there (UX1 PR-6, #921), and put the list and the item in a
+  person's words, a wide window opening the oldest item by itself (UX1
+  PR-21, #936). Each PR's checks are in its body.
 
   The acceptance (a decision is resolved from a phone on the LAN or a
   self-hosted switchyard, and the page says whether it was recorded or
@@ -5216,16 +5316,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   loopback origin's decision link and QR code (`share.spec.ts`); the
   switchyard saying `decisions` only from a build with the join page
   (`TestTheSwitchyardSaysDecisions`,
-  `TestAnAPIOnlySwitchyardSaysNoDecisions`). Not yet made: the
-  maintainers' by-hand check on the owner's real phone, which needs
-  PR-3 and PR-4 (#651, #652: DR1's records as items, a gate's decision
-  answered on the page) and is recorded here by PR-8 (#653), with what
-  ran, against which `main` and what it did not exercise. Its steps: on
+  `TestAnAPIOnlySwitchyardSaysNoDecisions`). Not yet made: the by-hand
+  check on a real phone, a person's to make (PR-3 and PR-4, which it
+  needed, are merged), recorded here by PR-8 (#653) when it is made, with
+  what ran, against which `main` and what it did not exercise. Its steps: on
   the LAN, a `conductor serve` on a machine the phone reaches that is not
   WSL (the LAN Linux box or the Mac), Claude Code in a managed run from a
   Dispatch ticket's approved revision with a gate before a task, a check
   that fails once and a member that asks a permission question; on iOS
-  Safari, then Android Chrome, the Decide tab showing the three items,
+  Safari, then Android Chrome, the Needs you tab showing the three items,
   the gate answered (recorded, applied, resumed as the task starts), the
   failed task retried, the question answered with a choice, a response
   at a revision made stale on the desktop refused with words, and the
@@ -5236,17 +5335,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   minted and opened on the phone, one item answered through to resumed,
   the gate answered before the run's first attempt with no member alive,
   the link revoked on the desktop and the phone's next action refused.
+  That gate is a DR1 record answered over a link, so the switchyard
+  observation also waits for DR1's plan to accept a decision link's actor
+  under `local/1`: until then a link shows a run's decision with no
+  action ("a link cannot answer a run's decision yet").
   The run of 2026-11-14 for `main` at 93afee23 (R1's workflow in one run,
   its entry below, #904) observed part of it on the LAN: a server on the
   Mac, Claude Code in a managed run from a Dispatch ticket's approved
   revision with a gate before a task, the gate approved from a
   maintainer's own phone and held applied and resumed as the task file
   reached the builder's first attempt, and the server restarted with the
-  decision the same; still open are the three items on the Decide tab,
-  the failed task retried and a permission question answered from the
-  phone, a response at a stale revision refused, iOS Safari and Android
-  Chrome each, and every step through a self-hosted switchyard, so #653
-  stays open.
+  decision the same; still open are the three items on the Needs you
+  tab, the failed task retried and a permission question answered from
+  the phone, a response at a stale revision refused, iOS Safari and
+  Android Chrome each, and every step through a self-hosted switchyard.
+  Both observations, on the LAN from a machine that is not WSL and
+  through a self-hosted switchyard, are a person's, on a real phone and
+  with the owner's word, and they are owed: #653 stays open until they
+  are recorded here.
 - **Searchable history: what was said, decided and checked, found from the
   palette with its source (HS1, #613 to #617, #619, #621 and #624,
   2026-11-06 to 2026-11-08).** Program item HS1, planned in

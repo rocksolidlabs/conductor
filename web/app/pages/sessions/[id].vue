@@ -260,9 +260,20 @@ const typingLine = computed(() => {
 const gone = ref<GonePage | null>(null)
 const history = useHistory()
 const goneTitle = computed(() => (gone.value?.kind === 'record' ? gone.value.name : 'An ended session'))
+/** The name in the header, live or gone. */
+const headName = computed(() => (gone.value ? goneTitle.value : current.value?.name || 'Session'))
 
 // The name as the live store has it: a rename, here or anywhere, shows at once.
-useHead({ title: computed(() => (gone.value ? goneTitle.value : current.value?.name || 'Session')) })
+useHead({ title: headName })
+
+// A name too long for the header is cut with an ellipsis, and its title shows it whole on hover (#906). A touch screen has no hover:
+// while the name is cut it is a button that opens the whole name, wrapped, in a popover. Not cut, it is plain text.
+const nameEl = ref<HTMLElement | null>(null)
+const nameCut = useTextCut(nameEl, () => headName.value)
+const nameHint = useId()
+const NAME = 'truncate text-[15px] font-semibold'
+const NAME_BUTTON = `${NAME} min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary`
+const NAME_POPOVER = { side: 'bottom', align: 'start', collisionPadding: 16 } as const
 
 async function load() {
   if (!admin.hasToken.value) {
@@ -591,12 +602,22 @@ palette.registerPage(() => {
         </template>
         <template #title>
           <div v-if="gone" class="flex min-w-0 items-center gap-2" data-session-gone-head>
-            <span class="truncate text-[15px] font-semibold" data-session-title>{{ goneTitle }}</span>
+            <UPopover v-if="nameCut" :content="NAME_POPOVER">
+              <button ref="nameEl" type="button" :class="NAME_BUTTON" :title="headName" :aria-describedby="nameHint" data-session-title>{{ headName }}</button>
+              <template #content><p class="max-w-[min(28rem,calc(100vw-2rem))] p-3 text-sm font-semibold text-highlighted [overflow-wrap:anywhere]" data-session-title-whole>{{ headName }}</p></template>
+            </UPopover>
+            <span v-else ref="nameEl" :class="NAME" :title="headName" data-session-title>{{ headName }}</span>
+            <span :id="nameHint" hidden>Show the whole name</span>
             <StatusMark :status="statusOfKey('exited')" word class="text-xs" data-session-status="gone" />
           </div>
           <div v-else class="flex min-w-0 flex-col">
             <div class="flex items-center gap-2 min-w-0">
-              <span class="truncate text-[15px] font-semibold" data-session-title>{{ current?.name || 'Session' }}</span>
+              <UPopover v-if="nameCut" :content="NAME_POPOVER">
+                <button ref="nameEl" type="button" :class="NAME_BUTTON" :title="headName" :aria-describedby="nameHint" data-session-title>{{ headName }}</button>
+                <template #content><p class="max-w-[min(28rem,calc(100vw-2rem))] p-3 text-sm font-semibold text-highlighted [overflow-wrap:anywhere]" data-session-title-whole>{{ headName }}</p></template>
+              </UPopover>
+              <span v-else ref="nameEl" :class="NAME" :title="headName" data-session-title>{{ headName }}</span>
+              <span :id="nameHint" hidden>Show the whole name</span>
               <StatusMark v-if="status" :status="status" word class="text-xs" :data-session-status="current?.id" />
               <YoloBadge v-if="current?.yolo" />
             </div>

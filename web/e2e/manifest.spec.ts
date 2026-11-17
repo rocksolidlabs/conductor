@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
+import { expect, standingRoute, stopStrays, task, test, type Api, type Run } from './fixtures'
 
 // A project manifest run end to end (EN1 PR-7, #399), with the stub as the
 // worker as in tasks.spec.ts: a setup step that writes under .conductor/, a
@@ -23,6 +23,11 @@ import { expect, stopStrays, task, test, type Api, type Run } from './fixtures'
 // cleaning count), never on the clock; a check that holds the attempt open
 // waits for a file the spec writes. Rows are found by their ids.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 interface Step {
   phase: string

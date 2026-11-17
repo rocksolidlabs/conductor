@@ -4,6 +4,7 @@ import { QUICK_START_URL } from '~/utils/about'
 import { agentIcon } from '~/utils/agentIcons'
 import { pageRequests, settleChecks, welcomeAgents } from '~/utils/agents'
 import { EXAMPLES_LINE } from '~/utils/crews'
+import { welcomeTips } from '~/utils/welcome'
 import { navTiles } from '~/utils/pages'
 
 // The first-run welcome (#359; the UX review's P17): what Conductor is in one sentence, then three steps, the first filled (the
@@ -90,9 +91,10 @@ async function loadExamples() {
               <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Looking for agents on this machine…
             </p>
             <template v-else-if="offered?.agents.length">
-              <UButton
+              <TipButton
                 v-for="(a, i) in offered.agents"
                 :key="a.id"
+                :tip="welcomeTips.agent(a.name)"
                 :icon="agentIcon(a.icon)"
                 :color="i === 0 ? 'primary' : 'neutral'"
                 :variant="i === 0 ? 'solid' : 'outline'"
@@ -104,15 +106,15 @@ async function loadExamples() {
                 <span class="min-w-0 truncate" data-welcome-agent-name>{{ a.name }}</span>
                 <span v-if="a.version" class="ml-auto flex-none font-mono text-xs opacity-80" data-mono="id" data-welcome-version>{{ a.version }}</span>
                 <span v-else-if="a.checking" class="ml-auto flex-none text-xs opacity-80" data-welcome-checking>checking…</span>
-              </UButton>
-              <UButton v-if="offered.rest" :label="`and ${offered.rest} more`" color="neutral" variant="link" class="self-start px-0 pointer-coarse:min-h-11" data-welcome-more @click="launch.show()" />
+              </TipButton>
+              <TipButton v-if="offered.rest" :tip="welcomeTips.more" :label="`and ${offered.rest} more`" color="neutral" variant="link" class="self-start px-0 pointer-coarse:min-h-11" data-welcome-more @click="launch.show()" />
             </template>
             <template v-else-if="offered">
               <p class="text-sm text-muted" data-welcome-none>No agent is installed on this machine yet.</p>
-              <UButton label="Agents" icon="i-lucide-bot" color="neutral" variant="outline" to="/agents" class="self-start pointer-coarse:min-h-11" />
+              <TipButton :tip="welcomeTips.agents" label="Agents" icon="i-lucide-bot" color="neutral" variant="outline" to="/agents" class="self-start pointer-coarse:min-h-11" data-welcome-agents />
             </template>
             <!-- The catalog not read: the dialog reads it again and says why. -->
-            <UButton v-else label="Launch agent" icon="i-lucide-play" block class="pointer-coarse:min-h-11" @click="launch.show()" />
+            <TipButton v-else :tip="welcomeTips.launch" label="Launch agent" icon="i-lucide-play" block class="pointer-coarse:min-h-11" data-welcome-launch @click="launch.show()" />
           </div>
         </li>
 
@@ -121,7 +123,7 @@ async function loadExamples() {
           <div class="flex min-w-0 flex-1 flex-col gap-2">
             <h3 class="text-sm font-semibold text-highlighted" data-welcome-step-label>Bring one in from another machine</h3>
             <p class="text-sm text-muted">Run <code class="font-mono text-highlighted">conductor host</code> there; its terminal shows here.</p>
-            <UButton label="How to bring one in" icon="i-lucide-book-open" trailing-icon="i-lucide-external-link" color="neutral" variant="outline" :to="QUICK_START_URL" target="_blank" class="self-start pointer-coarse:min-h-11" data-welcome-host />
+            <TipButton :tip="welcomeTips.host" label="How to bring one in" icon="i-lucide-book-open" trailing-icon="i-lucide-external-link" color="neutral" variant="outline" :to="QUICK_START_URL" target="_blank" class="self-start pointer-coarse:min-h-11" data-welcome-host />
           </div>
         </li>
 
@@ -129,7 +131,7 @@ async function loadExamples() {
           <span class="grid size-6 flex-none place-items-center rounded-full border border-default text-xs font-semibold text-muted" aria-hidden="true">3</span>
           <div class="flex min-w-0 flex-1 flex-col gap-2">
             <h3 class="text-sm font-semibold text-highlighted" data-welcome-step-label>Try a crew</h3>
-            <UButton label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" :loading="loadingExamples" class="self-start pointer-coarse:min-h-11" data-welcome-examples @click="loadExamples" />
+            <TipButton :tip="welcomeTips.examples" label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" :loading="loadingExamples" class="self-start pointer-coarse:min-h-11" data-welcome-examples @click="loadExamples" />
             <p class="text-sm text-muted" data-examples-line>{{ EXAMPLES_LINE }}</p>
           </div>
         </li>

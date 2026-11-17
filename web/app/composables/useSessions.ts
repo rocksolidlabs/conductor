@@ -315,7 +315,7 @@ export interface ShareLink {
   active?: number
   /** Minted at the switchyard the session is published to: listed and revoked from here, viewers counted there. */
   remote?: boolean
-  /** A decision link (docs/protocol.md, Decision links): its holder answers the decisions in its scope, on the join page's Decide tab. */
+  /** A decision link (docs/protocol.md, Decision links): its holder answers the decisions in its scope, on the join page's Needs you tab. */
   decide?: boolean
   /** A decision link revoked here whose revoke the switchyard has not confirmed yet: tried again until it does. */
   revokePending?: boolean

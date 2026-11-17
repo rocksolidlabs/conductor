@@ -35,7 +35,7 @@ const props = defineProps<{
   askBrakeman?: string
   /** The question Accept anyway and Cancel ask, the run page's (useTaskCommands.question). */
   confirmQuestion?: (a: InboxAction) => { title: string; detail: string }
-  /** A decision link's page (the join page's Decide tab): an evidence entry read through the link's lane. */
+  /** A decision link's page (the join page's Needs you tab): an evidence entry read through the link's lane. */
   readEvidence?: (evidence: string) => Promise<LaneEvidence>
   /** A decision link's page: a session's terminal, one tab away, in place of the workbench's route. */
   openTerminal?: (ref: string) => void

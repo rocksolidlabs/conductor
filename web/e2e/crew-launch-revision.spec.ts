@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { Page, Response, Route } from '@playwright/test'
-import { expect, test, type Api, type Run } from './fixtures'
+import { expect, standingRoute, test, type Api, type Run } from './fixtures'
 
 // A crew's launch names the revision the launch sheet read, and the server refuses another (#957; docs/protocol.md, POST
 // /api/crews/{id}/launch). The sheet keeps no guess of its own about whether its copy is current: a launch of a copy saved over is
@@ -22,10 +22,10 @@ function budget(...caps: number[]) {
   info.setTimeout(info.timeout + caps.reduce((a, b) => a + b, 0))
 }
 
-// A route that lets every request through, kept from before the page loads: the tests' own routes go on top, so interception is
-// never switched on or off while the page has requests out (capacity-crew.spec.ts lost a GET to an unroute so, #281).
+// A standing route (standingRoute: one no request matches), kept from before the page loads: the tests' own routes go on top, so
+// interception is never switched on or off while the page has requests out (capacity-crew.spec.ts lost a GET to an unroute so, #281).
 test.beforeEach(async ({ page }) => {
-  await page.route('**/*', (route) => route.fallback())
+  await standingRoute(page.context())
 })
 
 test.afterEach(async ({ api }) => {

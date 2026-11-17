@@ -63,7 +63,7 @@ const emit = defineEmits<{
   requestError: [err: { code: string; message: string; requestId: string }]
   /** What the editor's Neovim reports (design round 12, F8). */
   nvim: [ev: NvimEvent]
-  /** A decision link's connection: the scope's items changed (the lane's `decisions_changed`; the join page's Decide tab lists again). */
+  /** A decision link's connection: the scope's items changed (the lane's `decisions_changed`; the join page's Needs you tab lists again). */
   decisionsChanged: []
 }>()
 

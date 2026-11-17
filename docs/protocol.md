@@ -458,10 +458,13 @@ that failed; a re-registration tries it again with its backoff, as it tries
 a dial that failed. Text frames are JSON; binary frames are RELAY
 envelopes.
 
-Host → server: `register{proto, host{name,version,user?,answerAs?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
+Host → server: `register{proto, host{name,version,user?,answerAs?,forms?}, session{name,agentId,command,cwd,cols,rows,relayOnly?,agentToken?,branch?,where?,agentVersion?,repo?,repoCommon?,startCommit?}, resume?{sessionId,secret}}`
 (`user` ≤ 64 bytes is the OS user for "hosted by"; `answerAs: true` says the host takes `answer_as` and
 sends `kept` with its `attention` (below): `conductor host` says it, a server publishing to a switchyard
-never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
+never does, an older host leaves it out and an older server ignores it; `forms: true` says the host reads
+a recipe's forms by the form's rules, so the owner's own server puts them in `registered.recipe` (below,
+#970): a bool, so the register's bound does not change; `conductor host` says it, a server publishing to
+a switchyard never does, an older host leaves it out and an older server ignores it; `cwd` ≤ 4096 bytes; `branch` ≤ 200 bytes is read from `.git/HEAD`;
 a server publishing its sessions to a switchyard registers each with less: `command` is one word, the
 agent's id or else the program's name, never an argument; `cwd` the folder's last element; no `user`,
 no `branch` and none of what the host reports, below),
@@ -597,9 +600,9 @@ redirect is followed and a proxy used as before.
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links, recipe?, decisions?, renews?, sessionInfo?, agentSessions?, activitySeq?}`
 (`decisions: true` from a switchyard that carries a decision link's lane,
 relaying DECISION and DECIDE, keeping run desks and serving the join
-page's Decide tab, below, Decision links: a publisher mints a decision link
+page's Needs you tab, below, Decision links: a publisher mints a decision link
 only at one that says so; absent from an older switchyard, and from a
-switchyard built before its join page has the Decide tab (it relays the
+switchyard built before its join page has the Needs you tab (it relays the
 lane and keeps desks all the same, but says nothing), a boolean in the
 64 KiB host message; `iceServers`: the configured ones, then the media provider's for the
 host's session, as the viewer's welcome carries them, none dropped for
@@ -815,14 +818,18 @@ the screen of the agent the host registered (`session.agentId`), so that a
 hosted session watches what a server session of the same agent watches:
 `{trustPrompt?, trustAnswers?: [{label, input}], questions?: [{prompt,
 words?, anytime?, answers?, answersFromScreen?, modeAnswers?,
-typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields
-(`internal/agents`' `HostRecipe`: the recipe the server's own sessions are
-started with, `Recipe`, without the questions that are forms, a question
+typedAnswers?}], workingTitle?, confirmSubmit?}`, the catalog's own fields:
+to a host whose register said `forms`, from the owner's own server, the
+recipe the server's own sessions are started with (`internal/agents`'
+`Recipe`), whole; to any other (an older host, and every host of a
+switchyard) the same without the questions that are forms, a question
 asked at any time whose answers are read off the screen and that names
-answers of its own, below). So a host is not sent Codex's MCP tool
-approval form: on a hosted session that form is answered in the terminal,
-and the recipe a host is sent is the one it was sent before the form was a
-question (#716). With it the host holds the trust question and the startup
+answers of its own, below (`HostRecipe`), byte for byte what a host was
+sent before the form was a question (#716). So a host that said `forms`
+asks Codex's MCP tool approval form as a server session asks it, with the
+same words, choices, keys and mode answers (#970), and answers to it are
+taken as a server session takes them; on any other hosted session that
+form is answered in the terminal. With it the host holds the trust question and the startup
 questions at start, raises the questions asked during the work with their
 choices (Codex's command approval, Claude Code's dialogs read off the
 screen), refuses a line typed into the session while one shows (a crew's
@@ -1983,8 +1990,9 @@ three of the call's arguments, "› 1. Allow", "Allow for this session" and
 "Cancel", each with its description in a column beside it, then "enter to
 submit | esc to cancel" on the last row) is found by that whole shape, at
 most 8 rows from Allow to Cancel, and asked as a form (below) on a server's
-own session. A host is not sent it (`registered.recipe`): on a hosted
-session the form is answered in the terminal. Its words are every row
+own session, and on the session of a host whose register said `forms`
+(#970), which is sent it (`registered.recipe`); any other host is not: on
+its hosted session the form is answered in the terminal. Its words are every row
 between "Field 1/1" and its list (the message and the arguments), its
 choices read off the form, Allow and the choices that remember it each its
 digit, which picks it and submits the form at once, Cancel an Escape, the
@@ -2046,8 +2054,9 @@ exactly one choice, which is sent as that answer's keys (a form where one
 is not asks nothing), the others as their numbers. What a reply to it is
 weighed against is those words and the whole list: the form with any row
 changed is another question. After an answer it is not asked again while
-it stays on the screen, as any question read off the screen (below). A
-host is not sent a form (`registered.recipe`). `modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
+it stays on the screen, as any question read off the screen (below). Only a
+host that said `forms`, of the owner's own server, is sent a form
+(`registered.recipe`). `modeAnswers`, a pattern bounded as a prompt, marks `mode` the answers it
 matches, each read whole: its label with the rows that follow it up to the
 next choice (a narrow screen wraps "switch to" and "BYPASS PERMISSIONS"
 onto two rows). `typedAnswers`, a pattern bounded the
@@ -6708,7 +6717,7 @@ that is not a turn's:
 
 | Route | Body and answer |
 |---|---|
-| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and its `overflow` only under a grant that narrows neither the scope nor the runs', sessions' or Dispatch's visibility, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). These fields and no other: never the request as kept, so never the `capacity` view it keeps (a turn reads capacity through `observe_capacity` under its class, and nowhere else). The admin's token reads it too; read with the session's own, it marks the request read |
+| `GET /api/sessions/{id}/brakeman/request` | `{request: {id, kind, state, subjects: [{ref, url?, state?, rev?, why?}], note?, since?, lastBriefing?: {id, at, coverage?}, scope, scopeNow?, visibility, permissions, budget: {readsLeft, deadline, secondsLeft}, batch?, notes?}}`: a wake request's `batch` as the role holds it (`{id, openedAt, wakes: [{source, subject?, count, first, last}], overflow?: {count, first, last, sources?: {<source>: {count, first, last}}}}`) with only the wakes whose subjects the turn's grant admits (the snapshot's and the configuration's scope and visibility together, as now; a subject that cannot be read now left out) and, under a grant that narrows no scope, the part of its `overflow` of the sources whose class the grant sees (runs for `task_failed`, `run_ended` and `run_paused`, sessions for `question_open`, Dispatch for `ticket_ready`, capacity for `capacity`; a person's `request` and a `briefing` time are of no class), counted by source with each source's own times (one entry per wake source, eight at most: a wake of another source is refused as it fires); an overflow with no tally to trust (one kept by an older server: its `sources` do not add up to its `count`, or name a source this build does not know) only whole, under a grant that also sees runs, sessions, Dispatch and capacity, the role's `notes` (`[{text, from?, at}]`) for every turn; the subjects resolved now (`why` for one that is not), the newest briefing whose footprint and scope the turn's grant covers, the scope the turn began under (and the configuration's now when it differs: an item must be in both), the visibility and permissions of the snapshot and the configuration together (`permissions.act` the operations both grant that this build serves, absent for none). These fields and no other: never the request as kept, so never the `capacity` view it keeps (a turn reads capacity through `observe_capacity` under its class, and nowhere else). The admin's token reads it too; read with the session's own, it marks the request read |
 | `POST /api/sessions/{id}/brakeman/brief` | `{opId, brief}` → `201 {request}`, briefed, `request` as the turn is told it: `GET …/brakeman/request`'s fields without `subjects`, `lastBriefing`, `batch` and `notes` (the guide's receipt `brakeman_turn`), never the request as kept and its `capacity` view. The `opId` is looked up first: the same `opId` and brief answer `200` with the request so told whatever its state now, another brief `409 brief_exists`; so does a submission that overlapped the one kept (both checked before either was kept). Only a new brief is held to the state, the bounds and the refs: `400 invalid_brief` with `field` (its path, a list's entry by its index: `items[1].alternatives[1].label`) and why (a field past its bound is refused, never cut; a brief with no item is refused, and a briefing's with no `fact/1`; a proposal's `op` must be an operation the guide lists, and one whose route checks a revision needs `expectedRevision` above 0; the why names what is taken beside what was sent: an unknown item kind with every kind, an unknown field with the fields its object takes, a value of another type with its field's type, a ref of no kind with the ref forms); `422 bad_refs` with `refs: [{ref, why}]`, every ref that resolves to nothing, lies outside the scope or the visibility, or names a revision other than the one read; `413 bound` past 256 KiB as kept, or with resolutions past 4 MiB, or a body past 1 MiB; all of it against the configuration as the brief is kept, a save meanwhile having it checked again (`409 stale_revision` when the configuration keeps changing); nothing written on a refusal. The admin's token is refused (`403 agent_only`): a brief is always Brakeman's own |
 
 **What a turn reads.** A request whose bearer is a turn's session token
@@ -7064,7 +7073,8 @@ from its answer and with no watermark, is read from no later than it.
 A brief's footprint counts every class its turn's answers used,
 an answer with no item a ref names (a page of projects) among them, and
 the classes of the wake batch its request gave it (each wake's by its
-subject's kind; an overflow's runs, sessions and Dispatch).
+subject's kind; an overflow's by the sources it counts, or runs,
+sessions, Dispatch and capacity for one with no tally to trust).
 
 **A brief**, schema `brakeman.brief/1`, at most 256 KiB as kept: `{schema,
 title, summary, uncertainty?, items}`, `title` at most 200 characters,
@@ -7176,7 +7186,18 @@ managed run read as its ledger holds it: never a change whose
 transaction is pending or was refused), a ticket moved to `ready` (by
 the status that change set; Dispatch's changes read from the server's
 start, every row of each commit, at most 20 pages of 500 a pass and
-the rest on the next pass at once), a person's own request (logged once,
+the rest on the next pass at once), a capacity reading that warns
+(`docs/plans/capacity.md`, PR-8: a reading the provider answered with a
+window at its `warning` or `critical` severity, at 90% used or more, or
+a limit it says holds, as the capacity panel warns; source `capacity`,
+subject `capacity:<agent>/<account>`, the key by its ids alone with no
+reading time, so a key's readings coalesce in a batch, and key the
+reading's `readAt`, so each reading fires once; no label, folder or
+figure; a reading of the agent and the account Brakeman's own turns
+launch on, its configured agent on the account its configured folder is,
+wakes nothing; admitted by the Capacity class alone, whatever the scope,
+as a `capacity:` ref is; capacity acts on nothing, and the wake only
+tells Brakeman), a person's own request (logged once,
 its op id asked again too; one whose write fails is kept and logged on a
 later pass), and the
 briefing times `wake.briefings` (at most 24 `HH:MM`, the server's local
@@ -7215,7 +7236,11 @@ request closes it is `cooling` for `wake.cooldownMinutes` (0 to 1,440;
 30), then `idle`. Wakes while briefing, cooling or unavailable join the
 next batch. A batch holds at most 200 wakes, the same source and subject
 coalesced with a count, past them an `overflow` count with the first and
-last times; a wake whose source, subject and key the log holds already
+last times, kept by source too (a turn under a grant that narrows no
+scope reads the overflow's wakes of the sources whose class it sees; one
+kept by an older server, with no count by source, only under a grant that
+sees every class a wake may be of: runs, sessions, Dispatch and
+capacity); a wake whose source, subject and key the log holds already
 (a task's attempts, a question's time) is one fired before, after a
 restart too. `paused` (a person) gathers nothing (a wake is logged
 `held: "paused"`), a turn running then runs to its end, and a wake

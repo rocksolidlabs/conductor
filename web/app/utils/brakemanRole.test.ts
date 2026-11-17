@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { ROLE_STATES, ReadOrder, WAKE_SOURCES, batchCount, pauseAction, retryWords, roleWords, rowWords, sourceWords } from './brakemanRole'
+import { ROLE_STATES, ReadOrder, WAKE_SOURCES, batchCount, pauseAction, retryWords, roleWords, rowWords, sourceWords, subjectLabel } from './brakemanRole'
 
 // The background role's words and the controls' choices (docs/plans/brakeman.md, PR-15), against internal/crew/role.go's names.
 
@@ -58,6 +58,17 @@ describe('the role in words', () => {
     expect(rowWords({ source: 'task_failed', subject: 'task:team-0a1b2c3d/lint', at: '', held: 'paused' }).fate).toBe('not gathered: the role was paused')
     expect(rowWords({ source: 'request', subject: 'br-4', at: '', held: "a person's own request" })).toEqual({ what: 'Your request: br-4', fate: "no batch: a person's own request" })
     expect(rowWords({ source: 'briefing', at: '' })).toEqual({ what: 'A briefing time', fate: '' })
+  })
+
+  it("names a capacity wake's agent and account by their ids, its own login in words", () => {
+    expect(rowWords({ source: 'capacity', subject: 'capacity:claude/a-abcdefghijkl', at: '', batch: 'wb-3' })).toEqual({
+      what: 'An agent neared its usage limit: capacity of claude on a-abcdefghijkl',
+      fate: 'waiting in wb-3',
+    })
+    expect(subjectLabel('capacity:codex/default')).toBe('capacity of codex on its default login')
+    // A reading's ref keeps its own label; a subject of no known shape is shown as it is.
+    expect(subjectLabel('capacity:codex/default@2026-11-16T10:00:00Z')).toBe('capacity of codex on default')
+    expect(subjectLabel('capacity:codex/someone')).toBe('capacity:codex/someone')
   })
 
   it('offers Pause, or Resume for a paused role', () => {

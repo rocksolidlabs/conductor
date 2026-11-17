@@ -17,6 +17,11 @@ test.describe.configure({ mode: 'serial' })
 
 /** The cap of every wait a step makes without a bound of its own. */
 const STEP_MS = 15_000
+/**
+ * The cap of a page's first draw after a load, which only bounds a hang: a loaded machine takes seconds to boot the app before its
+ * first read (fourteen at a load average of 100), past a step's own cap.
+ */
+const DRAW_MS = 60_000
 test.use({ actionTimeout: STEP_MS, navigationTimeout: STEP_MS })
 
 interface Request {
@@ -125,9 +130,10 @@ const requests = () => api.ok<{ requests: Request[] }>('GET', '/api/brakeman/req
 const runOf = (id: string) => api.ok<{ run: Run }>('GET', `/api/runs/${encodeURIComponent(id)}`).then((r) => r.run)
 
 test('Settings turns the background role on with its window, cooldown, briefing times and the day\'s minutes', async ({ page }) => {
+  test.setTimeout(2 * DRAW_MS + 10 * STEP_MS + 60_000)
   await open(page, '/settings')
   const card = page.locator('[data-brakeman-settings]')
-  await expect(card.locator('[data-brakeman-role-settings]')).toBeVisible()
+  await expect(card.locator('[data-brakeman-role-settings]')).toBeVisible({ timeout: DRAW_MS })
   await card.getByRole('switch', { name: 'Wake on events' }).click()
   await card.locator('[data-brakeman-window] input, input[data-brakeman-window]').first().fill('10')
   await card.locator('[data-brakeman-cooldown] input, input[data-brakeman-cooldown]').first().fill('30')
@@ -149,7 +155,7 @@ test('Settings turns the background role on with its window, cooldown, briefing 
   await api.ok('PUT', '/api/brakeman/config', { rev: saved.rev, config: { ...saved, wake: { ...saved.wake, briefings: [] } } })
   // The Brakeman page shows the role, idle.
   await page.goto(`${server!.baseURL}/brakeman`)
-  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: STEP_MS })
+  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: DRAW_MS })
 })
 
 // The run's failure (its check's three attempts, 120 s), the window (10 s) and the wake request's start (60 s), the question shown in
@@ -159,9 +165,9 @@ const WAKE_CAPS = [120_000, 40_000, 60_000, 30_000, 30_000, 60_000, 30_000]
 const WAKE_STEPS = 10
 
 test('a task failing wakes Brakeman once: its question is listed in Needs you and notifies no one, one brief, the role cooling, its log', async ({ page }) => {
-  test.setTimeout(WAKE_CAPS.reduce((a, b) => a + b, 0) + WAKE_STEPS * STEP_MS + 60_000)
+  test.setTimeout(DRAW_MS + WAKE_CAPS.reduce((a, b) => a + b, 0) + WAKE_STEPS * STEP_MS + 60_000)
   await open(page, '/brakeman')
-  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: STEP_MS })
+  await expect(page.locator('[data-brakeman-role] [data-role-state]')).toHaveAttribute('data-role-state', 'idle', { timeout: DRAW_MS })
   const runId = (await api.launchCrew(crewId)).id
   runs.push(runId)
   await expect.poll(async () => (await runOf(runId)).outcome ?? '', { timeout: WAKE_CAPS[0], intervals: [500] }).toBe('failed')
@@ -197,10 +203,10 @@ test('a task failing wakes Brakeman once: its question is listed in Needs you an
 })
 
 test('paused from the page, nothing wakes it: the next failure joins no batch and starts no turn', async ({ page }) => {
-  test.setTimeout(120_000 + 30_000 + 8 * STEP_MS + 60_000)
+  test.setTimeout(DRAW_MS + 120_000 + 30_000 + 8 * STEP_MS + 60_000)
   await open(page, '/brakeman')
   const card = page.locator('[data-brakeman-role]')
-  await expect(card.locator('[data-role-action="pause"]')).toBeVisible({ timeout: STEP_MS })
+  await expect(card.locator('[data-role-action="pause"]')).toBeVisible({ timeout: DRAW_MS })
   await card.locator('[data-role-action="pause"]').click()
   await expect(card.locator('[data-role-state]')).toHaveAttribute('data-role-state', 'paused')
   await expect(card.locator('[data-role-action="resume"]')).toBeVisible()

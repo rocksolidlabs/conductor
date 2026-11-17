@@ -1,5 +1,5 @@
 import type { BrowserContext } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, standingRoute, test } from './fixtures'
 import type { Page } from '@playwright/test'
 import { freeProjectKey, makeMilestone, makeProject, makeTicket, mark, marked, rowKeys, secondBrowser, storedTicket } from './dispatch-helpers'
 import { noSideways } from './layout'
@@ -11,6 +11,11 @@ import { noSideways } from './layout'
 // by → and ← on a focused card, the milestones beside with done/total; and a phone's width (390 px) for the list, the board and the
 // ticket's page. Each test makes a project of its own (EV, EV1, EV2…) and counts only its rows.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 let other: BrowserContext | null = null
 

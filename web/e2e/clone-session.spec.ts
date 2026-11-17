@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, openSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Locator, Page } from '@playwright/test'
-import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, standingRoute, test, type Session } from './fixtures'
 import { serverBinary, stubBash, stubPath } from './server'
 
 // Cloning a session (#434): Clone… on a row's menu (More, a right-click, the phone's sheet) starts the same session again under
@@ -11,6 +11,11 @@ import { serverBinary, stubBash, stubPath } from './server'
 // changed launches as changed. A hosted session's entries are disabled with the reason. Every name is this run's own: a session an
 // earlier repetition left listed holds its name, ended or not.
 test.describe.configure({ mode: 'serial' })
+
+// The tests route the page while it works: the standing route keeps its interception on from before the first load.
+test.beforeEach(async ({ page }) => {
+  await standingRoute(page.context())
+})
 
 const sessions: string[] = []
 const runs: string[] = []

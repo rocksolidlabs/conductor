@@ -22,7 +22,7 @@ import (
 )
 
 // The decision inbox (Program item MB0, docs/plans/decision-inbox.md,
-// PR-1): the read model of the page "Needs your decision", built on each
+// PR-1): the read model of the page "Needs you", built on each
 // read from what the server holds (the sessions' questions, the engine's
 // failed tasks, Dispatch's open plan revisions, Brakeman's decision cards)
 // and from nothing of its own but the routes a router gave (router.go,

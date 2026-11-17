@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -560,6 +561,77 @@ func TestABatchPastTwoHundredWakesOverflows(t *testing.T) {
 	}
 	if len(r.Log) != 11+MaxBatchWakes+1 {
 		t.Fatalf("the log holds %d", len(r.Log))
+	}
+}
+
+// TestAnOverflowIsCountedBySource: a batch's overflow counts its wakes by
+// source too, with each source's own times; the tally adds up to the
+// count through keepFired, unfire and the record as written; an overflow
+// kept without a tally (by an older server) and folded in leaves a sum
+// short of the count, which says the tally cannot be trusted.
+func TestAnOverflowIsCountedBySource(t *testing.T) {
+	t0 := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
+	full := func() *Batch {
+		b := &Batch{ID: "wb-1", Wakes: []BatchWake{}}
+		for i := range MaxBatchWakes {
+			b.add(RoleWake{Source: WakeTaskFailed, Subject: fmt.Sprintf("task:r/t%d", i), At: t0})
+		}
+		return b
+	}
+	b := full()
+	b.add(RoleWake{Source: WakeRunEnded, Subject: "run:r2", At: t0.Add(time.Second)})
+	if o := b.Overflow; o == nil || o.Count != 1 || !o.Tallied() || o.Sources[WakeCapacity].Count != 0 {
+		t.Fatalf("a run's wake past the room: %+v", o)
+	}
+	b.add(RoleWake{Source: WakeCapacity, Subject: "capacity:claude-a/default", At: t0.Add(2 * time.Second)})
+	b.add(RoleWake{Source: WakeCapacity, Subject: "capacity:claude-b/default", At: t0.Add(3 * time.Second)})
+	want := map[string]OverflowPart{
+		WakeRunEnded: {Count: 1, First: t0.Add(time.Second), Last: t0.Add(time.Second)},
+		WakeCapacity: {Count: 2, First: t0.Add(2 * time.Second), Last: t0.Add(3 * time.Second)},
+	}
+	if o := b.Overflow; o.Count != 3 || !o.Tallied() || !maps.Equal(o.Sources, want) || !o.First.Equal(t0.Add(time.Second)) || !o.Last.Equal(t0.Add(3*time.Second)) {
+		t.Fatalf("the overflow by source: %+v", o)
+	}
+
+	// Written and read back: the tally is kept; a copy is a copy.
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Batch
+	if err := json.Unmarshal(raw, &back); err != nil || !maps.Equal(back.Overflow.Sources, want) || !back.Overflow.Tallied() {
+		t.Fatalf("read back: %+v (%v)", back.Overflow, err)
+	}
+	c := cloneBatch(b)
+	c.Overflow.Sources[WakeCapacity] = OverflowPart{}
+	if b.Overflow.Sources[WakeCapacity].Count != 2 {
+		t.Fatal("a clone's overflow shares its tally with the batch's")
+	}
+
+	// The fired batch kept for the next turn, joined by the open one's overflow: the tally follows.
+	open := full()
+	open.add(RoleWake{Source: WakeQuestionOpen, Subject: "question:s1", At: t0.Add(4 * time.Second)})
+	rec := &RoleRecord{Fired: cloneBatch(b), Open: open}
+	rec.keepFired(t0.Add(time.Minute))
+	if o := rec.Open.Overflow; o.Count != 4 || !o.Tallied() || o.Sources[WakeQuestionOpen].Count != 1 || o.Sources[WakeCapacity].Count != 2 || o.Sources[WakeRunEnded].Count != 1 {
+		t.Fatalf("kept for the next turn: %+v", o)
+	}
+	// A batch given back to gathering, the open one's overflow folded in.
+	rec = &RoleRecord{Fired: cloneBatch(b), Open: open}
+	rec.unfire()
+	if o := rec.Open.Overflow; o.Count != 4 || !o.Tallied() || o.Sources[WakeQuestionOpen].Count != 1 {
+		t.Fatalf("given back: %+v", o)
+	}
+
+	// An overflow an older server kept, with no tally: folded in, the sum falls short of the count.
+	old := &Batch{ID: "wb-2", Wakes: []BatchWake{}, Overflow: &Overflow{Count: 5, First: t0, Last: t0}}
+	rec = &RoleRecord{Fired: cloneBatch(b), Open: old}
+	rec.keepFired(t0.Add(time.Minute))
+	if o := rec.Open.Overflow; o.Count != 8 || o.Tallied() {
+		t.Fatalf("an untallied overflow folded in: %+v", o)
+	}
+	if (Overflow{Count: 5}).Tallied() || !(Overflow{}).Tallied() {
+		t.Fatal("an overflow with no tally says it has one, or an empty one says it has none")
 	}
 }
 

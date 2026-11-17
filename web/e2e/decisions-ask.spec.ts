@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect, test, tokenAsk } from './fixtures'
 import { inboxItem, stubInbox } from './inbox-stub'
 
-// Needs your decision, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
+// Needs you, as a phone opens it from the page's "Open on your phone" code, and its rows at a phone's width and a desktop's:
 // the address opened with no workbench token asks for it at once, the token saved shows the decision list, and a decide pass held
 // without one opens the decide page, which asks for nothing. A long title stays inside its row, cut with an ellipsis, its waiting
 // time in view. An open item's card says how long it waits as the page's clock moves, with no new read of it. The rows and the item

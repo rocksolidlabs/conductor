@@ -1,4 +1,4 @@
-// The decision page, "Needs your decision" (docs/plans/decision-inbox.md, Program item MB0, PR-2): what the inbox routes answer
+// The decision page, "Needs you" (docs/plans/decision-inbox.md, Program item MB0, PR-2): what the inbox routes answer
 // (GET /api/inbox, /api/inbox/item, /api/inbox/track, docs/protocol.md), the order of the items, the four steps of an action in
 // words, the rule that keeps a step from moving back, this browser's recent actions, the bar's count and the phone's two paths
 // (its landing on the page, a notification's target) and the Open on your phone offer. Pure. The names keep clear of DR1's

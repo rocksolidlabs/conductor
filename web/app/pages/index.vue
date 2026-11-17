@@ -17,7 +17,7 @@ const wide = useMedia('(min-width: 64rem)')
 // worth looking at (someone waiting, else the newest running one).
 const target = computed(() => sessionWorthOpening(attention.sessions.value))
 
-// A phone's first load of the home in a tab lands on Needs your decision when an item waits (docs/plans/decision-inbox.md, Owner
+// A phone's first load of the home in a tab lands on Needs you when an item waits (docs/plans/decision-inbox.md, Owner
 // decisions 10): it waits for the inbox's first answer (or its failure, or LANDING_WAIT_MS, past which it goes on as before), and
 // is asked once per tab, so the Sessions tab and every later `/` stay on the sessions. Once it chose the decision page, nothing the
 // home reads after (a session changing its target while that navigation is under way) sends it elsewhere (homeNext).
