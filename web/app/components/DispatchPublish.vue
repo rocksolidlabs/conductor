@@ -32,7 +32,7 @@ import {
  * restored. Each request is bounded by the server's own deadline, and says that GitHub is being read while it runs.
  */
 const props = defineProps<{
-  ticket: DispatchTicket & { externalSnapshot?: { kind?: string } }
+  ticket: DispatchTicket
   /** The target picked to start with (a link's `link:<id>`), else the linked item. */
   target?: string
   /** A publication of the list: sent again (`resend`, a failed one) or published as new (`new`, one not confirmed or restored). */

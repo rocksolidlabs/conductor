@@ -1,4 +1,5 @@
 import type { PublicationSummary, PublishOffer } from '~/composables/useDispatch'
+import { githubHref } from './tracker'
 
 // A ticket's publications to GitHub (Program item IN1a, docs/plans/tracker-linking.md, PR-9; docs/protocol.md, "A ticket's
 // publications"): what the composer may insert, the body it sends, the check that the preview drawn is the very bytes Send names, and
@@ -280,18 +281,19 @@ export function publicationsStripWords(shown: readonly PublicationSummary[], old
 }
 
 /**
- * The comment's address, drawn as a link only when it is an http or https page on the target's own origin with nothing but a
- * `#issuecomment-<n>` anchor beyond the item's page; '' otherwise (the state's words still say it was published).
+ * The comment's address, drawn as a link only by the one rule of what of GitHub's text is a link (githubHref: https on the target's own
+ * host, as written), and only when it is the target's own page with nothing but a `#issuecomment-<n>` anchor beyond it; '' otherwise
+ * (the state's words still say it was published).
  */
 export function commentLink(p: Pick<PublicationSummary, 'remoteUrl' | 'targetUrl'>): string {
   if (!p.remoteUrl || !p.targetUrl) return ''
   try {
-    const u = new URL(p.remoteUrl)
     const t = new URL(p.targetUrl)
-    if ((u.protocol !== 'https:' && u.protocol !== 'http:') || u.protocol !== t.protocol || u.host !== t.host || u.username || u.password) return ''
-    if (u.pathname.replace(/\/$/, '') !== t.pathname.replace(/\/$/, '') || u.search) return ''
+    if (!githubHref(p.remoteUrl, t.host)) return ''
+    const u = new URL(p.remoteUrl)
+    if (u.username || u.password || u.search || u.pathname.replace(/\/$/, '') !== t.pathname.replace(/\/$/, '')) return ''
     if (u.hash && !/^#issuecomment-\d+$/.test(u.hash)) return ''
-    return u.href
+    return p.remoteUrl
   } catch {
     return ''
   }
