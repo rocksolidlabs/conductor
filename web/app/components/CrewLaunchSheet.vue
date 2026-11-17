@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo } from '~/composables/useSessions'
-import type { DraftCrew } from '~/utils/crews'
+import { plainTasks, type DraftCrew } from '~/utils/crews'
+import { accountCountWords, launchAccounts, memberLogin } from '~/utils/launchAccounts'
+import { COMPARISON_LAUNCHES_FROM_A_TICKET } from '~/utils/compareLaunch'
 import { launchLines, launchYoloWords, readSheet, sheetNotice, type SheetRead, type SheetRefusal, type SheetTarget } from '~/utils/crewLaunch'
 
 /**
@@ -20,7 +22,9 @@ import { launchLines, launchYoloWords, readSheet, sheetNotice, type SheetRead, t
  * person's. While a launch is under way Cancel and Launch are held; the close button and Escape still close the sheet, and a launch
  * under way goes on and says its result when the sheet is closed so and also when the page is left. A sheet opened again in the same
  * page while a draft's launch is saving it makes that first confirmation start nothing. For a crew that opens its run after a launch, the first launch's move to the run page
- * takes a sheet opened again meanwhile with it.
+ * takes a sheet opened again meanwhile with it. Above the lines, the sessions this launch starts on each login (launchAccounts, CP1 PR-9):
+ * its first tasks', or its members that start at once, and for a comparison up to its reviews' after its candidates. A comparison's crew
+ * read here is not launched from the sheet: it says where a comparison is launched, and Launch is held.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ target: SheetTarget | null; agents: AgentInfo[]; launching?: boolean; refused?: SheetRefusal | null }>()
@@ -67,6 +71,27 @@ watch(
 const accounts = useAccounts()
 const cap = useCapacity()
 watch(open, (o) => o && void accounts.store.load(), { immediate: true })
+/** The sessions this launch starts on each login, each member's login as its line resolves it (memberLogin: never a default of the page's). */
+const perAccount = computed(() => {
+  const g = got.value
+  if (!g || !('crew' in g)) return []
+  const members = g.crew.members
+  return launchAccounts({
+    members,
+    tasks: g.crew.tasks ? plainTasks(g.crew.tasks) : undefined,
+    compare: g.crew.compare,
+    accountOf: (name) => {
+      const m = members.find((x) => x.name === name) ?? { name, agentId: '' }
+      const l = lines.value.find((x) => x.name === name)
+      return memberLogin(m, { doc: accounts.doc.value, view: l ? cap.entry(l.query).view : null, agent: l?.agent ?? m.agentId })
+    },
+  })
+})
+/** Whether the crew read is a comparison's, which the server launches from a ticket's approved revision alone. */
+const comparison = computed(() => {
+  const g = got.value
+  return !!(g && 'crew' in g && g.crew.compare)
+})
 const lines = computed(() => (crew.value ? launchLines(crew.value.members, { agents: props.agents, doc: accounts.doc.value, managed: crew.value.managed, yolo: crew.value.yolo, view: (q) => cap.entry(q).view }) : []))
 </script>
 
@@ -85,6 +110,13 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
       </p>
       <p v-else-if="!crew" class="flex items-center gap-2 text-sm text-muted" data-crew-launch-reading><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" />Reading the crew as the server holds it, and the server's yolo default when it inherits it…</p>
       <p v-else class="mb-3 text-sm text-muted" data-crew-launch-yolo>{{ launchYoloWords(crew.yolo, crew.inherits) }}</p>
+      <p v-if="crew && !failed && comparison" class="mb-3 flex items-start gap-2 text-sm text-warning" data-crew-launch-comparison>
+        <UIcon name="i-lucide-git-compare" class="mt-0.5 size-4 shrink-0" />
+        <span class="min-w-0">{{ COMPARISON_LAUNCHES_FROM_A_TICKET }}.</span>
+      </p>
+      <ul v-if="crew && !failed && perAccount.length" class="mb-3 flex flex-col gap-0.5 text-xs text-muted" data-crew-launch-accounts>
+        <li v-for="a in perAccount" :key="a.key" :data-crew-launch-account="a.key" :data-launch-account-first="a.first" :data-launch-account-later="a.later">{{ accountCountWords(a) }}</li>
+      </ul>
       <ul v-if="crew && !failed" class="flex flex-col gap-3" data-crew-launch-sheet>
         <li v-for="l in lines" :key="l.name" class="flex flex-col gap-1.5" :data-crew-launch-line="l.name">
           <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
@@ -100,7 +132,7 @@ const lines = computed(() => (crew.value ? launchLines(crew.value.members, { age
     <template #footer>
       <div ref="footer" class="flex w-full items-center justify-end gap-2">
         <UButton label="Cancel" color="neutral" variant="ghost" :disabled="!open || launching" data-crew-launch-cancel @click="open = false" />
-        <UButton label="Launch" icon="i-lucide-play" :loading="launching" :disabled="!open || !crew || launching || notice?.hold" data-crew-launch-confirm @click="emit('launch', crew?.saved ?? null)" />
+        <UButton label="Launch" icon="i-lucide-play" :loading="launching" :disabled="!open || !crew || launching || notice?.hold || comparison" data-crew-launch-confirm @click="emit('launch', crew?.saved ?? null)" />
       </div>
     </template>
   </UModal>

@@ -671,6 +671,72 @@ func admitRunPath(r *http.Request, o *observer) (bool, error) {
 	return ok, err
 }
 
+// admitChainPath admits a route whose path names a run of a chain every
+// run of which is in the grant: a comparison is read over its whole
+// chain (its continuations and the runs it continues), so a scope that
+// names some of the chain's runs and not the others is refused the read
+// (outside_scope), as one naming none is.
+func admitChainPath(r *http.Request, o *observer) (bool, error) {
+	id := r.PathValue("run")
+	if !crew.ValidRunID(id) {
+		return true, nil // the handler answers it
+	}
+	chain, err := o.chainOf(r.Context(), id)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range chain {
+		if _, ok, err := o.runAdmitted(r.Context(), run); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// maxObservedChain bounds the runs of a chain admitChainPath reads, a
+// comparison's own bound (crew's maxCompareChain).
+const maxObservedChain = 256
+
+// chainOf is the runs of the chain the run belongs to (ledgerChain).
+func (o *observer) chainOf(ctx context.Context, id string) ([]string, error) {
+	return o.rr.s.ledgerChain(ctx, id)
+}
+
+// ledgerChain is the runs of the chain the run belongs to, as the ledger
+// links them: the run, then back along continued_from, then on along
+// continued_by, each way at most maxObservedChain; the run alone without
+// a ledger or a row.
+func (s *Server) ledgerChain(ctx context.Context, id string) ([]string, error) {
+	ld := s.ledger
+	if ld == nil {
+		return []string{id}, nil
+	}
+	row, ok, err := ld.Run(ctx, id)
+	if err != nil || !ok {
+		return []string{id}, err
+	}
+	chain := []string{id}
+	seen := map[string]bool{id: true}
+	for _, way := range []func(r ledger.RunRow) string{
+		func(r ledger.RunRow) string { return r.ContinuedFrom },
+		func(r ledger.RunRow) string { return r.ContinuedBy },
+	} {
+		for next, n := way(row), 0; next != "" && !seen[next] && n < maxObservedChain; n++ {
+			seen[next] = true
+			chain = append(chain, next)
+			r, ok, err := ld.Run(ctx, next)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				break
+			}
+			next = way(r)
+		}
+	}
+	return chain, nil
+}
+
 // admitTicketPath admits a route whose path names a ticket in the grant.
 func admitTicketPath(r *http.Request, o *observer) (bool, error) {
 	key := r.PathValue("key")
@@ -1692,6 +1758,125 @@ func filterCandidates(r *http.Request, o *observer, body []byte) ([]byte, error)
 	return refreshed(body, "candidates", tasks)
 }
 
+// filterComparison is GET /api/runs/{run}/comparison for a turn: each
+// column's candidate with its candidate: ref, noted at the state and
+// commit its ref resolves to now, and each check cell's receipt with its
+// check: ref, noted at its state, the commit it checked and its log's
+// SHA-256, so a brief citing them after this read alone cites what it
+// observed. The read is admitted only when every run of the chain is in
+// the grant (admitChainPath), and the chain is held to it again once
+// the reply is made, so a continuation made meanwhile outside the grant
+// refuses the read (outside_scope) rather than showing its runs. The
+// selection and the state it gives the comparison are left out: the
+// person's answer is never Brakeman's input.
+func filterComparison(r *http.Request, o *observer, body []byte) ([]byte, error) {
+	switch ok, err := admitChainPath(r, o); {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, &apiError{Code: "outside_scope", Message: "outside the request's scope", status: http.StatusForbidden}
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "selection")
+	delete(m, "state")
+	// noted resolves ref as a brief's would and notes it when it is found
+	// in the grant: its state, its revision and its SHA-256.
+	noted := func(ref string) (bool, error) {
+		parsed, err := brakeman.ParseRef(ref)
+		if err != nil {
+			return false, nil
+		}
+		f, err := o.rr.lookup(r.Context(), parsed)
+		if err != nil {
+			return false, err
+		}
+		if !f.found || !o.grant.admits(f.item) {
+			return false, nil
+		}
+		o.noteRead(brakeman.Read{Ref: parsed, Class: brakeman.ClassRuns, State: f.now.State, Rev: f.now.Rev, SHA256: f.now.SHA256})
+		return true, nil
+	}
+	var cands []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["candidates"]), &cands); err != nil {
+		return nil, fmt.Errorf("the comparison's candidates: %w", err)
+	}
+	for _, c := range cands {
+		var head struct {
+			Task    string
+			Run     string
+			Attempt int
+		}
+		for k, v := range map[string]any{"task": &head.Task, "run": &head.Run, "attempt": &head.Attempt} {
+			if raw, ok := c[k]; ok {
+				if err := json.Unmarshal(raw, v); err != nil {
+					return nil, fmt.Errorf("the comparison's candidate's %s: %w", k, err)
+				}
+			}
+		}
+		if head.Attempt == 0 || head.Run == "" {
+			continue
+		}
+		ref := fmt.Sprintf("candidate:%s/%s/%d", head.Run, head.Task, head.Attempt)
+		ok, err := noted(ref)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c["ref"], _ = json.Marshal(ref)
+		}
+	}
+	var checks []map[string]json.RawMessage
+	if err := json.Unmarshal(orNull(m["checks"]), &checks); err != nil {
+		return nil, fmt.Errorf("the comparison's checks: %w", err)
+	}
+	for _, ch := range checks {
+		var cells []map[string]json.RawMessage
+		if err := json.Unmarshal(orNull(ch["cells"]), &cells); err != nil {
+			return nil, err
+		}
+		for _, cell := range cells {
+			var receipt string
+			if raw, ok := cell["receipt"]; !ok || json.Unmarshal(raw, &receipt) != nil || receipt == "" {
+				continue
+			}
+			ok, err := noted(receipt)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				cell["ref"], _ = json.Marshal(receipt)
+			}
+		}
+		var err error
+		if ch["cells"], err = marshalNoEscape(cells); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	if m["candidates"], err = marshalNoEscape(cands); err != nil {
+		return nil, err
+	}
+	if m["checks"], err = marshalNoEscape(checks); err != nil {
+		return nil, err
+	}
+	out, err := marshalNoEscape(m)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+// orNull is raw, or JSON's null for none.
+func orNull(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
+}
+
 // withheldTicket is a related ticket outside the grant as a ticket's read
 // shows it: its id and key, no title and no status.
 type withheldTicket struct {
@@ -2680,6 +2865,10 @@ var brakemanReads = []sharedRead{
 	// the refs a turn's answer gains is under the turn's (maxTurnReply).
 	{"GET /api/dispatch/tickets/{key}/plans", readSpec{class: brakeman.ClassDispatch, admit: admitTicketPath, filter: filterPlans}, 0},
 	{"GET /api/runs/{run}/candidates", readSpec{class: brakeman.ClassRuns, admit: admitRunPath, filter: filterCandidates}, 0},
+	// A comparison as the page measures it (docs/plans/compare-crew.md,
+	// PR-5): runs data alone (the crew as launched, the ledger's rows, git
+	// of the run's repository), nothing of the touched index.
+	{"GET /api/runs/{run}/comparison", readSpec{class: brakeman.ClassRuns, admit: admitChainPath, filter: filterComparison}, crew.MaxComparison},
 	{"GET /api/sessions", readSpec{class: brakeman.ClassSessions, filter: filterSessions}, 0},
 	{"GET /api/touched", readSpec{class: brakeman.ClassTouched, filter: filterTouched}, 0},
 	// AC1's capacity view (docs/plans/capacity.md, PR-6): the route answers

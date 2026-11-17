@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page, Route } from '@playwright/test'
-import { expect, task, test, type Api, type Run } from './fixtures'
+import { expect, readAgain, task, test, type Api, type Run } from './fixtures'
 import { freeProjectKey, makeProject, makeTicket, opOf, storedTicket } from './dispatch-helpers'
 
 // Crews, a ticket's launch and Brakeman on their accounts (docs/plans/capacity.md, Program item AC1, PR-7). A managed crew of a
@@ -807,7 +807,9 @@ test("a draft's launch starts a run only under the opening and the token it was 
   await page.locator('[data-launch]').click()
   await expect(lead.locator('[data-capacity-error]')).toContainText('e2e: the view is held back', { timeout: 30_000 })
   refuseView = false
-  await lead.locator('[data-capacity-again]').click()
+  // The panel reads again by itself after a refused view: Read again only hurries it, and can be gone before a click lands. It is
+  // pressed until the view it leads to is drawn (readAgain), never once and blind.
+  await readAgain(lead.locator('[data-capacity-again]'), lead.locator('[data-capacity-panel]:not(:has([data-capacity-error]))'))
   await expect(lead.locator('[data-capacity-panel]')).toHaveAttribute('data-capacity-state', /^[a-z_]+$/)
   await expect(lead.locator('[data-capacity-error]')).toHaveCount(0)
   await page.unroute(views)
@@ -957,4 +959,71 @@ test("the run page's Logins say a registered account in words while the accounts
   await expect(add).toBeEnabled()
   await slide.getByRole('button', { name: 'Cancel' }).click()
   await expect(slide).toHaveCount(0)
+})
+
+test("a comparison's launch counts the sessions it starts on each account, its reviews as up to, beside each member's line (CP1 PR-9)", async ({ page, api, state }) => {
+  test.setTimeout(180_000)
+  const work = label('work')
+  const workId = await addAccount(api, 'claude', work, folder(state.home))
+  await setDefault(api, 'claude', workId)
+  const team = label('team')
+  const teamId = await addAccount(api, 'codex', team, folder(state.home))
+  // A comparison as New comparison makes it: a candidate on Claude Code's default (Work), one on Codex naming Team, a review of each
+  // by the worker, on the default too.
+  const { crew } = await api.ok<{ crew: { id: string; name: string } }>('POST', '/api/crews', {
+    name: label('comparison'),
+    goal: 'compare on the accounts',
+    cwd: '',
+    where: 'server',
+    isolation: 'worktree',
+    openAfterLaunch: false,
+    members: [
+      { name: 'cand-a', agentId: 'worker', prompt: '', start: { when: 'task' } },
+      { name: 'cand-b', agentId: 'codex', prompt: '', start: { when: 'task' }, account: teamId },
+      { name: 'rev-a', agentId: 'worker', prompt: '', start: { when: 'task' } },
+      { name: 'rev-b', agentId: 'worker', prompt: '', start: { when: 'task' } },
+    ],
+    tasks: [
+      { id: 'approach-a', member: 'cand-a', kind: 'work', instructions: 'Try it.', checks: [{ id: 'unit', argv: ['true'] }] },
+      { id: 'approach-b', member: 'cand-b', kind: 'work', instructions: 'Try it.', checks: [{ id: 'unit', argv: ['true'] }] },
+      { id: 'review-a', member: 'rev-a', kind: 'review', instructions: 'Review it.', needs: ['approach-a'] },
+      { id: 'review-b', member: 'rev-b', kind: 'review', instructions: 'Review it.', needs: ['approach-b'] },
+    ],
+    compare: { criteria: [{ id: 'fast', text: 'the read is fast' }], candidates: [{ task: 'approach-a' }, { task: 'approach-b' }] },
+  })
+  made.crews.push(crew.id)
+  const key = await freeProjectKey(api, 'CAC')
+  await makeProject(api, key)
+  const ticketKey = await makeTicket(api, key, '1', { title: 'Compare on the accounts' })
+  const { plan } = await api.ok<{ plan: { id: string; rev: number } }>('POST', `/api/dispatch/tickets/${ticketKey}/plans`, { opId: opOf(key, 'r1'), crew: crew.id })
+  const ticket = await storedTicket(api, ticketKey)
+  await api.ok('POST', `/api/dispatch/plans/${plan.id}/approve`, { opId: opOf(key, 'ap1'), expectedRev: plan.rev, ticketRev: ticket.rev })
+
+  await page.goto(`/dispatch/${key}/1`)
+  const featured = page.locator('[data-plan-section] [data-plan-featured]')
+  await expect(featured).toHaveAttribute('data-plan-state', 'approved', { timeout: 30_000 })
+  await featured.locator('[data-plan-launch]').click()
+  const dialog = page.locator('[data-launch-dialog]')
+  // Work takes candidate A's session at once and up to both reviews after; Team candidate B's. The default is named once the
+  // server's view of the line has said it, never before.
+  const counts = dialog.locator('[data-launch-accounts] [data-launch-account]')
+  await expect(counts).toHaveText([`this launch: 1 session on ${work}, then up to 2 more`, `this launch: 1 session on ${team}`], { timeout: 30_000 })
+  await expect(dialog.locator(`[data-launch-account="account:${workId}"]`)).toHaveAttribute('data-launch-account-later', '2')
+  // AC1's lines as they were: each member's account, its usage panel.
+  await expect(dialog.locator('[data-launch-member="cand-a"] [data-launch-member-account]')).toHaveText(`the default at the launch (now ${work})`)
+  await expect(dialog.locator('[data-launch-member="cand-b"] [data-launch-member-account]')).toHaveText(team)
+  await expect(dialog.locator('[data-launch-member] [data-capacity-panel]')).toHaveCount(4)
+  const box = async (sel: string) => (await dialog.locator(sel).first().boundingBox())!
+  expect((await box('[data-launch-accounts]')).y).toBeLessThan((await box('[data-launch-members]')).y)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+
+  // The crew's own launch sheet on Crews counts the same (the server refuses the launch itself: a comparison is launched from a ticket).
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  await paletteLaunch(page, crew)
+  const sheet = page.locator('[data-crew-launch-accounts] [data-crew-launch-account]')
+  await expect(sheet).toHaveText([`this launch: 1 session on ${work}, then up to 2 more`, `this launch: 1 session on ${team}`], { timeout: 30_000 })
+  await page.locator('[data-crew-launch-cancel]').click()
+  await expect(page.locator('[data-crew-launch-confirm]')).toHaveCount(0)
 })

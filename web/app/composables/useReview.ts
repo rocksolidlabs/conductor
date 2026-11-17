@@ -146,6 +146,8 @@ export function useReviewApi() {
       return { text: r.text, truncated: r.headers.get('X-Conductor-Truncated') === '1', commit: r.headers.get('X-Conductor-Commit') ?? '' }
     },
     prepareRepair: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => request<PreparedRepair>(`${attemptPath(c)}/steps/${enc(step)}/${k}/repair`),
+    /** A delivery's CI job on GitHub (`job:<n>` or `run:<n>`) prepared, read fresh from GitHub (IN1a PR-10). */
+    prepareJob: (key: string, link: string, check: string) => request<PreparedRepair>(`/api/dispatch/tickets/${enc(key)}/links/${enc(link)}/checks/${enc(check)}/repair`),
     recheck: (run: string, task: string, body: { commandId: string; attempt: number; commit: string; expectedRevision?: number }) =>
       request<{ receipt: DispatchReceipt; run: string; attempt: number }>(`/api/runs/${enc(run)}/tasks/${enc(task)}/recheck`, { method: 'POST', body }),
     submitReview: (key: string, body: OpBody & ReviewBody & Omit<ApplyOptions, 'opId'>) => request<ReviewReply>(`/api/dispatch/tickets/${enc(key)}/reviews`, { method: 'POST', body }),
@@ -239,6 +241,8 @@ export function useReview(gate: DispatchOrder) {
       through(gate, `findings:${key}:${candidate}`, () => allPages((after) => api.findings(key, { state: 'all', candidate, after }).then((p) => ({ items: p.findings ?? [], next: p.next })), MAX_FINDINGS), apply),
     /** A failed receipt's prepared repair request (read whole, never cut). */
     prepare: (c: Pick<CandidateRef, 'run' | 'task' | 'attempt'>, step: string, k: number) => api.prepareRepair(c, step, k),
+    /** A delivery's CI job on GitHub prepared for a repair (read whole, never cut). */
+    prepareJob: (key: string, link: string, check: string) => api.prepareJob(key, link, check),
     /**
      * A finding marked against a candidate: its op id minted, asked once more with it on a lost reply; a refusal is a CommandRefused in
      * the store's words, a 409 invalid (not a later candidate, Resolved on the finding's own commit) an ApiError in the server's.
@@ -490,7 +494,7 @@ export function useShowWhenReady(o: { key: () => string; ready: () => boolean })
  * is applied only to the request that asked for it, by its generation (a later prepare) and its identity (the candidate it was asked
  * for still shown), checked as it is applied.
  */
-export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare' | 'recheck'>, shown: () => string) {
+export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare' | 'recheck'> & Partial<Pick<ReturnType<typeof useReview>, 'prepareJob'>>, shown: () => string) {
   const open = ref(false)
   const prepared = ref<PreparedRepair | null>(null)
   const error = ref('')
@@ -541,7 +545,31 @@ export function usePreparedRepair(r: Pick<ReturnType<typeof useReview>, 'prepare
       )
     }
   }
-  return { open, prepared, error, loading, prepare, recheck }
+  /**
+   * A delivery's CI job on GitHub prepared (the link's pull request's job `check`), by the same late-answer rule: applied only while the
+   * candidate it was asked for is shown. GitHub runs the job, so its request never offers Check again.
+   */
+  async function prepareJob(key: string, link: string, check: string): Promise<void> {
+    if (!r.prepareJob) return
+    const at = shown()
+    const current = asks.ask()
+    from = null
+    open.value = true
+    prepared.value = null
+    error.value = ''
+    loading.value = true
+    try {
+      const p = await r.prepareJob(key, link, check)
+      if (!current()) return
+      if (shown() === at) prepared.value = p
+      else error.value = 'Another candidate is shown now: prepare the repair from its checks.'
+    } catch (e) {
+      if (current()) error.value = shown() === at ? (e as Error).message : 'Another candidate is shown now: prepare the repair from its checks.'
+    } finally {
+      if (current()) loading.value = false
+    }
+  }
+  return { open, prepared, error, loading, prepare, prepareJob, recheck }
 }
 
 /**

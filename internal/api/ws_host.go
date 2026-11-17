@@ -175,7 +175,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		recipe = s.hostRecipe(reg.Session.AgentID)
 	}
 	registered, dropped := registeredMessage(proto.Registered{T: proto.HostRegistered, SessionID: info.ID, Secret: hs.Secret(), ShareBaseURL: s.publicBase(r), Resumed: resumed, ICEServers: ice, Links: s.liveLinkIDs(info.ID),
-		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk})
+		Recipe: recipe, Decisions: s.hosts.Decisions(), Renews: hc.cred != nil, SessionInfo: !isDesk && !s.cfg.Switchyard.Enabled, AgentSessions: !isDesk, ActivitySeq: !isDesk && !s.cfg.Switchyard.Enabled})
 	if dropped {
 		s.log.Warn("registered with the agent's recipe is past a host message; the hosted session watches no questions", "session", info.ID, "agent", reg.Session.AgentID)
 	}
@@ -553,7 +553,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		// The host's own report is not forwarded, so it is never limited;
 		// its question keeps the host's id, and its mark as the agent's own;
 		// its turns, once true, is learned (an older host sends none).
+		prev := hs.Info().Attention.ID
 		hs.HostAttentionTurns(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID, m.Ask, m.Answered, m.Plan, m.Kept, m.Turns)
+		// A question asked while the host was away, still open as it
+		// comes back (its retell, Retold), and not one the copy held:
+		// its entries come late and page no one, so it pages once here,
+		// from the session's state, as a live event of the session's.
+		if m.Retold && session.AttentionState(m.State) == session.AttentionNeedsInput && m.ID != "" && m.ID != prev {
+			s.events.activity(hs.Info().ID, session.ActivityEntry{At: time.Now().UTC(), Type: session.ActivityAttention, Message: m.Message}, session.AttentionNeedsInput)
+		}
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {
@@ -568,8 +576,17 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		// The session is the connection's, whatever m.SessionID says; the
 		// entry and its state are checked and cleaned by HostActivity, and an
 		// entry of a type this server does not know (a newer host's) is
-		// dropped, not fatal.
-		hs.HostActivity(m.Entry, m.State)
+		// dropped, not fatal. A numbered entry the session took already
+		// (sent again as a resuming connection starts) is dropped: shown
+		// once. Entries the host left out are said before the entry.
+		if m.Seq > 0 && !hs.TakeActivitySeq(m.Seq) {
+			break
+		}
+		if m.LeftOut > 0 {
+			at, _ := time.Parse(time.RFC3339Nano, m.Entry.At)
+			hs.HostActivityLeftOut(m.LeftOut, at.UTC())
+		}
+		hs.HostActivityOf(m.Entry, m.State, m.Late)
 	case proto.HostChat:
 		var m proto.HostChatMsg
 		if json.Unmarshal(data, &m) != nil {

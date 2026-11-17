@@ -1,6 +1,7 @@
 import { mintCommandId } from './tasks'
 import type { RefState } from './brakeman'
 import { RESPONSIBILITY_WORDS } from './crews'
+import { comparisonLink } from './compare'
 
 // Durable decisions (Program item DR1, docs/plans/decisions.md, "web/app"; docs/protocol.md, "Decisions"): the record as the operator's
 // routes give it, its four states in words (asked, the answer, checked by Yardmaster, applied or why not), and the operator's
@@ -10,16 +11,25 @@ import { RESPONSIBILITY_WORDS } from './crews'
 
 export type DecisionState = 'open' | 'answered' | 'applied' | 'superseded' | 'cancelled' | 'expired'
 export type DecisionType = 'clarification' | 'approval' | 'assignment'
+/**
+ * Who opened a decision: an agent's request, a plan's gate, or a comparison's selection (Program item CP1, docs/plans/compare-crew.md:
+ * Yardmaster opens it when every lane of a comparison has ended, its options the candidates and None of these).
+ */
+export type DecisionOrigin = 'agent' | 'plan' | 'compare'
 
-/** One of a request's alternatives. */
+/** One of a request's alternatives; a selection's candidate names the candidate it continues (`subject`, kind `candidate`). */
 export interface DecisionOption {
   label: string
   tradeoffs?: string
+  subject?: DecisionSubject
 }
 
-/** What a decision is about: a commit, a candidate (a task's submitted result), a file's blob at a commit, or a plan revision (a gate's). */
+/**
+ * What a decision is about: a commit, a candidate (a task's submitted result), a file's blob at a commit, a plan revision (a gate's),
+ * or a comparison (a selection's: its launched run, its base and the digest of its options' candidates).
+ */
 export interface DecisionSubject {
-  kind: 'commit' | 'candidate' | 'artifact' | 'plan'
+  kind: 'commit' | 'candidate' | 'artifact' | 'plan' | 'comparison'
   commit?: string
   run?: string
   task?: string
@@ -27,6 +37,7 @@ export interface DecisionSubject {
   path?: string
   sha256?: string
   plan?: string
+  base?: string
   digest?: string
 }
 
@@ -90,8 +101,11 @@ export interface DecisionApplication {
   attempt?: number
   response: number
   validated: boolean
-  how: 'typed' | 'task_file' | 'released' | 'cancelled' | 'noted'
+  how: 'typed' | 'task_file' | 'released' | 'cancelled' | 'noted' | 'selected'
   tasks?: string[]
+  /** A selection's candidate, applied (`how: selected`); absent with `none` for None of these. */
+  selected?: { task: string; run: string; attempt: number; commit: string }
+  none?: true
   words: string
 }
 
@@ -121,7 +135,7 @@ export interface Decision {
   /** The run that holds it now. */
   run: string
   openedIn: string
-  origin: 'agent' | 'plan'
+  origin: DecisionOrigin
   type: DecisionType
   gate?: string
   /** An agent's decision's asking attempt, and whether it is live (the same run, task, attempt and session, the session not ended). */
@@ -160,7 +174,7 @@ export interface DecisionSummary {
   id: string
   requestId?: string
   type: DecisionType
-  origin: 'agent' | 'plan'
+  origin: DecisionOrigin
   task?: string
   gate?: string
   state: DecisionState
@@ -196,8 +210,9 @@ export function optionsOf(d: Pick<Decision, 'type' | 'request'>): DecisionOption
   return d.request.options ?? []
 }
 
-/** The option the requester recommends, by its index; -1 for none. */
-export function recommended(d: Pick<Decision, 'type' | 'request'>): number {
+/** The option the requester recommends, by its index; -1 for none, and always for a selection: nothing is preselected (CP1's I6). */
+export function recommended(d: Pick<Decision, 'type' | 'request'> & { origin?: DecisionOrigin }): number {
+  if (d.origin === 'compare') return -1
   const r = d.request.recommendation
   return typeof r === 'number' && r >= 0 && r < optionsOf(d).length ? r : -1
 }
@@ -237,16 +252,27 @@ export function assignmentWords(d: Pick<Decision, 'type'> & { request?: Pick<Dec
   return `${f.person} is to do this by hand; the operator answers Done or Not done for them`
 }
 
-/** Where a decision was asked, in words: `build's attempt 1` for an agent's, `the plan's gate deploy-ok` for a gate. */
+/** Where a decision was asked, in words: `build's attempt 1` for an agent's, `the plan's gate deploy-ok` for a gate, `the comparison` for a selection. */
 export function askedWhere(d: Pick<Decision, 'origin' | 'gate' | 'asker'>): string {
+  if (d.origin === 'compare') return 'the comparison'
   if (d.origin === 'plan') return d.gate ? `the plan's gate ${d.gate}` : "the plan's gate"
   return d.asker ? `${d.asker.task}'s attempt ${d.asker.attempt}` : 'an agent'
 }
 
 const short = (c?: string) => (c ? c.slice(0, 7) : '')
 
-/** The subject in words, and the page it links to when it has one (a candidate's task). */
-export function subjectWords(s: DecisionSubject | null | undefined): { text: string; to?: string } {
+/** A comparison on its ticket's page (the compare view, any run of its chain, compare.ts's comparisonLink): '' when the ticket's key is not known. */
+export function comparisonPath(ticketKey: string | undefined, run: string | undefined): string {
+  const l = run ? comparisonLink(ticketKey, run) : null
+  return l ? `${l.path}?view=compare&run=${encodeURIComponent(l.query.run)}` : ''
+}
+
+/**
+ * The subject in words, and the page it links to when it has one: a candidate's task on its run page; a comparison (a selection's own
+ * subject) on its ticket's comparison when the key of the ticket its run was launched from is given (`o.ticket`), else its run page.
+ * A selection's options link their candidates to the comparison through optionSubject.
+ */
+export function subjectWords(s: DecisionSubject | null | undefined, o: { ticket?: string } = {}): { text: string; to?: string } {
   if (!s) return { text: '' }
   switch (s.kind) {
     case 'commit':
@@ -255,6 +281,11 @@ export function subjectWords(s: DecisionSubject | null | undefined): { text: str
       return {
         text: `the result of ${s.task}, attempt ${s.n}${s.commit ? ` (${short(s.commit)})` : ''}`,
         to: s.run && s.task ? `/runs/${encodeURIComponent(s.run)}?view=tasks&task=${encodeURIComponent(s.task)}` : undefined,
+      }
+    case 'comparison':
+      return {
+        text: `the comparison at base ${short(s.base)}${s.digest ? `, digest ${s.digest.slice(0, 12)}` : ''}`,
+        to: comparisonPath(o.ticket, s.run) || (s.run ? `/runs/${encodeURIComponent(s.run)}?view=tasks` : undefined),
       }
     case 'artifact':
       return { text: `${s.path} at ${short(s.commit)}${s.sha256 ? `, sha256 ${s.sha256.slice(0, 12)}` : ''}` }
@@ -298,9 +329,51 @@ export function acceptedAnswer(d: Pick<Decision, 'type' | 'request' | 'responses
  */
 export function confirmAuthorizes(d: Pick<Decision, 'origin' | 'type' | 'request'>, choice: number): string {
   const a = d.request.authorizes
-  if (!a) return ''
+  // A selection's confirm says that it is final in words of its own (selectionWords), whichever is picked.
+  if (!a || d.origin === 'compare') return ''
   if (d.origin === 'plan' || d.type === 'assignment') return choice === 0 ? `A yes authorizes: ${a}` : ''
   return d.type === 'approval' ? `This approval authorizes: ${a}` : ''
+}
+
+/** The finality words a selection says before its Send, for a candidate (CP1's I12, the plan's words) and for None of these. */
+export const SELECTION_FINAL = 'Final: the candidates not selected cannot be continued; a new comparison tries them again.'
+export const SELECTION_FINAL_NONE = 'Final: the comparison ends with no candidate selected; a new comparison tries the candidates again.'
+/** The rationale field's words: optional and kept with the answer, or a selection's, required. */
+export const RATIONALE_OPTIONAL = 'Why (optional, kept with the answer)…'
+export const RATIONALE_REQUIRED = 'Why (required: the record of this selection)…'
+
+/** Whether an answer of `d` must carry a rationale: a selection's always, on every path (CP1's I7; the server refuses one without). */
+export function rationaleRequired(d: Pick<Decision, 'origin'>): boolean {
+  return d.origin === 'compare'
+}
+
+/**
+ * How the answer to `d` is asked for, choice `choice` picked: the confirm button's label, the finality words above it ('' for none),
+ * the rationale's placeholder, and whether the confirm may be sent with `rationale` as typed. A selection's confirm names the
+ * candidate and says final ("Select approach-b (final)"; None of these "Answer None of these (final)"), says before it that the answer
+ * is final, and is held until the rationale holds text. Every other origin is as DR1 made it.
+ */
+export function answerAsk(d: Pick<Decision, 'origin' | 'type' | 'request'>, choice: number | undefined, rationale: string): { confirm: string; final: string; placeholder: string; ready: boolean } {
+  const o = choice === undefined ? undefined : optionsOf(d)[choice]
+  const required = rationaleRequired(d)
+  const ready = !required || !!rationale.trim()
+  if (!required) return { confirm: `Answer ${o?.label ?? ''}`, final: '', placeholder: RATIONALE_OPTIONAL, ready }
+  const task = o?.subject?.kind === 'candidate' ? o.subject.task : undefined
+  return {
+    confirm: task ? `Select ${task} (final)` : `Answer ${o?.label ?? ''} (final)`,
+    final: o ? (task ? SELECTION_FINAL : SELECTION_FINAL_NONE) : '',
+    placeholder: RATIONALE_REQUIRED,
+    ready,
+  }
+}
+
+/** An option's subject in words with its link (a selection's candidate, on its comparison when the ticket's key is known); null for none. */
+export function optionSubject(o: DecisionOption | undefined, ticket?: string): { text: string; to?: string } | null {
+  if (!o?.subject) return null
+  const w = subjectWords(o.subject)
+  if (!w.text) return null
+  // A selection's option is a candidate of the comparison: it links to the comparison; any other subject as subjectWords says.
+  return o.subject.kind === 'candidate' ? { ...w, to: comparisonPath(ticket, o.subject.run) || w.to } : w
 }
 
 /**
@@ -423,9 +496,12 @@ export function stepLook(step: Pick<DecisionStep, 'key' | 'status'>): { icon: st
   return { icon: 'i-lucide-circle', tone: 'dimmed' }
 }
 
-/** Whether the card's Details start open: for a plan's approval, whose plan revision is what a yes approves; folded for every other. */
+/**
+ * Whether the card's Details start open: for a plan's approval, whose plan revision is what a yes approves, and for a selection, whose
+ * subject (the comparison) and receipts are what it is answered on; folded for every other.
+ */
 export function detailsOpen(d: Pick<Decision, 'type' | 'origin'>): boolean {
-  return d.type === 'approval' && d.origin === 'plan'
+  return d.type === 'approval' && (d.origin === 'plan' || d.origin === 'compare')
 }
 
 /**
@@ -436,7 +512,7 @@ export function detailsOpen(d: Pick<Decision, 'type' | 'origin'>): boolean {
 export function authorizesLine(d: Pick<Decision, 'origin'> & { request: Pick<DecisionRequest, 'authorizes'> }): { lead: string; words: string } | null {
   const a = d.request.authorizes?.trim()
   if (!a) return null
-  return { lead: d.origin === 'plan' ? '' : 'A yes authorizes: ', words: a }
+  return { lead: d.origin === 'plan' ? '' : d.origin === 'compare' ? 'A selection authorizes: ' : 'A yes authorizes: ', words: a }
 }
 
 /**
@@ -445,6 +521,7 @@ export function authorizesLine(d: Pick<Decision, 'origin'> & { request: Pick<Dec
  */
 export function askForMore(d: Pick<Decision, 'id' | 'origin' | 'state' | 'asker'>): { enabled: boolean; why: string } {
   if (d.origin === 'plan') return { enabled: false, why: `${d.id} is the plan's: no agent asked it, comment instead` }
+  if (d.origin === 'compare') return { enabled: false, why: `${d.id} is the comparison's: no agent asked it, comment instead` }
   if (d.state !== 'open') return { enabled: false, why: `${d.id} is ${d.state}` }
   if (!d.asker?.live) return { enabled: false, why: `${d.id}'s agent has ended its attempt: comment, answer or cancel it` }
   return { enabled: true, why: '' }

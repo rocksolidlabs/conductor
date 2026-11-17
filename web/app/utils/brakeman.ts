@@ -329,6 +329,7 @@ export const KINDS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'locate', label: 'Find…' },
   { value: 'overlaps', label: 'Overlapping changes' },
   { value: 'ask', label: 'A question' },
+  { value: 'compare', label: 'Compare approaches' },
 ]
 
 /** What the page calls a request's kind: a wake request is the background role's own, never one the composer offers. */
@@ -351,6 +352,7 @@ export const KIND_SUBJECTS: Readonly<Record<string, { kinds: readonly string[]; 
   locate: { kinds: [], min: 0, max: 0, note: true },
   overlaps: { kinds: [], min: 0, max: 0, note: false },
   ask: { kinds: [], min: 0, max: 10, note: true },
+  compare: { kinds: ['run'], min: 1, max: 1, note: false },
 }
 
 /** A note's bound, in bytes of UTF-8 (brakeman.MaxNote). */

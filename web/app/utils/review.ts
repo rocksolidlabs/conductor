@@ -1,5 +1,7 @@
+import type { LinkRead } from '~/composables/useDispatch'
 import { cutBytes } from './quote'
 import { shortCommit } from './dispatchPlans'
+import { checksWords } from './tracker'
 
 /**
  * A person's review of one candidate (Program item RV1, docs/plans/review-repair.md, "web/app"): a note made from a selection in the
@@ -101,10 +103,14 @@ export interface CaptureChoice {
 export type FailureClass = 'code' | 'infrastructure' | 'flaky' | 'cancelled' | 'unavailable'
 export const FAILURE_CLASSES: readonly FailureClass[] = ['code', 'infrastructure', 'flaky', 'cancelled', 'unavailable']
 
-/** What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. */
+/**
+ * What a check note sends of its receipt (dispatch.CheckRequest): its source, its identity, the class chosen and the quote. A receipt of
+ * the ledger is Yardmaster's; an external one is a CI job on GitHub of a delivery's pull request (IN1a PR-10), which the server reads
+ * fresh again when the review is sent.
+ */
 export interface CheckChoice {
-  source: 'ledger'
-  /** `<run>/<task>/<n>/<phase>/<id>/<k>`. */
+  source: 'ledger' | 'external'
+  /** `<run>/<task>/<n>/<phase>/<id>/<k>`, or `github:<host>/<owner>/<repo>/check-runs/<n>` for an external one. */
   receipt: string
   chosen?: FailureClass
   quote?: string
@@ -248,6 +254,12 @@ function worstEvidence(send: string): EvidenceRef[] {
  * person's class and quote. The members Go's omitempty leaves out are optional here; `stable` is always written.
  */
 export interface RequestedCheck {
+  /** An external receipt's: its source, the job's name, conclusion, page and app. */
+  source?: string
+  name?: string
+  conclusion?: string
+  url?: string
+  app?: string
   receipt: string
   run?: string
   task?: string
@@ -291,16 +303,41 @@ export function requestedCheckOf(c: CheckRef): RequestedCheck {
   if (c.logBytes) r.logBytes = c.logBytes
   if (c.tail) r.tail = c.tail
   if (c.class) r.class = c.class
+  if (c.source === 'external') {
+    r.source = c.source
+    if (c.name) r.name = c.name
+    if (c.conclusion) r.conclusion = c.conclusion
+    if (c.url) r.url = c.url
+    if (c.app) r.app = c.app
+  }
   return r
 }
+
+/** The bounds of an external job's texts as the store keeps them (dispatch.MaxCheckName, a page's MaxExternalURL). */
+const MAX_JOB_NAME = 200
+const MAX_JOB_PAGE = 2048
 
 /**
  * A check note's receipt at its largest, for a note whose receipt the draft does not hold (a draft kept before it did): the parts its
  * identity names, a 64-hex subject and log hash, an exit, a signal, the failure's words and the output's tail at their bounds, the class.
  */
 function worstCheck(receipt: string): RequestedCheck {
-  const [run, task, n, phase, id, k] = receipt.split('/')
   const hex = 'f'.repeat(64)
+  if (receipt.startsWith('github:')) {
+    return {
+      source: 'external',
+      name: 'x'.repeat(MAX_JOB_NAME),
+      conclusion: 'action_required',
+      url: 'x'.repeat(MAX_JOB_PAGE),
+      app: 'x'.repeat(MAX_JOB_NAME),
+      receipt,
+      subject: hex,
+      stable: false,
+      tail: 'x'.repeat(MAX_CHECK_EXCERPT),
+      class: 'infrastructure',
+    }
+  }
+  const [run, task, n, phase, id, k] = receipt.split('/')
   return {
     receipt,
     run,
@@ -386,6 +423,7 @@ export function noteWhere(n: Pick<DraftNote, 'kind' | 'path' | 'side' | 'from' |
     if (!n.path) return what
     return `${what}, drawn by ${n.path}${n.from ? `:${n.from}` : ''}`
   }
+  if (n.kind === 'check' && n.check?.source === 'external') return `${n.checkName || 'a CI job'} failed on GitHub`
   if (n.kind === 'check') return `${n.checkName || 'the check'} failed (${n.check?.receipt ?? 'its receipt'})`
   const side = n.side === 'base' ? ' (base)' : ''
   if (n.kind === 'file') return `${n.path} (the whole file)${side}`
@@ -489,6 +527,14 @@ export interface ReviewCandidateOption {
   value: string
   label: string
   standing: boolean
+  /** A comparison's candidate, once its selection is applied (Program item CP1, PR-8b): selected, or not selected. */
+  selection?: 'selected' | 'not-selected'
+}
+
+/** A picker item's label: the candidate, " · result" when it stands as its task's, then a comparison's " · selected" or " · not selected". */
+export function pickerLabel(o: ReviewCandidateOption): string {
+  const sel = o.selection === 'selected' ? ' · selected' : o.selection === 'not-selected' ? ' · not selected' : ''
+  return `${o.label}${o.standing ? ' · result' : ''}${sel}`
 }
 
 /** A base a candidate's diff may be read against: the commit, and what it is in words. */
@@ -654,6 +700,12 @@ export interface CheckRef extends CheckChoice {
   tail: string
   class: FailureClass
   previous?: { attempt: number; state: string; stage?: string; commit?: string }
+  /** An external receipt's (a CI job on GitHub): the job's name, conclusion, page and app, and the commit it tested. */
+  name?: string
+  conclusion?: string
+  url?: string
+  headSha?: string
+  app?: string
 }
 
 /**
@@ -737,8 +789,8 @@ export function checkNote(p: PreparedRepair, chosen: FailureClass, quote: string
     intent: 'change',
     severity: 'major',
     message: message.trim() || p.finding.message,
-    check: { source: 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
-    checkName: `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
+    check: { source: ch.source === 'external' ? 'external' : 'ledger', receipt: ch.receipt, ...(chosen ? { chosen } : {}), ...(q ? { quote: q } : {}) },
+    checkName: ch.source === 'external' ? `CI job ${ch.name || ''}`.trim() : `${ch.phase} ${ch.id}${ch.k > 1 ? ` #${ch.k}` : ''}`,
     measured: requestedCheckOf(ch),
   }
 }
@@ -983,10 +1035,84 @@ export function firstReviewCandidate(runs: readonly ReviewableRun[]): string {
 }
 
 /**
+ * The candidate the Review view opens when the route names none, on a ticket whose runs hold a comparison (Program item CP1, PR-8b):
+ * its applied selection's candidate (`<run>/<task>/<n>@<commit>`); while the comparison is being read (`selected` undefined) none yet,
+ * so the view does not settle on another first; with no selection applied, or None of these, the view's own first. A ticket with no
+ * comparison (`compare` false) opens as it always has; while whether one of its runs is a comparison is not known yet (`compare`
+ * undefined: a run neither the live store holds nor its own read has answered), none yet either.
+ */
+export function reviewDefault(runs: readonly ReviewableRun[], compare: boolean | undefined, selected: { run: string; task: string; attempt: number; commit: string } | 'none' | null | undefined): string {
+  if (compare === undefined) return ''
+  if (!compare) return firstReviewCandidate(runs)
+  if (selected === undefined) return ''
+  if (selected && selected !== 'none') return `${selected.run}/${selected.task}/${selected.attempt}@${selected.commit}`
+  return firstReviewCandidate(runs)
+}
+
+/**
  * The latest candidate of a ticket's runs that the Review view can show, failed ones among them (a withdrawn one is not): the newest by
  * rankCandidates, the one ordering, its label saying so when that candidate has no time of its own (untimedWords). Null for none.
  */
 export function latestReviewable(runs: readonly ReviewableRun[]): { value: string; label: string } | null {
   const b = rankCandidates(runs).find((x) => !x.c.withdrawn)
   return b ? { value: b.value, label: `${b.task} · attempt ${b.c.attempt} · ${shortCommit(b.c.commit!)}${b.c.state === 'failed' ? ' · failed' : ''} · ${b.label}${untimedWords(b)}` } : null
+}
+
+/** The conclusions of a CI job on GitHub that are a failure (the tracker's Check.Failed): only such a job is prepared for a repair. */
+const JOB_FAILED = ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'error']
+
+/** A delivery's CI job as the failed-check panel lists it: its id, name, state in words, whether a repair can be prepared from it. */
+export interface ExternalJob {
+  id: string
+  name: string
+  /** "failed (failure)", "passed", "running", "a commit status". */
+  state: string
+  failed: boolean
+  /** Prepare a repair is offered: a failed GitHub Actions job or check run (a commit status is no job a repair can name). */
+  preparable: boolean
+}
+
+/**
+ * The CI jobs of a delivery's pull request at its head commit, from the link's read, as the failed-check panel lists them (IN1a PR-10):
+ * failed first, then the rest in the read's order; a job is preparable when it failed and is a GitHub Actions job or another app's check
+ * run. `incomplete` is the read's own words when it was cut ("incomplete: N checks not read, see them on GitHub", utils/tracker's
+ * checksWords), and `allPassed` is never true for a cut read, nor for a read with no job.
+ */
+export function externalJobs(read: Pick<LinkRead, 'checks' | 'incomplete'>): { jobs: ExternalJob[]; incomplete: string; allPassed: boolean } {
+  const jobs = read.checks.map((c): ExternalJob => {
+    const failed = JOB_FAILED.includes(c.conclusion ?? '')
+    const kind = c.id.split(':')[0]
+    const done = c.status === 'completed'
+    const state = failed ? `failed (${c.conclusion})` : !done ? (c.status === 'pending' || c.status === 'queued' ? 'waiting' : 'running') : c.conclusion === 'success' ? 'passed' : c.conclusion || 'done'
+    return { id: c.id, name: c.name, state: kind === 'status' ? `${state}, a commit status` : state, failed, preparable: failed && (kind === 'job' || kind === 'run') }
+  })
+  jobs.sort((a, b) => Number(b.failed) - Number(a.failed))
+  const counts = {
+    passed: read.checks.filter((c) => c.status === 'completed' && ['success', 'neutral', 'skipped'].includes(c.conclusion ?? '')).length,
+    failed: jobs.filter((j) => j.failed).length,
+    pending: read.checks.filter((c) => c.status !== 'completed').length,
+    other: 0,
+    incomplete: !!read.incomplete,
+    omitted: read.incomplete?.omitted ?? 0,
+  }
+  counts.other = read.checks.length - counts.passed - counts.failed - counts.pending
+  const w = checksWords(counts)
+  return { jobs, incomplete: w.incomplete, allPassed: w.allPassed }
+}
+
+/** The host an external receipt's job is on (`github:<host>/<owner>/<repo>/check-runs/<n>`), '' for a receipt of the ledger. */
+export function externalHost(receipt: string): string {
+  const m = /^github:([^/]+)\//.exec(receipt)
+  return m ? m[1]! : ''
+}
+
+/**
+ * Where a sent check finding is, in words, as the Findings list names it: a CI job on GitHub by its name ("CI job test (ubuntu) failed on
+ * GitHub", "a CI job failed on GitHub" with none), the ledger's by its step ("check test failed"), "a check failed" with no receipt. Text,
+ * never markup.
+ */
+export function checkFindingWhere(c: Pick<CheckRef, 'source' | 'phase' | 'id' | 'name'> | null | undefined): string {
+  if (!c) return 'a check failed'
+  if (c.source === 'external') return `${c.name ? `CI job ${c.name}` : 'a CI job'} failed on GitHub`
+  return `${c.phase} ${c.id} failed`
 }

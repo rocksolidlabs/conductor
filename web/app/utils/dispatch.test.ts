@@ -287,7 +287,9 @@ describe("the close card's words (PR-11)", () => {
 describe("the close policy's editor", () => {
   it('keeps the policy in its order, each requirement once, nothing it does not know', () => {
     expect(closeRequiresOf(['delivery', 'acceptance', 'delivery'])).toEqual(['acceptance', 'delivery'])
-    expect(closeRequiresOf(['verified', 'delivery', 'merged'])).toEqual(['delivery', 'verified'])
+    expect(closeRequiresOf(['verified', 'delivery', 'reviewed'])).toEqual(['delivery', 'verified'])
+    // IN1a's merged comes last, as the server keeps it (dispatch.CloseRequirements).
+    expect(closeRequiresOf(['merged', 'verified', 'acceptance'])).toEqual(['acceptance', 'verified', 'merged'])
     expect(closeRequiresOf([])).toEqual([])
   })
   it('tells two policies apart whatever their order', () => {
@@ -455,6 +457,14 @@ describe("a ticket's history", () => {
     expect(changeWords(row({ field: 'accepted_for', value: 'Alice' }))).toBe('accepted it for Alice')
     expect(changeWords(row({ op: 'reconcile', field: 'parent_id', value: '' }))).toBe("cleared the parent (a merge's repair)")
     expect(changeWords(row({ entity: 'comment', entityId: 'c1', op: 'create', value: '{}' }))).toBe('commented')
+  })
+  it("says a linked GitHub item's rows by their own kind: from GitHub, and taken over from GitHub (IN1a)", () => {
+    expect(changeWords(row({ op: 'observe', field: 'title', value: 'The list crashes', prior: 'Old' }))).toBe('the title, from GitHub: "The list crashes"')
+    expect(changeWords(row({ op: 'observe', field: 'description', value: 'x' }))).toBe('the description, from GitHub')
+    expect(changeWords(row({ op: 'adopt', field: 'title', value: 'The list crashes', prior: 'github' }))).toBe('the title, taken over from GitHub')
+    expect(changeWords(row({ op: 'adopt', field: 'description', value: 'x', prior: 'github' }))).toBe('the description, taken over from GitHub')
+    // Never the words of a person's own edit.
+    expect(changeWords(row({ op: 'observe', field: 'title', value: 'T' }))).not.toMatch(/^set the title/)
   })
   it('makes one entry per operation, oldest first, leaving out the rows that say nothing more than their operation', () => {
     const changes = [

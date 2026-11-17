@@ -40,7 +40,7 @@ import (
 
 // dispatchPlannedArgs is the commands of this file, which runDispatch
 // hands here.
-var dispatchPlannedArgs = map[string]bool{"plans": true, "plan": true, "launch": true, "runs": true}
+var dispatchPlannedArgs = map[string]bool{"plans": true, "plan": true, "launch": true, "runs": true, "comparison": true}
 
 // planVerbs is what conductor dispatch plan does.
 var planVerbs = []string{"show", "propose", "approve", "withdraw"}
@@ -67,7 +67,13 @@ type plannedFlags struct {
 	crew, base, basedOn, constraintsFile, note *string
 	plan, label                                *string
 	references, attachments, comments          multiFlag
-	decisions, decisionFor                     multiFlag
+	decisions, decisionFor, evidence           multiFlag
+	repro                                      *bool
+	// candidates is a comparison's count, which its launch repeats (-1
+	// when not given); run and json are comparison's.
+	candidates *int
+	run        *string
+	json       *bool
 }
 
 // revisionRef names a plan revision: by its number among its ticket's
@@ -157,11 +163,17 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 		fs.Var(&f.decisions, "decision", "a decision a person will make, ID:KIND:QUESTION[@TASK,...], KIND approval, clarification or assignment (repeatable)")
 		fs.Var(&f.decisionFor, "decision-for", "whom a decision is for, ID=role:RESP (architecture, product, security, acceptance) or ID=person:NAME of the crew (repeatable)")
 		f.note = fs.String("note", "", "why this revision, Markdown")
+		f.repro = fs.Bool("repro", false, "hand over the steps to reproduce from the ticket's linked issue, pinned as they read now")
+		fs.Var(&f.evidence, "evidence", "a delivery or external link of the ticket to hand over as evidence, by its id or its URL (repeatable)")
 	case "plan approve":
 		f.note = fs.String("note", "", "the approval's note, the rationale, Markdown")
 	case "launch":
 		f.plan = fs.String("plan", "", "the revision to launch from, its number or its id: the approved one when not given")
 		f.label = fs.String("label", "", "the run's name: the ticket's key and title when not given")
+		f.candidates = fs.Int("candidates", -1, "a comparison's revision: how many candidates it starts, as its statement says, which the launch repeats")
+	case "comparison":
+		f.run = fs.String("run", "", "a run of the comparison's chain: the ticket's newest comparison when not given")
+		f.json = fs.Bool("json", false, "print the comparison as the server answers it, one JSON object")
 	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, dispatchUsage, "\nFlags of dispatch "+name+":\n")
@@ -203,6 +215,12 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 		}
 		rev = &r
 	}
+	if name == "comparison" && *f.run != "" && !crew.ValidRunID(*f.run) {
+		return 2, fmt.Errorf("dispatch comparison: --run: %q is no run's id", *f.run)
+	}
+	if name == "launch" && *f.candidates < -1 {
+		return 2, errors.New("dispatch launch: --candidates is how many candidates the comparison's revision starts")
+	}
 	if name == "launch" && *f.plan != "" {
 		r, err := parseRevision(*f.plan)
 		if err != nil {
@@ -230,7 +248,9 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 	case "plan approve", "plan withdraw":
 		return dispatchPlanAct(ctx, c, key, *rev, strings.TrimPrefix(name, "plan "), f.note, stdout)
 	case "launch":
-		return dispatchLaunch(ctx, c, key, rev, *f.label, stdout)
+		return dispatchLaunch(ctx, c, key, rev, *f.label, *f.candidates, stdout, stderr)
+	case "comparison":
+		return dispatchComparison(ctx, c, key, *f.run, *f.json, stdout)
 	}
 	return dispatchRuns(ctx, c, key, stdout)
 }
@@ -242,10 +262,11 @@ func runDispatchPlanned(ctx context.Context, sub string, rest []string, stdin io
 // revision's own read, its body.
 type planEntry struct {
 	dispatch.PlanSummary
-	CrewChanged    bool            `json:"crewChanged"`
-	AgentsChanged  bool            `json:"agentsChanged"`
-	ExpectedChecks int             `json:"expectedChecks"`
-	Body           json.RawMessage `json:"body,omitempty"`
+	CrewChanged    bool              `json:"crewChanged"`
+	AgentsChanged  bool              `json:"agentsChanged"`
+	ExpectedChecks int               `json:"expectedChecks"`
+	Compare        *planCompareEntry `json:"compare,omitempty"`
+	Body           json.RawMessage   `json:"body,omitempty"`
 }
 
 // ticketPlans reads the ticket's revisions, newest first.
@@ -834,6 +855,11 @@ type proposal struct {
 	basedOn     *revisionRef
 	attachments []string
 	comments    []int
+	// repro hands over the linked issue's steps to reproduce, pinned as
+	// the ticket's snapshot holds them when it is sent; evidence names
+	// links by their ids or URLs.
+	repro    bool
+	evidence []string
 }
 
 // proposal checks the flags of plan propose and builds the proposal,
@@ -888,6 +914,16 @@ func (f plannedFlags) proposal(stdin io.Reader) (*proposal, error) {
 			return nil, err
 		}
 		p.req.Constraints = text
+	}
+	p.repro = *f.repro
+	for _, e := range f.evidence {
+		if e = strings.TrimSpace(e); e == "" || slices.Contains(p.evidence, e) {
+			return nil, errors.New("--evidence names a delivery or external link of the ticket by its id or its URL, each once")
+		}
+		p.evidence = append(p.evidence, e)
+	}
+	if n := len(p.evidence); n > dispatch.MaxPackageEvidence {
+		return nil, fmt.Errorf("--evidence: at most %d links; this names %d", dispatch.MaxPackageEvidence, n)
 	}
 	return p, nil
 }
@@ -954,6 +990,13 @@ func (p *proposal) send(ctx context.Context, c *apiClient, key string, stdout io
 		}
 		p.req.Comments = append(p.req.Comments, id)
 	}
+	if p.repro || len(p.evidence) > 0 {
+		src, err := p.source(ctx, c, key)
+		if err != nil {
+			return 1, err
+		}
+		p.req.Source = src
+	}
 	body := struct {
 		OpID string `json:"opId"`
 		dispatch.PlanRequest
@@ -974,6 +1017,39 @@ func (p *proposal) send(ctx context.Context, c *apiClient, key string, stdout io
 	fmt.Fprintf(stdout, "%s r%d proposed: %s, crew %s at %s, %s expected\napprove it with: conductor dispatch plan approve %s %d\n",
 		key, out.Plan.N, out.Plan.ID, oneLine(out.Plan.CrewName), short(out.Plan.Base), checksWords(out.Plan.ExpectedChecks), key, out.Plan.N)
 	return 0, nil
+}
+
+// source reads the ticket and makes what the proposal hands over of its
+// source: the steps to reproduce by the pin the ticket's snapshot holds
+// now (its linked item's identity and the steps' SHA-256), refused here
+// for a ticket with none; each evidence link by its id, a URL resolved
+// among the ticket's live delivery and external links. The server checks
+// the pin against the snapshot again (stale_plan when the steps changed
+// between the read and the proposal).
+func (p *proposal) source(ctx context.Context, c *apiClient, key string) (*dispatch.PlanSource, error) {
+	tk, err := ticketOf(ctx, c, key)
+	if err != nil {
+		return nil, err
+	}
+	src := &dispatch.PlanSource{Evidence: []string{}}
+	if p.repro {
+		sn, ok := dispatch.ParseSnapshot(string(tk.ExternalSnapshot))
+		if tk.ExternalID == "" || !ok || sn.Repro == "" || sn.ReproSha256 == "" {
+			return nil, fmt.Errorf("%s has no steps to reproduce from a linked issue to hand over", key)
+		}
+		src.Repro = &dispatch.PlanRepro{Identity: tk.ExternalID, SHA256: sn.ReproSha256}
+	}
+	for _, e := range p.evidence {
+		id, err := linkIDOf(key, tk, e)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(src.Evidence, id) {
+			return nil, fmt.Errorf("--evidence names the link %s twice", id)
+		}
+		src.Evidence = append(src.Evidence, id)
+	}
+	return src, nil
 }
 
 // attachmentID is the id of the ticket's attachment the name names: its
@@ -1071,7 +1147,7 @@ func dispatchPlanAct(ctx context.Context, c *apiClient, key string, ref revision
 // again, which would be a second launch. It prints the launch, the run
 // and the run's page; a launch that failed is the server's words, its
 // launch kept failed (conductor dispatch runs lists it).
-func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, stdout io.Writer) (int, error) {
+func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revisionRef, label string, candidates int, stdout, stderr io.Writer) (int, error) {
 	plans, err := ticketPlans(ctx, c, key)
 	if err != nil {
 		return 1, err
@@ -1085,9 +1161,28 @@ func dispatchLaunch(ctx context.Context, c *apiClient, key string, ref *revision
 	if err != nil {
 		return 1, err
 	}
+	// A comparison's revision is launched only with the count its
+	// statement says: without it, or with another, the statement is
+	// printed and nothing is sent.
+	switch {
+	case p.Compare != nil && candidates != p.Compare.Candidates:
+		var out struct {
+			Plan planEntry `json:"plan"`
+		}
+		if err := c.doLimit(ctx, http.MethodGet, "/api/dispatch/plans/"+url.PathEscape(p.ID), nil, &out, maxDispatchReply); err != nil {
+			return 1, err
+		}
+		fmt.Fprintln(stdout, compareStatement(*p.Compare, compareAgents(out.Plan.Body)))
+		return 2, fmt.Errorf("dispatch launch: r%d starts %d candidates: send --candidates %d to launch them", p.N, p.Compare.Candidates, p.Compare.Candidates)
+	case p.Compare == nil && candidates >= 0:
+		return 2, fmt.Errorf("dispatch launch: r%d is no comparison: --candidates is for a comparison's revision", p.N)
+	}
 	body := map[string]any{"opId": newOpID(), "plan": p.ID}
 	if label != "" {
 		body["label"] = label
+	}
+	if p.Compare != nil {
+		body["candidates"] = candidates
 	}
 	var out struct {
 		Launch dispatch.LaunchSummary `json:"launch"`

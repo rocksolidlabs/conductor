@@ -114,10 +114,10 @@ const (
 // FindingStates is a finding's states, and a mark's verdicts.
 var FindingStates = []string{FindingOpen, FindingResolved, FindingWithdrawn}
 
-// The sources of a check finding's receipt: Yardmaster's ledger; external
-// is reserved for a CI job a linked pull request reports (Program item
-// IN1a, docs/plans/tracker-linking.md) and refused until that item
-// defines it.
+// The sources of a check finding's receipt: Yardmaster's ledger, or a CI
+// job on GitHub that a delivery link's pull request reports at the
+// delivered candidate's commit (external: Program item IN1a,
+// docs/plans/tracker-linking.md, PR-10; its receipt is ExternalReceipt's).
 const (
 	CheckSourceLedger   = "ledger"
 	CheckSourceExternal = "external"
@@ -238,6 +238,13 @@ type CaptureRef struct {
 // quote, and the attempt before the failing one. The log itself stays the
 // ledger's, opened by the identity, and so does the whole argv when the
 // one kept is cut to fit MaxCheckRef (ArgvCut, fitCheckRef).
+//
+// An external receipt (source external, a CI job on GitHub) keeps its
+// identity (ExternalReceipt), the job's name, conclusion, page and app as
+// a fresh read gave them, the commit it tested (headSha, and subject the
+// same), the last of its log (tail, an Actions job's alone), the class,
+// the person's choice and quote; the ledger's fields (run, task, attempt,
+// phase, id, k, argv, where, state and the rest) stay empty.
 type CheckRef struct {
 	Source    string         `json:"source"`
 	Receipt   string         `json:"receipt"`
@@ -265,6 +272,13 @@ type CheckRef struct {
 	Chosen    string         `json:"chosen,omitempty"`
 	Quote     string         `json:"quote,omitempty"`
 	Previous  *CheckPrevious `json:"previous,omitempty"`
+	// An external receipt's: the job's name, conclusion, page, app and the
+	// commit it tested.
+	Name       string `json:"name,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	URL        string `json:"url,omitempty"`
+	HeadSha    string `json:"headSha,omitempty"`
+	App        string `json:"app,omitempty"`
 }
 
 // CheckPrevious is the attempt before a check finding's failing one: its
@@ -574,6 +588,76 @@ var receiptStates = []string{ReceiptStarted, ReceiptRunning, ReceiptFinished, Re
 // and no attempt's).
 var receiptRefPattern = regexp.MustCompile(`^([^/]+)/([^/]+)/([1-9][0-9]{0,5})/(check|verify|setup|service|ready)/([^/]+)/(0|[1-9][0-9]{0,5})$`)
 
+// externalReceiptPattern is an external receipt's identity,
+// github:<host>/<owner>/<repo>/check-runs/<n>: the host in lower case (a
+// DNS name, or a loopback host and port), the repository's owner and name
+// as GitHub's names are spelled, the check run's number with no leading
+// zero. A GitHub Actions job is the check run of the same number.
+var externalReceiptPattern = regexp.MustCompile(`^github:([a-z0-9.\[\]:-]{1,253})/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})/check-runs/([1-9][0-9]{0,18})$`)
+
+// ExternalReceipt is the identity of the check run n of the repository
+// owner/repo on host, as a check finding names a CI job on GitHub.
+func ExternalReceipt(host, space, n string) string {
+	return "github:" + host + "/" + space + "/check-runs/" + n
+}
+
+// ParseExternalReceipt reads an external receipt's identity: the host, the
+// repository (owner/name) and the check run's number; ok false for one
+// not of its shape.
+func ParseExternalReceipt(s string) (host, space, n string, ok bool) {
+	m := externalReceiptPattern.FindStringSubmatch(s)
+	if m == nil || strings.Trim(m[2], ".") == "" || strings.Trim(m[3], ".") == "" {
+		return "", "", "", false
+	}
+	return m[1], m[2] + "/" + m[3], m[4], true
+}
+
+// The conclusions of a CI job on GitHub that are a failure (the tracker's
+// Check.Failed) and those that are a pass; any other (one not finished, a
+// stale one, one not known) is neither, and no failure to repair.
+var (
+	externalFailed = []string{"failure", "cancelled", "timed_out", "action_required", "startup_failure", "error"}
+	externalPassed = []string{"success", "neutral", "skipped"}
+)
+
+// checkWordPattern is a CI job's conclusion as a read keeps it: the
+// system's word, lower-case letters and '_'.
+var checkWordPattern = regexp.MustCompile(`^[a-z_]{1,40}$`)
+
+// JobText is a CI job's name or app, written outside Conductor, as an
+// external receipt keeps it: one line of text (Storable), without an
+// address (addressFree), at most MaxCheckName bytes.
+//
+// The cut can land inside an address addressFree wrote (it may lengthen
+// one, escaping its path), which addressFree would change again: the
+// last word is then dropped and the text made address-free once more,
+// until it is what the receipt's rule reads back (bindExternal: no
+// address, at most MaxCheckName bytes). Each pass shortens the text, so it
+// ends; "" when nothing is left.
+func JobText(s string) string {
+	s = cutBytes(addressFree(Storable(s, MaxCheckName, false)), MaxCheckName)
+	for s != "" && (holdsAddress(s) || checkText("a job's text", s, MaxCheckName) != nil) {
+		if i := strings.LastIndexByte(s, ' '); i >= 0 {
+			s = s[:i]
+		} else {
+			s = ""
+		}
+		s = cutBytes(addressFree(s), MaxCheckName)
+	}
+	return s
+}
+
+// JobPage is a CI job's page as an external receipt keeps it: the address
+// whole as the store keeps one (admitAddress), or none when the store
+// would not keep it whole (a query, a fragment, a user, not https).
+func JobPage(s string) string {
+	a, err := admitAddress("a job's page", s)
+	if err != nil || a.carries() {
+		return ""
+	}
+	return a.kept
+}
+
 // receiptRef is a receipt's identity, parsed.
 type receiptRef struct {
 	run, task  string
@@ -637,8 +721,9 @@ func errEvidence(format string, args ...any) error {
 // ticket (invalid: "reopen the ticket to ask for changes"; a comment or
 // an approval of a closed ticket's candidate is kept), past MaxReviews
 // (bound), no finding and no summary, a request with no finding of intent
-// change, a finding whose kind and fields disagree, a check finding of an
-// external source or of a receipt not the candidate's (each invalid), and
+// change, a finding whose kind and fields disagree, a check finding of a
+// receipt not the candidate's (a ledger's of another attempt, a CI job's of
+// another commit) or not a failure (each invalid), and
 // a review past MaxReviewDetail as its read encodes it (bound). An
 // expected revision is the ticket's. The receipt carries the review's id
 // and its rev, 1 or 2; the review is read after the commit as it stands,
@@ -905,24 +990,28 @@ func checkCaptureRequest(what string, f NewFinding) error {
 }
 
 // checkCheckRequest checks a check finding's receipt as the client named
-// it: of the ledger (external is reserved), an identity of the
-// candidate's run, task and attempt, a class chosen among
-// FailureClasses or none, a quote by its rule. An error is a Refusal.
+// it: of the ledger, an identity of the candidate's run, task and attempt;
+// or external, an identity of a check run on GitHub (ExternalReceipt),
+// bound to the candidate by the commit it tested (bindCheck); a class
+// chosen among FailureClasses or none, a quote by its rule. An error is a
+// Refusal.
 func checkCheckRequest(what string, c Candidate, r CheckRequest) error {
 	switch r.Source {
 	case CheckSourceLedger:
+		ref, err := parseReceiptRef(r.Receipt)
+		if err != nil {
+			return err
+		}
+		if ref.run != c.Run || ref.task != c.Task || ref.attempt != c.Attempt {
+			return refuse(RefusalInvalid, "%s: the receipt %s is of %s/%s attempt %d, not of the candidate reviewed (%s)", what, r.Receipt, ref.run, ref.task,
+				ref.attempt, c.Name())
+		}
 	case CheckSourceExternal:
-		return refuse(RefusalInvalid, "%s: a receipt of an external CI job is reserved for a linked pull request's checks (Program item IN1a)", what)
+		if _, _, _, ok := ParseExternalReceipt(r.Receipt); !ok {
+			return refuse(RefusalInvalid, "%s: the receipt %q is not github:<host>/<owner>/<repo>/check-runs/<n>", what, r.Receipt)
+		}
 	default:
-		return refuse(RefusalInvalid, "%s: the receipt's source %q is not the ledger", what, r.Source)
-	}
-	ref, err := parseReceiptRef(r.Receipt)
-	if err != nil {
-		return err
-	}
-	if ref.run != c.Run || ref.task != c.Task || ref.attempt != c.Attempt {
-		return refuse(RefusalInvalid, "%s: the receipt %s is of %s/%s attempt %d, not of the candidate reviewed (%s)", what, r.Receipt, ref.run, ref.task,
-			ref.attempt, c.Name())
+		return refuse(RefusalInvalid, "%s: the receipt's source %q is neither the ledger nor external", what, r.Source)
 	}
 	if r.Chosen != "" && !slices.Contains(FailureClasses, r.Chosen) {
 		return refuse(RefusalInvalid, "%s: the class %q is none of %s", what, r.Chosen, strings.Join(FailureClasses, ", "))
@@ -1020,11 +1109,16 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 	if got == nil {
 		return nil, errEvidence("finding %d is a check's, and has no receipt", k)
 	}
+	if req.Source == CheckSourceExternal {
+		return bindExternal(k, c, req, got)
+	}
 	ref, _ := parseReceiptRef(req.Receipt)
 	switch {
 	case got.Receipt != req.Receipt || got.Run != ref.run || got.Task != ref.task || got.Attempt != ref.attempt || got.Phase != ref.phase ||
 		got.ID != ref.id || got.K != ref.k:
 		return nil, errEvidence("finding %d's receipt is %s, not the one it names, %s", k, got.Receipt, req.Receipt)
+	case got.Source != req.Source || got.Name != "" || got.Conclusion != "" || got.URL != "" || got.HeadSha != "" || got.App != "":
+		return nil, errEvidence("finding %d's receipt of the ledger has an external job's fields", k)
 	case !slices.Contains(FailureClasses, got.Class):
 		return nil, errEvidence("finding %d's class %q is none of %s", k, got.Class, strings.Join(FailureClasses, ", "))
 	case len(got.Argv) > MaxCheckArgv:
@@ -1062,6 +1156,67 @@ func bindCheck(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, 
 	}
 	if size > MaxCheckRef {
 		return nil, errEvidence("finding %d's receipt is %d bytes with no argv, more than %d", k, size, MaxCheckRef)
+	}
+	return &kept, nil
+}
+
+// bindExternal is bindCheck of an external receipt (a CI job on GitHub):
+// the server's filling of the receipt the request named, of its shapes and
+// bounds (none of the ledger's fields; the job's name a line of text with
+// no address, at most MaxCheckName bytes, and so its app's; its page an
+// address the store admits, whole, or none; the commit it tested in full,
+// its subject the same; a class among FailureClasses), with the request's
+// source, identity, chosen and quote. Evidence that does not answer the
+// request is errEvidence. Refused invalid: a job that tested another
+// commit than the candidate's (the delivered candidate's, as the server
+// read it from a delivery link), one not finished, and one whose
+// conclusion is no failure (a pass among them).
+func bindExternal(k int, c Candidate, req CheckRequest, got *CheckRef) (*CheckRef, error) {
+	ledgerFields := got.Run != "" || got.Task != "" || got.Attempt != 0 || got.Phase != "" || got.ID != "" || got.K != 0 || len(got.Argv) > 0 || got.ArgvCut ||
+		got.Exit != nil || got.Signal != "" || got.TimedOut || got.Killed || got.Stable || got.State != "" || got.Error != "" || got.Where != "" ||
+		got.LogSHA256 != "" || got.LogBytes != 0 || got.Previous != nil
+	switch {
+	case got.Source != CheckSourceExternal || got.Receipt != req.Receipt:
+		return nil, errEvidence("finding %d's receipt is %s %s, not the one it names, external %s", k, got.Source, got.Receipt, req.Receipt)
+	case ledgerFields:
+		return nil, errEvidence("finding %d's external receipt has the ledger's fields", k)
+	case got.Name == "" || checkText("a job's name", got.Name, MaxCheckName) != nil || holdsAddress(got.Name):
+		return nil, errEvidence("finding %d's job has no name of one line, without an address, of at most %d bytes", k, MaxCheckName)
+	case checkText("a job's app", got.App, MaxCheckName) != nil || holdsAddress(got.App):
+		return nil, errEvidence("finding %d's job's app is not one line, without an address, of at most %d bytes", k, MaxCheckName)
+	case got.Conclusion != "" && !checkWordPattern.MatchString(got.Conclusion):
+		return nil, errEvidence("finding %d's job's conclusion is not GitHub's word", k)
+	case !objectIDPattern.MatchString(got.HeadSha) || got.Subject != got.HeadSha:
+		return nil, errEvidence("finding %d's job names no commit in full", k)
+	case !slices.Contains(FailureClasses, got.Class):
+		return nil, errEvidence("finding %d's class %q is none of %s", k, got.Class, strings.Join(FailureClasses, ", "))
+	}
+	if got.URL != "" {
+		if a, err := admitAddress("a job's page", got.URL); err != nil || a.carries() || a.kept != got.URL {
+			return nil, errEvidence("finding %d's job's page is not an address the store keeps whole", k)
+		}
+	}
+	if got.HeadSha != c.Commit {
+		return nil, refuse(RefusalInvalid, "finding %d: the CI job %s tested %s, not the candidate reviewed (%s)", k, req.Receipt, short(got.HeadSha), short(c.Commit))
+	}
+	switch {
+	case got.Conclusion == "":
+		return nil, refuse(RefusalInvalid, "finding %d: the CI job %s has not finished", k, req.Receipt)
+	case slices.Contains(externalPassed, got.Conclusion):
+		return nil, refuse(RefusalInvalid, "finding %d: the CI job %s passed (%s): nothing failed to repair", k, req.Receipt, got.Conclusion)
+	case !slices.Contains(externalFailed, got.Conclusion):
+		return nil, refuse(RefusalInvalid, "finding %d: the CI job %s ended %s, which is no failure", k, req.Receipt, got.Conclusion)
+	}
+	kept := *got
+	kept.Source, kept.Receipt, kept.Chosen, kept.Quote = req.Source, req.Receipt, req.Chosen, req.Quote
+	kept.Argv = []string{}
+	kept.Tail = fitTail(kept.Tail)
+	value, err := encodeValue(kept)
+	if err != nil {
+		return nil, err
+	}
+	if len(value) > MaxCheckRef {
+		return nil, errEvidence("finding %d's receipt is %d bytes, more than %d", k, len(value), MaxCheckRef)
 	}
 	return &kept, nil
 }

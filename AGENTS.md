@@ -576,6 +576,16 @@ add its rule here.
   change, and at least one was a real defect of a page: a run's header on
   a low window). Push for a whole run early and often, one at a time, and
   let no push cancel the run before it.
+- A port a test freed is not a closed port. A listener closed so that a
+  dial of its address is refused gives the port back to the kernel, which
+  hands it to the next listener on the machine: now and then that was
+  another test's server, and it answered the dial ("the switchyard refused
+  it (400)" where the connection was to be refused,
+  `TestAFailedDialNamesItsHostAlone`, #281). Keep the listener for the
+  test's length, accepting nothing, so that the port stays the test's, and
+  let the dial fail through the seam the test gives its transport (its
+  dial function), with the error the kernel gives a port nobody listens
+  on.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

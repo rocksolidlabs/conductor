@@ -244,6 +244,12 @@ export interface ActivityEntry {
   path?: string
   /** GET /api/events only: for an attention entry, the state it records. Absent from a session's own replay and from an older host's entries. */
   state?: 'needs_input' | 'working' | 'done'
+  /**
+   * GET /api/events only: the entry reached the server late (its host recorded it while its connection was down, or sent it
+   * again): shown in its order, never a live event, so it changes no badge and tells no listener (no browser notification, no
+   * wall, no jump). Absent otherwise.
+   */
+  late?: boolean
 }
 
 /** Data of an `activity` event on GET /api/events: an activity entry and the session it belongs to. */
@@ -888,6 +894,15 @@ export interface HostAttentionTurns {
 }
 
 /**
+ * The part of a host's attention message that only a server whose registered said activitySeq is sent: retold, on the retell
+ * as its connection began, of a question its session was asked before it: the server pages that question once, as a live
+ * event, when its copy does not hold it already (its entries come late and page no one). A bool. The web never sends it.
+ */
+export interface HostAttentionRetold {
+  retold?: boolean
+}
+
+/**
  * server → host, on `attention`: the agent's own name for the turn the report belongs to (Codex's turn id), as the
  * attention route took it (its `turnId`). The host's session records a turn's end told twice once. At most
  * HOST_MAX_TURN_ID bytes: a letter or a digit, then letters, digits and `._:-`; a host takes a frame whose name is out
@@ -991,6 +1006,26 @@ export interface HostAgentSessionMessage {
 /** The part of registered that says the server takes agent_session; absent from an older server and a desk's. */
 export interface HostRegisteredAgentSessions {
   agentSessions?: boolean
+}
+
+/** activity's leftOut (below) is at most this; a larger one is taken as this. */
+export const HOST_MAX_ACTIVITY_LEFT_OUT = 1 << 20
+
+/**
+ * The part of a host's activity message that only a server whose registered said activitySeq is sent: seq numbers the host's
+ * entries from 1 for the life of its process (one sent again keeps its number, and the server takes a number once), leftOut how
+ * many entries before this one the host did not send (at most HOST_MAX_ACTIVITY_LEFT_OUT). The web never sends it.
+ */
+export interface HostActivitySeq {
+  seq?: number
+  leftOut?: number
+  /** The entry was recorded before the connection that carries it began, or is sent again: the server records and shows it, marked late on GET /api/events, and pages no one for it. */
+  late?: boolean
+}
+
+/** The part of registered that says the server takes activity's seq and leftOut; absent from an older server, a switchyard and a desk's. */
+export interface HostRegisteredActivitySeq {
+  activitySeq?: boolean
 }
 
 /** The part of registered that says which links the server still holds for the session; absent from an older server. */
@@ -1745,3 +1780,10 @@ export function crewLaunchBody(label: string, revision: string | undefined): Cre
   const name = label.trim()
   return name ? { label: name, revision } : { revision }
 }
+
+/**
+ * The `external` parameter of GET /api/dispatch/tickets (docs/protocol.md, the tickets' list): a pasted GitHub
+ * item's address the palette searches for, at most this many bytes (`dispatch.MaxLinkURL`; the server answers
+ * `400 invalid_request` past it). The admin's alone: a Brakeman turn's read of the list does not take it.
+ */
+export const MAX_TICKET_EXTERNAL_SEARCH = 2048

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
 import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
-import { noDispatchStore, runLinkWatch, runTicketRead, viewsWatch } from './useDispatchLive'
+import { asDispatchRead, noDispatchStore, runLinkWatch, runTicketRead, viewsWatch, type DispatchReadNotice } from './useDispatchLive'
 import { ApiError } from './useApi'
 import type { RelatedTicket } from './useDispatch'
 
@@ -589,5 +589,82 @@ describe("a ticket page's plan revisions and launches", () => {
     live.event(ev({ entity: 'plan', id: 'p'.repeat(16), ticket: 't9', project: 'API' }))
     await vi.advanceTimersByTimeAsync(10 * WINDOW)
     expect(r.count).toBe(0)
+  })
+})
+
+// E1 (docs/plans/tracker-linking.md, "Events, orderings and invariants"): every read of a GitHub item reaches every open page, by its own
+// `dispatch_read` event, never by a `dispatch` event, whose seq only the log moves.
+describe("a read of a ticket's GitHub item (dispatch_read)", () => {
+  const notice = (p: Partial<DispatchReadNotice> = {}): DispatchReadNotice => ({ ticket: 't1', project: 'CND', link: '', readAt: '2026-11-16T12:00:00Z', ...p })
+
+  it("reads the ticket's page again after the window for each read, the page's covered seq staying the log's", async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND', at: 7 }))
+    expect(r.count).toBe(1)
+    for (let i = 0; i < 3; i++) {
+      live.notice(notice({ link: i ? `l${i}` : '' }))
+      await vi.advanceTimersByTimeAsync(WINDOW - 1)
+      expect(r.count).toBe(1 + i)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(r.count).toBe(2 + i)
+    }
+    // The covered seq is still 7: the commit at 7 again reads nothing, the next commit does.
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND', at: 7 }))
+    expect(r.count).toBe(4)
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND', at: 8 }))
+    expect(r.count).toBe(5)
+  })
+
+  it('gathers the reads of one window into one read', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    for (const link of ['', 'l1', 'l2']) live.notice(notice({ link }))
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(r.count).toBe(1)
+  })
+
+  it('makes one more read after a read on its way when one arrives meanwhile', async () => {
+    const live = new DispatchLive()
+    let count = 0
+    let finish!: () => void
+    const read = () => {
+      count++
+      return count === 1 ? new Promise<void>((res) => (finish = res)) : Promise.resolve()
+    }
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', read))
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    expect(count).toBe(1)
+    // Recorded while that read is on its way, which may have been served before it.
+    live.notice(notice())
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    finish()
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(count).toBe(2)
+  })
+
+  it("reads no other ticket's page, nor a list, and asks again after a failure", async () => {
+    const live = new DispatchLive()
+    const other = reads()
+    const list = reads()
+    const mine = reads(1)
+    live.subscribe(ticketWatch(() => 't2', () => 'CND', other.read))
+    live.subscribe(listWatch(() => 'CND', list.read))
+    live.subscribe(ticketWatch(() => 't1', () => 'CND', mine.read))
+    live.notice(notice())
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([other.r.count, list.r.count, mine.r.count]).toEqual([0, 0, 1])
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(mine.r.count).toBe(2)
+  })
+
+  it('reads the event, and nothing that is not one', () => {
+    expect(asDispatchRead({ ticket: 't1', project: 'CND', link: 'l1', readAt: '2026-11-16T12:00:00Z' })).toEqual({ ticket: 't1', project: 'CND', link: 'l1', readAt: '2026-11-16T12:00:00Z' })
+    expect(asDispatchRead({ ticket: 't1', project: 'CND', readAt: 'x' })!.link).toBe('')
+    expect(asDispatchRead({ ticket: '', project: 'CND' })).toBeNull()
+    expect(asDispatchRead({ seq: 3, entity: 'ticket' })).toBeNull()
+    expect(asDispatchRead(null)).toBeNull()
   })
 })

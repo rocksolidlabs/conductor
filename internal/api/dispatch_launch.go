@@ -170,13 +170,24 @@ func (g *launchGate) afterAttempt(spec crew.LaunchSpec, id string) {
 	}
 }
 
-// ticketLaunchBody is a launch's body: the operation, the plan revision
-// to launch from and the run's label (empty for the ticket's key and
-// title).
+// ticketLaunchBody is a launch's body as Brakeman's granted launch act
+// takes it: the operation, the plan revision to launch from and the run's
+// label (empty for the ticket's key and title). It has no count of
+// candidates, so the act launches no comparison (LaunchApproved refuses
+// one too).
 type ticketLaunchBody struct {
 	dispatchOp
 	Plan  string `json:"plan"`
 	Label string `json:"label,omitempty"`
+}
+
+// ticketLaunchRouteBody is the launch route's body, a person's: the act's
+// and, for a comparison's revision, the count of candidates it starts as
+// the launch's statement said it (Program item CP1), which the launch
+// must repeat; absent or 0 for any other revision.
+type ticketLaunchRouteBody struct {
+	ticketLaunchBody
+	Candidates int `json:"candidates,omitempty"`
 }
 
 // wireLaunches gives the engine and Dispatch their sight of each other
@@ -411,28 +422,35 @@ func (s *Server) handleDispatchLaunch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body ticketLaunchBody
+	var body ticketLaunchRouteBody
 	if !readOp(w, r, &body, &body.dispatchOp, maxTicketLaunchBody) {
+		return
+	}
+	if body.Candidates < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "candidates is how many candidates the comparison's revision starts")
 		return
 	}
 	// A launch runs to its end when the client goes away: its store
 	// operations and its run's start, each within its own bound.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), LaunchTimeout)
 	defer cancel()
-	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label, nil)
+	s.ticketLaunch(ctx, w, ds, body.op(r), key, body.Plan, body.Label, body.Candidates, nil)
 }
 
 // ticketLaunch is DS2's launch from a ticket, the one function the route
 // and ext.Host's LaunchApproved run: op under its actor, the ticket key,
-// the revision plan and the label, answered to w as the route answers
+// the revision plan, the label and the count of candidates the person
+// confirmed (0 but for a comparison's revision, which must repeat its own
+// count: 409 confirm_candidates, nothing kept; a count for any other is
+// 400 invalid), answered to w as the route answers
 // (handleDispatchLaunch), the operation replayed first. admit, when set,
 // is asked in the store's transaction of a new launch, before anything is
 // kept (dispatch.Store.LaunchAdmitted): its error refuses the launch with
 // nothing kept and is answered as the store's error, after which the
 // caller answers in its own words (LaunchApproved, for a provider given
 // up while the launch waited). A launch it admitted runs to its end.
-func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string, admit func() error) {
-	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: plan, Label: label})
+func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key, plan, label string, candidates int, admit func() error) {
+	rc, found, err := ds.Replay(ctx, op, dispatch.IntentTicketLaunch, dispatch.LaunchArgs{Key: key, Plan: plan, Label: label, Candidates: candidates})
 	switch {
 	case err != nil:
 		s.dispatchError(w, "launch", err)
@@ -467,6 +485,16 @@ func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 			s.dispatchError(w, "plan revision", err)
 			return
 		}
+		// The count the launch's statement said, before anything is
+		// kept: the store refuses the same with its receipt kept.
+		switch {
+		case f.Compare != nil && candidates != f.Compare.Candidates:
+			writeError(w, http.StatusConflict, dispatch.RefusalConfirmCandidates, fmt.Sprintf("this revision starts %d candidates: send candidates %d to launch them", f.Compare.Candidates, f.Compare.Candidates))
+			return
+		case f.Compare == nil && candidates != 0:
+			writeError(w, http.StatusBadRequest, dispatch.RefusalInvalid, fmt.Sprintf("candidates is sent with the launch of a comparison: revision %d starts none", v.N))
+			return
+		}
 		if words := agentsChange(s.Catalog(), f, s.cfg.Yolo); words != "" {
 			writeError(w, http.StatusConflict, dispatch.RefusalStalePlan, fmt.Sprintf("%s since revision %d was approved: revise it", words, v.N))
 			return
@@ -475,7 +503,7 @@ func (s *Server) ticketLaunch(ctx context.Context, w http.ResponseWriter, ds *di
 	if f := gateSeam(&s.launches, &s.launches.beforeStore); f != nil {
 		f(key)
 	}
-	rc, err = ds.LaunchAdmitted(ctx, op, key, plan, label, admit)
+	rc, err = ds.LaunchAdmitted(ctx, op, key, plan, label, candidates, admit)
 	if err != nil || rc.Status != dispatch.StatusDone {
 		s.writeOp(w, "launch", rc, err, true, "launch", func(dispatch.Receipt) (any, error) { return nil, nil })
 		return

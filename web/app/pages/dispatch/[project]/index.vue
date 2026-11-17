@@ -48,6 +48,8 @@ const error = ref('')
 const agents = ref<AgentInfo[]>([])
 const now = ref(Date.now())
 const newOpen = ref(false)
+/** Import from GitHub (IN1a): its dialog, from the toolbar, the empty state and the palette's rows. */
+const importOpen = ref(false)
 
 useHead({ title: computed(() => (projectRead.value ? `${projectRead.value.project.name} · Dispatch` : project.value)) })
 
@@ -271,6 +273,13 @@ function more() {
  * A ticket made, by its key and title (its reply's ticket's, else its receipt's key and the title sent): said with its key and Open, so a
  * ticket the filter leaves out of the list is said too, and the list read at once (its event reads it again too).
  */
+/** A ticket imported from GitHub: its page, which says what it was imported from. */
+function imported(t: { key: string; title: string }) {
+  toast.add({ title: `${t.key} imported`, description: t.title, icon: 'i-lucide-github', color: 'success' })
+  void readList().catch(() => {})
+  void router.push(ticketPath(t.key))
+}
+
 function created(t: { key: string; title: string }) {
   toast.add({ title: `${t.key} made`, description: t.title, icon: 'i-lucide-ticket', color: 'success', actions: [{ label: 'Open', icon: 'i-lucide-arrow-right', onClick: () => void router.push(ticketPath(t.key)) }] })
   void readList().catch(() => {})
@@ -561,6 +570,7 @@ palette.registerPage((): PageGroup => {
   }
   rows.push({ key: 'page:filter', label: 'Filter the tickets…', icon: 'i-lucide-list-filter', run: () => void nextTick(() => filters.value?.openFilter()) })
   rows.push({ key: 'page:new-ticket', label: `New ticket in ${project.value}`, icon: 'i-lucide-ticket-plus', kbds: ['C'], disabled: !projectRead.value || archived.value, run: () => void nextTick(() => (newOpen.value = true)) })
+  rows.push({ key: 'page:import', label: `Import from GitHub into ${project.value}`, detail: 'An issue or a pull request, by its address', icon: 'i-lucide-github', disabled: !projectRead.value || archived.value, run: () => void nextTick(() => (importOpen.value = true)) })
   for (const kind of ['list', 'board', 'roadmap'] as const) {
     if (kind !== view.value) rows.push({ key: `page:view:${kind}`, label: VIEW_WORDS[kind].label, icon: VIEW_WORDS[kind].icon, run: () => (view.value = kind) })
   }
@@ -589,6 +599,7 @@ palette.registerPage((): PageGroup => {
         </template>
         <template #right>
           <IconButton icon="i-lucide-settings-2" color="neutral" variant="ghost" label="The project's settings: its close policy, labels and milestones" :disabled="!projectRead" data-project-settings-open @click="settingsOpen = true"><span class="hidden md:inline">Settings</span></IconButton>
+          <IconButton icon="i-lucide-github" color="neutral" variant="ghost" label="Import from GitHub" :disabled="!projectRead || archived" data-dispatch-import-open @click="importOpen = true"><span class="hidden md:inline">Import</span></IconButton>
           <IconButton icon="i-lucide-plus" label="New ticket" :disabled="!projectRead || archived" data-new-ticket-open @click="newOpen = true"><span class="hidden sm:inline">New ticket</span></IconButton>
           <FullscreenButton class="hidden sm:inline-flex" />
         </template>
@@ -666,7 +677,7 @@ palette.registerPage((): PageGroup => {
           state="empty"
           icon="i-lucide-ticket"
           :words="`${project} has no tickets yet.`"
-          :actions="archived ? [] : [{ label: 'New ticket', icon: 'i-lucide-plus', kbd: 'C', onClick: () => (newOpen = true) }]"
+          :actions="archived ? [] : [{ label: 'New ticket', icon: 'i-lucide-plus', kbd: 'C', onClick: () => (newOpen = true) }, { label: 'Import from GitHub', icon: 'i-lucide-github', onClick: () => (importOpen = true) }]"
           data-list-empty
         />
         <template v-else-if="view === 'list'">
@@ -690,5 +701,6 @@ palette.registerPage((): PageGroup => {
 
   <DispatchProjectSettings v-if="projectRead" v-model:open="settingsOpen" :project="project" :read="projectRead" :gate="gate" :archived="archived" @changed="() => void reload().catch(() => {})" />
   <DispatchNewTicket v-model:open="newOpen" :project="project" :gate="gate" @created="created" />
+  <DispatchImport v-model:open="importOpen" :project="project" :gate="gate" @created="imported" />
   <DispatchPicker v-model:open="pickerOpen" :field="pickerField" :tickets="pickerTickets" :labels="projectRead?.labels ?? []" :milestones="projectRead?.milestones ?? []" :agents="agents" @pick="picked" />
 </template>

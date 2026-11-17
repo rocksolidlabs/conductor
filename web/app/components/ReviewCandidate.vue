@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { shortCommit } from '~/utils/dispatchPlans'
-import type { BaseChoice, ReviewCandidateOption } from '~/utils/review'
+import { pickerLabel, type BaseChoice, type ReviewCandidateOption } from '~/utils/review'
 import type { Lineage } from '~/utils/reviewLineage'
 
 /**
  * The candidate reviewed and the base its diff is read against (Program item RV1, PR-6): a picker of the ticket's candidates, newest
  * first per task, each with its commit and whether it stands as its task's result; and a picker of the bases the server takes (the
  * run's base, where the attempt started, another result of the task). The base is the draft's: it is locked while the draft holds a
- * note on the base side, and says why. Under them, how each candidate of the task came to be (ReviewLineage, PR-7).
+ * note on the base side, and says why. Under them, how each candidate of the task came to be (ReviewLineage, PR-7). A comparison's
+ * candidates say "selected" or "not selected" once its selection is applied (Program item CP1, PR-8b).
  */
 defineProps<{
   options: ReviewCandidateOption[]
@@ -27,7 +28,7 @@ const emit = defineEmits<{ candidate: [ref: string]; base: [commit: string] }>()
     <UFormField label="Candidate" size="sm" class="min-w-0 sm:w-96">
       <USelect
         :model-value="candidate"
-        :items="options.map((o) => ({ label: `${o.label}${o.standing ? ' · result' : ''}`, value: o.value }))"
+        :items="options.map((o) => ({ label: pickerLabel(o), value: o.value }))"
         size="sm"
         class="w-full"
         data-review-candidate

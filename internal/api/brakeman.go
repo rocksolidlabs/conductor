@@ -2156,31 +2156,49 @@ func (s *Server) handleBrakemanAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := brakeman.Request{OpID: body.OpID, Kind: body.Kind, Subjects: body.Subjects, Note: body.Note, Since: body.Since, By: body.By}
-	req, created, aerr, err := s.askBrakeman(d, in)
-	switch {
-	case aerr != nil:
-		writeAPIError(w, aerr)
-	case err != nil:
+	if strings.HasPrefix(body.OpID, compareOpPrefix) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an op id beginning "+compareOpPrefix+" is a comparison's own request: choose another")
+		return
+	}
+	if err := s.compareAskRefusal(r.Context(), in); err != nil {
+		var refused *apiError
+		if errors.As(err, &refused) {
+			writeAPIError(w, refused)
+			return
+		}
 		s.brakemanError(w, err)
-	case created:
-		writeJSON(w, http.StatusCreated, map[string]any{"request": req})
+		return
+	}
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		s.brakemanError(w, a.err)
+	case a.code != "":
+		writeError(w, a.status, a.code, a.words)
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"request": req})
+		writeJSON(w, a.status, map[string]any{"request": a.req})
 	}
 }
 
-// askBrakeman is the desk's admission of a request in, the ask route's
-// and a capture's send's (capture_sends.go): a repeat of in's op id
-// answers its request whatever stands since (created false); a new one is
-// kept and queued under admission's order, unless the desk refuses it in
-// its own words (aerr): brakeman_off, brakeman_stuck, queue_full,
-// budget_spent. err is the store's (brakemanError answers it):
-// brakeman_not_owner before the desk holds the records' queue, an invalid
-// ask, pins_full for a pinned one past the store's pins. A pinned ask (a
-// capture's send, settled from its stored request) is refused
-// shutting_down once the desk closes, so no request is pinned past the
-// stop.
-func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman.Request, created bool, aerr *apiError, err error) {
+// askAnswer is what admitAsk made of a request: the request kept, 200
+// for a repeat or 201 for a new one; or a refusal of the desk's, its
+// status, code and words; or a store's error, as brakemanError answers it.
+type askAnswer struct {
+	req    brakeman.Request
+	status int
+	code   string
+	words  string
+	err    error
+}
+
+// admitAsk keeps the request in, as a person's ask is kept: a repeat of
+// its opId answers its request whatever stands since; else Brakeman on,
+// not stuck, the queue's bound and (unless spare) the day's budget, those
+// queued counted, then the request created, queued and told to the
+// background role. spare is the comparison's own request (compare_drafts.go):
+// past the day's budget it is queued all the same, and its start closes
+// it over_budget, recorded, as any request's start does past the budget.
+func (s *Server) admitAsk(d *brakemanDesk, in brakeman.Request, spare bool) askAnswer {
 	if f := d.beforeAdmit.Load(); f != nil {
 		(*f)()
 	}
@@ -2203,8 +2221,10 @@ func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman
 	// is refused, or after it, and cancels it with the queue.
 	d.admit.Lock()
 	defer d.admit.Unlock()
+	// A pinned ask (a capture's send, settled from its stored request) is
+	// refused once the desk closes, so no request is pinned past the stop.
 	if in.Pin && d.closing.Load() {
-		return brakeman.Request{}, false, nil, errDeskClosing
+		return askAnswer{err: errDeskClosing}
 	}
 	// A repeat answers its request whatever stands since. It is looked up
 	// in admission's order, so of two asks with one opId at once the
@@ -2212,22 +2232,22 @@ func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman
 	if _, found, err := d.st.ByOp(in.OpID); err == nil && found {
 		req, _, err := d.st.Create(in)
 		if err != nil {
-			return brakeman.Request{}, false, nil, err
+			return askAnswer{err: err}
 		}
 		if req.Open() && d.recovered.Load() {
 			asked = req.ID
 		}
-		return req, false, nil, nil
+		return askAnswer{req: req, status: http.StatusOK}
 	}
 	if !d.recovered.Load() {
-		return brakeman.Request{}, false, nil, d.notOwner()
+		return askAnswer{err: d.notOwner()}
 	}
 	cfg, err := d.st.Config()
 	if err != nil {
-		return brakeman.Request{}, false, nil, err
+		return askAnswer{err: err}
 	}
 	if !cfg.Enabled {
-		return brakeman.Request{}, false, newAPIError(http.StatusConflict, "brakeman_off", "Brakeman is off: turn it on in Settings"), nil
+		return askAnswer{status: http.StatusConflict, code: "brakeman_off", words: "Brakeman is off: turn it on in Settings"}
 	}
 	// The request keeps its agent's capacity view as it is queued, made
 	// for the configuration it is admitted under.
@@ -2239,29 +2259,57 @@ func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stuck {
-		return brakeman.Request{}, false, newAPIError(http.StatusServiceUnavailable, "brakeman_stuck", "the last turn's run did not stop: stop it from its run page"), nil
+		return askAnswer{status: http.StatusServiceUnavailable, code: "brakeman_stuck", words: "the last turn's run did not stop: stop it from its run page"}
 	}
 	if len(d.queue) >= brakemanQueue {
-		return brakeman.Request{}, false, newAPIError(http.StatusTooManyRequests, "queue_full", fmt.Sprintf("%d requests wait already", brakemanQueue)), nil
+		return askAnswer{status: http.StatusTooManyRequests, code: "queue_full", words: fmt.Sprintf("%d requests wait already", brakemanQueue)}
 	}
-	turns, err := d.st.TurnsToday(d.now())
+	if !spare {
+		turns, err := d.st.TurnsToday(d.now())
+		if err != nil {
+			return askAnswer{err: err}
+		}
+		if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
+			return askAnswer{status: http.StatusTooManyRequests, code: "budget_spent", words: fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay)}
+		}
+	}
+	req, created, err := d.st.Create(in)
 	if err != nil {
-		return brakeman.Request{}, false, nil, err
+		return askAnswer{err: err}
 	}
-	if turns+len(d.queue) >= cfg.Budget.TurnsPerDay {
-		return brakeman.Request{}, false, newAPIError(http.StatusTooManyRequests, "budget_spent", fmt.Sprintf("today's %d turns are spent, those queued counted", cfg.Budget.TurnsPerDay)), nil
-	}
-	req, created, err = d.st.Create(in)
-	if err != nil {
-		return brakeman.Request{}, false, nil, err
-	}
+	status := http.StatusOK
 	if created {
+		status = http.StatusCreated
 		d.queue = append(d.queue, req.ID)
 		d.publish(req.ID)
 		d.poke()
 		asked = req.ID
+		if req.Kind == brakeman.KindCompare {
+			s.drafts.asked(req)
+		}
 	}
-	return req, created, nil, nil
+	return askAnswer{req: req, status: status}
+}
+
+// askBrakeman is the desk's admission of a request in for a caller that
+// is not the ask route: a capture's send (capture_sends.go). It is
+// admitAsk, the day's budget counted, in that caller's terms: a repeat of
+// in's op id answers its request whatever stands since (created false); a
+// new one is kept and queued under admission's order, unless the desk
+// refuses it in its own words (aerr): brakeman_off, brakeman_stuck,
+// queue_full, budget_spent. err is the store's (brakemanError answers
+// it): brakeman_not_owner before the desk holds the records' queue, an
+// invalid ask, pins_full for a pinned one past the store's pins, and
+// shutting_down for a pinned ask once the desk closes.
+func (s *Server) askBrakeman(d *brakemanDesk, in brakeman.Request) (req brakeman.Request, created bool, aerr *apiError, err error) {
+	a := s.admitAsk(d, in, false)
+	switch {
+	case a.err != nil:
+		return brakeman.Request{}, false, nil, a.err
+	case a.code != "":
+		return brakeman.Request{}, false, newAPIError(a.status, a.code, a.words), nil
+	}
+	return a.req, a.status == http.StatusCreated, nil, nil
 }
 
 // handleBrakemanRequests answers a page of requests, newest first:

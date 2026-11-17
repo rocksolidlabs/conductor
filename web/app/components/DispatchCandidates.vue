@@ -7,6 +7,8 @@ import { REVIEW_ENTRY } from '~/composables/useReview'
 import { candidateRef, parseCandidate } from '~/utils/dispatch'
 import { previewPath } from '~/utils/capture'
 import { checkoutOfAttempt } from '~/composables/useCandidatePreview'
+import { runCompare } from '~/utils/compare'
+import { SELECTION_WORDS, candidateSelection } from '~/utils/compareSelect'
 
 /**
  * A run's candidates (Program item DS2, docs/plans/dispatch-evidence.md, "web/app", PR-11), read from the ledger (GET
@@ -19,13 +21,17 @@ import { checkoutOfAttempt } from '~/composables/useCandidatePreview'
  * are read again from the start, gathered for the window, when the run's revision moves (its run events, through the live store): the
  * reads are useRunCandidates'. A list, never a table: one column on a phone. On a ticket's page (RV1), each standing work candidate
  * offers Review, the ticket's Review view at it, with the open findings of its task counted; a failed receipt opened offers Prepare a
- * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A candidate whose
- * attempt's preview is offered now offers Open in Conductor, the preview page (PV1).
+ * repair there; and a person's repairs (the ticket's reviews that asked for changes) are listed with the run's (PR-7). A comparison's
+ * run (its `compare` part, as the page read the run or the live store holds it) labels each work candidate "selected" or "not selected" once its selection is
+ * applied (Program item CP1, PR-7), read from the comparison alone, in neutral ink.
+ * A candidate whose attempt's preview is offered now offers Open in Conductor, the preview page (PV1).
  */
 const props = defineProps<{
   runId: string
   /** The run's revision in the ledger as the live store holds it: a move reads the candidates again. Absent for a record. */
   revision?: number
+  /** The run is a comparison's, as the page that draws it read the run (a record the live store leaves out among them). */
+  compare?: boolean
 }>()
 
 const copy = useCopy()
@@ -71,6 +77,10 @@ watch(
   { immediate: true },
 )
 const fixes = computed(() => repairs(tasks.value, details))
+const attention = useAttention()
+/** The comparison of a compare run (the page's word for it, else the live store's), read only for one: its applied selection labels the candidates. */
+const comparison = useComparison({ run: () => (props.compare || runCompare(attention.runOf(props.runId)) ? props.runId : '') }).comparison
+const selectionOf = (c: RunCandidate) => (c.kind === 'work' ? candidateSelection(comparison.value, { task: c.task, attempt: c.attempt, commit: c.commit ?? '' }) : undefined)
 const ckey = candidateKey
 /** The ticket page's Review entry: absent anywhere else. */
 const review = inject(REVIEW_ENTRY, null)
@@ -135,6 +145,15 @@ const tone = { warning: 'text-warning', error: 'text-error', muted: 'text-muted'
               </template>
               <span v-else-if="c.kind === 'review' && c.start" class="text-muted">reviewed <code class="font-mono" :title="c.start">{{ shortCommit(c.start) }}</code></span>
               <UBadge v-if="c.standing" label="result" color="primary" variant="subtle" size="sm" title="The task's result now" data-candidate-standing />
+              <UBadge
+                v-if="selectionOf(c)"
+                :label="SELECTION_WORDS[selectionOf(c)!]"
+                color="neutral"
+                :variant="selectionOf(c) === 'selected' ? 'outline' : 'subtle'"
+                size="sm"
+                :class="selectionOf(c) === 'selected' ? 'text-default' : 'text-muted'"
+                :data-candidate-selection="selectionOf(c)"
+              />
               <UBadge v-if="c.withdrawn" label="withdrawn" color="neutral" variant="subtle" size="sm" title="A withdrawal took this result back" data-candidate-withdrawn />
               <UBadge
                 v-if="c.acceptedAnyway"

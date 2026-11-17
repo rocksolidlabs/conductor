@@ -126,6 +126,13 @@ export function usePalette() {
   const ticketsAt = useState<number>('paletteTicketsAt', () => 0)
   /** A new ticket asked for from a row (New ticket in CND): the project's key, taken by the palette, which opens the dialog. */
   const newTicketFor = useState<string>('paletteNewTicket', () => '')
+  /** An import from GitHub asked for from a row (Import from GitHub into CND): the project's key, taken by the palette (IN1a). */
+  const importFor = useState<string>('paletteImport', () => '')
+  /**
+   * The tickets a GitHub item's address pasted into the search names (IN1a): its linked issue's, or one of whose live links' URL it is
+   * (GET /api/dispatch/tickets?external=), for the address they were read for; none until read, and none when the read failed.
+   */
+  const externalHits = useState<{ url: string; tickets: TicketSummary[] }>('paletteExternal', () => ({ url: '', tickets: [] }))
   const api = useSessions()
   const dispatch = useDispatchApi()
   const admin = useWorkbenchToken()
@@ -306,6 +313,26 @@ export function usePalette() {
   function askNewTicket(project: string) {
     newTicketFor.value = project
   }
+  /** Asks the palette to open Import from GitHub for a project (a row's). */
+  function askImport(project: string) {
+    importFor.value = project
+  }
+  let externalGen = 0
+  /** Reads the tickets an item's address names; a later ask, or the token's change, drops an earlier answer. */
+  async function findExternal(url: string): Promise<void> {
+    const gen = ++externalGen
+    if (!admin.hasToken.value) return
+    try {
+      const found = await dispatch.ticketsOfExternal(url)
+      if (gen === externalGen) externalHits.value = { url, tickets: found }
+    } catch {
+      if (gen === externalGen) externalHits.value = { url, tickets: [] }
+    }
+  }
+  function forgetExternal() {
+    externalGen++
+    externalHits.value = { url: '', tickets: [] }
+  }
 
   function show(mode: PaletteMode = 'search') {
     query.value = mode === 'search' ? '' : MODE_PREFIX[mode]
@@ -325,5 +352,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, editTicket, forgetTickets, newTicketFor, askNewTicket, ticketsGate }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched, tickets, projects, loadTickets, staleTickets, resetTickets, patchTicket, editTicket, forgetTickets, newTicketFor, askNewTicket, importFor, askImport, externalHits, findExternal, forgetExternal, ticketsGate }
 }

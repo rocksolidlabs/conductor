@@ -1454,7 +1454,15 @@ func TestPublicationRefusedBeforeGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := len(page); i < dispatch.MaxPublications; i++ {
+	// The bound counts the publications not discarded: those already made
+	// that are, and as many more as it takes.
+	live := 0
+	for _, p := range page {
+		if p.State != dispatch.PublicationDiscarded {
+			live++
+		}
+	}
+	for i := live; i < dispatch.MaxPublications; i++ {
 		doneOf(t)(e.srv.dispatch.PreparePublication(ctx, adminOp("Alice"), dispatch.PublicationArgs{Key: "PUB-1", Target: dispatch.TargetLinked,
 			Body: fmt.Sprint("n", i)}, target, e.srv.trackers.gh.Marker))
 	}

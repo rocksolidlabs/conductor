@@ -274,15 +274,17 @@ export function useTicketPlans(o: { gate: DispatchOrder; key: () => string; tick
    * said by Launch until a launch is made, a snapshot, or the person asks again (`forgetRefusals`). The launch an answer carries goes
    * through the gate as a read of it: a slow answer never replaces a later state a read showed. It is remembered as this page's only when
    * its request was sent after the last reset, on the ticket shown: one sent before a snapshot is the restored store's to name, or not.
+   * `candidates` is a comparison's count as the launch dialog stated it to the person (CP1): sent only when given, never worked out here.
    */
-  async function launch(p: PlanSummary, label: string, opId: string): Promise<LaunchOutcome> {
+  async function launch(p: PlanSummary, label: string, opId: string, candidates?: number): Promise<LaunchOutcome> {
     const t = o.ticket()
     const k = key()
-    const body: OpBody & { plan: string; label?: string } = { opId, plan: p.id }
+    const body: OpBody & { plan: string; label?: string; candidates?: number } = { opId, plan: p.id }
     if (t?.rev) body.expectedRev = t.rev
     const name = identity.name.value.trim()
     if (name) body.byName = name
     if (label.trim()) body.label = label.trim()
+    if (candidates !== undefined) body.candidates = candidates
     let out: LaunchOutcome
     let n = 0
     let g = gen

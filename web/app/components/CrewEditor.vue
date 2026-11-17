@@ -13,7 +13,8 @@ import { yoloChoice, yoloFromChoice, type YoloChoice } from '~/utils/yolo'
  * and its members as a table or as the graph of their start rules; a crew
  * with tasks has its tasks and, under them, its project manifest. Between the
  * members and the tasks, its people (HM1): never started, they own its
- * decisions and its tasks' outcomes. The page
+ * decisions and its tasks' outcomes. A comparison's crew (CP1) shows its
+ * block, read only, above its tasks (CrewCompareBlock). The page
  * owns the name (in its header), saving, launching, duplicating and
  * deleting; the editor only changes the draft.
  */
@@ -256,6 +257,7 @@ function refused(message: string) {
       <CrewPeopleTable :model-value="crew.people ?? []" :members="crew.members" :tasks="crew.tasks" @update:model-value="setPeople" />
     </div>
 
+    <CrewCompareBlock v-if="managed && crew.compare" :compare="crew.compare" :tasks="crew.tasks ?? []" :members="crew.members" :agents="agents" />
     <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :members="crew.members" :people="crew.people ?? []" :isolation="crew.isolation" :taken="manifestIds(crew.manifest)" @update:model-value="set('tasks', $event)" />
     <CrewManifestEditor v-if="managed" :model-value="crew.manifest" :tasks="crew.tasks ?? []" :setup="crew.setup" @update:model-value="set('manifest', $event)" />
 

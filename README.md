@@ -1713,6 +1713,25 @@ decisions a person makes; **People** the owner, the assignees, who approved,
 launched and commented, the approved revision's agents with the commands they
 run, and each launch's agents with the version each reported.
 
+**GitHub.** With your own token saved in Settings, GitHub (or given to the
+server as `CONDUCTOR_GITHUB_TOKEN`), a ticket can be imported from a GitHub
+issue or pull request, or linked to one: GitHub's title and state show beside
+the ticket's own, and a link to a pull request shows whether it is merged and
+its checks. A plan revision can hand over the issue's **Steps to reproduce**
+(on when the issue has them) and the ticket's links as evidence, and the run
+page's header then says "Launched from CND-12 · plan r2 · GitHub
+acme/api#612". **Publish to GitHub** on the ticket composes one comment: your
+own words, the parts you tick (the delivery links, the delivered candidate's
+checks, the ticket's key and title; none to start), and "Close the issue as
+completed" for an issue, off unless ticked; **Preview** shows the exact text
+GitHub gets with its hidden marker said, and **Publish** posts it once, as the
+token's account, however often it is pressed. The ticket's **Publications**
+then say "Published to acme/api#612 by @alice at 14:02" with the comment's
+link; one GitHub has not shown is "not confirmed" and is never sent again
+(**Check** looks for it, **Publish as new** says the first may still appear).
+Nothing else Conductor does says anything on GitHub. Remove in Settings stops
+Conductor's use of the token; revoke it on GitHub.
+
 **The keys.** On a project's page: **J** **K** (or the arrows) move, **Enter**
 opens, **X** selects, **C** makes a ticket, and **S** **P** **A** **L** **M**
 **O** set the status, priority, assignees, labels, milestone or owner of the
@@ -1781,6 +1800,25 @@ say first what it was launched at ("As launched: CND-12 at revision 7, plan
 revision 3, in .conductor/ticket.md. Now at revision 9: the description
 changed; 2 comments since."): the run follows the ticket as launched, and a
 change is a person's to decide.
+
+**Compare approaches.** A ticket's plan revision can be a comparison: **New
+comparison** on the Crews page makes its crew from a goal, the criteria, the
+checks and two to four candidates (each an agent and its approach), and the
+launch from the approved revision says what it starts and asks you to send
+the count of candidates you read. Each candidate works from the same base in
+a lane of its own, and no lane reaches another's work. The ticket page's
+**Comparison** (also linked from the run's header and its card) shows what
+Conductor measured from git and the ledger alone (each candidate's commit,
+size, dependency changes, test and build files, whether it shares commits
+with another, and every check per candidate with whether the results are
+comparable), and apart from it, under "Supporting information, not
+evidence", what the agents, their reviews and Brakeman said (**Ask Brakeman
+to compare** asks for a draft by hand). Once every lane has ended you select
+a candidate, or None of these, with a rationale: nothing is preselected, and
+the answer is final. It is the same decision on the card, Needs you and a
+phone, and only you, the operator, answer it. The selected candidate then
+goes on to review, repair and delivery (**Review the selected candidate**);
+the others keep their branches and receipts and are labelled not selected.
 
 ## Brakeman
 

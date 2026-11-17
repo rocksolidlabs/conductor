@@ -777,9 +777,9 @@ func (s *Server) handleDispatchSubmitReview(w http.ResponseWriter, r *http.Reque
 	}
 	// A review runs to its end when the client goes away: its store
 	// operations and its application, each within its own bound.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), ReviewTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), reviewTimeoutOf(body.NewReview))
 	defer cancel()
-	s.submitReview(ctx, w, ds, body.op(r), key, body)
+	s.submitReview(ctx, w, ds, body.op(r), key, body, s.externalEvidence)
 }
 
 // answerReview answers an operation on a review that is done: {receipt,
@@ -794,8 +794,14 @@ func (s *Server) answerReview(w http.ResponseWriter, ctx context.Context, ds *di
 	})
 }
 
-// submitReview is the review's order (this file's comment).
-func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody) {
+// externalFill fills a review's external check finding k from a fresh read
+// of GitHub (Server.externalEvidence): the person's route gives it, and a
+// Brakeman turn's request_repair none, so no turn's review reads GitHub.
+type externalFill func(ctx context.Context, ds *dispatch.Store, key string, k int, c dispatch.Candidate, req dispatch.CheckRequest) (*dispatch.CheckRef, *apiError)
+
+// submitReview is the review's order (this file's comment), an external
+// check finding filled by external (nil: refused, nothing read).
+func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *dispatch.Store, op dispatch.Op, key string, body reviewSubmitBody, external externalFill) {
 	rv := body.NewReview
 	rc, found, err := ds.Replay(ctx, op, dispatch.IntentReviewSubmit, dispatch.ReviewSubmitArgs{Key: key, Review: rv})
 	switch {
@@ -837,6 +843,18 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeAPIError(w, aerr)
 		return
 	}
+	// A comparison's candidate is repaired once it is selected
+	// (compareReviewRefusal), refused before Dispatch keeps anything.
+	if request {
+		switch aerr, err := s.compareReviewRefusal(ctx, c); {
+		case err != nil:
+			s.chainReadError(w, c.Run, err)
+			return
+		case aerr != nil:
+			writeAPIError(w, aerr)
+			return
+		}
+	}
 	switch ok, err := s.allowedBase(ctx, row, a, rv.Base); {
 	case err != nil:
 		s.chainReadError(w, c.Run, err)
@@ -845,7 +863,7 @@ func (s *Server) submitReview(ctx context.Context, w http.ResponseWriter, ds *di
 		writeError(w, http.StatusConflict, dispatch.RefusalInvalid, "the base "+shortCommit(rv.Base)+" is none the run names: its base, the attempt's start, or a result of the task in the run's chain")
 		return
 	}
-	ev, proj, aerr, err := s.reviewEvidence(ctx, ds, c, rv)
+	ev, proj, aerr, err := s.reviewEvidence(ctx, ds, key, c, rv, external)
 	switch {
 	case err != nil && errors.Is(err, errRunContinuing):
 		s.chainReadError(w, c.Run, err)
@@ -988,15 +1006,22 @@ func receiptOfID(s string) (run, task string, n int, phase, id string, k int, ok
 // from the body); a check finding's receipt read from the ledger
 // (failedReceipt), refused 409 invalid when it is not of the candidate's
 // attempt, when the ledger has no such receipt, or when it did not fail;
-// a capture finding's capture, read from Dispatch's store as the review's
-// transaction binds it (Store.CaptureFinding: a send to a review of that
-// capture, of the candidate's own preview, with that annotation), refused
-// 409 invalid otherwise, its projection given by its place for the
-// request's measure. A finding whose shape is not one is given no
-// evidence: the store refuses its shape first, its receipt kept.
-func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, c dispatch.Candidate, rv dispatch.NewReview) (dispatch.ReviewEvidence, map[int]dispatch.CaptureProjection, *apiError, error) {
+// an external one (a CI job on GitHub) read fresh from the pull request of
+// the ticket's delivery link that delivers the candidate
+// (external, the person's route's externalEvidence; without it, 403
+// not_granted and nothing read); a capture finding's capture, read from
+// Dispatch's store as the review's transaction binds it
+// (Store.CaptureFinding: a send to a review of that capture, of the
+// candidate's own preview, with that annotation), refused 409 invalid
+// otherwise, its projection given by its place for the request's measure.
+// A finding whose shape is not one is given no evidence: the store refuses
+// its shape first, its receipt kept.
+func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, key string, c dispatch.Candidate, rv dispatch.NewReview, external externalFill) (dispatch.ReviewEvidence, map[int]dispatch.CaptureProjection, *apiError, error) {
 	ev := dispatch.ReviewEvidence{Findings: make([]dispatch.FindingEvidence, len(rv.Findings))}
 	proj := map[int]dispatch.CaptureProjection{}
+	// One budget for every external job's fresh read (externalBudget),
+	// begun at the first: the review's own bound stays for its store steps.
+	var ectx context.Context
 	for i, f := range rv.Findings {
 		k := i + 1
 		e := dispatch.FindingEvidence{K: k}
@@ -1021,6 +1046,22 @@ func (s *Server) reviewEvidence(ctx context.Context, ds *dispatch.Store, c dispa
 				e.AnchorCommit = rv.Base
 			}
 		case dispatch.FindingKindCheck:
+			if f.Check != nil && f.Check.Source == dispatch.CheckSourceExternal {
+				if external == nil {
+					return ev, nil, newAPIError(http.StatusForbidden, "not_granted", "a CI job on GitHub is read with the person's token: only the person names one in a request for changes"), nil
+				}
+				if ectx == nil {
+					var cancel context.CancelFunc
+					ectx, cancel = context.WithTimeout(ctx, s.externalBudget())
+					defer cancel()
+				}
+				ref, aerr := external(ectx, ds, key, k, c, *f.Check)
+				if aerr != nil {
+					return ev, nil, aerr, nil
+				}
+				e.Check = ref
+				break
+			}
 			if f.Check == nil || f.Check.Source != dispatch.CheckSourceLedger {
 				break
 			}
@@ -1113,6 +1154,11 @@ func requestedChange(id, kind, intent, severity, path, side string, from, to int
 		ch.Check = &crew.RequestedCheck{Receipt: ref.Receipt, Run: ref.Run, Task: ref.Task, Attempt: ref.Attempt, Phase: ref.Phase, ID: ref.ID, K: ref.K,
 			Subject: ref.Subject, Exit: ref.Exit, Signal: ref.Signal, TimedOut: ref.TimedOut, Stable: ref.Stable, Error: ref.Error, LogSHA256: ref.LogSHA256,
 			LogBytes: ref.LogBytes, Tail: ref.Tail, Class: ref.Class, Chosen: ref.Chosen, Quote: ref.Quote}
+		if ref.Source == dispatch.CheckSourceExternal {
+			// A CI job on GitHub: its name, conclusion, page and app, which
+			// task.md quotes (internal/crew).
+			ch.Check.Source, ch.Check.Name, ch.Check.Conclusion, ch.Check.URL, ch.Check.App = ref.Source, ref.Name, ref.Conclusion, ref.URL, ref.App
+		}
 	}
 	return ch
 }
@@ -1536,6 +1582,16 @@ func (s *Server) handleDispatchRetryReview(w http.ResponseWriter, r *http.Reques
 			// The candidate's run is still the ticket's alone, as at the
 			// review (the store holds the retry's transaction to it too).
 			if !s.ticketHoldsRun(w, ctx, ds, v.TicketKey, c.Run) {
+				return
+			}
+			// A comparison's candidate is repaired once it is selected
+			// (compareReviewRefusal), the try unchanged.
+			switch aerr, err := s.compareReviewRefusal(ctx, c); {
+			case err != nil:
+				s.chainReadError(w, c.Run, err)
+				return
+			case aerr != nil:
+				writeAPIError(w, aerr)
 				return
 			}
 			newest, live, err := s.newestOf(ctx, c.Run)

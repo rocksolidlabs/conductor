@@ -289,7 +289,7 @@ var beforeSessionComment atomic.Pointer[func()]
 // token asked.
 func (s *Server) handleSessionTicketComment(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.taskSession(w, r, false)
-	if !ok || brakemanCannot(w, d) || s.laneComment(w, d) {
+	if !ok || brakemanCannot(w, d) || s.laneComment(r.Context(), w, d) {
 		return
 	}
 	ds, ok := s.dispatchWriter(w)

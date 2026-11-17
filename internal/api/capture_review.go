@@ -445,7 +445,10 @@ func (s *Server) finishReviewSend(ctx context.Context, ds *dispatch.Store, sendI
 		}
 	}
 	rec := newReplyRecorder()
-	s.submitReview(ctx, rec, ds, reviewSendOp(sv, ""), asked.Key, reviewSubmitBody{NewReview: asked.Review, ContinueRun: continueRun})
+	// A review made from a capture's send holds capture findings alone: it
+	// names no CI job on GitHub, so it is given no reader of one (nil: an
+	// external check finding in it would be refused, nothing read).
+	s.submitReview(ctx, rec, ds, reviewSendOp(sv, ""), asked.Key, reviewSubmitBody{NewReview: asked.Review, ContinueRun: continueRun}, nil)
 	var out struct {
 		Receipt *dispatch.Receipt `json:"receipt"`
 		Review  *dispatch.Review  `json:"review"`

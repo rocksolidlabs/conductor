@@ -252,7 +252,7 @@ describe('the launch sheet', () => {
     expect(page).toContain("e.code === CREW_CHANGED) startedNothing(t, c, 'changed', confirmed())")
     const src = readFileSync(new URL('./CrewLaunchSheet.vue', import.meta.url), 'utf8')
     expect(src).toContain('<div role="status">')
-    expect(src).toContain(':disabled="!open || !crew || launching || notice?.hold"')
+    expect(src).toContain(':disabled="!open || !crew || launching || notice?.hold || comparison"')
   })
 
   it("source: the sheet's lines draw compact panels that read on open, the ticket dialog's compact panels do not", () => {
