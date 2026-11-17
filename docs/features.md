@@ -569,15 +569,52 @@ said on GitHub but what a person publishes.
   `internal/quoted`, never as the ledger's. A Brakeman turn names no such
   job. A log's tail comes only from an Actions job, fetched behind
   GitHub's redirect from a host the log rule admits, without the token.
-- **By hand, after merge.** The plan's Acceptance against github.com with
-  the owner's token (a fine-grained and a classic token, a private
-  repository's screenshot imported, a renamed repository followed, a merge
-  read, one comment posted and the issue closed, the server's log holding
-  no token, `jwt=` or `X-Amz-`, and the same from the Windows app's own
-  server) is recorded here with the build, with PR-10's part: a delivery
-  pull request's checks read with a fine-grained token (its incomplete
-  words) and a classic one, and a failed Actions job's log fetched by its
-  prepared request.
+- **The acceptance, observed 2026-11-17 (#985).** On a build of the tree
+  `main` holds at f23270d4 (`conductor v0.7.0-rc.23-1260-gb59f5ab7`, the
+  head that merge landed), the open-source build with no account, against
+  github.com with the maintainer's own fine-grained token, a repository of
+  the maintainer's choosing and a real Claude Code as the one crew member,
+  the plan's seven observations were made:
+  1. The token, saved by the GitHub card's own Check and save, showed the
+     account and a fingerprint and never the token again;
+     `credentials/github.json` was the only file of the data directory
+     holding it, and an export made then had no `credentials/`.
+  2. An issue with an image and a "Steps to reproduce" section, imported
+     from the palette, became a ticket with GitHub's title and description
+     owned by GitHub, the image as an attachment, the steps in the GitHub
+     panel and GitHub's label shown and not mapped.
+  3. A plan revision handing over the steps and the image was proposed,
+     approved and launched; the attempt's `ticket.md` held its Source and
+     Steps to reproduce parts, and the image was in
+     `.conductor/attachments/`.
+  4. The issue's title, edited on GitHub, came in on Refresh; the approved
+     revision was shown stale and the running run kept its package byte for
+     byte. The issue closed and reopened on GitHub left the ticket's status
+     where it was.
+  5. The candidate was delivered as a pull request and linked as the
+     delivery; under the project's policy `merged`, Close was refused before
+     the merge and met after it.
+  6. With a private comment, the plan's constraints and a review's finding
+     on the ticket, an outcome was published with the delivery link ticked,
+     Publish pressed twice and the page reloaded: the issue had exactly one
+     comment from the maintainer's account, its text the preview's byte for
+     byte; its timeline showed nothing else Conductor did; none of the
+     private texts was found anywhere on GitHub.
+  7. The server's log over the whole session held no token, no `jwt=` and no
+     `X-Amz-`.
+  Observed differently from the plan's words: the image was linked into the
+  issue and served through GitHub's image proxy, not pasted, and the
+  repository is public. No defect was found; two small things the
+  observation saw are #989. The judgement that the published comment's text
+  holds nothing private is the maintainers'.
+- **Still by hand.** Not observed yet: a classic token; a private
+  repository's pasted screenshot; a renamed repository followed; the same
+  from the Windows app's own server; and a delivery pull request's failed CI
+  job taken as a request for changes, with a failed Actions job's log
+  fetched by its prepared request (in the observation the agent's candidate
+  changed the changelog unasked, so every job of the pull request passed:
+  the Review view listed its two GitHub Actions jobs as passed under the
+  fine-grained token, with no incomplete words).
 
 ## Future features
 
@@ -4204,6 +4241,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   both, and what the agent says of it unasked leaves the limits out.
   Whether the text's two lines meet the clause, or the clause is
   reworded, is the maintainers' call.
+
+  **The clause reworded (2026-11-17, #984).** The maintainers' call was to
+  reword it to what Conductor hands over: the guide's reply to an agent
+  told nothing but to call it carries what the agent may do there and the
+  limits it must keep (`docs/plans/brakeman.md`, BK0's boundary). The
+  observations above meet it: since #721 the tool's text has carried both
+  in every session read, and
+  `TestTheOverviewListsWhatTheCallerMayDoAndItsLimits` holds the overview
+  to them. What an agent says of the reply unasked is the model's own and
+  is not measured. Of BK0's second part one half stays pending, as said
+  above: an official app's build listing the providers it registers,
+  which waits for the first build that registers one.
 
   **BK1's live check, 2026-11-05: every clause but one, then fixed
   (#602).** Against `main` at 9723fdc6, on a `conductor serve` of its own
