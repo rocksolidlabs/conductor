@@ -396,12 +396,12 @@ test('a comparison of two stub candidates on the real server: the view shows wha
       expect(await page.locator('[data-task-rows] > li').evaluateAll((els) => els.map((e) => e.getAttribute('data-task-lane') ?? e.getAttribute('data-task-row')))).toEqual(['approach-a', 'approach-a', 'review-a', 'approach-b', 'approach-b', 'review-b'])
       await expect(page.locator('[data-run-summary] [data-run-comparison]')).toHaveAttribute('href', `/dispatch/${project}/1?view=compare&run=${run}`)
 
-      // The crews page's Launch of the comparison's crew is refused, in its words.
+      // The crews page offers no Launch of the comparison's crew, and says where one is launched (the server's own refusal is compare-launch.spec.ts's).
       budget(LOAD_MS)
       await page.goto(`/crews/${crew.id}`)
-      await page.locator('[data-launch]').click()
-      await page.locator('[data-crew-launch-confirm]').click()
-      await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible()
+      await expect(page.locator('[data-launch]')).toBeDisabled({ timeout: LOAD_MS })
+      await page.locator('[data-launch]').hover({ force: true })
+      await expect(page.getByText("a comparison is launched from a ticket's approved plan revision").first()).toBeVisible({ timeout: 15_000 })
 
       // Answered and applied: the selection's keys once applied are the stub's too.
       const open = real.selection as { decision: string }
