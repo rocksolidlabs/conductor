@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -13,6 +14,7 @@ import (
 	"github.com/rocksolidlabs/conductor/ext"
 	"github.com/rocksolidlabs/conductor/internal/brakeman"
 	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -320,4 +322,64 @@ func TestAComparisonIsLaunchedByAPerson(t *testing.T) {
 	}
 	// The person's launch of it, with the count, is taken.
 	f.launch(t, f.testEnv, map[string]any{"plan": plan, "candidates": 2}, http.StatusCreated, "")
+}
+
+// I9: a comparison's candidate is delivered once it is selected; before a
+// selection is a record of its own, a delivery naming a candidate of any
+// run of a comparison's chain, the launched one or a continuation, is
+// refused 409 not_selected before anything is kept, though the candidate
+// stands with its receipts; an ordinary run's candidate on the same
+// ticket is delivered.
+func TestACompareCandidateIsNotDeliveredYet(t *testing.T) {
+	e := deliveryEnv(t)
+	c := compareCrewIn(t, "/work/repo")
+	c.ID = "cmp"
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-time.Hour)
+	for _, r := range []struct{ id, from string }{{"cmp-0000abcd", ""}, {"cmp-0000abce", "cmp-0000abcd"}} {
+		if _, err := e.srv.ledger.Transition(t.Context(), r.id, func(tx *ledger.Tx) error {
+			if err := tx.CreateRun(ledger.RunRow{ID: r.id, CrewID: c.ID, Crew: string(raw), Base: deliveryCommit(0), State: ledger.RunFinished, ContinuedFrom: r.from, CreatedAt: tx.Now()}); err != nil {
+				return err
+			}
+			if r.from != "" {
+				if err := tx.Continued(r.from); err != nil {
+					return err
+				}
+			}
+			if err := tx.PutTask(ledger.TaskRow{ID: "approach-a", Member: "cand-a", Kind: crew.TaskWork, State: ledger.TaskSucceeded, Attempts: 1, ResultAttempt: 1, ResultCommit: deliveryCommit(1)}); err != nil {
+				return err
+			}
+			res, _ := json.Marshal(crew.Result{Commit: deliveryCommit(1)})
+			if err := tx.PutAttempt(ledger.AttemptRow{Where: ledger.WhereNative, TaskID: "approach-a", N: 1, Member: "cand-a", StartCommit: deliveryCommit(0), ResultCommit: deliveryCommit(1), State: ledger.AttemptSucceeded, Result: string(res)}); err != nil {
+				return err
+			}
+			return tx.PutCheck(ledger.CheckRow{TaskID: "approach-a", N: 1, ID: "ok", K: 1, Subject: deliveryCommit(1), State: ledger.CheckFinished, Exit: 0, Stable: true, Where: ledger.WhereNative, StartedAt: at, FinishedAt: at.Add(time.Second)})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveRecord(t, e.srv, crew.Run{ID: "cmp-0000abcd", CrewID: c.ID, Name: c.Name, StartedAt: at, State: crew.RunStopped})
+	linkRun(t, e, "CND-1", "cmp-0000abcd", http.StatusCreated, "")
+	links := func() int {
+		return len(listOf(t, entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/CND-1", nil, http.StatusOK, ""), "ticket"), "links"))
+	}
+	before := links()
+	for _, run := range []string{"cmp-0000abcd", "cmp-0000abce"} {
+		op := opID()
+		out := e.deliver(t, "CND-1", op, "https://example.com/pull/"+run, run+"/approach-a/1@"+deliveryCommit(1), http.StatusConflict, "not_selected")
+		if apiMessage(out) != "a comparison's candidate is delivered once it is selected" || out["receipt"] != nil {
+			t.Fatalf("%s: %v", run, out)
+		}
+		// Nothing kept: the op id is free for another link.
+		if _, found, err := e.srv.dispatch.Receipt(t.Context(), adminActor, op); err != nil || found {
+			t.Fatalf("%s: a receipt kept: %v %v", run, found, err)
+		}
+	}
+	if n := links(); n != before {
+		t.Fatalf("%d links, %d before", n, before)
+	}
+	e.deliver(t, "CND-1", opID(), "https://example.com/pull/ordinary", "synth-0000abcd/build/2@"+deliveryCommit(2), http.StatusCreated, "")
 }
