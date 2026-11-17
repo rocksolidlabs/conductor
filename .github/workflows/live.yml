@@ -94,7 +94,7 @@ jobs:
         run: |
           npm install -g @anthropic-ai/claude-code @openai/codex
           # The releases this run met, for whoever reads a failure: the suite's patterns are checked against named releases.
-          { echo "### The agents this run met"; echo "- Claude Code: $(claude --version)"; echo "- Codex: $(codex --version)"; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### The agents this run met"; echo "- Claude Code: $(claude --version)"; echo "- Codex: $(codex --version)"; } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: the live repository
         run: |
           mkdir -p "$RUNNER_TEMP/live-repo" && cd "$RUNNER_TEMP/live-repo"

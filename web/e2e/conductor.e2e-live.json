@@ -1,4 +1,4 @@
 {
   "iceServers": [],
-  "envPassthrough": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_MODEL", "IS_DEMO"]
+  "envPassthrough": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_MODEL"]
 }
