@@ -2,6 +2,7 @@
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
 import { closed, kindWords, requestNumber } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
+import { roleShort } from '~/utils/brakemanRole'
 import { pageState } from '~/utils/pageState'
 
 // The Brakeman page (docs/plans/brakeman.md, PR-6; laid out as the Brakeman design review proposes, issue 993): the ask bar, then
@@ -186,10 +187,8 @@ function opened(r: BrakemanRequest) {
 const ABOUT =
   'Brakeman is an agent of your choosing that reads what the crews, the runs and Dispatch hold, and answers with a brief whose facts link to their evidence. It reads and drafts; nothing it writes becomes work until you act. Its agent, what it may see, its budget and whether it is on are in Settings.'
 const unavailable = computed(() => bk.available.value === false)
-/** The day's budget, spent and allowed. */
-const budgetLine = computed(() =>
-  state.value ? `${state.value.turnsToday} of ${config.value?.budget.turnsPerDay} turns, ${state.value.minutesToday ?? 0} of ${config.value?.budget.minutesPerDay} minutes today` : '',
-)
+/** The background role's state in a few words, for a phone's header ("cooling until 05:41"); none while it runs only when asked. */
+const roleState = computed(() => (config.value?.enabled && config.value.wake.mode === 'background' ? roleShort(state.value?.role) : ''))
 /** The page's content (P23): reading until the first answer, failed when it did not come, none yet, or the requests done. */
 const briefsState = computed(() => pageState({ read: !!state.value, error: bk.problem.value, count: done.value.length }))
 
@@ -208,6 +207,12 @@ const prefill = computed(() => {
     <template #header>
       <UDashboardNavbar :toggle="false" title="Brakeman" :ui="{ root: 'h-14' }" data-brakeman-header>
         <template #leading><UDashboardSidebarCollapse /></template>
+        <template #title>
+          <span class="flex min-w-0 items-baseline gap-2">
+            <span class="truncate">Brakeman</span>
+            <span v-if="roleState" class="truncate text-xs font-normal text-muted sm:hidden" data-brakeman-role-short>{{ roleState }}</span>
+          </span>
+        </template>
         <template #right>
           <PageAbout :shown="!unavailable && briefsState === 'content'">
             <p>{{ ABOUT }}</p>
@@ -220,7 +225,6 @@ const prefill = computed(() => {
     <template #body>
       <div class="@container mx-auto w-full max-w-[65rem]" data-brakeman-page>
         <div class="flex flex-col gap-5">
-          <p v-if="state" class="text-xs text-muted" data-turns-today>{{ budgetLine }}</p>
           <UAlert v-if="unavailable" color="neutral" variant="subtle" icon="i-lucide-info" title="Brakeman is not here" :description="bk.problem.value" data-brakeman-unavailable />
           <template v-else>
             <p v-if="briefsState !== 'content'" class="text-sm text-muted" data-brakeman-about>{{ ABOUT }}</p>
@@ -267,7 +271,7 @@ const prefill = computed(() => {
                   <BrakemanInProgress :current="current" :queue="queue" />
                 </div>
                 <div class="order-4 min-w-0">
-                  <BrakemanRoleCard v-if="state && config?.enabled" :background="config.wake.mode === 'background'" :window-seconds="config.wake.windowSeconds" />
+                  <BrakemanRoleCard v-if="state && config?.enabled" :background="config.wake.mode === 'background'" :window-seconds="config.wake.windowSeconds" :briefings="config.wake.briefings" />
                 </div>
               </div>
             </div>
