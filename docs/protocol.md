@@ -1549,6 +1549,67 @@ it too and sends it to the host on `attention`. A server that refuses
 `turnId` as unknown (an older one) gets the report again once without it
 alone, `agentSession` and `turn` kept.
 
+#### The host's socket
+
+A hosted session's process also receives `CONDUCTOR_HOST_SOCKET`: the path
+of a unix-domain socket its host (`conductor host`) listens on, made before
+the process starts, so that the agent's reports reach the host on its own
+machine whether or not the host's connection to the server is up. A
+server's own sessions never receive it (`CONDUCTOR_*` from the server's
+environment and the catalog never reach a session, and the server sets
+none). The socket is `conductor-host-<random>/report.sock` under
+`$XDG_RUNTIME_DIR` when that folder is the user's alone (mode 0700), else
+under the temporary folder, else `/tmp`: a folder of the user's own, mode
+0700, not a link, made afresh by each host and checked before it listens,
+and a path of at most 100 bytes (a socket's address holds 104 on macOS,
+108 on Linux). The host removes both as it ends; a host's start removes,
+in the folder it uses, one that a host that ended without closing it left
+behind: a folder and socket of the user's own, the socket over a minute
+old, nothing listening on it.
+
+`conductor notify` (and the MCP tools `ask` and `set_state`) posts an
+attention report there first: `POST /attention` over the socket, this
+route's body, `Authorization: Bearer <agent token>`. The host answers as
+this route does, `200 {attention}` or `{error: {code, message}}`:
+
+- only the session's own agent token, which the host minted: any other,
+  none, or one sent any other way is `401 unauthorized`, before the body
+  is read;
+- at most 64 KiB of body, one JSON object of this route's fields and
+  nothing after it (an unknown field, trailing data, a body past the
+  bound: `400 invalid_request`), and this route's bounds and codes
+  (`invalid_state`, `invalid_kind`, `message` 4,096 bytes, 32 `options`,
+  `agentSession` 128 bytes, `plan` 1,024; a `turnId` out of its bound is
+  left out, the report taken);
+- a report that comes before the host's session is made waits for it, at
+  most 10 s, then `503 starting`; an ended session is `409
+  session_ended`;
+- each report spends a token of the host session's bucket, the one the
+  server's copy keeps for its host is of the same size: with none left,
+  `429 rate_limited`, nothing changed (the sender tries a 429 again there,
+  as it does the server's);
+- any other path is `404`, another method `405`; at most eight
+  connections are served at once, each bounded in time.
+
+The host applies the report to its own session, as the server's route
+applies one to a server session (source `api`), and tells the server what
+its session then shows on `attention` (Host control connection), at once
+or, while its connection is down, as its next connection starts. One
+turn's end is still told once: a `done` that names the turn whose end the
+session recorded last is that report again. The sender posts to this
+route instead only when the socket cannot be reached: not named, gone,
+nothing listening on it, or not a socket of the user's own in a folder of
+the user's own, mode 0700, not a link (the token is never handed to such
+a socket). A host's answer, a refusal among them, and a connection lost
+after it was made (the host may have applied the report) are never sent
+to the server as well. `agentSession` and `turn` are taken and bounded on
+the socket and kept by neither end: a hosted session whose agent reports
+through its host's socket records no agent session id. Events
+(`POST /api/sessions/{id}/events`) and the files a tool call touched still
+go to the server. A sender of an earlier release ignores the variable and
+posts to this route; a host of an earlier release sets none, and the
+sender posts here.
+
 Session `Info` also carries `branch` (the git branch of the working
 directory, read from `.git/HEAD` at launch; server and host alike) and, for
 hosted sessions, `hostUser`. A server session carries `yolo: true` when its

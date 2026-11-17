@@ -291,6 +291,11 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 			env[k] = v
 		}
 	}
+	// The socket the agent's hooks report to on this machine, listening
+	// before its process starts (localreport.go): handed the session once
+	// it is made, closed and removed as the host ends.
+	reports := a.startReports(env)
+	defer reports.Close()
 	dirFile, err := folder.Dir()
 	if err != nil {
 		folder.Close()
@@ -362,6 +367,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	a.mu.Lock()
 	a.local = local
 	a.mu.Unlock()
+	reports.setSession(local)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
