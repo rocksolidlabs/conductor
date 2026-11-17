@@ -206,6 +206,18 @@ add its rule here.
   `t.Parallel` and given back by a cleanup registered first, `walkSlots`
   in `internal/dispatch`), and do once what every check reads (one export
   for all the secrets a case carries).
+- A test holds its worker while it runs. A vitest test that never awaits
+  keeps its worker's event loop for its whole run, and the worker waits at
+  most 60 s for the main process to take its report of the test's start:
+  the answer, queued behind the test, is read after that timer has fired,
+  and the run exits 1 with every test passed (`Timeout calling
+  "onTaskUpdate"`). A selector test looked each of 10,000 siblings up in a
+  fake document, a scan of the list each time, and held its worker 50 s
+  alone and past 60 s in a whole run; fewer workers did not help, since
+  one worker is enough (`select.test.ts`, 2026-11-17, #281). Keep a
+  test's synchronous work to seconds: look up a sample that covers every
+  case (each length of index, the ends of a budget), and give the fake a
+  walk that costs what an engine's does.
 - Count only what the test made. A spec that counts sessions, tiles or list
   rows sees what an earlier spec left behind and what the server's sweeps
   removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
