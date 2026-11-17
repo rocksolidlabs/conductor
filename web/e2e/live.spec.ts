@@ -211,9 +211,23 @@ const KNOWN_WORDS = [
 
 /** The test's page, for a row that fails to say what its member's screen holds (screenHolds). */
 let look: ((sessionId: string, want: string) => Promise<string[]>) | undefined
-/** The agent whose row runs, and why an agent's later rows are skipped once one of its turns ended in an error on this run's key. */
+/** The agent whose row runs. */
 let current = ''
-const gaveUp: Record<string, string> = {}
+/**
+ * Why an agent's later rows are skipped once one of its turns ended in an error on this run's key. Kept in a file of this run (the
+ * runner's process, the parent of every worker): a worker is started anew after a failed test, and what a module holds goes with it.
+ */
+const GAVE_UP = join(tmpdir(), `conductor-e2e-live-gave-up-${process.ppid}.json`)
+function gaveUp(): Record<string, string> {
+  try {
+    return JSON.parse(readFileSync(GAVE_UP, 'utf8')) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+function giveUp(agent: string, why: string) {
+  writeFileSync(GAVE_UP, JSON.stringify({ ...gaveUp(), [agent]: why }))
+}
 /** How long a row waits before it looks once at what the program signalled: an agent that answers does so sooner. */
 const LOOK_MS = 30_000
 
@@ -288,7 +302,7 @@ async function answerOrExit(api: Api, runId: string, read: () => Promise<string>
       const holds = await look(m.sessionId, want).catch(() => [] as string[])
       if (holds.some((h) => h.startsWith('program states:') && h.endsWith('error'))) {
         const why = `its turn ended in an error${holds.includes('billing') ? ', and its screen names billing: the provider refuses this key for its quota or its billing' : ''}`
-        if (current) gaveUp[current] = `${current}: an earlier row's turn ended in an error on this run's key${holds.includes('billing') ? ' (its screen named billing)' : ''}`
+        if (current) giveUp(current, `${current}: an earlier row's turn ended in an error on this run's key${holds.includes('billing') ? ' (its screen named billing)' : ''}`)
         throw new Error(`the agent did not answer: ${why}; of the words this suite knows a screen by, its screen holds: ${holds.join(', ')}`)
       }
     }
@@ -328,7 +342,8 @@ for (const agent of ['claude', 'codex']) {
     // In CI nobody is signed in: an agent runs on its key or not at all. On a person's machine its own login may stand in.
     test.skip(!!process.env.CI && !process.env[KEY[agent]!], `${agent}: this run holds no ${KEY[agent]}`)
     test.beforeEach(({ page, server }) => {
-      test.skip(!!gaveUp[agent], gaveUp[agent] ?? '')
+      const why = gaveUp()[agent]
+      test.skip(!!why, why ?? '')
       current = agent
       look = (sessionId, want) => screenHolds(page, server, sessionId, want)
     })

@@ -1381,6 +1381,23 @@ the `live` environment holding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`):**
   its session ended, which still knows the word it was told. Round 4's own
   live run (`PASS live4`, the spec 2 of 2) passed on 2026-10-02 against
   Claude Code 2.1.287 and Codex 0.159.0.
+- **On a fresh runner (2026-11-17, #988).** The workflow's weekly runs had
+  failed nine rows of ten since October, with the keys and without: the
+  suite assumed a machine whose owner uses both agents. `scripts/live_setup.py`
+  brings a runner's agents there first (signed in with the key, past their
+  first-run screens, trusting the live repository and no other folder);
+  an agent whose key the run does not hold is skipped; and a row whose
+  agent is held by a startup question, or whose turn ended in an error,
+  says so in one line instead of waiting its time out (the agent's other
+  rows are then skipped). Observed that day on runs dispatched from the
+  branch: Claude Code 2.1.326 passed all five rows, four runs in a row.
+  Codex 0.169.0 took the typed prompt and its turn ended in an error: its
+  provider refused the run's key for its quota or its billing (the
+  program's own status said error and its screen named billing), which the
+  row says; its rows pass once the key's account can be billed. Codex's
+  hooks row is skipped in CI: its hooks are installed and reviewed by a
+  person. Conductor's session went on showing "working" after that error,
+  which is #991.
 
 **Still by hand:**
 
