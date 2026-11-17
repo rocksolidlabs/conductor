@@ -29,7 +29,7 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe, Brakeman and usage-reader flags against the CLIs on this machine (nightly; the usage reads need a login, and a Claude Code other than the checked version is read only when CONDUCTOR_USAGE_CHECK names it)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py, design_drift.py, live_setup.py)
 ```
 
 `npm --prefix web test` runs the design system's rule checks among the
