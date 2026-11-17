@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { BrakemanRequest, BrakemanRow } from '~/utils/brakeman'
-import { closed, kindWords, refLabel, requestNumber, stateWords } from '~/utils/brakeman'
+import { closed, kindWords, requestNumber } from '~/utils/brakeman'
 import { askChips, askDisabled } from '~/utils/brakemanAsk'
 import { pageState } from '~/utils/pageState'
 
@@ -37,10 +37,9 @@ const current = computed(() => (state.value?.current ? (bk.requests.value.find((
 const queue = computed(() => (state.value?.queue ?? []).map((q) => bk.requests.value.find((r) => r.id === q.id) ?? q).filter((r) => r.state === 'queued'))
 /** The requests that are done, newest first: those with a brief, and those that ended without one. */
 const done = computed(() => bk.requests.value.filter((r) => closed(r.state)))
+/** The requests under way or waiting, for Earlier's Ask again (not offered for an ask among them). */
+const openRequests = computed(() => [...(current.value ? [current.value] : []), ...queue.value])
 
-const sessionName = (id?: string) => (id ? live.sessions.value.find((s) => s.id === id)?.name : undefined)
-const words = (r: BrakemanRequest) => stateWords(r, sessionName(r.sessionId))
-const at = (iso?: string) => (iso ? new Date(iso).toLocaleString() : '')
 
 /** The brief a link names: the query's request. */
 const openId = computed(() => (typeof route.query.request === 'string' ? route.query.request : ''))
@@ -70,9 +69,12 @@ const newer = ref<BrakemanRow | null>(null)
 const latestRead = ref(false)
 let latestBusy = false
 let latestAgain = false
+/** Whether the server takes the list's filters (an older one refuses them): Earlier hides them when it does not. */
+const served = ref<boolean | undefined>(undefined)
 async function newestBrief(): Promise<BrakemanRow | undefined> {
   try {
     const out = await bk.list({ has: 'brief', limit: 1 })
+    served.value = out.filtered
     if (out.filtered) return out.requests[0]
   } catch {
     /* the live store's newest stands in */
@@ -255,28 +257,9 @@ const prefill = computed(() => {
                   </UCard>
                 </section>
 
-                <section v-if="done.length" class="order-3 flex min-w-0 flex-col gap-2" data-brakeman-briefs>
-                  <h2 class="text-sm font-semibold text-highlighted">Earlier</h2>
-                  <UCard v-for="r in done" :key="r.id" :ui="{ body: 'p-3 sm:p-4' }" :data-request="r.id" :data-request-state="r.state" :data-request-latest="r.id === latestId ? '' : undefined">
-                    <div class="flex flex-wrap items-center gap-2 text-sm">
-                      <UButton
-                        :label="`${r.id} · ${kindWords(r.kind)}`"
-                        :icon="cardId === r.id && !folded ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
-                        color="neutral"
-                        variant="ghost"
-                        size="sm"
-                        :disabled="!r.hasBrief"
-                        data-request-open
-                        @click="toggle(r.id)"
-                      />
-                      <UBadge v-if="r.hasBrief && bk.unopened.value.includes(r.id)" label="new" color="primary" variant="subtle" size="sm" data-request-new />
-                      <span class="text-muted" data-request-words>{{ words(r) }}</span>
-                      <span v-if="r.subjects?.length" class="text-xs text-muted">about {{ r.subjects.map((s) => refLabel(s)).join(', ') }}</span>
-                      <span class="ml-auto text-xs text-muted">{{ at(r.briefAt || r.closedAt || r.createdAt) }}</span>
-                    </div>
-                  </UCard>
-                  <UButton v-if="bk.hasMore.value" label="Older requests" color="neutral" variant="outline" class="self-start" data-briefs-more @click="bk.more()" />
-                </section>
+                <div v-if="done.length" class="order-3 min-w-0">
+                  <BrakemanEarlier :latest="latestId" :shown="cardId" :folded="folded" :served="served" :waiting="openRequests" @toggle="toggle" />
+                </div>
               </div>
 
               <div class="contents @min-[53.75rem]:flex @min-[53.75rem]:min-w-0 @min-[53.75rem]:flex-[1_1_280px] @min-[53.75rem]:flex-col @min-[53.75rem]:gap-5" data-brakeman-side>
