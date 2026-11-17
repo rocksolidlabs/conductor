@@ -85,8 +85,10 @@ var ErrNotSelected = errors.New("not the comparison's selected candidate")
 // compareIntents are the commands a compare run takes, through act, the
 // one path of every task and run command. Any other, whatever row or plan
 // adds it, is refused (ErrNotListed) until its rule for a comparison is
-// written here.
-var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept}
+// written here. Every task command listed takes the selection's rule
+// (laneSelected): after an applied selection, refused on a lane not
+// selected.
+var compareIntents = []string{"pause", "unpause", TaskCancel, TaskRetry, TaskAccept, TaskRecheck, intentRequestChanges}
 
 // errComparisonNoTicket refuses the launch of a compare crew that no
 // ticket's approved plan revision carries: a comparison is launched by a
@@ -320,8 +322,14 @@ func (cmp *Compare) validate(c Crew) error {
 		}
 		laneOf[t.Member] = lane
 	}
+	// Whom the selection is for (HM1): a role a person of the crew holds,
+	// or a person of it, as a plan decision's for is checked. Any other
+	// form is refused, the decide grant's label among them: the operator
+	// answers a selection, for whomever it is.
 	if cmp.Selector != "" {
-		return invalidf("compare: selector is not taken yet: a comparison's selection is the operator's")
+		if _, _, err := Holder(c, cmp.Selector); err != nil {
+			return invalidf("compare: selector: %s", err.Error())
+		}
 	}
 	return nil
 }

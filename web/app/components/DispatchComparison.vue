@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
-import { MEASURED_BY, SELECT_LATER } from '~/utils/compare'
+import { MEASURED_BY } from '~/utils/compare'
+import { laneSelection, type SelectionMark } from '~/utils/compareSelect'
 import { ticketPath } from '~/utils/dispatch'
 import { shortCommit } from '~/utils/dispatchPlans'
 
@@ -8,7 +9,11 @@ import { shortCommit } from '~/utils/dispatchPlans'
  * A ticket's compare view (Program item CP1, docs/plans/compare-crew.md, PR-4), the ticket page's `?view=compare&run=<any run of the
  * chain>`, drawn in place of its sections and its strip as the Review view is: the comparison's base commit, its objective and
  * criteria, one column per candidate (CompareCandidates), the checks with the server's verdicts (CompareChecks) and the measured rows
- * (CompareMeasured), every one measured by Conductor. Until the selection arrives (PR-7) it says so under the columns. Read by
+ * (CompareMeasured), every one measured by Conductor; under the columns the selection (CompareSelect, PR-7: DR1's record of origin
+ * `compare`, answered through DR1's own card) and, below the measured part and apart from it, the supporting information
+ * (CompareSupporting: what the agents, their reviews and Brakeman said). Each column says "selected" or "not selected" once the
+ * selection is applied, read from the selection alone. One column on a phone: the candidates, the measured part, the supporting
+ * panel, then the selection (PR-8b); Brakeman's table scrolls inside its own card, never the page. Read by
  * useComparison: again on the run's change, on Dispatch's events naming the ticket, on the comparison's Brakeman request and on a
  * reconnect. A run of no comparison, a read under way and a first read that failed are said as every page says them (PageEmpty).
  */
@@ -30,6 +35,15 @@ const state = computed(() => {
   return c.error.value ? 'failed' : 'reading'
 })
 const back = { query: {} }
+/** Each lane's label once the selection is applied: selected, not selected. */
+const labels = computed<Record<string, SelectionMark>>(() => {
+  const out: Record<string, SelectionMark> = {}
+  for (const cand of comparison.value?.candidates ?? []) {
+    const m = laneSelection(comparison.value, cand.task)
+    if (m) out[cand.task] = m
+  }
+  return out
+})
 </script>
 
 <template>
@@ -72,16 +86,20 @@ const back = { query: {} }
           <h3 class="text-sm font-semibold text-highlighted">Candidates</h3>
           <span class="text-xs text-muted">{{ MEASURED_BY }}</span>
         </div>
-        <CompareCandidates :candidates="comparison.candidates" :agents="agents" />
+        <CompareCandidates :candidates="comparison.candidates" :agents="agents" :labels="labels" />
       </section>
 
-      <!-- The selection's place (PR-7). -->
-      <p class="text-sm text-muted" data-compare-select-slot>{{ SELECT_LATER }}.</p>
+      <!-- The selection (PR-7): DR1's record, answered through DR1's own card. Under the columns; on a phone last, after the measured
+           part and the supporting panel, so a person reads both before answering (PR-8b). -->
+      <CompareSelect :comparison="comparison" class="max-sm:order-last" />
 
       <section class="flex flex-col gap-4" data-compare-measured>
         <CompareChecks :checks="comparison.checks" :candidates="comparison.candidates" />
         <CompareMeasured :candidates="comparison.candidates" :not-observed="comparison.independence?.notObserved" />
       </section>
+
+      <!-- Supporting information, not evidence: its own panel, below the measured part, never colouring it. -->
+      <CompareSupporting :supporting="comparison.supporting" :run="comparison.run" />
     </template>
   </section>
 </template>

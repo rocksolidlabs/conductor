@@ -57,9 +57,14 @@ func (e *Engine) compareChainRoom(ctx context.Context, from Loaded, h history) e
 }
 
 // compareSelected is the lane (its candidate task) the chain's applied
-// selection selects, "" when none is applied: before the selection is a
-// record of its own, none is.
-func (h history) compareSelected() string { return "" }
+// selection selects (read with the chain's decisions,
+// readDecisionHistory), "" when none is applied or None of these was.
+func (h history) compareSelected() string {
+	if sel := h.dec.selection; sel != nil && !sel.None {
+		return sel.Task
+	}
+	return ""
+}
 
 // compareContinued judges a comparison's continuation r once each task's
 // import and repair are decided, inside its first change, before anything

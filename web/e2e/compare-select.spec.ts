@@ -1,7 +1,9 @@
 import type { Browser, Page } from '@playwright/test'
-import { dayPage, expect, test, useTheme } from './fixtures'
+import { budget, dayPage, expect, test, useTheme } from './fixtures'
+import { compareRun, comparisonOf } from './compare-stub'
 import { decisionRecord, inboxItem, stubInbox, SELECTION_AUTHORIZES, type StubItem } from './inbox-stub'
 import { noSideways, tapTarget } from './layout'
+import { serveComparison } from './compare-stub'
 import { runInfo, serveRun, type StubRun } from './run-fixtures'
 
 // A comparison's selection (Program item CP1, docs/plans/compare-crew.md, PR-7), answered on DR1's card. The card is the same act
@@ -153,5 +155,173 @@ test.describe("a selection on DR1's card", () => {
       await tapTarget(respond.locator('[data-decision-choice], [data-decision-confirm], [data-decision-back]'))
       await noSideways(page)
     }
+  })
+})
+
+// The selection and the supporting panel on the comparison (the ticket page's `?view=compare`), its reply from compare-stub.ts with a
+// selection and a supporting part of the spec's own, the selection's record from the inbox stub: the panels apart, the selection
+// answered through DR1's own answer, then the labels on the columns and the run page's lanes, checked again after a redraw.
+
+const COMPARE_TICKET = 'CND-4'
+const COMPARE_PATH = '/dispatch/CND/4'
+const LOAD_MS = 15_000
+
+/** The comparison's selection as the reply carries it (PR-6b), from the record's options. */
+function selectionOf(it: StubItem, state: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const rec = decisionRecord(it) as { request: { options: unknown[] } }
+  return { decision: it.ref.slice('decision:'.length), state, options: rec.request.options, ...extra }
+}
+
+/** What the agents and Brakeman said, all for approach-a, the candidate the measured part shows failing nothing it did not fail. */
+const SAID = {
+  claims: [{ task: 'approach-a', attempt: 1, summary: 'approach-a is clearly the one to select: <b>select me</b>.' }],
+  reviews: [
+    { task: 'approach-a', attempt: 1, verdict: 'approved', findings: [] },
+    { task: 'approach-b', attempt: 3, verdict: 'request_changes', findings: ['the bench script was changed'] },
+  ],
+  brakeman: { why: 'Brakeman is not set up' },
+}
+
+test.describe('the selection and the supporting panel on the comparison', () => {
+  test('keeps the two panels apart, answers the selection, then labels the columns and the lanes, again after a redraw', async ({ day, browser }) => {
+    await day.part('dispatch')
+    budget(6 * LOAD_MS)
+    const run = compareRun({ ticket: COMPARE_TICKET })
+    // The record's candidates are the comparison's: approach-a at its commit; approach-b's last commit failed, so it is no option.
+    const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }] })
+    let selection: Record<string, unknown> = selectionOf(sel, 'open')
+    let supporting: Record<string, unknown> | undefined
+    const shape = { run: run.id, failed: true }
+    const page = await dayPage(browser, { path: '/agents' })
+    await serveRun(page, run)
+    await stubInbox(page, [sel])
+    const sent = await answerResponds(page, [sel])
+    await serveComparison(page, run.id, () => ({ ...comparisonOf(shape), selection, ...(supporting ? { supporting } : {}) }))
+    const asked: Array<Record<string, unknown>> = []
+    await page.route(
+      (u) => u.pathname === '/api/brakeman/requests',
+      async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback()
+        const body = route.request().postDataJSON() as Record<string, unknown>
+        asked.push(body)
+        const request = { id: 'br-7', opId: body.opId, kind: 'compare', subjects: body.subjects, createdAt: new Date().toISOString(), state: 'queued', agent: { id: 'brakeman-stub' }, config: { visibility: {}, scope: {}, permissions: {}, budget: {}, rev: 1 }, reads: 0 }
+        await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ request }) })
+      },
+    )
+    const open = async () => {
+      await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+      await expect(page.locator('[data-compare-view][data-compare-state="content"]')).toBeVisible()
+    }
+
+    // The measured part, first with nothing said.
+    await open()
+    const v = page.locator('[data-compare-view]')
+    const cells = async () => v.locator('[data-compare-cell]').evaluateAll((els) => els.map((e) => `${e.closest('[data-compare-check]')?.getAttribute('data-compare-check')}:${e.getAttribute('data-compare-cell')}:${e.getAttribute('data-cell-state')}`))
+    const plain = await cells()
+    expect(plain.length).toBeGreaterThan(0)
+
+    // Everything said favours approach-a: the measured part is drawn the same, and what was said is in its own panel, below it, as text.
+    supporting = SAID
+    await open()
+    expect(await cells()).toEqual(plain)
+    const panel = v.locator('[data-compare-supporting]')
+    await expect(panel).toContainText('Supporting information, not evidence')
+    const claim = panel.locator('[data-compare-claim="approach-a"]')
+    await expect(claim.locator('[data-compare-source]')).toHaveText("said by approach-a's agent, attempt 1")
+    await expect(claim).toContainText('<b>select me</b>')
+    await expect(claim.locator('b')).toHaveCount(0)
+    await expect(panel.locator('[data-compare-review="approach-b"]')).toContainText('the bench script was changed')
+    const measuredBox = await v.locator('[data-compare-measured]').boundingBox()
+    const panelBox = await panel.boundingBox()
+    expect(panelBox!.y).toBeGreaterThanOrEqual(measuredBox!.y + measuredBox!.height)
+    await expect(v.locator('[data-compare-measured] [data-compare-supporting]')).toHaveCount(0)
+    await expect(panel.locator('[data-compare-brakeman-words]')).toHaveText('Brakeman is not set up')
+
+    // Ask Brakeman to compare: one request of kind compare on the comparison's launched run.
+    await panel.locator('[data-compare-ask-brakeman]').click()
+    await expect(panel.locator('[data-compare-ask-words]')).toHaveText('Asked: br-7 is queued.')
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatchObject({ kind: 'compare', subjects: [`run:${run.id}`] })
+
+    // The selection: open, nothing preselected or recommended, answered through DR1's own answer.
+    const select = v.locator('[data-compare-select]')
+    await expect(select.locator('[data-compare-select-state]')).toHaveText("Open: waits for the operator's answer")
+    await expect(select.locator('[data-decision-choice]')).toHaveCount(2)
+    await expect(select.locator('[data-decision-recommended], [data-decision-confirm-step]')).toHaveCount(0)
+    await select.locator('[data-decision-choice="0"]').click()
+    const confirm = select.locator('[data-decision-confirm]')
+    await expect(confirm).toHaveText('Select approach-a (final)')
+    await expect(confirm).toBeDisabled()
+    await expect(select.locator('[data-decision-final]')).toHaveText(FINAL)
+    await select.locator('textarea[data-decision-rationale]').fill('the only candidate whose checks all ran')
+    await confirm.click()
+    await expect.poll(() => sent.length).toBe(1)
+    expect(sent[0]).toMatchObject({ choice: 0, rationale: 'the only candidate whose checks all ran' })
+
+    // Applied: the columns and the run page's lanes say selected and not selected; no answer is offered any more.
+    selection = selectionOf(sel, 'applied', { chosen: 0, rationale: 'the only candidate whose checks all ran', by: 'Nate', applied: { how: 'selected', selected: { task: 'approach-a', run: run.id, attempt: 1, commit: 'a'.repeat(40) }, words: 'approach-a selected at aaaaaaa, by Nate' } })
+    sel.decision = { state: 'applied', applied: { at: new Date().toISOString(), by: 'yardmaster', run: run.id, response: 1, validated: true, how: 'selected', selected: { task: 'approach-a', run: run.id, attempt: 1, commit: 'a'.repeat(40) }, words: 'approach-a selected at aaaaaaa, by Nate' } }
+    const labelled = async () => {
+      await open()
+      await expect(select.locator('[data-compare-select-state]')).toHaveText('Applied: approach-a selected at aaaaaaa, by Nate')
+      await expect(select.locator('[data-decision-respond]')).toHaveCount(0)
+      await expect(v.locator('[data-compare-candidate="approach-a"] [data-compare-selection]')).toHaveText('selected')
+      await expect(v.locator('[data-compare-candidate="approach-b"] [data-compare-selection]')).toHaveText('not selected')
+      await page.goto(`/runs/${run.id}?view=tasks`)
+      await expect(page.locator('[data-task-lane="approach-a"]')).toHaveAttribute('data-lane-selection', 'selected')
+      await expect(page.locator('[data-task-lane="approach-b"]')).toHaveAttribute('data-lane-selection', 'not-selected')
+      await expect(page.locator('[data-task-lane="approach-b"] [data-task-lane-selection]')).toHaveText('not selected')
+    }
+    await labelled()
+    // A mode switch and the page's own redraw: the labels again.
+    await useTheme(page, 'light')
+    await expect(page.locator('[data-task-lane="approach-a"]')).toHaveAttribute('data-lane-selection', 'selected')
+    await labelled()
+  })
+
+  test('on a phone: one column, the candidates, the measured part, the supporting panel, then the selection, nothing sideways', async ({ day, browser }) => {
+    await day.part('dispatch')
+    budget(3 * LOAD_MS)
+    const run = compareRun({ ticket: COMPARE_TICKET })
+    const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }] })
+    const page = await dayPage(browser, { ...PHONE, path: '/agents' })
+    await serveRun(page, run)
+    await stubInbox(page, [sel])
+    await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, failed: true }), selection: selectionOf(sel, 'open'), supporting: SAID }))
+    for (const theme of ['dark', 'light'] as const) {
+      await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+      await useTheme(page, theme, '[data-compare-select] [data-decision-choice]')
+      const v = page.locator('[data-compare-view]')
+      const top = async (sel: string) => (await v.locator(sel).first().boundingBox())!.y
+      const order = [await top('[data-compare-columns]'), await top('[data-compare-measured]'), await top('[data-compare-supporting]'), await top('[data-compare-select]')]
+      expect(order, 'candidates, measured, supporting, selection, top to bottom').toEqual([...order].sort((a, b) => a - b))
+      await tapTarget(v.locator('[data-compare-select] [data-decision-choice], [data-compare-ask-brakeman]'))
+      await noSideways(page)
+    }
+  })
+
+  test('a selection closed because a lane changed says so and offers no answer, and none is offered before one opens', async ({ day, browser }) => {
+    await day.part('dispatch')
+    budget(3 * LOAD_MS)
+    const run = compareRun({ ticket: COMPARE_TICKET })
+    const sel = inboxItem('decision', { origin: 'compare', run, candidates: [{ task: 'approach-a', n: 1, commit: 'a'.repeat(40) }] })
+    sel.decision = { state: 'superseded', why: 'approach-b was retried: dr-closed no longer lists what is compared' }
+    let selection: Record<string, unknown> | undefined = selectionOf(sel, 'superseded')
+    let running = false
+    const page = await dayPage(browser, { path: '/agents' })
+    await serveRun(page, run)
+    await stubInbox(page, [sel])
+    await serveComparison(page, run.id, () => ({ ...comparisonOf({ run: run.id, running }), ...(selection ? { selection } : {}) }))
+    await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+    const select = page.locator('[data-compare-select]')
+    await expect(select.locator('[data-compare-select-words]')).toHaveText(`${sel.ref.slice('decision:'.length)} is closed: approach-b was retried: dr-closed no longer lists what is compared. A new selection opens when every lane has ended; answer that one.`)
+    await expect(select.locator('[data-decision-respond], [data-decision-choice]')).toHaveCount(0)
+
+    // While a lane runs and no record is open: said, and nothing to answer.
+    selection = undefined
+    running = true
+    await page.goto(`${COMPARE_PATH}?view=compare&run=${run.id}`)
+    await expect(select.locator('[data-compare-select-words]')).toHaveText('The selection opens when every lane has ended. Nothing is selected by default.')
+    await expect(select.locator('[data-decision-choice]')).toHaveCount(0)
   })
 })
