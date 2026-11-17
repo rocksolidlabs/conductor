@@ -419,7 +419,7 @@ func TestAHostedRecordBorrowsNothingFromTheServer(t *testing.T) {
 	probed := catalog.Agent{ID: "probed", Name: "probed", Command: []string{"/bin/cat"}, Adapter: "claude"}
 	e := newTestEnvAgents(t, nil, nil, []catalog.Agent{probed})
 	e.srv.probes.mu.Lock()
-	e.srv.probes.run = func(context.Context, []string, agents.Probe, map[string]string) agents.ProbeResult {
+	e.srv.probes.run = func(context.Context, *agents.ProbeProcess, []string, agents.Probe, map[string]string) agents.ProbeResult {
 		return agents.ProbeResult{Ran: true, Identified: true, Version: "9.9.9"}
 	}
 	e.srv.probes.mu.Unlock()

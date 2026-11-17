@@ -957,9 +957,13 @@ func (s *Server) track(f func()) {
 
 // WaitBackground waits, as long as ctx allows, for the goroutines the
 // server started on its own (track): a run's record being written, the
-// viewers of a forgotten run's links being closed. Shutdown does the same
-// at its end; tests call it before their directories go.
+// viewers of a forgotten run's links being closed. It ends the identity
+// probes as Shutdown does. Shutdown does the same at its end; tests call it
+// before their directories go.
 func (s *Server) WaitBackground(ctx context.Context) {
+	// No identity probe starts from now on, and every one under way is
+	// sent its end, waited for with the usage reads below (#961).
+	s.probes.stop()
 	// A first message still waiting is typed by no one now.
 	s.firstStop()
 	// From now on no call enters the one door to GitHub of a ticket's
@@ -985,6 +989,7 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	s.stopReviews()
 	s.stopHistory()
 	s.capacity.close()
+	s.probes.close(ctx)
 	if s.brakeman != nil {
 		s.brakeman.release(ctx)
 	}
@@ -1411,8 +1416,11 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 // written in a moment.
 const recordsGrace = 5 * time.Second
 
-// Shutdown arms the managed runs' teardown cut-off (crew's Draining: ctx's
-// deadline less the reserve their rows need), stops the webhooks, then the
+// Shutdown first ends the identity probes (probeCache.stop: none starts,
+// each under way has its process group killed), waited for within ctx with
+// the usage reads. It arms the managed runs' teardown cut-off (crew's
+// Draining: ctx's deadline less the reserve their rows need), stops the
+// webhooks, then the
 // runs, so that no crew member starts any more and the services of their
 // trees end, then waits for the trees being ended (crew's Drain), then
 // every session, and closes every viewer. The webhooks go first: the
@@ -1424,6 +1432,9 @@ const recordsGrace = 5 * time.Second
 // records of the runs stopped are then waited for within recordsGrace,
 // whatever ctx says, and closed, and the ledger after them.
 func (s *Server) Shutdown(ctx context.Context) {
+	// No identity probe starts from now on, and every one under way is
+	// sent its end, before any wait (#961); they are waited for below.
+	s.probes.stop()
 	// A first message still waiting is typed by no one now: its goroutine
 	// ends, and the wait for the server's own below finds it gone.
 	s.firstStop()
@@ -1445,6 +1456,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 	// No usage read starts from now on, and those under way are ended,
 	// their outcomes recorded, before capacity/owner.lock goes.
 	s.capacity.close()
+	// The probes ended above are waited for within ctx: none still runs,
+	// writing in the HOME it was given, once the stop returns, but a helper
+	// that left its probe's process group (probeCache.stop).
+	s.probes.close(ctx)
 	s.runs.Draining(ctx)
 	s.shutDesks()
 	s.stopRevokeRetries()
